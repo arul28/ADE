@@ -4360,6 +4360,15 @@ final class SyncService: ObservableObject {
   @Published var ctoHomeMachineKey: String?
   /// The home machine's name, also when the phone cannot reach it.
   @Published var ctoHomeMachineName: String?
+  /// Whether the account has a home record for the CTO. False with
+  /// `ctoHomeProjectId == activeProjectId` means the account answered and has
+  /// none: there is no default, so the person picks one. Stays true while the
+  /// answer is unknown (an older brain, or not read yet), which keeps the
+  /// primary machine as before.
+  @Published var ctoHomeChosen = true
+  /// The ADE Cloud computer the CTO lives on when its home is one
+  /// (`cloudInstanceId` in the account record); nil for the person's machines.
+  @Published var ctoHomeCloudInstanceId: String?
   /// The project the CTO home above was read for; another project's CTO
   /// home is unknown until read again.
   var ctoHomeProjectId: String?
@@ -12352,6 +12361,93 @@ final class SyncService: ObservableObject {
     )
   }
 
+  // MARK: - CTO v2: notes, open work, context, routines
+  //
+  // Every call goes to the CTO's home machine: `cto.*` through
+  // `ctoCommandTarget()`, `chat.*` on the CTO session through its chat scope
+  // (registered by `ensureCtoSession`). Callers gate each control on
+  // `supportsRemoteAction` / `supportsChatRemoteAction`, so an older host hides it.
+
+  /// Writes a whole notes file. `baseHash` refuses the write when the file
+  /// changed since the editor loaded it (`ctoNotesChangedError`).
+  func updateCtoNotes(scope: String, text: String, baseHash: String?) async throws -> CtoMemory {
+    let target = try ctoCommandTarget()
+    var args: [String: Any] = ["scope": scope, "text": text]
+    if let baseHash, !baseHash.isEmpty { args["baseHash"] = baseHash }
+    return try await sendDecodableCommand(
+      action: "cto.updateNotes",
+      args: args,
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoMemory.self
+    )
+  }
+
+  /// `op`: add (with `text`), complete, reopen or remove (with `id`).
+  func updateCtoOpenWork(op: String, text: String? = nil, id: String? = nil) async throws -> CtoMemory {
+    let target = try ctoCommandTarget()
+    var args: [String: Any] = ["op": op]
+    if let text { args["text"] = text }
+    if let id { args["id"] = id }
+    return try await sendDecodableCommand(
+      action: "cto.updateOpenWork",
+      args: args,
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoMemory.self
+    )
+  }
+
+  func refreshCtoContext() async throws -> CtoRefreshContextResult {
+    let target = try ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.refreshContext",
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoRefreshContextResult.self
+    )
+  }
+
+  func listScheduledWork(sessionId: String, includeTerminal: Bool = false) async throws -> [AgentChatScheduledWorkItem] {
+    let scope = chatCommandScope(for: sessionId)
+    let action = chatActionName("chat.listScheduledWork", sessionId: sessionId)
+    var args: [String: Any] = ["sessionId": sessionId]
+    if includeTerminal { args["includeTerminal"] = true }
+    return try await sendDecodableCommand(
+      action: action,
+      args: args,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: [AgentChatScheduledWorkItem].self
+    )
+  }
+
+  /// One routine's own on/off switch.
+  func setScheduledWorkItemPaused(sessionId: String, scheduleId: String, paused: Bool) async throws {
+    let scope = chatCommandScope(for: sessionId)
+    let action = chatActionName("chat.setScheduledWorkItemPaused", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    _ = try await sendCommand(
+      action: action,
+      args: ["sessionId": sessionId, "scheduleId": scheduleId, "paused": paused],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  func runScheduledWorkNow(sessionId: String, scheduleId: String) async throws -> AgentChatRunScheduledWorkNowResult {
+    let scope = chatCommandScope(for: sessionId)
+    let action = chatActionName("chat.runScheduledWorkNow", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    return try await sendDecodableCommand(
+      action: action,
+      args: ["sessionId": sessionId, "scheduleId": scheduleId],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatRunScheduledWorkNowResult.self
+    )
+  }
+
   /// PR hydration that stays small on every brain, including ones that
   /// ignore `includeSnapshots` and answer an argument-less `prs.refresh` with
   /// every stored snapshot (17 MB on a real project, which the host refused
@@ -17353,6 +17449,29 @@ final class SyncService: ObservableObject {
       args: ["enabled": enabled],
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
+  }
+
+  /// Whether the phone can allow Claude's Full access as root on the machine
+  /// a chat lives on. An older brain without the command answers false.
+  func canAllowRootFullAccess(sessionId: String) -> Bool {
+    let action = "chat.setRootFullAccess"
+    if let connection = remoteChatConnection(for: sessionId) {
+      return connection.isLive && connection.commandDescriptor(for: action)?.policy.allowsPhone == true
+    }
+    return canInvokeRemoteAction(action)
+  }
+
+  /// Allows Full access as root on the chat's machine, for every chat there.
+  /// True when that machine now allows it.
+  func allowRootFullAccess(sessionId: String) async throws -> Bool {
+    let scope = chatCommandScope(for: sessionId)
+    let raw = try await sendCommand(
+      action: "chat.setRootFullAccess",
+      args: ["allowed": true],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+    return (raw as? [String: Any])?["allowed"] as? Bool == true
   }
 
   func moveChatSteer(sessionId: String, steerId: String, toIndex: Int) async throws {

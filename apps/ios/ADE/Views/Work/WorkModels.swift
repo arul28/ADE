@@ -727,6 +727,10 @@ struct WorkActiveSendCapability: Equatable {
     // no cancel-and-resend, so interrupt just stops the turn.
     case "copilot":
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "GitHub Copilot", interruptContinues: false)
+    // Pi's SDK `steer` joins the running turn; like Copilot there is no
+    // cancel-and-resend.
+    case "pi":
+      return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "Pi", interruptContinues: false)
     // Qwen and Grok are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
     // so the label reads with the provider's name instead of "the agent", and
@@ -810,10 +814,11 @@ func workBoardColumnLabel(_ column: String) -> String {
 ///
 /// Deliberately separate from `WorkActiveSendCapability` above, exactly as it is
 /// on the desktop. That table governs the composer's staged-message menu; this
-/// is the CTO's own eligibility contract, and Cursor qualifies here through
-/// interrupt-and-resend despite having no inline channel at all, and OpenCode
-/// through its inbox, which delivers an inline message at the next step.
-let ctoLiveRedirectProviders: [String] = ["claude", "codex", "cursor", "opencode"]
+/// is the CTO's own eligibility contract: Cursor qualifies through
+/// interrupt-and-resend, OpenCode through its inbox (an inline message lands
+/// at the next step) and Copilot through an immediate send. Pi and Muse steer in
+/// a plain chat but are not CTO providers until they pass the CTO's live check.
+let ctoLiveRedirectProviders: [String] = ["claude", "codex", "cursor", "opencode", "copilot"]
 
 /// True when `provider` can redirect a turn already in flight, so it is allowed
 /// to be the CTO.

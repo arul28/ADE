@@ -481,6 +481,8 @@ struct WorkChatMessageBubble: View, Equatable {
   /// Active session model id, used to resolve the per-model accent for the
   /// model badge chip and card border tint.
   @Environment(\.workChatModelId) private var sessionModelId
+  /// The CTO thread: the CTO's own colour, deepened, fills the person's bubbles.
+  @Environment(\.workChatAccentHexOverride) private var accentHexOverride
   /// Pretty model label ("Claude Sonnet 5"), injected by the session view
   /// so each bubble doesn't have to recompute the same string.
   @Environment(\.workChatModelLabel) private var sessionModelLabel
@@ -521,6 +523,9 @@ struct WorkChatMessageBubble: View, Equatable {
   /// as anyway. Kept in step with `CHAT_USER_BUBBLE_GRADIENT_*` in
   /// `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts`.
   private var userBubbleFill: Color {
+    if let accentHexOverride, let hex = ctoNormalizedHex(accentHexOverride) {
+      return workMixColors(ctoColor(hex: hex), Color.black, 0.28)
+    }
     // Claude and Codex shipped looking right, so they keep the original stops,
     // which mix toward a fixed violet.
     if ADEColor.chatAccentKeepsOriginalBubble(accent) {
@@ -540,9 +545,12 @@ struct WorkChatMessageBubble: View, Equatable {
   }
 
   private var userBubbleBorder: Color {
+    if let accentHexOverride, let hex = ctoNormalizedHex(accentHexOverride) {
+      return workMixColors(ctoColor(hex: hex), Color.white, 0.14).opacity(0.45)
+    }
     // accent at ~26% over a faint white edge — matches the desktop bubble's
     // `--chat-user-border-accent-mix`.
-    workMixColors(accent, Color.white, 0.14).opacity(0.45)
+    return workMixColors(accent, Color.white, 0.14).opacity(0.45)
   }
 
   private var workViolet: Color { Color(red: 0x7c / 255.0, green: 0x3a / 255.0, blue: 0xed / 255.0) }
@@ -663,7 +671,10 @@ struct WorkChatMessageBubble: View, Equatable {
           // One accessibility element per message: the first piece speaks it.
           .accessibilityHidden(segment.map { !$0.isFirst } ?? false)
         }
-        if isLastPiece, let deliveryBadge {
+        // The CTO answers mid-task input on its own, so its thread shows no
+        // delivery receipts; only a send that actually failed is worth a word.
+        if isLastPiece, let deliveryBadge,
+           accentHexOverride == nil || deliveryBadge == .sendFailed || deliveryBadge == .steerFailed {
           WorkDeliveryBadge(state: deliveryBadge)
             .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
         }
@@ -1523,6 +1534,79 @@ struct WorkResetCreditNoticeView: View {
   }
 }
 
+/// "Claude doesn't allow Full access as root here", with the way out: allow it
+/// for the chat's machine, after the same warning desktop shows.
+struct WorkRootFullAccessNoticeView: View {
+  let card: WorkEventCardModel
+  let sessionId: String
+
+  /// Not `@EnvironmentObject`: renders inside a transcript cell (see
+  /// `WorkSyncServiceReference`).
+  @Environment(\.workSyncService) private var syncReference
+  @State private var confirming = false
+  @State private var working = false
+  @State private var outcome: String?
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: card.icon)
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(card.tint.color)
+      Text(card.title)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+      Spacer(minLength: 6)
+      if let outcome {
+        Text(outcome)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      } else if syncReference.service?.canAllowRootFullAccess(sessionId: sessionId) == true {
+        Button("Allow") { confirming = true }
+          .buttonStyle(.plain)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .disabled(working)
+          .frame(minHeight: 44)
+          .contentShape(Rectangle())
+          .accessibilityHint("Allows Full access for every chat on this computer.")
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 8)
+    .background(ADEColor.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(ADEColor.warning.opacity(0.18), lineWidth: 0.8)
+    )
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .confirmationDialog("Allow Full access on this machine?", isPresented: $confirming, titleVisibility: .visible) {
+      Button("Allow on this machine", role: .destructive) {
+        Task { await allow() }
+      }
+      Button("Keep Accept edits", role: .cancel) {}
+    } message: {
+      Text("ADE runs as root on this computer. Allowing Full access covers every chat on it, and agents there can then change anything on it without asking.")
+    }
+  }
+
+  @MainActor
+  private func allow() async {
+    guard let syncService = syncReference.service else { return }
+    working = true
+    defer { working = false }
+    do {
+      outcome = try await syncService.allowRootFullAccess(sessionId: sessionId)
+        ? "Allowed. The next message runs with Full access."
+        : "The computer didn't allow it."
+    } catch {
+      ADEHaptics.error()
+      outcome = error.localizedDescription
+    }
+  }
+}
+
 /// Desktop `formatTurnTokenParts`: `12.3k`, `1.2M`; nil for zero.
 func workTurnTokenCount(_ value: Int) -> String? {
   guard value > 0 else { return nil }
@@ -2058,6 +2142,16 @@ extension EnvironmentValues {
     get { self[WorkChatModelLabelEnvironmentKey.self] }
     set { self[WorkChatModelLabelEnvironmentKey.self] = newValue }
   }
+
+  /// Set on the CTO thread only: its accent (the avatar colour) as `#rrggbb`.
+  var workChatAccentHexOverride: String? {
+    get { self[WorkChatAccentHexOverrideKey.self] }
+    set { self[WorkChatAccentHexOverrideKey.self] = newValue }
+  }
+}
+
+private struct WorkChatAccentHexOverrideKey: EnvironmentKey {
+  static let defaultValue: String? = nil
 }
 
 struct WorkDeliveryBadge: View {

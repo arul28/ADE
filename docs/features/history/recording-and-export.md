@@ -354,7 +354,6 @@ so CSV consumers must respect RFC 4180-style quoting.
 - [History README](README.md) -- overview and IPC surface.
 - [Chat Transcript and Turns](../chat/transcript-and-turns.md) -- the
   full event union and render pipeline for chat streams.
-- [Agents README](../agents/README.md) -- CTO session logs (tracked
-  separately in `cto_session_logs`).
-</content>
-</invoke>
+- [Agents README](../agents/README.md) -- the CTO keeps no session log;
+  its conversation lives in the chat transcripts, and `cto.getState` no
+  longer sends a list of past sessions.

@@ -580,15 +580,15 @@ Browser `window.ade` adapter:
   honestly when the host is offline or the action is not advertised. Its
   `cto.*` namespace is wired
   method by method on purpose — the host registers every `cto.*` action as
-  viewer-allowed, so completing the namespace mechanically would hand any
-  connected browser write access to the Linear credential store; only reads and
-  the session ensure are wired, and identity/token writes stay with the
-  fallback proxy, which rejects them as unavailable. CTO onboarding is
-  desktop-first and has no host descriptors, so the web adapter synthesizes a
-  completed onboarding state in browser-local storage — left to the fallback
-  proxy those reads would reject and
-  `CtoPage` parks forever, because its ensure-session effect bails while
-  onboarding state is null. `misc.ts` applies the display zoom preference
+  viewer-allowed, including `setLinearToken`/`clearLinearToken`, so completing
+  the namespace mechanically would hand any connected browser write access to
+  the host's Linear credential store. The namespace wires `getState`,
+  `ensureSession`, `getAttention`, `getMemory`, `updateNotes`, `updateOpenWork`,
+  `updateIdentity`, `refreshContext`, `previewSystemPrompt`, the onboarding
+  reads and the Linear reads; credential writes stay with the fallback proxy.
+  Every CTO method carries the CTO home machine's pin, and a pin naming another
+  machine refuses instead of reading or creating a session on this one.
+  `misc.ts` applies the display zoom preference
   through `applyHostedWebZoom`: CSS zoom still lives on `<body>` (the root
   element is reserved for browser pinch-zoom), but the body's specified
   width/height are divided by the factor first so the zoomed used box is

@@ -1,592 +1,317 @@
 # CTO
 
-The CTO is ADE's persistent, project-level operator identity — one per project, not a family of rotating chats or a background daemon. It is a single long-living chat thread that behaves as if it remembers everything discussed about the project, plus a small settings surface. There are no workers, no hiring, and no Linear workflow engine: those subsystems were removed. What remains is a durable thread with a smart memory system, first-class mid-thread model switching, and a light Linear read/write surface.
-
-The whole surface is built around one contract: the CTO is a daily chat you can open and use immediately, and its identity, memory, and context survive across sessions, context compaction, and model switches.
+The CTO is ADE's persistent project operator: one chat session per project that never rotates, a short memory it keeps itself, and a face you can change. The session is the conversation of record. Behind it, the model runs on a provider thread that ADE throws away and rebuilds whenever it gets full, compacts, overflows or hits a model limit, carrying the notes, the open work, the live project state and the last 40 messages onto the new one. Around the thread sit a page built for one daily chat (a floating name pill, a profile panel, quiet chips instead of tool rows) and a settings page with five sections: Look, Brain, Memory, Routines, Instructions.
 
 ## Source file map
 
 ### Main services (`apps/desktop/src/main/services/cto/`)
 
-- `ctoStateService.ts` — identity (name, persona, model preferences), session logs, onboarding state, and the system-prompt preview. Owns the immutable doctrine, continuity model, memory-system guidance, environment knowledge, and capability manifest constants. `buildReconstructionContext()` assembles the memory-enriched context injected on session start, compaction, and model switch (deliberately without the environment-knowledge document, which the system prompt it is concatenated to already carries); `previewSystemPrompt()` returns the same layered prompt the settings UI renders verbatim. It also owns the live state block: `refreshLiveState()` / `getLiveStateSnapshot()`, the `CtoLiveStateSnapshot` shape, the exported pure renderer `renderCtoLiveStateBlock()`, and `CTO_LIVE_STATE_MAX_CHARS`. Its `getLiveStateSources` constructor argument is a thunk returning `CtoLiveStateSources` (a `Pick` of `CtoOperatorToolDeps`) because the state service is constructed at boot, long before the chat, PR, and automation services exist. `normalizeModelPreferences` is what makes `modelPreferences` nullable — see [Only providers that can redirect a live turn](#only-providers-that-can-redirect-a-live-turn).
-- `ctoMemoryService.ts` — the smart-memory file store under `.ade/cto/`, plus the project context store in `projectContextStore.ts` (`.ade/cto/context-store.json`). Reads/writes `MEMORY.md` and `thread-state.md` (atomic writes), appends per-turn lines to `daily/<YYYY-MM-DD>.md`, exposes `searchMemory(query, { limit?, tags? })` (bounded, file-based, tag hits before text hits, with context-store hits that are not already in those files), `getSnapshot()` (including `projectBrief`, `projectThreads`, and `projectItems`), and `buildMemoryContextSections()` (the capped copies used for injection, brief and ranked facts first). It also owns the fact-tag vocabulary (`CTO_MEMORY_TAG_KEYS`, `CtoMemoryTags`, `formatMemoryTagSuffix()`, `parseMemoryTags()`), the per-lane read `listFactsForLane()` and its injectable wrapper `buildLaneMemoryContextSection()`, and the worker discovery queue (`recordDiscovery()`, `readNewDiscoveries()`). No embedding model. When the repo has a git remote, `ctx.*` rows mirror through the existing account settings store.
-- `ctoPromptContent.ts` — `buildCtoCapabilityManifest()`, the operator-tool operating rules injected into the prompt, plus the `# Tool packs` section rendered from `CTO_TOOL_PACK_NAMES` / `CTO_TOOL_PACK_SCOPES`. Registered tool schemas are the authoritative capability reference; the prompt does not repeat their descriptions. The retained operating rules are what keep CTO-launched work off the primary lane. Also owns `CTO_INTRO_PROMPT` and `CTO_INTRO_ONBOARDING_STEP` — the opening turn and the once-only marker described in [The opening turn](#the-opening-turn) — and the nightly gardener constants `CTO_MEMORY_GARDENER_ONBOARDING_STEP`, `CTO_MEMORY_GARDENER_TITLE`, `CTO_MEMORY_GARDENER_CRON`, `CTO_MEMORY_GARDENER_ID_PREFIX`, `CTO_MEMORY_GARDENER_DESCRIPTION`.
-- `linearClient.ts` — Linear GraphQL client (shared by desktop and the headless ADE CLI). Reads: `fetchIssueById`, `listProjects`, `searchIssues`, `getQuickView`, `fetchIssueComments`, `listLabels`, `listUsers`. Writes: `updateIssueState`, `updateIssueAssignee`, `createComment`, `addIssueLabel` / `removeIssueLabel`.
-- `linearIssueTracker.ts` / `issueTracker.ts` — issue cache, change detection, and the `getQuickView` / `searchIssues` / `fetchIssueComments` read shims plus the `updateIssueState` / `updateIssueAssignee` / `createComment` / `addLabel` write surface renderer surfaces call through.
-- `linearGraphQLInput.ts` — GraphQL input builders shared by the client and tracker.
-- `linearCredentialService.ts` — personal API key + OAuth client + auth-mode storage, backed by the active project's `.ade/secrets`, with `ensureFreshToken()` for automatic OAuth refresh.
-- `linearOAuthService.ts` / `linearOAuthRefreshLock.ts` / `linearTokenRefresh.ts` — PKCE loopback OAuth flow (port 19836), a cross-process refresh lock, and the token-refresh exchange.
-- `linearLaneCardService.ts` — builds the "Open in ADE" Linear attachments for lanes, PRs, issue quick-view links, and chat sessions.
-- `linearLiveStatusService.ts` — optional live-status round-trip that reflects an ADE agent's progress (launch → In Progress + self-assign + branch comment; PR open → PR-link comment; merge → Done) back into Linear. Gated OFF unless `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`.
+- `ctoStateService.ts` — identity (name, persona, model preferences, standing instructions) in `.ade/cto/identity.yaml` mirrored to the `cto_identity_state` row, with the fallback models, avatar look and personality in the `.ade/cto/preferences.json` sidecar (see [Where the identity is stored](#where-the-identity-is-stored)); the prompt layers (`IMMUTABLE_CTO_DOCTRINE`, `CTO_CONTINUITY_OPERATING_MODEL`, `CTO_MEMORY_SYSTEM_GUIDANCE`, the ADE environment document, the capability manifest); `previewSystemPrompt()` and `buildStaticContextSection()`; the per-turn volatile block `buildReconstructionContext()`; and the live project state block (`captureLiveState()`, `getLiveStateSnapshot()`, the pure `renderCtoLiveStateBlock()`, `CTO_LIVE_STATE_MAX_CHARS`). Its `getLiveStateSources` argument is a thunk because the service is built at boot, before the chat, PR and automation services exist.
+- `ctoMemoryService.ts` — the whole memory store. Project notes (`.ade/cto/MEMORY.md`), notes about the person (`<ADE home>/cto/USER.md`), open work (`.ade/cto/open-work.json`), the one-time v1 migration, the worker-discovery queue (`discoveries.md`, `discoveries-archive.md`, `discoveries.cursor`) and `buildMemoryContextSections()`, the three sections injected every turn.
+- `ctoPromptContent.ts` — `buildCtoCapabilityManifest()`, the operator-tool operating rules and the tool-pack list injected into the prompt, plus the opening turn (`CTO_INTRO_PROMPT`, `CTO_INTRO_ONBOARDING_STEP`).
+- `linearClient.ts`, `linearIssueTracker.ts`, `issueTracker.ts`, `linearGraphQLInput.ts`, `linearCredentialService.ts`, `linearOAuthService.ts`, `linearOAuthRefreshLock.ts`, `linearTokenRefresh.ts`, `linearLaneCardService.ts`, `linearLiveStatusService.ts` — Linear plumbing the CTO tools call. The canonical description is [Linear integration](../linear-integration/README.md); this doc covers only what the CTO itself uses.
 
-The Linear services above are shared plumbing, not CTO-owned workflow machinery. See [Linear integration](../linear-integration/README.md) for the canonical description; this doc only covers what the CTO thread itself uses.
+### Chat runtime (`apps/desktop/src/main/services/chat/`)
+
+- `agentChatService.ts` — the CTO session (`ensureIdentitySession`, `listIdentitySessions`), the disposable provider thread `refreshCtoProviderThread()` and the settled-turn decisions in `onCtoTurnSettled()`, the fallback model switch, the once-per-thread staging of the static context and conversation tail, `seedCtoIntroTurn()`, the attention probe `getCtoAttention()`, and `readCtoHistory()` behind the `readHistory` tool.
+- `chatScheduledWorkScheduler.ts` — the scheduled-work rows behind routines, including the per-row pause and run-now operations. Run now takes the same shared claim a timer fire takes (so two brains cannot both deliver), saves the `fired` row before delivering and rolls it back with the claim when that save fails, and gives a cron's claim back when its occurrence did not move.
+- `ctoTurnContext.ts` — the pure pieces: `truncateTailToLineBoundary()`, `readChildPullRequestNumber()`, `formatCtoChildReportLine()`.
+- `providerThreadContinuity.ts` — which provider-side thread the next send will land on (`persistedPointerState()`, `providerThreadRef()`, `armIfStale()`), the signal that decides whether the static block and conversation tail ride a turn.
+- `sessionTurnHealth.ts` — durable turn health over plain records, including the `context_overflow` kind the refresh path reads.
+
+### Operator tools (`apps/desktop/src/main/services/ai/tools/`)
+
+- `ctoOperatorTools.ts` — the CTO's tool factory: the memory tools (`remember`, `forget`, `trackWork`, `finishWork`, `readHistory`, `readDiscoveries`), the pack loader `loadCtoTools`, scheduling, chat spawn and supervision, lanes/PRs/git/tests, Linear, proof and the cross-machine tools.
+- `ctoToolPacks.ts` — the closed list of packs and their one-line scopes. No imports, so the prompt builder can read it without the tool runtime.
+- `ctoCrossMachine.ts`, `ctoCrossMachineTools.ts` — the cross-machine tool contract and implementation (`listMachines`, `listMachineActions`, `runMachineAction`, the `machine` argument).
+- `universalTools.ts` — hosts `recordDiscovery`, the append-only tool every agent gets.
 
 ### Renderer (`apps/desktop/src/renderer/components/cto/`)
 
-- `CtoPage.tsx` — the `/cto` shell. A single full-bleed chat thread (`AgentChatPane` with a locked session), not tabs. The slim header shows only the CTO name/avatar and Settings gear; model controls stay in settings. The CTO composer also hides lane, permission, model, reasoning, and fast-mode controls because the session is project-level, always full-access, and settings-owned. There is no setup wizard and no first-run card — a project that has never picked a model opens on `ModelPickCard`, which is the CTO's welcome screen. The primary session is cached module-side so it stays warm across tab switches, and is obtained via `window.ade.cto.ensureSession()`. When the wake retries are exhausted the thread is replaced by a failure pane rather than a raw error line: it says the CTO didn't answer and that the thread is still there, puts the underlying error in a `TechnicalDetailsFold`, and offers **Try again**, which resets the retry budget and re-runs the wake effect — a failure pane with no way out is a dead end. Voice comes from the chat composer's own Codex voice button, the same one every chat has; the CTO page adds nothing of its own for it. It also owns `ModelPickCard` (`data-testid="cto-model-pick"`), which takes the thread's place while `modelPreferences` is null; the wake effect is gated on the same condition **and** on the identity snapshot having landed, so nothing materializes a session before the pick is known or on a provider the user has not chosen.
-- `CtoSettingsPage.tsx` — settings as a page, not a sheet. A left rail of five sections — Identity, Model, Memory, Prompt, Past threads — and one topic per pane at a readable width. The last one is called **Past threads**, not History, and says why it exists in two sentences (`CTO_PAST_THREADS_DESCRIPTION`): the CTO is one assistant with one memory, running on a conversation thread that is retired when it fills up or the owner starts fresh, and its memory, identity and daily log carry over into the next one. The section id stays `history` because that is what the rail routes on; only the words changed, after an owner read the old ones as a list of different CTOs. The page opens on Model, because the model pick is the setting users change most; that pane pairs the picker with a `ModelFactsCard` whose every line comes from the descriptor through `modelFacts.ts`, so the card and the picker row cannot describe one model two ways. It replaced a 440px drawer that stacked a model picker, a raw markdown editor, a 4.5k-token prompt and a history list in one column, where the things you change sat above two blocks you only read. Memory and Prompt now open on request. Identity carries the name and standing instructions only: the CTO's *voice* is still the doctrine's, and `IMMUTABLE_CTO_DOCTRINE` is not editable from here.
-- `ctoSettingsUi.tsx` — the settings page's visual vocabulary: `CTO_SECTION_COLORS` (one accent per section, the way each Settings section has a brand colour), `CtoCard`, and the rest of the type ramp. It imports `SettingsSectionShell` directly rather than copying it, and hand-builds only what is not shareable — two settings surfaces sitting side by side in one app must not read as two products.
-- `CtoHistoryList.tsx` — every thread the CTO has retired in this project, as a list you can scan. `sessionTitle` strips the "Session closed: " prefix the log writer put there, because the row should lead with the work rather than with the machine's sentence, and the rows carry no raw tool-tier enum. Each row carries one note under the title from `sessionRetirementNote` — "Retired after 12 turns · memory carried over", or "Still running · this is the live thread" for one that has not ended — which is where the list answers the question the old columns raised: nothing the CTO knows went with the thread. The turn count is no longer a separate column, because the note already says it.
-- `CtoMemoryPanel.tsx` — "what the CTO remembers": the project brief as labeled fields, ranked facts as rows with a status, and directed threads as titles (read-only; the CTO writes them), an editable notes textarea (save via `window.ade.cto.updateMemory`), a read-only current thread-state, and today's daily log. Loads via `window.ade.cto.getMemory`.
-- `CtoPromptPreview.tsx` — renders the effective, layered system prompt (doctrine, continuity, memory guidance, environment knowledge, capabilities).
-- `useCtoModelOptions.ts` — loads the user's configured model IDs for the settings Model section, and owns `ctoModelSupportsLiveRedirect(descriptor)`, the `ModelPicker` filter both CTO pickers pass. It resolves eligibility through `resolveChatProviderForDescriptor` — the provider the model would actually launch on, never its registry family, because an OpenAI model that is not CLI-wrapped runs under OpenCode, which stages everything. `ctoSessionViewState.ts` — view-state helpers. `shared/designTokens.ts` + `shared/TimelineEntry.tsx` — shared class tokens and the session-history timeline row.
+- `CtoPage.tsx` — the `/cto` page: the home-machine pin, the session wake, the header pill, the side panel, the welcome, and settings in place of the thread. It holds the CTO session warm across tab switches and resolves the home machine through `useCtoHome.tsx` / `CtoHomeChooser.tsx`.
+- `CtoHeaderPill.tsx` — the floating pill: live avatar, name, one status phrase, panel toggle and settings.
+- `CtoSidePanel.tsx` — the profile panel with the big avatar, name, status and the Activity | Library switch.
+- `CtoLibrary.tsx` — what the CTO's work produced, filtered by All / PRs / Proof / Lanes.
+- `CtoRoutineRows.tsx` — routine rows for the panel and settings: title, human schedule, per-row switch, Run now / Cancel menu.
+- `CtoOpenWorkList.tsx` — the open-work checklist, shared by the panel and Settings › Memory.
+- `CtoWelcome.tsx` — the asleep avatar and model picker shown before a model is picked.
+- `CtoSettingsPage.tsx` — the five-section settings page; `ctoSettingsUi.tsx` holds its shared pieces (`CTO_SETTINGS_GROUP`, `ByteMeter`, `AutosaveTextArea`).
+- `CtoMemoryPanel.tsx` — Settings › Memory: project notes, notes about the person, open work. `CtoPromptPreview.tsx` renders the assembled prompt in Instructions.
+- `apps/desktop/src/renderer/components/cto/avatar/CtoAvatar.tsx` — the character, with `apps/desktop/src/renderer/components/cto/avatar/ctoAvatarState.ts` (state derivation and the 1.4 s blips), `ctoAvatarLook.ts` (swatches, eye ink), `ctoAvatarShapes.ts` (the seven bodies) and `ctoAvatar.css` (all motion).
+- Hooks and helpers: `useCtoMemory.ts` (notes and open work on the home machine), `useCtoActivityData.ts` (children, PRs, proof), `useCtoLiveState.ts` (turn status and the live step), `useCtoModelOptions.ts` (eligible models and `CTO_ELIGIBLE_PROVIDERS_COPY`), `ctoSessionViewState.ts` (status phrase, panel memory, dock width), `ctoNavigation.ts` (opening a chat, PR or proof), `ctoLook.tsx` (the look outside the page), `ctoPage.css`.
 
-### Shared and tools
+### Calm chat (`apps/desktop/src/renderer/components/chat/cto/`)
 
-- `apps/desktop/src/shared/types/chat.ts` — `AgentChatIdentityKey`, now just the literal `"cto"`. The old `agent:<id>` worker identity keys are gone. It also owns `CTO_LIVE_REDIRECT_PROVIDERS` + `providerSupportsLiveRedirect()`, the CTO's provider-eligibility contract.
-- `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` — the operator tool surface. `createCtoOperatorTools()` is the single factory behind the tools a running CTO session can actually call (see [Operator tools on a live session](#operator-tools-on-a-live-session)). It includes the memory tools `saveMemory` (with `kind`, `pin` and `replaces`), `forgetMemory`, `searchMemory` (memory plus past chat history), `readMemory`, and `readDiscoveries`, the pack loader `loadCtoTools`, the session-lifecycle tools described in [Session lifecycle tools](#session-lifecycle-tools), and the git tools whose mutating half refuses to default a lane (`resolveReadLaneId` vs `requireMutationLaneId`). It also owns `CtoOperatorTool` / `CtoOperatorToolMap` (a `Tool` plus its `pack` and derived `alwaysLoad`), `applyCtoToolPackVisibility()`, the `confirmDestructive` gate behind the optional `requestApproval` dep, and `redactConfigValues` — the redaction the `getProjectConfig` tool applies.
-- `apps/desktop/src/main/services/ai/tools/ctoCrossMachine.ts` and
-  `ctoCrossMachineTools.ts` — the CTO tool contract and implementation for
-  machine discovery, action discovery, and policy-checked action execution.
-- `apps/ade-cli/src/services/account/ctoCrossMachineBridge.ts` — the runtime
-  bridge that pools paired machine connections under the separate
-  `ade-cto-remote` caller identity.
-- `apps/desktop/src/renderer/components/cto/ctoHomeMachine.ts` and
-  `useCtoHome.tsx` — the selected CTO home machine and the account-setting
-  fallback used to persist it.
-- `apps/desktop/src/main/services/ai/tools/ctoToolPacks.ts` — the closed list of tool packs and nothing else: `CTO_TOOL_PACK_NAMES`, `CtoToolPack`, `CTO_TOOL_PACK_SCOPES` (one line per pack, reused verbatim by the capability manifest), `isCtoToolPack()`. It has **zero imports** on purpose, so the prompt builder can read pack names without dragging zod, the model registry, and the service graph in behind them — the same split as `domains.ts` versus the action registry.
-- `apps/desktop/src/main/services/chat/agentChatService.ts` — owns the CTO session lifecycle: single-session reuse/rebind (`listIdentitySessions` / `ensureIdentitySession`), the memory flush hooks, the reconstruction-context injection, `refreshCtoLiveStateForTurn`, `seedCtoIntroTurn` (the opening turn), `ensureCtoMemoryGardenerJob` (the nightly gardening job), `resolveCtoExecutionLane` (where CTO-launched work runs), `buildCtoOperatorToolDeps` / `createCtoRuntimeToolMap` / `createCtoAdvertisedToolMap` plus the per-provider transports that register them, the per-session loaded-pack set `managed.ctoToolPacks`, and the canonical `getCtoAttention` probe (all detailed below).
-- `apps/desktop/src/main/services/chat/ctoTurnContext.ts` — the pure pieces of a CTO turn, out of `agentChatService` so they are testable without standing up the provider graph: `truncateTailToLineBoundary()` (tail-truncation that never keeps a partial line), `shouldInjectLaneMemoryContext()`, `readChildPullRequestNumber()`, and `formatCtoChildReportLine()`.
-- `apps/desktop/src/main/services/chat/providerThreadContinuity.ts` — which provider-side thread a chat is talking to, and whether it has moved. `persistedPointerState()` (the one complete pointer mapping, shared with the thread-pointer ledger) behind `providerThreadRef()`, the `ProviderThreadRef` record, `providerThreadContinuityChanged()` — where `none` means unknown and the live runtime handle is the thread's identity of last resort — plus the `StagedSection` record and its four operations: `newStagedSection()`, `armIfStale()`, `resetStagedSection()` (the thread is gone; re-stage) and `suppressStagedSection()`. This is what decides whether the ~21 KB static block and the conversation tail ride a turn at all.
-- `apps/desktop/src/main/services/chat/sessionTurnHealth.ts` — a session's durable turn health as pure functions over plain records: `normalizeLastTurnFailure()`, `normalizeSessionContextHealth()`, `shouldAdviseSessionRotation()`, and the `nextSessionTurnHealth()` reducer `recordSettledTurnHealth` spends on every `done`. It reports whether the record actually moved, compared field by field rather than by `JSON.stringify`, because a false "changed" costs a disk write on every settled turn of every chat.
-- `apps/desktop/src/main/services/chat/identityThreadRotation.ts` — the way out of a thread that is finished, over an injected deps bag (the same shape `claudeReplayOverflowRecovery.ts` uses): `getSessionTurnHealth()`, `getCtoThreadHealth()`, `distilIdentityHandoff()` and `startFreshIdentitySession()`. `agentChatService` keeps thin closures that give it this service's world. See [One thread, and the way out of one that is finished](#one-thread-and-the-way-out-of-one-that-is-finished).
-- `apps/desktop/src/main/services/chat/codexCtoToolDeferral.ts` — Codex's dynamic-tool wire shape and the two pure functions that build it: `CodexDynamicToolSpec`, `jsonSchemaForExecutableTool()`, `buildCodexDynamicToolSpecs()`, and the CTO defer predicate `codexDeferCtoTool()`. Service-side types are imported `type`-only, so a unit test for the defer rule costs a zod import rather than the Cursor SDK pool, the Droid worker, and the whole chat graph.
-- `apps/desktop/src/main/services/ai/tools/universalTools.ts` — carries `recordDiscovery`, the append-only tool every agent gets (see [Worker discoveries](#worker-discoveries)).
-- `apps/desktop/src/shared/types/cto.ts` — the discriminated `CtoAttentionState` (`idle`, `awaiting-input`, or `unknown`), the shape every attention transport returns. `unknown` means inspection failed and clients must retain their last known badge state. It also splits `CtoModelPreferences` out as its own type, because `CtoIdentity.modelPreferences` is now `CtoModelPreferences | null`.
-- `apps/desktop/src/renderer/components/shared/ModelPicker/modelFacts.ts` — what a model *is*, in the words a person would use, as pure functions with nothing rendered: `providerLabel` / `PROVIDER_LABELS`, `isPiRoutedModel`, `isLocalModel`, `runsOnLabel`, `subProviderLabel` / `subProviderKey`, `formatTokenCount`, `reasoningEffortLabel`, and `modelDetailLine`. `modelDetailLine(model, { omitProvider })` is the picker row's one detail line: the route (`Anthropic (via Cursor)`) and context size, dropping the provider name when the list is scoped to that provider's own rail (the rail's panel label already names it). Reasoning and image input are not spelled out here — the row's capability pill shows them. Every fact appears on at least two surfaces — the picker row and the CTO's model card — so it is formatted once here rather than twice.
+- `CtoWorkingLine.tsx` — the live turn as one line: 16 px working avatar, latest step, elapsed time, expandable steps and raw tool calls.
+- `CtoToolChips.tsx` — the quiet state-change chips, and `CtoFreshContextDivider`, the hairline the `cto_context_refreshed` notice becomes.
+- `ctoToolWords.ts` — the pure words: which tools draw chips, the chip verbs (including their failure forms), and the step phrases the working line and panel use (`ctoStepWords`, `ctoLatestStepWords`, `ctoStepList`).
+- `ctoChat.css` — their styles.
+- `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx` — chooses the calm rendering when the session's `presentation.profile` is `persistent_identity`.
 
-### Attention surfaces (renderer)
+### Shared
 
-- `apps/desktop/src/renderer/hooks/useCtoAttention.ts` — the probe loop behind the CTO tab dot. Mounted once in `AppShell.tsx`.
-- `apps/desktop/src/renderer/state/appStore.ts` — `ctoAttention` + `setCtoAttention`, reset to idle on every project switch/close alongside `terminalAttention`.
-- `apps/desktop/src/renderer/components/app/projectSidebar/ProjectSidebar.tsx` — renders the warning dot on the CTO entry in the sidebar footer.
-- `apps/desktop/src/renderer/components/app/projectSidebar/StarRepoPill.tsx`, `apps/desktop/src/renderer/lib/starPill.ts`, `renderer/lib/starPillActivity.ts` — the **Star on GitHub** pill above the CTO/History footer, desktop only. Its show / snooze / final-dismissal schedule is the one every sidebar nudge shares (`renderer/lib/nudgePill.ts`, also used by the Invite friends pill in `invitePill.ts`), and a sent message reaches both pills through `recordNudgeMessageSent` (`nudgePillActivity.ts`). It shows once at least one message has been sent and the repo is not starred. The first `×` hides it for the next 20 sent messages (`STAR_PILL_SNOOZE_MESSAGES`); it then returns once, and the second `×` ("Don't show again") is final (`STAR_PILL_MAX_DISMISSALS`). Messages are only counted while the count can still change the pill, so ordinary chatting does not rewrite the synced pref. `isRepoStarred()` (`GET /user/starred/arul28/ADE`, 204 means starred, via the shared GitHub request helper) is re-checked at most once per 6 h (`STAR_PILL_CHECK_INTERVAL_MS`), and an unknown answer still shows the pill — silence never hides a real ask. A star detected while the pill is showing plays "★ Thanks!" and hides it. The pref is account-synced under its own key `ade.starPill.v1` and merged field by field (flags OR, numbers max) by `mergeStarPillPrefs`, so two machines cannot un-star or un-dismiss each other; an older copy's chat-count snooze reads as one dismissal. Shown, clicked, dismissed and a detected star are reported as `star_prompt` analytics (see `docs/logging.md`). Hosted web and non-Work tabs never render it.
-- `apps/desktop/src/renderer/hooks/useAppWideSessionAttention.ts` — folds `ctoAttention.awaitingInput` into the dock badge count while remaining the only writer of `setDockBadgeCount`.
-- `apps/desktop/src/renderer/webclient/adapter/misc.ts` — forwards `getAttention` through the paired runtime's `cto.getAttention` command, so the hosted web `/cto` tab uses the same probe and retention semantics as Electron.
+- `apps/desktop/src/shared/types/cto.ts` — the identity, notes caps, open-work, history, avatar and personality types. The field names are a cross-platform contract for iOS.
+- `apps/desktop/src/shared/types/chat.ts` — `CTO_LIVE_REDIRECT_PROVIDERS`, `providerSupportsLiveRedirect()`, `CTO_CONTEXT_REFRESHED_STATUS`, the scheduled-work item shape (including `paused`), and the per-row pause/run-now argument and result types.
+- `apps/desktop/src/shared/ipc.ts` — the `ade.cto.*` channels and the scheduled-work channels.
 
-### iOS companion (`apps/ios/ADE/Views/Cto/`)
+### iOS (`apps/ios/ADE/`)
 
-- `CtoRootScreen.swift` — renders the CTO chat inline as the tab body (single thread, kind `.cto`) with a top-bar gear that opens settings as a sheet. No Team/Workflows navigation. It routes on the pure `ctoRootContent(identity:loadError:hostUnreachable:) -> CtoRootContent` (`.loading`, `.loadError`, `.modelPick`, `.thread`), mirroring desktop `CtoPage`'s order — `modelPick` sits *before* `thread`, and in that state the view deliberately does not build `CtoSessionDestinationView`, so nothing ensures a session on a provider the user has not chosen. `applyModelPick` writes identity preferences first, then `ensureCtoSession()`, then pins the exact model through `updateChatSession`, and only publishes the refreshed snapshot last so the picker cannot drop out mid-flight and let a second ensure run.
-- `CtoSessionDestinationView.swift` — resolves the always-on CTO session (`ensureCtoSession()`) and reuses the Work chat pipeline with a compact one-line voice/send composer. It passes `liveRedirectOnlySends: true` so the composer never offers *Send after turn* on the CTO thread.
-- `CtoSettingsScreen.swift` — sections: Identity (name and standing instructions, edited in a sheet), Model (live model/reasoning/Fast selection), Integrations (read-only Linear connection status), and Memory (durable facts + thread summary via `cto.getMemory`). It has no Voice section, because iOS has no call surface. With no stored preference the identity row reads "No model picked yet" rather than inventing a default.
-- `apps/ios/ADE/Views/Work/WorkModelPickerSheet.swift` — gained an optional `modelFilter`; both CTO surfaces pass `{ providerSupportsLiveRedirect($0.provider) }`. `applyModelFilter` prunes providers and groups that empty out, so the provider rail never shows a tab with nothing behind it. Every other caller passes nothing and is unchanged.
-- `apps/ios/ADE/Views/Work/WorkModels.swift` — `ctoLiveRedirectProviders` / `providerSupportsLiveRedirect(_:)`, the hand mirror of `CTO_LIVE_REDIRECT_PROVIDERS` (iOS cannot import TS), pinned by `testCtoLiveRedirectProvidersMirrorDesktopContract`. Deliberately a separate list from `WorkActiveSendCapability`: Cursor has no inline channel at all and still qualifies, through interrupt-and-resend.
-- `CtoReloadHelpers.swift` — reload plumbing for the CTO screens.
-- `apps/ios/ADE/Models/RemoteModels.swift` — `CtoAttention` (`status`, `awaitingInput`, optional `since`, plus effective-status compatibility for older hosts), the Codable mirror of `CtoAttentionState`. It also carries `CtoIdentity.modelPreferences` as an optional with a `needsModelPick` read — null is a real state on a healthy install, not just decode tolerance, because the host normalizes an ineligible stored preference back to null.
-- `apps/ios/ADE/Services/SyncService.swift` — `fetchCtoAttention()` (the `cto.getAttention` call), the `@Published ctoAttention`, and `refreshCtoAttentionIfNeeded()`, called from `refreshActiveSessionsAndSnapshot()` above its roster-signature early return and from `saveRemoteCommandDescriptors` with `force: true`.
-
-The iOS CTO tab icon is the bundled template asset `CtoMark` (`apps/ios/ADE/App/ContentView.swift`), not an SF Symbol. On desktop, the CTO entry in the project sidebar footer uses the Phosphor `Robot` glyph (`projectSidebar/projectSidebarTabs.ts`).
-
-That same tab carries the attention badge described in [Hidden from rosters, but never silent](#hidden-from-rosters-but-never-silent).
+- `apps/ios/ADE/Views/Cto/CtoRootScreen.swift` — the CTO tab: the thread inline, a gear for settings, and the model pick before the thread.
+- `apps/ios/ADE/Views/Cto/CtoSessionDestinationView.swift` — resolves the CTO session and reuses the Work chat pipeline with a compact composer.
+- `apps/ios/ADE/Views/Cto/CtoSettingsScreen.swift`, `apps/ios/ADE/Views/Cto/CtoIdentityEditor.swift`, `apps/ios/ADE/Views/Cto/CtoReloadHelpers.swift` — settings, the name/instructions editor and reload plumbing.
+- `apps/ios/ADE/Views/Work/WorkModels.swift` — `ctoLiveRedirectProviders`, the hand mirror of the desktop list.
+- `apps/ios/ADE/Views/Work/WorkModelPickerSheet.swift` — the model picker with an optional eligibility filter.
 
 ## Domain model
 
-### Identity layers
+### One session forever, one provider thread at a time
 
-The system prompt is assembled from layered sections (`ctoStateService.previewSystemPrompt`), immutable first:
+There is one CTO session per project, with identity key `cto`. It is pinned to the primary lane, runs `full-auto`, is hidden from every lane and session roster, and is never rotated: no "past threads", no start-fresh action. The ADE transcript is the record, and `readHistory` can read all of it.
 
-1. **Immutable doctrine** (`IMMUTABLE_CTO_DOCTRINE`) — the CTO role, the ADE environment description, precision rules, how the CTO speaks, and how it helps with ADE itself. Always injected, never user-editable, never compacted away. It is the only place the CTO's voice is set: lead with the state of things, then the read, then the recommendation; stay level, with no exclamation marks and no "great question"; say plainly when you do not know, say what you would check, then check it; disagree once with the reason and then drop it; never call something done before verifying it. The same block tells the CTO it knows the ADE application and not only the repository — a user lost in ADE gets a product answer, grounded in ADE's own documentation rather than a guess, and a deeplink to the place instead of navigation directions.
-2. **Continuity model** (`CTO_CONTINUITY_OPERATING_MODEL`) — how ADE re-grounds the CTO across compaction and resumes.
-3. **Persistent memory guidance** (`CTO_MEMORY_SYSTEM_GUIDANCE`) — teaches the CTO that it has durable, model-agnostic memory and how to use the `saveMemory` / `searchMemory` / `readMemory` tools proactively.
-4. **Environment knowledge** — a glossary of ADE entities (lanes, chats vs terminals, PRs, conflicts, automations, Linear reads) plus intent-to-tool routing, including the live model registry.
-5. **Capability rules** — cross-tool operating rules that are not expressed by any one schema. The registered tool schemas already describe the full tool surface.
+`ensureIdentitySession` runs one call per identity key at a time. The page, a phone (`cto.ensureSession`), a second window and the CTO's own tool can ask at once; a call that arrives while another runs waits for it and then takes the reuse path, so the project never gets two CTO threads or two opening turns. The reuse path also sends the opening turn when its marker is missing and the transcript has no person message (the first try failed, say on a signed-out provider).
 
-### Identity record
+The model's own thread is disposable. `refreshCtoProviderThread(managed, reason)` in `agentChatService`:
 
-Persisted under `.ade/cto/` and mirrored into the `cto_identity_state` DB row (newest wins on reconcile):
+1. Refuses while a turn is running or an account move holds the thread (Smart Balance, an account switch, a move to another machine), and records the reason on `managed.ctoRefreshPending`, persisted with the chat state, so the next settled turn runs it, after a restart too.
+2. Tears the runtime down with a non-preserving reason, then forgets every provider pointer: the thread id, Claude's SDK session (and background-resume id and fork fields), the provider session id and its seeded copy, Cursor's SDK agent and run ids, Droid's, Copilot's and ACP session ids, Pi's session id and file, and Muse's session id. Claude also gets `claudeFreshThreadPending`, because that runtime resumes from a persisted SDK id. Both copies of the chat metadata file are written, so neither can hand the old thread back.
+3. Re-stages the once-per-thread half of the turn context (the static prompt and the conversation tail) and rebuilds the volatile half, so the next send opens a new thread carrying the doctrine, the notes, the open work, the live state and the last 40 messages. The CTO never gets a full transcript replay.
+4. Emits one quiet `system_notice` with status `cto_context_refreshed`: "Fresh context — notes, open work and the last 40 messages carried over." The page draws it as a hairline divider.
 
-- `identity.yaml` — name, persona, `systemPromptExtension`, `modelPreferences` (provider, model, modelId, reasoningEffort — **nullable**), onboarding state, version. There is no personality preset, no work style and no call voice; `normalizeIdentity` silently drops those keys (including the legacy `voiceName` / `voiceBackchannels`) when an older build wrote them, so an existing file still loads.
-- `CURRENT.md` — ADE-generated working context (recent CTO sessions), refreshed on identity and session-log changes.
-- `sessions.jsonl` — hash-chained session log, reconciled with the `cto_session_logs` table.
+The reasons are `occupancy`, `compaction`, `overflow`, `model_fallback` and `manual`. A CTO running on a Cursor Cloud agent keeps its cloud agent and refuses the refresh.
 
-The entire `cto/` directory is local runtime state by default (git-ignored unless force-added).
+Triggers, all decided on the `done` event in `onCtoTurnSettled()`:
 
-### Smart memory system
+- **Occupancy.** A completed turn whose provider thread is at or past `CTO_REFRESH_OCCUPANCY_PCT` (55%) gets a fresh thread.
+- **Compaction.** A completed `context_compact` or `codex_context_compaction` refreshes as soon as the turn settles: a compacted thread lost detail anyway.
+- **Overflow.** A turn that failed with `lastTurnFailure.kind === "context_overflow"` gets a fresh thread and the person's failed message is sent once more, as they typed it (never the mid-task wrapper), with its display text, attachments and metadata, marked `metadata.ctoResend`. A per-message key set stops any loop.
+- **A model fallback** refreshes as part of the switch (below).
+- **Manual.** The settings "Refresh context" button, `cto.refreshContext` over IPC, or `cto_state.refreshContext` as an action. A busy CTO answers that it will refresh when the turn ends.
 
-Files under `.ade/cto/`, owned by `ctoMemoryService`:
+A person's Stop is not a failure and triggers nothing but a refresh that was already owed.
 
-| File | Role | Written by | Injected |
-| --- | --- | --- | --- |
-| `context-store.json` | The one project brief, ranked typed facts (`fact`, `decision`, `convention`, `trap`, `environment`, `pointer`; pinned / active / archived), threads the CTO has directed, and the rolling thread state. Atomic, mode `0600`, gitignored. This is the durable copy: it is not tied to a chat id, so a restart, a crash, and a cleared CTO session leave it in place. When the repo has a git remote, the same rows mirror through the existing account settings store as `ctx.brief`, `ctx.item.<id>`, `ctx.thread.<id>`, `ctx.state`, and `ctx.meta` (about 120 live facts per repo, so many repos fit the account's shared key budget). `setProjectBrief` keeps any field the caller omits. Rows the cap drops are deleted from the account instead of being pulled back on the next reconcile. A retired fact is archived with a new `updatedAt`, so the retirement reaches every machine. | `saveMemory`, `forgetMemory`, the automatic memory pass, `setProjectBrief`, `spawnChat` (thread row), one-time import of `MEMORY.md` bullets | Brief (1.2k), ranked facts (1.8k) the notes file below does not already say, threads (800), ahead of the files below |
-| `MEMORY.md` | Local notes. Still written by `saveMemory`, the automatic memory pass and the memory panel. New `- ` bullets are copied into the context store; the rest of the file is not stored as one fact. `forgetMemory` moves the matching line to `memory-archive.md`. | `saveMemory` tool, the memory pass, `CtoMemoryPanel` edits | Always (tail-capped at 4k chars for injection; disk copy never truncated, hard byte cap 64 KiB drops oldest facts into `memory-archive.md`) |
-| `thread-state.md` | Rolling summary of the current goal, work in flight, decisions, open loops. Mirrored to the context store's `ctx.state`; reads take the newer of the file and the synced copy, so a second machine or a CTO that moved home opens on where the work is. | Deterministic flush + the memory pass (every 6 settled turns, or on the next settled turn once the file is 45 min old: a CTO on 30-min scheduled wakes otherwise went 3 h between refreshes) | Always (head-capped 3k chars), under a `(Written 2 h ago. …)` line that tells the model how old it is and that Live project state wins |
-| `daily/<date>.md` | Per-turn journal: `HH:MM — intent → outcome` | Turn-end append (no LLM) | The two most recent daily files that exist (tail-capped 3k chars) |
-| `discoveries.md` / `discoveries-archive.md` / `discoveries.cursor` | The unreviewed worker-discovery queue and its read cursor | The `recordDiscovery` tool, from any agent | Never directly — drained into the CTO's turn (see [Worker discoveries](#worker-discoveries)) |
+The settled-turn work waits up to 5 s for the thread to go idle. Past that, the whole action (the overflow resend or the backup switch, not only the refresh) is kept on `ctoPendingSettledAction`, retried every 5 s for two minutes, and run by the next settled turn otherwise. A newer user message means the conversation moved on: an overflow still gets its fresh thread, but the old message is not sent again.
 
-`buildMemoryContextSections()` returns the capped, labeled copies, with the project brief, ranked facts, and directed threads ahead of the file sections. `ctoStateService.buildReconstructionContext()` appends them after the identity/doctrine/environment sections and still appends the live state block last. Only the injected copies are truncated. The file sections stay inside their 4k/3k/3k caps; the context-store prefix is capped at 1.2k + 1.8k + 800 on top of that.
+### Memory: two notes files and an open-work list
 
-#### One fact, said once
+The CTO's own memory is three files, and a fourth is the worker-discovery queue. Nothing here runs a model.
 
-Facts are compared without a model. `factSimilarity` is the Dice overlap of two facts' content words (stopwords and tag suffixes dropped; numbers always count, so "Node 22" and "Node 20" stay different facts). At `NEAR_DUPLICATE_SIMILARITY` (0.8) or above, `remember` and `appendMemoryFact` refuse the new wording and return the existing fact's id and text, and `saveMemory` says so: the CTO passes that id in `replaces` when its wording should win. The threshold is deliberately high — two facts that only share vocabulary must both survive, and the nightly gardener merges what slips through. `saveMemory({ replaces })` retires the old facts first, so a reworded replacement is not refused as its own duplicate; `forgetMemory` retires a fact on its own. Both archive (store row archived, `MEMORY.md` line moved to `memory-archive.md`), never delete.
+| File | What it is | Cap |
+| --- | --- | --- |
+| `.ade/cto/MEMORY.md` | Facts about this project, one `- ` line each. | `CTO_PROJECT_NOTES_MAX_BYTES` = 4096 |
+| `<ADE home>/cto/USER.md` | Facts about the person, shared by the CTO of every project on this machine. | `CTO_USER_NOTES_MAX_BYTES` = 2048 |
+| `.ade/cto/open-work.json` | What the CTO started and has not finished. | 20 open, 30 finished |
 
-#### The automatic memory pass
+Writes are atomic and secret-scrubbed. A note is one line, clipped at 400 characters. A new note that says the same thing as an existing one (Dice overlap of content words at 0.8 or more, negations counted as opposites) is not saved; the CTO is told which note already says it. `remember({ note, replaces })` rewrites the one line containing the `replaces` text, and refuses with the candidate lines when the text matches none or several. `forget()` removes the one matching line the same way. Past a cap, the write is refused with "Notes are full (N of N bytes). Merge or forget notes first." The CTO merges or forgets; ADE never silently drops a note.
 
-The CTO almost never called `saveMemory` on its own, so memory used to be whatever a person typed into `MEMORY.md`. ADE now decides **when** memory is written and a cheap helper model decides **what**: `runIdentityMemoryPass` sends `buildContinuityCapturePrompt` (`cto/ctoMemoryCapture.ts`) to the chat's session-intelligence model — Haiku, Luna or Composer for Claude, Codex and Cursor, the chat's own model elsewhere — over ADE's own transcript (what the person typed, not the injected prefix; newest 40 entries, each clipped), the previous model-written summary, and the live facts it must not repeat. `parseContinuityCapture` reads back a `SUMMARY:` block (the new thread state) and up to five `DURABLE:` lines of `- <kind>: <sentence>`; `captureFacts` files them at `agent` trust through the same near-duplicate check. It runs:
+Open work is a small list of `CtoOpenWorkItem`s. `trackWork({ text })` adds one (`addedBy: "cto"`) and returns its id; `finishWork({ id, outcome })` marks it done and appends the outcome, clipped at 120 characters. Finished items past the cap are dropped oldest first; open items are never dropped. The person edits the same list from the panel and Settings › Memory (`cto.updateOpenWork`). An `open-work.json` that does not parse is moved aside to `open-work.json.corrupt-<ms>` (and logged) before the list reads as empty, so the next write cannot destroy the only copy.
 
-- every `CTO_MEMORY_CHECKPOINT_TURNS` (6) completed CTO turns, in the background;
-- when a compaction starts and completes, on every provider;
-- on a model or provider switch;
-- when a thread is retired and cannot write its own hand-off.
+A notes editor sends `baseHash`, the sha256 of the text it started from (`CtoMemorySnapshot.memoryHash` / `userNotesHash`). When the file changed since (the CTO wrote a note, another device saved), `writeNotes` refuses with `CTO_NOTES_CHANGED_ERROR` ("Notes changed since you opened them."); match it with `isCtoNotesChangedError()`, since the class does not survive IPC or sync. A write without `baseHash` still replaces the file. `cto.updateNotes` over sync is not queueable: a whole-file write replayed later would overwrite what changed meanwhile.
 
-Because it reads ADE's transcript rather than asking the CTO, it works on every provider and on a thread that can no longer take a turn. A failed pass changes nothing: the checkpoint skips the deterministic flush, so the last good summary stays.
+The one-time v1 migration runs on first load, guarded by `.ade/cto/.v2-migrated`. It builds `MEMORY.md` from the old file's bullet lines and the old context store's live items, deduplicated and trimmed to the cap, then moves the v1 files (`context-store.json`, `thread-state.md`, `daily/`, `memory-archive.md`, `CURRENT.md`, `sessions.jsonl`) into `.ade/cto/legacy-v1/`. Nothing is deleted.
 
-#### Fact tags
+### What the CTO is given each turn
 
-Every durable fact may carry a trailing `[lane:… pr:… path:… topic:…]` suffix. The vocabulary is closed (`CTO_MEMORY_TAG_KEYS`), values are normalized on write — whitespace and `]` runs collapse to `-`, clipped at 120 chars — so the suffix stays parseable by one end-anchored regex, and the suffix is appended **after** the fact is clipped so a long fact can never truncate away its own tags. `parseMemoryTags` is first-wins on a repeated key.
+The turn context has two halves with different lifetimes.
 
-Tags are what make memory addressable rather than merely searchable: `searchMemory(query, { tags })` accepts an empty query when tags are present ("everything about lane X"), and collects into two buckets — facts whose *tag values* matched, then plain substring hits — returning tag hits first so they win the result budget. Untagged facts still match by text. Context-store hits that are not already in those files take up to a quarter of the page, so a fact that exists only in the store still shows up when the files would otherwise fill it.
+**Static, once per provider thread.** The doctrine with the chosen voice, the continuity model, the memory guidance, the ADE environment knowledge document and the capability manifest: the same `previewSystemPrompt().prompt` the Instructions section shows. About 21 KB, byte-identical on turn 2 and turn 200. `restageSectionsForNewProviderThread()` re-arms it when the provider thread changes, and the section's content key re-stages it if a rename or edited instruction changes the prompt under a live thread.
 
-#### Per-lane memory in project chats
+**Volatile, every turn.** `buildReconstructionContext()` builds, in this order:
 
-`buildLaneMemoryContextSection(laneId)` returns a "Project memory (ADE, read-only context)" section holding the facts tagged for that lane (newest last, 1.5k chars) plus the rolling thread state (1.2k chars) when it was written in the last 3 days — older thread state describes a conversation that has moved on, and every worker chat used to open on a month-old one — or `null` when there is nothing lane-scoped — so a worker never receives an empty heading. Lane-tagged facts that exist only in the context store are included and deduped against `MEMORY.md`. `listFactsForLane` deliberately excludes untagged facts: an untagged fact is not a claim about this lane.
+1. `CTO Context` — name, persona, preferred model.
+2. `## Notes (project) — N of 4096 bytes` and the notes file.
+3. `## Notes about the person — N of 2048 bytes` and the user notes file.
+4. `## Open work` — open items with their ids, then up to five recently finished ones marked done.
+5. The live project state block, **last**.
 
-The delivery rule is the pure `shouldInjectLaneMemoryContext` (`ctoTurnContext.ts`): never for the CTO (it already has all of memory) or a personal chat (no project lane), otherwise once per lane change, keyed on the same `lastLaneDirectiveKey` the lane execution directive uses. The section therefore arrives beside the directive that explains the lane, and a worker that stays put never pays for it again.
+The live state block is captured per turn, with a bounded wait. `refreshCtoLiveStateForTurn` waits at most `CTO_LIVE_STATE_SEND_WAIT_MS` (350 ms) before a send; a capture still running then finishes into the cache for the next turn (`refreshLiveState` is single-flight, so a second send joins it), and this send carries the previous snapshot, whose header reads "as of 40 s ago" once it is more than 5 s old. Inside the capture, the two slow reads (lanes, which run git status, and the chat summaries) run in parallel; PRs, machines and automation runs are synchronous reads. The block covers who is waiting on the person, the account's machines, lanes, active chats with their lineage, open PRs with checks and review state, scheduled work, recent automation runs, and any source that failed this turn. It is capped at `CTO_LIVE_STATE_MAX_CHARS` (6000) with per-section row caps and "…and N more" lines. It stays last because the volatile prefix is truncated by keeping its tail: the freshest, most perishable section must be where a budgeted send cannot cut it.
 
-#### Worker discoveries
+The conversation tail (`Recent Conversation Tail`, the last 40 entries for the CTO) rides only when the provider thread the next send lands on is not the one those turns happened on. A live thread already holds them.
 
-`recordDiscovery` is a **universal** tool — every agent has it, not just the CTO. It appends one timestamped, secret-redacted, tag-suffixed line to `<adeDir>/cto/discoveries.md`. There is deliberately no matching read tool on the worker side: a worker can hand a finding up without gaining any view of what the CTO knows. `agentChatService` stamps the worker's own lane when the caller did not tag one. The same action is reachable as `ade actions run cto_memory.recordDiscovery` and from automation `ade-action` steps.
+### `readHistory`: the whole conversation
 
-The file is capped at 128 KiB — larger than `MEMORY.md`'s 64 KiB because it is a drain queue, not a standing document, with a much wider writer set. Over the cap, the **oldest** entries shift into append-only `discoveries-archive.md` (marked with the eviction instant) rather than being destroyed, and the read cursor rewinds by exactly the bytes removed, clamped at zero: eviction can re-deliver a discovery, never skip one.
+`readHistory({ query?, before?, limit? })` reads the CTO's entire conversation: the current session plus every older CTO session of this project. Without a query it pages newest first; `nextBefore` is the cursor for the next older page. With a query, every word must appear (case-insensitive) in a user or assistant message, newest first, and each hit comes with the message before and after it for context. Entries carry `role`, text (clipped to about 600 characters), `at` and `sessionId`; `match` marks the hits. The limit defaults to 20 and is at most 50. Parsed transcripts are cached per session by file mtime and size.
 
-`readNewDiscoveries()` drains from a **byte offset** held in `discoveries.cursor`, not a line count, so a concurrent append between read and write can only be re-read. It reads at most a 64 KiB unread window per call, rewinds to the last newline so no discovery is handed out in halves, and treats its char budget as a *drain* budget — the oldest lines that fit are returned and the cursor advances over exactly those, so a backlog drains across several reports instead of being thrown away. At least one line is always handed out even if it alone blows the budget.
+### Where the identity is stored
 
-Two consumers: the CTO's own `readDiscoveries` core tool (which returns the drained `text`, not `lines`, so one oversized entry cannot carry the whole window into a tool result), and the child-completion wake — when a finished child wakes the CTO, fresh discoveries ride the wake text, never the one-line system notice.
+The identity record is `.ade/cto/identity.yaml` plus the `cto_identity_state` row (a synced table); every read reconciles the two, newer `updatedAt` wins, ties go to the file. It holds the name, persona, standing instructions (`systemPromptExtension`), `modelPreferences`, onboarding state and the cross-machine switch.
 
-#### Nightly memory gardening
+`avatar`, `personality` and `fallbackModels` live in a sidecar, `.ade/cto/preferences.json` (`{ version: 1, avatar?, personality?, fallbackModels?, updatedAt }`, written atomically). `getIdentity()` lays the sidecar over the record, so IPC, sync `cto.getState`, iOS and the renderer still read `identity.avatar`, `identity.personality` and `identity.fallbackModels`. `updateIdentity(patch)` writes those three to the sidecar and everything else to the record; no record write ever carries them. A project whose sidecar is missing gets a one-time move: the keys are copied from the record (canonical half first, then the other half) before the record is rewritten without them.
 
-`ensureCtoMemoryGardenerJob` schedules one durable ADE-owned cron job on the CTO session (id `cto-memory-gardener:<sessionId>`, `CTO_MEMORY_GARDENER_CRON` = `30 3 * * *` local to the brain machine, no `expiresAt` — the recurring-cron TTL exists to bound Claude-mirrored rows, and this row has a stable ADE-owned id).
+`normalizeIdentity` keeps keys it does not know untouched, so a field a newer build adds survives this build rewriting the record. The exception is the retired v1 fields while they are being folded into the extension. `updateIdentity` accepts only known keys from a patch, so a caller cannot plant a key this way. The sidecar is per machine: it does not ride the synced row.
 
-The row only marks the time; it is not delivered as a CTO turn. When it fires, the scheduler's `fire` sees the id prefix and calls `runCtoMemoryGardening` instead of `messageSession`, so a night costs one call to the cheap session-intelligence helper model (the same one the automatic memory pass uses) and never adds to the CTO thread. It used to be a full turn on the CTO's own model every night. Rows armed before the change still carry the old prompt text and run the same way, because the dispatch is by id.
+### Personality
 
-- **Skipped** when nothing was journaled in the last two days (`hasRecentDailyEntries`): nothing new to distill.
-- **Input** (`buildGardeningPrompt` in `ctoMemoryCapture.ts`): the live facts under short refs (`F1`, `F2`, … — a small model copies those reliably, UUIDs it mangles), the last two days of daily log, and the unread discovery queue (read without advancing its cursor).
-- **Output** (`parseGardeningPlan`): `ADD <kind>: …`, `MERGE F3 F7 -> <kind>: …`, `RETIRE F5: <reason>`, or `NONE`. Parsed strictly against the facts actually shown: an unknown ref, a pinned fact, or a fact already touched by another line drops the line. At most 5 adds, 5 merges, and 3 retirements a night, so one bad answer cannot empty the notes.
-- **Apply** (`applyGardeningPlan` in `ctoMemoryService.ts`): a merge retires its sources first, then files the merged sentence, keeping the sources' tags when they all agree. Everything is filed at `agent` trust and archived, never deleted. A run that changed anything is journaled in the daily log.
+`identity.personality` is `focused` (the default), `friendly` or `playful`. The default adds nothing: the doctrine's "How you speak" rules are already the voice. Friendly adds warmth and a little personality in short replies; playful allows light humour, never at the cost of precision, never emoji spam, never a joke in a failure report. The personality block sits inside the doctrine, after its speaking rules, and the precision and verification rules always win.
 
-A rotation carries the job (and every other ADE-owned schedule) to the new thread; before that, disposal cancelled it and the onboarding step kept it from ever being re-created.
+The doctrine also asks for brevity: a default reply of one to three short sentences, answer first; no headings; bullets only for three or more parallel items; never restating the request or narrating what it is about to do; no closing offers, and one direct question when a decision is needed; ids and hashes only when the person needs them to act. The opening turn asks for at most three sentences and three bullets.
 
-Idempotency keys on the `memory_gardener` onboarding step, **not** on whether the row exists: a presence check would re-create a job the user deleted and re-arm one they paused. The step is written only after a successful upsert, so a runtime with no scheduler retries later. Success posts a `system_notice` naming where to pause or remove it.
+### The avatar
 
-### Live project state
+`CtoAvatar` is an SVG character: a body and a face, drawn in `viewBox 0 0 100 100`.
 
-The CTO is told what is happening rather than asked to go find out. Each CTO turn, `refreshCtoLiveStateForTurn` captures a `CtoLiveStateSnapshot` and `buildReconstructionContext` appends `renderCtoLiveStateBlock(...)` **last**, after every identity and memory section.
+- **Shapes** (`CTO_AVATAR_SHAPES`): pebble, bean, spark, chip, drop, cloud, hex. Chip is the dev-tool nod: a rounded square with tiny pins.
+- **Eyes** (`CTO_AVATAR_EYES`): caret, round, visor, pixel. The default caret is two text-cursor bars that blink like a terminal cursor. Eye ink is dark on light bodies and white on dark ones, chosen by luminance.
+- **Energy** (`CTO_AVATAR_ENERGIES`): calm or lively. Calm halves the motion and drops the squash.
+- **States** (`CtoAvatarState`): idle, working, thinking, waiting, asleep, happy, error. Working bobs and scans the eyes with an orbiting dot. Thinking turns the eyes into three typing dots. Waiting looks up, tilts and pulses a ring. Asleep closes the eyes, breathes slowly and drifts a `z`. Happy (`^ ^`) and error (`x x`) are 1.4 s blips.
+- **Derivation.** `deriveCtoAvatarState()` maps a session status, `awaitingInput`, streaming text, the last failure, offline and no-model onto a state. `useCtoAvatarState()` adds the happy hop when a turn lands and the error shake when one fails, then returns to idle.
+- **Motion modes.** `static` is a picture (the state still shows in the eyes). `lazy` (the default) is still at idle and moves otherwise. `live` also blinks and glances at idle.
 
-Last is deliberate. The turn-context prefix truncates by keeping its tail, so the freshest and most perishable section is placed where a budgeted send cannot cut it.
+### Fallback models
 
-The snapshot reads six things through `CtoLiveStateSources` — a `Pick` of the operator tools' own dependency surface, so the block and the tools see one project through one set of shapes: open lanes (with dirty/ahead/behind), active chats (title, lane, status, note, lineage), open PRs (checks + review), pending approvals, scheduled work, and recent automation runs. Approvals and scheduled work are derived from the same chat summaries rather than a second round-trip. The chat list is read with the identity thread included, for one purpose only: the CTO's own jobs (its launches and check-ins, marked `[yours]`) are part of Scheduled work, which used to leave them out. Scheduled work lists only rows still to run (`scheduled`, `paused`), soonest first. Rendering runs most- to least-urgent — "Waiting on you" first, automation runs last — and empty sections say `- none`.
+`identity.fallbackModels` holds up to three backups, each normalized through the same live-redirect check as the main model and deduplicated against it and against each other. When a CTO turn fails for a reason a different model would not hit (usage or rate limit, budget, permission, plan, model unavailable, server overloaded, missing CLI), ADE:
 
-Every source is read in its own `try`/`catch`; a throw names the source in an `Unavailable this turn:` line rather than blanking the block, and a service that simply is not wired is skipped silently (not the same thing as unavailable). A refresh failure is swallowed and logged — a slow PR refresh must not block the user's turn. Refresh is per-send rather than on a timer, because the block tells the model not to re-derive it, and a stale block is worse than no block.
+1. switches the session to the next untried backup through the normal model-switch path,
+2. emits a quiet notice, "<main> hit its limit — switched to <fallback>.",
+3. gives the thread a fresh provider context, and
+4. resends the person's failed message.
 
-Caps are layered: per-section row caps with an explicit `…and N more` overflow line, per-field clips, then a whole-block cap of `CTO_LIVE_STATE_MAX_CHARS` (6,000) applied as **line-aligned head truncation** — lines are kept from the top until the next would overflow, then `…(live state truncated)`. A half-rendered row is never emitted, and what goes is the tail. The 6,000 is measured, not guessed: this project's real state renders ~4.6k chars, and the absolute worst case the row caps permit is ~12.6k.
+Each message tries each model once. When every backup has been tried, one quiet notice says "<main> and backups are unavailable — <reason>" instead of nothing. Context overflow is not a fallback cause (it gets a fresh thread instead), and a person's interrupt is not a failure. The identity's `modelPreferences` stays on the main model while the thread runs on a backup, so settings still shows the person's pick; picking a model in settings moves the thread back.
 
-### Only providers that can redirect a live turn
+The fallback state (`ctoFallbackIndex`, `ctoFallbackSince`, `ctoFallbackRetryAt`) is persisted with the chat state. `ctoFallbackRetryAt` is the main model's published limit reset, else 30 minutes after the move (`CTO_FALLBACK_RETRY_MAIN_MS`). The first CTO turn after it starts on the main model again ("Back on <main>.", a fresh provider thread); a main model that still fails falls back again.
 
-`CtoIdentity.modelPreferences` is `CtoModelPreferences | null`, and the CTO may only run on a provider in `CTO_LIVE_REDIRECT_PROVIDERS` — Claude, Codex, Cursor, OpenCode. The CTO is interrupted constantly (child reports, scheduled wakes, peer notes), and a provider that can only stage the next turn would hold every one of them until the current turn ends. Cursor qualifies through interrupt-and-resend: the live run is cancelled and the message continues on the same agent thread, which is still a redirect of work in flight. OpenCode qualifies through its inbox, which delivers an inline message at the running turn's next step boundary; it is also what puts every model OpenCode reaches (Zen, OpenRouter, local models) in reach of the CTO. OpenCode sessions already receive the CTO tools over the HTTP MCP lease. iOS mirrors the list in `ctoLiveRedirectProviders`.
+An account move owns a usage-limit failure first (Smart Balance). For the CTO a failed move never becomes a plain new chat on the other account (`handOffUsageLimitChat` refuses identity `cto`): the backup models take over, and the usage-limit resume arms only when none is left.
 
-The list is deliberately **not** derived from `ACTIVE_TURN_DISPATCH_MODES`. That table governs the composer's staged-message promotion menu; this is the CTO's own eligibility contract, and reading one off the other would let a composer-menu change silently decide who is allowed to be the CTO.
+A model pick that changes the provider or model without a `modelId` (the phone's picker sends only those) replaces the stored preference rather than merging into it, with the id resolved from the registry when the model names one; a merge kept the stale `modelId`, which is what the runtime launches from.
 
-`makeDefaultIdentity` — the seed a project with no identity file and no DB row reconciles to — carries `modelPreferences: null`. That is load-bearing rather than incidental: the seed is the one identity path that never passes through `normalizeModelPreferences`, so a provider hard-coded there could not be validated away and would become the user's pick without the user picking.
+### Providers that can be the CTO
 
-`normalizeModelPreferences` keeps a stored preference only when it is complete *and* its resolved chat provider supports live redirect; otherwise it is set to null. The provider is resolved from `modelId` through the model registry, with a family fold (`anthropic`/`claude*` → `claude`, `openai`/`codex*` → `codex`, `cursor*` → `cursor`) only for records written before `modelId` existed. `updateIdentity` treats an explicit `null` as "clear the pick" and an absent key as "leave alone", and the reconstruction context prints `- Preferred model: not picked yet`.
+`CTO_LIVE_REDIRECT_PROVIDERS` in `shared/types/chat.ts` is claude, codex, cursor, opencode and copilot: the providers verified live *as the CTO* on 2026-11-14 (a message sent mid-turn joins the same turn, the CTO's tools load, its notes reach the model, and `replyNow` answers in 1–5 s). Claude and Codex steer inline, Cursor steers inline locally and interrupts-and-resends in the cloud, OpenCode delivers at the next step, Copilot interjects with an immediate send. Pi and Muse steer in a plain chat but are left out until they pass the same check; neither could be signed in to test. Add a provider only after that live check passes.
 
-Both clients then put a picker in front of the thread rather than starting one: desktop's `ModelPickCard` and iOS's `.modelPick` content state, each gating session creation so nothing materializes a CTO session on an ineligible provider. Both model pickers narrow their catalog by the same predicate, and the "nothing configured" copy names Claude, Codex, Cursor, and OpenCode specifically.
+Every provider outside that list is not eligible for the CTO, even where the composer offers an interrupt-style send. The list is its own contract, deliberately not read off the composer's dispatch table. The pickers filter on the provider the model would actually launch on, not its registry family, and the runtime refuses an explicit model that resolves to an ineligible provider with an error that names the list. In user copy the list reads "Claude, Codex, Cursor, OpenCode or Copilot" (`CTO_ELIGIBLE_PROVIDERS_COPY`).
 
-The composer follows: the CTO session's steer queue cap is zero — a delivery that would queue becomes a live redirect instead — so desktop (`surfaceProfile: "persistent_identity"`) and iOS (`liveRedirectOnlySends`) both drop *Send after turn* from the active-turn menu. Both filters are presentation catching up with the host, not a second policy; the per-provider table itself is untouched.
+### Quick replies while working
 
-### The welcome screen
+Every steering provider folds a mid-task note into its final reply, so a person who asks something during a long task waited for the whole task. `steerWithOptionsWithoutReview` wraps a person's inline message to a running CTO turn: the model gets "The person sent this while you were working: … If it asks something or changes the plan, answer briefly with the replyNow tool, then continue the task. Otherwise take it into account and keep going.", while the bubble keeps what they typed (`displayText`) and the message carries `metadata.ctoMidTask`.
 
-There is no setup wizard, no personality question, and no first-run card. A project that has never picked a model opens on `ModelPickCard` (`data-testid="cto-model-pick"`), and that card **is** the welcome screen: the CTO introduces itself in its own voice — "I run point on this project" — explains why it can only run on a model that accepts a message into a turn already underway, and the `ModelPicker` underneath is the reply affordance. A first turn, not a form. iOS renders the same state as `.modelPick` in `ctoRootContent`, ordered ahead of `.thread` for the same reason.
+It applies only when the identity is `cto`, the delivery is inline (OpenCode's `steer` delivery counts), a turn is running by that provider's own reading, the sender is a person (`sentByUser`, set by the desktop composer and the sync `chat.steer` / `chat.send` transports, never inferred from metadata, so an agent's `ade chat send` is not the person), and the message is not a scheduled wake, child report, relay, host continuation or slash command. Interrupt sends (Claude's interrupt, Cursor's cancel-and-resend) are not wrapped. Every CTO provider's steer branch does it: Claude (`priority: "next"`), Codex (`turn/steer`, not during a compaction or review), Cursor local (`Run.steer()`; a refused steer is staged with the plain words), OpenCode (inbox `steer`), Muse (`turn/steer` with a turn id), Copilot (`immediate`) and Pi (SDK `steer`).
 
-What is gone from it is the point. Personality, work style, and tone are not choices: the voice is `IMMUTABLE_CTO_DOCTRINE`'s, and the Identity section in `CtoSettingsPage` cannot override it — it holds the name and the user's own standing instructions, which are added to the doctrine rather than replacing any of it. The only thing ADE genuinely cannot infer is which model should do the thinking, so that is the only thing first run asks. See [Only providers that can redirect a live turn](#only-providers-that-can-redirect-a-live-turn) for why the catalog is narrowed to Claude, Codex, Cursor, and OpenCode, and why picking here moves the existing thread rather than starting a second one.
-
-`CtoIdentity.name` survives as a field rather than a question. It defaults to `"CTO"`, seeds the system prompt (`You are ${identity.name}`), the header, and the avatar initial. The Identity section of `CtoSettingsPage` edits the name and the standing instructions. That form writes through `ctoUpdateIdentity`, and the iOS identity editor writes the same fields through the `cto.updateIdentity` sync command.
-
-### Flush and injection lifecycle
-
-The guarantee is that a deterministic flush always runs before anything can be lost; an LLM upgrade of the summary is best-effort on top. All flush paths live in `agentChatService.ts` and no-op for non-CTO sessions.
-
-- **Turn-end journal (deterministic, cheap).** After each completed or failed CTO turn, `appendCtoTurnJournal` appends one `HH:MM — intent → outcome` line to today's daily log. No LLM call.
-- **Turn-end journal is written once, for every provider.** `appendCtoTurnJournal` runs from `commitChatEvent` on `done`, the one point every provider agrees a turn is over. It used to be called from each provider path by hand, and Codex's main path never had it.
-- **Memory checkpoint.** Every 6 completed CTO turns the memory pass runs in the background (see [The automatic memory pass](#the-automatic-memory-pass)). Compaction alone was too rare a schedule: one thread went weeks without one and its thread state stayed a month old.
-- **Compaction, on every provider.** `observeIdentityCompaction` handles `context_compact` (Claude, OpenCode) and `codex_context_compaction` (Codex) alike. On `started` it runs `flushIdentityContinuityDeterministic` (the newest 12 entries, each clipped, *behind* the last model-written summary — a snapshot alone used to replace a good summary with a raw copy of what was just said). On `completed` it re-arms the once-per-thread static block — a compacted thread keeps only what the provider's summary kept, and that is not reliably the CTO's doctrine — runs the memory pass, and re-injects. Before, all of this hung off Claude's compaction observer only.
-- **Pre-model/provider-switch flush.** The model-switch path calls the same flush before `teardownRuntime`, so nothing in the old provider window is lost, then rebinds. Both the synchronous switch and the deferred (cursor-busy) switch take this path.
-- **Injection** happens by staging `pendingReconstructionContext` and delivering it on the next turn after session start, compaction, and model/provider switch.
-
-#### What the per-turn prefix does and does not repeat
-
-The prefix is the one thing that rides every CTO turn, so anything duplicated inside it is paid for again on every single send — and on a long thread that is what walks the provider window into auto-compaction. The owner's thread went 46k → 237k input tokens in 18 turns and Codex auto-compacted mid-turn, for 27 seconds.
-
-- **The prefix is split by lifetime, and only the perishable half repeats.** `ctoStateService` exposes the two halves as two functions, and `refreshReconstructionContext` stages them on two different clocks:
-  - **Static** — `buildStaticContextSection()`: doctrine, continuity model, memory guidance, the ADE environment knowledge document and the capability manifest, i.e. `previewSystemPrompt().prompt` whole. ~21 KB, byte-identical on turn 2 and turn 200, and a live provider thread holds it from the first send. It is staged **once per provider thread** — same `providerThreadContinuityKey` the conversation tail uses — and re-staged when that key moves (rotation, handoff, resume onto a new thread, provider/model switch, fresh session) or when the section's own content `key` moves. The content key is the second trigger on purpose: an identity rename or an edited prompt extension changes the prompt under a live thread and must reach it on the next turn, not at the next rotation. Staging is sticky: the flag clears only when the section actually survived the prefix's character budget. Survival is decided by OFFSET, not by searching the rendered prefix for the section's heading — a conversation tail can quote a heading, and the CTO reads its own prefix back, so the substring test could clear a flag for a section that was cut. `refreshReconstructionContext` records where each attributable section starts (`pendingReconstructionSections`), `truncateTailToLineBoundary` keeps the END of the prefix, and a section counts as delivered exactly when it begins at or after the cut. The static block is first in the prefix, so it is the first thing a tight budget drops — and a thread must never be left believing it was told its own doctrine.
-  - **Volatile** — `buildReconstructionContext()`: identity line, current working context, memory sections, the live project-state block. Perishable by construction, so it rides every single send.
-  On the synthetic fixture the steady-state turn is 24,269 → 2,651 bytes; turn 1, which has to carry everything, is unchanged at 24,506. Keep the two disjoint. The knowledge document is in the static half and **nowhere else** — `buildReconstructionContext()` deliberately does not emit it, because the two strings are concatenated and a second copy was pure duplication.
-- **Codex gets it the same way everyone else does.** It is tempting to assume the doctrine already rides codex's `developerInstructions` at `thread/start` and skip the thread item there. It does not: `buildCodexDeveloperInstructions` builds the generic coding-agent prompt, and the CTO doctrine and capability manifest exist in exactly one place in the codebase — `ctoStateService`. Dropping the static block for codex would quietly take the CTO's whole role away on that provider, so every provider takes the once-per-thread staging. A test pins this.
-- **The thread's identity is one mapping, and it lives in `providerThreadContinuity.ts`.** `providerThreadRef()` feeds the live pointers to `persistedPointerState()` — the same complete provider mapping the thread-pointer ledger is keyed on — and returns a `{ provider, ref }` record rather than a packed `provider:ref` string. A second, hand-rolled switch inside `agentChatService` had already drifted: it omitted codex and pi entirely, never read `cursorCloudAgentId`, and missed the `unified` → opencode fold, so those chats sat on a permanent `<provider>:none` and never re-staged anything. `armIfStale(staged, threadKey, contentKey?)` is the one arming routine, and the conversation tail and the static block are now one `StagedSection` record each (`{ threadKey, contentKey, pending }`) rather than two triples of loose fields kept in step by hand across three construction sites.
-- **`none` means unknown, not "a different thread".** The send path builds the turn prefix *before* it ensures the runtime, so the ref reads as `none` while a thread is being opened — and that same send delivers the prefix into the thread it opens. Most providers also keep their pointer only in the runtime, so it reads as `none` again whenever the prefix is rebuilt with the runtime down. `providerThreadContinuityChanged` therefore treats a transition involving `none` on the same provider as continuity in **both** directions, and `armIfStale` never overwrites a real ref with `none` — forgetting the thread a section was staged for would make the next real thread look like the same one. Without the first rule every fresh thread paid the whole prefix twice; without the second, a key pinned at `none` compares every future thread against `none` and a rotation never registers at all.
-- **A reset forgets the thread, explicitly.** Because the runtime handle survives them, the paths that throw a conversation away — Claude's `conversation_reset` message (`adoptClaudeConversationReset`) and a `resetClaudeQuerySession` that clears the SDK session id — read as continuity to everything above. They call `restageSectionsForNewProviderThread`, which clears both staged keys and arms them. Three more paths belong to the same class and each one is a thread the doctrine would otherwise never reach: Claude's **thread-missing recovery** (a resume onto a conversation the provider no longer has — it clears `sdkSessionId`, so the next send opens a new thread), the **handoff/resume** paths, and **Droid re-readying onto a different `sessionId`** on a pooled connection that otherwise survived (`applyDroidSdkReadyState` compares the id before and after and re-stages when it moved; nothing else watches that id). Without it a brand-new provider session was never told the CTO's doctrine and went on answering as a generic coding agent, with nothing in the product saying so. The replay-overflow recovery is the one caller that then stands the *tail* back down (`suppressStagedSection`): it re-sends the whole transcript, so the tail on top of it would be the same conversation twice — which is what overflowed that chat in the first place. The static block stays armed there, because the replay is the conversation, not the doctrine.
-- **The live runtime object is the thread; its name is not.** A thread renames itself once on Claude — ADE mints the SDK session id before the first query and adopts whatever the provider reports back — so the ref alone cannot tell "one thread learning its name" from "a second thread". The key carries the runtime handle and compares it by identity: while it is the same object, nothing has changed. A provider change is always a change, `none` or not.
-- **The conversation tail rides only a thread it has not been said to.** `Recent Conversation Tail` (40 turns for the CTO, 20 elsewhere) is re-orientation for a model that cannot see those turns, not context. `providerThreadContinuityKey` identifies the provider-side thread the next send lands on; the tail is pushed only when that key has changed since it was last delivered — a rotated Cursor agent, a model or provider switch, a fresh resume, or a thread that has not opened yet. A live, intact codex/Claude thread already holds the conversation verbatim and gets nothing. The flag is sticky until a send actually consumes it, because the context is rebuilt several times per turn — which is why a brand-new thread's tail, armed while the thread had no name and with no conversation to put in it yet, lands on the *second* send and then never again. Tests pin the rule per adapter (codex, claude, cursor SDK, cursor cloud, pi, opencode/unified, droid, ACP) in `providerThreadContinuity.test.ts`, and end to end on a live codex thread.
-- **The headless path refreshes too.** `runSessionTurn` — the headless way a turn reaches the thread — calls the same `refreshCtoLiveStateForTurn` the interactive send does, so a headless turn sees current lanes, PRs, dirty flags and scheduled work instead of whatever the last typed message left behind. It runs on the way into the dispatch rather than before `prepareSendMessage`, because `runSessionTurn` has to register its turn collector synchronously: a `forceDisposeAll` racing a just-started headless turn can only reject a collector that already exists. The prefix is consumed further downstream, so that is early enough.
-- **Tool results are bounded at the tool.** `listScheduledWork` returns a compact record per job (id, chat, kind, status, cron/next run, prompt truncated to 120 characters), at most 50 of them, plus `count` and `truncated`. A project-wide call with full prompts once came back at 50 KB and was the single result that tipped a live CTO thread into auto-compaction mid-call. `getScheduledWorkState` is still the full picture for one chat.
-
-### Model switching is first-class
-
-- Changing the model from the Settings Model section routes through `agentChatService.updateSession` for a live session, moving the same ADE session and transcript to the new provider/model.
-- **`identity.modelPreferences` is written on every pick, session or no session.** `handleModelChange` writes the preference *first* and then moves the live session, so a failure between the two leaves the durable record holding what the user picked rather than what they replaced. It used to be written only when no session existed, on the theory that `updateSession` would persist it on the way through — and when it did not, the page showed the new model (`currentModelId` prefers the live session's) while the preference silently stayed on `codex/gpt-5.6-luna` at low effort. The next `startFreshSession` then created the thread from that stale preference: a smaller model at a lower reasoning tier than the one on screen, which is why the CTO read as vague for reasons nothing in the UI could explain. Reasoning-tier changes take the same path, because the picker routes them through the same callback.
-- Fast mode does not travel onto a model that has no fast tier: the pick sends `currentFastMode && selection.supportsFastMode`.
-- The live selection is *also* persisted back into `identity.modelPreferences` by the chat service (`persistCtoModelPreference`) so the identity file stays the single source of truth in both directions. Two writers of the same fact is deliberate belt-and-braces here: the renderer's write is the one the user's click guarantees.
-- Switch order: flush durable memory → `refreshReconstructionContext` (now memory-rich) → `teardownRuntime` → rebind. Claude→Claude keeps the fast `setModel` path.
-
-### Single session, project-level
-
-`AgentChatIdentityKey` is just `"cto"`. `ensureIdentitySession` reuses the newest CTO session regardless of which lane it was last active on: if nothing lives on the canonical lane but a CTO session exists elsewhere, it reuses that session and rebinds it to the canonical lane instead of forking a parallel thread. There is only ever one CTO thread per project.
-
-### One thread, and the way out of one that is finished
-
-A single project-level thread is the right default and it has one failure mode: it fills up. The owner's CTO thread crossed its context window by ordinary accumulation across twenty sessions of real work — 3,376 events, ~1.2M tokens against a 1M window — and then every turn failed with `Prompt is too long` while the fallback compaction answered *"conversation could not be reduced below the context limit"*. Nothing in the product said so, and nothing offered a way out.
-
-**Turn health is durable, and it is one field.** Every `done` event passes through `recordSettledTurnHealth` — the one place all providers agree a turn is over. It spends the error text the turn streamed past (from an `error` event or a failed `status`) and writes two things onto the session's persisted state. The decision itself is the pure reducer `nextSessionTurnHealth()` in `chat/sessionTurnHealth.ts`, alongside `normalizeLastTurnFailure`, `normalizeSessionContextHealth` and `shouldAdviseSessionRotation`; the service keeps only the read of the live session, the log line and the write. It also reports whether anything actually moved, compared field by field rather than by `JSON.stringify` — both records are rehydrated, and a false "changed" costs a disk write on every settled turn of every chat:
-
-- `lastTurnFailure` — `{ kind: "context_overflow" | "error", message, at, turnId }`. The `context_overflow` verdict is the only failure that describes the *conversation* rather than the turn, and it is classified by `isContextOverflowFailureText` (which also matches the compaction refusal, because that is the second half of the same event). A completed turn clears it; an interrupted turn leaves it alone, because the user stopping a turn says nothing about the thread.
-- `contextHealth` — `{ occupancyPct, aboveHighWaterTurns, compactionSeen, updatedAt }`. Occupancy comes from Claude's own context guardrail where there is one, and otherwise from the settled turn's usage against the context window it reported, so Codex and the rest are covered too.
-
-`getSessionTurnHealth({ sessionId })` reads that record and nothing else — no provider round-trip, no query started — which is what makes it cheap enough to call before drawing a banner. `getCtoThreadHealth()` is the CTO-facing wrapper and is strictly read-only, like `getCtoAttention`: it resolves the thread through `listIdentitySessions` and must never call `ensureIdentitySession`, because materializing a lane and a session as a side effect of drawing a banner is not a thing a banner may do.
-
-**Rotation is offered while the thread still answers, and taken once it cannot.** `shouldAdviseSessionRotation` says yes when the thread has already failed on overflow, or when occupancy has sat at or above `AGENT_CHAT_CONTEXT_ROTATION_PCT` (80%) for `AGENT_CHAT_CONTEXT_ROTATION_TURNS` (2) consecutive settled turns **and** a compaction has already run. The compaction condition matters: before compaction the occupancy number is not the thread's floor, so advising then would be advising for nothing. When it says yes, `CtoPage` shows a quiet, dismissible prompt above the thread.
-
-Once a CTO turn actually fails on context overflow, waiting protects nothing — every later message fails the same way (one thread took ten failed "Hello"s over thirteen hours). `maybeAutoRolloverCtoThread` then rotates by itself: it calls `startFreshIdentitySession({ force: true })`, emits a `system_notice` with `status: CTO_THREAD_ROLLED_OVER_STATUS` as the first row of the new thread, and sends the failed message again there. Two guards: a thread with fewer than 3 user messages is not full (the message is too big, and a new thread would fail the same way), and a 10-minute cooldown stops a loop. `CtoPage` listens for that status (pinned to the CTO's home machine) and follows the thread.
-
-**`startFreshIdentitySession` is the escape hatch, and it is not amnesia.** In order: distil the outgoing thread, flush continuity, write it to durable memory, retire the thread, create a new one. It, `getSessionTurnHealth`, `getCtoThreadHealth` and `distilIdentityHandoff` live in `chat/identityThreadRotation.ts` over an injected deps bag — the same shape `claudeReplayOverflowRecovery.ts` uses — so the policy is readable without the provider graph around it; `agentChatService` keeps thin closures that give it this service's world.
-
-- The distillation prefers **asking the CTO** to write its own hand-off note — but only when there is something to summarize *and* `getSessionTurnHealth` says the thread can still take a turn. When it cannot (the case this routine exists for), or the turn fails, the **helper model** writes the note from the transcript on disk (`summarizeForHandoff`, the same memory pass, which also files any durable facts), followed by the person's last eight messages. Only when no helper answers does the deterministic note stand alone: the session summary (skipped when it is just the failure message, such as "Prompt is too long"), the last eight user messages as typed (`displayText`, not the wrapper ADE sent), and the titles of any scheduled work. If that comes back empty it says so in the daily log rather than writing nothing.
-- The note goes through the routines a normal turn already uses: `flushIdentityContinuityDeterministic(managed, "session_rotation")`, then the note itself into `continuitySummary` and `thread-state.md` (`writeCtoThreadStateFromSummary`), and the note into the daily log (`appendDailyEntry`), which keeps every hand-off and is searchable. A **thin** note writes only the daily line: it must not replace the previous thread's real hand-off, and it is never filed as a durable fact (hand-offs used to be, which put twelve-line status notes beside real decisions).
-- ADE-owned scheduled work on the outgoing thread (the gardener, check-ins the CTO scheduled) is taken before disposal and re-armed on the new thread (`takeScheduledWork` / `restoreScheduledWork`). Claude provider schedules stay with their SDK session, paused, as before.
-- Then the old session is **ended**, which is what puts it under Past threads with its turn count and leaves its transcript on disk, and `ensureIdentitySession({ reuseExisting: false })` creates the replacement. Identity, memory, daily log and project state are untouched; only the conversation restarts. `listIdentitySessions` sorts by `lastActivityAt`, so the next `ensureIdentitySession` resolves to the new thread.
-
-**Where it is reachable.** The `cto_state.startFreshSession` action (plus `IPC.ctoStartFreshSession` as the desktop's own fallback) and `window.ade.cto.startFreshSession()`. It is **CTO-only** in `ADE_ACTION_CTO_ONLY.cto_state`: nothing it touches is destructive, but deciding a thread is finished is the operator's call, and an agent that could make it could quietly drop the context it is being supervised with. `cto_state.getThreadHealth` stays open to every role, like `getAttention` — it creates nothing and returns no content. In the UI it is the "Start a fresh session" card under Settings → Model (confirm-before-act, with the plain sentence *"Everything the CTO remembers is kept, and this conversation moves to Past threads. Only the live thread starts over."*), and the rotation prompt on the CTO page.
-
-### Hidden from rosters, but never silent
-
-The CTO thread is pinned to the project's **primary lane** (it needs a lane for its cwd), but it is filtered out of every session roster so it never reads as a chat you started: `agentChatService.listSessions` drops identity sessions unless `includeIdentity` is set, and `chatSessionProjection.projectChatSummariesOntoSessions` plus `laneListSnapshotService` drop the backing terminal row before the Work tab, Lanes tab, and TopBar ever see it. `sessions:get` still resolves the id, so deeplinks and `CtoPage` keep working. Universal search deliberately *does* index the thread — it is your own conversation, and it should be findable in ⌘K.
-
-Hiding the row removes it from `terminalAttention`, which is what the Work dot and the dock badge summarize. A hidden thread that asks a question would otherwise surface nowhere, so attention gets its own path:
-
-- `agentChatService.getCtoAttention()` is the single implementation. All three transports — `IPC.ctoGetAttention` (plain IPC), the `cto_state.getAttention` action (daemon-routed), and the `cto.getAttention` sync command (mobile and hosted web) — delegate to it, so a remote runtime, local Electron window, browser client, and phone cannot derive "needs you" differently. It returns a discriminated `CtoAttentionState`: `idle`, `awaiting-input` with an optional tooltip timestamp, or `unknown` when inspection failed.
-- It is **read-only**. It resolves the thread through the same `listIdentitySessions` helper `ensureIdentitySession` uses, but never calls `ensureIdentitySession` itself: rendering a badge must not materialize a primary lane and a chat session as a side effect. The predicate is `awaitingInput || pendingInputItemId || attentionRequestedAt` (the last being an explicit `ade chat ask` hand-raise) rather than `canonicalStatusBucket`, whose awaiting-input bucket folds in `idle` and `ready` and would light the dot whenever the CTO is merely sitting there. A probe failure logs and returns `unknown`, never a false `idle`.
-- `useCtoAttention` (mounted once in `AppShell`) keeps `appStore.ctoAttention` fresh from chat events, focus, and a 15 s visible-tab interval; the project sidebar footer renders the dot on the CTO entry. It filters chat events through `shouldRefreshSessionListForChatEvent` so a streaming turn does not re-run a full identity scan per delta, debounces to 1.5 s (0 on focus), ignores `unknown` so the last known state survives a failed host scan, and clears to idle on project switch so the previous project's state cannot linger. The hosted web adapter now exposes `getAttention` over `cto.getAttention`, so this same renderer hook works in paired-browser mode.
-- `useAppWideSessionAttention` adds the CTO to the dock badge count so a question reaches a minimized window. It stays the single writer of `setDockBadgeCount`.
-- **iOS** takes the same path. `SyncService.fetchCtoAttention()` calls `cto.getAttention` and publishes `ctoAttention`; `ContentView` badges the CTO tab (a string badge, so it renders as a dot-sized marker and disappears when idle) with a matching accessibility label. `refreshCtoAttentionIfNeeded()` rides the same "something changed" pulse that rebuilds the session roster — the CTO is not *in* that roster, so it needs its own read. It is called from `refreshActiveSessionsAndSnapshot()` **above** the roster-signature early return, not below it: since the CTO is excluded from `allAgents`, a turn where only the CTO changed leaves the signature identical, so a probe hanging below the guard would fire only when some unrelated session happened to change — and, once lit, would never clear. It is also called with `force: true` from `saveRemoteCommandDescriptors`, because the probe no-ops until it knows the host advertises the command, so the first read after a (re)connect has to happen when the descriptors land and must skip the debounce a reconnect could land inside. Otherwise it is debounced to 5 s. It is gated on `supportsRemoteAction("cto.getAttention")`: an older brain never lights the dot, and a value left over from a newer host is cleared. A transport error or explicit `unknown` result keeps the last known value rather than clearing, because falsely dropping a pending question is worse than a slightly stale dot. The wire `status` remains optional when decoding so iOS infers `idle`/`awaiting-input` from `awaitingInput` against older hosts.
+Each delivered wrapped message grants the turn one `replyNow({ message })` (core pack, 1–600 characters), at most three, cleared when the turn settles. Without one the tool answers `{ posted: false, note: "Not posted: nobody asked mid-task. Keep working and answer in your final reply." }`. `postCtoInterimReply()` flushes the provider's buffered text, then commits a `text` event of its own (`messageId` and `itemId` `cto-reply:<uuid>`, `CTO_INTERIM_REPLY_ID_PREFIX`, phase `partial_answer`, secret-scrubbed), so it never merges with the provider's streaming text; the turn fold keeps `partial_answer` prose visible, and it reaches the conversation tail and `readHistory` as an assistant entry of its own.
 
 ### The opening turn
 
-A brand-new CTO thread used to open on a blank screen. `ensureIdentitySession` now seeds one real, **visible** first user turn when it *creates* the session (`seedCtoIntroTurn`), asking the CTO to introduce itself and give a read on the project. Because `ensureSession` is gated behind onboarding in `CtoPage`, session creation is exactly the blank-thread moment, and seeding there covers desktop, iOS, and the CLI in one place.
-
-It is deliberately not a hidden or canned message: ADE has no hidden-turn mechanism, and a fabricated assistant message would feed back into the model's context on every later turn. The `intro` marker lives in `onboardingState.completedSteps` — not a user-facing setup step, but kept in that list so it is persisted — so it survives restarts and fires once. The marker is write-once, and nothing clears it; it is written only *after* the send succeeds, so an unauthenticated first run retries instead of burning the one shot. The send is fire-and-forget with `awaitDispatch` so a dispatch failure is logged rather than escaping as an unhandled rejection.
-
-### Operator tools on a live session
-
-The CTO's operator tools are registered on the running session, not merely
-advertised in its prompt. `createCtoRuntimeToolMap(managed)` in
-`agentChatService.ts` builds the executable map and returns `null` for anything
-whose `identityKey` is not `"cto"`, so no other chat can reach these tools.
-
-`buildCtoOperatorToolDeps` builds the dependency set for the runtime map. It
-was also shared with `previewSessionToolNames`, a name-enumeration helper that
-has since been removed because it had no non-test caller — there is no separate
-prompt manifest today. Registered schemas are always loaded for CTO sessions and
-are the authoritative capability reference. A live measurement
-found that repeating the generated inventory in the prompt added about 11.8k
-characters (roughly 2,945 estimated tokens) on top of about 28.8k tokens of MCP
-tool schemas, so `buildCtoCapabilityManifest` now carries only cross-tool
-operating rules. Tool search is left to the Claude CLI's default for CTO sessions (on against Anthropic's API), and `alwaysLoad` remains enabled;
-removing the duplicate prose reduces context without making tools undiscoverable.
-
-Every chat-control dep — `steerChat`, `cancelSteer`, `listSubagents`,
-`approveToolUse` — is **required** on `CtoOperatorToolDeps` and wired to the
-matching `agentChatService` method (`steer`, `cancelSteer`, `listSubagents`,
-`approveToolUse`, the last translating the tool's `toolUseId` into the
-service's `itemId`). Making them required is the guard: an optional dep left
-unset advertises a tool whose only possible answer is "not available", which is
-worse than not offering it. `cancelSteer` takes the `steerId` that `steerChat`
-returned, so cancelling is unambiguous when several steers are pending.
-`steerChat` asks for the provider's live (`inline`) mode, so the instruction
-joins the running turn at its next step instead of waiting for the turn to
-end; only a provider that refuses a mid-turn message gets it staged, and the
-result says which (`delivery: "live" | "queued"`). `steerChat`, `cancelSteer`
-and `interruptChat` take `machine`, like `sendChatMessage`. There
-is no `handoffChat`: it targeted "a different agent identity" and
-`AgentChatIdentityKey` is just `"cto"`.
+A brand-new CTO thread gets one visible opening message (`CTO_INTRO_PROMPT`): introduce yourself, say what you can do here, then scan the project and say what you see. It is a real user turn, not a canned assistant message, so nothing fabricated enters the transcript. `intro` in the onboarding marker list makes it once per project; there is no setup wizard.
 
 ### Tool packs
 
-The curated tool surface is large enough that advertising every description on
-every turn is its own context cost. `ctoToolPacks.ts` splits it into eleven
-packs — `core`, `linear`, `files`, `tests`, `conflicts`, `scheduling`, `proof`,
-`search`, `insights`, `config`, `devices` — each with
-a one-line scope string the capability manifest reuses verbatim.
+Every ADE domain is reachable from a CTO session. `ctoToolPacks.ts` is the closed list of packs; `core` is always loaded with full descriptions, and every other pack stays callable but carries a one-line scope until the CTO calls `loadCtoTools` with its name. Loading is a description-level economy: no tool becomes uncallable by being unloaded. The loaded set is recorded per live session, so the prompt-manifest preview (which runs no turns) lists packs but records nothing.
 
-`core` is the standing surface and is always loaded **by construction**:
-`alwaysLoad` is derived from the pack inside `createCtoOperatorTools`, never set
-per tool, so a core tool cannot ship un-loaded because someone forgot a flag.
-The stamper is applied at each tool's definition site rather than by a mutable
-"current pack" variable reassigned between sections, because moving a definition
-across a section boundary used to silently re-pack it.
+Destructive calls (replacing or deleting an automation rule, cancelling scheduled work) ask the person to confirm before they run, and configuration reads redact secret-shaped values.
 
-Every other pack is an **extension, not a gate**: its tools stay registered and
-callable on every transport at all times. Only the advertised *description* is
-trimmed. `applyCtoToolPackVisibility(tools, loadedPacks)` produces the advertised
-map — it never adds or drops a key — replacing an unloaded extension tool's
-description with a one-sentence summary plus a pointer to `loadCtoTools`, and
-only when that stub is genuinely shorter than the original, because most ADE
-descriptions are already one line and the naive version measured *larger* than
-the full catalog.
+### Hidden from rosters, but never silent
 
-`loadCtoTools` lives in `core` (the loader can never itself be the thing waiting
-to be revealed). With no argument it lists every pack with its scope and load
-state without loading anything; with a pack name it records the load and returns
-that pack's full descriptions. Loaded packs live in the per-session, in-memory
-`managed.ctoToolPacks` and are deliberately never persisted: a pack loaded for
-one investigation must not widen every later thread's prompt.
-
-Three deferral mechanisms layer on top of the same map:
-
-| Provider | Mechanism |
-| --- | --- |
-| Claude | ToolSearch. The CTO's `ENABLE_TOOL_SEARCH` pin was removed. ADE no longer sets the variable for any session (it forced `"auto"` until 2026-10-20, which kept every schema inline at normal catalog sizes; see Agent prompt in `docs/perf/macos-baseline.md`), so the CLI's default applies: tool search on against Anthropic's API, off against a third-party base URL. It was previously pinned off because deferring one flat catalog risked a CTO that could not find `spawnChat`; packs removed that risk, and the parity gate is `ctoToolPacks.test.ts`, which asserts the three properties the flip depends on — derived `alwaysLoad`, registration identical regardless of which optional services are wired, and a visibility pass that never adds or drops a key. |
-| Codex | `deferLoading` per tool, built by `buildCodexDynamicToolSpecs` with the `codexDeferCtoTool` predicate: a tool with no pack metadata is never deferred, a core/`alwaysLoad` tool is never deferred, and an extension tool stops being deferred once its pack is loaded. |
-| Cursor / Droid / OpenCode | No native mechanism, so the trimmed descriptions *are* the deferral. The HTTP MCP lease and the SDK MCP server both build from `createCtoAdvertisedToolMap`. |
-
-`buildCtoCapabilityManifest` renders the pack list from the same two constants
-and adds eleven operating rules. Three of them matter most here: never claim something cannot be done for lack of
-a tool before checking `loadCtoTools` for the owning pack; secret *values* are
-unreadable by any tool by design (names are listable, values are the user's to
-read in Settings); destructive tools pause for confirmation, so expect it.
-
-### Confirmation and redaction
-
-Two guards sit on the wider tool surface.
-
-**Destructive tools ask.** An optional `requestApproval` dep raises the same
-approval card an agent tool call raises (`requestChatInput` with
-`providerMetadata.toolApproval`, answered through `approveToolUse`), and
-`confirmDestructive` turns a decline into `{ success: false, error }` rather
-than a thrown turn. It gates replacing an existing automation rule, deleting
-one, and cancelling scheduled work. With no `requestApproval` wired — the
-headless `ade` RPC, tests — the call proceeds, because the caller there is
-already the operator.
-
-**`getProjectConfig` redacts values, never shape.** `redactConfigValues` walks
-the config and replaces: an env bag object with `{ __redacted, names: [...] }`;
-a credential-map object (`apiKeys`, `secrets`, `tokens`, …) the same way; a
-credential-shaped string with `"[redacted]"`; and a credential/env container
-that is an *array* with a count. Arrays carry the parent key down so
-`{ apiToken: ["ghp_…"] }` is still redacted. Key matching normalizes camelCase
-and is word-bounded, so `tokenizer` survives, and an explicit allow-list of
-pointer keys (`secret_ref`, `secret_name`, `api_key_ref`, `credential_ref`) is
-checked first — hiding the *name* of a secret protects nothing while costing the
-CTO the ability to say which secret a webhook trigger depends on. Every key
-stays visible; only values change. `listProjectSecretNames` re-maps rows to
-exactly `{ name, updatedAt, scope }` as defence in depth.
-
-Registration then goes through whichever transport the session's provider
-speaks. All three read their identifiers from one descriptor table,
-`HTTP_MCP_TOOL_SETS`, whose `cto` entry names the `ade-cto` server, the
-`ade_cto` Codex namespace, and `createCtoRuntimeToolMap` as its factory:
-
-| Provider | Transport |
-| --- | --- |
-| Claude | `buildClaudeSdkMcpServer(managed, "cto")` returns an SDK MCP server named `ade-cto`, merged into `opts.mcpServers`. It is injected **without** `allowManagedMcpServersOnly` — the CTO is a daily-driver chat and must keep the user's own MCP servers. |
-| Codex | `refreshCodexDynamicTools` walks the table and registers each set as dynamic tools under its own namespace — `ade_cto`. Dispatch falls back by bare name across namespaces when a call arrives un-namespaced. |
-| Cursor / Droid / OpenCode | An HTTP MCP lease from `ensureHttpMcpServer(managed, "cto")`, cached in `managed.httpMcpServers.cto` and advertised under the `ade-cto` server name. Transports resolve every live lease at once via `ensureHttpMcpLeases(managed)`. |
-
-Two invariants keep this from breaking quietly:
-
-- **One refresher per Codex runtime.** `refreshCodexDynamicTools` clears the
-  dynamic-tool map before rebuilding it, so both tool sets must register inside
-  that one function. A second refresher would clobber the first.
-- **One tool set per HTTP MCP lease.** `managed.httpMcpServers` is a map keyed
-  by tool set rather than a single shared server carrying both, and
-  `ensureHttpMcpServer` starts one server per key. `closeHttpMcpServers(managed)`
-  drops every lease in the map, so every teardown path releases the CTO one too.
+The CTO thread is deliberately absent from every lane and session roster, so it cannot borrow the Work tab's attention dot. `getCtoAttention()` is the one signal that keeps a hidden thread from going quiet when it asks a question: a strictly read-only probe that never creates a session. The desktop's CTO sidebar entry wears the CTO's remembered look (a static avatar in place of the robot glyph) with the same warning dot, the dock badge counts it, and the phone's CTO tab reads the same probe through `cto.getAttention`. Clients keep their last known badge on `unknown` rather than treating a failed scan as idle.
 
 ### Where CTO-launched work runs
 
-The CTO also has a home machine, stored in account settings for this repository.
-Its machine chip opens the home-machine chooser, and all CTO calls stay pinned
-to that machine. When the runtime there predates cross-machine tools, the page
-shows an update hint. Settings exposes the user's cross-machine access switch;
-only the desktop user client can change it, and the phone sync command removes
-that field from incoming identity patches.
+The CTO session is pinned to the project's primary lane, and its own work never runs there. `spawnChat` without a `laneId` creates a fresh lane for the work; an explicit `laneId` is honoured when the person named an existing lane. On another machine, `machine` names where the lane and its chat live, and a one-time check-in wakes the CTO when that child should report. A finished child comes back as one line — its title, provider, outcome and PR if there is one — never a pasted transcript.
 
-The runtime bridge in `apps/ade-cli/src/services/account/ctoCrossMachineBridge.ts`
-is the CTO's wrapper over the shared connection pool in `machineBridge.ts`
-(ordinary agents have their own pool and identity; see
-[Cross-machine agents](../sync-and-multi-device/cross-machine-agents.md)). It
-reuses the paired-runtime connector with the distinct `ade-cto-remote` caller
-identity. It pools one connection per target, confirms mutating actions, refuses
-secret-bearing results on both the caller and target dispatch paths, and closes
-idle connections only when no action is in flight. The CTO's `listMachines`,
-`listMachineActions`, and `runMachineAction` tools can inspect its home machine
-or another account machine. The target runtime applies its own action policy;
-unknown actions are not forwarded around that gate.
+## The page
 
-The CTO session is pinned to the project's **primary lane**, so a tool that
-silently defaults its lane would act on the primary worktree. Nothing the CTO
-does may land there by omission.
+`/cto` is one thread, not a tab bar.
 
-For spawned work:
+### Header pill
 
-- **The prompt.** `buildCtoCapabilityManifest`'s operating rules tell the CTO to leave `laneId` off for new work and reserve the lane its session is pinned to for read-only inspection. `ctoState.test.ts` pins the wording.
-- **The code.** `resolveCtoExecutionLane` creates a dedicated lane when no `laneId` is requested, honoring the `freshLaneName` / `freshLaneDescription` contract that `CtoOperatorToolDeps` always declared. It never falls back to the CTO session's lane; if lane creation fails the error surfaces (`spawnChat` reports it) rather than quietly re-targeting primary.
+A centred floating pill: a small live avatar, the CTO's name, and one status phrase. The phrase is `Free`, `Working…`, `Writing…`, `Waiting on you`, `Asleep`, or `Working on 2 things` when it has children running (`ctoStatusPhrase()`). On the right are the panel toggle and the settings gear. The avatar's colour is the page's accent, replacing the old fixed cyan.
 
-For git tools the rule is split by whether the call mutates:
+### Side panel
 
-- **Reads default.** `resolveReadLaneId` falls back to `deps.defaultLaneId` — inspecting the primary lane is normal supervision. `gitStatus`, `gitFetch`, `gitListRecentCommits`, `gitListBranches`, `gitStashList`, `gitGetConflictState`, and `getConflictStatus` take this path.
-- **Repository writes are refused.** `requireMutationLaneId` still throws when `laneId` is missing, so an omitted lane cannot fall through to the primary worktree. When the lane is named, `assertCtoMayNotWriteRepository` refuses before any git or conflict write: the CTO does not commit, push, pull, rebase, stash, check out, or apply a conflict patch. Those tools answer `{ success: false, error }` and tell the model to `spawnChat` without a `laneId`. `createTerminal` stays, for a command that directs agents.
+About 340 px, collapsible, and it remembers open or closed per project (`ade.cto.panelOpen.v1:<scope>`). Below a 1100 px container (`CTO_PANEL_DOCK_MIN_WIDTH`) it stops docking and opens as a sheet. It leads with the big live avatar, the name and the status phrase, then a segmented **Activity | Library** switch.
 
-### Children report back
+**Activity**
 
-The CTO is a director, not a dispatcher: work it starts returns to it without
-being polled for.
+- **Now** — the live turn's current step in plain words, and the chats the CTO started that are still open: provider logo, title, lane and status (Needs you / Working / Idle). A row opens that chat on the CTO's machine. Six rows show, the rest fold into "and N more".
+- **Upcoming** — the CTO's scheduled work as rows: title, a human schedule ("Every day around 8:00 PM", "In 20 min", "Ran 5 min ago"), its own on/off switch, and a menu with Run now and Cancel (confirm first). Empty says "Nothing scheduled. Ask the CTO to check on something later."
+- **Open work** — the checklist, with inline add, tick to complete, untick to reopen, and × to remove.
+- **Remembers** — the note count, the first three notes, and "See all" into Settings › Memory.
 
-`spawnChat` takes `instanceId` (an `accounts[].instanceId` from
-`getUsageSnapshot`) or `credentialId` to pick the account the chat runs on,
-here or with `machine`; without one the target machine picks its default or
-smart-balance account. The result carries `warnings` when the host started the
-chat at a lower permission mode than asked (a chat never gets more access than
-the chat that starts it) or when a named `laneId` already has a chat at work or
-one waiting on the user. A remote spawn's `followUp.scheduleId` is the id of
-the check-in it scheduled on the CTO thread, so `cancelScheduledWork` can take
-it. `sendChatMessage` takes `machine` like the other chat tools.
-`getUsageSnapshot` answers a summary by default (windows, accounts, pacing,
-spend totals and the top models by cost) and the full per-model and per-day
-token breakdowns only with `detail: "full"`; a busy machine's full snapshot is
-about 1 MB of tool output. `listPullRequests` lists open and draft PRs by
-default, newest first, with `state` and `limit`.
+**Library** — what the CTO's work produced: PRs in the lanes its child chats worked in, proof artifacts filed by it or its children, and those lanes themselves. Filter chips: All, PRs, Proof, Lanes. Rows open the thing on the right machine. These reads run only once Library is opened.
 
-`spawnChat` sets `orchestrationParentSessionId` to the calling CTO session
-unconditionally, and `spawnKind` defaults to `"subagent"` — twice, once in the
-zod schema and once in the tool body, so the kind it echoes back is explicit
-(the host also defaults a parented chat with no kind to `subagent`). A
-`subagent` wakes the CTO when it finishes; a `peer` is fire-and-forget and
-leaves a quiet note. The tool result echoes the resolved `spawnKind` back.
+Live updates come from chat events for the CTO and its children, debounced at 800 ms; a single 60 s safety read runs while the panel is visible. There is no polling loop.
 
-A finished child renders in the CTO thread as **one `system_notice` line**, not
-a `subagent_result` card. The card restates the child's whole closing summary,
-and the CTO runs dozens of chats at once, so a report that pasted a transcript
-into the thread would bury everything else it is holding. The line is built by
-`formatCtoChildReportLine` and reads `"<child title>" · <provider> · finished |
-was stopped | failed`, with `· PR #<n>` appended when
-`readChildPullRequestNumber` finds one — from the completion report's artifacts
-first, falling back to the closing summary, because plenty of agents write the
-number in prose and never file an artifact. The notice is `warning` for a
-failure and `info` otherwise, and carries the same `spawnCompletion` payload so
-delivery dedupe still anchors on it.
+### Calm chat
 
-For a subagent the CTO is then woken with the same line as the wake text, plus
-any fresh worker discoveries. The wake deliberately carries no `spawnCompletion`
-metadata — the notice owns that row, and a second copy would draw the wake
-divider header over it.
+The CTO thread is drawn differently from every other chat, keyed on `presentation.profile === "persistent_identity"`.
 
-Because the CTO's steer queue cap is zero, that wake never stages: it is
-delivered into the running turn, or starts one.
+- **One working line.** During a live turn, the tool and work rows collapse into `CtoWorkingLine`: a 16 px working avatar, the latest step in plain words ("Checking PR #12", "Reading a chat", "Starting a chat on Codex"), and the elapsed time. Click it to see every step; a second click shows the raw tool calls. When the turn ends, the normal turn fold takes over.
+- **Quiet chips.** A finished call to a state-changing tool draws a chip instead of a tool row: Scheduled · `<title>`, Cancelled · `<title>`, Paused / Resumed · `<title>`, Remembered · `<note>`, Forgot · `<note>`, Tracking · `<text>`, Done · `<text>`. A failed call says "Couldn't schedule" and so on. A call still running draws nothing here, because the working line names it.
+- **Fresh context.** The `cto_context_refreshed` notice is a hairline divider labelled "Fresh context", not a card.
 
-### Session lifecycle tools
+Non-CTO chats are unchanged.
 
-Session lifecycle is not desktop-only and settle is not the only quiet tier. A
-session carries a canonical phase plus two independent controls, and both are
-reachable from every surface — desktop, iOS, hosted web, the `ade`
-CLI, and the CTO's own tools:
+### Welcome
 
-- **Settle override** — the tri-state `null | "settled" | "active"` pin. It is
-  consulted at the declared-settle tier, *before* the derived exit-0 rule:
-  `"active"` is a keep-active pin that suppresses settle entirely, and
-  `"settled"` counts as a declared settle alongside `settledAt`.
-- **Snooze** — a synced **visibility overlay** that never touches the canonical
-  phase. It is stored as `snoozedUntil` / `snoozedAt`, expiry is *derived* by
-  comparing the deadline to now, and no scheduler exists anywhere.
+A project with no model picked shows `CtoWelcome` instead of the thread: the big avatar asleep, the reason (the CTO cannot run without a model), and a model picker filtered to the eligible providers. Picking one plays asleep → happy → idle, then the thread appears. The copy names the providers. The pick is the whole of first run.
 
-The CTO reaches both through `ctoOperatorTools.ts`:
+## Settings
 
-| Tool | Purpose |
-| --- | --- |
-| `getSessionLifecycle` | Read the settle/snooze slice for any ADE session (chat or tracked CLI). |
-| `settleSession` / `unsettleSession` | Declare a session done (optionally with a one-line `outcome`) or return it to the active lifecycle. These write `settle_source = "operator"`. The CTO is the one agent that retains this, as a user-configured operator acting on *other* rows; ordinary worker agents lost self-settlement in 2026-07 (see [terminals-and-sessions](../terminals-and-sessions/README.md)). |
-| `setSessionSettleOverride` | Pin the tri-state override; `"active"` is the keep-active pin that suppresses a declared settle. |
-| `snoozeSession` | Hide a row until a deadline (`untilIso` or `durationMinutes`). The session keeps running. |
-| `wakeSession` | "Clear a snooze on an ADE session so it resurfaces now. No-op when the session was not snoozed." Records `wokeReason` (default `manual`). |
+`CtoSettingsPage` is a rail of five topics, one pane at a time, built from the settings primitives.
 
-`listChats` and `getChatStatus` carry the same lifecycle block, including
-`wokeReason` (`timer | needs_you | error | turn_complete | manual`), so the CTO
-can reason about **why** a row resurfaced instead of only that it did. The
-lifecycle read degrades to "unknown" rather than failing when a host wires only
-a partial session service, which older harnesses do.
-
-See [Terminals and sessions › Session lifecycle](../terminals-and-sessions/README.md#session-lifecycle)
-for the canonical derivation and the full cross-surface matrix.
-
-**Lanes on ADE Cloud.** `createLane` and `spawnChat` take `machine: "cloud"`
-(and `size`, else the person's saved size). That makes one new ADE Cloud
-computer for one new lane through the home brain's `cloud.lane_launch`, under
-this CTO chat's identity, so the approval card shows in the CTO chat. The tool
-returns with the launch id, and the CTO follows the launch with
-`cloud.lane_launch_status`. See [ADE Cloud](../ade-cloud/README.md#a-new-lane).
-
-## Tab model
-
-The CTO tab is a single persistent thread plus a settings page — there is no Chat/Team/Workflows/Settings tab bar. The header exposes the mark, the name, and a gear that swaps the thread for `CtoSettingsPage`; **Back to the thread** returns. Model, reasoning, and Fast mode live there. A project with no model picked yet shows `ModelPickCard` across the whole surface instead of the thread.
+- **Look** — a live preview with a state strip (Idle, Working, Thinking, Waiting, Asleep, Happy, Error) that plays each state; the name; shape (seven tiles drawing the real shapes); colour (ten swatches tuned for dark and light, plus a hex input); eyes (four tiles); energy (Calm / Lively); personality (Focused / Friendly / Playful, each with an example sentence). Every change saves as you make it through `cto.updateIdentity({ patch }, pin)`, and the page says "Saved" quietly.
+- **Brain** — the main model (the standard picker, filtered to models the CTO can run on) with reasoning effort and Fast; up to three backup models as an ordered list with add, move up/down and remove, under one line explaining the switch; a **Refresh context** button with its one-sentence explanation; the **Home machine** row when the account has more than one machine; and the cross-machine switch.
+- **Memory** — the project notes editor with a byte meter ("1,240 of 4,096"), the "About you" editor (2,048), and the open-work list. Saves through `cto.updateNotes` and `cto.updateOpenWork`. A text over the cap is not sent; the meter says how many bytes over.
+- **Routines** — every row of the CTO chat's scheduled work, with the prompt, when it last ran, and what came of it, plus recently finished one-off wake-ups. The same rows as the panel.
+- **Instructions** — standing instructions (`systemPromptExtension`), then "What the CTO is told": the assembled prompt, folded.
 
 ## IPC surface
 
-Registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`, named in `apps/desktop/src/shared/ipc.ts`, reached from the renderer via `window.ade.cto.*`:
+Registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`, named in `apps/desktop/src/shared/ipc.ts`, reached as `window.ade.cto.*`. Every call that acts on the CTO takes a `pin` and routes to the CTO's home machine.
 
-- Thread + identity: `ctoEnsureSession`, `ctoGetState`, `ctoGetAttention`, `ctoUpdateIdentity`, `ctoListSessionLogs`, `ctoPreviewSystemPrompt`, `ctoRunProjectScan`.
-- Onboarding: `ctoGetOnboardingState`, `ctoCompleteOnboardingStep`. Those two are the only onboarding channels.
-- Memory: `ctoGetMemory`, `ctoUpdateMemory`, `ctoSearchMemory`.
-- Linear read + credentials/OAuth: `ctoGetLinearConnectionStatus`, `ctoGetLinearProjects`, `ctoGetLinearQuickView`, `ctoGetLinearIssuePickerData`, `ctoSearchLinearIssues`, `ctoGetLinearIssueComments`, `ctoSetLinearToken`, `ctoClearLinearToken`, `ctoStartLinearOAuth`, `ctoGetLinearOAuthSession`, `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`.
+- Thread and identity: `ctoGetState`, `ctoGetAttention`, `ctoEnsureSession`, `ctoUpdateIdentity`, `ctoPreviewSystemPrompt`, `ctoRefreshContext`, `ctoRunProjectScan`.
+- Memory: `ctoGetMemory`, `ctoUpdateNotes`, `ctoUpdateOpenWork`, and `ctoUpdateMemory` (the older name for writing the project notes, kept because iOS still calls it).
+- Onboarding markers: `ctoGetOnboardingState`, `ctoCompleteOnboardingStep`.
+- Linear reads, credentials and OAuth: `ctoGetLinearConnectionStatus`, `ctoGetLinearProjects`, `ctoGetLinearQuickView`, `ctoGetLinearIssuePickerData`, `ctoSearchLinearIssues`, `ctoGetLinearIssueComments`, `ctoGetLinearIssue`, `ctoCreateLinearIssue`, `ctoCreateLinearIssueComment`, `ctoCountLinearIssues`, `ctoGetLinearCustomViews`, `ctoGetLinearIssueCreateOptions`, `ctoListLinearProjectMilestones`, `ctoUploadLinearFile`, `ctoSetLinearToken`, `ctoClearLinearToken`, `ctoStartLinearOAuth`, `ctoGetLinearOAuthSession`, `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`.
 
-There are no worker, workflow, flow-policy, sync, or ingress IPC channels — they were removed with those subsystems.
+Scheduled work has its own generic channels: `ade.agentChat.scheduledWork.pauseItem` (`agentChat.setScheduledWorkItemPaused`) and `ade.agentChat.scheduledWork.runNow` (`agentChat.runScheduledWorkNow`).
+
+The action surface follows the same contract. `cto_state` exposes `refreshContext` and `cto_memory` exposes `getSnapshot`, `updateMemory`, `updateNotes`, `updateOpenWork` and `recordDiscovery`; both carry input contracts and the `cto_memory` domain is `allExcept`, so a method added there later is CTO-only by default. `recordDiscovery` and `getSnapshot` are the two deliberate exceptions. The hosted web client implements the CTO namespace method by method in `apps/desktop/src/renderer/webclient/adapter/misc.ts` (`getMemory`, `updateNotes`, `updateOpenWork`, `updateIdentity`, `refreshContext`, `previewSystemPrompt`).
 
 ## Sync command surface
 
-Registered by `registerCtoRemoteCommands` in `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` and consumed by the iOS client's `SyncService`:
+Registered by `registerCtoRemoteCommands` in `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` and consumed by the paired clients (iOS, hosted web):
 
 - `cto.ensureSession`, `cto.getState`, `cto.updateIdentity`.
-- `cto.getMemory` — returns the `CtoMemorySnapshot` (durable memory + thread state + today's daily log) the iOS Memory card decodes.
-- `cto.getAttention` — the mobile transport for the attention probe. `viewerAllowed`, strictly read-only (it delegates to `agentChatService.getCtoAttention()`, which never calls `ensureIdentitySession`, so a phone drawing a badge cannot materialize a primary lane and a chat session as a side effect), and advertised as an **optional** mobile capability so an older brain omitting it never flips a phone into `limited` mode.
-- `cto.getLinearConnectionStatus`, `cto.getLinearQuickView`, `cto.getLinearIssuePickerData`, `cto.searchLinearIssues`, `cto.getLinearIssueComments` — the Linear read surface.
-- `cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`, `cto.setLinearToken`, `cto.clearLinearToken` — the Linear **connection-management** surface the iOS Linear pane uses to connect (worker-bounce OAuth or API key), reconnect, and disconnect. All four are `viewerAllowed` and advertised as **optional** mobile capabilities (`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS` in `syncMobileCompatibility.ts`), so older brains omit them and the phone gates the affordances locally. See [Linear integration](../linear-integration/README.md#connecting-and-managing-from-mobile).
+- `cto.getHomeMachine`, `cto.setHomeMachine` — which machine owns this project's CTO.
+- `cto.getAttention` — the mobile attention probe. Read-only: it delegates to `getCtoAttention()` and never materializes a session.
+- `cto.getMemory` — the `CtoMemorySnapshot`. The v1-only fields (`threadState`, `dailyLog`, `dailyLogDate`, `projectBrief`, `projectThreads`, `projectItems`) are sent empty or null so older phones keep decoding.
+- `cto.updateNotes` — the notes write, with optional `baseHash`; not queueable. `cto.updateOpenWork` — the queueable open-work write. Both are used by the hosted web client.
+- `cto.refreshContext` — the hosted web client's "Refresh context".
+- `cto.previewSystemPrompt` — the prompt preview in the hosted web client's CTO settings.
+- The Linear surface: `cto.getLinearConnectionStatus`, `cto.getLinearQuickView`, `cto.getLinearIssuePickerData`, `cto.searchLinearIssues`, `cto.getLinearIssueComments`, `cto.getLinearIssue`, `cto.createLinearIssueComment`, `cto.createLinearIssue`, `cto.updateLinearIssue`, `cto.countLinearIssues`, `cto.getLinearCustomViews`, `cto.getLinearIssueCreateOptions`, `cto.listLinearProjectMilestones`, `cto.uploadLinearFile`, `cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`, `cto.setLinearToken`, `cto.clearLinearToken`.
 
-The legacy `cto.getBudgetSnapshot` and `cto.runLinearSyncNow` commands were removed.
-
-## Setup
-
-First run is the model picker. A project whose `modelPreferences` is null opens on `ModelPickCard` instead of the thread, the user picks a model that can steer a live turn, and the CTO is ready to chat. That pick is the entire setup: there is no wizard, no personality question, and nothing to re-run. Reasoning effort, Fast mode, and Linear all layer in afterward from Settings.
-
-`CtoOnboardingState` survives as an internal marker list only. `intro` records that the opening turn was sent and `memory_gardener` records the nightly job; neither is ever shown to the user, and the only surviving operations are `getOnboardingState` and `completeOnboardingStep`.
+`cto.getMemory` is the one snapshot command the iOS Memory card reads. `recentSessions` is always `[]` now, kept on the wire only so older clients decode.
 
 ## Gotchas and fragile areas
 
-- **The deterministic flush is the guarantee.** `flushIdentityContinuityDeterministic` runs synchronously and unconditionally before teardown and after compaction; the LLM summary upgrade is best-effort and may be skipped or fail without affecting correctness. Never make the durable write depend on the LLM path.
-- **The memory pass must stay off the hot path.** It runs from a `void` call after `done`, reads the transcript once, and makes one helper-model call. Never await it on a send, and never let it write when it failed: a checkpoint that cannot reach its model leaves the last good thread state exactly as it was.
-- **Near-duplicate refusal is lexical.** A changed decision that keeps most of its words reads as the old fact. The automatic pass is conservative on purpose and keeps the existing fact; the CTO updates it with `saveMemory({ replaces })`.
-- **Cursor and Droid emit no compaction signal.** For those runtimes there is no pre-compaction flush hook, so the turn-end daily journal plus the switch-time flush are what make any provider reset recoverable. Treat the daily log as the safety net there.
-- **Injected memory is authoritative.** The prompt tells the CTO never to claim memory it does not have injected — changes to injection caps or ordering in `ctoMemoryService`/`ctoStateService` directly change what the CTO "knows."
-- **Capability knowledge has two live sources.** `ctoPromptContent.buildCtoCapabilityManifest()` is generated from `createCtoOperatorTools()`. For service actions outside that curated tool set, the CTO prompt directs the model to the installed runtime's `ade actions list --text` catalog and bundled `ade-*` skills instead of a stale hard-coded inventory.
-- **One CTO session.** Do not create a second CTO session on a foreign lane; `ensureIdentitySession` rebinds the existing one. Session-creation paths that bypass it would fork the thread.
-- **The CTO does not write the repository.** A new git or file-changing tool on the CTO pack has to refuse in code, the way `assertCtoMayNotWriteRepository` does. A prompt line is not the gate. The work goes to `spawnChat`.
-- **Codex tool sets share one refresher.** Adding a third dynamic tool set means extending `refreshCodexDynamicTools`, not writing a second refresher: it clears the runtime's dynamic-tool map first, so a parallel refresher silently deletes the other set's tools.
-- **A pack defers a description, never a capability.** `applyCtoToolPackVisibility` must keep every key and every schema. If a change makes an unloaded pack's tools uncallable, the CTO stops being able to do things it is told it can do — and `loadCtoTools` becomes a gate rather than a hint. `ctoToolPacks.test.ts` asserts the no-add/no-drop property, and it is the gate the Claude ToolSearch flip rests on.
-- **`loadCtoTools` needs a live session to record anything.** `onToolPackLoaded` / `loadedToolPacks` are wired only when a `managed` session exists; the prompt-manifest preview has neither, so there `loadCtoTools` lists packs but has nowhere to record a load. That is correct — the preview runs no turns.
-- **The live state block must stay last.** The turn-context prefix truncates by keeping the tail. Anything appended after the live state block pushes the freshest, most perishable section into the part a budgeted send can cut.
-- **Never make the CTO's provider list a read of the composer's table.** `CTO_LIVE_REDIRECT_PROVIDERS` and `ACTIVE_TURN_DISPATCH_MODES` answer different questions. Deriving one from the other means a change to a send menu decides who may be the CTO.
-- **`recordDiscovery` is append-only on purpose.** There is no worker-side read tool, and the action policy inverts for `cto_memory` (`allExcept`) so a method added there later is CTO-only by omission. Adding a read tool beside it would hand every agent a view of the CTO's memory as a side effect of letting it contribute.
-- **The discovery cursor is a byte offset, not a line count.** Eviction rewinds it by exactly the bytes removed and clamps at zero, and a partial read window rewinds to the last newline. Both rules exist so the queue can re-deliver but never skip; a line-counting cursor breaks both.
+- **A refresh never runs mid-turn.** `refreshCtoProviderThread` refuses while the session is active or the runtime holds work, and records `ctoRefreshPending`; the next settled turn runs it. Tearing a runtime down under a live turn loses the turn.
+- **A forgotten pointer is the whole trick.** A teardown reason alone does not stop a provider resuming: Claude reads its persisted SDK id, Codex its `threadId`, Cursor its SDK agent. `refreshCtoProviderThread` clears every field `persistedPointerState` knows, writes both metadata copies, and uses `claudeFreshThreadPending` for Claude. Codex refuses to start a fresh thread while a `threadId` exists, so the clear must come first.
+- **No full replay for the CTO.** A Cursor rotation normally stages the whole transcript; the CTO's refresh deliberately does not. It carries the notes, open work, live state and 40 messages.
+- **The live state block must stay last in the volatile half.** That prefix is truncated by keeping the tail. Anything appended after the live state pushes the freshest section into the part a budgeted send can cut.
+- **The static block is staged once.** Re-sending ~21 KB every turn is what once grew a real CTO thread from 46k to 237k input tokens and tripped auto-compaction. Re-stage it only for a new provider thread or when its content key changes.
+- **Occupancy 55 is a deliberate choice, not a ceiling.** The CTO's turns are short and its memory is injected, so a small provider thread is fast and cheap, and a fresh one loses nothing the notes and the 40-message tail do not carry. Raising the number trades that for thread age; change it with measurements, not by feel.
+- **The notes caps are the point.** A `remember` past the cap is refused, not truncated, so the CTO has to merge or forget. Lowering a cap silently makes the CTO look forgetful; raising it grows every turn.
+- **`replaces` and `forget` must match exactly one line.** Zero or several matches are refused with the candidate lines. A substring that is not unique is a question, not a write.
+- **User notes are machine-wide.** `<ADE home>/cto/USER.md` is shared by every project on that machine. A project fact written there leaks into other projects' CTOs.
+- **`readHistory` reads ended sessions too.** It is the way back across a fresh context or an old thread. Do not scope it to the current session; that would make a fresh context look like amnesia.
+- **The fallback loop is bounded per message.** Each model is tried at most once for the same message, and only a completed turn clears the set. A new failure cause must go through the same gate.
+- **The mid-task wrapper is for the person only.** `sentByUser` is the one signal; inferring "a person" from metadata would wrap every agent's `ade chat send`. A resend reads the display text, never the wrapper.
+- **A quick reply is committed at once.** `postCtoInterimReply` flushes the provider's buffer before and after its event; left in the 100 ms buffer, the provider's next delta could join it.
+- **Overflow is not a fallback.** A context overflow gets a fresh provider thread, not a smaller model; the two paths have different symptoms and different fixes.
+- **v2 preferences live in `preferences.json` because older builds rewrite `identity.yaml` from known keys.** A build from before `avatar`, `personality` and `fallbackModels` existed rebuilds the record (file and synced row) from the keys it knows, with the same version and `updatedAt`, which silently deleted them. Do not move them back into the record, and put any new field an older build would strip in the sidecar too.
+- **The avatar must stay compositor-cheap.** Animate transform and opacity only; use step timing for the infinite idle loops; pause when off screen or the window is hidden; draw still at 24 px and under; never listen for `animationiteration`; honour `prefers-reduced-motion` by dropping the motion but keeping the eye state.
+- **Panel reads go to the home machine.** Every panel, memory and routine call carries `pin`; a null pin silently talks to the tab's machine, which is the wrong one whenever the CTO's home is elsewhere.
+- **The CTO does not write the repository.** Git mutations and file writes are refused in code, and work goes through `spawnChat` on its own lane. A prompt line is not the gate.
+
+- **The CTO's tool server needs its bearer header, as a plain record.** The HTTP MCP lease (`ensureHttpMcpLeases`) answers 401 without `Authorization: Bearer …`, and the lease hands the header out in Droid's array shape. `leaseHeaderRecord` turns it into the `{ name: value }` record that Copilot, Pi, Muse, OpenCode and Cursor take. Passed as an array, Copilot refused the whole config and dropped the turn silently; OpenCode and Cursor, given no header, reached none of the CTO's tools.
+- **Every provider's turn must consume the staged context.** `consumePendingTurnContextPrefix` is what carries the doctrine, notes, open work, live state and tail. A provider path that skips it runs a CTO with no memory; Copilot's did until 2026-11-14.
+- **Quick replies depend on the running tool letting go.** A steered message is read at the next tool boundary. Claude moves a running shell (`Bash`, or `PowerShell` on Windows) to the background when a person steers; Codex reads the steer while its command runs. Codex confirms a steer by matching its echo against the text ADE sent, so a wrapped CTO steer records that text as `providerText`.
 
 ## Cross-links
 
-- [`../agents/identity-and-personas.md`](../agents/identity-and-personas.md) — the persistent-identity model, the immutable doctrine, and memory-backed reconstruction.
-- [`../linear-integration/README.md`](../linear-integration/README.md) — the canonical Linear doc: connection model, read surface, developer lane/PR flow, live-status round-trip, and the `ade linear` bridge.
-- [`../chat/README.md`](../chat/README.md) — the underlying agent-chat session the CTO thread is built on.
-- [`../automations/README.md`](../automations/README.md) — event-driven automation rules (independent of the CTO; the CTO no longer owns any intake).
-- [`../capture-gesture/README.md`](../capture-gesture/README.md) — the global screenshot chord, whose target is always the CTO composer.
+- [Identity and Personas](../agents/identity-and-personas.md) — the identity record, the prompt layers and the memory model.
+- [Chat](../chat/README.md) — the agent-chat session the CTO thread is built on.
+- [Tool system](../chat/tool-system.md) — tool packs, registration and the operator tools.
+- [Automations](../automations/README.md) — event-driven rules, separate from the CTO's own scheduled work.
+- [Linear integration](../linear-integration/README.md) — the connection model and the read/write surface the CTO tools use.
+- [Remote commands](../sync-and-multi-device/remote-commands.md) — the paired-client command surface.
+- [Capture gesture](../capture-gesture/README.md) — the global screenshot chord, whose target is the CTO composer.
+- [Notices](../../design/notices.md) and [Visual language](../../design/visual-language.md) — the banner/toast/dialog primitives and the surface kit the page and settings use.

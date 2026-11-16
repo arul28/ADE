@@ -201,10 +201,11 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "previewCrossMachineHandoff", "resolveSmartLinkPreview", "resolveSmartLinkImage", "resolveSourceFavicons",
       "readTranscript", "readTranscriptPage", "suggestLaneNameFromPrompt",
       "generateAutoLaneIdentity", "listDeletedChats", "getDeletedChatDetail", "getDeviceSources",
+      "getRootFullAccess",
     ],
     write: [
       "archiveSession", "cancelDispatchedSteer", "cancelSteer", "createSession", "deleteSession",
-      "reopenDeletedChat", "removeDeletedChats",
+      "reopenDeletedChat", "removeDeletedChats", "setRootFullAccess",
       "dispatchSteer", "editSteer", "ensureCtoSession", "moveSteer", "setCodexGoal",
       "setCodexGoalStatus", "clearCodexGoal", "startCodexRealtime", "stopCodexRealtime",
       "resetCodexMemory", "terminateCodexBackgroundTerminal", "interrupt",
@@ -227,7 +228,8 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "dismissPendingInput", "reloadClaudePlugins", "rewindFiles", "saveTempAttachment",
       "copyTempAttachment", "createAttachmentUpload", "sendMessage", "setClaudeOutputStyle",
       "setParallelLaunchState", "cancelScheduledWork", "resumeUsageLimitNow",
-      "continueUsageLimitOnAlternate", "switchAccount", "setScheduledWorkPaused", "steer",
+      "continueUsageLimitOnAlternate", "switchAccount", "setScheduledWorkPaused",
+      "setScheduledWorkItemPaused", "runScheduledWorkNow", "steer",
       "unarchiveSession", "updateSession", "regenerateSessionMetadata", "setSpawnKind", "setParent",
       "dismissSubagentTakeoverPrompt", "warmupModel", "mcpAppRequest", "revokeMcpAppGrant",
     ],
@@ -284,11 +286,12 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   cto_state: {
     live: "all",
     read: [
-      "getAttention", "getIdentity", "getOnboardingState", "getSessionLogs", "getSnapshot",
-      "getThreadHealth", "previewSystemPrompt",
+      "getAccountCopyStatus", "getAttention", "getIdentity", "getOnboardingState", "getSnapshot", "previewSystemPrompt",
+      // v1 compatibility shims (adeActions/registry.ts).
+      "getSessionLogs", "getThreadHealth",
     ],
     write: [
-      "completeOnboardingStep", "runProjectScan", "startFreshSession", "updateIdentity",
+      "adoptAccountCopy", "completeOnboardingStep", "refreshContext", "runProjectScan", "updateIdentity",
     ],
   },
   cto_memory: {
@@ -296,7 +299,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getSnapshot", "searchMemory",
     ],
     write: [
-      "updateMemory", "recordDiscovery",
+      "updateMemory", "updateNotes", "updateOpenWork", "recordDiscovery",
     ],
   },
   session: {

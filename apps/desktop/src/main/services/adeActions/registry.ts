@@ -192,8 +192,8 @@ import type {
   CtoAttentionState,
   CtoRunProjectScanResult,
   CursorCloudServiceTier,
-  CtoStartFreshSessionResult,
-  CtoThreadHealth,
+  CtoRefreshContextResult,
+  CtoUpdateNotesArgs,
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
@@ -251,6 +251,7 @@ import { machineStatsReader } from "../machineStats/machineStatsService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import type { CtoMemoryTags } from "../cto/ctoMemoryService";
+import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { getSourceFaviconService, type ResolveSourceFaviconsArgs } from "../chat/sourceFaviconService";
 import { resolveSmartLinkImage } from "../chat/smartLinkPreviewService";
@@ -1570,6 +1571,26 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       });
     };
   }
+  if (typeof base.setScheduledWorkItemPaused === "function") {
+    service.setScheduledWorkItemPaused = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.setScheduledWorkItemPaused");
+      if (typeof record.paused !== "boolean") throw new Error("paused must be a boolean.");
+      return agentChatService.setScheduledWorkItemPaused({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+        scheduleId: requireNonEmptyString(record.scheduleId, "scheduleId"),
+        paused: record.paused,
+      });
+    };
+  }
+  if (typeof base.runScheduledWorkNow === "function") {
+    service.runScheduledWorkNow = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.runScheduledWorkNow");
+      return agentChatService.runScheduledWorkNow({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+        scheduleId: requireNonEmptyString(record.scheduleId, "scheduleId"),
+      });
+    };
+  }
   if (typeof base.resumeUsageLimitNow === "function") {
     service.resumeUsageLimitNow = (args?: unknown) => {
       const record = readObjectActionArg(args, "chat.resumeUsageLimitNow");
@@ -1672,43 +1693,37 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
       (await runtime.agentChatService?.getCtoAttention())
       ?? { status: "unknown", awaitingInput: false, since: null },
     /**
-     * Read-only: can the CTO thread take a turn, and should it be rotated?
-     *
-     * Open to every role for the same reason `getAttention` is — it answers a
-     * question about a badge, creates nothing, and returns no content.
+     * Give the CTO a fresh provider thread; the ADE session and everything
+     * the CTO remembers stay. CTO-only (see `ADE_ACTION_CTO_ONLY.cto_state`).
      */
-    getThreadHealth: async (): Promise<CtoThreadHealth> =>
-      (await runtime.agentChatService?.getCtoThreadHealth())
-      ?? {
-        sessionId: null,
-        canTakeTurn: true,
-        blockedReason: null,
-        lastTurnFailure: null,
-        context: null,
-        rotationAdvised: false,
-      },
-    /**
-     * Retire the CTO thread and start a clean one.
-     *
-     * CTO-only (see `ADE_ACTION_CTO_ONLY.cto_state`): it ends the conversation
-     * every other surface is talking to. Nothing the CTO remembers is touched —
-     * identity, memory, the daily log and project state all carry over, and the
-     * outgoing thread is distilled into memory before it is retired.
-     */
-    startFreshSession: async (): Promise<CtoStartFreshSessionResult> => {
+    refreshContext: async (): Promise<CtoRefreshContextResult> => {
       const agentChatService = runtime.agentChatService;
       if (!agentChatService) throw new Error("The chat service is not available on this machine.");
-      await runtime.laneService?.ensurePrimaryLane();
-      const lanes = (await runtime.laneService?.list()) ?? [];
-      const laneId = lanes.find((lane) => lane.laneType === "primary")?.id;
-      if (!laneId) throw new Error("No primary lane is available to host the CTO chat session.");
-      const result = await agentChatService.startFreshIdentitySession({ identityKey: "cto", laneId });
-      return {
-        sessionId: result.session.id,
-        previousSessionId: result.previousSessionId,
-        handoff: result.handoff,
-      };
+      return agentChatService.refreshCtoContext();
     },
+    /**
+     * This machine is the CTO's home now: take the CTO from its account copy
+     * when another machine wrote it last. Person-only (`ADE_ACTION_USER_ONLY`).
+     */
+    adoptAccountCopy: async (args?: CtoAdoptAccountCopyArgs): Promise<CtoAdoptAccountCopyResult> => {
+      const copy = runtime.ctoAccountCopyService;
+      if (!copy) return { restored: false, fromName: null, savedAt: null };
+      return await copy.adopt({ home: args?.home });
+    },
+    getAccountCopyStatus: async (): Promise<CtoAccountCopyStatus> =>
+      runtime.ctoAccountCopyService?.status()
+      ?? { available: false, savedAt: null, ownerName: null, ownerIsThisMachine: false },
+    // Compatibility shim: v1's thread health. A refresh is automatic now, so the thread always reads as healthy.
+    getThreadHealth: async () => ({
+      sessionId: null,
+      canTakeTurn: true,
+      blockedReason: null,
+      lastTurnFailure: null,
+      context: null,
+      rotationAdvised: false,
+    }),
+    // Compatibility shim: v1's session log is gone; the conversation is `readHistory`.
+    getSessionLogs: (_limit?: unknown) => [],
   };
 }
 
@@ -1717,31 +1732,71 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
   if (!ctoMemoryService) return null;
   return {
     getSnapshot: () => ctoMemoryService.getSnapshot(),
+    /** The older name for writing the project notes; iOS still calls it. */
     updateMemory: (args?: { memory?: string }) => {
-      // A missing field must not silently blank the durable memory file; only
-      // an explicit string (including a deliberate "") is a valid rewrite —
-      // and clearing writes archive the replaced content.
+      // A missing field must not silently blank the notes; only an explicit
+      // string (including a deliberate "") is a valid rewrite.
       if (typeof args?.memory !== "string") {
         throw new Error("updateMemory requires a string `memory` field.");
       }
-      ctoMemoryService.writeMemory(args.memory);
+      ctoMemoryService.writeNotes("project", args.memory);
       return ctoMemoryService.getSnapshot();
     },
-    searchMemory: (args?: { query?: string; limit?: number; tags?: CtoMemoryTags }) => {
-      const query = args?.query ?? "";
-      const rows = ctoMemoryService.searchMemory(query, {
-        limit: args?.limit ?? 20,
-        ...(args?.tags ? { tags: args.tags } : {}),
+    updateNotes: (args?: Partial<CtoUpdateNotesArgs>) => {
+      if (args?.scope !== "project" && args?.scope !== "user") {
+        throw new Error("updateNotes requires `scope`: \"project\" or \"user\".");
+      }
+      if (typeof args.text !== "string") throw new Error("updateNotes requires a string `text` field.");
+      ctoMemoryService.writeNotes(args.scope, args.text, {
+        baseHash: typeof args.baseHash === "string" ? args.baseHash : null,
       });
-      return { query, rows };
+      return ctoMemoryService.getSnapshot();
+    },
+    updateOpenWork: (args?: Partial<{ op: string; text: string; id: string }>) => {
+      const op = args?.op;
+      if (op === "add") {
+        if (typeof args?.text !== "string" || !args.text.trim()) throw new Error("updateOpenWork add requires `text`.");
+        ctoMemoryService.updateOpenWork({ op, text: args.text });
+      } else if (op === "complete" || op === "reopen" || op === "remove") {
+        if (typeof args?.id !== "string" || !args.id.trim()) throw new Error(`updateOpenWork ${op} requires \`id\`.`);
+        ctoMemoryService.updateOpenWork({ op, id: args.id });
+      } else {
+        throw new Error("updateOpenWork requires `op`: add, complete, reopen or remove.");
+      }
+      return ctoMemoryService.getSnapshot();
+    },
+    // Compatibility shim: v1's search, in its old `{ query, rows }` shape, over the notes, open work and the conversation.
+    searchMemory: async (args?: { query?: string; limit?: number; tags?: CtoMemoryTags }) => {
+      const query = typeof args?.query === "string" ? args.query : "";
+      const limit = Math.max(1, Math.min(50, Math.floor(typeof args?.limit === "number" && Number.isFinite(args.limit) ? args.limit : 20)));
+      const words = query.toLowerCase().split(/\s+/).filter((word) => word.length > 0);
+      const matches = (text: string) => words.length > 0 && words.every((word) => text.toLowerCase().includes(word));
+      const snapshot = ctoMemoryService.getSnapshot();
+      type Row = { file: "MEMORY.md" | "daily" | "context"; date: string | null; line: number; snippet: string; id?: string };
+      const rows: Row[] = [];
+      const lineRows = (file: Row["file"], content: string | undefined) => {
+        (content ?? "").split(/\r?\n/).forEach((line, index) => {
+          if (matches(line)) rows.push({ file, date: null, line: index + 1, snippet: line.trim() });
+        });
+      };
+      lineRows("MEMORY.md", snapshot.memory);
+      lineRows("context", snapshot.userNotes);
+      (snapshot.openWork ?? []).forEach((item, index) => {
+        if (matches(item.text)) rows.push({ file: "context", date: item.doneAt ?? null, line: index + 1, snippet: item.text, id: item.id });
+      });
+      if (rows.length < limit && words.length && runtime.agentChatService?.readCtoHistory) {
+        const page = await runtime.agentChatService.readCtoHistory({ query, limit }).catch(() => null);
+        for (const entry of page?.entries ?? []) {
+          if (entry.match) rows.push({ file: "daily", date: entry.at.slice(0, 10) || null, line: 0, snippet: entry.text });
+        }
+      }
+      return { query, rows: rows.slice(0, limit) };
     },
     /**
-     * One of the three non-CTO methods on this domain — see the `cto_memory`
+     * One of the two non-CTO methods on this domain — see the `cto_memory`
      * rule in `actionPolicy.ts`, which is `allExcept` so everything else here
-     * is CTO-only by omission. Append-only: it cannot read or modify durable
-     * memory, so a worker handing up a finding gains no view of what the CTO
-     * already knows (the other two, `getSnapshot` and `searchMemory`, can read
-     * it; see that rule for why they stay open).
+     * is CTO-only by omission. Append-only: it cannot read or change the
+     * notes, so a worker handing up a finding gains no view of them.
      */
     recordDiscovery: (args?: { fact?: string; tags?: CtoMemoryTags }) => {
       if (typeof args?.fact !== "string" || !args.fact.trim().length) {

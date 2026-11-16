@@ -5003,6 +5003,20 @@ func eventCard(
       if let continuity = envelope.continuityNotice {
         return workContinuityNoticeCard(continuity, envelope: envelope)
       }
+      // The CTO got a fresh provider thread: one hairline, "Fresh context".
+      if kind == AgentChatNoticeKind.ctoContextRefreshed.rawValue {
+        return WorkEventCardModel(
+          id: envelope.id,
+          kind: "ctoFresh",
+          title: "Fresh context",
+          icon: "sparkles",
+          tint: .secondary,
+          timestamp: envelope.timestamp,
+          body: nil,
+          bullets: [],
+          metadata: []
+        )
+      }
       // A Claude turn ADE is running once more: the message is the whole line.
       if kind == AgentChatNoticeKind.claudeKeychainRetry.rawValue {
         return WorkEventCardModel(
@@ -5067,6 +5081,22 @@ func eventCard(
           body: nil,
           bullets: [],
           metadata: workResetCreditAccountId(from: detail).map { [$0] } ?? []
+        )
+      }
+      // ── Claude's Full access as root ──
+      // The way out (allow it for the machine) rides the notice, as the reset
+      // credit's does.
+      if kind == AgentChatNoticeKind.claudeRootFullAccess.rawValue {
+        return WorkEventCardModel(
+          id: envelope.id,
+          kind: "rootFullAccess",
+          title: nonEmptyWorkTimelineText(message) ?? "Claude doesn't allow Full access as root here.",
+          icon: "exclamationmark.shield",
+          tint: .warning,
+          timestamp: envelope.timestamp,
+          body: nil,
+          bullets: [],
+          metadata: []
         )
       }
       // ── Host sleep: ONE chip per sleep ──

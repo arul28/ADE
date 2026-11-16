@@ -71,12 +71,27 @@ export function sameTurnFolds(left: readonly TurnFold[], right: readonly TurnFol
   return true;
 }
 
-/** Folds for the rows the timeline would draw (after presentation filtering). */
+/**
+ * Folds for the rows the timeline would draw (after presentation filtering).
+ * `keepVisible` marks rows a surface always shows under the fold row (the CTO
+ * thread's state chips); without it every row keeps its own role.
+ */
 export function deriveChatTranscriptTurnFolds(
   rows: readonly ChatTranscriptGroupedEnvelope[],
   snapshots: ReadonlyMap<string, TurnEndSnapshot>,
+  keepVisible?: (row: ChatTranscriptGroupedEnvelope) => boolean,
 ): TurnFold[] {
-  return deriveTurnFolds(rows.map(describeTurnFoldRow), (turnId) => snapshots.get(turnId));
+  const described = keepVisible
+    ? rows.map((row) => {
+      const next = describeTurnFoldRow(row);
+      if (keepVisible(row)) {
+        next.role = "keep";
+        delete next.trivial;
+      }
+      return next;
+    })
+    : rows.map(describeTurnFoldRow);
+  return deriveTurnFolds(described, (turnId) => snapshots.get(turnId));
 }
 
 /**

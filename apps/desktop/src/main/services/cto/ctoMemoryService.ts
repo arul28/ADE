@@ -1,193 +1,96 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { CtoMemorySearchRow, CtoMemorySnapshot } from "../../../shared/types";
-import { clipText, nowIso, redactSecrets, writeTextAtomic } from "../shared/utils";
+import { createHash, randomUUID } from "node:crypto";
 import {
-  createProjectContextStore,
-  FACT_TAG_SUFFIX_PATTERN,
-  PROJECT_CONTEXT_TAG_KEYS,
-  type ProjectContextAccountPort,
-  type ProjectContextItem,
-  type ProjectContextKind,
-} from "./projectContextStore";
-import type { GardeningFact, GardeningPlan } from "./ctoMemoryCapture";
+  CTO_NOTES_CHANGED_ERROR,
+  CTO_OPEN_WORK_MAX_DONE,
+  CTO_OPEN_WORK_MAX_OPEN,
+  CTO_PROJECT_NOTES_MAX_BYTES,
+  CTO_USER_NOTES_MAX_BYTES,
+  type CtoMemorySnapshot,
+  type CtoNotesScope,
+  type CtoOpenWorkItem,
+  type CtoUpdateOpenWorkArgs,
+} from "../../../shared/types/cto";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { clipText, nowIso, redactSecrets, writeTextAtomic } from "../shared/utils";
+import { resolveAdeHomeForOwnership } from "../chat/chatRuntimeOwnership";
 
 type Logger = {
   warn: (message: string, meta?: Record<string, unknown>) => void;
+  info?: (message: string, meta?: Record<string, unknown>) => void;
 };
 
 type CtoMemoryServiceArgs = {
   /** The project's `.ade` directory (same value ctoStateService receives). */
   adeDir: string;
   /**
-   * Account mirror for `ctx.*` rows. Null when this checkout has no git remote.
-   * The desktop process can omit it: the brain owns the upload, and both
-   * processes read the same atomic file.
+   * Where the machine-wide notes about the person live (`USER.md`). Defaults to
+   * `<ADE home>/cto`, shared by the CTO of every project on this machine.
    */
-  account?: ProjectContextAccountPort | null;
+  userNotesDir?: string | null;
   logger?: Logger | null;
 };
 
-// Disk copies are never truncated; only the injected copies are capped so the
-// reconstruction context stays within a sane token budget (~4 chars/token).
-//
-// These came down from 8000/4000/4000 when the live state block joined the same
-// reconstruction context. Measured on this project the three memory files hold
-// 1275 + 3456 + 405 chars, so the old caps were never binding — the reduction
-// costs nothing today and hands the live block its 6000 without growing the
-// per-turn prefix at all: 10000 here plus `CTO_LIVE_STATE_MAX_CHARS` is the
-// same 16000 the three sections used to claim on their own.
-const MEMORY_INJECT_MAX_CHARS = 4000;
-const THREAD_STATE_INJECT_MAX_CHARS = 3000;
-const DAILY_INJECT_MAX_CHARS = 3000;
-const GARDENING_JOURNAL_PREFIX = "Nightly memory gardening:";
+/*
+ * The CTO's memory is two short notes files and an open-work list, all
+ * injected on every turn:
+ *
+ * - `.ade/cto/MEMORY.md`: facts about this project, one `- ` line each.
+ * - `<ADE home>/cto/USER.md`: facts about the person, for every project.
+ * - `.ade/cto/open-work.json`: what the CTO has started and not finished.
+ *
+ * The notes are capped in bytes so the per-turn prefix stays small and the
+ * CTO has to keep them tidy: a `remember` past the cap is refused, and the
+ * CTO merges or forgets notes to make room. Nothing here runs a model.
+ *
+ * `discoveries.md` is a separate channel: any agent may append a finding, and
+ * the CTO drains the new ones on each child report and decides what becomes a
+ * note.
+ */
 
-// Worker (non-CTO) chats receive a much thinner slice: only the facts tagged
-// with their own lane plus the rolling thread state. It rides along with the
-// lane execution directive, so it is delivered once per lane change, not once
-// per turn.
-const LANE_FACTS_INJECT_MAX_CHARS = 1500;
-const LANE_THREAD_STATE_INJECT_MAX_CHARS = 1200;
-const LANE_THREAD_STATE_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+const NOTE_MAX_CHARS = 400;
+const OPEN_WORK_TEXT_MAX_CHARS = 300;
+const OPEN_WORK_OUTCOME_MAX_CHARS = 120;
+/** Done items shown in the injected list, newest first. */
+const OPEN_WORK_INJECTED_DONE = 5;
+/** A new note this close to an existing one is the same note said again. */
+const NEAR_DUPLICATE_SIMILARITY = 0.8;
+/** How many candidate lines an ambiguous `replaces`/`forget` lists back. */
+const MATCH_CANDIDATES_SHOWN = 8;
 
-// A single discovery read-out is bounded the same way: the CTO takes it on a
-// child report line, which is a one-line channel by design.
+// The discovery queue. Any agent can append to it, so it carries its own cap
+// and an append-only archive; the CTO drains it through a byte cursor.
 const DISCOVERY_READ_MAX_CHARS = 1200;
 const DISCOVERY_FACT_MAX_CHARS = 400;
-
-// Hard cap on the on-disk MEMORY.md so a runaway `saveMemory` loop cannot grow
-// the file without bound. Oldest facts are dropped first when the cap is hit.
-const MEMORY_FILE_MAX_BYTES = 64 * 1024;
-
-// The same discipline for discoveries.md, and it needs it MORE: MEMORY.md is
-// written only by the CTO's own `saveMemory`, while any agent can append a
-// discovery — through the universal tool, `ade actions run
-// cto_memory.recordDiscovery`, or an automation `ade-action` step — and the
-// only reaper is the nightly gardener, which is a prompt, not a code path. A
-// worker stuck in a retry loop files one per turn. The cap is larger than
-// MEMORY.md's because this file is a drain queue, not a standing document.
 const DISCOVERIES_FILE_MAX_BYTES = 128 * 1024;
-
-// One read-out pulls at most this many bytes off the queue. The cursor then
-// advances by exactly what was read, so a backlog bigger than the window is
-// drained across several reports rather than skipped — and no single child
-// report reads an unbounded file into memory.
 const DISCOVERY_READ_MAX_BYTES = 64 * 1024;
-
-// Per-turn journal line caps (`HH:MM — user → outcome`).
-const JOURNAL_USER_MAX_CHARS = 160;
-const JOURNAL_OUTCOME_MAX_CHARS = 200;
-
-// A single fact may not dominate MEMORY.md — clip before the byte-cap pass so
-// one runaway `saveMemory` payload cannot evict every other fact.
-const MEMORY_FACT_MAX_CHARS = 2000;
-
-// One automatic capture files at most this many facts. A summarizer that
-// suddenly returns twenty "facts" is summarizing, not remembering.
-const CAPTURE_MAX_FACTS = 5;
-const CAPTURE_FACT_MAX_CHARS = 300;
-
-/** The kinds a saved or captured fact may carry. */
-export const CTO_MEMORY_FACT_KINDS = ["fact", "decision", "convention", "trap", "environment", "preference"] as const;
-export type CtoMemoryFactKind = (typeof CTO_MEMORY_FACT_KINDS)[number];
-
-/**
- * Where each kind lands in the store's closed list. Exhaustive, so a new kind
- * cannot ship without one. A user preference is a convention about working
- * together; `pointer` is reserved for notes-file imports.
- */
-const STORE_KIND: Record<CtoMemoryFactKind, ProjectContextKind> = {
-  fact: "fact",
-  decision: "decision",
-  convention: "convention",
-  trap: "trap",
-  environment: "environment",
-  preference: "convention",
-};
-
-function storeKindFor(kind: CtoMemoryFactKind | null | undefined): ProjectContextKind {
-  return kind ? STORE_KIND[kind] : "fact";
-}
-
-const MEMORY_HEADER = "# CTO Durable Memory";
-const MEMORY_FACTS_HEADING = "## Facts";
-const THREAD_STATE_HEADER = "# CTO Thread State";
-const DISCOVERIES_HEADER = "# Worker discoveries (unreviewed — the CTO distills these into facts)";
+const DISCOVERIES_HEADER = "# Worker discoveries (unreviewed — the CTO decides which become notes)";
 const DISCOVERIES_HEADER_BLOCK = `${DISCOVERIES_HEADER}\n\n`;
 
-function readFileOrEmpty(filePath: string): string {
-  try {
-    return fs.readFileSync(filePath, "utf8");
-  } catch {
-    return "";
-  }
-}
+/** Marker that the one-time reset from the v1 memory files has run. */
+const V2_MIGRATION_MARKER = ".v2-migrated";
+const LEGACY_DIR = "legacy-v1";
+/** v1 files and folders that are moved into `legacy-v1/`, never deleted. */
+const LEGACY_ENTRIES = [
+  "context-store.json",
+  "thread-state.md",
+  "daily",
+  "memory-archive.md",
+  "CURRENT.md",
+  "sessions.jsonl",
+];
 
-function statMtimeIso(filePath: string): string | null {
-  try {
-    return new Date(fs.statSync(filePath).mtimeMs).toISOString();
-  } catch {
-    return null;
-  }
-}
+/* ── Tags (discoveries) ── */
 
-/** Local calendar date as `YYYY-MM-DD` — used for daily log file names. */
-function todayStamp(now = new Date()): string {
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function localHourMinute(now = new Date()): string {
-  const hh = String(now.getHours()).padStart(2, "0");
-  const mm = String(now.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
-}
-
-/** Keep the newest content (tail) when a body exceeds the cap. */
-function truncateKeepTail(body: string, maxChars: number): string {
-  if (body.length <= maxChars) return body;
-  return `…(older content truncated)\n${body.slice(body.length - maxChars)}`;
-}
-
-/** "12 min ago", "3 h ago", "2 days ago"; null for a missing or unreadable time. */
-function describeThreadStateAge(updatedAt: string | null, nowMs = Date.now()): string | null {
-  const epoch = updatedAt ? Date.parse(updatedAt) : Number.NaN;
-  if (!Number.isFinite(epoch)) return null;
-  const minutes = Math.max(0, Math.round((nowMs - epoch) / 60_000));
-  if (minutes < 1) return "just now";
-  if (minutes < 90) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours} h ago`;
-  return `${Math.round(hours / 24)} days ago`;
-}
-
-/** Keep the leading content (head) when a body exceeds the cap. */
-function truncateKeepHead(body: string, maxChars: number): string {
-  if (body.length <= maxChars) return body;
-  return `${body.slice(0, maxChars)}\n…(truncated)`;
-}
-
-/* ── Fact tags ── */
-
-/**
- * The closed tag vocabulary. Facts carry a trailing `[lane:x pr:123 path:a/b
- * topic:t]` suffix so a later reader can ask "what do we know about THIS lane"
- * without a database. Untagged facts predate this and stay valid everywhere —
- * nothing filters them out, they simply never satisfy a tag-scoped query.
- */
-export const CTO_MEMORY_TAG_KEYS = PROJECT_CONTEXT_TAG_KEYS;
-
+export const CTO_MEMORY_TAG_KEYS = ["lane", "pr", "path", "topic"] as const;
 export type CtoMemoryTagKey = (typeof CTO_MEMORY_TAG_KEYS)[number];
-
 export type CtoMemoryTags = Partial<Record<CtoMemoryTagKey, string | number | null>>;
 
-/**
- * Tag values are whitespace-free by construction so the suffix stays parseable
- * with a single regex — a topic of "lane timeline" is stored as
- * `topic:lane-timeline`. Empty values are dropped rather than written blank.
- */
+const TAG_SUFFIX_PATTERN = new RegExp(
+  `\\[((?:${CTO_MEMORY_TAG_KEYS.join("|")}):[^\\]\\s]+(?:\\s+(?:${CTO_MEMORY_TAG_KEYS.join("|")}):[^\\]\\s]+)*)\\]\\s*$`,
+);
+
 function normalizeTagValue(value: string | number | null | undefined): string | null {
   if (value == null) return null;
   const text = String(value).replace(/[\s\]]+/g, "-").replace(/^-+|-+$/g, "").trim();
@@ -206,75 +109,156 @@ export function formatMemoryTagSuffix(tags?: CtoMemoryTags | null): string {
   return parts.length ? ` [${parts.join(" ")}]` : "";
 }
 
-const MEMORY_TAG_SUFFIX_PATTERN = FACT_TAG_SUFFIX_PATTERN;
+/* ── Near-duplicate check ── */
 
-/** Parsed tags for one stored line. Untagged lines return an empty record. */
-export function parseMemoryTags(line: string): Record<CtoMemoryTagKey, string | undefined> {
-  const parsed: Record<string, string | undefined> = {};
-  const match = MEMORY_TAG_SUFFIX_PATTERN.exec(line.trimEnd());
-  if (!match) return parsed as Record<CtoMemoryTagKey, string | undefined>;
-  for (const token of match[1].split(/\s+/)) {
-    const separator = token.indexOf(":");
-    if (separator <= 0) continue;
-    const key = token.slice(0, separator) as CtoMemoryTagKey;
-    const value = token.slice(separator + 1);
-    if (!CTO_MEMORY_TAG_KEYS.includes(key) || !value.length) continue;
-    // First wins: a hand-edited line with a repeated key keeps its leading value.
-    if (parsed[key] === undefined) parsed[key] = value;
+const SIMILARITY_STOPWORDS = new Set([
+  "the", "and", "for", "are", "was", "were", "with", "that", "this", "from", "into", "its", "has", "have",
+]);
+const NEGATION_WORDS = new Set(["not", "no", "never", "don't", "dont", "doesn't", "isn't", "can't", "cannot", "won't", "avoid", "without", "stop"]);
+
+function isNegated(text: string): boolean {
+  return text.replace(/[‘’ʼ]/g, "'").toLowerCase().split(/[^a-z']+/).some((word) => NEGATION_WORDS.has(word));
+}
+
+function similarityTerms(text: string): Set<string> {
+  const terms = new Set<string>();
+  for (const part of text.replace(TAG_SUFFIX_PATTERN, "").toLowerCase().split(/[^a-z0-9]+/)) {
+    // Numbers count however short: "Node 22" and "Node 20" are different notes.
+    const numeric = /\d/.test(part);
+    if (!part || (!numeric && (part.length < 3 || SIMILARITY_STOPWORDS.has(part)))) continue;
+    terms.add(part);
   }
-  return parsed as Record<CtoMemoryTagKey, string | undefined>;
+  return terms;
 }
 
-function contextItemMatches(item: ProjectContextItem, filter: CtoMemoryTags): boolean {
-  for (const key of CTO_MEMORY_TAG_KEYS) {
-    const wanted = normalizeTagValue(filter[key]);
-    if (!wanted) continue;
-    if ((item.tags[key] ?? "").toLowerCase() !== wanted.toLowerCase()) return false;
+/**
+ * Overlap of two notes' content words, 0..1 (Dice). A negated note and a plain
+ * one are opposites however many words they share: "Use pnpm" / "Do not use pnpm".
+ */
+export function noteSimilarity(a: string, b: string): number {
+  if (isNegated(a) !== isNegated(b)) return 0;
+  const left = similarityTerms(a);
+  const right = similarityTerms(b);
+  if (!left.size || !right.size) return a.trim().toLowerCase() === b.trim().toLowerCase() ? 1 : 0;
+  let shared = 0;
+  for (const term of left) if (right.has(term)) shared += 1;
+  return (2 * shared) / (left.size + right.size);
+}
+
+/* ── Helpers ── */
+
+function readFileOrEmpty(filePath: string): string {
+  try {
+    return fs.readFileSync(filePath, "utf8");
+  } catch {
+    return "";
   }
-  return true;
 }
 
-function snippetIdentity(snippet: string): string {
-  return snippet.trim().replace(/^-+\s*/, "").toLowerCase();
-}
-
-/** True when every requested tag is present on the line with the same value. */
-function lineMatchesTags(line: string, filter: CtoMemoryTags): boolean {
-  const parsed = parseMemoryTags(line);
-  for (const key of CTO_MEMORY_TAG_KEYS) {
-    const wanted = normalizeTagValue(filter[key]);
-    if (!wanted) continue;
-    if ((parsed[key] ?? "").toLowerCase() !== wanted.toLowerCase()) return false;
+function statMtimeIso(filePath: string): string | null {
+  try {
+    return new Date(fs.statSync(filePath).mtimeMs).toISOString();
+  } catch {
+    return null;
   }
-  return true;
 }
 
-/** True when any tag VALUE on the line contains the needle. */
-function lineTagsMatchNeedle(line: string, needle: string): boolean {
-  const parsed = parseMemoryTags(line);
-  return CTO_MEMORY_TAG_KEYS.some((key) => (parsed[key] ?? "").toLowerCase().includes(needle));
+function utf8Bytes(text: string): number {
+  return Buffer.byteLength(text, "utf8");
+}
+
+/** One note's text: one line, no bullet, secret-scrubbed, clipped. */
+function normalizeNote(raw: string): string {
+  const single = raw.replace(/\s+/g, " ").trim().replace(/^(?:[-*•]\s+)+/, "").trim();
+  return clipText(redactSecrets(single), NOTE_MAX_CHARS);
+}
+
+/** The note lines of a notes file, without their bullets. Headings and blanks are not notes. */
+function parseNoteLines(content: string): string[] {
+  return content.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"))
+    .map((line) => line.replace(/^(?:[-*•]\s+)+/, "").trim())
+    .filter((line) => line.length > 0);
+}
+
+function renderNotes(lines: readonly string[]): string {
+  return lines.length ? `${lines.map((line) => `- ${line}`).join("\n")}\n` : "";
+}
+
+function notesFullMessage(bytes: number, limit: number): string {
+  return `Notes are full (${bytes} of ${limit} bytes). Merge or forget notes first.`;
+}
+
+function newWorkId(): string {
+  return `w-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+}
+
+function normalizeOpenWorkItem(value: unknown): CtoOpenWorkItem | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id.trim() : "";
+  const text = typeof record.text === "string" ? record.text.trim() : "";
+  if (!id || !text) return null;
+  const createdAt = typeof record.createdAt === "string" && record.createdAt.trim() ? record.createdAt : nowIso();
+  const doneAt = typeof record.doneAt === "string" && record.doneAt.trim() ? record.doneAt : null;
+  return { id, text, createdAt, doneAt, addedBy: record.addedBy === "user" ? "user" : "cto" };
+}
+
+/** Open items oldest first (a checklist), then finished ones newest first. */
+function orderOpenWork(items: readonly CtoOpenWorkItem[]): CtoOpenWorkItem[] {
+  const open = items.filter((item) => !item.doneAt).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const done = items.filter((item) => item.doneAt).sort((a, b) => (b.doneAt ?? "").localeCompare(a.doneAt ?? ""));
+  return [...open, ...done];
+}
+
+/** A move that never loses the source: an existing target gets a stamped name. */
+function moveAside(source: string, targetDir: string): void {
+  if (!fs.existsSync(source)) return;
+  fs.mkdirSync(targetDir, { recursive: true });
+  const base = path.basename(source);
+  let target = path.join(targetDir, base);
+  if (fs.existsSync(target)) target = path.join(targetDir, `${base}.${Date.now()}`);
+  try {
+    fs.renameSync(source, target);
+  } catch {
+    // Windows refuses a rename across volumes or of a held folder: copy, then
+    // remove the source only once the copy is complete.
+    fs.cpSync(source, target, { recursive: true, errorOnExist: false });
+    fs.rmSync(source, { recursive: true, force: true });
+  }
+}
+
+export type CtoRememberResult =
+  | { ok: true; saved: true; note: string; replaced?: string; scope: CtoNotesScope; bytes: number; limitBytes: number }
+  | { ok: true; saved: false; note: string; duplicateOf: string; scope: CtoNotesScope }
+  | { ok: false; error: string; candidates?: string[] };
+
+export type CtoForgetResult =
+  | { ok: true; forgotten: string; scope: CtoNotesScope }
+  | { ok: false; error: string; candidates?: string[] };
+
+export type CtoOpenWorkResult =
+  | { ok: true; item: CtoOpenWorkItem }
+  | { ok: false; error: string };
+
+/** sha256 hex of a notes text: the `baseHash` a notes editor sends back. */
+function notesHash(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const logger = args.logger ?? null;
   const ctoDir = path.join(args.adeDir, "cto");
-  const dailyDir = path.join(ctoDir, "daily");
   const memoryPath = path.join(ctoDir, "MEMORY.md");
-  const threadStatePath = path.join(ctoDir, "thread-state.md");
-  const memoryArchivePath = path.join(ctoDir, "memory-archive.md");
+  const openWorkPath = path.join(ctoDir, "open-work.json");
   const discoveriesPath = path.join(ctoDir, "discoveries.md");
   const discoveriesArchivePath = path.join(ctoDir, "discoveries-archive.md");
   const discoveriesCursorPath = path.join(ctoDir, "discoveries.cursor");
+  const userNotesDir = (): string => args.userNotesDir?.trim() || path.join(resolveAdeHomeForOwnership(), "cto");
+  const userNotesPath = (): string => path.join(userNotesDir(), "USER.md");
 
   fs.mkdirSync(ctoDir, { recursive: true });
-
-  // Durable project context. Independent of the CTO chat id: a restart, a
-  // crash, and a cleared session all leave this file where it is.
-  const context = createProjectContextStore({
-    adeDir: args.adeDir,
-    account: args.account,
-    logger,
-  });
 
   const warn = (message: string, error: unknown, meta?: Record<string, unknown>): void => {
     logger?.warn(message, {
@@ -283,537 +267,212 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     });
   };
 
-  const dailyPathFor = (stamp: string): string => path.join(dailyDir, `${stamp}.md`);
+  const notesPath = (scope: CtoNotesScope): string => (scope === "user" ? userNotesPath() : memoryPath);
+  const notesLimit = (scope: CtoNotesScope): number =>
+    scope === "user" ? CTO_USER_NOTES_MAX_BYTES : CTO_PROJECT_NOTES_MAX_BYTES;
 
-  /* ── MEMORY.md ── */
+  /* ── Notes ── */
 
-  const readMemory = (): string => readFileOrEmpty(memoryPath);
+  const readNotes = (scope: CtoNotesScope): string => readFileOrEmpty(notesPath(scope));
+  const readNoteLines = (scope: CtoNotesScope): string[] => parseNoteLines(readNotes(scope));
 
-  const archiveMemoryContent = (content: string, reason: string): void => {
-    const body = content.trim();
-    if (!body.length) return;
-    try {
-      const archiveExists = fs.existsSync(memoryArchivePath);
-      fs.appendFileSync(
-        memoryArchivePath,
-        `${archiveExists ? "" : "# CTO Memory Archive (facts evicted from MEMORY.md)\n\n"}<!-- ${reason} ${nowIso()} -->\n${body}\n`,
-        "utf8",
-      );
-    } catch (error) {
-      warn("cto_memory.archive_failed", error, { reason });
-    }
-  };
-
-  const memoryBullets = (memory: string): string[] => memory.split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("- "))
-    .map((line) => line.slice(2).replace(/\s+/g, " ").trim());
-
-  const writeMemory = (content: string): void => {
-    const previous = readMemory();
-    const previousBullets = memoryBullets(previous);
-    const next = content.trim().length ? redactSecrets(content.trim()) : MEMORY_HEADER;
-    // A full rewrite that clears existing content preserves what it replaces in
-    // the append-only archive — durable memory is never silently destroyed.
-    if (next === MEMORY_HEADER) {
-      const previousContent = previous.trim();
-      if (previousContent.length && previousContent !== MEMORY_HEADER) {
-        archiveMemoryContent(previousContent, "cleared by updateMemory");
-      }
-    }
-    writeTextAtomic(memoryPath, `${next}\n`);
-    try {
-      // The notes file is still the notes file. Only its bullets become facts,
-      // and exact text is ignored, so a second save does not store the document.
-      const bullets = next === MEMORY_HEADER ? [] : memoryBullets(next);
-      const notesFileFacts = new Set(bullets);
-      for (const text of bullets) {
-        context.remember({ text, trust: "human", kind: "pointer", notesFileFacts });
-      }
-      for (const text of previousBullets) {
-        if (!notesFileFacts.has(text)) context.archive({ text });
-      }
-      void context.reconcile();
-    } catch (error) {
-      warn("cto_context.remember_failed", error);
-    }
+  const writeNoteLines = (scope: CtoNotesScope, lines: readonly string[]): number => {
+    const rendered = renderNotes(lines);
+    writeTextAtomic(notesPath(scope), rendered);
+    return utf8Bytes(rendered);
   };
 
   /**
-   * Append a durable fact under the `## Facts` section. Exact-line duplicates
-   * are ignored. If the file would exceed the byte cap, the oldest facts are
-   * moved to the append-only `memory-archive.md` (never silently destroyed)
-   * and the eviction is reported to the caller.
+   * Replace a whole notes file, one note per line (bullets optional). Over the
+   * cap is refused with the same sentence the CTO's `remember` gets.
+   *
+   * `baseHash` is the hash of the text the editor started from. When it no
+   * longer matches the file (the CTO wrote a note, another device saved), the
+   * write is refused rather than silently overwriting what changed.
    */
-  const appendMemoryFact = (
-    fact: string,
-    tags?: CtoMemoryTags | null,
-    options: { kind?: CtoMemoryFactKind | null; pin?: boolean; trust?: "cto" | "agent" } = {},
-  ): { saved: boolean; fact: string; id?: string; duplicateOf?: string; evictedCount?: number } => {
-    // Memory files are plaintext on disk and re-injected into prompts: scrub
-    // secret-shaped content and clip a single fact before the byte-cap pass.
-    const normalized = clipText(redactSecrets(fact.replace(/\s+/g, " ").trim()), MEMORY_FACT_MAX_CHARS);
-    if (!normalized.length) return { saved: false, fact: "" };
-    // The suffix is appended after the clip so a long fact can never truncate
-    // its own tags away — the tags are what make it findable later.
-    const tagged = `${normalized}${formatMemoryTagSuffix(tags)}`;
-    const bullet = `- ${tagged}`;
+  const writeNotes = (scope: CtoNotesScope, text: string, options?: { baseHash?: string | null }): void => {
+    const baseHash = options?.baseHash?.trim().toLowerCase();
+    if (baseHash && notesHash(readNotes(scope)) !== baseHash) {
+      throw new AdeExpectedError(`${CTO_NOTES_CHANGED_ERROR} Reload to see the new version, then save again.`, "user");
+    }
+    const lines = parseNoteLines(text).map(normalizeNote).filter((line) => line.length > 0);
+    const bytes = utf8Bytes(renderNotes(lines));
+    const limit = notesLimit(scope);
+    if (bytes > limit) throw new AdeExpectedError(notesFullMessage(bytes, limit), "user");
+    writeNoteLines(scope, lines);
+  };
 
-    const existing = readMemory();
-    const lines = existing.length ? existing.split(/\r?\n/) : [];
+  /** Lines that contain `needle` exactly (case-sensitive). An exact line wins over a substring. */
+  const matchLines = (lines: readonly string[], needle: string): number[] => {
+    const exact = lines.findIndex((line) => line === needle);
+    if (exact >= 0) return [exact];
+    return lines.flatMap((line, index) => (line.includes(needle) ? [index] : []));
+  };
 
-    // Split into a header block (everything before `## Facts`) and the fact list.
-    let factsHeadingIndex = lines.findIndex((line) => line.trim() === MEMORY_FACTS_HEADING);
-    const header: string[] = [];
-    const facts: string[] = [];
-    if (factsHeadingIndex === -1) {
-      // No facts section yet — preserve any existing header content.
-      for (const line of lines) header.push(line);
+  const remember = (input: { note: string; scope?: CtoNotesScope; replaces?: string | null }): CtoRememberResult => {
+    const scope = input.scope ?? "project";
+    const note = normalizeNote(input.note);
+    if (!note.length) return { ok: false, error: "The note is empty." };
+    const lines = readNoteLines(scope);
+    const replaces = input.replaces?.trim() ? input.replaces.trim().replace(/^(?:[-*•]\s+)+/, "") : null;
+    let next: string[];
+    let replaced: string | undefined;
+    if (replaces) {
+      const matches = matchLines(lines, replaces);
+      if (matches.length !== 1) {
+        const candidates = matches.length
+          ? matches.map((index) => lines[index]).slice(0, MATCH_CANDIDATES_SHOWN)
+          : lines.slice(0, MATCH_CANDIDATES_SHOWN);
+        return {
+          ok: false,
+          error: matches.length
+            ? `${matches.length} notes contain "${replaces}". Pass more of the line you mean.`
+            : `No note contains "${replaces}".`,
+          candidates,
+        };
+      }
+      replaced = lines[matches[0]];
+      next = lines.map((line, index) => (index === matches[0] ? note : line));
     } else {
-      for (let i = 0; i < factsHeadingIndex; i += 1) header.push(lines[i]);
-      for (let i = factsHeadingIndex + 1; i < lines.length; i += 1) {
-        const line = lines[i];
-        if (line.trim().length) facts.push(line.trimEnd());
-      }
+      const duplicate = lines.find((line) => line.toLowerCase() === note.toLowerCase())
+        ?? lines.find((line) => noteSimilarity(line, note) >= NEAR_DUPLICATE_SIMILARITY);
+      if (duplicate) return { ok: true, saved: false, note, duplicateOf: duplicate, scope };
+      next = [...lines, note];
     }
-    if (!header.length) header.push(MEMORY_HEADER);
+    const limit = notesLimit(scope);
+    const bytes = utf8Bytes(renderNotes(next));
+    if (bytes > limit) {
+      return { ok: false, error: notesFullMessage(utf8Bytes(renderNotes(lines)), limit) };
+    }
+    writeNoteLines(scope, next);
+    return { ok: true, saved: true, note, ...(replaced ? { replaced } : {}), scope, bytes, limitBytes: limit };
+  };
 
-    if (facts.some((line) => line.trim() === bullet)) {
-      return { saved: false, fact: tagged };
+  const forget = (input: { note: string; scope?: CtoNotesScope }): CtoForgetResult => {
+    const scope = input.scope ?? "project";
+    const needle = input.note.trim().replace(/^(?:[-*•]\s+)+/, "");
+    if (!needle.length) return { ok: false, error: "Say which note to forget." };
+    const lines = readNoteLines(scope);
+    const matches = matchLines(lines, needle);
+    if (matches.length !== 1) {
+      return {
+        ok: false,
+        error: matches.length
+          ? `${matches.length} notes contain "${needle}". Pass more of the line you mean.`
+          : `No note contains "${needle}".`,
+        candidates: (matches.length ? matches.map((index) => lines[index]) : lines).slice(0, MATCH_CANDIDATES_SHOWN),
+      };
     }
-    // Model-free near-duplicate check against the store: the same fact said a
-    // second way is not a second fact. The caller gets the existing wording so
-    // it can retire it with `replaces` if the new one is better.
-    const nearDuplicate = context.findNearDuplicate(tagged, parseMemoryTags(tagged));
-    if (nearDuplicate) {
-      return { saved: false, fact: tagged, id: nearDuplicate.id, duplicateOf: nearDuplicate.text };
-    }
-    facts.push(bullet);
+    const forgotten = lines[matches[0]];
+    writeNoteLines(scope, lines.filter((_, index) => index !== matches[0]));
+    return { ok: true, forgotten, scope };
+  };
 
-    const render = (factList: string[]): string =>
-      [
-        ...header.map((line) => line.replace(/\s+$/, "")),
-        "",
-        MEMORY_FACTS_HEADING,
-        "",
-        ...factList,
-        "",
-      ]
-        .join("\n")
-        .replace(/\n{3,}/g, "\n\n")
-        .trimEnd();
+  /* ── Open work ── */
 
-    // Move oldest facts to the append-only archive until under the byte cap —
-    // durable memory is never silently destroyed, only demoted out of the
-    // always-injected file (the archive stays reachable via searchMemory).
-    const evicted: string[] = [];
-    let rendered = render(facts);
-    while (Buffer.byteLength(rendered, "utf8") > MEMORY_FILE_MAX_BYTES && facts.length > 1) {
-      evicted.push(facts.shift() as string);
-      rendered = render(facts);
-    }
-    if (evicted.length) {
-      archiveMemoryContent(evicted.join("\n"), "evicted by size cap");
-    }
-
-    writeTextAtomic(memoryPath, `${rendered}\n`);
-    let storedId: string | undefined;
+  const readOpenWork = (): CtoOpenWorkItem[] => {
+    const raw = readFileOrEmpty(openWorkPath);
+    if (!raw.trim()) return [];
     try {
-      const parsed = parseMemoryTags(tagged);
-      const tags: ProjectContextItem["tags"] = {};
-      for (const key of CTO_MEMORY_TAG_KEYS) {
-        const value = parsed[key];
-        if (value) tags[key] = value;
-      }
-      const remembered = context.remember({
-        text: tagged,
-        trust: options.trust ?? "cto",
-        kind: storeKindFor(options.kind),
-        tags,
-      });
-      if (options.pin && remembered.item) context.setPinned(remembered.item.id, true);
-      storedId = remembered.item?.id;
-      void context.reconcile();
+      const parsed = JSON.parse(raw) as { items?: unknown };
+      const items = Array.isArray(parsed?.items) ? parsed.items : [];
+      return orderOpenWork(items.map(normalizeOpenWorkItem).filter((item): item is CtoOpenWorkItem => item != null));
     } catch (error) {
-      // MEMORY.md has the fact; only the synced copy is missing, and the
-      // next save or reconcile does not repair it, so it is logged.
-      warn("cto_context.remember_failed", error);
-    }
-    return {
-      saved: true,
-      fact: tagged,
-      ...(storedId ? { id: storedId } : {}),
-      ...(evicted.length ? { evictedCount: evicted.length } : {}),
-    };
-  };
-
-  /**
-   * Retire a fact from both copies: the store row is archived (so the
-   * retirement syncs), and the matching MEMORY.md line moves to the archive
-   * file. `ref` is a store id from searchMemory, or the fact's exact text.
-   */
-  const forgetFact = (
-    ref: { id?: string | null; text?: string | null },
-    reason?: string | null,
-    options: { onlyActive?: boolean } = {},
-  ): { forgotten: boolean; fact: string | null } => {
-    const archived = context.archive(ref, options);
-    const text = archived?.text ?? ref.text?.trim() ?? "";
-    if (!text.length) return { forgotten: false, fact: null };
-    const identity = snippetIdentity(text);
-    const lines = readMemory().split(/\r?\n/);
-    const removed: string[] = [];
-    const kept = lines.filter((line) => {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("- ")) return true;
-      if (snippetIdentity(trimmed) !== identity) return true;
-      removed.push(trimmed);
-      return false;
-    });
-    if (removed.length) {
-      archiveMemoryContent(removed.join("\n"), `forgotten${reason?.trim() ? `: ${clipText(reason.trim(), 200)}` : ""}`);
-      writeTextAtomic(memoryPath, `${kept.join("\n").trimEnd()}\n`);
-    }
-    if (archived) void context.reconcile();
-    return { forgotten: Boolean(archived || removed.length), fact: archived?.text ?? removed[0]?.slice(2) ?? null };
-  };
-
-  /**
-   * Facts an ADE-run summarizer pulled out of the conversation. The model does
-   * not have to remember to call saveMemory: ADE decides WHEN (compaction, a
-   * provider switch, a retired thread, every few turns) and a cheap helper
-   * model decides WHAT. Bounded, near-duplicate-checked, and stored at "agent"
-   * trust so a fact the CTO or the person saved outranks it.
-   */
-  const captureFacts = (
-    facts: Array<{ text: string; kind?: CtoMemoryFactKind | null }>,
-  ): { saved: string[]; skipped: number } => {
-    const saved: string[] = [];
-    let skipped = 0;
-    for (const entry of facts.slice(0, CAPTURE_MAX_FACTS)) {
-      const text = clipText(entry.text.replace(/\s+/g, " ").trim(), CAPTURE_FACT_MAX_CHARS);
-      if (text.length < 12) {
-        skipped += 1;
-        continue;
+      // Moved aside, not left to be overwritten: the next write would replace
+      // the only copy of the list, and a hand edit gone wrong is worth reading.
+      const asidePath = `${openWorkPath}.corrupt-${Date.now()}`;
+      try {
+        fs.renameSync(openWorkPath, asidePath);
+        warn("cto_memory.open_work_unreadable", error, { movedTo: asidePath });
+      } catch (renameError) {
+        warn("cto_memory.open_work_unreadable", error, {
+          moveFailed: renameError instanceof Error ? renameError.message : String(renameError),
+        });
       }
-      const result = appendMemoryFact(text, null, { kind: entry.kind ?? null, trust: "agent" });
-      if (result.saved) saved.push(result.fact);
-      else skipped += 1;
-    }
-    return { saved, skipped };
-  };
-
-  /** Live facts for the nightly gardener, oldest first, with their ids. */
-  const listGardeningFacts = (): GardeningFact[] =>
-    context.read().items
-      .filter((item) => item.status !== "archived")
-      .map((item) => ({ id: item.id, text: item.text, kind: item.kind, pinned: item.status === "pinned" }));
-
-  /**
-   * Apply what the nightly gardener decided. Merges retire their sources
-   * first (a merged sentence would otherwise be refused as their near-
-   * duplicate) and keep the sources' tags when they all agree. Everything is
-   * filed at "agent" trust, and the run is journaled so the person can see
-   * what changed overnight.
-   */
-  const applyGardeningPlan = (plan: GardeningPlan): { added: number; merged: number; retired: number } => {
-    let added = 0;
-    let merged = 0;
-    let retired = 0;
-    for (const entry of plan.merge) {
-      const uniqueIds = new Set(entry.ids);
-      const currentItems = new Map(context.read().items.map((item) => [item.id, item]));
-      const sources = entry.ids
-        .map((id) => currentItems.get(id))
-        .filter((item): item is ProjectContextItem => item !== undefined && item.status === "active");
-      // The sources were shown with their tag suffix; it is re-added from `tags`.
-      const text = entry.text.replace(MEMORY_TAG_SUFFIX_PATTERN, "").trim();
-      if (uniqueIds.size < 2 || uniqueIds.size !== entry.ids.length || sources.length !== entry.ids.length || text.length < 12) continue;
-      const tagSets = new Set(sources.map((item) => JSON.stringify(item.tags)));
-      for (const item of sources) {
-        forgetFact({ id: item.id }, "merged by nightly memory gardening", { onlyActive: true });
-      }
-      // A refusal means the same sentence, or a near-duplicate of it, is already filed.
-      appendMemoryFact(text, tagSets.size === 1 ? sources[0].tags : null, { kind: entry.kind, trust: "agent" });
-      merged += 1;
-    }
-    for (const entry of plan.retire) {
-      if (forgetFact(
-        { id: entry.id },
-        `nightly memory gardening: ${entry.reason}`,
-        { onlyActive: true },
-      ).forgotten) retired += 1;
-    }
-    for (const entry of plan.add) {
-      if (appendMemoryFact(entry.text, null, { kind: entry.kind, trust: "agent" }).saved) added += 1;
-    }
-    if (added || merged || retired) {
-      appendDailyEntry(`${GARDENING_JOURNAL_PREFIX} added ${added}, merged ${merged}, retired ${retired}.`);
-    }
-    return { added, merged, retired };
-  };
-
-  /** Whether anything was journaled within the last `days` days. */
-  const hasRecentDailyEntries = (days: number, now = new Date()): boolean => {
-    const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-    const oldestStamp = todayStamp(cutoff);
-    const newestStamp = todayStamp(now);
-    return listDailyStampsNewestFirst()
-      .filter((stamp) => stamp >= oldestStamp && stamp <= newestStamp)
-      .some((stamp) => readFileOrEmpty(dailyPathFor(stamp))
-        .split(/\r?\n/)
-        .some((line) => {
-          const entry = line.trim();
-          return entry.length > 0 && !entry.startsWith("#") && !entry.startsWith(GARDENING_JOURNAL_PREFIX);
-        }));
-  };
-
-  /** Live store facts for a summarizer to check against, newest last. */
-  const listKnownFacts = (limit = 40): string[] =>
-    context.read().items
-      .filter((item) => item.status !== "archived")
-      .slice(-limit)
-      .map((item) => item.text);
-
-  /**
-   * Durable facts carrying `[lane:<laneId>]`, newest last, bounded for
-   * injection. Untagged facts are deliberately excluded: this is the lane-
-   * scoped slice a worker chat receives, and an untagged fact has not claimed
-   * to be about this lane.
-   */
-  const listFactsForLane = (laneId: string, maxChars = LANE_FACTS_INJECT_MAX_CHARS): string => {
-    const lane = laneId.trim();
-    if (!lane.length) return "";
-    const fromFile = readMemory()
-      .split(/\r?\n/)
-      .filter((line) => line.trim().length && lineMatchesTags(line, { lane }))
-      .map((line) => line.trimEnd());
-    const seen = new Set(fromFile.map((line) => snippetIdentity(line)));
-    const fromStore = context.read().items
-      .filter((item) => item.status !== "archived" && (item.tags.lane ?? "").toLowerCase() === lane.toLowerCase())
-      .map((item) => item.text.trim())
-      .filter((text) => {
-        const key = snippetIdentity(text);
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .map((text) => (text.startsWith("-") ? text : `- ${text}`));
-    const matched = [...fromFile, ...fromStore];
-    if (!matched.length) return "";
-    return truncateKeepTail(matched.join("\n"), maxChars);
-  };
-
-  /* ── thread-state.md ── */
-
-  const renderThreadState = (summary: string, updatedAt: string, reason?: string | null): string => {
-    const stamp = `_Updated ${updatedAt}${reason ? ` (${reason})` : ""}_`;
-    return [THREAD_STATE_HEADER, "", stamp, "", summary].join("\n");
-  };
-
-  /**
-   * The newer of this machine's file and the account's copy. The file is the
-   * local record; the synced row is what lets a second machine, or a CTO that
-   * moved to a new home, pick up where the work actually is.
-   */
-  const readThreadState = (): string => {
-    const local = readFileOrEmpty(threadStatePath);
-    const synced = context.threadState();
-    if (!synced) return local;
-    const localMtime = statMtimeIso(threadStatePath);
-    // Both are written together, the file a moment first, so the same text
-    // counts as the file's (the synced copy is clipped and re-rendered).
-    if (local.trim().length && (local.includes(synced.text.replace(/…$/, "")) || (localMtime && localMtime >= synced.updatedAt))) {
-      return local;
-    }
-    return `${renderThreadState(synced.text, synced.updatedAt, synced.reason)}\n`;
-  };
-
-  /** When the thread state was last written, on this machine or another. */
-  const threadStateUpdatedAt = (): string | null => {
-    const localMtime = statMtimeIso(threadStatePath);
-    const synced = context.threadState()?.updatedAt ?? null;
-    if (!localMtime) return synced;
-    if (!synced) return localMtime;
-    return localMtime >= synced ? localMtime : synced;
-  };
-
-  const writeThreadState = (content: string, reason?: string): void => {
-    const summary = redactSecrets(content.trim());
-    if (!summary.length) return;
-    writeTextAtomic(threadStatePath, `${renderThreadState(summary, nowIso(), reason)}\n`);
-    try {
-      context.setThreadState(summary, reason ?? null);
-      void context.reconcile();
-    } catch (error) {
-      warn("cto_context.thread_state_mirror_failed", error);
-    }
-  };
-
-  /* ── daily logs ── */
-
-  const appendDailyEntry = (line: string, now = new Date()): void => {
-    const entry = redactSecrets(line.replace(/\r?\n/g, " ").trim());
-    if (!entry.length) return;
-    const stamp = todayStamp(now);
-    const filePath = dailyPathFor(stamp);
-    fs.mkdirSync(dailyDir, { recursive: true });
-    const fileExists = fs.existsSync(filePath);
-    // New files get a dated header; existing files just get the appended line.
-    fs.appendFileSync(filePath, fileExists ? `${entry}\n` : `# ${stamp}\n\n${entry}\n`, "utf8");
-  };
-
-  /**
-   * One compact daily-log line per completed CTO turn:
-   * `HH:MM — <user intent> → <outcome>`. Owns the format and caps so callers
-   * only supply the raw text.
-   */
-  const appendTurnJournal = (
-    input: { user: string; outcome: string },
-    now = new Date(),
-  ): void => {
-    const user = input.user.replace(/\s+/g, " ").trim();
-    const outcome = input.outcome.replace(/\s+/g, " ").trim();
-    if (!user.length && !outcome.length) return;
-    const line = `${localHourMinute(now)} — ${clipText(user, JOURNAL_USER_MAX_CHARS)} → ${clipText(outcome, JOURNAL_OUTCOME_MAX_CHARS)}`;
-    appendDailyEntry(line, now);
-  };
-
-  const listDailyStampsNewestFirst = (): string[] => {
-    let entries: string[] = [];
-    try {
-      entries = fs.readdirSync(dailyDir);
-    } catch {
       return [];
     }
-    return entries
-      .filter((name) => /^\d{4}-\d{2}-\d{2}\.md$/.test(name))
-      .map((name) => name.replace(/\.md$/, ""))
-      .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
   };
 
-  const readRecentDailyEntries = (days = 2, maxChars = DAILY_INJECT_MAX_CHARS): string => {
-    const stamps = listDailyStampsNewestFirst().slice(0, Math.max(1, days));
-    if (!stamps.length) return "";
-    // Oldest first so the newest content sits at the tail and survives truncation.
-    const chronological = [...stamps].reverse();
-    const blocks: string[] = [];
-    for (const stamp of chronological) {
-      const content = readFileOrEmpty(dailyPathFor(stamp))
-        .split(/\r?\n/)
-        .filter((line) => !line.trim().startsWith(GARDENING_JOURNAL_PREFIX))
-        .join("\n")
-        .trim();
-      if (content.length) blocks.push(content);
-    }
-    return truncateKeepTail(blocks.join("\n\n"), maxChars);
+  const writeOpenWork = (items: readonly CtoOpenWorkItem[]): void => {
+    const ordered = orderOpenWork(items);
+    // Finished items past the cap go oldest first; open ones are never dropped.
+    const open = ordered.filter((item) => !item.doneAt);
+    const done = ordered.filter((item) => item.doneAt).slice(0, CTO_OPEN_WORK_MAX_DONE);
+    writeTextAtomic(openWorkPath, `${JSON.stringify({ version: 1, items: [...open, ...done] }, null, 2)}\n`);
   };
 
-  /* ── search ── */
-
-  const searchMemory = (
-    query: string,
-    options: { limit?: number; tags?: CtoMemoryTags | null } = {},
-  ): CtoMemorySearchRow[] => {
-    const needle = query.trim().toLowerCase();
-    const limit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 20)));
-    const tagFilter = options.tags ?? null;
-    const hasTagFilter = Boolean(tagFilter && formatMemoryTagSuffix(tagFilter).length);
-    // An empty query is meaningful once tags exist: "everything about lane X".
-    if (!needle.length && !hasTagFilter) return [];
-
-    // Tag hits and substring hits are collected separately so tags win the
-    // result budget — a fact that declared itself to be about this lane/PR is
-    // a better answer than one that merely mentions the word somewhere.
-    const tagHits: CtoMemorySearchRow[] = [];
-    const textHits: CtoMemorySearchRow[] = [];
-    const seen = new Set<string>();
-    // A notes-file line that is also a live store fact carries the store id,
-    // so the CTO can replace or forget what it just found.
-    const liveIds = new Map<string, string>();
-    for (const item of context.read().items) {
-      if (item.status !== "archived") liveIds.set(snippetIdentity(item.text), item.id);
+  const trackWork = (text: string, addedBy: CtoOpenWorkItem["addedBy"] = "cto"): CtoOpenWorkResult => {
+    const normalized = clipText(redactSecrets(text.replace(/\s+/g, " ").trim()), OPEN_WORK_TEXT_MAX_CHARS);
+    if (!normalized.length) return { ok: false, error: "Say what the work is." };
+    const items = readOpenWork();
+    if (items.filter((item) => !item.doneAt).length >= CTO_OPEN_WORK_MAX_OPEN) {
+      return { ok: false, error: `Open work is full (${CTO_OPEN_WORK_MAX_OPEN} items). Finish or remove one first.` };
     }
-    const scan = (
-      file: CtoMemorySearchRow["file"],
-      date: string | null,
-      content: string,
-    ): void => {
-      const lines = content.split(/\r?\n/);
-      for (let i = 0; i < lines.length; i += 1) {
-        const raw = lines[i];
-        if (!raw.trim().length) continue;
-        if (hasTagFilter && !lineMatchesTags(raw, tagFilter as CtoMemoryTags)) continue;
-        const matchesTag = Boolean(needle.length && lineTagsMatchNeedle(raw, needle));
-        const matchesText = !needle.length || raw.toLowerCase().includes(needle);
-        if (!matchesTag && !matchesText) continue;
-        const identity = snippetIdentity(raw.trim().slice(0, 240));
-        if (identity) seen.add(identity);
-        if (tagHits.length >= limit) continue;
-        const liveId = file === "MEMORY.md" ? liveIds.get(snippetIdentity(raw.trim())) : undefined;
-        const row: CtoMemorySearchRow = {
-          file,
-          date,
-          line: i + 1,
-          snippet: raw.trim().slice(0, 240),
-          ...(liveId ? { id: liveId } : {}),
-        };
-        if (matchesTag) {
-          tagHits.push(row);
-          continue;
-        }
-        if (textHits.length < limit) textHits.push(row);
-      }
-    };
-
-    // Durable facts first — current then archived — before any transient
-    // content (rolling thread summary, daily journals), so evicted memories
-    // are never starved out of the result budget.
-    const budgetLeft = (): boolean => tagHits.length + textHits.length < limit * 2;
-    scan("MEMORY.md", null, readMemory());
-    if (budgetLeft()) scan("memory-archive.md", null, readFileOrEmpty(memoryArchivePath));
-    if (budgetLeft()) scan("thread-state.md", null, readThreadState());
-    if (budgetLeft()) {
-      for (const stamp of listDailyStampsNewestFirst()) {
-        if (!budgetLeft()) break;
-        scan("daily", stamp, readFileOrEmpty(dailyPathFor(stamp)));
-      }
-    }
-    const fileRows = [...tagHits, ...textHits];
-    const storeSlots = Math.max(1, Math.ceil(limit / 4));
-    const contextRows: CtoMemorySearchRow[] = [];
-    const candidates = needle.length
-      // The store holds at most 120 live facts and 40 archived ones. Scan
-      // that whole set so a store-only hit is not hidden behind file copies.
-      ? context.search(needle, 160)
-      : context.read().items.filter((item) => item.status !== "archived");
-    for (const item of candidates) {
-      if (contextRows.length >= storeSlots) break;
-      if (hasTagFilter && !contextItemMatches(item, tagFilter as CtoMemoryTags)) continue;
-      const snippet = item.text.slice(0, 240);
-      const key = snippetIdentity(snippet);
-      if (!key || seen.has(key)) continue;
-      const tagValues = Object.values(item.tags).join(" ");
-      if (needle.length && !snippet.toLowerCase().includes(needle) && !tagValues.toLowerCase().includes(needle)) continue;
-      seen.add(key);
-      contextRows.push({
-        file: "context",
-        date: null,
-        line: 1,
-        snippet,
-        ...(item.status !== "archived" ? { id: item.id } : {}),
-      });
-    }
-    const novel = contextRows.slice(0, storeSlots);
-    const fileKeep = Math.max(0, limit - novel.length);
-    return [...fileRows.slice(0, fileKeep), ...novel].slice(0, limit);
+    const existingIds = new Set(items.map((item) => item.id));
+    let id = newWorkId();
+    while (existingIds.has(id)) id = newWorkId();
+    const item: CtoOpenWorkItem = { id, text: normalized, createdAt: nowIso(), doneAt: null, addedBy };
+    writeOpenWork([...items, item]);
+    return { ok: true, item };
   };
 
-  /* ── discoveries ── */
+  const updateItem = (
+    id: string,
+    change: (item: CtoOpenWorkItem) => CtoOpenWorkItem | null,
+  ): CtoOpenWorkResult => {
+    const key = id.trim();
+    const items = readOpenWork();
+    const current = items.find((item) => item.id === key);
+    if (!current) return { ok: false, error: `No open-work item has id "${key}".` };
+    const updated = change(current);
+    if (!updated) return { ok: false, error: `Item "${key}" cannot change that way.` };
+    writeOpenWork(items.map((item) => (item.id === key ? updated : item)));
+    return { ok: true, item: updated };
+  };
+
+  const finishWork = (id: string, outcome?: string | null): CtoOpenWorkResult =>
+    updateItem(id, (item) => {
+      if (item.doneAt) return item;
+      const note = outcome?.replace(/\s+/g, " ").trim();
+      return {
+        ...item,
+        text: note ? `${item.text} (${clipText(redactSecrets(note), OPEN_WORK_OUTCOME_MAX_CHARS)})` : item.text,
+        doneAt: nowIso(),
+      };
+    });
+
+  const reopenWork = (id: string): CtoOpenWorkResult => {
+    if (readOpenWork().filter((item) => !item.doneAt).length >= CTO_OPEN_WORK_MAX_OPEN) {
+      return { ok: false, error: `Open work is full (${CTO_OPEN_WORK_MAX_OPEN} items). Finish or remove one first.` };
+    }
+    return updateItem(id, (item) => ({ ...item, doneAt: null }));
+  };
+
+  const removeWork = (id: string): CtoOpenWorkResult => {
+    const key = id.trim();
+    const items = readOpenWork();
+    const current = items.find((item) => item.id === key);
+    if (!current) return { ok: false, error: `No open-work item has id "${key}".` };
+    writeOpenWork(items.filter((item) => item.id !== key));
+    return { ok: true, item: current };
+  };
+
+  /** The settings and panel path: the person's own edits to the list. */
+  const updateOpenWork = (change: CtoUpdateOpenWorkArgs): void => {
+    const result = change.op === "add"
+      ? trackWork(change.text, "user")
+      : change.op === "complete"
+        ? finishWork(change.id)
+        : change.op === "reopen"
+          ? reopenWork(change.id)
+          : removeWork(change.id);
+    if (!result.ok) throw new AdeExpectedError(result.error, "user");
+  };
+
+  /* ── Discoveries ── */
 
   const readDiscoveryCursor = (): number => {
-    const raw = readFileOrEmpty(discoveriesCursorPath).trim();
-    const parsed = Number.parseInt(raw, 10);
+    const parsed = Number.parseInt(readFileOrEmpty(discoveriesCursorPath).trim(), 10);
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
   };
 
@@ -826,16 +485,10 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   };
 
   /**
-   * Hold discoveries.md under its byte cap by moving the OLDEST entries to the
-   * append-only `discoveries-archive.md` — the same archive-then-evict shape
-   * `appendMemoryFact` uses, because an unreviewed worker note is still
-   * evidence and must not be silently destroyed.
-   *
-   * The read cursor is a byte offset into this file, so it is rewound by
-   * exactly the number of bytes removed. An already-drained discovery stays
-   * drained; if the evicted head reached past the cursor the rewind clamps to
-   * 0, which can re-deliver a discovery but can never skip one — the same
-   * direction every other decision on this cursor errs in.
+   * Hold discoveries.md under its cap by moving the OLDEST entries to the
+   * append-only archive. The read cursor is a byte offset into this file, so
+   * it is rewound by exactly the bytes removed (clamped at 0: a discovery may
+   * be delivered twice, never skipped).
    */
   const evictDiscoveriesOverCap = (): void => {
     let buffer: Buffer;
@@ -851,14 +504,11 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       const body = hasHeader ? text.slice(DISCOVERIES_HEADER_BLOCK.length) : text;
       const header = hasHeader ? DISCOVERIES_HEADER_BLOCK : "";
       const entries = body.split("\n");
-      // `split` leaves a trailing "" for the final newline — keep it out of the
-      // eviction loop so the rewritten file still ends in one.
       const trailing = entries.length && entries[entries.length - 1] === "" ? entries.pop() : null;
       const evicted: string[] = [];
-      const render = (): string =>
-        `${header}${entries.join("\n")}${trailing === null ? "" : "\n"}`;
+      const render = (): string => `${header}${entries.join("\n")}${trailing === null ? "" : "\n"}`;
       let rendered = render();
-      while (Buffer.byteLength(rendered, "utf8") > DISCOVERIES_FILE_MAX_BYTES && entries.length > 1) {
+      while (utf8Bytes(rendered) > DISCOVERIES_FILE_MAX_BYTES && entries.length > 1) {
         evicted.push(entries.shift() as string);
         rendered = render();
       }
@@ -869,7 +519,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
         `${archiveExists ? "" : "# Worker discoveries archive (evicted from discoveries.md)\n\n"}<!-- evicted by size cap ${nowIso()} -->\n${evicted.join("\n")}\n`,
         "utf8",
       );
-      const removed = buffer.byteLength - Buffer.byteLength(rendered, "utf8");
+      const removed = buffer.byteLength - utf8Bytes(rendered);
       writeTextAtomic(discoveriesPath, rendered);
       const cursor = readDiscoveryCursor();
       if (cursor > 0) writeDiscoveryCursor(cursor - removed);
@@ -879,22 +529,15 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   };
 
   /**
-   * The worker-to-CTO channel. Any agent — not just the CTO — may append a
-   * discovery; the CTO drains the new ones on each child report and decides
-   * what becomes a durable fact. Deliberately a separate file, not MEMORY.md:
-   * an unreviewed worker note must not enter durable memory just by being
-   * written. Appends are capped the same way `appendMemoryFact` is — the
-   * writer set here is strictly wider, so the file needs the bound more.
+   * The worker-to-CTO channel. Any agent may append a discovery; the CTO
+   * drains the new ones on each child report and decides what becomes a note.
    */
   const recordDiscovery = (
     fact: string,
     tags?: CtoMemoryTags | null,
     now = new Date(),
   ): { saved: boolean; fact: string } => {
-    const normalized = clipText(
-      redactSecrets(fact.replace(/\s+/g, " ").trim()),
-      DISCOVERY_FACT_MAX_CHARS,
-    );
+    const normalized = clipText(redactSecrets(fact.replace(/\s+/g, " ").trim()), DISCOVERY_FACT_MAX_CHARS);
     if (!normalized.length) return { saved: false, fact: "" };
     const tagged = `${normalized}${formatMemoryTagSuffix(tags)}`;
     try {
@@ -913,24 +556,11 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   };
 
   /**
-   * Discoveries appended since the last read, advancing the cursor. Byte-offset
-   * based (not line counts) so a concurrent append between read and write can
-   * only ever be re-read, never skipped. A truncated or replaced file resets the
-   * cursor rather than reading past the end.
-   *
-   * Only the unread window is read — never the whole file. A child report is
-   * the caller, and the CTO files one per finished child, so a queue that a
-   * runaway writer had grown must not become a full-file read per report. The
-   * cursor advances by what was ACTUALLY handed out, which is what keeps a
-   * backlog larger than one read drained-over-several-reports rather than
-   * skipped.
-   *
-   * `maxChars` is a *drain* budget, not a display clip: the oldest lines that
-   * fit are returned and the cursor advances over exactly those bytes, so the
-   * remainder is still there for the next read. Clipping the joined text
-   * instead would have destroyed it — the production caller passes no options
-   * at all, so the default 1200-char budget over a 64 KB window silently ate
-   * every discovery past the first three or four.
+   * Discoveries appended since the last read, advancing the cursor. Only the
+   * unread window is read, and the cursor moves by exactly what was handed out,
+   * so a backlog larger than one read drains over several reports. `maxChars`
+   * is a drain budget: at least one line is always handed out so a single
+   * oversized entry cannot wedge the queue.
    */
   const readNewDiscoveries = (
     options: { maxChars?: number; advance?: boolean } = {},
@@ -955,12 +585,6 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
         const buffer = Buffer.alloc(window);
         const read = fs.readSync(handle, buffer, 0, window, start);
         let slice = buffer.subarray(0, read);
-        // A window that stops short of EOF almost certainly stops mid-line.
-        // Rewind to the last newline inside it so a discovery is never handed
-        // out in halves — and never half-skipped by the cursor either. With no
-        // newline at all (a pathological single line far longer than a capped
-        // discovery) the window is taken as-is, because standing still here
-        // would wedge the queue permanently.
         if (start + read < size) {
           const lastBreak = slice.lastIndexOf(0x0a);
           if (lastBreak !== -1) slice = slice.subarray(0, lastBreak + 1);
@@ -979,29 +603,22 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       }
     }
     const budget = options.maxChars ?? DISCOVERY_READ_MAX_CHARS;
-    // Walk the window as raw segments (newline kept) so every kept line's byte
-    // cost is known — the cursor has to land on a line boundary in the FILE,
-    // and `\r\n`, the header block and blank lines all carry bytes the parsed
-    // lines do not. Splitting on "\n" alone (not /\r?\n/) keeps the segments
-    // byte-faithful on Windows; the trim below still normalises the text.
+    // Raw segments (newline kept) so the cursor lands on a byte boundary in the
+    // file; splitting on "\n" alone keeps `\r\n` files byte-faithful.
     const segments = fresh.split("\n").map((part, index, all) => (index < all.length - 1 ? `${part}\n` : part));
     const lines: string[] = [];
     let keptChars = 0;
     let keptBytes = 0;
-    // Bytes seen since the last kept line — headers and blanks are only
-    // consumed once a discovery after them is actually handed out.
     let pendingBytes = 0;
     let stoppedEarly = false;
     for (const segment of segments) {
-      const bytes = Buffer.byteLength(segment, "utf8");
+      const bytes = utf8Bytes(segment);
       const line = segment.trim();
       if (!line.startsWith("- ")) {
         pendingBytes += bytes;
         continue;
       }
       const projected = keptChars + (lines.length ? 1 : 0) + line.length;
-      // Always hand out at least one line even when it alone blows the budget:
-      // refusing to advance would wedge the queue on a single oversized entry.
       if (lines.length && projected > budget) {
         stoppedEarly = true;
         break;
@@ -1011,168 +628,120 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       keptBytes += pendingBytes + bytes;
       pendingBytes = 0;
     }
-    // Nothing was held back, so the whole window (trailing blanks included) is
-    // consumed — otherwise the cursor stops right after the last kept line.
     if (!stoppedEarly) keptBytes += pendingBytes;
     if (options.advance !== false) writeDiscoveryCursor(stoppedEarly ? windowStart + keptBytes : nextCursor);
     if (!lines.length) return { lines: [], text: "" };
-    // Only the single-oversized-line case can still exceed the budget here.
-    return { lines, text: truncateKeepTail(lines.join("\n"), budget) };
+    const joined = lines.join("\n");
+    const text = joined.length > budget ? `…(older content truncated)\n${joined.slice(joined.length - budget)}` : joined;
+    return { lines, text };
   };
 
-  /* ── snapshot + injection ── */
+  /* ── Snapshot and injection ── */
 
   const getSnapshot = (): CtoMemorySnapshot => {
-    pullContext();
-    const dailyLogDate = todayStamp();
-    const dailyLog = readFileOrEmpty(dailyPathFor(dailyLogDate));
-    const updatedCandidates = [statMtimeIso(memoryPath), threadStateUpdatedAt(), statMtimeIso(dailyPathFor(dailyLogDate))]
+    const memory = readNotes("project");
+    const userNotes = readNotes("user");
+    const updatedCandidates = [statMtimeIso(memoryPath), statMtimeIso(userNotesPath()), statMtimeIso(openWorkPath)]
       .filter((value): value is string => Boolean(value))
       .sort();
     return {
-      memory: readMemory(),
-      threadState: readThreadState(),
-      dailyLog,
-      dailyLogDate,
+      memory,
+      memoryBytes: utf8Bytes(memory),
+      memoryLimitBytes: CTO_PROJECT_NOTES_MAX_BYTES,
+      userNotes,
+      userNotesBytes: utf8Bytes(userNotes),
+      userNotesLimitBytes: CTO_USER_NOTES_MAX_BYTES,
+      memoryHash: notesHash(memory),
+      userNotesHash: notesHash(userNotes),
+      openWork: readOpenWork(),
+      threadState: "",
+      dailyLog: "",
+      dailyLogDate: "",
       updatedAt: updatedCandidates.length ? updatedCandidates[updatedCandidates.length - 1] : null,
-      projectBrief: context.briefText(),
-      projectThreads: context.threadsText(),
-      projectItems: context.itemsText(readThreadState()),
+      projectBrief: null,
+      projectThreads: null,
+      projectItems: null,
     };
   };
 
   /**
-   * Labeled memory sections for injection into the reconstruction context.
-   * Only the injected copies are truncated; the on-disk files are untouched.
+   * The memory half of the CTO's per-turn context: project notes, notes about
+   * the person, and open work. Rebuilt on every turn; each title carries the
+   * byte count so the CTO can see how close to the cap it is.
    */
   const buildMemoryContextSections = (): Array<{ title: string; body: string }> => {
-    pullContext();
-    const query = [context.briefText() ?? "", readThreadState()].filter((part) => part.trim().length).join("\n");
-    const memory = readMemory().trim();
-    // Every saveMemory lands in both MEMORY.md and the store, so the store
-    // section would mostly repeat the notes file injected right after it. It
-    // keeps only what the notes file does not say: facts from another machine,
-    // the person's pinned facts, and older facts the notes file evicted.
-    const injectedMemory = memory.length ? truncateKeepTail(memory, MEMORY_INJECT_MAX_CHARS) : "";
-    const injectedLines = new Set(
-      injectedMemory.split(/\r?\n/).map((line) => snippetIdentity(line)).filter((line) => line.length),
-    );
-    const sections: Array<{ title: string; body: string }> = [
-      ...context.injectionSections(query, { exclude: (text) => injectedLines.has(snippetIdentity(text)) }),
+    const project = readNotes("project").trim();
+    const user = readNotes("user").trim();
+    const items = readOpenWork();
+    const open = items.filter((item) => !item.doneAt);
+    const done = items.filter((item) => item.doneAt).slice(0, OPEN_WORK_INJECTED_DONE);
+    const workLines = [
+      ...open.map((item) => `- [ ] ${item.id}: ${item.text}`),
+      ...done.map((item) => `- [x] ${item.id}: ${item.text} (done)`),
     ];
-    if (injectedMemory.length) {
-      sections.push({
-        title: "Durable memory (MEMORY.md)",
-        body: injectedMemory,
-      });
-    }
-    const threadState = readThreadState().trim();
-    if (threadState.length) {
-      // A summary a few turns behind reads as current unless it says how old
-      // it is ("next check 7:01", hours after 7:01). Live project state is
-      // read fresh every turn and wins where the two disagree.
-      const age = describeThreadStateAge(threadStateUpdatedAt());
-      sections.push({
-        title: "Thread state",
-        body: [
-          ...(age ? [`(Written ${age}. Where it disagrees with Live project state, the live state is right.)`] : []),
-          truncateKeepHead(threadState, THREAD_STATE_INJECT_MAX_CHARS),
-        ].join("\n"),
-      });
-    }
-    const daily = readRecentDailyEntries(2, DAILY_INJECT_MAX_CHARS).trim();
-    if (daily.length) {
-      sections.push({ title: "Recent daily log", body: daily });
-    }
-    return sections;
+    return [
+      {
+        title: `## Notes (project) — ${utf8Bytes(readNotes("project"))} of ${CTO_PROJECT_NOTES_MAX_BYTES} bytes`,
+        body: project || "(none yet)",
+      },
+      {
+        title: `## Notes about the person — ${utf8Bytes(readNotes("user"))} of ${CTO_USER_NOTES_MAX_BYTES} bytes`,
+        body: user || "(none yet)",
+      },
+      {
+        title: "## Open work",
+        body: workLines.length ? workLines.join("\n") : "(nothing open)",
+      },
+    ];
   };
+
+  /* ── One-time reset from the v1 files ── */
 
   /**
-   * The one memory section every project chat gets, not just the CTO: facts
-   * tagged with the chat's own lane plus the rolling thread state. Deliberately
-   * narrow — a worker needs what is known about the lane it is standing in, not
-   * the CTO's whole durable memory or its daily journal.
-   *
-   * Returns null when there is nothing lane-scoped to say, so a worker never
-   * receives an empty "here is your project memory" heading.
+   * CTO v2 starts clean: the v1 files (and a v1 MEMORY.md) move into
+   * `legacy-v1/` untouched, nothing is imported. Runs once per project, keyed
+   * on the marker file.
    */
-  const buildLaneMemoryContextSection = (
-    laneId: string,
-  ): { title: string; body: string } | null => {
-    const facts = listFactsForLane(laneId, LANE_FACTS_INJECT_MAX_CHARS).trim();
-    // The CTO's rolling thread state is news, not a standing fact: once it is
-    // days old it describes a conversation that has moved on, and every worker
-    // chat in the project used to open on a month-old one.
-    const threadStateMtime = threadStateUpdatedAt();
-    const threadStateFresh = threadStateMtime !== null
-      && Date.now() - Date.parse(threadStateMtime) <= LANE_THREAD_STATE_MAX_AGE_MS;
-    const threadState = threadStateFresh
-      ? truncateKeepHead(readThreadState().trim(), LANE_THREAD_STATE_INJECT_MAX_CHARS).trim()
-      : "";
-    const blocks: string[] = [];
-    if (facts.length) blocks.push(["Known about this lane:", facts].join("\n"));
-    if (threadState.length) blocks.push(threadState);
-    if (!blocks.length) return null;
-    return {
-      title: "Project memory (ADE, read-only context)",
-      body: blocks.join("\n\n"),
-    };
+  const resetFromV1 = (): void => {
+    const markerPath = path.join(ctoDir, V2_MIGRATION_MARKER);
+    if (fs.existsSync(markerPath)) return;
+    const legacyDir = path.join(ctoDir, LEGACY_DIR);
+    try {
+      const entries = fs.existsSync(ctoDir) ? fs.readdirSync(ctoDir) : [];
+      const hasV1 = entries.some((entry) => LEGACY_ENTRIES.includes(entry) || entry.startsWith("context-store.json"));
+      for (const entry of entries) {
+        const isLegacy = LEGACY_ENTRIES.includes(entry) || entry.startsWith("context-store.json")
+          || (hasV1 && entry === "MEMORY.md");
+        if (!isLegacy) continue;
+        try {
+          moveAside(path.join(ctoDir, entry), legacyDir);
+        } catch (error) {
+          warn("cto_memory.reset_move_failed", error, { entry });
+        }
+      }
+      fs.mkdirSync(ctoDir, { recursive: true });
+      writeTextAtomic(markerPath, `${nowIso()}\n`);
+      if (hasV1) logger?.info?.("cto_memory.reset_from_v1", { movedTo: LEGACY_DIR });
+    } catch (error) {
+      warn("cto_memory.reset_failed", error);
+    }
   };
 
-  let lastContextPullMs = Date.now();
-  const pullContext = (): void => {
-    const nowMs = Date.now();
-    if (nowMs - lastContextPullMs < 30_000) return;
-    lastContextPullMs = nowMs;
-    void context.reconcile();
-  };
-
-  context.migrateFromMemory(readMemory());
-  context.retireLegacyPlaceholders();
-  void context.reconcile();
+  resetFromV1();
 
   return {
-    readMemory,
-    writeMemory,
-    appendMemoryFact,
-    setProjectBrief: (
-      input: { goal?: string; success?: string; constraints?: string; conventions?: string; openLoops?: string },
-    ) => {
-      const current = context.read().brief;
-      const keep = (next: string | undefined, previous: string | undefined): string => next ?? previous ?? "";
-      const brief = context.setBrief({
-        goal: keep(input.goal, current?.goal),
-        success: keep(input.success, current?.success),
-        constraints: keep(input.constraints, current?.constraints),
-        conventions: keep(input.conventions, current?.conventions),
-        openLoops: keep(input.openLoops, current?.openLoops),
-      });
-      void context.reconcile();
-      return brief;
-    },
-    recordThread: (input: { title: string; sessionId: string; laneId: string; objective: string }) => {
-      const thread = context.recordThread(input);
-      void context.reconcile();
-      return thread;
-    },
-    forgetFact,
-    captureFacts,
-    listKnownFacts,
-    listGardeningFacts,
-    applyGardeningPlan,
-    hasRecentDailyEntries,
-    readRecentDailyEntries,
-    listFactsForLane,
-    writeThreadState,
-    threadStateUpdatedAt,
-    appendDailyEntry,
-    appendTurnJournal,
-    searchMemory,
+    readNotes,
+    writeNotes,
+    remember,
+    forget,
+    readOpenWork,
+    trackWork,
+    finishWork,
+    updateOpenWork,
     recordDiscovery,
     readNewDiscoveries,
     getSnapshot,
     buildMemoryContextSections,
-    buildLaneMemoryContextSection,
   };
 }
 

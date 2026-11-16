@@ -273,7 +273,7 @@ the activity feed and the detail panel; they will never appear in
 | Kind | Source | Metadata highlights |
 |---|---|---|
 | `chat.session` | `agentChat.list({ includeAutomation: true })` | `sessionId`, `title`, `provider`, `model`, `chatStatus`, `awaitingInput`, `automationId` |
-| `cto.session` | `cto.getState({ recentLimit }).recentSessions` | `sessionId`, `summary`, `provider`, `model`, `capabilityMode` |
+| `cto.session` | `cto.getState({ recentLimit }).recentSessions` | `sessionId`, `summary`, `provider`, `model`, `capabilityMode`. The v2 host sends `recentSessions: []` (one CTO session, no list of past ones), so this source currently contributes no rows. |
 
 ### Status
 
@@ -541,6 +541,6 @@ these are surfaced on the Activity surface as synthesized rows:
 - [Chat README](../chat/README.md) -- chat transcript persistence is
   separate from the operations timeline but parallel in intent, and
   chat sessions also synthesize Activity feed rows.
-- [Agents README](../agents/README.md) -- CTO session logs are tracked
-  in `cto_session_logs`; the CTO snapshot synthesizes rows into the
-  Activity feed.
+- [Agents README](../agents/README.md) -- the CTO keeps no session log; its
+  conversation lives in the chat transcripts and `readHistory` reads them,
+  and `cto.getState` no longer sends a list of past sessions.

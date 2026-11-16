@@ -312,6 +312,7 @@ import {
 } from "../../lib/chatSessionEvents";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { confirmDialog } from "../ui/dialog/confirm";
+import { ensureRootFullAccessFor } from "./rootFullAccessPrompt";
 import { ImportFloatingBadge } from "../terminals/importSessions/ImportFloatingBadge";
 import {
   readImportedFrom,
@@ -16612,10 +16613,17 @@ export function AgentChatPane({
     sessionProvider,
   ]);
   const handleClaudeModeChange = useCallback((mode: AgentChatClaudePermissionMode) => {
-    void updateNativeControls({
-      interactionMode: mode === "plan" ? "plan" : "default",
-      claudePermissionMode: mode,
-    });
+    void (async () => {
+      // As root, Claude takes Full access only on a machine the person set
+      // aside for agents: ask once for the chat's machine.
+      const next = mode === "bypassPermissions" && !(await ensureRootFullAccessFor(chatRuntimePinRef.current))
+        ? "acceptEdits"
+        : mode;
+      void updateNativeControls({
+        interactionMode: next === "plan" ? "plan" : "default",
+        claudePermissionMode: next,
+      });
+    })();
   }, [updateNativeControls]);
 
   const handleReasoningEffortChange = useCallback((nextReasoningEffort: string | null) => {
@@ -19823,7 +19831,14 @@ export function AgentChatPane({
             onExecutionModeChange={handleExecutionModeChange}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
             onClaudeModeChange={handleClaudeModeChange}
-            onClaudePermissionModeChange={(value) => { void updateNativeControls({ claudePermissionMode: value }); }}
+            onClaudePermissionModeChange={(value) => {
+              void (async () => {
+                const next = value === "bypassPermissions" && !(await ensureRootFullAccessFor(chatRuntimePinRef.current))
+                  ? "acceptEdits"
+                  : value;
+                void updateNativeControls({ claudePermissionMode: next });
+              })();
+            }}
             onCodexPresetChange={(next) => { void updateNativeControls(next); }}
             onCodexApprovalPolicyChange={(value) => { void updateNativeControls({ codexApprovalPolicy: value }); }}
             onCodexSandboxChange={(value) => { void updateNativeControls({ codexSandbox: value }); }}

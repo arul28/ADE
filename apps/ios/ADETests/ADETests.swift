@@ -14722,7 +14722,11 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(opencode.interruptContinues)
     XCTAssertEqual(opencode.agentLabel, "OpenCode")
 
-    for provider in ["droid", "pi", ""] {
+    let pi = WorkActiveSendCapability.forProvider("pi")
+    XCTAssertEqual(pi.modes, [.inline, .queue])
+    XCTAssertFalse(pi.interruptContinues)
+
+    for provider in ["droid", ""] {
       let capability = WorkActiveSendCapability.forProvider(provider)
       XCTAssertEqual(capability.modes, [.queue], "expected queue-only for \(provider)")
       XCTAssertEqual(capability.atomicDispatchModes, [], "expected no atomic dispatch for \(provider)")
@@ -14735,11 +14739,11 @@ final class ADETests: XCTestCase {
   /// and OpenCode is eligible through its inbox, so a list derived from either
   /// atomic mode would get a provider wrong.
   func testCtoLiveRedirectProvidersMirrorDesktopContract() {
-    XCTAssertEqual(ctoLiveRedirectProviders, ["claude", "codex", "cursor", "opencode"])
-    for provider in ["claude", "claude-code", "anthropic", "codex", "openai", "cursor", "cursor-agent", "opencode"] {
+    XCTAssertEqual(ctoLiveRedirectProviders, ["claude", "codex", "cursor", "opencode", "copilot"])
+    for provider in ["claude", "claude-code", "anthropic", "codex", "openai", "cursor", "cursor-agent", "opencode", "copilot"] {
       XCTAssertTrue(providerSupportsLiveRedirect(provider), "expected \(provider) to be CTO-eligible")
     }
-    for provider in ["droid", "pi", "qwen", "kimi", "grok", "copilot", ""] {
+    for provider in ["droid", "qwen", "kimi", "grok", ""] {
       XCTAssertFalse(providerSupportsLiveRedirect(provider), "expected \(provider) to be rejected")
     }
     XCTAssertFalse(WorkActiveSendCapability.forProvider("codex").modes.contains(.interrupt))
@@ -19036,35 +19040,48 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(plain.supportsCodexFastMode)
   }
 
-  func testCtoMemoryDecodesFullPayload() throws {
+  func testCtoMemoryDecodesV2PayloadAndIgnoresV1Keys() throws {
     let payload: [String: Any] = [
-      "memory": "- Prefers monochrome UI\n- Ships mac-only releases",
-      "threadState": "Goal: finish CTO revamp. Open loop: iOS build.",
-      "dailyLog": "09:12 reviewed onboarding card",
-      "dailyLogDate": "2026-07-04",
+      "memory": "- Prefers monochrome UI
+- Ships mac-only releases",
+      "memoryBytes": 46,
+      "memoryLimitBytes": 4096,
+      "userNotes": "- Short answers",
+      "userNotesLimitBytes": 2048,
+      "memoryHash": "abc",
+      "userNotesHash": "def",
+      "openWork": [
+        ["id": "ow-1", "text": "Land the fix", "createdAt": "2026-11-14T09:00:00Z", "doneAt": NSNull(), "addedBy": "cto"],
+        ["id": "ow-2", "text": "Ship it", "createdAt": "2026-11-14T09:00:00Z", "doneAt": "2026-11-14T10:00:00Z", "addedBy": "user"],
+      ],
+      // An older host's v1 keys still decode as noise.
+      "threadState": "",
+      "dailyLog": "",
+      "projectBrief": NSNull(),
       "updatedAt": "2026-07-04T12:00:00.000Z",
     ]
     let data = try JSONSerialization.data(withJSONObject: payload)
     let memory = try JSONDecoder().decode(CtoMemory.self, from: data)
 
-    XCTAssertTrue(memory.memory.contains("monochrome"))
-    XCTAssertTrue(memory.threadState.contains("Open loop"))
-    XCTAssertEqual(memory.dailyLogDate, "2026-07-04")
-    XCTAssertEqual(memory.updatedAt, "2026-07-04T12:00:00.000Z")
-    XCTAssertNil(memory.projectBrief)
+    XCTAssertEqual(memory.noteLines, ["Prefers monochrome UI", "Ships mac-only releases"])
+    XCTAssertEqual(memory.memoryLimitBytes, 4096)
+    XCTAssertEqual(memory.userNotesLimitBytes, 2048)
+    XCTAssertEqual(memory.memoryHash, "abc")
+    XCTAssertEqual(memory.userNotesHash, "def")
+    XCTAssertEqual(memory.openWork?.map(\.isDone), [false, true])
     XCTAssertFalse(memory.isEmpty)
   }
 
   func testCtoMemoryDecodesPartialAndEmptyPayload() throws {
     // A host that only returns `memory` (missing/null other fields) must still
-    // decode — the tolerant model defaults the rest to empty strings.
-    let partial: [String: Any] = ["memory": "just one fact", "threadState": NSNull()]
+    // decode — every v2 field is optional.
+    let partial: [String: Any] = ["memory": "just one fact", "userNotes": NSNull(), "openWork": NSNull()]
     let partialData = try JSONSerialization.data(withJSONObject: partial)
     let partialMemory = try JSONDecoder().decode(CtoMemory.self, from: partialData)
     XCTAssertEqual(partialMemory.memory, "just one fact")
-    XCTAssertEqual(partialMemory.threadState, "")
-    XCTAssertEqual(partialMemory.dailyLog, "")
-    XCTAssertNil(partialMemory.updatedAt)
+    XCTAssertNil(partialMemory.userNotes)
+    XCTAssertNil(partialMemory.openWork)
+    XCTAssertNil(partialMemory.memoryHash)
     XCTAssertFalse(partialMemory.isEmpty)
 
     let emptyData = try JSONSerialization.data(withJSONObject: [String: Any]())
@@ -19234,10 +19251,10 @@ final class ADETests: XCTestCase {
       .thread
     )
 
-    // No identity yet: the offline case stays on the spinner (the top bar owns
-    // the connection dot); a reachable host surfaces the failure.
+    // No identity yet: an unreachable machine is the asleep "offline" state;
+    // a reachable host surfaces the failure.
     XCTAssertEqual(ctoRootContent(identity: nil, loadError: nil, hostUnreachable: false), .loading)
-    XCTAssertEqual(ctoRootContent(identity: nil, loadError: "boom", hostUnreachable: true), .loading)
+    XCTAssertEqual(ctoRootContent(identity: nil, loadError: "boom", hostUnreachable: true), .offline)
     XCTAssertEqual(
       ctoRootContent(identity: nil, loadError: "boom", hostUnreachable: false),
       .loadError("boom")

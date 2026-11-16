@@ -1016,6 +1016,9 @@ struct AgentChatScheduledWorkItem: Codable, Identifiable, Equatable {
   var outcomeSummary: String?
   /// Provenance for rows ADE armed itself. Older hosts omit it.
   var source: String? = nil
+  /// The row's own pause switch (the status also reads "paused" when the
+  /// chat-wide pause holds it). Older hosts omit it.
+  var paused: Bool? = nil
 }
 
 struct AgentChatCancelScheduledWorkResult: Codable, Equatable {
@@ -1944,6 +1947,40 @@ struct CtoModelPreferences: Codable, Hashable {
   var provider: String
   var model: String
   var reasoningEffort: String?
+  /// The exact catalog id (`anthropic/claude-sonnet-5`). Older hosts and the
+  /// first-pick patch omit it; the host resolves it from the registry.
+  var modelId: String? = nil
+  /// Which signed-in account runs it (Claude and Codex only). Absent is the
+  /// machine's default account; a patch without it keeps the stored one.
+  var instanceId: String? = nil
+}
+
+/// Mirrors desktop `CtoAvatarLook`: how the CTO looks. Every field decodes
+/// tolerantly (a value this build does not know falls back to the default),
+/// so a newer desktop's shape or eyes never breaks the identity decode.
+struct CtoAvatarLook: Codable, Hashable {
+  var shape: String
+  var color: String
+  var eyes: String
+  var energy: String
+
+  static let `default` = CtoAvatarLook(shape: "pebble", color: "#7C9CFF", eyes: "caret", energy: "lively")
+
+  init(shape: String, color: String, eyes: String, energy: String) {
+    self.shape = shape
+    self.color = color
+    self.eyes = eyes
+    self.energy = energy
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    func str(_ key: CodingKeys) -> String? { (try? c.decodeIfPresent(String.self, forKey: key)).flatMap { $0 } }
+    shape = str(.shape) ?? Self.default.shape
+    color = str(.color) ?? Self.default.color
+    eyes = str(.eyes) ?? Self.default.eyes
+    energy = str(.energy) ?? Self.default.energy
+  }
 }
 
 /// Mirrors desktop `CtoOnboardingState`. There is no iOS setup flow any more,
@@ -1970,6 +2007,15 @@ struct CtoIdentity: Codable, Hashable, Identifiable {
   /// normalizes a preference on any other provider back to null, so this is a
   /// real state on a healthy install, not just a decoding tolerance.
   var modelPreferences: CtoModelPreferences?
+  /// Backup models, in order (at most three). Older hosts omit it.
+  var fallbackModels: [CtoModelPreferences]? = nil
+  /// How the CTO looks. Absent means the default look.
+  var avatar: CtoAvatarLook? = nil
+  /// "focused" | "friendly" | "playful". Absent means focused.
+  var personality: String? = nil
+  /// The person's IANA time zone. Routines run on it, so they keep their hour
+  /// when the CTO lives on a computer in another zone. Older hosts omit it.
+  var timeZone: String? = nil
   var updatedAt: String?
 
   /// Flat accessor used by UI code.
@@ -1991,6 +2037,10 @@ struct CtoIdentityPatch: Codable, Hashable {
   var systemPromptExtension: String?
   var onboardingState: CtoOnboardingState?
   var modelPreferences: CtoModelPreferences?
+  var fallbackModels: [CtoModelPreferences]?
+  var avatar: CtoAvatarLook?
+  var personality: String?
+  var timeZone: String? = nil
 }
 
 /// Mirrors desktop `CtoSessionLogEntry`.
@@ -2051,38 +2101,56 @@ struct CtoAttention: Codable, Hashable {
   static let idle = CtoAttention(status: .idle, awaitingInput: false, since: nil)
 }
 
-/// Returned by the `cto.getMemory` sync command: local notes, the rolling
-/// thread state, today's daily log, and the project brief, facts, and directed
-/// threads when the host sends them. Missing keys stay nil so an older host
-/// still decodes.
+/// One item of the CTO's open work (desktop `CtoOpenWorkItem`).
+struct CtoOpenWorkItem: Codable, Hashable, Identifiable {
+  var id: String
+  var text: String
+  var createdAt: String?
+  var doneAt: String?
+  var addedBy: String?
+
+  var isDone: Bool { !(doneAt ?? "").isEmpty }
+}
+
+/// Returned by `cto.getMemory`, `cto.updateNotes` and `cto.updateOpenWork`
+/// (desktop `CtoMemorySnapshot`): the project notes, the notes about the
+/// person, their hashes for conflict-safe writes, and the open work. Every
+/// key but `memory` is v2 and optional, so an older host still decodes; the
+/// v1-only keys it may still send are ignored.
 struct CtoMemory: Codable, Hashable {
   var memory: String
-  var threadState: String
-  var dailyLog: String
-  var dailyLogDate: String
+  var memoryBytes: Int?
+  var memoryLimitBytes: Int?
+  var userNotes: String?
+  var userNotesBytes: Int?
+  var userNotesLimitBytes: Int?
+  var memoryHash: String?
+  var userNotesHash: String?
+  var openWork: [CtoOpenWorkItem]?
   var updatedAt: String?
-  var projectBrief: String?
-  var projectThreads: String?
-  var projectItems: String?
 
   init(
     memory: String = "",
-    threadState: String = "",
-    dailyLog: String = "",
-    dailyLogDate: String = "",
-    updatedAt: String? = nil,
-    projectBrief: String? = nil,
-    projectThreads: String? = nil,
-    projectItems: String? = nil
+    memoryBytes: Int? = nil,
+    memoryLimitBytes: Int? = nil,
+    userNotes: String? = nil,
+    userNotesBytes: Int? = nil,
+    userNotesLimitBytes: Int? = nil,
+    memoryHash: String? = nil,
+    userNotesHash: String? = nil,
+    openWork: [CtoOpenWorkItem]? = nil,
+    updatedAt: String? = nil
   ) {
     self.memory = memory
-    self.threadState = threadState
-    self.dailyLog = dailyLog
-    self.dailyLogDate = dailyLogDate
+    self.memoryBytes = memoryBytes
+    self.memoryLimitBytes = memoryLimitBytes
+    self.userNotes = userNotes
+    self.userNotesBytes = userNotesBytes
+    self.userNotesLimitBytes = userNotesLimitBytes
+    self.memoryHash = memoryHash
+    self.userNotesHash = userNotesHash
+    self.openWork = openWork
     self.updatedAt = updatedAt
-    self.projectBrief = projectBrief
-    self.projectThreads = projectThreads
-    self.projectItems = projectItems
   }
 
   init(from decoder: Decoder) throws {
@@ -2090,25 +2158,59 @@ struct CtoMemory: Codable, Hashable {
     func str(_ key: CodingKeys) -> String? {
       (try? c.decodeIfPresent(String.self, forKey: key)).flatMap { $0 }
     }
+    func int(_ key: CodingKeys) -> Int? {
+      (try? c.decodeIfPresent(Int.self, forKey: key)).flatMap { $0 }
+    }
     memory = str(.memory) ?? ""
-    threadState = str(.threadState) ?? ""
-    dailyLog = str(.dailyLog) ?? ""
-    dailyLogDate = str(.dailyLogDate) ?? ""
+    memoryBytes = int(.memoryBytes)
+    memoryLimitBytes = int(.memoryLimitBytes)
+    userNotes = str(.userNotes)
+    userNotesBytes = int(.userNotesBytes)
+    userNotesLimitBytes = int(.userNotesLimitBytes)
+    memoryHash = str(.memoryHash)
+    userNotesHash = str(.userNotesHash)
+    openWork = (try? c.decodeIfPresent([CtoOpenWorkItem].self, forKey: .openWork)).flatMap { $0 }
     updatedAt = str(.updatedAt)
-    projectBrief = str(.projectBrief)
-    projectThreads = str(.projectThreads)
-    projectItems = str(.projectItems)
   }
 
-  /// True when the host returned no substantive memory content yet.
+  /// The project notes, one per line, without list markers.
+  var noteLines: [String] { ctoNoteLines(memory) }
+
+  /// True when the host returned no notes and no open work yet.
   var isEmpty: Bool {
     memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && threadState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && dailyLog.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && (projectBrief ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && (projectThreads ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && (projectItems ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (userNotes ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (openWork ?? []).isEmpty
   }
+}
+
+/// Notes text as lines: list markers dropped, blanks skipped.
+func ctoNoteLines(_ text: String?) -> [String] {
+  (text ?? "")
+    .split(whereSeparator: \.isNewline)
+    .map { line -> String in
+      var value = line.trimmingCharacters(in: .whitespaces)
+      if value.hasPrefix("- ") || value.hasPrefix("* ") { value = String(value.dropFirst(2)) }
+      return value.trimmingCharacters(in: .whitespaces)
+    }
+    .filter { !$0.isEmpty }
+}
+
+/// The start of the error a notes write gets when the file changed since the
+/// editor loaded it (desktop `CTO_NOTES_CHANGED_ERROR`).
+let ctoNotesChangedError = "Notes changed since you opened them."
+
+/// What `cto.refreshContext` did. A busy CTO is refreshed when its turn ends.
+struct CtoRefreshContextResult: Codable, Hashable {
+  var refreshed: Bool
+  var reason: String?
+}
+
+/// What `chat.runScheduledWorkNow` answered. Not fired (the chat is busy, the
+/// row is gone) is an answer, not a throw.
+struct AgentChatRunScheduledWorkNowResult: Codable, Hashable {
+  var fired: Bool?
+  var reason: String?
 }
 
 // MARK: Linear sync
@@ -2667,6 +2769,13 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   /// "info"` with `status: "claude_keychain_retry"`; promoted so the timeline
   /// can fold the turn's FAILED rows and draw one quiet line.
   case claudeKeychainRetry = "claude_keychain_retry"
+  /// ADE gave the CTO a fresh provider thread (`status:
+  /// "cto_context_refreshed"`): one hairline, "Fresh context".
+  case ctoContextRefreshed = "cto_context_refreshed"
+  /// Claude dropped a chat to Accept edits because ADE runs as root on its
+  /// machine (`status: "claude_root_full_access"`). Promoted so the timeline
+  /// can draw the "Allow" control, not a dead sentence.
+  case claudeRootFullAccess = "claude_root_full_access"
 
   // The host's noticeKind union (see apps/desktop/src/shared/types/chat.ts) grows
   // over time. `system_notice.noticeKind` is a required, non-optional decode, so an
@@ -2712,6 +2821,8 @@ func normalizedSystemNoticeKind(from status: String?) -> AgentChatNoticeKind? {
   case AgentChatNoticeKind.crossMachineHandoffArrived.rawValue: return .crossMachineHandoffArrived
   case AgentChatNoticeKind.userNotified.rawValue: return .userNotified
   case AgentChatNoticeKind.claudeKeychainRetry.rawValue: return .claudeKeychainRetry
+  case AgentChatNoticeKind.ctoContextRefreshed.rawValue: return .ctoContextRefreshed
+  case AgentChatNoticeKind.claudeRootFullAccess.rawValue: return .claudeRootFullAccess
   default: return nil
   }
 }

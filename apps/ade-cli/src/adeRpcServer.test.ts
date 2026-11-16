@@ -643,13 +643,11 @@ function createRuntime() {
     } as any,
     fileService: null,
     ctoMemoryService: {
-      appendMemoryFact: vi.fn((fact: string, _tags?: unknown) => ({ saved: true, fact })),
-      searchMemory: vi.fn(() => [{ file: "MEMORY.md", date: null, line: 1, snippet: "a fact" }]),
       getSnapshot: vi.fn(() => ({
-        memory: "# CTO Durable Memory\n\n## Facts\n\n- a fact",
-        threadState: "# CTO Thread State\n\nrolling summary",
+        memory: "- a fact\n",
+        threadState: "",
         dailyLog: "",
-        dailyLogDate: "2026-07-04",
+        dailyLogDate: "",
         updatedAt: "2026-07-04T09:00:00.000Z",
       })),
     } as any,
@@ -2264,9 +2262,9 @@ describe("adeRpcServer", () => {
     expect(names).toEqual(
       expect.arrayContaining([
         "get_cto_state",
-        "saveMemory",
-        "searchMemory",
-        "readMemory",
+        "remember",
+        "forget",
+        "readHistory",
         "listChats",
         "spawnChat",
         "getChatStatus",
@@ -2286,29 +2284,6 @@ describe("adeRpcServer", () => {
     expect(names).not.toContain("spawn_worker");
     expect(names).not.toContain("listLinearWorkflows");
     expect(names).not.toContain("getLinearSyncDashboard");
-  });
-
-  it("dispatches CTO memory tools through ctoMemoryService", async () => {
-    const { runtime } = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
-    await initialize(handler, { callerId: "cto-1", role: "cto" });
-
-    const saved = await callTool(handler, "saveMemory", { fact: "Prefer sentence case." });
-    // An untagged save passes null tags and the default kind/pin options.
-    expect((runtime.ctoMemoryService as any).appendMemoryFact).toHaveBeenCalledWith(
-      "Prefer sentence case.",
-      null,
-      { kind: null, pin: false },
-    );
-    expect(saved.structuredContent).toEqual(
-      expect.objectContaining({ success: true, saved: true, file: "MEMORY.md" }),
-    );
-
-    const read = await callTool(handler, "readMemory", {});
-    expect((runtime.ctoMemoryService as any).getSnapshot).toHaveBeenCalled();
-    expect(read.structuredContent).toEqual(
-      expect.objectContaining({ success: true, memory: expect.stringContaining("a fact") }),
-    );
   });
 
   it("stamps who is calling on chat actions so an agent cannot pose as the user or the CTO", async () => {

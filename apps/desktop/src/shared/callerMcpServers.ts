@@ -1027,9 +1027,16 @@ export function callerMcpClaudeDisallowedTools(servers: CallerMcpServers | null 
  * OpenCode 2.0 config shape (`mcp.servers.<name>`): an HTTP/SSE server is
  * "remote", a stdio server is "local" with `command` as a single argv array.
  */
+/**
+ * OpenCode 2.x `Mcp.TimeoutConfig`: milliseconds per phase. A bare number is
+ * NOT accepted: OpenCode skips the whole server as malformed (logged only as a
+ * "configuration normalization diagnostic"), so its tools silently vanish.
+ */
+export type OpenCodeMcpTimeoutConfig = { startup?: number; catalog?: number; execution?: number };
+
 export type OpenCodeMcpServerConfig =
-  | { type: "local"; command: string[]; environment?: Record<string, string>; disabled: false; codemode?: boolean }
-  | { type: "remote"; url: string; headers?: Record<string, string>; disabled: false; codemode?: boolean };
+  | { type: "local"; command: string[]; environment?: Record<string, string>; disabled: false; codemode?: boolean; timeout?: OpenCodeMcpTimeoutConfig }
+  | { type: "remote"; url: string; headers?: Record<string, string>; disabled: false; codemode?: boolean; timeout?: OpenCodeMcpTimeoutConfig };
 
 export function callerMcpServersToOpenCodeConfig(
   servers: CallerMcpServers,

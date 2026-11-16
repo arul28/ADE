@@ -33,6 +33,8 @@ import type {
   AgentChatSessionCapabilities,
   AgentChatSessionSummary,
   AgentChatSetScheduledWorkPausedResult,
+  AgentChatSetScheduledWorkItemPausedResult,
+  AgentChatRunScheduledWorkNowResult,
   AgentChatSteerResult,
   AutoLaneIdentitySuggestion,
   DraftClaimArgs,
@@ -272,6 +274,14 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         guardPin("parallelLaunchState.set", pin);
         await call("chat.setParallelLaunchState", args, undefined, false);
       },
+    },
+    getRootFullAccess: async (pin?: RuntimePinArg) => {
+      guardPin("getRootFullAccess", pin);
+      return await callRequired<{ applies: boolean; allowed: boolean }>("chat.getRootFullAccess", {}, "Chat", true);
+    },
+    setRootFullAccess: async (args: { allowed: boolean }, pin?: RuntimePinArg) => {
+      guardPin("setRootFullAccess", pin);
+      return await callRequiredMutation<{ applies: boolean; allowed: boolean }>("chat.setRootFullAccess", args);
     },
     fastModePolicy: {
       get: async () => {
@@ -637,6 +647,18 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("switchAccount", pin);
       return await callRequired<AgentChatSwitchAccountResult>(
         "chat.switchAccount", args, "Chat", false,
+      );
+    },
+    setScheduledWorkItemPaused: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("setScheduledWorkItemPaused", pin);
+      return await callRequired<AgentChatSetScheduledWorkItemPausedResult>(
+        "chat.setScheduledWorkItemPaused", args, "Scheduled work", false,
+      );
+    },
+    runScheduledWorkNow: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("runScheduledWorkNow", pin);
+      return await callRequired<AgentChatRunScheduledWorkNowResult>(
+        "chat.runScheduledWorkNow", args, "Scheduled work", false,
       );
     },
     setScheduledWorkPaused: async (args: unknown, pin?: RuntimePinArg) => {

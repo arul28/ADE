@@ -1,0 +1,612 @@
+/*
+ * The CTO tab. One bold thing, the avatar; everything around it quiet.
+ * `--cto-accent` is the avatar's colour and stands in for every accent here.
+ */
+
+/* The page and the narrow-window sheet (portalled outside the page) both
+ * carry the variables; the panel sets its own `--cto-accent` inline. */
+.ade-cto-page,
+.ade-cto-panel {
+  --cto-accent: #7c9cff;
+  --cto-accent-soft: color-mix(in srgb, var(--cto-accent) 9%, transparent);
+  --cto-accent-line: color-mix(in srgb, var(--cto-accent) 26%, transparent);
+  --cto-rule: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  --cto-text-2: color-mix(in srgb, var(--color-fg) 62%, transparent);
+  --cto-text-3: color-mix(in srgb, var(--color-fg) 42%, transparent);
+}
+
+.ade-cto-page {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background:
+    radial-gradient(70% 44% at 50% -12%, color-mix(in srgb, var(--cto-accent) 11%, transparent), transparent 72%),
+    var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+}
+
+/* Light themes: the muted greys need more ink to stay legible. */
+[data-theme="light"] .ade-cto-page,
+[data-theme="light"] .ade-cto-panel {
+  --cto-text-2: color-mix(in srgb, var(--color-fg) 70%, transparent);
+  --cto-text-3: color-mix(in srgb, var(--color-fg) 54%, transparent);
+  --cto-accent-soft: color-mix(in srgb, var(--cto-accent) 12%, transparent);
+}
+
+.ade-cto-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.ade-cto-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ade-cto-stage[hidden] {
+  display: none;
+}
+
+.ade-cto-settings {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── Header ── */
+
+.ade-cto-header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  flex-shrink: 0;
+  height: 52px;
+  padding: 0 12px;
+}
+
+.ade-cto-pill {
+  grid-column: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(520px, 60vw);
+  height: 34px;
+  padding: 0 14px 0 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 9%, transparent);
+  background: color-mix(in srgb, var(--color-card, var(--color-bg)) 78%, transparent);
+  box-shadow: 0 10px 28px -18px color-mix(in srgb, var(--cto-accent) 70%, transparent);
+  white-space: nowrap;
+}
+
+.ade-cto-pill-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 620;
+  letter-spacing: -0.005em;
+}
+
+.ade-cto-pill-sep {
+  color: var(--cto-text-3);
+}
+
+.ade-cto-pill-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--cto-text-2);
+}
+
+.ade-cto-header-actions {
+  grid-column: 3;
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.ade-cto-header-btn {
+  background: transparent;
+}
+
+.ade-cto-header-btn[aria-pressed="true"] {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+
+.ade-cto-header-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── Side panel ── */
+
+.ade-cto-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 340px;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--cto-rule);
+  background: color-mix(in srgb, var(--color-fg) 1.5%, transparent);
+}
+
+.ade-cto-panel[data-sheet="true"] {
+  width: 100%;
+  height: 100%;
+  border-left: 0;
+  background: transparent;
+}
+
+.ade-cto-panel-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1;
+  background: transparent;
+}
+
+.ade-cto-profile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 34px 20px 4px;
+  text-align: center;
+}
+
+.ade-cto-profile-halo {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  width: 190px;
+  height: 160px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--cto-accent) 24%, transparent), transparent);
+  pointer-events: none;
+}
+
+.ade-cto-profile > :not(.ade-cto-profile-halo) {
+  position: relative;
+}
+
+.ade-cto-profile-name {
+  margin: 16px 0 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+}
+
+.ade-cto-profile-status {
+  max-width: 100%;
+  margin: 4px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--cto-text-2);
+}
+
+.ade-cto-tabs {
+  margin-top: 18px;
+}
+
+.ade-cto-tabs > button {
+  min-width: 92px;
+  height: 26px;
+}
+
+.ade-cto-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 20px 14px 28px;
+}
+
+.ade-cto-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ade-cto-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ade-cto-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--color-fg) 82%, transparent);
+}
+
+.ade-cto-section-head .ade-cto-section-title {
+  padding-right: 0;
+}
+
+.ade-cto-section-count {
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--cto-text-3);
+}
+
+.ade-cto-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--cto-text-3);
+  cursor: pointer;
+}
+
+.ade-cto-link:hover {
+  color: var(--color-fg);
+}
+
+.ade-cto-empty,
+.ade-cto-more {
+  margin: 0;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--cto-text-3, var(--kit-text-3));
+}
+
+/* An empty list: a glyph and two or three words, one line. */
+.ade-cto-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 28px;
+}
+
+.ade-cto-empty[data-tone="crit"] {
+  color: var(--kit-crit);
+}
+
+/* Every compact row shares one grid: 8px inset, a 16px glyph column, 10px gap. */
+.ade-cto-empty-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  justify-content: center;
+  width: 16px;
+  opacity: 0.8;
+}
+
+.ade-cto-empty-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-cto-now-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--cto-accent-soft);
+  font-size: 12.5px;
+  color: color-mix(in srgb, var(--color-fg) 80%, transparent);
+}
+
+.ade-cto-now-line > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-cto-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ade-cto-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+
+.ade-cto-row:hover {
+  background: var(--kit-hover, color-mix(in srgb, var(--color-fg) 5%, transparent));
+}
+
+.ade-cto-row:focus-visible {
+  outline: 1px solid var(--cto-accent-line);
+  outline-offset: -1px;
+}
+
+.ade-cto-row-icon {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  color: var(--cto-text-2);
+}
+
+.ade-cto-row-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ade-cto-row-title,
+.ade-cto-row-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-cto-row-title {
+  font-size: 12.5px;
+  color: color-mix(in srgb, var(--color-fg) 88%, transparent);
+}
+
+.ade-cto-row-detail {
+  font-size: 11px;
+  color: var(--cto-text-3);
+}
+
+.ade-cto-row-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--cto-text-3);
+}
+
+.ade-cto-row-meta[data-state="live"] {
+  color: color-mix(in srgb, var(--cto-accent) 85%, var(--color-fg));
+}
+
+.ade-cto-row-meta[data-state="warn"] {
+  color: var(--kit-warn, #f59e0b);
+}
+
+.ade-cto-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 2px 8px;
+  list-style: none;
+}
+
+.ade-cto-notes li {
+  position: relative;
+  min-width: 0;
+  padding-left: 26px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--color-fg) 72%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-cto-notes li::before {
+  content: "";
+  position: absolute;
+  top: calc(0.75em - 2px);
+  left: 6px;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cto-accent) 70%, transparent);
+}
+
+/* ── Library ── */
+
+.ade-cto-library {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ade-cto-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 4px;
+}
+
+.ade-cto-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 25px;
+  padding: 0 11px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 9%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--cto-text-2);
+  cursor: pointer;
+  transition: background-color 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+
+.ade-cto-filter:hover {
+  color: var(--color-fg);
+}
+
+.ade-cto-filter[aria-pressed="true"] {
+  border-color: var(--cto-accent-line);
+  background: color-mix(in srgb, var(--cto-accent) 14%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-cto-filter:focus-visible {
+  outline: 1px solid var(--cto-accent-line);
+  outline-offset: 1px;
+}
+
+.ade-cto-filter-count {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--cto-text-3);
+}
+
+/* ── Welcome and every whole-page state ──
+ * One layout for all of them: the avatar carries the state, then the name, a
+ * one-line status word, and at most one control. No paragraphs. */
+
+.ade-cto-welcome,
+.ade-cto-waking {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: auto;
+}
+
+.ade-cto-welcome-inner,
+.ade-cto-waking-inner {
+  display: flex;
+  width: 100%;
+  max-width: 360px;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.ade-cto-welcome-avatar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 190px;
+  height: 160px;
+}
+
+.ade-cto-welcome-avatar .ade-cto-profile-halo {
+  top: 0;
+}
+
+.ade-cto-welcome-avatar > :not(.ade-cto-profile-halo) {
+  position: relative;
+}
+
+.ade-cto-welcome-title,
+.ade-cto-waking-title {
+  max-width: 100%;
+  margin: 12px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.018em;
+}
+
+.ade-cto-waking-title {
+  font-size: 17px;
+}
+
+/* The status word under the name: one line, the avatar says the rest. */
+.ade-cto-status-word {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--cto-text-2);
+}
+
+.ade-cto-status-word > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-cto-status-word[data-tone="warn"] {
+  color: color-mix(in srgb, var(--kit-warn, #f59e0b) 85%, var(--color-fg));
+}
+
+.ade-cto-status-word[data-tone="crit"] {
+  color: color-mix(in srgb, var(--kit-crit, #ef4444) 85%, var(--color-fg));
+}
+
+.ade-cto-welcome-picker {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin-top: 20px;
+  text-align: left;
+}
+
+.ade-cto-welcome-inner > .kit-btn,
+.ade-cto-waking-inner > .kit-btn {
+  margin-top: 16px;
+}
+
+.ade-cto-welcome-wake {
+  animation: ade-cto-wake-in 420ms cubic-bezier(0.3, 0.7, 0.4, 1) both;
+}
+
+@keyframes ade-cto-wake-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-cto-welcome-wake { animation: none; }
+}

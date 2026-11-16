@@ -669,8 +669,17 @@ a boolean.
 **CTO** (`cto.*`)
 - `ensureSession`, `getState`, `updateIdentity` — resolve the single CTO
   chat session and read/patch its identity.
-- `getMemory` — return the CTO's memory snapshot (durable `MEMORY.md`,
-  rolling thread state, and today's daily log) for the phone's Memory card.
+- `getHomeMachine`, `setHomeMachine` — read or choose the machine that owns this
+  project's CTO.
+- `getMemory` — return the CTO's memory snapshot (project notes, notes about the
+  person, and the open-work list) for the phone's Memory card. The v1-only fields
+  are sent empty so older phones keep decoding.
+- `updateNotes`, `updateOpenWork` — queueable writes for one notes file and the
+  open-work list, used by the hosted web client's CTO page and settings.
+- `refreshContext` — give the CTO a fresh provider thread; the ADE session and
+  everything it remembers stay.
+- `previewSystemPrompt` — the assembled prompt the hosted web client's CTO
+  settings read.
 - `getAttention` — whether the CTO thread is blocked on the user, for the
   badge on the phone's CTO tab. It delegates to the canonical
   `agentChatService.getCtoAttention()` (the same implementation behind

@@ -67,6 +67,8 @@ modules). IPC rows are a separate launch with `ADE_PERF_RUN_ID` set.
 | Top bar: re-renders | 2 / 2 per 15 s | 5 per 15 s |
 | Work area: re-renders | 0 / 0 per 15 s | 5 per 12 s |
 | React commits on Work, idle | 0.5/s / 0.7/s | 10/s (the macOS row is while streaming) |
+| CTO v2 page (thread, profile panel with the avatar), idle after load: main-thread work, long tasks on opening, elements | *new* 0.4-0.7 / 0.4-0.5 ms/s; no long task on opening (three passes); 1,827 elements against Work's 1,838 in the same session (the demo project's long chat list is in both). `route-sweep.mjs` with `CDP_PORT=9413`, dev build on its own pipe, sync off, a throwaway demo project, 2026-11-14, branch `ade/cto-context-skill-learning` | 30 ms/s; 3k elements |
+| CTO avatar while the CTO works or writes: frames drawn | *new* glides (before): one frame per display refresh for the whole turn (56/s at the bench's 60 Hz; the refresh rate on a 120 or 240 Hz screen). Stepped on one grid per state (after): working 23.0 / 23.2, thinking 19.8 / 20.0 frames/s; idle 0.8/s both. Main thread about 7 ms/s for two avatars (the timer's seeks), was about 1. Measured in headless Edge loading the real `ctoAvatar.css` and `animationPhaseAlignment.ts` from the dev server, two avatars (95 and 148 px), 6 s per run; the dev window itself draws nothing while covered, so it cannot be traced in place | 25/s |
 
 ### Processes (CPU and memory)
 

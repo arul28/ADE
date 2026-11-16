@@ -1,3 +1,4 @@
+import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../shared/ctoAccountCopy";
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { MessagesIntegrationSettings, MessagesIntegrationStatus } from "../shared/types/messagesIntegration";
 import type { BuiltInBrowserSaveLoginOffer } from "../shared/types/builtInBrowserLoginCapture";
@@ -130,6 +131,7 @@ import type {
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
 import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults } from "../shared/cloudLaneLife";
+import type { CtoCloudHomeCallRequest, CtoCloudHomeEvent } from "../shared/ctoCloudHome";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
@@ -446,15 +448,12 @@ import type {
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateIdentityArgs,
-  CtoListSessionLogsArgs,
   CtoSnapshot,
-  CtoSessionLogEntry,
-  CtoStartFreshSessionResult,
-  CtoThreadHealth,
   CtoMemorySnapshot,
   CtoUpdateMemoryArgs,
-  CtoSearchMemoryArgs,
-  CtoSearchMemoryResult,
+  CtoUpdateNotesArgs,
+  CtoUpdateOpenWorkArgs,
+  CtoRefreshContextResult,
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearIssueComment,
@@ -735,6 +734,8 @@ import type {
   AgentChatStartSideChatArgs,
   AgentChatStartSideChatResult,
   AgentChatEndSideChatArgs,
+  AgentChatRootFullAccessState,
+  AgentChatSetRootFullAccessArgs,
   AgentChatEndSideChatResult,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffArgs,
@@ -791,6 +792,10 @@ import type {
   AgentChatClaudeOutputStylesArgs,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSetScheduledWorkPausedArgs,
+  AgentChatSetScheduledWorkItemPausedArgs,
+  AgentChatSetScheduledWorkItemPausedResult,
+  AgentChatRunScheduledWorkNowArgs,
+  AgentChatRunScheduledWorkNowResult,
   AgentChatSetScheduledWorkPausedResult,
   AgentChatCreateScheduledWorkArgs,
   AgentChatCreateScheduledWorkResult,
@@ -8932,6 +8937,18 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "handoffSession", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatHandoff, args),
       ),
+    // Full access as root is the chat's machine's setting: both calls take its pin.
+    getRootFullAccess: async (pin?: OpenProjectBinding | null): Promise<AgentChatRootFullAccessState> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "getRootFullAccess", {}, () =>
+        ipcRenderer.invoke(IPC.agentChatGetRootFullAccess),
+      ),
+    setRootFullAccess: async (
+      args: AgentChatSetRootFullAccessArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatRootFullAccessState> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "setRootFullAccess", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatSetRootFullAccess, args),
+      ),
     // Side chats run on the main chat's machine: every call takes that chat's pin.
     startSideChat: async (
       args: AgentChatStartSideChatArgs,
@@ -9617,6 +9634,36 @@ const adeBridge = {
         "setScheduledWorkPaused",
         { args },
         () => ipcRenderer.invoke(IPC.agentChatSetScheduledWorkPaused, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
+    },
+    setScheduledWorkItemPaused: async (
+      args: AgentChatSetScheduledWorkItemPausedArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatSetScheduledWorkItemPausedResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "chat",
+        "setScheduledWorkItemPaused",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatSetScheduledWorkItemPaused, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
+    },
+    runScheduledWorkNow: async (
+      args: AgentChatRunScheduledWorkNowArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatRunScheduledWorkNowResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "chat",
+        "runScheduledWorkNow",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatRunScheduledWorkNow, args),
       );
       agentChatSummaryCache.clear();
       return result;
@@ -14038,6 +14085,14 @@ const adeBridge = {
       ipcRenderer.on(IPC.cloudLaneJobEvent, listener);
       return () => ipcRenderer.removeListener(IPC.cloudLaneJobEvent, listener);
     },
+    // The CTO's home on ADE Cloud. Account level and made by this app, like a
+    // new computer; the computer it makes is then addressed by its own pin.
+    ctoHome: (request: CtoCloudHomeCallRequest): Promise<unknown> => ipcRenderer.invoke(IPC.ctoCloudHomeCall, request),
+    onCtoHomeEvent: (cb: (event: CtoCloudHomeEvent) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, event: CtoCloudHomeEvent) => cb(event);
+      ipcRenderer.on(IPC.ctoCloudHomeEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.ctoCloudHomeEvent, listener);
+    },
     // Contract C3 (shared/laneComputer.ts): a lane follows its computer. Account level, by lane id.
     laneComputer: (laneId: string): Promise<LaneComputer | null> => ipcRenderer.invoke(IPC.cloudLaneComputer, { laneId }),
     followLane: (laneId: string, options?: { connect?: boolean }): Promise<LaneFollowResult> =>
@@ -15128,31 +15183,28 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.ctoEnsureSession, args),
       ),
     /**
-     * Retire the CTO thread and start a clean one. CTO-only in the action
-     * policy; the plain-IPC fallback is the desktop's own path when no project
-     * runtime is bound.
+     * Give the CTO a fresh provider thread on its home machine. CTO-only in
+     * the action policy; the plain-IPC fallback is the desktop's own path when
+     * no project runtime is bound.
      */
-    startFreshSession: async (
-      pin?: OpenProjectBinding | null,
-    ): Promise<CtoStartFreshSessionResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "cto_state", "startFreshSession", {}, () =>
-        ipcRenderer.invoke(IPC.ctoStartFreshSession),
+    refreshContext: async (pin?: OpenProjectBinding | null): Promise<CtoRefreshContextResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_state", "refreshContext", {}, () =>
+        ipcRenderer.invoke(IPC.ctoRefreshContext),
       ),
-    getThreadHealth: async (pin?: OpenProjectBinding | null): Promise<CtoThreadHealth> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "cto_state", "getThreadHealth", {}, () =>
-        ipcRenderer.invoke(IPC.ctoGetThreadHealth),
-      ),
-    listSessionLogs: async (
-      args: CtoListSessionLogsArgs = {},
-      pin?: OpenProjectBinding | null,
-    ): Promise<CtoSessionLogEntry[]> =>
-      callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "cto_state",
-        "getSessionLogs",
-        { arg: args.limit ?? 40 },
-        () => ipcRenderer.invoke(IPC.ctoListSessionLogs, args),
-      ),
+    /**
+     * The CTO's new home takes it from the account copy. Sent to the new
+     * home's own pin, never the tab's: that machine restores and writes it.
+     * No plain-IPC fallback: only a brain holds the account vault.
+     */
+    adoptAccountCopy: async (args: CtoAdoptAccountCopyArgs, pin: OpenProjectBinding | null): Promise<CtoAdoptAccountCopyResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_state", "adoptAccountCopy", { args: { home: args?.home ?? null } }, async () => ({ restored: false, fromName: null, savedAt: null })),
+    getAccountCopyStatus: async (pin: OpenProjectBinding | null): Promise<CtoAccountCopyStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_state", "getAccountCopyStatus", {}, async () => ({
+        available: false,
+        savedAt: null,
+        ownerName: null,
+        ownerIsThisMachine: false,
+      })),
     updateIdentity: async (
       args: CtoUpdateIdentityArgs,
       pin?: OpenProjectBinding | null,
@@ -15175,12 +15227,19 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "updateMemory", { args }, () =>
         ipcRenderer.invoke(IPC.ctoUpdateMemory, args),
       ),
-    searchMemory: async (
-      args: CtoSearchMemoryArgs,
+    updateNotes: async (
+      args: CtoUpdateNotesArgs,
       pin?: OpenProjectBinding | null,
-    ): Promise<CtoSearchMemoryResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "searchMemory", { args }, () =>
-        ipcRenderer.invoke(IPC.ctoSearchMemory, args),
+    ): Promise<CtoMemorySnapshot> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "updateNotes", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoUpdateNotes, args),
+      ),
+    updateOpenWork: async (
+      args: CtoUpdateOpenWorkArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<CtoMemorySnapshot> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "updateOpenWork", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoUpdateOpenWork, args),
       ),
     getLinearConnectionStatus: async (pin?: OpenProjectBinding | null): Promise<LinearConnectionStatus> =>
       callPinnedOrBoundRuntimeActionOr(

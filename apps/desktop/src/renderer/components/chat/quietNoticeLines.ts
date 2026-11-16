@@ -44,6 +44,7 @@ const QUIET_NOTICE_KINDS: ReadonlySet<string> = new Set([
 const SPECIAL_NOTICE_STATUSES: ReadonlySet<string> = new Set([
   "model_switched",
   "reset_credit_available",
+  "claude_root_full_access",
   "voice_session",
   "subagent_spawned",
   "spawn_takeover",
