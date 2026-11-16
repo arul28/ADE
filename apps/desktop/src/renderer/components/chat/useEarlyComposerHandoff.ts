@@ -5,6 +5,7 @@ import {
   retireEarlyComposer,
   type EarlyComposerClaim,
 } from "../../lib/earlyComposer";
+import { logRendererDebugEvent, markBoot } from "../../lib/debugLog";
 
 /*
  * The real Work draft composer's side of the early prompt box
@@ -115,6 +116,36 @@ function recordWhenSceneSettles(dock: HTMLElement, projectRoot: string, readDraf
   return stop;
 }
 
+let firstComposerNoted = false;
+
+/**
+ * Diagnostics only, once per window, when the first Work draft composer
+ * mounts. With no `ade:early-composer:*` mark yet, the Work page had loaded
+ * before its route rendered: the route never showed its fallback, so the early
+ * box had nothing to decide (`page-first`). Then one log line carries the
+ * launch marks as wall-clock times, to line up with main's log.
+ */
+function noteFirstDraftComposer(): void {
+  if (firstComposerNoted) return;
+  firstComposerNoted = true;
+  try {
+    const isLaunchMark = (name: string) => name.startsWith("ade:boot:") || name.startsWith("ade:early-composer:");
+    if (!performance.getEntriesByType("mark").some((mark) => mark.name.startsWith("ade:early-composer:"))) {
+      performance.mark("ade:early-composer:page-first");
+    }
+    markBoot("composer");
+    const origin = performance.timeOrigin;
+    logRendererDebugEvent("startup_renderer_boot", {
+      timeOriginEpochMs: Math.round(origin),
+      marks: performance.getEntriesByType("mark")
+        .filter((mark) => isLaunchMark(mark.name))
+        .map((mark) => ({ name: mark.name, atEpochMs: Math.round(origin + mark.startTime) })),
+    });
+  } catch {
+    // best effort
+  }
+}
+
 export function useEarlyComposerHandoff(args: {
   /** This is the Work tab's new-chat composer. */
   enabled: boolean;
@@ -130,6 +161,7 @@ export function useEarlyComposerHandoff(args: {
   const { enabled, projectRoot } = args;
   useEffect(() => {
     if (!enabled) return;
+    noteFirstDraftComposer();
     const { dockRef, readDraft, applyDraft } = argsRef.current;
     const dock = dockRef.current;
     const hydrated = readDraft();

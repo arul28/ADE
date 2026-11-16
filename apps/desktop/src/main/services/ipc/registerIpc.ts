@@ -1164,6 +1164,7 @@ import type {
 } from "../../../shared/types/diagnostics";
 import { buildPublicIssueUrl, osFamilyOf } from "../../../shared/publicIssueLink";
 import { listWebhookAutomations } from "../automations/webhookAutomationFactory";
+import { rendererCspHookCounts } from "../../rendererCsp";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
 type AppResourceUsageMode = "fresh" | "calm-ok";
@@ -3605,12 +3606,27 @@ export function registerIpc({
     return ctx.hasUserSelectedProject ? ctx.project : null;
   });
 
+  let windowSessionAnswered = false;
   handle(IPC.appGetWindowSession, async (event) => {
+    const receivedMs = Math.round(process.uptime() * 1000);
     // The first window can load before the launch has opened its project.
     await waitForStartupProjectOpen?.();
     // The window can close while the launch is still opening its project.
     if (event.sender.isDestroyed()) return null;
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+    if (!windowSessionAnswered) {
+      // Launch report: when main got the first window's session request and
+      // answered it (process uptime and wall clock, to line up with the
+      // renderer's `ade:boot:*` marks), and what the header hook did so far.
+      windowSessionAnswered = true;
+      getCtx().logger.info("startup.window_session_first", {
+        receivedMs,
+        answeredMs: Math.round(process.uptime() * 1000),
+        answeredAtEpochMs: Date.now(),
+        cspHookCalls: rendererCspHookCounts.calls,
+        cspHookApplied: rendererCspHookCounts.applied,
+      });
+    }
     if (getWindowSession) return getWindowSession(windowId);
     const ctx = getCtx();
     return {

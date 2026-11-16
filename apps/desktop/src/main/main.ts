@@ -474,6 +474,7 @@ import { stampCustomNotificationLinkOwner } from "../shared/customNotificationLi
 import {
   buildRendererCspPolicy,
   isRendererFrameNavigationAllowed,
+  rendererCspHookCounts,
   shouldApplyRendererCsp,
 } from "./rendererCsp";
 import { trustedAccountRelayBaseUrls } from "../shared/accountDirectory";
@@ -1248,6 +1249,7 @@ async function createWindow(args: {
   // No URL filter: a filter's patterns do not match the app's own page
   // scheme, so a filtered hook never sets the policy on the app document.
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    rendererCspHookCounts.calls += 1;
     if (
       !shouldApplyRendererCsp(details, {
         isDevMode,
@@ -1258,6 +1260,7 @@ async function createWindow(args: {
       return;
     }
 
+    rendererCspHookCounts.applied += 1;
     callback({
       responseHeaders: {
         ...details.responseHeaders,

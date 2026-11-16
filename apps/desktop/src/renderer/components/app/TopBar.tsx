@@ -6,6 +6,7 @@ import React, {
   useState,
 } from "react";
 import { announceHostStall, announceHostStorageWait } from "../../lib/hostStallToast";
+import { markBoot } from "../../lib/debugLog";
 import {
   AppWindow,
   ArrowLineRight,
@@ -1383,9 +1384,11 @@ export function TopBar({
 
   useEffect(() => {
     let cancelled = false;
+    markBoot("session-asked");
     window.ade.app
       .getWindowSession()
       .then((session) => {
+        markBoot("session-answered");
         if (cancelled) return;
         setWindowId(session.windowId);
         // The main process keeps only the binding in front; this window's
