@@ -1127,7 +1127,8 @@ const WORK_AREA_MODE_TRANSITION = { duration: 0.3, ease: STANDARD_EASE } as cons
 const WORK_AREA_DOCK_TRANSITION = { duration: 0.14, ease: STANDARD_EASE } as const;
 
 /**
- * `custom` = the switch is a composer dock (no blur, quick swap).
+ * `custom` = a quick swap (no blur): a composer dock, or a chat switching to
+ * a new draft.
  *
  * At rest the layer has no filter at all (`transitionEnd`), not `blur(0px)`:
  * a filter on the whole Work area that holds a composited child (the usage
@@ -1514,6 +1515,19 @@ export function WorkViewArea({
   // composer glides down from the draft's position (`chatLaunchDock`), so the
   // surface underneath just swaps quickly instead of blurring the glide away.
   const composerDockTransition = workAreaMode === "single" && hasPendingComposerDock(activeSession?.id);
+  // From a chat to a new draft, the same quick swap: the person asked for a
+  // fresh prompt box and types at once, so it shows at once (no blur over the
+  // text). The draft dissolving into its chat keeps the blur. The choice is
+  // made once per mode change and held until the next one: the leaving
+  // layer's exit reads it for as long as it animates.
+  const modeSwitchRef = useRef<{ mode: typeof workAreaMode; quick: boolean }>({ mode: workAreaMode, quick: false });
+  if (modeSwitchRef.current.mode !== workAreaMode) {
+    modeSwitchRef.current = {
+      mode: workAreaMode,
+      quick: modeSwitchRef.current.mode === "single" && workAreaMode === "empty",
+    };
+  }
+  const quickModeSwap = composerDockTransition || modeSwitchRef.current.quick;
   // The prompt box takes the keyboard when the view first shows a chat after
   // launch, and after a click switches the chat (a new chat included). A grid
   // focuses its own active tile (`shouldAutofocus`).
@@ -1524,8 +1538,8 @@ export function WorkViewArea({
   useEffect(() => scheduleTerminalViewPreload(), []);
   const tabBody = (
     <div ref={workAreaBodyRef} className="relative min-h-0 flex-1" style={{ background: workAreaMode === "empty" ? "transparent" : "var(--chat-canvas-bg)" }}>
-      <AnimatePresence initial={false} custom={composerDockTransition}>
-        <WorkAreaModeLayer key={workAreaMode} dock={composerDockTransition}>
+      <AnimatePresence initial={false} custom={quickModeSwap}>
+        <WorkAreaModeLayer key={workAreaMode} dock={quickModeSwap}>
           {workAreaContent}
         </WorkAreaModeLayer>
       </AnimatePresence>
