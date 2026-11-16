@@ -4,7 +4,7 @@ import { createSentryEventHooks, setSentryUserResolver } from "./eventFilter";
 import { codedError } from "../codedError";
 import { AdeExpectedError } from "../expectedError";
 import { isExpectedOutcome } from "./expectedFailure";
-import { scrubFreeTextThenCut, scrubOutputTail } from "./scrub";
+import { scrubFreeText, scrubFreeTextThenCut, scrubOutputTail } from "./scrub";
 
 type TestEvent = Record<string, any>;
 
@@ -212,15 +212,23 @@ describe("createSentryEventHooks", () => {
     expect(reported).toContain("host.example/status");
     // Past the 64,000-char scrub bound the input is cut before it is scrubbed;
     // wherever that cut lands in the credential, none of it is kept.
-    // The filler is spaced words: one unbroken 64k run costs the email pattern seconds per scrub.
-    const filler = (length: number) => `${"x".repeat(63)} `.repeat(Math.ceil(length / 64)).slice(0, length - 1) + "x";
     for (const prefix of [63_975, 63_980, 63_988, 63_995, 63_999]) {
-      const long = `${filler(prefix)} https://ade:hunter2secret@host.example/status`;
+      const long = `${"x".repeat(prefix)} https://ade:hunter2secret@host.example/status`;
       expect(scrubFreeTextThenCut(long, 64_000)).not.toMatch(/hunter|ade:/);
     }
     // A short path grows into `[path]`; the newest line of a tail still comes whole.
     expect(scrubOutputTail("/a/b\nfatal: final error", { maxLines: 5, lineChars: 200 }))
       .toEqual(["[path]", "fatal: final error"]);
+  });
+
+  it.each(["a.", "a-", "%"])("scrubs a long line with no spaces in one pass over it (a run of %j)", (unit) => {
+    // A pattern that rescans the rest of the run from every position is
+    // quadratic: at this length one scrub took minutes, and a log blob or
+    // minified line in a report stalled the process that sent it.
+    const run = unit.repeat(200_000 / unit.length);
+    expect(scrubFreeText(run, { maxLength: run.length })).toBe(run);
+    // The email pattern still finds an address at the end of the run.
+    expect(scrubFreeText(`${run}x@mail.example`, { maxLength: run.length + 20 })).toMatch(/\[email\]$/);
   });
 
   // Last in the file: it turns diagnostics on for the rest of this process.
