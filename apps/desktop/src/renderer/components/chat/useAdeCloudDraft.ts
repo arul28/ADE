@@ -8,7 +8,7 @@ import {
 } from "../../../shared/adeCloud";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
-import type { AgentChatFileRef, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
+import type { AgentChatFileRef, AgentChatProvider, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
 import { cloudTierHoursAt, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
@@ -192,7 +192,7 @@ export function useAdeCloudComposer(input: {
   parallelChatMode: boolean;
   isCliDraft: boolean;
   /** The draft chat's provider: ADE Web can't start one that signs in only from the desktop. */
-  provider: string | null;
+  provider: AgentChatProvider | null;
   attachments: AgentChatFileRef[];
   newLaneConfig: NewLaneDraftConfig | null;
   /** Stable (module level): the launch's lane config from the "+" lane's draft. */

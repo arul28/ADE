@@ -105,6 +105,7 @@ struct CloudLaunchRecord: Decodable, Equatable {
     sessionId = c.lenient(String.self, forKey: .sessionId)
     error = c.lenient(String.self, forKey: .error)
     signIn = c.lenient(CloudLaunchSignIn.self, forKey: .signIn)
+    // `request` twice: its chat fields for the row, and all of it, as sent, for a Retry.
     let chatRequest = c.lenient(Request.self, forKey: .request)
     provider = c.lenient(String.self, forKey: .provider) ?? chatRequest?.chat?.provider
     modelId = c.lenient(String.self, forKey: .modelId) ?? chatRequest?.chat?.modelId

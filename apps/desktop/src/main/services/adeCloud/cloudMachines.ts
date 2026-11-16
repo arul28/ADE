@@ -15,7 +15,6 @@ import {
   cloudCatalogOf,
   cloudStatusAwake,
   type CloudAccountState,
-  type CloudMachine,
   type CloudMachineActionArgs,
   type CloudMachineActionResult,
   type CloudMachinesResult,

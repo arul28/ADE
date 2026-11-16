@@ -24,7 +24,7 @@ export const str = (value: unknown): string | null => (typeof value === "string"
 const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
 export const bool = (value: unknown): boolean => value === true;
 
-export function user(value: unknown): GithubDirectUser {
+function user(value: unknown): GithubDirectUser {
   if (!isRecord(value) || typeof value.login !== "string") return null;
   return { login: value.login, avatarUrl: str(value.avatar_url) };
 }

@@ -20,7 +20,6 @@ import type {
   SyncProjectCloneRequestEnvelope,
   SyncProjectDefaultParentDirPayload,
   SyncProjectDefaultParentDirRequestEnvelope,
-  CloneProjectInput,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandAction,
   SyncTerminalDataPayload,
@@ -33,6 +32,7 @@ import { hostStallFromHello, hostStorageWaitFromHealth } from "../../../shared/c
 import { announceHostStall, announceHostStorageWait } from "../../lib/hostStallToast";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { ChatLaunchEvent } from "../../../shared/types/chatLaunch";
+import type { CloneProjectInput } from "../../../shared/types";
 import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../../../main/services/git/gitTimeouts";
 import {
   ARCHIVE_DELETE_TIMEOUT_MS,
@@ -1110,7 +1110,7 @@ export class AdeSyncClient {
 
   private async sendProjectAction<T>(
     requests: Map<string, PendingRequest<T>>,
-    envelope: Omit<SyncProjectCloneRequestEnvelope, "requestId"> | Omit<SyncProjectDefaultParentDirRequestEnvelope, "requestId">,
+    envelope: Pick<SyncProjectCloneRequestEnvelope, "type" | "payload"> | Pick<SyncProjectDefaultParentDirRequestEnvelope, "type" | "payload">,
     timeoutMs: number,
   ): Promise<T> {
     const generation = this.requireReadyGeneration();
@@ -1125,7 +1125,7 @@ export class AdeSyncClient {
       requests.set(requestId, pending);
     });
     try {
-      this.connection.send({ ...envelope, requestId } as SyncProjectCloneRequestEnvelope | SyncProjectDefaultParentDirRequestEnvelope);
+      this.connection.send({ ...envelope, requestId });
     } catch (error) {
       this.rejectPending(requests, requestId, this.connectionError(error));
     }
@@ -2096,19 +2096,18 @@ export class AdeSyncClient {
       this.pendingTerminalHistory.delete(requestId);
       pending.reject(error);
     }
-    for (const [requestId, pending] of this.pendingProjectSwitches) {
+    this.rejectAllIn(this.pendingProjectSwitches, error);
+    this.rejectAllIn(this.pendingProjectClones, error);
+    this.rejectAllIn(this.pendingDefaultParentDirs, error);
+    this.rejectPendingProjectCatalog(error);
+  }
+
+  private rejectAllIn<T>(requests: Map<string, PendingRequest<T>>, error: Error): void {
+    for (const [requestId, pending] of requests) {
       clearTimeout(pending.timer);
-      this.pendingProjectSwitches.delete(requestId);
+      requests.delete(requestId);
       pending.reject(error);
     }
-    for (const requests of [this.pendingProjectClones, this.pendingDefaultParentDirs] as Map<string, PendingRequest<unknown>>[]) {
-      for (const [requestId, pending] of requests) {
-        clearTimeout(pending.timer);
-        requests.delete(requestId);
-        pending.reject(error);
-      }
-    }
-    this.rejectPendingProjectCatalog(error);
   }
 
   private rejectPendingCommands(error: Error): void {

@@ -1,4 +1,3 @@
-import { PRIMARY_LANE_DISPLAY_NAME } from "../../../shared/laneDisplayName";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowSquareOut, Desktop, FolderSimple, GitBranch, WifiSlash } from "@phosphor-icons/react";
@@ -17,6 +16,7 @@ import { copyMachines, repoKeyForOriginIdentity } from "./projectCopies";
 import { startCopyJob, useCopyJobs } from "./projectCopyJobs";
 import { requestRemoveProject } from "./removeProjectRequest";
 import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
+import { PRIMARY_LANE_DISPLAY_NAME } from "../../../shared/laneDisplayName";
 import { repoRefForTab } from "../prs/state/prsReader";
 import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";

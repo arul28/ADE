@@ -898,7 +898,6 @@ export function ProjectWelcomePage() {
         {webZeroMachines ? <WebZeroMachines notice={webZeroMachines} /> : null}
 
         <HomeWidgetGrid
-          single={false}
           style={appearanceStyle}
           renderWidget={renderWidget}
         />

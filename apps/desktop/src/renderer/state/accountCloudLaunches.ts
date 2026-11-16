@@ -21,8 +21,9 @@ import { refreshCloudMachines } from "../components/remoteTargets/useCloudMachin
  *
  * One poll for every launch: a read every 3 s, slowing to 10 s while nothing
  * changes, paused while the page is hidden, and stopped once no launch is in
- * progress and no message waits for its chat. The reads run one at a time, so a page never holds more than one
- * of the browser's connections to the account server for this.
+ * progress and no message waits for its chat. The reads run one at a time,
+ * so a page never holds more than one of the browser's connections to the
+ * account server for this.
  */
 
 export type AccountCloudLaunchEntry = {
@@ -97,6 +98,20 @@ function messagesWaiting(entry: AccountCloudLaunchEntry): boolean {
   return entry.messages.some((message) => message.state === "queued" || message.state === "sending");
 }
 
+/**
+ * After the chat started (the record's last change) or the message was
+ * typed, whichever is later, a waiting message is read again this long; one
+ * the computer never takes then stays "Waiting" without a poll.
+ */
+const QUEUED_AFTER_CHAT_READ_MS = 10 * 60_000;
+
+function messagesWaitingRecently(entry: AccountCloudLaunchEntry, now = Date.now()): boolean {
+  const chatAt = entry.record?.updatedAt ?? 0;
+  return entry.messages.some((message) =>
+    (message.state === "queued" || message.state === "sending")
+    && now - Math.max(message.createdAt, chatAt) < QUEUED_AFTER_CHAT_READ_MS);
+}
+
 function bridge() {
   const value = typeof window !== "undefined" ? window.ade?.cloudLaunches : undefined;
   return value && isAdeAvailable(value.start) ? value : null;
@@ -119,7 +134,7 @@ export function launchInProgress(entry: AccountCloudLaunchEntry): boolean {
  */
 function launchNeedsRead(entry: AccountCloudLaunchEntry): boolean {
   if (launchInProgress(entry)) return true;
-  return Boolean(entry.record?.sessionId) && entry.record?.state !== "failed" && entry.record?.state !== "cancelled" && messagesWaiting(entry);
+  return Boolean(entry.record?.sessionId) && entry.record?.state !== "failed" && entry.record?.state !== "cancelled" && messagesWaitingRecently(entry);
 }
 
 function signatureOf(record: CloudLaunchRecord | null): string {
@@ -135,6 +150,7 @@ async function readInProgress(): Promise<boolean> {
   for (const entry of snapshot.entries.filter(launchNeedsRead)) {
     // A start still on its way has nothing to read yet.
     if (entry.startedHere && !entry.record) continue;
+    let read = "status";
     try {
       if (launchInProgress(entry)) {
         const record = await api.status(entry.launchId);
@@ -145,6 +161,7 @@ async function readInProgress(): Promise<boolean> {
       }
       // Queued messages move to `delivered` once the chat exists; read them while any wait.
       if (messagesWaiting(entry)) {
+        read = "messages";
         const { messages } = await api.messages(entry.launchId);
         const local = snapshot.entries.find((candidate) => candidate.launchId === entry.launchId)?.messages ?? entry.messages;
         const merged = mergeMessages(local, messages);
@@ -155,7 +172,7 @@ async function readInProgress(): Promise<boolean> {
       }
     } catch (error) {
       // A failed read keeps the last record; the next tick tries again.
-      noteReadFailed("status", error);
+      noteReadFailed(read, error);
     }
   }
   return changed;
@@ -236,6 +253,8 @@ export function launchesForOrigin(entries: readonly AccountCloudLaunchEntry[], o
 }
 
 export type StartAccountCloudChat = {
+  /** Left out, a new one. The launch's `launch` args, when sent, carry the same id. */
+  launchId?: string;
   /** The account's project; left out, the server reads `origin` (a GitHub repository). */
   accountProjectId?: string | null;
   origin: string;
@@ -251,8 +270,8 @@ export type StartAccountCloudChat = {
   sizeChoice?: CloudLaunchStartRequest["sizeChoice"];
   /** Left out, a new lane named from the first message. */
   lane?: CloudLaunchStartRequest["lane"];
-  /** The launch as the app set it up (`cloudLaunchAppArgs`); the launch's own id is added here. */
-  launch?: Record<string, unknown> | null;
+  /** The launch as the app set it up (`cloudLaunchAppArgs`), for `CloudServerLaunchRequest.launch`. */
+  launch?: CloudLaunchStartRequest["launch"] | null;
 };
 
 /**
@@ -264,7 +283,7 @@ export type StartAccountCloudChat = {
 export async function startAccountCloudChat(input: StartAccountCloudChat): Promise<string> {
   const api = bridge();
   if (!api) throw new Error("ADE Cloud chats start from the web app here.");
-  const launchId = newCloudLaunchId();
+  const launchId = input.launchId ?? newCloudLaunchId();
   const messageId = newCloudMessageId();
   const request: CloudLaunchStartRequest = {
     launchId,
@@ -284,7 +303,7 @@ export async function startAccountCloudChat(input: StartAccountCloudChat): Promi
       messageId,
     },
     madeBy: { kind: "person" },
-    ...(input.launch ? { launch: { ...input.launch, launchId } } : {}),
+    ...(input.launch ? { launch: input.launch } : {}),
   };
   const now = Date.now();
   const firstMessage: CloudLaunchMessage = {
@@ -369,10 +388,19 @@ export async function cancelAccountCloudLaunch(launchId: string): Promise<void> 
   patchEntry(launchId, { record });
 }
 
-/** Takes a finished or failed launch off this page's cards. A launch still on its way stays. */
+/**
+ * Whether the person may take this launch's card off the page: its start
+ * failed, or it ended with nothing left to send. A launch still on its way,
+ * or a chat whose later messages still wait, stays.
+ */
+export function accountCloudLaunchHideable(entry: AccountCloudLaunchEntry): boolean {
+  return entry.startError != null || !launchNeedsRead(entry);
+}
+
+/** Takes a finished or failed launch off this page's cards. */
 export function hideAccountCloudLaunch(launchId: string): void {
   const entry = snapshot.entries.find((candidate) => candidate.launchId === launchId);
-  if (!entry || launchNeedsRead(entry)) return;
+  if (!entry || !accountCloudLaunchHideable(entry)) return;
   setEntries(snapshot.entries.filter((candidate) => candidate.launchId !== launchId));
 }
 

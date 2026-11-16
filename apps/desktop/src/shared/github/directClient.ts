@@ -16,7 +16,7 @@ import type {
 } from "../types";
 import { GITHUB_DIRECT_ACCOUNT_CHANGED } from "../types/githubDirect";
 import type { AccountAppTokenClient } from "./accountAppTokenClient";
-import { isRecord, str, bool, user, mapRepository, mapBranch, mapContentEntry, mapPull, mapPullDetail, mapCheckRun, mapReview, mapComment, mapIssue, mapIssueDetail, listOf } from "./directMappers";
+import { isRecord, str, bool, mapRepository, mapBranch, mapContentEntry, mapPull, mapPullDetail, mapCheckRun, mapReview, mapComment, mapIssue, mapIssueDetail, listOf } from "./directMappers";
 import { appGrantMissingPermissions, appGrantNeedsApproval, appInstallationGrantForOwner } from "./githubAppGrant";
 
 /**
@@ -384,7 +384,6 @@ export function nextPageUrl(link: string | null, apiOrigin: string): string | nu
   }
   return null;
 }
-
 
 // ---------------------------------------------------------------------------
 // Credential

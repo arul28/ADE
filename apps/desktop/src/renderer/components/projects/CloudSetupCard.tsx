@@ -6,6 +6,7 @@ import { extractError } from "../../lib/format";
 import { openExternalUrl } from "../../lib/openExternal";
 import { CloudSignInCodeField } from "../chat/launch/CloudSignInCodeField";
 import {
+  accountCloudLaunchHideable,
   cancelAccountCloudLaunch,
   queueAccountCloudMessage,
   refreshAccountCloudLaunches,
@@ -131,6 +132,9 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
       {needsCode && signIn.jobId ? (
         <CloudSignInCodeField jobId={signIn.jobId} instanceId={instanceId} className="text-[12px]" onSent={refreshAccountCloudLaunches} />
       ) : null}
+      {needsCode && !signIn.jobId ? (
+        <p className="m-0 text-[12px]" style={{ color: "var(--kit-text-2)" }}>The computer isn't ready for the code yet. It asks for it in a moment.</p>
+      ) : null}
       {signIn.kind === "api_key" ? (
         <form
           className="flex min-w-[220px] items-center gap-1.5"
@@ -165,12 +169,6 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
   );
 }
 
-/**
- * "Getting ADE Cloud ready": the chat's first message made a computer on
- * ADE Cloud. The message waits on the server (the tab may close) while the
- * computer starts, clones the repository, and signs in to the chat's
- * provider; then the computer sends it. Messages typed now wait with it.
- */
 type CardPhase = "working" | "ready" | "failed" | "cancelled";
 
 const CARD_TITLE: Record<CardPhase, string> = {
@@ -188,6 +186,12 @@ function cardPhaseOf(entry: AccountCloudLaunchEntry): CardPhase {
   return "working";
 }
 
+/**
+ * "Getting ADE Cloud ready": the chat's first message made a computer on
+ * ADE Cloud. The message waits on the server (the tab may close) while the
+ * computer starts, clones the repository, and signs in to the chat's
+ * provider; then the computer sends it. Messages typed now wait with it.
+ */
 export function CloudSetupCard({
   entry,
   onOpenChat,
@@ -252,6 +256,10 @@ export function CloudSetupCard({
 
   const pending = entry.messages.filter((message) => message.state !== "delivered");
   const messageNotSent = (message: AccountCloudLaunchEntry["messages"][number]) => message.state === "failed" || failed || phase === "cancelled";
+  const messageTag = (message: AccountCloudLaunchEntry["messages"][number]) => {
+    if (messageNotSent(message)) return "Not sent";
+    return message.state === "sending" ? "Sending" : "Waiting";
+  };
   const canQueue = working && record != null;
 
   return (
@@ -263,7 +271,7 @@ export function CloudSetupCard({
             {cancelling ? "Cancelling…" : "Cancel"}
           </button>
         ) : null}
-        {(ready || failed) && onHide ? (
+        {(ready || failed) && onHide && accountCloudLaunchHideable(entry) ? (
           <button type="button" className="kit-card-head-action" onClick={onHide}>
             Hide
           </button>
@@ -277,7 +285,7 @@ export function CloudSetupCard({
               <li key={message.messageId} className="kit-panel flex items-start gap-2 px-2.5 py-1.5">
                 <span className="min-w-0 flex-1 whitespace-pre-wrap text-[12.5px]" style={{ overflowWrap: "anywhere" }}>{message.text}</span>
                 <span className="kit-tag shrink-0" data-tone={messageNotSent(message) ? "crit" : undefined}>
-                  {messageNotSent(message) ? "Not sent" : message.state === "sending" ? "Sending" : "Waiting"}
+                  {messageTag(message)}
                 </span>
               </li>
             ))}

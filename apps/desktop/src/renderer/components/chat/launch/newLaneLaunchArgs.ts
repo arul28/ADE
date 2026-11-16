@@ -2,6 +2,7 @@ import type { ChatLaunchArgs, ChatLaunchChatArgs, ChatLaunchLaneConfig } from ".
 import type { DraftLaunchKind, DraftLaunchMode, PreparedDraftLaunch } from "../../../lib/draftLaunchJobs";
 import { cloudLaunchAppArgs, cloudLaunchLaneFields } from "../../../../shared/cloudLaneLaunch";
 import { isCloudTierId } from "../../../../shared/cloudTiers";
+import { newCloudLaunchId } from "../../../../shared/accountCloudLaunches";
 import type { StartAccountCloudChat } from "../../../state/accountCloudLaunches";
 
 /**
@@ -14,7 +15,8 @@ export function buildNewLaneLaunchArgs(input: {
   kind: DraftLaunchKind;
   mode: DraftLaunchMode;
   launchId: string;
-  laneId: string;
+  /** Left out, the host names the lane (ADE Web's start: the account server does, from the launch id). */
+  laneId?: string;
   laneName: string;
   prepared: Pick<PreparedDraftLaunch, "finalText" | "finalDisplayText" | "selectedAttachments" | "modelId">;
   /** ADE provider of the chat, or the CLI profile. */
@@ -27,14 +29,15 @@ export function buildNewLaneLaunchArgs(input: {
   baseBranch?: string | null;
   /** Explicit lane recipe (child/import/template/color), when the user configured one. */
   laneConfig?: ChatLaunchLaneConfig | null;
-  originClientId: string;
+  /** Left out when no window of this client follows the launch (ADE Web's start). */
+  originClientId?: string;
 }): ChatLaunchArgs {
   const { prepared } = input;
   return {
     kind: input.kind,
     mode: input.mode,
     launchId: input.launchId,
-    laneId: input.laneId,
+    ...(input.laneId ? { laneId: input.laneId } : {}),
     laneName: input.laneName,
     prompt: prepared.finalText,
     displayPrompt: prepared.finalDisplayText,
@@ -44,7 +47,7 @@ export function buildNewLaneLaunchArgs(input: {
     modelId: prepared.modelId || null,
     provider: input.provider,
     title: input.cliTitle,
-    originClientId: input.originClientId,
+    ...(input.originClientId ? { originClientId: input.originClientId } : {}),
     ...(input.chat ? { chat: input.chat } : {}),
   };
 }
@@ -53,7 +56,7 @@ export function buildNewLaneLaunchArgs(input: {
  * ADE Web's start of a draft chat on a new ADE Cloud lane (`POST /cloud/launches`
  * through the account server): the same lane fields and launch args the
  * desktop's main process sends (`cloudLaneComputerStages.ts`). The server
- * names the launch and its lane, so the args carry no ids of their own.
+ * names the lane from the launch id.
  */
 export function buildAccountCloudDraftStart(input: {
   prepared: Pick<PreparedDraftLaunch, "finalText" | "finalDisplayText" | "selectedAttachments" | "modelId">;
@@ -67,21 +70,23 @@ export function buildAccountCloudDraftStart(input: {
   sizeChoice: "default" | "picked";
 }): StartAccountCloudChat {
   const { create, message } = input.chat;
-  const appArgs = cloudLaunchAppArgs(buildNewLaneLaunchArgs({
+  // A provider account, a harness preset or a stored key names one machine's
+  // stores, never the new computer's: there the provider signs in on its own.
+  const { instanceId: _instanceId, presetId: _presetId, presetSnapshot: _presetSnapshot, credentialId: _credentialId, ...portable } = create;
+  const launchId = newCloudLaunchId();
+  const launch = cloudLaunchAppArgs(buildNewLaneLaunchArgs({
     kind: "chat",
     mode: "foreground",
-    launchId: "",
-    laneId: "",
+    launchId,
     laneName: input.laneName,
     prepared: input.prepared,
     provider: create.provider,
     cliTitle: null,
-    chat: input.chat,
+    chat: { create: portable, message },
     laneConfig: input.laneConfig,
-    originClientId: "",
   }));
-  const { laneId: _laneId, originClientId: _originClientId, ...launch } = appArgs ?? {};
   return {
+    launchId,
     accountProjectId: input.accountProjectId,
     origin: input.origin,
     provider: create.provider,
@@ -93,6 +98,6 @@ export function buildAccountCloudDraftStart(input: {
     ...(isCloudTierId(input.sizeId) ? { sizeId: input.sizeId } : {}),
     sizeChoice: input.sizeChoice,
     lane: cloudLaunchLaneFields(input.laneName, input.laneConfig),
-    launch: appArgs ? launch : null,
+    launch,
   };
 }

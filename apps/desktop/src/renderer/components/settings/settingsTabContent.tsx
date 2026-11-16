@@ -124,16 +124,16 @@ function providerIdFromHash(hash: string): string | null {
   return raw.slice(PROVIDER_ANCHOR_PREFIX.length) || null;
 }
 
-/**
- * Settings › ADE Cloud. In ADE Web with no computer of the person's own, the
- * providers' ADE Cloud sign-ins and saved keys show here too: that person has
- * no machine whose Providers page could hold them.
- */
 /** ADE Web with no computer of the person's own: the providers' ADE Cloud sign-ins live in Settings. */
 function useAccountProvidersInSettings(): boolean {
   return !useHasOwnComputer() && isWebClientMode() && accountCloudLaunchesAvailable();
 }
 
+/**
+ * Settings › ADE Cloud. In ADE Web with no computer of the person's own, the
+ * providers' ADE Cloud sign-ins and saved keys show here too: that person has
+ * no machine whose Providers page could hold them.
+ */
 function AdeCloudSettingsPage() {
   const accountProviders = useAccountProvidersInSettings();
   return (

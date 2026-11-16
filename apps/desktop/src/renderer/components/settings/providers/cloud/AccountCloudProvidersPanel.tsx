@@ -81,7 +81,6 @@ export function AccountCloudProvidersPanel() {
   );
 }
 
-
 /** The tag and the line under a provider, for how it signs in on ADE Cloud. */
 function signInRowCopy(
   kind: CloudCatalogProvider["remoteSignIn"],
@@ -151,7 +150,13 @@ function ProviderRow({
     if (!ok) return;
     setBusy(true);
     setError(null);
-    void api.removeSignIn(signIn.id).then(onChanged, (failure: unknown) => setError(extractError(failure))).finally(() => setBusy(false));
+    try {
+      onChanged(await api.removeSignIn(signIn.id));
+    } catch (failure) {
+      setError(extractError(failure));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
