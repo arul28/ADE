@@ -1484,6 +1484,17 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   automationRun?: AgentChatAutomationRunMetadata;
   /** Marks a terminal watch wake. Renders as its card, never as a user bubble. */
   terminalWatchWake?: AgentChatTerminalWatchWakeMetadata;
+  /**
+   * Set only by the host: a person's message the CTO got while a turn was
+   * running. The model was told to answer it now with `replyNow` if it asks
+   * something; the bubble shows what the person typed (`displayText`).
+   */
+  ctoMidTask?: true;
+  /**
+   * Set only by the host: ADE sent the person's failed CTO message again on a
+   * fresh context or a backup model. The same words, already shown once.
+   */
+  ctoResend?: { reason: "overflow" | "model_fallback" };
 };
 
 export type AgentChatTerminalWatchWakeMetadata = {
@@ -2640,8 +2651,8 @@ export type AgentChatEvent =
  *
  * `context_overflow` is the one failure that describes the CONVERSATION rather
  * than the turn: the thread is too large for its model and every later turn
- * will fail the same way until it is rotated. Everything else is a single
- * turn's bad luck.
+ * will fail the same way until it gets a fresh thread. Everything else is a
+ * single turn's bad luck.
  */
 export type AgentChatLastTurnFailure = {
   kind: "context_overflow" | "error";
@@ -2661,23 +2672,8 @@ export type AgentChatSessionContextHealth = {
   updatedAt: string;
 };
 
-export type AgentChatSessionTurnHealth = {
-  sessionId: string;
-  /** False only when the thread itself is the problem, never for a one-off error. */
-  canTakeTurn: boolean;
-  blockedReason: "context_overflow" | null;
-  lastTurnFailure: AgentChatLastTurnFailure | null;
-  context: AgentChatSessionContextHealth | null;
-  /**
-   * True when the thread should be rotated BEFORE it wedges — see
-   * `AGENT_CHAT_CONTEXT_ROTATION_PCT`. Advice, never an action: ADE offers, the
-   * user presses.
-   */
-  rotationAdvised: boolean;
-};
-
 /**
- * Occupancy at which ADE starts offering a fresh thread.
+ * Occupancy above which a settled turn counts toward the high-water streak.
  *
  * 80% is chosen because compaction has usually already run by then and cannot
  * win back much more; the remaining fifth is the margin one large turn can
@@ -2685,19 +2681,6 @@ export type AgentChatSessionTurnHealth = {
  */
 export const AGENT_CHAT_CONTEXT_ROTATION_PCT = 80;
 
-/**
- * How many consecutive settled turns must sit above the mark before ADE says
- * anything. One spike is a big turn; two in a row is a trend.
- */
-export const AGENT_CHAT_CONTEXT_ROTATION_TURNS = 2;
-
-/**
- * The CTO thread's health, with a null session id when there is no thread yet.
- *
- * Its own type rather than a widened `AgentChatSessionTurnHealth`, because
- * "there is no CTO thread" is a real answer the CTO page has to render and an
- * intersection that merely relaxes the id hides it.
- */
 /**
  * Does this failure say the CONVERSATION is too big, rather than that one turn
  * went wrong?
@@ -2746,10 +2729,6 @@ export type AgentChatBackgroundTurnResult = {
   turnId?: string;
   threadId?: string;
   sdkSessionId?: string | null;
-};
-
-export type CtoThreadHealth = Omit<AgentChatSessionTurnHealth, "sessionId"> & {
-  sessionId: string | null;
 };
 
 export type AgentChatEventEnvelope = {
@@ -5825,6 +5804,12 @@ export type AgentChatSendArgs = {
    * Absent (older clients): every call sends.
    */
   clientSendId?: string;
+  /**
+   * A person typed this in a composer (a paired phone or web client over
+   * sync). Carried onto the steer when the send lands on a running turn; see
+   * `AgentChatSteerArgs.sentByUser`. Agent and CLI senders leave it unset.
+   */
+  sentByUser?: boolean;
 };
 
 export type AgentChatDispatchSteerMode = "inline" | "interrupt";
@@ -5880,6 +5865,8 @@ export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, reado
   grok: ["queue"],
   antigravity: ["queue"],
   copilot: ["inline", "queue"],
+  // Pi: the SDK's `steer` joins the running turn; queue stages the next one.
+  pi: ["inline", "queue"],
 };
 
 /**
@@ -6027,15 +6014,53 @@ export function isUnsupportedActiveTurnDispatchModeError(message: string): boole
  * the running turn's next step boundary, inside the same execution. It is also
  * what puts every model OpenCode reaches (Zen, OpenRouter, local models) in
  * reach of the CTO.
+ *
+ * Muse joins the live turn with `turn/steer`, Copilot with `session.send`
+ * `mode: "immediate"` (it interjects during an in-progress turn), and Pi
+ * through its SDK's `steer`.
+ *
+ * In user copy the list reads "Claude, Codex, Cursor, OpenCode, Copilot, Pi or
+ * Muse".
  */
-export const CTO_LIVE_REDIRECT_PROVIDERS = ["claude", "codex", "cursor", "opencode"] as const;
+// Verified live as the CTO on 2026-11-14: a message sent mid-turn joins the
+// same turn, the CTO's tools load, its notes reach the model, and `replyNow`
+// answers within seconds. Pi and Muse steer in a plain chat but are left out
+// until they pass the same check; neither could be signed in to test.
+export const CTO_LIVE_REDIRECT_PROVIDERS = ["claude", "codex", "cursor", "opencode", "copilot"] as const;
 
 /**
- * `system_notice.status` on the first row of a CTO thread ADE opened by itself
- * because the previous one no longer fit its context window. The CTO page
- * follows the thread when it sees it.
+ * `system_notice.status` of the quiet row ADE writes when it gives the CTO a
+ * fresh provider thread (context nearly full, a compaction, an overflow, a
+ * model fallback, or the person's "Refresh context"). The ADE session and its
+ * transcript stay the same; only the provider-side thread is new. The CTO page
+ * draws it as a hairline divider.
  */
-export const CTO_THREAD_ROLLED_OVER_STATUS = "cto_thread_rolled_over";
+export const CTO_CONTEXT_REFRESHED_STATUS = "cto_context_refreshed";
+
+/**
+ * `system_notice.status` of the row ADE writes when a Claude chat asked for
+ * Full access on a machine where ADE runs as root and Claude refused it. The
+ * row offers "Allow on this machine" (`chat.setRootFullAccess`, sent to the
+ * chat's machine).
+ */
+export const CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS = "claude_root_full_access";
+
+/** Whether Claude can run with Full access as root on a machine (`chat.getRootFullAccess`). */
+export type AgentChatRootFullAccessState = {
+  /** ADE runs as root there, outside a sandbox, so Claude needs the opt-in. */
+  applies: boolean;
+  /** The person allowed Full access for agents on that machine. */
+  allowed: boolean;
+};
+
+export type AgentChatSetRootFullAccessArgs = { allowed: boolean };
+
+/**
+ * `messageId` prefix of a quick reply the CTO posted with `replyNow` while it
+ * kept working: a `text` event with phase `partial_answer` of its own, never
+ * merged into the provider's streaming text.
+ */
+export const CTO_INTERIM_REPLY_ID_PREFIX = "cto-reply:";
 
 /** True when `provider` can redirect a turn that is already running. */
 export function providerSupportsLiveRedirect(provider: string): boolean {
@@ -6145,6 +6170,32 @@ export type AgentChatSetScheduledWorkPausedResult = {
   nextWakeAt: string | null;
 };
 
+/** Pause or resume one scheduled row, leaving the chat's other rows alone. */
+export type AgentChatSetScheduledWorkItemPausedArgs = {
+  sessionId: string;
+  scheduleId: string;
+  paused: boolean;
+};
+
+export type AgentChatSetScheduledWorkItemPausedResult = {
+  schedule: AgentChatScheduledWorkItem;
+};
+
+/**
+ * Run one scheduled row now. A recurring row keeps its next occurrence; a
+ * one-shot is spent by the run.
+ */
+export type AgentChatRunScheduledWorkNowArgs = {
+  sessionId: string;
+  scheduleId: string;
+};
+
+export type AgentChatRunScheduledWorkNowResult = {
+  fired: boolean;
+  /** Why nothing ran (the chat is busy, the row finished), when `fired` is false. */
+  reason?: string;
+};
+
 export type AgentChatGetScheduledWorkStateArgs = {
   sessionId: string;
 };
@@ -6165,6 +6216,8 @@ export type AgentChatScheduledWorkItem = {
   prompt: string;
   reason?: string;
   cron?: string;
+  /** IANA zone the cron is read in, when it is not the brain machine's local time. */
+  timeZone?: string;
   nextRunAt?: string;
   lastRunAt?: string;
   expiresAt?: string;
@@ -6174,6 +6227,11 @@ export type AgentChatScheduledWorkItem = {
   cancellable: boolean;
   late?: boolean;
   outcomeSummary?: string;
+  /**
+   * This row's own pause switch. The row's `status` reads "paused" when this
+   * or the chat-wide pause holds it; this field says only the row's switch.
+   */
+  paused?: boolean;
   /**
    * Provenance for rows ADE armed itself rather than the user or the agent.
    * Additive and optional: older clients simply ignore it.
@@ -6194,11 +6252,16 @@ type AgentChatCreateScheduledWorkBaseArgs = {
   sessionId: string;
   prompt: string;
   reason?: string;
+  /**
+   * IANA zone a cron is read in. Absent: the person's zone for the CTO (its
+   * identity's `timeZone`), else the brain machine's local time.
+   */
+  timeZone?: string;
 };
 
 export type AgentChatCreateScheduledWorkArgs = AgentChatCreateScheduledWorkBaseArgs & (
   | {
-      /** Five-field cron interpreted in the ADE brain machine's local timezone. */
+      /** Five-field cron, read in `timeZone` (see the base args). */
       cron: string;
       runAt?: never;
       delaySeconds?: never;
@@ -6222,7 +6285,7 @@ export type AgentChatCreateScheduledWorkArgs = AgentChatCreateScheduledWorkBaseA
 
 export type AgentChatCreateScheduledWorkResult = {
   item: AgentChatScheduledWorkItem;
-  /** IANA timezone of the ADE brain that resolved the schedule. */
+  /** IANA timezone the schedule was resolved in. */
   timeZone: string;
 };
 

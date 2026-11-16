@@ -14,40 +14,20 @@ export type CtoCapabilityMode = "full_tooling" | "fallback";
  *
  * Distinct from `CtoIdentity.version`, which is a revision counter bumped on
  * every edit and therefore says nothing about the fields present. This one only
- * moves when the record's shape changes, so a one-time migration can tell "not
+ * moves when the record's shape changes, so a later migration can tell "not
  * converted yet" from "converted, and edited thirty times since".
  *
- * 2 = the fold that carried `constraints`, `personality`, `customPersonality`
- * and `communicationStyle` into `systemPromptExtension`.
+ * 2 = CTO v2. Every record this build writes carries it; nothing reads it yet.
+ * CTO v2 starts every CTO over, so there is no v1 record to convert.
  */
 export const CTO_IDENTITY_SCHEMA_VERSION = 2;
-
-/**
- * Fields older identity.yaml files still carry.
- *
- * They are no longer part of `CtoIdentity` — the preset personalities and the
- * separate constraint list were replaced by a single freeform
- * `systemPromptExtension`. They are declared here so the migration that folds
- * them into that extension has a name for what it is reading, and so nobody
- * re-adds them to the live type by accident.
- */
-export type CtoLegacyIdentityFields = {
-  personality?: "professional" | "casual" | "minimal" | "custom" | null;
-  customPersonality?: string | null;
-  communicationStyle?: {
-    verbosity?: string | null;
-    proactivity?: string | null;
-    escalation?: string | null;
-  } | null;
-  constraints?: string[] | null;
-};
 
 export type CtoIdentity = {
   name: string;
   version: number;
   /**
-   * Shape of the record, not its revision. Absent on anything written before
-   * the legacy fold existed, which is exactly what marks it as needing one.
+   * Shape of the record, not its revision. Absent on anything written
+   * before CTO v2.
    */
   schemaVersion?: number;
   persona: string;
@@ -69,6 +49,24 @@ export type CtoIdentity = {
    * that names it from any caller but the desktop.
    */
   crossMachineEnabled?: boolean | null;
+  /**
+   * Backup models, in order. When the main model fails for a reason a
+   * different model would not hit (usage or rate limit, sign-in, provider
+   * down), ADE moves the thread to the next one and sends the message again.
+   * Each entry passes the same live-redirect check as `modelPreferences`.
+   */
+  fallbackModels?: CtoModelPreferences[];
+  /** How the CTO looks. Absent means the default look. */
+  avatar?: CtoAvatarLook | null;
+  /** How the CTO talks. Absent means "focused". */
+  personality?: CtoPersonality | null;
+  /**
+   * The person's IANA time zone, written by the desktop and the phone when
+   * they open the CTO. Its routines and its sense of "now" use it, so they
+   * keep their hour when the CTO lives on a computer in another zone (an ADE
+   * Cloud computer runs on UTC). Absent means the home machine's zone.
+   */
+  timeZone?: string | null;
   updatedAt: string;
 };
 
@@ -77,6 +75,133 @@ export type CtoModelPreferences = {
   model: string;
   modelId?: ModelId;
   reasoningEffort?: string | null;
+  /**
+   * Claude or Codex only: which signed-in account (provider instance id on the
+   * CTO's home machine) runs it. Absent means the provider's default account.
+   * Moving accounts keeps the CTO's one thread (`switchAccount`).
+   */
+  instanceId?: string | null;
+};
+
+/* ── Look and personality ── */
+
+export const CTO_AVATAR_SHAPES = ["pebble", "bean", "spark", "chip", "drop", "cloud", "hex"] as const;
+export type CtoAvatarShape = (typeof CTO_AVATAR_SHAPES)[number];
+
+export const CTO_AVATAR_EYES = ["caret", "round", "visor", "pixel"] as const;
+export type CtoAvatarEyes = (typeof CTO_AVATAR_EYES)[number];
+
+export const CTO_AVATAR_ENERGIES = ["calm", "lively"] as const;
+export type CtoAvatarEnergy = (typeof CTO_AVATAR_ENERGIES)[number];
+
+export type CtoAvatarLook = {
+  shape: CtoAvatarShape;
+  /** `#rrggbb`, lower case. The body colour, also the CTO page's accent. */
+  color: string;
+  eyes: CtoAvatarEyes;
+  energy: CtoAvatarEnergy;
+};
+
+export const DEFAULT_CTO_AVATAR_LOOK: CtoAvatarLook = {
+  shape: "pebble",
+  color: "#7c9cff",
+  eyes: "caret",
+  energy: "lively",
+};
+
+/** Most backup models the CTO keeps. */
+export const CTO_MAX_FALLBACK_MODELS = 3;
+
+export const CTO_PERSONALITIES = ["focused", "friendly", "playful"] as const;
+export type CtoPersonality = (typeof CTO_PERSONALITIES)[number];
+
+/**
+ * What the CTO is doing right now, as its avatar shows it. Derived on the
+ * client from the session status; never stored.
+ */
+export type CtoAvatarState = "idle" | "working" | "thinking" | "waiting" | "asleep" | "happy" | "error";
+
+/* ── Notes and open work ── */
+
+/** Hard caps on the two notes files, in UTF-8 bytes. */
+export const CTO_PROJECT_NOTES_MAX_BYTES = 4096;
+export const CTO_USER_NOTES_MAX_BYTES = 2048;
+/** Open items the CTO tracks at once; done items past this many are dropped oldest first. */
+export const CTO_OPEN_WORK_MAX_OPEN = 20;
+export const CTO_OPEN_WORK_MAX_DONE = 30;
+
+export type CtoNotesScope = "project" | "user";
+
+export type CtoOpenWorkItem = {
+  id: string;
+  text: string;
+  createdAt: string;
+  doneAt: string | null;
+  addedBy: "cto" | "user";
+};
+
+export type CtoUpdateNotesArgs = {
+  scope: CtoNotesScope;
+  /** The whole notes file, one note per line. Over the cap is refused. */
+  text: string;
+  /**
+   * sha256 (hex) of the notes text the editor started from: the snapshot's
+   * `memoryHash` or `userNotesHash`. When given and the file changed since
+   * (the CTO wrote a note, another device saved), the write is refused with
+   * {@link CTO_NOTES_CHANGED_ERROR} instead of overwriting it.
+   */
+  baseHash?: string;
+};
+
+/**
+ * The start of the error a notes write gets when the file changed since the
+ * editor loaded it. Match it with {@link isCtoNotesChangedError}: errors lose
+ * their class across IPC and sync, the message survives.
+ */
+export const CTO_NOTES_CHANGED_ERROR = "Notes changed since you opened them.";
+
+export function isCtoNotesChangedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return message.includes(CTO_NOTES_CHANGED_ERROR);
+}
+
+export type CtoUpdateOpenWorkArgs =
+  | { op: "add"; text: string }
+  | { op: "complete"; id: string }
+  | { op: "reopen"; id: string }
+  | { op: "remove"; id: string };
+
+/** What `cto.refreshContext` did. A busy CTO is refreshed when its turn ends. */
+export type CtoRefreshContextResult = {
+  refreshed: boolean;
+  /** Why nothing happened now, when `refreshed` is false. */
+  reason?: string;
+};
+
+/** One message of the CTO's conversation, as `readHistory` hands it back. */
+export type CtoHistoryEntry = {
+  role: "user" | "assistant";
+  /** Clipped to about 600 characters. */
+  text: string;
+  at: string;
+  sessionId: string;
+  /** In a search: true on the entries that matched, false on their neighbours. */
+  match?: boolean;
+};
+
+export type CtoReadHistoryArgs = {
+  /** Words that must all appear (case-insensitive). Absent pages the conversation newest first. */
+  query?: string | null;
+  /** The `nextBefore` of the previous page. */
+  before?: string | null;
+  /** Default 20, at most 50. */
+  limit?: number;
+};
+
+export type CtoHistoryPage = {
+  entries: CtoHistoryEntry[];
+  /** Pass as `before` for the next older page; null when there is none. */
+  nextBefore: string | null;
 };
 
 export type CtoSessionLogEntry = {
@@ -117,28 +242,7 @@ export type CtoSnapshot = {
   capabilities?: CtoRuntimeCapabilities;
 };
 
-export type CtoGetStateArgs = {
-  recentLimit?: number;
-};
-
-/**
- * What starting a fresh CTO thread actually did.
- *
- * `handoff` is reported rather than assumed because the case this exists for
- * is a thread too full to summarize itself: `source` says whether the CTO wrote
- * its own note or ADE distilled one from the transcript, and `thin` says the
- * distillation found little to work with. The retired conversation is still in
- * History with its transcript on disk either way.
- */
-export type CtoStartFreshSessionResult = {
-  sessionId: string;
-  previousSessionId: string | null;
-  handoff: {
-    written: boolean;
-    thin: boolean;
-    source: "model" | "deterministic" | "none";
-  };
-};
+export type CtoGetStateArgs = Record<string, never>;
 
 export type CtoEnsureSessionArgs = {
   modelId?: ModelId | null;
@@ -149,18 +253,13 @@ export type CtoUpdateIdentityArgs = {
   patch: Partial<Omit<CtoIdentity, "version" | "updatedAt">>;
 };
 
-export type CtoListSessionLogsArgs = {
-  limit?: number;
-};
-
 /* ── Onboarding ── */
 
 /**
  * Durable per-project markers, not a setup wizard.
  *
  * The wizard is gone; what remains is `completedSteps`, which carries the
- * non-user-facing `intro` and `memory_gardener` markers. The old `dismissedAt`
- * and `completedAt` went with their last writer and their last reader.
+ * non-user-facing `intro` marker.
  */
 export type CtoOnboardingState = {
   completedSteps: string[];
@@ -544,43 +643,24 @@ export type CtoRunProjectScanResult = {
  * types here are a cross-platform contract — do not rename them.
  */
 export type CtoMemorySnapshot = {
+  /** Project notes (`.ade/cto/MEMORY.md`), one note per line. iOS reads this field. */
   memory: string;
-  threadState: string;
-  dailyLog: string;
-  dailyLogDate: string;
+  memoryBytes?: number;
+  memoryLimitBytes?: number;
+  /** Notes about the person, shared by the CTO in every project on this machine. */
+  userNotes?: string;
+  userNotesBytes?: number;
+  userNotesLimitBytes?: number;
+  /** sha256 (hex) of `memory`; pass it back as `CtoUpdateNotesArgs.baseHash`. */
+  memoryHash?: string;
+  /** sha256 (hex) of `userNotes`; pass it back as `CtoUpdateNotesArgs.baseHash`. */
+  userNotesHash?: string;
+  /** Open and recently finished work items, open first. */
+  openWork?: CtoOpenWorkItem[];
   updatedAt: string | null;
-  /** The one project brief. Null until the CTO writes one. */
-  projectBrief: string | null;
-  /** Threads the CTO has directed. Null when none have been recorded. */
-  projectThreads: string | null;
-  /** Ranked project facts. Null when the context store has nothing to show. */
-  projectItems: string | null;
 };
 
 export type CtoGetMemoryArgs = Record<string, never>;
-
-export type CtoUpdateMemoryArgs = {
-  memory: string;
-};
-
-export type CtoSearchMemoryArgs = {
-  query: string;
-  limit?: number;
-};
-
-export type CtoMemorySearchRow = {
-  file: "MEMORY.md" | "thread-state.md" | "daily" | "memory-archive.md" | "context";
-  date: string | null;
-  line: number;
-  snippet: string;
-  /** The context-store id when the row is a live fact: what saveMemory `replaces` and forgetMemory take. */
-  id?: string;
-};
-
-export type CtoSearchMemoryResult = {
-  query: string;
-  rows: CtoMemorySearchRow[];
-};
 
 /* ── Attention ── */
 

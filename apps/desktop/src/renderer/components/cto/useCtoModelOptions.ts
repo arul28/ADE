@@ -7,18 +7,26 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { providerSupportsLiveRedirect } from "../../../shared/types/chat";
-import type { OpenProjectBinding } from "../../../shared/types";
+import type { CtoModelPreferences, OpenProjectBinding } from "../../../shared/types";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { settingsRouteFor } from "../settings/settingsManifest";
 
 /**
- * The CTO may only run on a model whose provider can redirect a turn that is
- * already running — child reports, wakes and peer notes arrive constantly and
- * must not wait for a turn boundary.
+ * The providers the CTO can run on, in the words every CTO surface uses.
+ * They are the ones whose chats take a new message in the middle of a turn
+ * (`CTO_LIVE_REDIRECT_PROVIDERS`).
+ */
+export const CTO_ELIGIBLE_PROVIDERS_COPY = "Claude, Codex, Cursor, OpenCode or Copilot";
+
+/**
+ * The CTO only runs on a model whose chat can take a new message mid-turn
+ * (Claude, Codex, Cursor, OpenCode or Copilot): child reports,
+ * wakes and the person's follow-ups arrive constantly and must not wait for
+ * a turn to end.
  *
  * Resolved through the provider the model would actually launch on, never its
- * registry family: an OpenAI model that is not CLI-wrapped runs under OpenCode,
- * which stages everything.
+ * registry family: an OpenAI model that is not CLI-wrapped runs under
+ * OpenCode, and that is the provider that has to qualify.
  */
 export function ctoModelSupportsLiveRedirect(descriptor: ModelDescriptor): boolean {
   return providerSupportsLiveRedirect(resolveChatProviderForDescriptor(descriptor).provider);
@@ -50,10 +58,26 @@ export function resolveModelSelection(
   };
 }
 
+/** The stored form of a model choice (`CtoIdentity.modelPreferences` / `fallbackModels`). */
+export function toCtoModelPreferences(
+  modelId: string,
+  reasoningEffort: string | null = null,
+): CtoModelPreferences | null {
+  const selection = resolveModelSelection(modelId, reasoningEffort);
+  if (!selection) return null;
+  return {
+    provider: selection.provider,
+    model: selection.model,
+    modelId: selection.modelId,
+    reasoningEffort: selection.reasoningEffort,
+  };
+}
+
 /**
- * Loads the models the user has configured (API keys / signed-in CLIs) so the
- * CTO Settings draws from the same configured catalog as the chat composer.
- * Also exposes a jump to provider settings for the empty-catalog case.
+ * Loads the models the user has set up (API keys, signed-in CLIs) on the
+ * CTO's home machine, narrowed to the ones the CTO can run on, so the CTO's
+ * pickers draw from the same catalog as the chat composer. Also exposes a
+ * jump to provider settings for the empty case.
  */
 export function useCtoModelOptions(pin: OpenProjectBinding | null = null): {
   availableModelIds: string[];
@@ -77,8 +101,8 @@ export function useCtoModelOptions(pin: OpenProjectBinding | null = null): {
         // The CTO runs on its home machine, so its models are that machine's.
         const status = await window.ade.ai.getStatus(undefined, pin);
         if (cancelled) return;
-        // Narrowed here as well as in the picker's filter, so the panel's
-        // "no models configured" state counts only models the CTO can use.
+        // Narrowed here as well as in the picker's filter, so "no models set
+        // up" counts only models the CTO can use.
         setAvailableModelIds(deriveConfiguredModelIds(status).filter((modelId) => {
           const descriptor = getModelById(modelId);
           return descriptor ? ctoModelSupportsLiveRedirect(descriptor) : false;

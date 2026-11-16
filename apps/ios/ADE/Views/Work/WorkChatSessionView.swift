@@ -998,6 +998,10 @@ struct WorkChatSessionView: View {
   /// Opens this chat's side chat. Set only while the chat has one; the badge
   /// row then shows a Side chat chip (never otherwise).
   var onOpenSideChat: (() -> Void)? = nil
+  /// Set on the CTO thread only. Its turns draw calm: quiet chips for state
+  /// changes instead of the turn-end line, one working line while it runs.
+  /// Every other chat leaves it nil and renders exactly as before.
+  var ctoLive: CtoLiveModel? = nil
 
   @State private var threadCommentsSheetPresented = false
   /// Compact first for the next send: nil follows the offer's own default.
@@ -1899,9 +1903,33 @@ struct WorkChatSessionView: View {
     }
   }
 
+  /// The CTO thread's live facts, for its header pill and profile.
+  var ctoLiveFacts: WorkCtoLiveFacts? {
+    guard ctoLive != nil else { return nil }
+    let active = isStreamingTurn
+    return WorkCtoLiveFacts(
+      active: active,
+      streaming: active && streamingAssistantMessageId != nil,
+      awaiting: !pendingInputs.isEmpty,
+      step: active ? ctoLatestStepWords(turnToolActivity.active?.members ?? []) : nil
+    )
+  }
+
   @ViewBuilder
   var streamingStatusSection: some View {
-    if isStreamingTurn {
+    if isStreamingTurn, let ctoLive {
+      CtoWorkingLine(
+        look: ctoLive.look,
+        members: turnToolActivity.active?.members ?? [],
+        streamingText: streamingAssistantMessageId != nil,
+        startedAt: ctoLive.turnStartedAt,
+        onOpenSteps: turnToolActivity.active.map { _ in
+          { toolActivitySheet = .active }
+        }
+      )
+      .id("chat-streaming-status")
+      .frame(maxWidth: .infinity, alignment: .leading)
+    } else if isStreamingTurn {
       WorkActivityIndicator(
         transcript: transcript,
         precomputedPresentation: frame?.activityPresentation,
@@ -2381,6 +2409,7 @@ struct WorkChatSessionView: View {
             .environment(\.workSkillInstructions, skillInstructions)
             .environment(\.workProofCitations, proofCitationContext)
             .environment(\.workSceneBridge, sceneBridge)
+            .environment(\.workChatAccentHexOverride, ctoLive.map { CtoResolvedLook($0.look).hex })
             .modifier(
               WorkChatTranscriptEnvironmentModifier(
                 provider: chatSummaryContext.provider,
@@ -2867,6 +2896,26 @@ struct WorkChatSessionView: View {
         .onChange(of: liveClaudeQuotaCardId) { _, newId in
           handleLiveQuotaCardChange(newId)
         }
+        .onChange(of: ctoLiveFacts, initial: true) { _, facts in
+          publishCtoLiveFacts(facts)
+        }
+  }
+
+  /// Hands the CTO thread's turn facts to its live model (header pill,
+  /// profile). The turn's start is read off the transcript once, when the
+  /// turn begins, never per streamed delta.
+  @MainActor
+  private func publishCtoLiveFacts(_ facts: WorkCtoLiveFacts?) {
+    guard let ctoLive, let facts else { return }
+    if facts.active {
+      if ctoLive.turnStartedAt == nil {
+        ctoLive.turnStartedAt = WorkActivityIndicator.activeTurnStartTimestamp(from: transcript)
+          .flatMap(workActivityTimestamp) ?? Date()
+      }
+    } else if ctoLive.turnStartedAt != nil {
+      ctoLive.turnStartedAt = nil
+    }
+    ctoLive.applyTurn(active: facts.active, streaming: facts.streaming, awaiting: facts.awaiting, step: facts.step, failed: false)
   }
 
   /// Per-frame bookkeeping that is not rendering: a history reset (generation

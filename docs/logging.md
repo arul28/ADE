@@ -2358,6 +2358,22 @@ per-outcome one-minute deduplication key bounds a chord-mashing loop to at most
 is single digits. No ceiling was raised, and the dashboard spec is deliberately
 untouched — no card asks that question yet.
 
+### The CTO's home move
+
+When the CTO moves to a new home machine, the brain there records one
+`ade_feature_used` event where the account copy lands it
+(`ctoAccountCopyService.ts` `adopt`, reported by `reportCtoHomeMove` in
+`analytics/ctoHomeProductAnalytics.ts`), with `feature: "cto"`,
+`action: "cto_home_move"`, `surface: "api"`, and one of three outcomes:
+`completed` (it took the CTO another machine left in the account), `kept` (it
+already held the newest copy, or there was none), or `failed` (the account
+couldn't be read; the copy is taken later). The product question is whether the
+CTO comes along when people move it. Never the machine, its name, the
+repository, the notes, the conversation, or the routines. A per-outcome
+one-hour deduplication key bounds it to 24 accepted events per outcome a day in
+theory; the realistic number is a handful a month. No ceiling was raised, and
+the dashboard spec is untouched.
+
 ### Native iOS
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.

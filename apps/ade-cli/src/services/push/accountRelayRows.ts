@@ -125,7 +125,9 @@ export type AccountVaultItemKind =
   /** ADE MCP: the account secret and the connections (token hashes only). */
   | "ade_mcp"
   /** A provider sign-in (the login a provider's CLI keeps on disk). The relay allows 16,000 chars, not 6,000. */
-  | "provider_login";
+  | "provider_login"
+  /** The CTO's account copy, one per repository (`shared/ctoAccountCopy.ts`). The relay allows 48,000 chars. */
+  | "cto_copy";
 
 export type AccountVaultItem = {
   scope: string;
@@ -154,6 +156,7 @@ const ACCOUNT_VAULT_ITEM_KINDS: ReadonlySet<string> = new Set<AccountVaultItemKi
   "project_secret",
   "ade_mcp",
   "provider_login",
+  "cto_copy",
 ]);
 
 export function isAccountVaultItemKind(value: unknown): value is AccountVaultItemKind {
@@ -165,7 +168,7 @@ export function isAccountVaultItemKind(value: unknown): value is AccountVaultIte
  * them in their own batch, because a Worker refuses a whole batch for one
  * unknown kind.
  */
-export const NEWER_VAULT_KINDS: ReadonlySet<AccountVaultItemKind> = new Set<AccountVaultItemKind>(["ade_mcp", "provider_login"]);
+export const NEWER_VAULT_KINDS: ReadonlySet<AccountVaultItemKind> = new Set<AccountVaultItemKind>(["ade_mcp", "provider_login", "cto_copy"]);
 
 /** Validate one vault row before callers can mistake corrupt data for a secret. */
 export function decodeAccountVaultItem(value: unknown): AccountVaultItem | null {

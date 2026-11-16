@@ -18,6 +18,8 @@ import { isRecord } from "../shared/utils";
 import { sendToAllWindows } from "./broadcast";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
+import { createCtoCloudHomeService } from "./ctoCloudHomeService";
+import type { CtoCloudHomeCallRequest } from "../../../shared/ctoCloudHome";
 import { cloudLaneLaunchOutcomes, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 
@@ -155,6 +157,53 @@ export function registerCloudLaneLaunchIpc(args: {
     }
   });
 
-  app.once("will-quit", () => service.dispose());
+  // The CTO's home on ADE Cloud: a computer made the way Settings' "New cloud
+  // machine" makes one (no lane), then the repository cloned there.
+  const ctoCloudHome = createCtoCloudHomeService({
+    recordsDir: path.join(app.getPath("userData"), "cto-cloud-homes"),
+    logger,
+    emit: (event) => sendToAllWindows(IPC.ctoCloudHomeEvent, event),
+    // With its note of computers being made: one a quit cut off is found and deleted on the next start.
+    creator: args.machineCreatorDeps,
+    removeAccountMachine: args.removeAccountMachine,
+    forgetMachineConnections: args.forgetMachineConnections,
+    pairMachine: args.pairMachine,
+    connect: async (targetId) => {
+      await remote.connect(targetId);
+      return true;
+    },
+    listProjects: (targetId) => remote.projects(targetId),
+    defaultParentDir: (targetId) => remote.defaultParentDir(targetId),
+    cloneProject: (targetId, input) => remote.cloneProject(targetId, input),
+    resolveBinding: (targetId, projectId, rootPath) => remote.resolveBinding(targetId, projectId, rootPath),
+    ...(args.gitPreflight ? { gitPreflight: args.gitPreflight } : {}),
+  });
+  ipcMain.handle(IPC.ctoCloudHomeCall, async (event, raw: unknown) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.ctoCloudHomeCall)) {
+      throw new Error("ADE can't do that from here.");
+    }
+    const request = (isRecord(raw) ? raw : {}) as Partial<CtoCloudHomeCallRequest>;
+    const callArgs: Record<string, unknown> = isRecord(request.args) ? request.args : {};
+    const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
+    switch (request.method) {
+      case "start":
+        return await ctoCloudHome.start({ originUrl: text(callArgs.originUrl) });
+      case "get":
+        return ctoCloudHome.get({ originUrl: text(callArgs.originUrl) });
+      case "retry":
+        return await ctoCloudHome.retry({ jobId: text(callArgs.jobId) ?? "" });
+      case "cancel":
+        return await ctoCloudHome.cancel({ jobId: text(callArgs.jobId) ?? "" });
+      case "finish":
+        return ctoCloudHome.finish({ jobId: text(callArgs.jobId) ?? "" });
+      default:
+        throw new Error("Unknown CTO cloud home call.");
+    }
+  });
+
+  app.once("will-quit", () => {
+    service.dispose();
+    ctoCloudHome.dispose();
+  });
   return service;
 }

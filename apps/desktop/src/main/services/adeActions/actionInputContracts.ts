@@ -38,22 +38,26 @@ type AdeActionInputContractTable =
 
 const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   cto_state: {
-    getThreadHealth: {
+    refreshContext: {
       description:
-        "Report whether the CTO thread can take a turn: the session id, the last turn failure, context occupancy, "
-        + "and whether a rotation is advised. Open to every role; never changes state.",
+        "Give the CTO a fresh provider thread. The conversation, notes, open work and the last 40 messages carry over. "
+        + "A CTO that is mid-turn is refreshed when the turn ends. CTO-only.",
       input: "none",
-      example: "ade actions run cto_state.getThreadHealth --json",
-    },
-    startFreshSession: {
-      description:
-        "Retire the CTO's live conversation into History and start a fresh one on the primary lane. "
-        + "Identity, memory and the daily log carry over; a hand-off note is written first. CTO-only.",
-      input: "none",
-      example: "ade --role cto actions run cto_state.startFreshSession --json",
+      example: "ade --role cto actions run cto_state.refreshContext --json",
     },
   },
   cto_memory: {
+    updateNotes: {
+      description:
+        "Replace one notes file, one note per line: scope \"project\" (.ade/cto/MEMORY.md, 4096 bytes) or \"user\" (the person, every project on this machine, 2048 bytes). Over the cap is refused. Pass the snapshot's memoryHash/userNotesHash as baseHash to refuse the write when the file changed since it was read. CTO-only.",
+      input: "object { scope: \"project\" | \"user\", text: string, baseHash?: string }",
+      example: "ade --role cto actions run cto_memory.updateNotes --input-json '{\"scope\":\"project\",\"text\":\"- Deploys go through the release lane\"}' --json",
+    },
+    updateOpenWork: {
+      description: "Add, complete, reopen or remove one open-work item on the CTO's list. CTO-only.",
+      input: "object { op: \"add\", text: string } | { op: \"complete\" | \"reopen\" | \"remove\", id: string }",
+      example: "ade --role cto actions run cto_memory.updateOpenWork --input-json '{\"op\":\"add\",\"text\":\"Land the login fix\"}' --json",
+    },
     recordDiscovery: {
       description:
         "Hand one durable finding up to the project's CTO — a convention, a trap, a decision the next agent should not have to rediscover. "
@@ -844,6 +848,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "End a side chat for good. Pass the side chat's id or its main chat's id; with expectedSideSessionId, it refuses when the main chat has a different side chat now.",
       input: "object { sessionId: string, expectedSideSessionId?: string }",
       example: "ade actions run chat.endSideChat --input-json '{\"sessionId\":\"chat-123\"}' --json",
+    },
+    setScheduledWorkItemPaused: {
+      description: "Pause or resume one scheduled job on a chat, leaving its other jobs alone. Reversible; nothing is cancelled.",
+      input: "object { sessionId: string, scheduleId: string, paused: boolean }",
+      example: "ade actions run chat.setScheduledWorkItemPaused --input-json '{\"sessionId\":\"chat-123\",\"scheduleId\":\"cron-abc\",\"paused\":true}' --text",
+    },
+    runScheduledWorkNow: {
+      description: "Run one scheduled job now. A recurring job keeps its next time; a one-shot is spent. Refused while the chat is busy.",
+      input: "object { sessionId: string, scheduleId: string }",
+      example: "ade actions run chat.runScheduledWorkNow --input-json '{\"sessionId\":\"chat-123\",\"scheduleId\":\"cron-abc\"}' --text",
     },
     setScheduledWorkPaused: {
       description: "Pause or resume every scheduled job on one chat. Reversible; nothing is cancelled.",

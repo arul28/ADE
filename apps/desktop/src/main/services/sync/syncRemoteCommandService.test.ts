@@ -318,13 +318,7 @@ function makePayload(action: string, args: Record<string, unknown> = {}): SyncCo
 
 const CTO_MEMORY_SNAPSHOT = {
   memory: "# CTO Durable Memory\n\n## Facts\n\n- A durable fact.",
-  threadState: "# CTO Thread State\n\nCurrent goal: ship memory.",
-  dailyLog: "# 2026-07-04\n\n09:00 — do a thing → done",
-  dailyLogDate: "2026-07-04",
   updatedAt: "2026-07-04T09:00:00.000Z",
-  projectBrief: null,
-  projectThreads: null,
-  projectItems: null,
 };
 
 describe("createSyncRemoteCommandService", () => {
@@ -1204,9 +1198,11 @@ describe("createSyncRemoteCommandService", () => {
         sessionId: "sess-1",
         text: "hello",
       }));
+      // A paired controller sends what its person typed.
       expect(agentChatService.sendMessage).toHaveBeenCalledWith({
         sessionId: "sess-1",
         text: "hello",
+        sentByUser: true,
       }, {
         awaitDispatch: false,
         routeActiveToSteer: true,
@@ -1372,7 +1368,7 @@ describe("createSyncRemoteCommandService", () => {
         }));
         expect(agentChatService.sendMessage).toHaveBeenCalledTimes(1);
         const sentArg = agentChatService.sendMessage.mock.calls[0][0] as Record<string, unknown>;
-        expect(sentArg).toEqual({ sessionId: "sess-1", text: "plain" });
+        expect(sentArg).toEqual({ sessionId: "sess-1", text: "plain", sentByUser: true });
         // Explicitly ensure none of the new optional keys leaked in.
         expect(sentArg).not.toHaveProperty("displayText");
         expect(sentArg).not.toHaveProperty("attachments");

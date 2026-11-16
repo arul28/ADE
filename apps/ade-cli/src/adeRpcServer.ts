@@ -1448,47 +1448,63 @@ const STANDALONE_CHAT_HIDDEN_TOOL_NAMES = new Set([
 const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   {
     name: "get_cto_state",
-    description: "Read the reconstructed CTO identity and recent continuity state maintained by ADE. Prefer this over shell-reading .ade/cto files from the workspace.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        recentLimit: { type: "number", minimum: 0, maximum: 50 }
-      }
-    }
-  },
-  {
-    name: "saveMemory",
-    description: "Save a durable fact to your persistent memory (MEMORY.md) — decisions, preferences, conventions, and standing project context you should remember across sessions and model switches. One crisp sentence per fact; exact duplicates are ignored.",
-    inputSchema: {
-      type: "object",
-      required: ["fact"],
-      additionalProperties: false,
-      properties: {
-        fact: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
-    name: "searchMemory",
-    description: "Search your persistent memory (MEMORY.md, thread state, and recent daily logs) for prior context before asking the user to restate something.",
-    inputSchema: {
-      type: "object",
-      required: ["query"],
-      additionalProperties: false,
-      properties: {
-        query: { type: "string", minLength: 1 },
-        limit: { type: "number", minimum: 1, maximum: 100 }
-      }
-    }
-  },
-  {
-    name: "readMemory",
-    description: "Read your persistent memory: durable facts (MEMORY.md) and the current thread state.",
+    description: "Read the CTO identity ADE maintains. Prefer this over shell-reading .ade/cto files from the workspace.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {}
+    }
+  },
+  {
+    name: "remember",
+    description: "Write a note the CTO sees on every turn: a decision, a convention, a trap, how the person likes to work. One short line. Pass part of an existing line in `replaces` to rewrite it. Refused past the notes' size cap.",
+    inputSchema: {
+      type: "object",
+      required: ["note"],
+      additionalProperties: false,
+      properties: {
+        note: { type: "string", minLength: 1, maxLength: 400 },
+        scope: { type: "string", enum: ["project", "user"] },
+        replaces: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "forget",
+    description: "Remove the note whose line contains this exact text (it must match one note).",
+    inputSchema: {
+      type: "object",
+      required: ["note"],
+      additionalProperties: false,
+      properties: {
+        note: { type: "string", minLength: 1 },
+        scope: { type: "string", enum: ["project", "user"] }
+      }
+    }
+  },
+  {
+    name: "readHistory",
+    description: "Page or search the CTO's whole conversation, newest first. With `query`, messages containing all its words, each with its neighbours. Pass `nextBefore` as `before` for older pages.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", minLength: 1 },
+        before: { type: "string", minLength: 1 },
+        limit: { type: "number", minimum: 1, maximum: 50 }
+      }
+    }
+  },
+  {
+    name: "replyNow",
+    description: "Answer the person right away while you keep working: only when they wrote mid-task and asked something or changed the plan. One or two sentences, then continue.",
+    inputSchema: {
+      type: "object",
+      required: ["message"],
+      additionalProperties: false,
+      properties: {
+        message: { type: "string", minLength: 1, maxLength: 600 }
+      }
     }
   },
   {
@@ -1745,8 +1761,7 @@ const READ_ONLY_TOOLS = new Set([
   "pr_get_checks",
   "pr_get_review_comments",
   "get_cto_state",
-  "searchMemory",
-  "readMemory",
+  "readHistory",
   "listChats",
   "getChatStatus",
   "readChatTranscript",
@@ -1762,7 +1777,9 @@ const READ_ONLY_TOOLS = new Set([
 ]);
 
 const MUTATION_TOOLS = new Set([
-  "saveMemory",
+  "remember",
+  "forget",
+  "replyNow",
   // A chat on another machine deleting its own work copy here.
   "release_remote_work_copy",
   // A chat on another machine whose turn ended letting go of the devices it holds here.
@@ -4255,6 +4272,8 @@ const CHAT_ACTION_SCOPE = new Map<string, "mesh" | "self">([
   // transcript records the cancel as the user's.
   ["cancelScheduledWork", "self"],
   ["setScheduledWorkPaused", "self"],
+  ["setScheduledWorkItemPaused", "self"],
+  ["runScheduledWorkNow", "self"],
   // Spends a real turn on the target; a bound agent could otherwise force any
   // usage-limited chat on the machine to burn its retry.
   ["resumeUsageLimitNow", "self"],
@@ -5852,6 +5871,12 @@ async function runCtoOperatorBridgeTool(
     fileService: runtime.fileService ?? null,
     issueTracker: runtime.linearIssueTracker ?? null,
     ctoMemoryService: runtime.ctoMemoryService ?? null,
+    readHistory: (historyArgs) => agentChatService.readCtoHistory(historyArgs),
+    // The caller is the CTO chat itself; the service refuses any other session.
+    postInterimReply: ({ text }) => agentChatService.postCtoInterimReply({
+      sessionId: session.identity.chatSessionId?.trim() || session.identity.callerId,
+      text,
+    }),
     listChats: agentChatService.listSessions,
     getChatStatus: agentChatService.getSessionSummary,
     getChatTranscript: agentChatService.getChatTranscript,
@@ -6633,8 +6658,7 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
     if (name === "get_cto_state") {
-      const recentLimit = Math.max(0, Math.min(50, Math.floor(asNumber(toolArgs.recentLimit, 10))));
-      return runtime.ctoStateService.getSnapshot(recentLimit);
+      return runtime.ctoStateService.getSnapshot();
     }
     return await runCtoOperatorBridgeTool(runtime, session, name, toolArgs);
   }

@@ -265,6 +265,8 @@ struct WorkSessionDestinationView: View {
   @Environment(\.scenePhase) private var scenePhase
   @Environment(\.duoLayout) private var duoLayout
   @Environment(\.duoWorkFamily) private var duoWorkFamily
+  /// Set on the CTO thread only: its calm rendering and its live state.
+  @Environment(\.ctoLiveModel) private var ctoLiveModel
   /// This chat's child chats as the Work list holds them. Chat Info lists a
   /// nested subagent only from here, and opens a child through its lane id.
   @Environment(\.workChatChildRoster) var chatChildRoster
@@ -2380,7 +2382,7 @@ struct WorkSessionDestinationView: View {
     let openSideChatAction: (() -> Void)? = currentSideChatSessionId == nil
       ? nil
       : { openSideChatPanel() }
-    return WorkChatSessionView(
+    var chatView = WorkChatSessionView(
       session: WorkChatSessionRenderContext(session),
       chatSummaryContext: summaryContext,
       thread: thread,
@@ -2547,6 +2549,8 @@ struct WorkSessionDestinationView: View {
         },
       onOpenSideChat: openSideChatAction
     )
+    chatView.ctoLive = ctoLiveModel
+    return chatView
   }
 
   /// Extracted from the `.onChange` modifier: the destination's modifier chain

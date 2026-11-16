@@ -30,6 +30,7 @@ import {
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { runFirstLoadWithRetry } from "../../lib/firstLoadRetry";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
+import { ensureRootFullAccessFor } from "../chat/rootFullAccessPrompt";
 import {
   canonicalInputFromSummary,
   effectiveSessionFilingBuckets,
@@ -2723,6 +2724,22 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           };
         }
       }
+      // The lane's machine starts the shell. A lane with no known machine has
+      // nowhere to start it.
+      const createPin = args.pin ?? machineRouter.pinForSession({ laneId: args.laneId });
+      if (!createPin) throw noChatMachineError();
+      // Claude Code exits at once when told to skip permissions as root. On a
+      // root machine that hasn't allowed it, ask once for the machine; a no
+      // starts the terminal in Accept edits instead of a dead one.
+      const claudeFullAccess = args.runtimeCliLaunch
+        ? args.runtimeCliLaunch.provider === "claude" && args.runtimeCliLaunch.permissionMode === "full-auto"
+        : args.profile === "claude" && args.permissionMode === "full-auto"
+          && args.startupCommand === undefined && args.command === undefined && args.args === undefined;
+      if (claudeFullAccess && !(await ensureRootFullAccessFor(createPin))) {
+        args = args.runtimeCliLaunch
+          ? { ...args, runtimeCliLaunch: { ...args.runtimeCliLaunch, permissionMode: "edit" } }
+          : { ...args, permissionMode: "edit" };
+      }
       // resolveLaunchFields preserves caller intent: any caller-supplied
       // startupCommand/command/args is used as-is, never mixed with defaults
       // from the other fields. Only when the caller passes none of them do
@@ -2755,10 +2772,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // owns the lane, out of the same account-settings copy the renderer
       // syncs. Make sure that copy holds the preset before the spawn, or the
       // CLI starts on the harness's own sign-in and reports the preset gone.
-      // The lane's machine starts the shell. A lane with no known machine has
-      // nowhere to start it.
-      const createPin = args.pin ?? machineRouter.pinForSession({ laneId: args.laneId });
-      if (!createPin) throw noChatMachineError();
       await ensureHarnessPresetOnBrain(args.runtimeCliLaunch?.presetId, {
         targetsAnotherMachine: createPin.kind === "remote",
       });

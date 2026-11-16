@@ -491,6 +491,16 @@ extension SyncService {
     )
   }
 
+  /// Whether the account pays for ADE Cloud, or nil while that can't be read
+  /// (ADE Cloud is off for the account, an older machine, no connection).
+  /// One account read, no computers: the CTO's home chooser needs only the
+  /// plan to word its one ADE Cloud row.
+  func readCloudPlanIsPaid() async -> Bool? {
+    guard cloudAvailable, cloudSupported, connectionState == .connected else { return nil }
+    guard let account = try? await cloudRead("hours", as: CloudPhoneAccount.self) else { return nil }
+    return account.currentPlanId != "free"
+  }
+
   /// The account's invite summary (`cloud.read referral`); nil without ADE
   /// Cloud, on an older machine, or when it can't be read.
   func readCloudReferral() async -> CloudPhoneReferral? {

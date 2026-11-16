@@ -223,25 +223,22 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
    * restriction means a `cto_memory` method added later is CTO-only by default
    * and cannot be opened up by forgetting to update this file.
    *
-   * `getSnapshot` and `searchMemory` are deliberately open, and stay open, for
-   * backward compatibility: they were reachable by any agent before this domain
-   * was inverted, and automation `ade-action` steps call them. Closing them
-   * would be a silent breaking change that protects nothing — CTO memory is
-   * plain markdown under `<adeDir>/cto/` inside the project, and every coding
-   * agent already has file read access to it, so this gate is not the boundary.
-   * `updateMemory` (the rewrite path) stays CTO-only.
+   * `getSnapshot` is deliberately open, and stays open, for backward
+   * compatibility: it was reachable by any agent before this domain was
+   * inverted, and automation `ade-action` steps call it. Closing it would
+   * protect nothing — the notes are plain markdown under `<adeDir>/cto/`, and
+   * every coding agent already has file read access to them. The writes
+   * (`updateNotes`, `updateOpenWork`) stay CTO-only.
    */
-  cto_memory: { allExcept: ["recordDiscovery", "getSnapshot", "searchMemory"] },
+  cto_memory: { allExcept: ["recordDiscovery", "getSnapshot"] },
   /*
-   * `startFreshSession` retires the conversation every other CTO surface is
-   * talking to and starts a new one. Nothing it touches is destructive — memory,
-   * identity and the retired transcript all survive — but deciding that a thread
-   * is finished is the operator's call, not an agent's, and an agent that could
-   * make it could quietly drop the context it was being supervised with. Listed
-   * as `only` because every other method on this domain is a read the whole
-   * fleet already depends on.
+   * `refreshContext` replaces the CTO's provider thread. Nothing it touches is
+   * lost — the conversation, notes and open work all carry over — but when the
+   * CTO starts over is the operator's call, not an agent's. Listed as `only`
+   * because every other method on this domain is a read the whole fleet
+   * already depends on.
    */
-  cto_state: { only: ["startFreshSession"] },
+  cto_state: { only: ["refreshContext"] },
   // Every settle WRITER is CTO-only on purpose. "Is this work actually done?"
   // is a subjective judgment and agents are unreliable at it, so settlement is
   // reachable only from surfaces that connect at cto role — the desktop
@@ -397,6 +394,8 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
+  // Where the CTO lives is the person's choice: no agent moves it (or itself).
+  cto_state: ["adoptAccountCopy"],
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
   // A secret's value is the person's to read (Settings, or the desktop's own
@@ -424,6 +423,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
     "revokeMcpAppGrant",
     // Taking a chat off Recently deleted means it can no longer be reopened.
     "removeDeletedChats",
+    // Letting agents run with Full access as root covers the whole machine;
+    // an agent must not grant it to itself.
+    "setRootFullAccess",
   ],
   // Granting an outside AI app this computer is the person's call. `ade mcp`
   // in their own terminal reaches the same service through `remoteMcp.call`.
@@ -863,6 +865,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   tests: ["getLogTail", "listRuns", "listSuites", "run", "stop"],
   chat: [
     "archiveSession",
+    "getRootFullAccess",
+    "setRootFullAccess",
     "cancelDispatchedSteer",
     "cancelSteer",
     // `ade chat ask --clear`: the agent takes back the hand it raised. Fenced
@@ -1041,6 +1045,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "continueUsageLimitOnAlternate",
     "switchAccount",
     "setScheduledWorkPaused",
+    "setScheduledWorkItemPaused",
+    "runScheduledWorkNow",
     "steer",
     "suggestLaneNameFromPrompt",
     "generateAutoLaneIdentity",
@@ -1149,19 +1155,19 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   automation_planner: ["parseNaturalLanguage", "saveDraft", "simulate", "validateDraft"],
   cto_state: [
+    "adoptAccountCopy",
     "completeOnboardingStep",
+    "getAccountCopyStatus",
     "getAttention",
     "getIdentity",
     "getOnboardingState",
-    "getSessionLogs",
     "getSnapshot",
-    "getThreadHealth",
     "previewSystemPrompt",
+    "refreshContext",
     "runProjectScan",
-    "startFreshSession",
     "updateIdentity",
   ],
-  cto_memory: ["getSnapshot", "searchMemory", "updateMemory", "recordDiscovery"],
+  cto_memory: ["getSnapshot", "updateNotes", "updateOpenWork", "recordDiscovery"],
   session: [
     "backfillDeltas",
     "clearWokeMarker",

@@ -61,7 +61,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import { sideChatSendBlocksToMarkdown } from "../../../shared/sideChat";
-import { SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS } from "../../../shared/types/chat";
+import { CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS, CTO_CONTEXT_REFRESHED_STATUS, SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS } from "../../../shared/types/chat";
 import { SideChatTranscriptContext } from "./sideChatState";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, readVoiceSessionNotice, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
@@ -122,6 +122,7 @@ import {
 } from "./chatTranscriptChrome";
 import { useAppStore } from "../../state/appStore";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { confirmRootFullAccess } from "./rootFullAccessPrompt";
 import { transcriptRowGapPx } from "./chatAppearance";
 import { UserMessageIssueContext } from "./UserMessageIssueContext";
 import type { AgentChatContextAttachment, AgentChatFileRef } from "../../../shared/types";
@@ -286,6 +287,7 @@ import {
 import { BackgroundJobRunRow } from "./BackgroundJobRunRow";
 import { ThinkingIndicator } from "../ui/ThinkingIndicator";
 import { ScheduledWorkChips, ScheduledWorkLine, WakeChainChip, WakeChainRow } from "./ScheduledWorkLine";
+import { SCHEDULED_WORK_PENDING_STATUSES } from "../../../shared/chatScheduledWork";
 import { applyWakeChains, foldIdsByHiddenRowKey, foldScheduledWorkRows, insertNewSinceDivider, moveScheduledWorkToTurnEnds } from "./chatScheduledWorkRows";
 import { useWakeLoopFolds } from "./useWakeLoopFolds";
 
@@ -336,6 +338,9 @@ import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { parseMessageAuthor } from "../../../shared/messageAuthor";
 import { withChatPin } from "./chatMachinePin";
+import { CtoFreshContextDivider, CtoToolChips } from "./cto/CtoToolChips";
+import { CtoWorkingLine } from "./cto/CtoWorkingLine";
+import { drawsCtoChips, keepCtoChipRowsVisible } from "./cto/ctoToolWords";
 
 /**
  * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
@@ -459,6 +464,57 @@ function ResetCreditNoticeRow({
       {outcome ? (
         <span className="normal-case tracking-normal text-fg/42">{outcome}</span>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Claude held a chat back to Accept edits because ADE runs as root on its
+ * machine. The person can allow Full access there, once, for the machine; the
+ * call goes to the chat's machine.
+ */
+function RootFullAccessNoticeRow({
+  message,
+  className,
+  icon,
+  chipLabel,
+}: {
+  message: string;
+  className?: string;
+  icon: React.ReactNode;
+  chipLabel: string;
+}) {
+  const { pin } = useChatRuntimeScope();
+  const [allowed, setAllowed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const canAllow = typeof window.ade?.agentChat?.setRootFullAccess === "function" && !allowed;
+  const allow = useCallback(async () => {
+    setBusy(true);
+    try {
+      setAllowed(await confirmRootFullAccess(pin));
+    } finally {
+      setBusy(false);
+    }
+  }, [pin]);
+  return (
+    <div className={cn(
+      "inline-flex max-w-[var(--chat-content-width,52rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
+      className,
+    )}>
+      {icon}
+      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
+      <span className="normal-case tracking-normal text-fg/55">{message}</span>
+      {canAllow ? (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => { void allow(); }}
+          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
+        >
+          Allow on this machine
+        </button>
+      ) : null}
+      {allowed ? <span className="normal-case tracking-normal text-fg/42">Allowed. The next message runs with Full access.</span> : null}
     </div>
   );
 }
@@ -1159,14 +1215,18 @@ function UserMessageStatusRow({
   onRunUnprocessedMessage,
   onEditUnprocessedMessage,
   onDismissUnprocessedMessage,
+  quiet = false,
 }: {
   event: UserMessageEvent;
   onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
   onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
   onDismissUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
+  /** The CTO answers mid-task input itself: show only a send that went wrong. */
+  quiet?: boolean;
 }) {
   const status = describeUserMessageStatus(event);
   if (!status) return null;
+  if (quiet && status.tone === "muted" && status.kind !== "steer_unprocessed") return null;
   return (
     <div className="mt-1 flex min-w-0 max-w-[82%] flex-col items-end" data-testid="user-message-status-row">
       {status.kind === "steer_unprocessed" ? (
@@ -1894,12 +1954,21 @@ export const ChatInfoHostContext = React.createContext(false);
 function ChatActivityBundle({
   event,
   sessionId,
+  hidePendingSchedules = false,
 }: {
   event: ChatActivityBundleEvent;
   sessionId?: string | null;
+  /**
+   * The CTO thread: a routine still waiting to run is already a "Scheduled"
+   * chip in the thread and a row in the side panel, so only runs show here.
+   */
+  hidePendingSchedules?: boolean;
 }) {
   // `foldScheduledWorkRows` already left one item per schedule id.
-  const displayItems = event.items;
+  const displayItems = hidePendingSchedules
+    ? event.items.filter((item) => !SCHEDULED_WORK_PENDING_STATUSES.has(item.event.status))
+    : event.items;
+  if (displayItems.length === 0) return null;
   const rows = displayItems.map((item) => (
     <ScheduledWorkLine
       key={item.event.id}
@@ -3225,6 +3294,7 @@ function renderEvent(
           onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
           onEditUnprocessedMessage={options?.onEditUnprocessedMessage}
           onDismissUnprocessedMessage={options?.onDismissUnprocessedMessage}
+          quiet={options?.surfaceProfile === "persistent_identity"}
         />
       </div>
     );
@@ -3409,6 +3479,7 @@ function renderEvent(
           onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
           onEditUnprocessedMessage={options?.onEditUnprocessedMessage}
           onDismissUnprocessedMessage={options?.onDismissUnprocessedMessage}
+          quiet={options?.surfaceProfile === "persistent_identity"}
         />
       </motion.div>
     );
@@ -3930,6 +4001,8 @@ function renderEvent(
 
   /* ── System Notice ── */
   if (event.type === "system_notice") {
+    // The CTO got a fresh provider thread: a hairline, not a card.
+    if (event.status === CTO_CONTEXT_REFRESHED_STATUS) return <CtoFreshContextDivider message={event.message} />;
     if (event.status === "model_switched") {
       const message = event.message.trim() || "switched models";
       return (
@@ -4182,6 +4255,17 @@ function renderEvent(
         <ResetCreditNoticeRow
           message={event.message}
           accountId={typeof detail?.accountId === "string" ? detail.accountId : null}
+          className={cn(style.border, style.bg, style.text)}
+          icon={<NoticeIcon size={11} weight="bold" />}
+          chipLabel={chipLabel}
+        />
+      );
+    }
+
+    if (event.status === CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS) {
+      return (
+        <RootFullAccessNoticeRow
+          message={event.message}
           className={cn(style.border, style.bg, style.text)}
           icon={<NoticeIcon size={11} weight="bold" />}
           chipLabel={chipLabel}
@@ -5614,10 +5698,20 @@ const EventRow = React.memo(function EventRow({
         <WakeChainRow event={envelope.event} open={turnFoldOpen} onToggle={onToggleTurnFold} />
       ) : envelope.event.type === "work_log_group" ? (
         // Only groups holding computer-use actions reach the timeline; their
-        // other tools stay in the tools toggle.
-        <ChatComputerUseActionRun entries={envelope.event.entries} compactAll={envelope.event.computerUseCompact === true} />
+        // other tools stay in the tools toggle. The CTO thread also keeps its
+        // state changes, drawn as quiet chips.
+        surfaceProfile === "persistent_identity" && drawsCtoChips(envelope.event.entries) ? (
+          <>
+            <CtoToolChips entries={envelope.event.entries} />
+            {hasComputerUseEntries(envelope.event.entries)
+              ? <ChatComputerUseActionRun entries={envelope.event.entries} compactAll={envelope.event.computerUseCompact === true} />
+              : null}
+          </>
+        ) : (
+          <ChatComputerUseActionRun entries={envelope.event.entries} compactAll={envelope.event.computerUseCompact === true} />
+        )
       ) : envelope.event.type === "activity_bundle"
-        ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
+        ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} hidePendingSchedules={surfaceProfile === "persistent_identity"} />
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
             onQuietTurnRecovery,
@@ -5668,38 +5762,42 @@ const EventRow = React.memo(function EventRow({
             playEntrance,
           })}
       {envelope.event.type === "done" && !(compactOnlyTurn && envelope.event.status === "completed") ? (
-        <DoneTurnDivider
-          event={envelope.event}
-          timestamp={envelope.timestamp}
-          assistantTurnCopyText={assistantTurnCopyText}
-          durationMs={turnEndDurationMs ?? null}
-          toolEntries={turnToolEntries}
-          proofArtifacts={turnProof}
-          scheduledWork={turnScheduledWork}
-          turnEndFold={turnEndFold}
-          wakeChain={turnEndWakeChain}
-          onToggleFold={onToggleTurnFold}
-          onOpenProofDrawer={onOpenProofDrawer}
-          onNavigateSuggestion={onNavigateSuggestion}
-          onInsertDraft={onInsertDraft}
-          onRevealChatTerminal={onRevealChatTerminal}
-          sessionId={sessionId}
-          onReviewInFiles={onReviewChanges}
-          turnFileEntries={turnFileEntries}
-          hasCheckpointDiffSummary={hasCheckpointDiffSummary}
-          turnDiffSummary={doneTurnId
-            ? (turnDiffSummaries?.find((summary) => summary.turnId === doneTurnId) ?? null)
-            : null}
-          turnDiffSummaries={turnDiffSummaries}
-          usageLimitResumeTurnId={usageLimitResumeTurnId}
-          endedAtUsageLimit={envelope.endedAtUsageLimit === true}
-          failureShown={envelope.failureShown === true}
-          repeatCount={envelope.repeatCount ?? 1}
-          workSummaryInFold={turnWorkInFold}
-          turnSources={turnSources}
-          onOpenTurnSources={onOpenTurnSources}
-          onForkFromTurn={onForkFromTurn}
-        />
+        // The CTO thread keeps a finished turn's stats line (time, tokens,
+        // tool count) out of sight until the person hovers the reply.
+        <div className={surfaceProfile === "persistent_identity" && envelope.event.status === "completed" ? "ade-cto-turnend" : "contents"}>
+          <DoneTurnDivider
+            event={envelope.event}
+            timestamp={envelope.timestamp}
+            assistantTurnCopyText={assistantTurnCopyText}
+            durationMs={turnEndDurationMs ?? null}
+            toolEntries={turnToolEntries}
+            proofArtifacts={turnProof}
+            scheduledWork={turnScheduledWork}
+            turnEndFold={turnEndFold}
+            wakeChain={turnEndWakeChain}
+            onToggleFold={onToggleTurnFold}
+            onOpenProofDrawer={onOpenProofDrawer}
+            onNavigateSuggestion={onNavigateSuggestion}
+            onInsertDraft={onInsertDraft}
+            onRevealChatTerminal={onRevealChatTerminal}
+            sessionId={sessionId}
+            onReviewInFiles={onReviewChanges}
+            turnFileEntries={turnFileEntries}
+            hasCheckpointDiffSummary={hasCheckpointDiffSummary}
+            turnDiffSummary={doneTurnId
+              ? (turnDiffSummaries?.find((summary) => summary.turnId === doneTurnId) ?? null)
+              : null}
+            turnDiffSummaries={turnDiffSummaries}
+            usageLimitResumeTurnId={usageLimitResumeTurnId}
+            endedAtUsageLimit={envelope.endedAtUsageLimit === true}
+            failureShown={envelope.failureShown === true}
+            repeatCount={envelope.repeatCount ?? 1}
+            workSummaryInFold={turnWorkInFold}
+            turnSources={turnSources}
+            onOpenTurnSources={onOpenTurnSources}
+            onForkFromTurn={onForkFromTurn}
+          />
+        </div>
       ) : null}
       {inlineProof?.length ? (
         <div className="w-full max-w-[var(--chat-content-width,52rem)]">
@@ -6202,6 +6300,7 @@ function AgentChatMessageListMain({
   showStreamingIndicator = false,
   textPacingEnabled = true,
   transcriptPending = false,
+  emptyTranscript = null,
     className,
   onApproval,
   onQuietTurnRecovery,
@@ -6283,6 +6382,8 @@ function AgentChatMessageListMain({
    * without their entrance (`RowEntranceGate`).
    */
   transcriptPending?: boolean;
+  /** Shown in place of a transcript that has no messages once its first read is done. */
+  emptyTranscript?: React.ReactNode;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
@@ -6935,9 +7036,15 @@ function AgentChatMessageListMain({
   // rendering an empty block) keeps them from consuming a `--chat-row-gap`.
   // Then one row per schedule (`foldScheduledWorkRows`), and an ended turn's
   // schedules move onto its turn-end line (`moveScheduledWorkToTurnEnds`).
+  const ctoSurface = surfaceProfile === "persistent_identity";
   const scheduledWorkAtTurnEnd = useMemo(
     () => moveScheduledWorkToTurnEnds(foldScheduledWorkRows(allGroupedRows.filter((row) => {
-      if (row.event.type === "work_log_group") return hasComputerUseEntries(row.event.entries);
+      if (row.event.type === "work_log_group") {
+        return hasComputerUseEntries(row.event.entries) || (ctoSurface && drawsCtoChips(row.event.entries));
+      }
+      // The CTO re-sends the person's message after a fresh context or a model
+      // switch; the bubble they typed is already on screen, so the copy is not drawn.
+      if (ctoSurface && row.event.type === "user_message" && row.event.metadata?.ctoResend) return false;
       if (
         row.event.type === "turn_diff_summary"
         && row.event.turnId
@@ -6945,7 +7052,7 @@ function AgentChatMessageListMain({
       ) return false;
       return true;
     }))),
-    [allGroupedRows, doneTurnIds],
+    [allGroupedRows, ctoSurface, doneTurnIds],
   );
   const scheduledWorkByTurnEndKey = scheduledWorkAtTurnEnd.byTurnEndKey;
   const previousPresentedRowsRef = useRef<readonly TranscriptGroupedEnvelope[]>([]);
@@ -7011,8 +7118,11 @@ function AgentChatMessageListMain({
       () => deriveChatTranscriptTurnFolds(
         presentedRows,
         readTurnEndSnapshots(collapseCacheState.cache.context),
+        // The CTO's state chips stay visible under its fold: they are what
+        // the turn changed, not how it got there.
+        ctoSurface ? keepCtoChipRowsVisible : undefined,
       ),
-      [collapseCacheState, presentedRows],
+      [collapseCacheState, ctoSurface, presentedRows],
     ),
     sameTurnFolds,
   );
@@ -7218,9 +7328,13 @@ function AgentChatMessageListMain({
     // A row that draws nothing (a queued steer, a stale interrupt receipt, …)
     // is not a row: kept, it measures 0, which never replaces its estimate,
     // and a run of them at the tail strands the thread above a blank band.
-    const drawn = arranged.rows.filter((row) => !transcriptEventDrawsNothing(row.event, rowDrawContext));
+    // The CTO thread's live turn: its thinking stays inside the one working
+    // line (`CtoWorkingLine`) until the turn ends and the fold takes over.
+    const calmTurnId = ctoSurface && showStreamingIndicator && !sessionEnded ? activeTurnId : null;
+    const drawn = arranged.rows.filter((row) => !transcriptEventDrawsNothing(row.event, rowDrawContext)
+      && !(calmTurnId && row.event.type === "reasoning" && row.event.turnId === calmTurnId));
     return drawn.length === arranged.rows.length ? arranged.rows : drawn;
-  }, [openTurnFolds, presentedRows, rowDrawContext, turnFolds, unreadSince, wakeChains, wakeTurnIds]);
+  }, [activeTurnId, ctoSurface, openTurnFolds, presentedRows, rowDrawContext, sessionEnded, showStreamingIndicator, turnFolds, unreadSince, wakeChains, wakeTurnIds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that
   // name it land on the merged row.
@@ -9270,16 +9384,28 @@ function AgentChatMessageListMain({
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
-      <WorkingIndicator
-        activity={workingActivity}
-        startedAt={wakingIndicator ? wakingSinceMs : activeTurnStartedAt}
-        toolEntries={wakingIndicator ? EMPTY_WORK_LOG_ENTRIES : transcriptToolActivity.activeEntries}
-        replyWritesScene={activeTurnReplyWritesScene}
-        onNavigateSuggestion={handleNavigateSuggestion}
-        onInsertDraft={onInsertDraft}
-        onRevealChatTerminal={onRevealChatTerminal}
-        sessionId={sessionId}
-      />
+      {ctoSurface ? (
+        <CtoWorkingLine
+          activity={workingActivity}
+          startedAt={wakingIndicator ? wakingSinceMs : activeTurnStartedAt}
+          toolEntries={wakingIndicator ? EMPTY_WORK_LOG_ENTRIES : transcriptToolActivity.activeEntries}
+          onNavigateSuggestion={handleNavigateSuggestion}
+          onInsertDraft={onInsertDraft}
+          onRevealChatTerminal={onRevealChatTerminal}
+          sessionId={sessionId}
+        />
+      ) : (
+        <WorkingIndicator
+          activity={workingActivity}
+          startedAt={wakingIndicator ? wakingSinceMs : activeTurnStartedAt}
+          toolEntries={wakingIndicator ? EMPTY_WORK_LOG_ENTRIES : transcriptToolActivity.activeEntries}
+          replyWritesScene={activeTurnReplyWritesScene}
+          onNavigateSuggestion={handleNavigateSuggestion}
+          onInsertDraft={onInsertDraft}
+          onRevealChatTerminal={onRevealChatTerminal}
+          sessionId={sessionId}
+        />
+      )}
     </motion.div>
   ) : null;
 
@@ -9372,7 +9498,7 @@ function AgentChatMessageListMain({
           {/* Proof with no following turn completion is a chronological tail
               row, not the old permanently pinned footer. */}
           {rows.length === 0 && !streamingIndicator && !trailingProof ? (
-            null
+            transcriptPending || hasOlderHistory ? null : emptyTranscript
           ) : shouldVirtualize ? (
             /* ── Virtualized path: only render rows in / near the viewport ── */
             <div className="flex min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)]">

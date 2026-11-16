@@ -500,6 +500,8 @@ import type {
   AgentChatStartSideChatArgs,
   AgentChatStartSideChatResult,
   AgentChatEndSideChatArgs,
+  AgentChatRootFullAccessState,
+  AgentChatSetRootFullAccessArgs,
   AgentChatEndSideChatResult,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffArgs,
@@ -575,6 +577,10 @@ import type {
   AgentChatCancelDispatchedSteerResult,
   AgentChatUpdateSessionArgs,
   AgentChatSetScheduledWorkPausedArgs,
+  AgentChatSetScheduledWorkItemPausedArgs,
+  AgentChatSetScheduledWorkItemPausedResult,
+  AgentChatRunScheduledWorkNowArgs,
+  AgentChatRunScheduledWorkNowResult,
   AgentChatSetScheduledWorkPausedResult,
   AgentChatCreateScheduledWorkArgs,
   AgentChatCreateScheduledWorkResult,
@@ -728,16 +734,12 @@ import type {
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateIdentityArgs,
-  CtoListSessionLogsArgs,
   CtoSnapshot,
-  CtoSessionLogEntry,
-  CtoStartFreshSessionResult,
-  CtoThreadHealth,
   CtoGetMemoryArgs,
-  CtoUpdateMemoryArgs,
-  CtoSearchMemoryArgs,
+  CtoUpdateNotesArgs,
+  CtoUpdateOpenWorkArgs,
+  CtoRefreshContextResult,
   CtoMemorySnapshot,
-  CtoSearchMemoryResult,
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoGetLinearIssuePickerDataResult,
@@ -9462,6 +9464,16 @@ export function registerIpc({
     return await ctx.agentChatService.endSideChat(arg);
   });
 
+  handle(IPC.agentChatGetRootFullAccess, async (): Promise<AgentChatRootFullAccessState> => {
+    const ctx = ensureAgentChatContext();
+    return await ctx.agentChatService.getRootFullAccess();
+  });
+
+  handle(IPC.agentChatSetRootFullAccess, async (_event, arg: AgentChatSetRootFullAccessArgs): Promise<AgentChatRootFullAccessState> => {
+    const ctx = ensureAgentChatContext();
+    return await ctx.agentChatService.setRootFullAccess(arg);
+  });
+
   handle(
     IPC.agentChatPrepareCrossMachineHandoff,
     async (_event, arg: AgentChatPrepareCrossMachineHandoffArgs): Promise<AgentChatPrepareCrossMachineHandoffResult> => {
@@ -9953,6 +9965,25 @@ export function registerIpc({
     async (_event, arg: AgentChatSetScheduledWorkPausedArgs): Promise<AgentChatSetScheduledWorkPausedResult> => {
       const ctx = ensureAgentChatContext();
       return ctx.agentChatService.setScheduledWorkPaused(arg);
+    },
+  );
+
+  handle(
+    IPC.agentChatSetScheduledWorkItemPaused,
+    async (
+      _event,
+      arg: AgentChatSetScheduledWorkItemPausedArgs,
+    ): Promise<AgentChatSetScheduledWorkItemPausedResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.setScheduledWorkItemPaused(arg);
+    },
+  );
+
+  handle(
+    IPC.agentChatRunScheduledWorkNow,
+    async (_event, arg: AgentChatRunScheduledWorkNowArgs): Promise<AgentChatRunScheduledWorkNowResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.runScheduledWorkNow(arg);
     },
   );
 
@@ -14141,12 +14172,12 @@ export function registerIpc({
 
   // ── CTO state IPC ─────────────────────────────────────────────────
 
-  handle(IPC.ctoGetState, async (_event, arg: CtoGetStateArgs = {}): Promise<CtoSnapshot> => {
+  handle(IPC.ctoGetState, async (_event, _arg: CtoGetStateArgs = {}): Promise<CtoSnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) {
       throw new Error("CTO state service is not available.");
     }
-    return ctx.ctoStateService.getSnapshot(arg.recentLimit ?? 20);
+    return ctx.ctoStateService.getSnapshot();
   });
 
   /**
@@ -14179,42 +14210,10 @@ export function registerIpc({
     });
   });
 
-  handle(IPC.ctoGetThreadHealth, async (): Promise<CtoThreadHealth> => {
-    const ctx = getCtx();
-    const service = ctx.agentChatService;
-    return service
-      ? await service.getCtoThreadHealth()
-      : {
-          sessionId: null,
-          canTakeTurn: true,
-          blockedReason: null,
-          lastTurnFailure: null,
-          context: null,
-          rotationAdvised: false,
-        };
-  });
-
-  handle(IPC.ctoStartFreshSession, async (): Promise<CtoStartFreshSessionResult> => {
+  handle(IPC.ctoRefreshContext, async (): Promise<CtoRefreshContextResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["agentChatService"] as const);
-    const laneId = await resolvePrimaryLaneIdOnly(ctx);
-    if (!laneId) {
-      throw new Error("No primary lane is available to host the CTO chat session.");
-    }
-    const result = await ctx.agentChatService.startFreshIdentitySession({ identityKey: "cto", laneId });
-    return {
-      sessionId: result.session.id,
-      previousSessionId: result.previousSessionId,
-      handoff: result.handoff,
-    };
-  });
-
-  handle(IPC.ctoListSessionLogs, async (_event, arg: CtoListSessionLogsArgs = {}): Promise<CtoSessionLogEntry[]> => {
-    const ctx = getCtx();
-    if (!ctx.ctoStateService) {
-      throw new Error("CTO state service is not available.");
-    }
-    return ctx.ctoStateService.getSessionLogs(arg.limit ?? 40);
+    return ctx.agentChatService.refreshCtoContext();
   });
 
   handle(IPC.ctoUpdateIdentity, async (_event, arg: CtoUpdateIdentityArgs): Promise<CtoSnapshot> => {
@@ -14231,24 +14230,22 @@ export function registerIpc({
     return ctx.ctoMemoryService.getSnapshot();
   });
 
-  handle(IPC.ctoUpdateMemory, async (_event, arg: CtoUpdateMemoryArgs): Promise<CtoMemorySnapshot> => {
+  handle(IPC.ctoUpdateNotes, async (_event, arg: CtoUpdateNotesArgs): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
-    // Only an explicit string may rewrite MEMORY.md — a missing field must not
-    // silently blank the durable memory file.
-    if (typeof arg?.memory !== "string") {
-      throw new Error("updateMemory requires a string `memory` field.");
-    }
-    ctx.ctoMemoryService.writeMemory(arg.memory);
+    if (arg?.scope !== "project" && arg?.scope !== "user") throw new Error("updateNotes requires a scope.");
+    if (typeof arg.text !== "string") throw new Error("updateNotes requires a string `text` field.");
+    ctx.ctoMemoryService.writeNotes(arg.scope, arg.text, {
+      baseHash: typeof arg.baseHash === "string" ? arg.baseHash : null,
+    });
     return ctx.ctoMemoryService.getSnapshot();
   });
 
-  handle(IPC.ctoSearchMemory, async (_event, arg: CtoSearchMemoryArgs): Promise<CtoSearchMemoryResult> => {
+  handle(IPC.ctoUpdateOpenWork, async (_event, arg: CtoUpdateOpenWorkArgs): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
-    const query = arg?.query ?? "";
-    const rows = ctx.ctoMemoryService.searchMemory(query, { limit: arg?.limit ?? 20 });
-    return { query, rows };
+    ctx.ctoMemoryService.updateOpenWork(arg);
+    return ctx.ctoMemoryService.getSnapshot();
   });
 
   // -- Linear connection & credentials --

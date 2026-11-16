@@ -173,12 +173,29 @@ extension WorkChatSessionView {
         isExpanded: cardIsExpanded(model.id, entryId: entry.id),
         onToggle: { toggleCard(model.id, entryId: entry.id) }
       )
+    case .toolGroup(let group) where ctoLive != nil && group.computerUseActions.isEmpty:
+      // The CTO thread draws its state changes as chips; every other tool
+      // call stays behind the working line and the activity sheet.
+      let chips = ctoChips(for: group.members)
+      if chips.isEmpty {
+        Color.clear.frame(height: 1)
+      } else {
+        CtoToolChipsRow(chips: chips, accent: ctoLive?.look.ctoAccent ?? ADEColor.ctoAccent)
+      }
     case .toolGroup(let group):
       timelineToolGroup(group, entryId: entry.id)
     case .changedFiles(let group):
       timelineChangedFiles(group, entryId: entry.id)
     case .proof(let artifacts):
       timelineProof(artifacts)
+    case .turnEndMarker(let marker) where ctoLive != nil:
+      // The CTO thread: no time or token line, only what changed.
+      let chips = ctoChips(for: turnToolActivity.completedByTurnId[marker.turnId]?.members ?? [])
+      if chips.isEmpty {
+        Color.clear.frame(height: 4)
+      } else {
+        CtoToolChipsRow(chips: chips, accent: ctoLive?.look.ctoAccent ?? ADEColor.ctoAccent)
+      }
     case .turnEndMarker(let marker):
       WorkTurnEndMarkerView(
         marker: marker,
@@ -387,8 +404,12 @@ extension WorkChatSessionView {
         // The card title doubles as the divider's accessibility label.
         accessibilityLabel: card.title
       )
+    } else if card.kind == "ctoFresh" {
+      CtoFreshContextDivider()
     } else if card.kind == "resetCredit" {
       WorkResetCreditNoticeView(card: card)
+    } else if card.kind == "rootFullAccess" {
+      WorkRootFullAccessNoticeView(card: card, sessionId: session.id)
     } else if card.kind == "turnDiagnostics" {
       WorkTurnDiagnosticsDisclosureView(
         card: card,

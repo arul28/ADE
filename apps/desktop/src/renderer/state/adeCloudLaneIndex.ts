@@ -209,11 +209,20 @@ export function isAdeCloudComputer(
   machine: { hostname?: string | null; machineKey?: string | null },
   index: Pick<IndexState, "computers" | "cloudComputers"> = state,
 ): boolean {
-  if (adeCloudLaneComputerForMachine(machine, index.computers)) return true;
+  return adeCloudInstanceIdForMachine(machine, index) != null;
+}
+
+/** The ADE Cloud id of a machine that is one of the account's ADE Cloud computers; else null. */
+export function adeCloudInstanceIdForMachine(
+  machine: { hostname?: string | null; machineKey?: string | null },
+  index: Pick<IndexState, "computers" | "cloudComputers"> = state,
+): string | null {
+  const lane = adeCloudLaneComputerForMachine(machine, index.computers);
+  if (lane) return lane.instanceId;
   const host = machine.hostname?.trim().toLowerCase() ?? "";
   const key = machine.machineKey?.trim() ?? "";
-  if (!host && !key) return false;
-  return index.cloudComputers.some((computer) => (host && computer.instanceId.toLowerCase() === host) || (key && computer.machineKey === key));
+  if (!host && !key) return null;
+  return index.cloudComputers.find((computer) => (host && computer.instanceId.toLowerCase() === host) || (key && computer.machineKey === key))?.instanceId ?? null;
 }
 
 /**

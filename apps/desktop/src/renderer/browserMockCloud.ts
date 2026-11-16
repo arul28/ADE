@@ -37,7 +37,7 @@ import {
   type CloudMachinesResult,
   type CloudPlanCleanup,
 } from "../shared/adeCloud";
-import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
+import { githubRepoOf, type CloudLaneMachine, type CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
 import { CLOUD_PLAN_SEEN_STORAGE_KEY } from "./components/settings/cloudDashboard/cloudPlanMoment";
 
 type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "over" | "full" | "blocked" | "idle" | "idlepaid" | "idleheld" | "pastdue" | "extradisk" | "upgraded" | "emptyplus";
@@ -156,6 +156,108 @@ type Fixture = {
   /** The period started an hour ago (a plan just bought). */
   freshPeriod?: boolean;
 };
+
+/** A CTO cloud home job that walks its three steps on timers. */
+function mockCtoCloudHome(paid: boolean, failClone: boolean) {
+  type Listener = (event: unknown) => void;
+  const listeners = new Set<Listener>();
+  let job: Record<string, any> | null = null;
+  let timers: number[] = [];
+  const emit = () => {
+    if (!job) return;
+    job.updatedAt = new Date().toISOString();
+    const snapshot = { ...job, stages: job.stages.map((stage: Record<string, unknown>) => ({ ...stage })) };
+    for (const listener of listeners) listener({ type: "updated", snapshot });
+  };
+  const stage = (id: string) => ({ id, status: "pending", startedAt: null, endedAt: null, percent: null, detail: null, error: null });
+  const walk = (from: number) => {
+    const ids = ["computer", "join", "clone"];
+    ids.forEach((id, index) => {
+      if (index < from) return;
+      timers.push(window.setTimeout(() => {
+        if (!job) return;
+        const row = job.stages.find((entry: Record<string, unknown>) => entry.id === id);
+        row.status = "running";
+        row.detail = id === "computer" ? "Small · 2 CPU, 4 GB" : null;
+        emit();
+        timers.push(window.setTimeout(() => {
+          if (!job) return;
+          if (id === "clone" && failClone && !job.retried) {
+            row.status = "failed";
+            row.error = "The new computer can't read this repository. Check that ADE Cloud can sign in to GitHub for it, then retry.";
+            job.phase = "failed";
+            job.error = row.error;
+            emit();
+            return;
+          }
+          row.status = "done";
+          if (id === "clone") {
+            job.phase = "ready";
+            job.instanceId = "mock-cto-instance";
+            job.targetId = "mock-cto-target";
+          }
+          emit();
+        }, 1_400));
+      }, (index - from) * 1_600 + 200));
+    });
+  };
+  const clear = () => { for (const timer of timers) window.clearTimeout(timer); timers = []; };
+  const copyJob = () => (job ? { ...job, stages: job.stages.map((entry: Record<string, unknown>) => ({ ...entry })) } : null);
+  return {
+    ctoHome: async (request: { method: string; args: Record<string, unknown> }) => {
+      console.info(`[browser mock] cloud.ctoHome ${request.method}`);
+      if (request.method === "get") return copyJob();
+      if (request.method === "start") {
+        if (!paid) throw new Error("ADE Cloud as the CTO's home needs a paid plan. Upgrade to use it.");
+        if (job) return copyJob();
+        job = {
+          jobId: "mock-cto-job",
+          projectOrigin: githubRepoOf(typeof request.args?.originUrl === "string" ? request.args.originUrl : null)?.identity ?? "github.com/acme/web",
+          phase: "running",
+          stages: [stage("computer"), stage("join"), stage("clone")],
+          error: null,
+          warning: null,
+          computerName: "CTO · acme/web",
+          instanceId: null,
+          machineKey: null,
+          binding: null,
+          targetId: null,
+          reused: false,
+          updatedAt: new Date().toISOString(),
+        };
+        walk(0);
+        return copyJob();
+      }
+      if (request.method === "retry" && job) {
+        job.phase = "running";
+        job.error = null;
+        job.retried = true;
+        const failed = job.stages.find((entry: Record<string, unknown>) => entry.status === "failed");
+        if (failed) { failed.status = "pending"; failed.error = null; }
+        walk(2);
+        emit();
+        return copyJob();
+      }
+      if (request.method === "cancel" && job) {
+        const current: Record<string, any> = job;
+        clear();
+        const done: Record<string, any> = { ...current, phase: "cancelled" };
+        job = null;
+        for (const listener of listeners) listener({ type: "removed", jobId: done.jobId, projectOrigin: done.projectOrigin });
+        return done;
+      }
+      if (request.method === "finish") {
+        job = null;
+        return true;
+      }
+      return null;
+    },
+    onCtoHomeEvent: (cb: Listener) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  };
+}
 
 function fixture(scenario: Scenario): Fixture {
   switch (scenario) {
@@ -518,6 +620,9 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     onLaneJob: () => () => undefined,
     clearCaches: async () => ({ freedGb: 1.2 }),
+    // The CTO's home on ADE Cloud, as the desktop makes it (`ctoCloudHomeService.ts`).
+    // `?mockCtoCloud=fail` fails the clone step, so Retry and Cancel can be seen.
+    ...mockCtoCloudHome(fix.planId !== "free", param("mockCtoCloud") === "fail"),
     redeemInvite: async (code: string) => {
       console.info(`[browser mock] cloud.redeemInvite (${code.length} chars)`);
       if (!code.trim().toUpperCase().includes("FRIEND")) return { ok: false, reason: "unknown_code", message: "That invite code doesn't exist. Check it and try again." };

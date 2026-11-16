@@ -1125,7 +1125,7 @@ chat pane mount, which happens either way.
   inherits the user's own `config.toml`. Surfaces that pass no
   `effectiveFastTier` draw nothing.
 
-  Surfaces not yet migrated (`ModelSelector`, `CtoSettingsPage`)
+  Surfaces not yet migrated (`ModelSelector`)
   still pass the deprecated `fastModeActive` / `onFastModeToggle` pair,
   which keeps rendering the old sibling chip. Migrating them is a prop
   rename with nothing else to unwind.
@@ -1346,9 +1346,9 @@ chat pane mount, which happens either way.
   raises "Couldn't remove the queued message: …" in the pane error banner. A
   swallowed rejection read as a cancellation that never happened while the agent
   still sent the message.
-- **Mid-turn split Send button.** While a Claude, Codex, Cursor, or OpenCode
-  turn is
-  active, the composer's primary send control is a split button
+- **Mid-turn split Send button.** While a turn is active on a provider that
+  accepts more than queue-only delivery, the composer's primary send control is
+  a split button
   (`ActiveTurnSendButton`, Claude Code parity). The caret selects a delivery
   mode without sending; the primary click and Enter execute the selected mode,
   and the icon, tooltip, and accessible label follow it. Which modes appear is

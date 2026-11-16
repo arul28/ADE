@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { CLOUD_JOIN_WATCH_MS, cloudCatalogOf } from "../../../shared/adeCloud";
+import { cloudCatalogOf } from "../../../shared/adeCloud";
 import { cloudTier, type CloudTier } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { createCloudApiClient, CloudApiError } from "../../../shared/cloudApiClient";
@@ -24,7 +24,6 @@ import { getErrorMessage } from "../shared/utils";
 import { waitForCloudAccountRow } from "./cloudMachineCreator";
 import type { CloudLaneLaunchRecord } from "./cloudLaneLaunchRecords";
 import {
-  CONNECT_RETRY_MS,
   CREATE_IN_PROGRESS_POLL_MS,
   CREATE_IN_PROGRESS_WAIT_MS,
   LaunchStepError,
@@ -36,8 +35,8 @@ import {
   type CloudLaneLaunchDeps,
   type Logger,
 } from "./cloudLaneLaunchSteps";
-import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
-import { CloudProviderError, type CloudInstance, type CloudProvider } from "./cloudProvider";
+import { deleteComputersForRequest, pairAndConnectWithRetry } from "./cloudComputerSteps";
+import type { CloudProvider } from "./cloudProvider";
 
 /**
  * The computer half of an ADE Cloud lane launch (`cloudLaneLaunchService.ts`),
@@ -349,29 +348,18 @@ export function createCloudLaneComputerStages(
   };
 
   /** Pairs and connects, retrying while the computer's account row and relay route come up. */
-  const pairAndConnect = async (record: CloudLaneLaunchRecord, machineKey: string, signal: AbortSignal): Promise<string> => {
-    const startedAt = Date.now();
-    let lastError: unknown = null;
-    for (;;) {
-      assertActive(record, signal);
-      try {
-        const targetId = record.targetId ?? (await deps.pairMachine(machineKey)).targetId;
-        record.targetId = targetId;
-        if (await deps.connect(targetId)) return targetId;
-      } catch (error) {
-        lastError = error;
-        // A saved target that is gone is paired again on the next try.
-        if (/target was not found/i.test(getErrorMessage(error))) record.targetId = null;
-      }
-      if (Date.now() - startedAt >= CLOUD_JOIN_WATCH_MS) break;
-      await sleep(CONNECT_RETRY_MS);
-    }
-    logger.warn("cloud_lane_launch.connect_timed_out", {
-      launchId: record.snapshot.launchId,
-      error: lastError ? getErrorMessage(lastError) : null,
+  const pairAndConnect = (record: CloudLaneLaunchRecord, machineKey: string, signal: AbortSignal): Promise<string> =>
+    pairAndConnectWithRetry({
+      machineKey,
+      holder: record,
+      pairMachine: deps.pairMachine,
+      connect: deps.connect,
+      assertActive: () => assertActive(record, signal),
+      sleep,
+      logger,
+      timedOutEvent: "cloud_lane_launch.connect_timed_out",
+      logFields: { launchId: record.snapshot.launchId },
     });
-    throw new LaunchStepError("ADE couldn't connect to the new computer in time.");
-  };
 
   /**
    * The launch on the server until the computer's brain holds it: the
@@ -508,64 +496,31 @@ export function createCloudLaneComputerStages(
     }
   };
 
-  /** Deletes only computers made for this launch (its request id), then takes a joined one off the account. */
   /**
-   * `accountRowLeft`: every computer is gone but its account row couldn't be
-   * removed; the machine key stays on the record for the next cleanup.
+   * Deletes only computers made for this launch (its request id), then takes a
+   * joined one off the account. `accountRowLeft`: every computer is gone but
+   * its account row couldn't be removed; the machine key stays on the record
+   * for the next cleanup.
    */
   const deleteOwnComputers = async (record: CloudLaneLaunchRecord): Promise<{ found: number; deleted: number; accountRowLeft: boolean }> => {
-    const launchId = record.snapshot.launchId;
-    const client = await providerClient();
-    const own = new Map<string, CloudInstance>();
-    const known = record.snapshot.cloud.instanceId;
-    if (known) {
-      try {
-        const instance = await client.getInstance(known);
-        if (instance.metadata.ade_request_id === launchId && instance.status !== "deleted") own.set(instance.id, instance);
-      } catch (error) {
-        if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
-      }
+    const result = await deleteComputersForRequest({
+      client: await providerClient(),
+      requestId: record.snapshot.launchId,
+      knownInstanceId: record.snapshot.cloud.instanceId,
+      machineKey: record.snapshot.cloud.machineKey,
+      reason: "lane_launch_cancelled",
+      logger,
+      sleep,
+      removeAccountMachine: deps.removeAccountMachine,
+      forgetMachineConnections: deps.forgetMachineConnections,
+      logPrefix: "cloud_lane_launch",
+      logFields: { launchId: record.snapshot.launchId },
+    });
+    if (result.deleted === result.found) {
+      if (record.snapshot.cloud.machineKey && !result.accountRowLeft) record.snapshot.cloud.machineKey = null;
+      if (result.connectionsForgotten) record.targetId = null;
     }
-    for (const instance of await client.listInstances()) {
-      if (instance.metadata.ade_request_id === launchId && instance.status !== "deleted") own.set(instance.id, instance);
-    }
-    let deleted = 0;
-    for (const instance of own.values()) {
-      if (await deleteCloudInstanceConfirmed(client, instance.id, { logger, sleep, reason: "lane_launch_cancelled" })) {
-        deleted += 1;
-        logger.info("cloud_lane_launch.computer_deleted", { launchId, instanceId: instance.id });
-      }
-    }
-    // Every computer is gone, including one the server's cancel already
-    // deleted (then none is found here): its account row and saved
-    // connections go too. The machine key is kept until its row is removed,
-    // so a later cleanup tries again.
-    let accountRowLeft = false;
-    if (deleted === own.size) {
-      const machineKey = record.snapshot.cloud.machineKey;
-      if (machineKey) {
-        const removed = await deps.removeAccountMachine(machineKey).then(() => true, (error: unknown) => {
-          logger.warn("cloud_lane_launch.account_row_left", { launchId, error: getErrorMessage(error) });
-          return false;
-        });
-        if (removed) record.snapshot.cloud.machineKey = null;
-        accountRowLeft = !removed;
-      }
-      // A saved connection left behind points at a computer that is gone,
-      // and the Connections list shows it as a machine that never answers.
-      const gone = new Set([...own.keys(), ...(known ? [known] : [])]);
-      if (gone.size > 0) {
-        for (const instanceId of gone) {
-          try {
-            deps.forgetMachineConnections?.({ machineKey, instanceId });
-          } catch (error) {
-            logger.warn("cloud_lane_launch.connection_left", { launchId, error: getErrorMessage(error) });
-          }
-        }
-        record.targetId = null;
-      }
-    }
-    return { found: own.size, deleted, accountRowLeft };
+    return { found: result.found, deleted: result.deleted, accountRowLeft: result.accountRowLeft };
   };
 
   return { providerClient, runServerLaunch, cancelOnServer, deleteOwnComputers, refreshServerSize, computerWords };

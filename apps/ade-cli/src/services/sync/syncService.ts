@@ -31,6 +31,7 @@ import type { CloudAgentsService } from "../../../../desktop/src/main/services/c
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
+import type { CtoAccountCopyService } from "../../../../desktop/src/main/services/cto/ctoAccountCopyService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
 import type { createLinearOAuthService } from "../../../../desktop/src/main/services/cto/linearOAuthService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
@@ -183,6 +184,8 @@ type SyncServiceArgs = {
   pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  /** The CTO account copy, read when a phone asks (built after this service). */
+  ctoAccountCopyService?: () => CtoAccountCopyService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   getJiraService?: () => ReturnType<typeof createJiraService> | null;
@@ -1136,6 +1139,7 @@ export function createSyncService(args: SyncServiceArgs) {
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
+    ctoAccountCopyService: args.ctoAccountCopyService,
     linearCredentialService: args.linearCredentialService,
     linearOAuthService: args.linearOAuthService,
     getLinearIssueTracker: args.getLinearIssueTracker,
@@ -1341,6 +1345,7 @@ export function createSyncService(args: SyncServiceArgs) {
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
+    ctoAccountCopyService: args.ctoAccountCopyService,
     linearCredentialService: args.linearCredentialService,
     getLinearIssueTracker: args.getLinearIssueTracker,
     // Production always supplies `remoteCommandService` below, so the host's
