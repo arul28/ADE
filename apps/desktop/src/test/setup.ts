@@ -254,6 +254,14 @@ function withDefaultWaitTimeout(options: WaitOptions): { timeout?: number; inter
   vi.waitUntil = ((callback: Parameters<typeof vi.waitUntil>[0], options?: WaitOptions) =>
     originalWaitUntil(callback, withDefaultWaitTimeout(options))) as typeof vi.waitUntil;
 }
+// Testing Library's findBy* and waitFor have the same 1 s default, and a
+// lazily loaded panel behind a few IPC reads outlasts it on a loaded shard
+// (HistoryPage's deep-linked commit-detail, Nov 2026). Only DOM tests use
+// them, so node tests do not pay for the import.
+if (typeof document !== "undefined") {
+  const { configure } = await import("@testing-library/dom");
+  configure({ asyncUtilTimeout: DEFAULT_WAIT_TIMEOUT_MS });
+}
 
 beforeEach(() => {
   restartWaitingFrames();
