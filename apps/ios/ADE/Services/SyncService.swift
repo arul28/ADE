@@ -24582,7 +24582,8 @@ final class SyncService: ObservableObject {
         connection: "focused",
         routeKind: currentAddress.map(syncConnectionRouteKind),
         closeCode: closeCodeRawValue.map { $0 == 0 ? nil : $0 } ?? syncWebSocketCloseCode(task),
-        connectionAgeSeconds: connectionEstablishedUptime.map { ProcessInfo.processInfo.systemUptime - $0 }
+        connectionAgeSeconds: connectionEstablishedUptime.map { ProcessInfo.processInfo.systemUptime - $0 },
+        error: error
       )
       let closeReason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) }
       let flapBackoff = noteLiveConnectionClosed(
