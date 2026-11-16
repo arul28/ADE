@@ -196,7 +196,13 @@ export function AnnouncementsHost() {
     const check = () => {
       if (!accountRead || Date.now() - since < SETTLE_MS) return;
       if (!quietNow(input, input.lastInputAt() ?? since)) return;
-      if (!onboardingSettledBeforeThisLaunch() || launchGateOpen()) return;
+      // Onboarding that was not done before this launch cannot become so
+      // until the next one: this launch's chance is gone, so the check stops.
+      if (!onboardingSettledBeforeThisLaunch()) {
+        setShownThisLaunch(true);
+        return;
+      }
+      if (launchGateOpen()) return;
       setShownThisLaunch(true);
       if (!inProjectShowingAllowed()) return;
       const pages = dueAnnouncements();
