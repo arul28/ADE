@@ -29,7 +29,16 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        latest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)
+        # The newest release, never a beta: an image that added
+        # Xcode_27.3_beta.app (Nov 2026) was picked over 27.2, and that beta
+        # ships without the Metal toolchain SwiftTerm needs, so every build
+        # failed. A beta also has its own build number, so it would miss the
+        # build-folder cache and compile cold. Only an image with no release
+        # of 27 falls back to a beta.
+        latest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | grep -vi beta | sort -V | tail -1 || true)
+        if [[ -z "$latest" ]]; then
+          latest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)
+        fi
         if [[ -n "$latest" ]]; then
           sudo xcode-select -s "$latest/Contents/Developer"
         fi
