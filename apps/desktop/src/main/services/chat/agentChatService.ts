@@ -22238,6 +22238,11 @@ export function createAgentChatService(args: {
             }
           : {}),
         ...(claudeFreshThreadPending ? { claudeFreshThreadPending: true as const } : {}),
+        // The CTO's backup model, account and pending refresh survive a
+        // restart; the session hydrate checks each value before using it.
+        ...(typeof record.ctoRefreshPending === "string" ? { ctoRefreshPending: record.ctoRefreshPending } : {}),
+        ...(typeof record.ctoAccountApplied === "string" ? { ctoAccountApplied: record.ctoAccountApplied } : {}),
+        ...(record.ctoFallback && typeof record.ctoFallback === "object" ? { ctoFallback: record.ctoFallback } : {}),
         ...(asyncQuestions?.length ? { asyncQuestions } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
         ...(typeof record.preferredExecutionLaneId === "string" && record.preferredExecutionLaneId.trim().length

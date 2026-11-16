@@ -315,8 +315,11 @@ final class CtoStore: ObservableObject {
       .sorted { $0.startedAt > $1.startedAt }
     children = mine.map { session in
       let state = session.runtimeState.lowercased()
+      // A home's roster row says "waiting on you" in `status` while its
+      // runtime reads running.
+      let waiting = state == "waiting-input" || session.status.lowercased() == "awaiting-input"
       let status: CtoChildRow.Status = session.endedAt != nil ? .idle
-        : state == "waiting-input" ? .needsYou
+        : waiting ? .needsYou
         : state == "running" ? .working
         : .idle
       let title = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
