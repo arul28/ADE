@@ -1581,17 +1581,18 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
   };
   process.once("SIGINT", onInterrupt);
   try {
-    // Always, --json too (stderr), before anything waits: the id is what follows or resumes this launch.
-    // A retry (--launch-id with no message: the id-only shape) keeps the size
-    // its launch was given, picked or default. A new launch carries a fresh id too.
-    const resumed = launch.kind === "chat" && !isRecord(launch.chat) && !asString(launch.prompt);
-    const sizeText = resumed ? "the size it started with" : (sizeId ?? "your default size");
-    process.stderr.write(`ade: ${resumed ? "going on with" : "starting"} a lane on ADE Cloud (${sizeText}). Launch id ${launchId}.\n`);
     return await withCloudActions(options, roots.projectRoot, async (call) => {
+      // A launch this computer's ADE already holds (any retry: by id alone, a
+      // repeated chat command, a lane) keeps the size it was given, whatever
+      // --size says now. A new launch carries a fresh id, so the brain is asked.
+      const held = Boolean(await call("lane_launch_status", { launchId }));
       // A chat launch with no message only goes on with one ADE already holds.
-      if (launch.kind === "chat" && !isRecord(launch.chat) && !(await call("lane_launch_status", { launchId }))) {
+      if (launch.kind === "chat" && !isRecord(launch.chat) && !held) {
         throw new CliUsageError(`This computer's ADE has no ADE Cloud lane launch ${launchId}. To start a new one, pass --prompt.`);
       }
+      // Always, --json too (stderr), before the launch waits: the id is what follows or resumes it.
+      const sizeText = held ? "the size it started with" : (sizeId ?? "your default size");
+      process.stderr.write(`ade: ${held ? "going on with" : "starting"} a lane on ADE Cloud (${sizeText}). Launch id ${launchId}.\n`);
       let lastLine = "";
       const { outcome, status, answer } = await followCloudLaneLaunch({
         start: () => call("lane_launch", { launch, originUrl }),
