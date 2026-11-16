@@ -299,6 +299,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
           ...resources,
           ...(options?.computerIdle ? { computerIdle: true } : {}),
           ...(options?.origin === "auto" ? { origin: "auto" } : {}),
+          ...(options?.origin === "auto" && options.launchId ? { launchId: options.launchId } : {}),
         },
         timeoutMs: LIFECYCLE_TIMEOUT_MS,
       }), "updating");

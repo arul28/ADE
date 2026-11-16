@@ -1,5 +1,7 @@
 import path from "node:path";
 import { defineConfig } from "vitest/config";
+import { BaseSequencer } from "vitest/node";
+import { createDurationShardSequencer } from "../../scripts/ci/test-shards.mjs";
 import { windowsScaledTimeout } from "./vitest.timeouts";
 
 const emojiDataStub = path.resolve(
@@ -32,6 +34,17 @@ export default defineConfig({
     testTimeout: windowsScaledTimeout(20_000),
     hookTimeout: windowsScaledTimeout(20_000),
     setupFiles: ["src/test/setup.ts"],
+    // `--shard=N/M` splits the files by their recorded durations instead of
+    // by a hash of their paths. Only this root config's sequencer applies:
+    // Vitest shards the files of all the workspace projects in one call.
+    sequence: {
+      sequencer: createDurationShardSequencer(BaseSequencer, {
+        durationsFile: path.resolve(__dirname, "vitest.durations.json"),
+        // The recorded durations leave out import and setup time; this
+        // adds a small fixed cost for each file.
+        perFileMs: 300,
+      }),
+    },
     // `pool` and `poolOptions` are vitest 1.x keys. This project pins vitest
     // 0.34.6, which does not know either of them, so the maxForks: 4 cap below
     // has never actually applied — 0.34 reads `threads`/`maxThreads` instead.

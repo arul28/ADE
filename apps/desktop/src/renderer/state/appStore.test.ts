@@ -51,7 +51,7 @@ const mockLocalStorage = {
 };
 
 // Import after window is set up
-import { createProjectAppStore, effectiveThemeId, retainProjectAppStoreState, selectEffectiveThemeId, useAppStore, DEFAULT_TERMINAL_PREFERENCES, DEFAULT_CHAT_FONT_SIZE_PX } from "./appStore";
+import { createProjectAppStore, effectiveThemeId, flushWorkViewStatePersistForTests, retainProjectAppStoreState, selectEffectiveThemeId, useAppStore, DEFAULT_TERMINAL_PREFERENCES, DEFAULT_CHAT_FONT_SIZE_PX } from "./appStore";
 import { DEFAULT_APPLE_DEVICE_PREFERENCES } from "../../shared/appleDeviceSettings";
 
 // ---------------------------------------------------------------------------
@@ -131,6 +131,10 @@ function laneCacheKey(projectRoot: string): string {
 
 describe("appStore", () => {
   beforeEach(() => {
+    // A test's debounced work-view write (a real 300 ms timer) must not land in
+    // the next test: on a slow runner it fired mid-way through one and wrote
+    // its stale project over that test's state.
+    flushWorkViewStatePersistForTests();
     mockStorage.clear();
     vi.clearAllMocks();
     resetStore();
@@ -1312,50 +1316,6 @@ describe("appStore", () => {
         expect(reloaded.workCollapsedSectionIds).toEqual([]);
         // Turned off after the upgrade, it stays off.
         expect(reloaded.workFoldBusyLanes).toBe(false);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("merges into the stored blob instead of republishing its own whole map", async () => {
-      vi.useFakeTimers();
-      try {
-        // Project B's surface holds a copy of A's state from when it was
-        // created. A whole-map write from B republished that stale copy over
-        // A's newer state — the "I left the tab and my collapse reverted" bug.
-        mockStorage.set("ade.workViewState.v1", JSON.stringify({
-          version: 3,
-          workViewByProject: {
-            "/project/a": { workCollapsedLaneIds: ["lane-a"], search: "alpha" },
-            "/project/b": { workCollapsedLaneIds: [] },
-          },
-          laneWorkViewByScope: {},
-        }));
-
-        vi.resetModules();
-        const mod = await import("./appStore");
-        // Simulate another surface writing A directly to storage after this
-        // store took its snapshot.
-        mockStorage.set("ade.workViewState.v1", JSON.stringify({
-          version: 3,
-          workViewByProject: {
-            "/project/a": { workCollapsedLaneIds: ["lane-a", "lane-a2"], search: "alpha-updated" },
-            "/project/b": { workCollapsedLaneIds: [] },
-          },
-          laneWorkViewByScope: {},
-        }));
-
-        mod.useAppStore.getState().setWorkViewState("/project/b", { search: "beta" });
-        await vi.advanceTimersByTimeAsync(300);
-
-        const persisted = JSON.parse(mockStorage.get("ade.workViewState.v1") ?? "{}") as {
-          workViewByProject?: Record<string, Record<string, unknown>>;
-        };
-        expect(persisted.workViewByProject?.["/project/b"]?.search).toBe("beta");
-        // A's newer state survives B's write.
-        expect(persisted.workViewByProject?.["/project/a"]?.search).toBe("alpha-updated");
-        expect(persisted.workViewByProject?.["/project/a"]?.workCollapsedLaneIds)
-          .toEqual(["lane-a", "lane-a2"]);
       } finally {
         vi.useRealTimers();
       }

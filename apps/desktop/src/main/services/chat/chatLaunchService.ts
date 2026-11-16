@@ -51,7 +51,8 @@ import type { ChatLaunchEnvironmentPlan } from "../lanes/laneEnvironmentSetup";
 import { createChatLaunchRecordStore, type ChatLaunchRecord as LaunchRecord } from "./chatLaunchRecords";
 import { createQueuedMessageDelivery, type QueuedDeliveryState } from "./chatLaunchDelivery";
 import { createLaneSetupTranscriptCard, type LaneSetupCardState } from "./chatLaunchTranscriptCard";
-import { isDiskFullText, LANE_SETUP_NO_ROOM_TO_SAVE_ERROR } from "../../../shared/types/storage";
+import { isDiskFullText, isLaneSetupOutOfMemoryText, LANE_SETUP_NO_ROOM_TO_SAVE_ERROR } from "../../../shared/types/storage";
+import { cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
 
 /**
  * Brain-owned "launch a chat into a new lane".
@@ -176,6 +177,16 @@ export type ChatLaunchEnvironmentDisk = {
    * grow brings often comes before its answer.
    */
   makeRoom(args: { launchId: string; laneId: string; signal: AbortSignal; onAsking?: (detail: string) => void }): Promise<ChatLaunchEnvironmentRoom | null>;
+  /**
+   * The run was stopped by the memory guard (`error`, its sentence). A host
+   * that can move the computer up a size (an ADE Cloud launch whose size was
+   * ADE's default, on a Small: `cloudSetupUpsize.ts`) says whether it will,
+   * once per launch; otherwise the sentence the stage fails with. Unset: the
+   * stage fails with the guard's sentence.
+   */
+  outOfMemory?(args: { launchId: string; error: string }): { upsize: true } | { upsize: false; error: string };
+  /** Moves the computer up, once the launch's mark is on disk, as `makeRoom` grows its disk (a resize restarts the computer too). */
+  moreMemory?(args: { launchId: string; laneId: string; signal: AbortSignal; onAsking?: (detail: string) => void }): Promise<ChatLaunchEnvironmentRoom | null>;
 };
 
 export type ChatLaunchServiceDeps = {
@@ -224,6 +235,8 @@ export type ChatLaunchServiceDeps = {
 };
 
 type EnvironmentOutcome = "ok" | "failed" | "empty";
+/** A setup run that ran short of disk (`disk`) or memory (`memory`): the stage still runs while the host may make room. */
+type SetupShort = { short: "disk" | "memory"; steps: LaneEnvInitProgress["steps"]; error: string };
 
 type LaunchRuntime = LaneSetupCardState & QueuedDeliveryState & {
   abort: AbortController;
@@ -806,13 +819,16 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     return disposed;
   };
 
-  const runEnvironmentOnce = async (record: LaunchRecord): Promise<EnvironmentOutcome | { diskFull: LaneEnvInitProgress["steps"]; error: string }> => {
+  const runEnvironmentOnce = async (record: LaunchRecord): Promise<EnvironmentOutcome | SetupShort> => {
     const laneId = record.snapshot.laneId;
     const resumes = record.roomMark?.resumes ?? 0;
     setStage(record, "environment", "running", {
-      detail: resumes > 0
-        ? `${record.snapshot.templateName ?? "Setup"}: running again after the disk grew (restart ${resumes})`
-        : record.snapshot.templateName,
+      // Kept once setup is done: the person sees why the computer is bigger.
+      detail: record.roomMark?.kind === "memory"
+        ? cloudAutoSizeSentence("setup_memory")
+        : resumes > 0
+          ? `${record.snapshot.templateName ?? "Setup"}: running again after the disk grew (restart ${resumes})`
+          : record.snapshot.templateName,
       steps: [],
     });
     // Written down: a restart during this run reads this run, never the grow's "Making room…".
@@ -843,7 +859,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         // Cancel may land during that wait (the type narrowed before it).
         if ((record.snapshot.phase as string) === "cancelled") return "failed";
         const steps = progress.steps.map((step) => ({ ...step }));
-        if (failedStep?.error && isDiskFullText(failedStep.error)) return { diskFull: steps, error: failedStep.error };
+        if (failedStep?.error && isDiskFullText(failedStep.error)) return { short: "disk", steps, error: failedStep.error };
+        if (failedStep?.error && isLaneSetupOutOfMemoryText(failedStep.error)) return { short: "memory", steps, error: failedStep.error };
         const message = failedStep ? `${failedStep.label}: ${failedStep.error ?? "failed"}` : "Lane environment setup failed.";
         setStage(record, "environment", environmentFailureStatus(record), {
           steps,
@@ -859,7 +876,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     } catch (error) {
       if (record.snapshot.phase === "cancelled") return "failed";
       const message = getErrorMessage(error);
-      if (isDiskFullText(message)) return { diskFull: stageOf(record, "environment")?.steps ?? [], error: message };
+      if (isDiskFullText(message)) return { short: "disk", steps: stageOf(record, "environment")?.steps ?? [], error: message };
       setStage(record, "environment", environmentFailureStatus(record), {
         error: message,
         ...(record.startNowRequested ? { detail: message } : {}),
@@ -879,20 +896,32 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
    * itself after it instead of reading as interrupted; a mark that can't be
    * written means no grow. Otherwise the sentence the stage fails with.
    */
-  const waitForRoom = async (record: LaunchRecord, full: { diskFull: LaneEnvInitProgress["steps"]; error: string }): Promise<true | string> => {
+  const waitForRoom = async (record: LaunchRecord, full: SetupShort): Promise<true | string> => {
     const host = deps.environmentDisk;
     // Started anyway: the agent already runs, so nothing restarts under it.
     if (!host || record.startNowRequested) return full.error;
     const launchId = record.snapshot.launchId;
-    const verdict = host.diskFull({ launchId, error: full.error });
-    if (!verdict.grow) return verdict.error;
+    const memory = full.short === "memory";
+    if (memory) {
+      // A host that can't move the computer up (not ADE Cloud, an older brain): the guard's sentence.
+      if (!host.outOfMemory || !host.moreMemory) return full.error;
+      const verdict = host.outOfMemory({ launchId, error: full.error });
+      if (!verdict.upsize) return verdict.error;
+    } else {
+      const verdict = host.diskFull({ launchId, error: full.error });
+      if (!verdict.grow) return verdict.error;
+    }
     const runtime = runtimeFor(launchId);
     const signal = runtime.abort.signal;
     // A new grow, a new mark: its own clock and restart count (a regrow during a
     // rerun never spends the last grow's resumes; the grow cap bounds the grows).
     const previousMark = record.roomMark ?? null;
-    record.roomMark = { at: nowIso(), resumes: 0 };
-    setStage(record, "environment", "running", { detail: "The disk filled up during setup. Making room…", steps: full.diskFull });
+    record.roomMark = { at: nowIso(), resumes: 0, ...(memory ? { kind: "memory" as const } : {}) };
+    setStage(record, "environment", "running", {
+      // Not "moving" yet: the server may keep the size (it was picked, the agent limits), and says so.
+      detail: memory ? cloudAutoSizeSentence("checking") : "The disk filled up during setup. Making room…",
+      steps: full.steps,
+    });
     if (!store.persist(record)) {
       record.roomMark = previousMark;
       logger.warn("chat_launch.environment_room_mark_failed", { launchId });
@@ -902,7 +931,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     runtime.growInFlight = true;
     let room: ChatLaunchEnvironmentRoom | null = null;
     try {
-      room = await host.makeRoom({
+      room = await (memory ? host.moreMemory! : host.makeRoom)({
         launchId,
         laneId: record.snapshot.laneId,
         signal,
@@ -918,9 +947,11 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         const stage = stageOf(record, "environment");
         if (stage) stage.detail = room.detail;
         publish(record);
-        logger.info("chat_launch.environment_making_room", { launchId });
+        logger.info("chat_launch.environment_making_room", { launchId, kind: memory ? "memory" : "disk" });
         if (await room.ready.catch(() => false)) return true;
-        return "ADE asked for a bigger disk, but it didn't grow in time. Retry to set up again.";
+        return memory
+          ? "ADE asked to move this computer to a bigger size, but it didn't change in time. Retry to set up again."
+          : "ADE asked for a bigger disk, but it didn't grow in time. Retry to set up again.";
       }
     } catch (error) {
       logger.warn("chat_launch.environment_room_failed", { launchId, error: getErrorMessage(error) });
@@ -958,7 +989,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     for (;;) {
       host?.setupStarting({ launchId });
       let room: true | string;
-      let full: { diskFull: LaneEnvInitProgress["steps"]; error: string };
+      let full: SetupShort;
       try {
         const outcome = await runEnvironmentOnce(record);
         if (typeof outcome === "string") return outcome;
@@ -973,7 +1004,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       if (record.startNowRequested) runtimeFor(launchId).startNow?.();
       if (room === true) continue;
       setStage(record, "environment", environmentFailureStatus(record), {
-        steps: full.diskFull,
+        steps: full.steps,
         error: room,
         detail: record.startNowRequested ? room : record.snapshot.templateName,
       });
@@ -1580,7 +1611,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         // computer more than once, so a restart during this run resumes again,
         // CHAT_LAUNCH_ROOM_MAX_RESUMES times at most and within the mark's hour.
         const mark = record.roomMark!;
-        record.roomMark = { at: mark.at, resumes: mark.resumes + 1 };
+        record.roomMark = { ...mark, resumes: mark.resumes + 1 };
         if (!store.persist(record)) {
           // Not written down (the disk is still full): running setup now could repeat on
           // every restart, so it stops here with the free-space sentence and Retry.

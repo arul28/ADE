@@ -13400,6 +13400,7 @@ export function AgentChatPane({
      */
     cloud: {
       sizeId: string;
+      sizeChoice?: "default" | "picked";
       originUrl: string | null;
       launchId?: string;
       lane?: { laneId: string; laneName: string; branchRef: string };
@@ -13480,6 +13481,7 @@ export function AgentChatPane({
       void startAdeCloudLaunch({
         args: { ...cloudArgs, laneId: newLaneId, laneName },
         sizeId: cloud.sizeId,
+        ...(cloud.sizeChoice ? { sizeChoice: cloud.sizeChoice } : {}),
         originUrl: cloud.originUrl,
         binding: launchBinding,
         draftSnapshot: snapshot,
@@ -13698,7 +13700,7 @@ export function AgentChatPane({
           draftNewLaneConfig,
           // Main owns every ADE Cloud launch; there is no older path to fall back to.
           () => setError({ message: "This ADE can't start an ADE Cloud lane. Update ADE, then send again.", kind: "status" }),
-          { sizeId: cloudSend.tierId, originUrl: cloudSend.originUrl },
+          { sizeId: cloudSend.tierId, sizeChoice: cloudSend.sizeChoice, originUrl: cloudSend.originUrl },
         );
         draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
         // The composer clears with the launch, so the same key can only come

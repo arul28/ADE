@@ -135,8 +135,12 @@ export type ChatLaunchQueuedMessage = {
  * runs on a machine that already exists.
  */
 export type ChatLaunchCloudState = {
-  /** The size picked at Send (a `CloudTierId`). */
+  /** The size picked at Send (a `CloudTierId`); Medium once ADE Cloud started a default Small there (`sizeNote`). */
   sizeId: string;
+  /** How the size was chosen (`CloudLaunchSizeChoice`); absent is `picked`. */
+  sizeChoice?: "default" | "picked" | "capped";
+  /** Why the computer is bigger than the size asked for, in plain words ("Medium: this repo's setup needed more than 4 GB before."). */
+  sizeNote?: string | null;
   /** The repository the lane clones, `github.com/owner/repo`: which project's views show this launch. */
   projectOrigin: string;
   /** The ADE Cloud computer, once the create answered. */
@@ -373,6 +377,12 @@ export type ChatLaunchArgs = {
 export type ChatLaunchCloudTarget = {
   /** The size, as `cloudTiers` names it: `small`, `medium`, `large` or `xlarge`. */
   sizeId: string;
+  /**
+   * How it was chosen (`CloudLaunchSizeChoice`): `default` when nobody picked
+   * one for this launch, so a Small may move to Medium when its setup needs
+   * more memory. Absent is `picked`: the size stays.
+   */
+  sizeChoice?: "default" | "picked" | "capped";
   /**
    * The project's git origin as the launching window knows it (the one its
    * composer checked before Send), so main clones the same repository the

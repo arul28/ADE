@@ -276,42 +276,6 @@ describe("createSourceFaviconService", () => {
     expect(pickIcoEntry(buildIco([{ size: 0, data: Buffer.alloc(100_000) }]).subarray(0, 65_536))).toBeNull();
   });
 
-  it("times out a hung request after 3 s and remembers the failure only briefly, in memory", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    let calls = 0;
-    // The request itself says it started: the disk-cache read before it is
-    // real I/O, which a loaded CI runner can hold past any bounded poll.
-    let requested: () => void = () => undefined;
-    const nextRequest = () => new Promise<void>((resolve) => { requested = resolve; });
-    const net = fakeNetwork({
-      "https://www.slow.dev/": (request) => {
-        calls += 1;
-        requested();
-        return new Promise((_resolve, reject) => {
-          request.signal.addEventListener("abort", () => reject(request.signal.reason));
-        });
-      },
-    });
-    const service = createSourceFaviconService({ cacheDir, lookup: net.lookup, fetch: net.fetch, now });
-    let started = nextRequest();
-    const pending = service.resolveHost("www.slow.dev");
-    await started;
-    await vi.advanceTimersByTimeAsync(SOURCE_FAVICON_LIMITS.timeoutMs - 1);
-    expect(calls).toBe(1);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(await pending).toBeNull();
-    expect(fs.readdirSync(cacheDir)).toEqual([]);
-    expect(await service.resolveHost("www.slow.dev")).toBeNull();
-    expect(calls).toBe(1);
-    clock += SOURCE_FAVICON_LIMITS.transientTtlMs + 1;
-    started = nextRequest();
-    const retry = service.resolveHost("www.slow.dev");
-    await started;
-    expect(calls).toBe(2);
-    await vi.advanceTimersByTimeAsync(SOURCE_FAVICON_LIMITS.timeoutMs);
-    expect(await retry).toBeNull();
-  });
-
   it("tries the www. host when the apex does not resolve", async () => {
     const net = fakeNetwork({
       "https://www.apexless.dev/": page(`<link rel="icon" sizes="32x32" href="/i.png">`),

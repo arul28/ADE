@@ -19,6 +19,7 @@ import {
   waitForCondition,
   waitForEvent,
   waitForFakeTimers,
+  settleSteppingTimeouts,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -77,10 +78,10 @@ async function createClaudeCompactionFixture(args: {
     modelId: "anthropic/claude-sonnet-5",
   });
 
-  await service.runSessionTurn({
+  await settleSteppingTimeouts(() => service.runSessionTurn({
     sessionId: session.id,
     text: "Exercise Claude streaming text.",
-  });
+  }));
 
   return { ...harness, events, session, send };
 }
@@ -951,7 +952,7 @@ describe("createAgentChatService", () => {
         turnUsageLedger: ledger,
       });
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
-      await service.runSessionTurn({ sessionId: session.id, text: "Start background work." });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "Start background work." }));
       releaseIdle();
 
       await waitForCondition(
@@ -1379,14 +1380,14 @@ describe("createAgentChatService", () => {
         modelId: "anthropic/claude-sonnet-5",
       });
 
-      await service.runSessionTurn({ sessionId: session.id, text: "turn one" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "turn one" }));
       await vi.waitFor(() => {
         expect(claudeNoticeMessages(events))
           .toContain("Claude could not compact this conversation. Start a new chat or hand off with a shorter history.");
       }, { timeout: 5_000 });
 
-      await service.runSessionTurn({ sessionId: session.id, text: "turn two" });
-      await service.runSessionTurn({ sessionId: session.id, text: "turn three" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "turn two" }));
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "turn three" }));
 
       // The refusal described one moment, not the session: a grown conversation
       // must be compactable again.
@@ -1442,14 +1443,14 @@ describe("createAgentChatService", () => {
         modelId: "anthropic/claude-sonnet-5",
       });
 
-      await service.runSessionTurn({ sessionId: session.id, text: "first message" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "first message" }));
       await vi.waitFor(() => {
         expect(send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
           .toHaveLength(1);
       }, { timeout: 5_000 });
 
       failPermissionMode = true;
-      await service.runSessionTurn({ sessionId: session.id, text: "second message" }).catch(() => undefined);
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "second message" })).catch(() => undefined);
 
       await vi.waitFor(() => {
         expect(claudeNoticeMessages(events))
@@ -2630,7 +2631,7 @@ describe("createAgentChatService", () => {
         expect(fetchResults()).toEqual([]);
 
         vi.mocked(getSessionMessages).mockResolvedValue([notificationRow] as any);
-        await service.runSessionTurn({ sessionId: session.id, text: "Anything else?" });
+        await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text: "Anything else?" }));
 
         expect(fetchResults()).toEqual([
           expect.objectContaining({ tool: "WebFetch", result: lateResult, turnId: fetchTurnId, status: "completed" }),
@@ -2859,10 +2860,10 @@ describe("createAgentChatService", () => {
       const idleA = await open(passA.id);
       const busyA = await open(passA.id);
       const idleB = await open(passB.id);
-      await service.runSessionTurn({ sessionId: idleA.id, text: "first" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: idleA.id, text: "first" }));
       void service.runSessionTurn({ sessionId: busyA.id, text: "hold this turn" });
       await waitForCondition(() => held.length === 1, "the held turn to start");
-      await service.runSessionTurn({ sessionId: idleB.id, text: "first" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: idleB.id, text: "first" }));
       expect(processes).toHaveLength(3);
 
       service.restartProviderRuntimesWhenIdle("claude", { instanceIds: [passA.id] });

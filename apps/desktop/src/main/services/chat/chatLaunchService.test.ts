@@ -586,6 +586,51 @@ describe("chatLaunchService", () => {
     reloaded.dispose();
   });
 
+  it("a setup the memory guard stopped moves the computer up instead of growing the disk, and goes on at the new size across its restarts", async () => {
+    const h = harness({ hasEnvironment: true, templateName: "npm packages" });
+    const moreMemory = vi.fn(async ({ signal }: { signal: AbortSignal }) => ({
+      state: "growing" as const,
+      detail: "Moving this computer to Medium",
+      ready: new Promise<boolean>((resolve) => signal.addEventListener("abort", () => resolve(false), { once: true })),
+    }));
+    const environmentDisk = {
+      setupStarting: vi.fn(),
+      setupEnded: vi.fn(),
+      diskFull: vi.fn(() => ({ grow: true as const })),
+      makeRoom: vi.fn(),
+      outOfMemory: vi.fn(() => ({ upsize: true as const })),
+      moreMemory,
+    };
+    const service = createChatLaunchService({ ...h.deps, environmentDisk });
+    await service.start(chatArgs());
+    h.laneCreate.resolve(laneSummary());
+    h.environment.resolve({
+      laneId: LANE_ID,
+      overallStatus: "failed",
+      steps: [{ kind: "setup-script", label: "Setup script", status: "failed", error: "Setup used nearly all of this computer's memory (4 GB), so ADE stopped it before the computer had to restart. Use a bigger size, or make setup use less memory, then retry." }],
+    } as never);
+    await h.waitFor((snapshot) => snapshot.stages.find((stage) => stage.id === "environment")?.detail === "Moving this computer to Medium");
+    service.dispose();
+    h.service.dispose();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    // The move's restart, then one more while setup runs again: each resumes it, and says why the computer is bigger.
+    for (let restart = 1; restart <= 2; restart += 1) {
+      const runEnvironment = setupRunning();
+      const resumed = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment });
+      await vi.waitFor(() => expect(runEnvironment).toHaveBeenCalled());
+      expect(resumed.get({ launchId: LAUNCH_ID })?.stages.find((stage) => stage.id === "environment")?.detail).toMatch(/moved this computer to Medium/);
+      resumed.dispose();
+    }
+    const reloaded = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment: setupPasses() });
+    await vi.waitFor(() => expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("completed"));
+
+    expect(moreMemory).toHaveBeenCalledTimes(1);
+    expect(environmentDisk.diskFull).not.toHaveBeenCalled();
+    expect(environmentDisk.makeRoom).not.toHaveBeenCalled();
+    reloaded.dispose();
+  });
+
   it("Start now while setup runs again after the grow's restart starts the agent at once, and a later restart reads as interrupted instead of rerunning setup under it", async () => {
     const { h, environmentDisk } = await launchWaitingForRoom();
     const runEnvironment = setupRunning();

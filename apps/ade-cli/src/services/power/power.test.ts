@@ -37,6 +37,7 @@ import {
 import { createBrainKeepAwakeService } from "./brainKeepAwakeService";
 import { cloudKeepAwakePaths, createCloudKeepAwake } from "./cloudKeepAwake";
 import { createCloudDiskGrower } from "./cloudDiskGrow";
+import { createCloudSetupUpsizer } from "./cloudSetupUpsize";
 import { CloudProviderError } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { cloudDiskGrowStatePath } from "./cloudDiskGuard";
 
@@ -1012,6 +1013,70 @@ describe("cloud disk grow for a lane setup", () => {
       expect(client).not.toHaveBeenCalled();
     } finally {
       controller.abort();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("cloud setup upsize for a lane setup that ran out of memory", () => {
+  const OUT_OF_MEMORY = "Setup used nearly all of this computer's memory (4 GB), so ADE stopped it before the computer had to restart. Use a bigger size, or make setup use less memory, then retry.";
+
+  // How the launch's record reads its size choice, what the account server answers the ask (a move it starts, its
+  // 409 `size_kept`, a refusal, a lost answer), whether that run's setup moved up, and whether the next run of the
+  // same launch on the same Small may ask again.
+  it.each<[string, "default" | "picked" | "unreadable", "starts" | "kept" | "out_of_hours" | "lost", "growing" | "refused", boolean]>([
+    ["a move the server starts", "default", "starts", "growing", false],
+    ["a lost answer (the move may have happened)", "default", "lost", "growing", false],
+    ["a size the server keeps (picked for the launch)", "unreadable", "kept", "refused", true],
+    ["a size the launch's record says was picked: never asked", "picked", "starts", "refused", true],
+    ["a move refused for hours", "default", "out_of_hours", "refused", true],
+  ])("%s", async (_label, choice, answer, state, asksAgain) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-upsize-"));
+    try {
+      const resizes: unknown[] = [];
+      const server = {
+        getInstance: async () => ({ resources: { cpu: 2, memory: 4, disk: 8 }, metadata: {} }),
+        getAccount: async () => { throw new Error("no catalog here"); },
+        resizeInstance: async (...args: unknown[]) => {
+          resizes.push(args);
+          if (answer === "kept") throw new CloudProviderError("Small was picked for this launch, so ADE didn't move it up.", "size_kept", 409, { reason: "picked" });
+          if (answer === "out_of_hours") throw new CloudProviderError("You're out of hours.", "out_of_hours", 402);
+          if (answer === "lost") throw new CloudProviderError("ADE Cloud did not answer in time. Try again.", "timeout", 0);
+          return "updating";
+        },
+      };
+      const readLaunch = async () => {
+        if (choice === "unreadable") throw new Error("network down");
+        return { request: { sizeChoice: choice } };
+      };
+      const upsizer = createCloudSetupUpsizer({ instanceId: "i-1", client: async () => server as never, adeHome: home, memTotalMb: () => 3_900, readLaunch });
+      const setup = upsizer.setupMemory(() => true);
+      const controller = new AbortController();
+
+      expect(setup.outOfMemory({ launchId: "launch-1", error: OUT_OF_MEMORY })).toEqual({ upsize: true });
+      const room = await setup.moreMemory({ launchId: "launch-1", laneId: "lane-1", signal: controller.signal });
+      controller.abort();
+
+      expect(room?.state).toBe(state);
+      // The move asked for is Medium, for this launch, as the computer's own; a picked size is never asked to move.
+      expect(resizes).toEqual(choice === "picked" ? [] : [["i-1", { cpu: 4, memory: 8 }, { computerIdle: true, origin: "auto", launchId: "launch-1" }]]);
+      if (room?.state === "refused") expect(room.error).toMatch(/^Setup used nearly all of this computer's memory .*\. \S/);
+      // A move that started counts (one step per launch); one that didn't is taken back, so a Retry asks again.
+      expect(createCloudSetupUpsizer({ instanceId: "i-1", client: async () => server as never, adeHome: home, memTotalMb: () => 3_900 })
+        .setupMemory(() => true).outOfMemory({ launchId: "launch-1", error: OUT_OF_MEMORY }).upsize).toBe(asksAgain);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("a computer already bigger than a Small never asks to move", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-upsize-"));
+    try {
+      const client = vi.fn(async () => null);
+      const setup = createCloudSetupUpsizer({ instanceId: "i-1", client, adeHome: home, memTotalMb: () => 7_800 }).setupMemory(() => true);
+      expect(setup.outOfMemory({ launchId: "launch-1", error: OUT_OF_MEMORY })).toEqual({ upsize: false, error: OUT_OF_MEMORY });
+      expect(client).not.toHaveBeenCalled();
+    } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { CloudAccountState, CloudAgentLimits } from "../../../shared/adeCloud";
 import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { buildCloudAgentActions, type CloudAgentActionDeps, type CloudApproval } from "./cloudAgentActions";
@@ -22,10 +22,13 @@ describe("ADE Cloud agent actions: approvals", () => {
     launchPhase?: "failed" | "running";
     /** The size that launch was started with. */
     savedSize?: string;
+    /** How that size was chosen. */
+    savedChoice?: "default" | "picked";
     maxShape?: string;
   } = {}) {
     const ran: string[] = [];
     const cards: string[] = [];
+    const starts: Array<{ args: { cloud?: unknown } }> = [];
     let limits: CloudAgentLimits = { unattendedSpend: options.unattendedSpend ?? true, machinesPerDay: 3, maxShape: (options.maxShape ?? "4x16") as CloudAgentLimits["maxShape"] };
     const box = { instanceId: "inst_1", name: "lane box", machineKey: "mk_1", type: "box", hoursRate: 1 };
     const deps = {
@@ -58,9 +61,10 @@ describe("ADE Cloud agent actions: approvals", () => {
       }),
       laneLaunch: () => ({
         status: async (launchId: string) => (options.launchPhase
-          ? { launch: { launchId, kind: "chat", phase: options.launchPhase, cloud: { handedOff: false, sizeId: options.savedSize ?? "small" } }, madeByChat: "chat_1" }
+          ? { launch: { launchId, kind: "chat", phase: options.launchPhase, cloud: { handedOff: false, sizeId: options.savedSize ?? "small", sizeChoice: options.savedChoice } }, madeByChat: "chat_1" }
           : null),
-        start: async () => {
+        start: async (input: { args: { cloud?: unknown } }) => {
+          starts.push(input);
           ran.push("lane_launch");
           return { status: { launch: { phase: "running" } }, created: !options.launchPhase };
         },
@@ -75,7 +79,7 @@ describe("ADE Cloud agent actions: approvals", () => {
         notice: () => undefined,
       },
     } as unknown as CloudAgentActionDeps;
-    return { actions: buildCloudAgentActions(deps), ran, cards };
+    return { actions: buildCloudAgentActions(deps), ran, cards, starts };
   }
 
   const person: CloudApproval = { by: "person" };
@@ -128,6 +132,28 @@ describe("ADE Cloud agent actions: approvals", () => {
       expect(ran).toEqual([]);
     }
     expect(cards).toHaveLength(expectedCards);
+  });
+
+  // A full-auto agent's retry of a default Small: the limits as they are now decide whether setup may move it up.
+  it.each<[string, string, boolean, string]>([
+    ["limits that allow Medium leave the saved choice", "4x16", false, "2031-03-01T12:00:00Z"],
+    ["limits lowered to Small since the first start hold it there", "2x4", true, "2031-03-02T12:00:00Z"],
+  ])("a full-auto agent's retry of a default Small: %s", async (_label, maxShape, capped, day) => {
+    // A day of its own: the count of computers agents made today lives for the whole process.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(day));
+    try {
+      const { actions, starts } = setup({ level: "full-auto", launchPhase: "failed", savedChoice: "default", maxShape });
+
+      await actions.lane_launch!({ ...laneLaunchArgs, approval: agent } as never);
+
+      expect(starts).toHaveLength(1);
+      const choice = (starts[0]!.args.cloud as { sizeChoice?: string }).sizeChoice;
+      if (capped) expect(choice).toBe("capped");
+      else expect(choice).not.toBe("capped");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("parallel makes by full-auto agents stay within the day's limit, counted on top of the account's", async () => {

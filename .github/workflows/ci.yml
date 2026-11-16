@@ -42,7 +42,10 @@ jobs:
       # and the post steps save the other groups' entries.
       # The core group's key and paths live in one composite action, which
       # every job that restores the group uses too. It only looks the entry
-      # up; the step after the install saves it.
+      # up; the step after the install saves it. This job is the only one
+      # that saves the core entry. The jobs that use the core group do not
+      # wait for it: they restore the entry themselves and, on a miss, run
+      # the same install script (install-on-miss).
       - name: Check core node_modules cache
         id: cache_core
         uses: ./.github/actions/restore-core-node-modules
@@ -101,11 +104,8 @@ jobs:
         run: |
           set -euo pipefail
           pids=()
-          # Electron 42+ fetches its binary on first require instead of in npm ci; fetch it
-          # here so the cached node_modules carries it, as it did on Electron 41. Without it,
-          # every brain a test starts from source downloads Electron before it can listen.
-          if [ "$MISS_CORE" = "true" ]; then (cd apps/desktop && npm ci && node scripts/ensure-electron.cjs) & pids+=($!); fi
-          if [ "$MISS_CORE" = "true" ]; then (cd apps/ade-cli && npm ci) & pids+=($!); fi
+          # The same script the core restore action runs on a miss.
+          if [ "$MISS_CORE" = "true" ]; then scripts/ci/install-core-node-modules.sh & pids+=($!); fi
           if [ "$MISS_WEB" = "true" ]; then (cd apps/web && npm ci) & pids+=($!); fi
           if [ "$MISS_WEBHOOK_RELAY" = "true" ]; then (cd apps/webhook-relay && npm ci) & pids+=($!); fi
           if [ "$MISS_PUSH_RELAY" = "true" ]; then (cd apps/push-relay && npm ci) & pids+=($!); fi
@@ -164,8 +164,16 @@ jobs:
   # ade-cli steps run. Its own step at the end waits for it and prints its
   # output, so a failure still names the check. Peak memory measured together:
   # desktop tsc about 7 GB, ade-cli tsc about 2.5 GB, on a 16 GB runner.
+  #
+  # Both run tsc --incremental. The build info holds a hash of each file and
+  # the errors tsc found in it. A pull request restores the build info of the
+  # newest main commit with the same TypeScript, lockfiles and tsconfigs, so
+  # tsc checks again only the files that changed and the files they affect,
+  # and still reports the errors it recorded for the others. A push to main
+  # and a dispatch restore nothing and run the full check; a push to main
+  # then saves a fresh build info. A missing or unreadable build info makes
+  # tsc run the full check, so it can never make the check pass.
   typecheck:
-    needs: install
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -174,6 +182,27 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/restore-core-node-modules
+        with:
+          install-on-miss: "true"
+      - name: Typecheck build info key
+        id: tsc_cache
+        env:
+          INPUTS_HASH: ${{ hashFiles('apps/desktop/package-lock.json', 'apps/ade-cli/package-lock.json', 'apps/desktop/tsconfig.json', 'apps/ade-cli/tsconfig.json') }}
+        run: |
+          set -euo pipefail
+          desktop_ts="$(node -p 'require("./apps/desktop/node_modules/typescript/package.json").version')"
+          cli_ts="$(node -p 'require("./apps/ade-cli/node_modules/typescript/package.json").version')"
+          echo "prefix=tsc-v1-${RUNNER_OS}-ts${desktop_ts}-${cli_ts}-${INPUTS_HASH}-" >> "$GITHUB_OUTPUT"
+          mkdir -p .tsbuildinfo
+      # Only main saves build infos (the last step), so restore-keys can only
+      # match a main commit's entry with the same inputs, the newest first.
+      - name: Restore the typecheck build info of main
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v4
+        with:
+          path: .tsbuildinfo
+          key: ${{ steps.tsc_cache.outputs.prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.tsc_cache.outputs.prefix }}
       # A background process outlives its step; the runner stops leftover
       # processes only when the job ends. The status file appears only when
       # tsc has exited, so the wait step below cannot read a partial result.
@@ -184,24 +213,26 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=8192
         run: |
           (
-            if (cd apps/desktop && npm run typecheck) > "$RUNNER_TEMP/typecheck-desktop.log" 2>&1; then code=0; else code=$?; fi
+            if (cd apps/desktop && npm run typecheck -- --incremental --tsBuildInfoFile "$GITHUB_WORKSPACE/.tsbuildinfo/desktop.tsbuildinfo") > "$RUNNER_TEMP/typecheck-desktop.log" 2>&1; then code=0; else code=$?; fi
             echo "$code" > "$RUNNER_TEMP/typecheck-desktop.status.tmp"
             mv "$RUNNER_TEMP/typecheck-desktop.status.tmp" "$RUNNER_TEMP/typecheck-desktop.status"
           ) &
           echo "TYPECHECK_DESKTOP_PID=$!" >> "$GITHUB_ENV"
       - name: "ade-cli: typecheck"
-        run: cd apps/ade-cli && npm run typecheck
+        run: cd apps/ade-cli && npm run typecheck -- --incremental --tsBuildInfoFile "$GITHUB_WORKSPACE/.tsbuildinfo/ade-cli.tsbuildinfo"
       # scripts/validate-docs.test.mjs covers the docs validator that the
       # docs job runs. scripts/check-package-licenses.test.mjs covers
       # the package-license checker that the packages job runs.
       # scripts/check-source-nul-bytes.test.mjs covers the NUL-byte gate.
       # scripts/release-pipeline.test.mjs covers the release tag's CI gate, the
       # cached-build attestation check, the Mach-O arch check and Apple retries.
+      # scripts/ci/test-shards.test.mjs covers the split of the test files into
+      # shards: each file runs in exactly one shard.
       # scripts/build/asciiBundleSource.test.mjs covers the bundle source map on
       # Windows chunk paths (the map Sentry symbolicates brain and main with).
       - name: Test release runtime archive, packaging, and docs-validator guards
         if: ${{ !cancelled() }}
-        run: node --test apps/ade-cli/scripts/build-runtime-npm-packages.test.mjs apps/ade-cli/scripts/install-runtime-rollback.test.mjs apps/ade-cli/scripts/native-archive-verification.test.mjs apps/ade-cli/scripts/native-deps-entry-filter.test.mjs apps/ade-cli/scripts/notarize-static-runtime.test.mjs apps/ade-cli/scripts/package-native-deps.crsqlite.test.mjs apps/ade-cli/scripts/probe-runtime-crsqlite.test.mjs apps/ade-cli/scripts/verify-runtime-package-contents.test.mjs apps/desktop/scripts/mac-runtime-archive-mode.test.mjs apps/desktop/scripts/packaged-ade-cli-resources.test.mjs apps/desktop/scripts/runtime-fetched-tool-packages.test.mjs apps/desktop/scripts/runtime-resource-targets.test.mjs apps/desktop/scripts/windows-release-contract.test.mjs scripts/build/asciiBundleSource.test.mjs scripts/channelVersion.test.mjs scripts/channelSignIdentity.test.mjs scripts/check-package-licenses.test.mjs scripts/check-source-nul-bytes.test.mjs scripts/dev-shared.test.mjs scripts/release-pipeline.test.mjs scripts/ship-poll.test.mjs scripts/validate-docs.test.mjs scripts/validate-platform-gates.test.mjs
+        run: node --test apps/ade-cli/scripts/build-runtime-npm-packages.test.mjs apps/ade-cli/scripts/install-runtime-rollback.test.mjs apps/ade-cli/scripts/native-archive-verification.test.mjs apps/ade-cli/scripts/native-deps-entry-filter.test.mjs apps/ade-cli/scripts/notarize-static-runtime.test.mjs apps/ade-cli/scripts/package-native-deps.crsqlite.test.mjs apps/ade-cli/scripts/probe-runtime-crsqlite.test.mjs apps/ade-cli/scripts/verify-runtime-package-contents.test.mjs apps/desktop/scripts/mac-runtime-archive-mode.test.mjs apps/desktop/scripts/packaged-ade-cli-resources.test.mjs apps/desktop/scripts/runtime-fetched-tool-packages.test.mjs apps/desktop/scripts/runtime-resource-targets.test.mjs apps/desktop/scripts/windows-release-contract.test.mjs scripts/build/asciiBundleSource.test.mjs scripts/ci/test-shards.test.mjs scripts/channelVersion.test.mjs scripts/channelSignIdentity.test.mjs scripts/check-package-licenses.test.mjs scripts/check-source-nul-bytes.test.mjs scripts/dev-shared.test.mjs scripts/release-pipeline.test.mjs scripts/ship-poll.test.mjs scripts/validate-docs.test.mjs scripts/validate-platform-gates.test.mjs
       - name: "desktop: typecheck"
         if: ${{ !cancelled() }}
         run: |
@@ -215,9 +246,16 @@ jobs:
             exit 1
           fi
           exit "$(cat "$status")"
+      # Each main commit saves its own entry, because a cache key cannot be
+      # replaced. Old entries expire when no run reads them.
+      - name: Save the typecheck build info
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: .tsbuildinfo
+          key: ${{ steps.tsc_cache.outputs.prefix }}${{ github.sha }}
 
   lint-desktop:
-    needs: install
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -225,6 +263,8 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/restore-core-node-modules
+        with:
+          install-on-miss: "true"
       - run: cd apps/desktop && npm run test:lint-tooling
       - run: cd apps/desktop && npm run lint:ci
       # The iOS scene shell and the web client's scene headers are copies of
@@ -233,8 +273,13 @@ jobs:
       # The iOS settings-chip labels are a copy of the settings manifest.
       - run: node apps/desktop/scripts/generate-ios-settings-catalog.mjs --check
 
+  # The desktop and ade-cli suites run in shards. Each vitest.config.ts sets a
+  # sequencer (scripts/ci/test-shards.mjs) that splits the files Vitest finds
+  # by the durations in the package's vitest.durations.json, so the shards
+  # take about the same time. Every shard computes the same split, so each
+  # test file runs in exactly one shard. scripts/ci/update-test-durations.mjs
+  # refreshes the durations.
   test-desktop:
-    needs: install
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -247,18 +292,28 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/restore-core-node-modules
+        with:
+          install-on-miss: "true"
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
+  # ci-pass reads the matrix as one result, `test-ade-cli`; the checks are
+  # named `test-ade-cli (1)` and `test-ade-cli (2)`.
   test-ade-cli:
-    needs: install
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - uses: ./.github/actions/restore-core-node-modules
-      - run: cd apps/ade-cli && npm test
+        with:
+          install-on-miss: "true"
+      - run: cd apps/ade-cli && npm test -- --shard=${{ matrix.shard }}/2
 
   # The five Cloudflare Workers in one job, with one step per check. Every
   # check runs even when an earlier step failed (`!cancelled()`), so one
@@ -459,7 +514,6 @@ jobs:
         run: npm run test:posthog
 
   build:
-    needs: install
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -467,11 +521,20 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/restore-core-node-modules
-      - uses: actions/cache/restore@v4
+        with:
+          install-on-miss: "true"
+      # This job does not wait for the install job, so a miss installs the
+      # web group here. Only the install job saves the entry.
+      - name: Restore web node_modules cache
+        id: cache_web
+        uses: actions/cache/restore@v4
         with:
           path: |
             apps/web/node_modules
           key: nm-web-v1-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+      - name: Install web node_modules (no cache entry)
+        if: steps.cache_web.outputs.cache-hit != 'true'
+        run: cd apps/web && npm ci
       - run: cd apps/desktop && npm run build
       - run: cd apps/ade-cli && npm run build
       # The desktop app ships the CLI help digest to agents. This job already

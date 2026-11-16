@@ -172,7 +172,7 @@ only user-visible output is the per-iteration status line and the final summary.
 - **Package manager:** `npm`; each app under `apps/` has its own `node_modules` +
   `package-lock.json` (no workspaces). Node 24 (`.nvmrc`).
 - **CI:** `.github/workflows/ci.yml` — desktop tests shard **8-way**
-  (`npx vitest run --shard=<n>/8`) plus `test-ade-cli`; a `ci-pass`/`ci-status`
+  (`npx vitest run --shard=<n>/8`) plus `test-ade-cli` (2 shards); a `ci-pass`/`ci-status`
   gate aggregates required jobs. Discover the required-check list live via
   `gh pr checks` / the `ade-pr-workflows` skill — do not hardcode.
 - **PR creation:** prefer the `ade` CLI (registers the PR in ADE's tracking — lane

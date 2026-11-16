@@ -211,6 +211,9 @@ describe("HistoryPage lane/URL sync", () => {
       branch("ade/lane-b", "b2"),
       branch("main", "m1"),
     ]);
+    // The page loads the detail panel lazily. Load the module first, so the
+    // wait for the panel below does not also time a cold import.
+    await import("./CommitDetailPanel");
     render(
       <MemoryRouter initialEntries={[`/history?surface=commits&laneId=lane-a&commitSha=${sha}`]}>
         <HistoryPage />

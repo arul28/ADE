@@ -42,7 +42,12 @@ export type ChatLaunchRecord = {
   awaitingRoom?: boolean;
 };
 
-export type ChatLaunchRoomMark = { at: string; resumes: number };
+/**
+ * `kind`: what the host is making room in. Absent is the disk (a grow);
+ * `memory` is an ADE Cloud computer moving up a size for its setup
+ * (`cloudSetupUpsize.ts`). Either restarts the computer.
+ */
+export type ChatLaunchRoomMark = { at: string; resumes: number; kind?: "memory" };
 
 /** A launch waiting for room is resumed after this many restarts at most; the next one reads as interrupted. */
 export const CHAT_LAUNCH_ROOM_MAX_RESUMES = 3;
@@ -56,7 +61,9 @@ export const CHAT_LAUNCH_ROOM_MAX_AGE_MS = 60 * 60_000;
  */
 function roomMarkOf(record: ChatLaunchRecord): ChatLaunchRoomMark | null {
   const mark = record.roomMark;
-  if (mark && typeof mark.at === "string" && typeof mark.resumes === "number") return mark;
+  if (mark && typeof mark.at === "string" && typeof mark.resumes === "number") {
+    return { at: mark.at, resumes: mark.resumes, ...(mark.kind === "memory" ? { kind: "memory" as const } : {}) };
+  }
   if (record.awaitingRoom === true) return { at: record.snapshot.updatedAt, resumes: 0 };
   return null;
 }
@@ -77,16 +84,18 @@ export function chatLaunchRoomVerdict(record: ChatLaunchRecord, nowMs: number): 
   return { kind: "resume", mark, ageMs };
 }
 
-const ROOM_REFUSED: Record<"cap" | "age", { stage: string; launch: string }> = {
-  cap: {
-    stage: `Interrupted: ADE restarted ${CHAT_LAUNCH_ROOM_MAX_RESUMES + 1} times while setup ran again after the disk grew.`,
-    launch: "Setup kept being interrupted by restarts after the disk grew. Retry to set up again.",
-  },
-  age: {
-    stage: "Interrupted: setup was waiting to run again after the disk grew, and the computer was off too long.",
-    launch: "Setup was waiting to run again after the disk grew, but too much time went by. Retry to set up again.",
-  },
-};
+function roomRefused(kind: "cap" | "age", mark: ChatLaunchRoomMark): { stage: string; launch: string } {
+  const after = mark.kind === "memory" ? "after ADE moved the computer to a bigger size" : "after the disk grew";
+  return kind === "cap"
+    ? {
+      stage: `Interrupted: ADE restarted ${CHAT_LAUNCH_ROOM_MAX_RESUMES + 1} times while setup ran again ${after}.`,
+      launch: `Setup kept being interrupted by restarts ${after}. Retry to set up again.`,
+    }
+    : {
+      stage: `Interrupted: setup was waiting to run again ${after}, and the computer was off too long.`,
+      launch: `Setup was waiting to run again ${after}, but too much time went by. Retry to set up again.`,
+    };
+}
 
 /**
  * Progress publishes skip the disk write, so the persisted `sequence` can trail
@@ -112,7 +121,7 @@ function reviveChatLaunchRecord(record: ChatLaunchRecord, nowIso: string): ChatL
   delete record.awaitingRoom;
   if (room?.kind !== "resume" && (snapshot.phase === "running" || snapshot.phase === "awaiting-client")) {
     // The process that ran it is gone. Say so instead of spinning forever.
-    const refused = room ? ROOM_REFUSED[room.kind] : null;
+    const refused = room ? roomRefused(room.kind, room.mark) : null;
     const running = snapshot.stages.find((stage) => stage.status === "running");
     if (running) {
       running.status = "failed";

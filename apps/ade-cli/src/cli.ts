@@ -1771,7 +1771,9 @@ const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --p
                                                     A new lane on its own new ADE Cloud computer: ADE makes the
                                                     computer, gets the repository there (the pushed branch) and
                                                     starts the chat there. --size small, medium, large, xlarge
-                                                    (default: the size you saved for new lanes). --lane-name <name>
+                                                    (default: the size you saved for new lanes; a default Small
+                                                    whose setup needs more memory moves to Medium once, and the
+                                                    repo starts at Medium after that). --lane-name <name>
                                                     names the lane and its computer (default: from the prompt).
                                                     Asks you first. Ctrl-C stops only the waiting; the
                                                     same --launch-id <id> again follows it or goes on from a
@@ -1781,7 +1783,8 @@ const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --p
 
 const LANES_CLOUD_HELP = `  ade lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
                    (the lane alone, with no chat, on its own new ADE Cloud computer; asks you first.
-                   No --size: the size you saved for new lanes. The same --launch-id again follows it or
+                   No --size: the size you saved for new lanes (a Small whose setup needs more memory moves
+                   to Medium once, and the repo starts at Medium after that). The same --launch-id again follows it or
                    goes on from a failed step. A Linear issue needs its whole JSON. No --description
                    or --no-template yet.)
 `;
@@ -11969,6 +11972,8 @@ export function formatChatLaunch(value: unknown): string {
     ["lane", `${asString(snapshot.laneName) ?? ""} (${asString(snapshot.laneId) ?? ""})`],
     // A lane on ADE Cloud: the computer made for it.
     ["machine", machine ? `ADE Cloud · ${asString(machine.name) ?? ""}${asString(machine.machineKey) ? ` (${asString(machine.machineKey)})` : ""}` : null],
+    // Why its computer is bigger than the size asked for ("Medium: this repo's setup needed more than 4 GB before.").
+    ["size", isRecord(snapshot.cloud) ? asString(snapshot.cloud.sizeNote) : null],
     ["approve", wrapper?.approvalUrl],
     ["base", snapshot.baseRef],
     ["branch", snapshot.branchRef],
@@ -30245,20 +30250,49 @@ async function runServe(
   // itself still reads as `lane_setup` while it waits, so that one setup
   // doesn't hold the grow back; a second one running does (the restart
   // would cut it off).
-  const laneSetupDisk = cloudDiskGrower && readCloudBusy
-    ? cloudDiskGrower.setupDisk(async () => {
-        const busy = await readCloudBusy();
-        const others = busy.reasons.filter((reason) => reason !== "lane_setup");
-        if (others.length || busy.waitingOnPerson || busy.laneSetups > 1) {
-          headlessProjectLogger.info("cloud.disk_grow_for_setup_busy", {
-            reasons: others,
-            laneSetups: busy.laneSetups,
-            waitingOnPerson: Boolean(busy.waitingOnPerson),
-          });
-          return false;
-        }
-        return true;
+  const laneSetupOnlyRuns = async (): Promise<boolean> => {
+    if (!readCloudBusy) return false;
+    const busy = await readCloudBusy();
+    const others = busy.reasons.filter((reason) => reason !== "lane_setup");
+    if (others.length || busy.waitingOnPerson || busy.laneSetups > 1) {
+      headlessProjectLogger.info("cloud.disk_grow_for_setup_busy", {
+        reasons: others,
+        laneSetups: busy.laneSetups,
+        waitingOnPerson: Boolean(busy.waitingOnPerson),
+      });
+      return false;
+    }
+    return true;
+  };
+  // A setup that ran out of memory on a Small whose size was ADE's default
+  // moves the computer to Medium the same way (`cloudSetupUpsize.ts`): one
+  // step, under the same "nothing else runs" rule, and setup runs again.
+  const cloudSetupUpsizer = cloudDiskGrower
+    ? (await import("./services/power/cloudSetupUpsize")).createCloudSetupUpsizer({
+        instanceId: cloudInstanceId,
+        client: async () => (await getCloudBrainAccess()).client(),
+        adeHome: layout.adeDir,
+        logger: headlessProjectLogger,
+        // The launch's own record says whether its size was ADE's default; 404: not a server launch.
+        readLaunch: async (launchId) => {
+          const base = getSharedAccountDirectoryBaseUrl();
+          if (!base || !brainAccountAuthService.getStatus().signedIn) throw new Error("not signed in to an ADE account");
+          const { createCloudApiClient, CloudApiError } = await import("../../desktop/src/shared/cloudApiClient");
+          const api = createCloudApiClient({ baseUrl: base, accessToken: async () => await brainAccountAuthService.getAccessToken() });
+          try {
+            return await api.launchStatus(launchId);
+          } catch (error) {
+            if (error instanceof CloudApiError && error.status === 404) return null;
+            throw error;
+          }
+        },
       })
+    : null;
+  const laneSetupDisk = cloudDiskGrower && readCloudBusy
+    ? {
+        ...cloudDiskGrower.setupDisk(laneSetupOnlyRuns),
+        ...(cloudSetupUpsizer ? cloudSetupUpsizer.setupMemory(laneSetupOnlyRuns) : {}),
+      }
     : null;
   const cloudKeepAwake = cloudKeepAwakeModule && readCloudBusy
     ? cloudKeepAwakeModule.createCloudKeepAwake({
