@@ -71,7 +71,7 @@ import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools
 import { resolveClaudeCodeExecutable } from "../../desktop/src/main/services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../../desktop/src/main/services/ai/codexExecutable";
 import { requirePinnedProviderExecutable } from "../../desktop/src/main/services/ai/pinnedProviderTools";
-import { CODEX_NO_UPDATE_CHECK_ARGS, codexLinuxShellArgs, providerSelfUpdateEnv } from "../../desktop/src/shared/pinnedToolSpawnEnv";
+import { CODEX_NO_UPDATE_CHECK_ARGS, codexLinuxShellArgs, codexSandboxCliArgs, providerSelfUpdateEnv } from "../../desktop/src/shared/pinnedToolSpawnEnv";
 import {
   createComputerUseArtifactPath,
   createComputerUseScratchPath,
@@ -9874,17 +9874,17 @@ async function runTool(args: {
         commandArgs.push("--dangerously-bypass-approvals-and-sandbox");
         commandPreviewParts.push("--dangerously-bypass-approvals-and-sandbox");
       } else if (permissionMode === "default") {
-        commandArgs.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
-        commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
+        commandArgs.push(...codexSandboxCliArgs("workspace-write"), "--ask-for-approval", "on-request");
+        commandPreviewParts.push(...codexSandboxCliArgs("workspace-write").map(previewShellEscapeArg), "--ask-for-approval", "on-request");
       } else if (permissionMode === "config-toml") {
         // No explicit Codex permission flags; let the host config.toml decide.
       } else if (permissionMode === "plan") {
-        commandArgs.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
-        commandPreviewParts.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
+        commandArgs.push(...codexSandboxCliArgs("read-only"), "--ask-for-approval", "on-request");
+        commandPreviewParts.push(...codexSandboxCliArgs("read-only").map(previewShellEscapeArg), "--ask-for-approval", "on-request");
       } else {
         // The CLI flag refuses `untrusted` and exits (see `codexApprovalPolicy.ts`).
-        commandArgs.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
-        commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
+        commandArgs.push(...codexSandboxCliArgs("workspace-write"), "--ask-for-approval", "on-request");
+        commandPreviewParts.push(...codexSandboxCliArgs("workspace-write").map(previewShellEscapeArg), "--ask-for-approval", "on-request");
       }
     } else {
       let claudePermission: string;

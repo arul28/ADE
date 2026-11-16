@@ -15,7 +15,7 @@ import {
   type ClaudeVersionRejection,
 } from "./providerVersionRejection";
 import { requirePinnedProviderExecutable } from "./pinnedProviderTools";
-import { CODEX_NO_UPDATE_CHECK_ARGS, codexLinuxShellArgs, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import { CODEX_NO_UPDATE_CHECK_ARGS, codexLinuxShellArgs, codexSandboxCliArgs, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { resolveCopilotSdkRuntime } from "./acpExecutables";
 import { getApiKey } from "./apiKeyStore";
 import { parseStructuredOutput } from "./utils";
@@ -284,8 +284,7 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     ...codexLinuxShellArgs(process.platform),
     "--color",
     "never",
-    "--sandbox",
-    buildCodexSandbox(args.permissionMode),
+    ...codexSandboxCliArgs(buildCodexSandbox(args.permissionMode)),
     "--cd",
     args.cwd,
     "--skip-git-repo-check",

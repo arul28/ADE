@@ -26,6 +26,7 @@ import {
   museCliApprovalFlag,
 } from "./types/chat";
 import { codexCliApprovalFlagValue } from "./codexApprovalPolicy";
+import { codexSandboxCliArgs } from "./pinnedToolSpawnEnv";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   filterAdeAgentSkillRoots,
@@ -2154,9 +2155,9 @@ function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | nu
   if (permissionMode === "full-auto") return ["--dangerously-bypass-approvals-and-sandbox"];
   // The CLI flag has no value between "ask" and "never", so both rungs match.
   if (permissionMode === "default" || permissionMode === "edit") {
-    return ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"];
+    return [...codexSandboxCliArgs("workspace-write"), "--ask-for-approval", "on-request"];
   }
-  if (permissionMode === "plan") return ["--sandbox", "read-only", "--ask-for-approval", "on-request"];
+  if (permissionMode === "plan") return [...codexSandboxCliArgs("read-only"), "--ask-for-approval", "on-request"];
   return [];
 }
 
@@ -2168,7 +2169,7 @@ function codexResumePermissionFlags(args: {
 }): string[] {
   if (args.configSource === "config-toml") return [];
   if (args.approvalPolicy && args.sandbox) {
-    return ["--sandbox", args.sandbox, "--ask-for-approval", codexCliApprovalFlagValue(args.approvalPolicy)];
+    return [...codexSandboxCliArgs(args.sandbox), "--ask-for-approval", codexCliApprovalFlagValue(args.approvalPolicy)];
   }
   if (args.approvalPolicy || args.sandbox) return [];
   return permissionModeToCodexFlags(args.permissionMode);

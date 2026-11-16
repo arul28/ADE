@@ -1063,7 +1063,7 @@ describe("buildTrackedCliStartupCommand", () => {
 
     it("adds supported workspace-write defaults for default", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "default" });
-      expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request");
+      expect(command).toContain("codex --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request");
       expect(command).not.toContain("mcp_servers.linear");
       expect(command).not.toContain("control plane for ADE state");
     });
@@ -1123,13 +1123,13 @@ describe("buildTrackedCliStartupCommand", () => {
 
     it("adds on-request approval and workspace-write sandbox for edit", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "edit" });
-      expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request");
+      expect(command).toContain("codex --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request");
       expect(command).not.toContain("control plane for ADE state");
     });
 
     it("adds on-request approval and read-only sandbox for plan", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "plan" });
-      expect(command).toContain("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request");
+      expect(command).toContain("codex --no-alt-screen -c \"default_permissions=\\\"ade_read_only\\\"\" -c \"permissions.ade_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_read_only.network.enabled=true --ask-for-approval on-request");
       expect(command).not.toContain("control plane for ADE state");
     });
 
@@ -1652,7 +1652,7 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "thread",
       targetId: "thread-99",
       launch: { permissionMode: "edit" },
-    })).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-99");
+    })).toBe("codex --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "cursor",
@@ -1708,7 +1708,7 @@ describe("tracked CLI resume helpers", () => {
         codexConfigSource: "flags",
       },
     })).toBe(
-      "codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-workspace-on-request",
+      "codex --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-workspace-on-request",
     );
   });
 
@@ -1777,7 +1777,7 @@ describe("tracked CLI resume helpers", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit" },
     }, { model: "gpt-5.4", reasoningEffort: "high", permissionMode: "plan" })).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" --sandbox read-only --ask-for-approval on-request resume thread-99",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" -c \"default_permissions=\\\"ade_read_only\\\"\" -c \"permissions.ade_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_read_only.network.enabled=true --ask-for-approval on-request resume thread-99",
     );
 
     const droidResume = buildTrackedCliResumeCommand({
@@ -1799,7 +1799,7 @@ describe("tracked CLI resume helpers", () => {
       targetId: "thread-99",
       launch: { permissionMode: "plan" },
     }, { prompt: "fix failing tests" })).toBe(
-      "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-99 \"fix failing tests\"",
+      "codex --no-alt-screen -c \"default_permissions=\\\"ade_read_only\\\"\" -c \"permissions.ade_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_read_only.network.enabled=true --ask-for-approval on-request resume thread-99 \"fix failing tests\"",
     );
 
     expect(buildTrackedCliResumeCommand({
@@ -1817,7 +1817,7 @@ describe("tracked CLI resume helpers", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium", fastMode: true },
     })).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write --ask-for-approval on-request resume thread-99",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-99",
     );
 
     expect(buildTrackedCliResumeCommand({

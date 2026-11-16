@@ -10135,12 +10135,23 @@ function codexPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Recor
     : {};
 }
 
+/**
+ * The per-turn sandbox policy. Commands reach the network in every mode
+ * (owner's decision, 2026-11-16): Codex's own default keeps Plan (read-only)
+ * and Edit (workspace-write) offline, so `gh`, `npm install` and `git push`
+ * only worked in Full auto. The sandbox's file limits stay as they were.
+ */
+function codexTurnSandboxPolicy(sandbox: AgentChatCodexSandbox): Record<string, unknown> {
+  const type = codexSandboxPolicyType(sandbox);
+  return type === "dangerFullAccess" ? { type } : { type, networkAccess: true };
+}
+
 /** Spread-ready codex per-turn policy args or empty object if null. */
 function codexTurnPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Record<string, unknown> {
   return policy
     ? {
         approvalPolicy: codexAppServerApprovalPolicy(policy.approvalPolicy),
-        sandboxPolicy: { type: codexSandboxPolicyType(policy.sandbox) },
+        sandboxPolicy: codexTurnSandboxPolicy(policy.sandbox),
       }
     : {};
 }
