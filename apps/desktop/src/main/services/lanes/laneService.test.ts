@@ -4449,6 +4449,47 @@ describe("laneService delete teardown + cancellation + streaming", () => {
 
 
 
+  it("answers a background delete once under way, finishes it without the caller, and takes a re-sent delete as success", async () => {
+    // What a client on a slow link relies on (shared/laneDeleteFollow.ts): the
+    // start answers before the slow work, a start re-sent after a lost answer
+    // never fails as "already running" or "Lane not found", and the delete
+    // runs once and ends on its own.
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service } = await setupWithLane({ teardown: fake, events });
+    let releaseRemove: () => void = () => undefined;
+    const removeGate = new Promise<void>((resolve) => {
+      releaseRemove = resolve;
+    });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "worktree" && args[1] === "remove") {
+        await removeGate;
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+    const onDeleted = vi.fn();
+
+    const started = await service.delete({ laneId: "lane-child", deleteBranch: false, background: true }, { onDeleted });
+    expect(started.accepted).toBe(true);
+    expect(service.listDeleteProgress()[0]?.overallStatus).toBe("running");
+    await expect(service.delete({ laneId: "lane-child", deleteBranch: false, background: true }))
+      .resolves.toMatchObject({ accepted: true });
+    const joined = service.delete({ laneId: "lane-child", deleteBranch: false });
+
+    releaseRemove();
+    await expect(joined).resolves.toMatchObject({ leftoverWorktree: null });
+    expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])).toBeNull();
+    expect(onDeleted).toHaveBeenCalledTimes(1);
+    expect(fake.ptyService.disposeForLane).toHaveBeenCalledTimes(1);
+    expect(service.listDeleteProgress()[0]?.overallStatus).toBe("completed");
+    await expect(service.delete({ laneId: "lane-child", deleteBranch: false, background: true }))
+      .resolves.toMatchObject({ alreadyDeleted: true });
+  });
+
   it("deletes the lane locally when optional remote branch cleanup fails", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
