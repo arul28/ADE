@@ -136,8 +136,16 @@ let workInputTrackerInstalled = false;
 /**
  * The first Work view of the window gives the prompt box the keyboard once,
  * within a few seconds; a chat the restore selects meanwhile carries it on.
+ * `done` means the person put the keyboard somewhere else. `focused` names the
+ * chat and the view layer that got it: a relaunch shows the new-chat draft
+ * until the session list has the remembered chat, then swaps in the chat
+ * itself, and that swap (same chat, new layer) carries the keyboard on too.
  */
-let launchPromptFocus: { until: number; done: boolean } | null = null;
+let launchPromptFocus: {
+  until: number;
+  done: boolean;
+  focused: { chatKey: string | null; layerKey: string | null } | null;
+} | null = null;
 /** A chat switch this soon after a pointer press counts as made by the pointer. */
 const POINTER_SWITCH_WINDOW_MS = 1_000;
 const LAUNCH_PROMPT_FOCUS_WAIT_MS = 5_000;
@@ -172,6 +180,8 @@ function promptBoxMayTakeFocus(): boolean {
   if (selection && selection.rangeCount > 0 && !selection.isCollapsed) return false;
   const active = document.activeElement;
   if (!active || active === document.body || active === document.documentElement) return true;
+  // A field in a layer that is leaving (inert) takes no keys: nobody holds the keyboard.
+  if (active.closest("[inert]")) return true;
   if (isEditableElement(active)) return false;
   if (active.closest("[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox'], [aria-modal='true']")) {
     return false;
@@ -199,11 +209,15 @@ function findWorkInputIn(root: ParentNode): HTMLElement | null {
  * once the Work view shows a chat after launch, and after a pointer click
  * switches the chat. A switch made with the keyboard keeps the focus where it
  * is, and nothing takes the focus from a field, a dialog or a selection.
+ * `layerKey` names the view layer that shows the chat (the draft, a single
+ * chat): at launch the keyboard follows the chat from the draft to its own
+ * layer when the restore swaps them.
  */
 export function useWorkInputFocusOnChatSwitch(
   rootRef: { readonly current: HTMLElement | null },
   chatKey: string | null,
   active: boolean,
+  layerKey: string | null = null,
 ): void {
   const previousKeyRef = useRef<{ key: string | null } | null>(null);
   useEffect(() => {
@@ -214,9 +228,12 @@ export function useWorkInputFocusOnChatSwitch(
     const previous = previousKeyRef.current;
     previousKeyRef.current = { key: chatKey };
     const now = performance.now();
-    launchPromptFocus ??= { until: now + LAUNCH_PROMPT_FOCUS_WAIT_MS, done: false };
+    launchPromptFocus ??= { until: now + LAUNCH_PROMPT_FOCUS_WAIT_MS, done: false, focused: null };
     const launch = launchPromptFocus;
-    const launchPending = !launch.done && now < launch.until;
+    const launchPending = !launch.done && now < launch.until && (
+      launch.focused == null
+      || (launch.focused.chatKey === chatKey && launch.focused.layerKey !== layerKey)
+    );
     let deadline: number;
     if (launchPending) {
       deadline = launch.until;
@@ -242,7 +259,7 @@ export function useWorkInputFocusOnChatSwitch(
       const target = root ? findWorkInputIn(root) : null;
       if (target) {
         target.focus({ preventScroll: true });
-        if (launchPending) launch.done = true;
+        if (launchPending) launch.focused = { chatKey, layerKey };
         return;
       }
       if (performance.now() < deadline) frame = requestAnimationFrame(tick);
@@ -251,7 +268,7 @@ export function useWorkInputFocusOnChatSwitch(
     return () => {
       if (frame) cancelAnimationFrame(frame);
     };
-  }, [active, chatKey, rootRef]);
+  }, [active, chatKey, layerKey, rootRef]);
 }
 
 /** Put the keyboard inside the tools pane once it is on screen. */

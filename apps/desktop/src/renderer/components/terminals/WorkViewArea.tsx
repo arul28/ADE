@@ -1518,7 +1518,7 @@ export function WorkViewArea({
   // launch, and after a click switches the chat (a new chat included). A grid
   // focuses its own active tile (`shouldAutofocus`).
   const workAreaBodyRef = useRef<HTMLDivElement>(null);
-  useWorkInputFocusOnChatSwitch(workAreaBodyRef, activeItemId ?? null, pageActive && workAreaMode !== "grid");
+  useWorkInputFocusOnChatSwitch(workAreaBodyRef, activeItemId ?? null, pageActive && workAreaMode !== "grid", workAreaMode);
   // The terminal code loads once the person stops for a moment, so the first
   // terminal they open does not wait for it (LazyTerminalView).
   useEffect(() => scheduleTerminalViewPreload(), []);
