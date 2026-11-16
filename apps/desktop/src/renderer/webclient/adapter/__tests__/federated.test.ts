@@ -893,6 +893,40 @@ describe("createFederatedWebAdapter", () => {
     expect(fixture.targetB.onAgentChatEvent).not.toHaveBeenCalled();
   });
 
+  it("keeps a pinned subscription on its own machine across reconnects, once, until it is unsubscribed", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "pinned-subscriptions-reconnect",
+      fallbackClient: fixture.fallbackClient,
+    });
+    const bindingA = await federated.openProject("machine-a", "project-machine-a");
+    const listener = vi.fn();
+    const unsubscribe = (federated.ade.agentChat.onEvent as unknown as (
+      listener: () => void,
+      binding: typeof bindingA,
+    ) => () => void)(listener, bindingA);
+    expect(fixture.targetA.onAgentChatEvent).toHaveBeenCalledOnce();
+
+    // The machine's client is replaced: the feed attaches to the new one, once,
+    // and more snapshots of the same client attach nothing more.
+    const second = fixture.reconnect("machine-a");
+    fixture.emitSnapshot();
+    expect(second.onAgentChatEvent).toHaveBeenCalledOnce();
+    expect((second.onAgentChatEvent.mock.calls[0] as unknown[])[0]).toBe(listener);
+
+    // Gone, then back: it waits detached and attaches to the client that arrives.
+    fixture.disconnect("machine-a");
+    const third = fixture.reconnect("machine-a");
+    expect(third.onAgentChatEvent).toHaveBeenCalledOnce();
+    expect(second.onAgentChatEvent).toHaveBeenCalledOnce();
+
+    unsubscribe();
+    const fourth = fixture.reconnect("machine-a");
+    expect(fourth.onAgentChatEvent).not.toHaveBeenCalled();
+  });
+
   it("releases every durable subscription when the workspace is disposed", async () => {
     const fixture = managerFixture();
     const federated = createFederatedWebAdapter({

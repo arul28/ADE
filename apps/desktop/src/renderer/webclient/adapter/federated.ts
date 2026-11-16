@@ -423,6 +423,15 @@ export function createFederatedWebAdapter({
     return /^on[A-Z]/.test(member) || /^subscribe/.test(member) || /Subscribe$/.test(member);
   };
 
+  // A listener API (`onEvent`, `subscribe…`): calling it again on a new client
+  // only attaches a listener. A command that ends in `Subscribe`
+  // (`macDesktop.streamSubscribe`) starts work on the computer and returns a
+  // Promise; it is never kept and called again.
+  const isListenerMember = (path: PropertyKey[]): boolean => {
+    const member = String(path[path.length - 1] ?? "");
+    return /^on[A-Z]/.test(member) || /^subscribe/.test(member);
+  };
+
   const setCurrentAdapter = (adapter: AdeWebAdapter) => {
     if (currentAdapter === adapter) return;
     currentAdapter = adapter;
@@ -1064,17 +1073,21 @@ export function createFederatedWebAdapter({
             // here; the call fails as "not connected" instead.
             const notConnected = () => markExpected(new Error("The machine is not connected."), "network");
             const connectPinned = () => manager.connectEnvironment(pinned.targetId, { activate: false, background: true });
-            if (isSubscriptionMember(path)) {
+            if (isListenerMember(path)) {
               // It attaches when the machine's client arrives (see `pinnedSubscriptions`).
               void connectPinned().catch(() => undefined);
               return registerPinnedSubscription({ binding: pinned, path, args, detach: null, client: null });
+            }
+            if (isSubscriptionMember(path)) {
+              console.warn("[ade-web] subscription skipped: its machine is connecting", path.join("."));
+              return () => {};
             }
             return connectPinned().then(
               (): unknown => (manager.getClient(pinned.targetId) ? callDynamic(...args) : Promise.reject(notConnected())),
               (error: unknown) => Promise.reject(error instanceof WebMachineConnectSkipped ? notConnected() : error),
             );
           }
-          if (isSubscriptionMember(path)) {
+          if (isListenerMember(path)) {
             return registerPinnedSubscription({ binding: pinned, path, args, detach: null, client: null });
           }
           try {
