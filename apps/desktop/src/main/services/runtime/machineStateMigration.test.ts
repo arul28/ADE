@@ -291,6 +291,7 @@ describe("machine trust reset migration", () => {
     const adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-trust-reset-"));
     const secretsDir = path.join(adeDir, "secrets");
     fs.mkdirSync(secretsDir, { recursive: true });
+    fs.writeFileSync(path.join(secretsDir, "desktop-paired-machines.json"), "{}\n", "utf8");
 
     expect(runMachineTrustResetMigration({ adeDir, secretsDir })).toMatchObject({
       didRun: true,

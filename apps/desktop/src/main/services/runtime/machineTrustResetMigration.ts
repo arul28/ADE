@@ -64,6 +64,20 @@ export function runMachineTrustResetMigration(
   }
 
   fs.mkdirSync(layout.adeDir, { recursive: true, mode: 0o700 });
+  // Nothing was on disk, so no brain can hold an old grant (a fresh install,
+  // or a home that never paired). The reset is done now: a forced restart
+  // would only interrupt a brain that is starting, and the window would then
+  // show the "background service restarted" banner a few seconds after launch.
+  if (removedFiles.length === 0) {
+    fs.writeFileSync(markerPath, `${new Date().toISOString()}\n`, { encoding: "utf8", mode: 0o600 });
+    return {
+      didRun: true,
+      restartRequired: false,
+      markerPath,
+      pendingMarkerPath,
+      removedFiles,
+    };
+  }
   fs.writeFileSync(pendingMarkerPath, `${new Date().toISOString()}\n`, {
     encoding: "utf8",
     mode: 0o600,
