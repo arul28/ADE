@@ -32011,10 +32011,25 @@ async function runServe(
         await providerLoginSync()?.pass(null);
       },
       // The person's messages sent before the chat existed (the server keeps them).
+      // A provider that refuses a send while its turn runs (Codex) gets it once
+      // the turn is over: the chat's status is read again every few seconds, for
+      // at most 30 minutes. The same `clientSendId` makes a retry safe.
       sendChatMessage: async (projectId, sessionId, message) => {
         const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
         if (!chat) throw new Error("This ADE runtime has no chats.");
-        await chat.sendMessage({ sessionId, text: message.text, clientSendId: message.clientSendId });
+        const waitUntil = Date.now() + 30 * 60_000;
+        for (;;) {
+          try {
+            await chat.sendMessage({ sessionId, text: message.text, clientSendId: message.clientSendId });
+            return;
+          } catch (error) {
+            const turnRunning = isRecord(error) && error.code === "turn_in_flight";
+            if (!turnRunning || Date.now() >= waitUntil) throw error;
+          }
+          do {
+            await new Promise((resolve) => setTimeout(resolve, 5_000));
+          } while (Date.now() < waitUntil && (await chat.getSessionSummary(sessionId))?.status === "active");
+        }
       },
       // An automation's run (C9): its chat's turn ending is the run's end. Nobody
       // watches that chat, so one that stops to ask for input ends the run as

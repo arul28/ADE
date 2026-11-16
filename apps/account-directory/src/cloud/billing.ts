@@ -2,7 +2,7 @@ import { trustedHttpsOrigin } from "../trustedOrigin";
 import { captureCloudAction, captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
 import { CLOUD_WEB_BILLING_RETURN_PARAM, formatCloudCents, type CloudBillingReturnOutcome, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
 import { unlockFreePlanWithCard } from "./freePlanGithub";
-import { claimCardForFreeUnlock } from "./blocks";
+import { claimCardForFreeUnlock, isCloudBlocked } from "./blocks";
 import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
 import { cloudReturnPageHtml } from "./returnPage";
@@ -1134,6 +1134,13 @@ async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: nu
   const userId = textOf(session.client_reference_id) ?? textOf(metadata?.ade_user_id);
   if (session.mode !== "subscription" || !subscriptionId || !userId) return;
   const subscription = await readSubscription(env, subscriptionId);
+  // A Checkout opened before the owner blocked the account: the block had no subscription to
+  // cancel then, so this one is cancelled now (no proration) instead of joining a blocked account.
+  if (await isCloudBlocked(env, userId)) {
+    await stripeRequest(env, "DELETE", `/subscriptions/${encodeURIComponent(subscription.id)}`, { prorate: "false", invoice_now: "false" });
+    logCloud("cloud.subscription_cancelled_for_blocked_account", { userId, via: "checkout" });
+    return;
+  }
   if (subscription.status === "incomplete") {
     // Payment still pending: remember the subscription so its `active` event starts the plan.
     const pending = await loadAccount(env, userId, now);

@@ -218,6 +218,10 @@ function stagesOf(snapshot: ChatLaunchSnapshot): CloudLaunchStage[] {
   return snapshot.stages.map((stage) => ({ id: stage.id, status: stage.status, detail: stage.detail, error: stage.error }));
 }
 
+/** A delivery round that couldn't reach the server is tried again this much later, at most this many times. */
+const OWED_MESSAGE_ROUND_MS = 2 * 60_000;
+const OWED_MESSAGE_ROUNDS = 15;
+
 /**
  * What a report says, for "has it changed": the phase and each stage's id
  * and status, plus a running stage's detail (a disk grow says "growing it to
@@ -686,32 +690,43 @@ async function follow(
   const save = (state: BootState) => writeState(deps.stateFile, owed ? { ...state, messagesOwed: owed } : state);
   let delivery: Promise<void> | null = null;
   let messagesSent = false;
+  let deliveryRounds = 0;
   const sendQueued = (snapshot: ChatLaunchSnapshot): void => {
-    if (messagesSent || delivery || !snapshot.sessionId || snapshot.phase === "failed" || snapshot.phase === "cancelled") return;
+    // Only once the launch is done: the chat exists and has its opening message, so a queued one
+    // can't go first (or meet the opening turn still starting).
+    if (messagesSent || delivery || !snapshot.sessionId || !snapshot.sessionCreated || snapshot.phase !== "completed") return;
     const sessionId = snapshot.sessionId;
     owed = { sessionId };
     const current = readState(deps.stateFile, logger);
     if (current?.launchId === launchId) save(current);
     delivery = deliverOwedMessages(deps, projectId, sessionId, sleep).then((done) => {
+      delivery = null;
       if (done) {
         owed = null;
         messagesSent = true;
+        return;
       }
-      // Not all sent: a later report here tries again, and so does a later boot.
-      delivery = null;
+      // Not all sent: tried again here a while later (also after the launch ended, so a
+      // server that was down doesn't need another event), a few times; a later boot tries too.
+      if (deliveryRounds >= OWED_MESSAGE_ROUNDS) return;
+      deliveryRounds += 1;
+      const timer = setTimeout(() => sendQueued(snapshot), OWED_MESSAGE_ROUND_MS);
+      timer.unref?.();
     });
   };
   const send = async (snapshot: ChatLaunchSnapshot): Promise<boolean> => {
     const stages = stagesOf(snapshot);
     const terminal = TERMINAL.has(snapshot.phase);
-    const shape = reportShapeOf(snapshot.phase, stages);
+    // The chat's creation is part of the shape, so the report that names the chat goes even with no stage change.
+    const shape = `${reportShapeOf(snapshot.phase, stages)}${snapshot.sessionCreated ? "|chat" : ""}`;
     if (shape === last) return terminal;
     last = shape;
     const error = snapshot.phase === "cancelled" ? STOPPED_ON_COMPUTER : snapshot.phase === "failed" ? snapshot.error : null;
     const update: CloudLaunchStagesUpdate = {
       state: REPORTED_STATE[snapshot.phase] ?? "running",
       stages,
-      sessionId: snapshot.sessionId,
+      // Named only once the chat exists: the server then marks the first message sent and takes no more.
+      ...(snapshot.sessionCreated && snapshot.sessionId ? { sessionId: snapshot.sessionId } : {}),
       ...(error ? { error } : {}),
     };
     if (!terminal) {

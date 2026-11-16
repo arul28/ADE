@@ -54,12 +54,13 @@ function writeJournal(file: string, journal: MessageJournal): void {
  * each once: the claim is written here before it is asked for, the send
  * carries a client send id, and a message this computer claimed but can't
  * tell it sent (a restart mid-send) is reported failed, never sent again.
- * True when nothing is left to send.
+ * True only when the queue was read and nothing is left to send.
  */
 export async function deliverQueuedMessages(deps: MessageDeps, projectId: string, sessionId: string): Promise<boolean> {
   const { launchId, logger } = deps;
   const api = deps.api();
-  if (!api || !deps.sendChatMessage) return true;
+  // Nothing to read or send with (no account session yet): the messages are still owed.
+  if (!api || !deps.sendChatMessage) return false;
   const listed = await api.launchMessages(launchId).catch((error: unknown) => {
     logger.warn("cloud_boot_launch.messages_read_failed", { launchId, error: errorText(error) });
     return null;
@@ -97,13 +98,17 @@ export async function deliverQueuedMessages(deps: MessageDeps, projectId: string
     const claimId = mine ?? randomBytes(18).toString("base64url");
     journal.claims[message.messageId] = claimId;
     writeJournal(file, journal);
-    const claimed = await api.claimLaunchMessage(launchId, message.messageId, claimId).then(() => true, (error: unknown) => {
-      logger.warn("cloud_boot_launch.message_claim_failed", { launchId, error: errorText(error) });
-      return false;
+    const claimed = await api.claimLaunchMessage(launchId, message.messageId, claimId).then(() => "claimed" as const, (error: unknown) => {
+      const final = isFinalRefusal(error);
+      logger.warn("cloud_boot_launch.message_claim_failed", { launchId, final, error: errorText(error) });
+      return final ? "refused" as const : "retry" as const;
     });
-    if (!claimed) {
+    // The server's no (sent or claimed elsewhere): not this computer's to send.
+    if (claimed === "refused") continue;
+    // A claim that didn't get through: stop here, so no later message goes before this one.
+    if (claimed === "retry") {
       done = false;
-      continue;
+      break;
     }
     journal.attempted.push(message.messageId);
     writeJournal(file, journal);

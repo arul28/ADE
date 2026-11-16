@@ -915,6 +915,8 @@ async function finishRun(env: RelayEnv, provider: CloudProvider, run: RunRow, no
   const computer = run.instance_id ? await ownedComputer(env, run.user_id, run.instance_id) : null;
   if (!computer) return end(null, null);
   if (rule?.keep_computer === 1) return end("kept", "This rule keeps its computer after a run.");
+  // A blocked account's computer stays stopped: the push would wake it.
+  if (await isCloudBlocked(env, run.user_id)) return end("kept", "Its computer stays: ADE Cloud is turned off for this account.");
   const wake: WakeRecord = { woke: false, from: computer.status };
   const keep = async (why: string): Promise<void> => {
     if (wake.woke) await putBackToRest(env, provider, computer.instance_id, wake.from);

@@ -185,7 +185,16 @@ export type ChatLaunchCloudState = {
    * code to enter there, and one sentence on what to do. The card shows it.
    * Absent otherwise.
    */
-  signIn?: { label: string; url: string | null; userCode: string | null; reason: string | null };
+  signIn?: {
+    label: string;
+    url: string | null;
+    userCode: string | null;
+    reason: string | null;
+    /** The computer's sign-in job, for a pasted code (`providers.remoteSignInCode` on that computer). */
+    jobId?: string | null;
+    /** The provider shows a code after sign-in that goes back to the computer (Claude). */
+    needsPastedCode?: boolean;
+  };
 };
 
 export type ChatLaunchSnapshot = {

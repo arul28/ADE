@@ -58,9 +58,14 @@ export function firstMessageStatement(
   `).bind(launchId, chat.messageId, userId, chat.prompt, chat.provider, chat.modelId, now, now);
 }
 
-/** A draft's start that didn't go ahead: its first message goes, so the next start writes its own prompt as message 1. */
-export function dropFirstMessageStatement(env: CloudEnv, launchId: string): D1PreparedStatement {
-  return env.DB.prepare("delete from cloud_launch_messages where launch_id = ? and seq = 1 and state = 'queued'").bind(launchId);
+/**
+ * Row 1 goes, so the start that follows writes its own prompt as message 1:
+ * a draft turned into the launch (a queued row 1), or a Retry (row 1 of the
+ * failed attempt, queued or failed; never one the chat already got).
+ */
+export function dropFirstMessageStatement(env: CloudEnv, launchId: string, from: "draft" | "retry" = "draft"): D1PreparedStatement {
+  return env.DB.prepare(`delete from cloud_launch_messages where launch_id = ? and seq = 1 and ${from === "retry" ? "state <> 'delivered'" : "state = 'queued'"}`)
+    .bind(launchId);
 }
 
 /** The chat exists: the computer started it with the first message. */
@@ -76,9 +81,16 @@ export function failQueuedMessagesStatement(env: CloudEnv, launchId: string, err
     .bind(error, now, launchId);
 }
 
-/** Every message of one launch (a start the create refused). */
-export function deleteLaunchMessagesStatement(env: CloudEnv, launchId: string): D1PreparedStatement {
-  return env.DB.prepare("delete from cloud_launch_messages where launch_id = ?").bind(launchId);
+/**
+ * A start the create refused: its messages (all of them, or a draft's row 1)
+ * go only while the launch is still that unmade start. Batched before the
+ * launch's own write, so a new start of the same id never loses its messages.
+ */
+export function refusedStartMessagesStatement(env: CloudEnv, launchId: string, which: "all" | "first"): D1PreparedStatement {
+  return env.DB.prepare(`
+    delete from cloud_launch_messages where launch_id = ?${which === "first" ? " and seq = 1 and state = 'queued'" : ""}
+      and exists (select 1 from cloud_launches where launch_id = ? and state = 'making' and instance_id is null)
+  `).bind(launchId, launchId);
 }
 
 /** The messages of a launch past its record's time, only while the launch is still past it. */

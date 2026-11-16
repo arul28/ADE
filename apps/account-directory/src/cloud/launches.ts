@@ -44,12 +44,12 @@ import type { ServerGitCheck } from "./accountVault";
 import {
   LAUNCH_MESSAGE_ID,
   accountLaunchMessagesStatement,
-  deleteLaunchMessagesStatement,
   dropFirstMessageStatement,
   expiredLaunchMessagesStatement,
   failQueuedMessagesStatement,
   firstMessageDeliveredStatement,
   firstMessageStatement,
+  refusedStartMessagesStatement,
   routeLaunchMessages,
 } from "./launchMessages";
 
@@ -718,10 +718,13 @@ export async function startServerLaunch(
 
   // The first message is row 1 of the launch's messages: sent once, as the chat's first message.
   // A draft's earlier start that was refused may have left one: the start that turned the
-  // draft into the launch replaces it with its prompt; any other start keeps what is there.
+  // draft into the launch replaces it with its prompt, and so does a Retry (its prompt or
+  // model may have changed, and the failed attempt's row 1 can't be delivered); any other
+  // start keeps what is there.
   if (parsed.chat) {
     const first = firstMessageStatement(env, launchId, userId, parsed.chat, now);
     if (claimedDraft) await env.DB.batch([dropFirstMessageStatement(env, launchId), first]);
+    else if (options.restarted) await env.DB.batch([dropFirstMessageStatement(env, launchId, "retry"), first]);
     else await first.run();
   }
 
@@ -774,16 +777,20 @@ export async function startServerLaunch(
     // back to what it was (a draft keeps its files), so the same start can be
     // sent again once the reason is gone. A create still in flight keeps it.
     if (outcome.kind === "refused") {
+      // One batch, messages first: they go only while the launch is still this unmade start.
       if (existing?.state === "draft") {
-        const restored = await env.DB.prepare(`
-          update cloud_launches set state = 'draft', expires_at = ?, updated_at = ? where launch_id = ? and state = 'making' and instance_id is null
-        `).bind(existing.expires_at, now, launchId).run();
         // Its first message goes too; the next start writes its own.
-        if ((restored.meta?.changes ?? 0) === 1) await dropFirstMessageStatement(env, launchId).run();
+        await env.DB.batch([
+          refusedStartMessagesStatement(env, launchId, "first"),
+          env.DB.prepare("update cloud_launches set state = 'draft', expires_at = ?, updated_at = ? where launch_id = ? and state = 'making' and instance_id is null")
+            .bind(existing.expires_at, now, launchId),
+        ]);
       } else {
-        const gone = await env.DB.prepare("delete from cloud_launches where launch_id = ? and state = 'making' and instance_id is null").bind(launchId).run();
-        // Its first message goes with it; the same start sent again writes it again.
-        if ((gone.meta?.changes ?? 0) === 1) await deleteLaunchMessagesStatement(env, launchId).run();
+        // Its messages go with it; the same start sent again writes them again.
+        await env.DB.batch([
+          refusedStartMessagesStatement(env, launchId, "all"),
+          env.DB.prepare("delete from cloud_launches where launch_id = ? and state = 'making' and instance_id is null").bind(launchId),
+        ]);
       }
     }
     return createAnswerOf(outcome);
@@ -891,6 +898,8 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
   const signInJson = state === "waiting_for_sign_in" ? JSON.stringify(signIn) : null;
   // A finished launch stays finished: a report that left the computer before the last one can land after it.
   if (row.state === "done" && state !== "done") return fail("launch_closed", "This launch already finished.", 409);
+  // A launch the server ended (no join, no sign-in) is having its computer deleted: a late report doesn't revive it.
+  if (row.state === "failed" && serverEnded(row.error) && state !== "failed") return fail("launch_closed", "This launch isn't running.", 409);
   const sessionId = body.sessionId === undefined ? undefined : shortString(body.sessionId, 120);
   const error = body.error === undefined ? undefined : clippedText(body.error, 400);
   const written = await env.DB.prepare(`
@@ -903,6 +912,7 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
       sign_in_json = case when ? is not null then ? else sign_in_json end,
       updated_at = ?
     where launch_id = ? and instance_id = ? and state not in ('cancelled', 'retrying') and (state <> 'done' or ? = 'done')
+      and (state <> 'failed' or coalesce(error, '') not in (?, ?) or ? = 'failed')
   `).bind(
     state, stages ? JSON.stringify(stages) : null,
     sessionId !== undefined ? 1 : 0, sessionId ?? null,
@@ -910,6 +920,7 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
     state,
     state, signInJson,
     now, row.launch_id, row.instance_id, state,
+    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, state,
   ).run();
   // Only the computer this report was checked against, and never into a Retry
   // that claimed the launch since this request read it.
@@ -1209,6 +1220,8 @@ const UNJOINED_PER_TICK = 20;
 const SIGN_IN_WAIT_MS = 45 * 60_000;
 /** The computer's own timeout reports the same error, so both end the same way. */
 const SIGN_IN_NEVER_FINISHED = CLOUD_LAUNCH_SIGN_IN_TIMED_OUT;
+/** The server's own endings: the computer is deleted after them, so no report brings the launch back. */
+const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || error === SIGN_IN_NEVER_FINISHED;
 
 /**
  * Launches whose computer never signed in, past the join window and a grace:

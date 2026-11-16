@@ -55,11 +55,18 @@ type BlockSummary = { computers: number; stopped: number; failed: number; subscr
  */
 export async function enforceBlockOnComputer(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number): Promise<void> {
   if (isPendingId(computer.instance_id)) return;
+  // Read now, not from the caller's list: an unblock since then must not be undone.
+  if (!(await isCloudBlocked(env, computer.user_id))) return;
   if (computer.network_denied_at == null) {
     let denied = false;
     try {
       await provider.setNetworkPolicy(computer.instance_id, "deny-all");
       denied = true;
+      // An unblock that landed while the deny was on its way: the internet goes back on.
+      if (!(await isCloudBlocked(env, computer.user_id))) {
+        await reopenComputer(env, provider, computer, now);
+        return;
+      }
     } catch (error) {
       // `try_again`: the policy is saved and lands within two minutes. Anything else: the stop below still runs.
       if (error instanceof CloudProviderError && error.code === TRY_AGAIN_CODE) denied = true;
@@ -111,19 +118,57 @@ export async function enforceBlockAfterCreate(env: CloudEnv, provider: CloudProv
  * (each tried again at most every `STOPPED_DENY_RETRY_MS`).
  */
 export async function enforceBlocksInTick(env: CloudEnv, provider: CloudProvider, computers: ComputerRow[], now: number): Promise<void> {
-  const blocked = await blockedUsersAmong(env, computers.map((computer) => computer.user_id));
-  if (blocked.size === 0) return;
-  const mine = computers.filter((computer) => blocked.has(computer.user_id) && !isPendingId(computer.instance_id));
+  const real = computers.filter((computer) => !isPendingId(computer.instance_id));
+  const blocked = await blockedUsersAmong(env, real.map((computer) => computer.user_id));
+  const retryDue = (computer: ComputerRow) => computer.network_deny_tried_at == null || now - computer.network_deny_tried_at >= STOPPED_DENY_RETRY_MS;
+  const mine = real.filter((computer) => blocked.has(computer.user_id));
   const running = mine.filter((computer) => computer.status !== "stopped");
-  const stoppedOpen = mine.filter((computer) => computer.status === "stopped" && computer.network_denied_at == null
-    && (computer.network_deny_tried_at == null || now - computer.network_deny_tried_at >= STOPPED_DENY_RETRY_MS));
-  const due = [...running, ...stoppedOpen];
+  const stoppedOpen = mine.filter((computer) => computer.status === "stopped" && computer.network_denied_at == null && retryDue(computer));
+  // Longest since its last try first, so computers that keep failing don't hold the others' turn.
+  const lastTry = (computer: ComputerRow) => computer.network_deny_tried_at ?? 0;
+  const due = [...running.sort((a, b) => lastTry(a) - lastTry(b)), ...stoppedOpen.sort((a, b) => lastTry(a) - lastTry(b))];
   for (const computer of due.slice(0, TICK_ENFORCE_LIMIT)) {
     try {
       await enforceBlockOnComputer(env, provider, computer, now);
     } catch (error) {
       reportCloudFailure("cloud.block_tick_stop_failed", { userId: computer.user_id, instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+      await env.DB.prepare("update cloud_computers set network_deny_tried_at = ? where instance_id = ?").bind(now, computer.instance_id).run()
+        .catch((noteError: unknown) => reportCloudFailure("cloud.block_network_note_failed", { instanceId: computer.instance_id, message: noteError instanceof Error ? noteError.message : String(noteError) }));
     }
+  }
+  // An unblock whose `allow-all` didn't land: its computers still carry the deny mark, so they get the internet back here (hourly).
+  const reopen = real.filter((computer) => !blocked.has(computer.user_id) && (computer.network_denied_at != null || computer.network_deny_tried_at != null) && retryDue(computer));
+  for (const computer of reopen.slice(0, TICK_ENFORCE_LIMIT)) {
+    await reopenComputer(env, provider, computer, now);
+  }
+}
+
+/**
+ * Gives an unblocked account's computer the internet back and clears its deny
+ * marks. A failure keeps the marks (with the try's time), so the tick tries
+ * again an hour later. Never throws. True when the policy is back.
+ */
+async function reopenComputer(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number): Promise<boolean> {
+  try {
+    // Read now: a block that came back since the caller looked keeps the internet off.
+    if (await isCloudBlocked(env, computer.user_id)) return false;
+    try {
+      await provider.setNetworkPolicy(computer.instance_id, "allow-all");
+    } catch (error) {
+      // `try_again`: the policy is saved and lands within two minutes, as with the block's deny.
+      if (!(error instanceof CloudProviderError && error.code === TRY_AGAIN_CODE)) {
+        reportCloudFailure("cloud.unblock_network_failed", { userId: computer.user_id, instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+        await env.DB.prepare("update cloud_computers set network_deny_tried_at = ? where instance_id = ?").bind(now, computer.instance_id).run();
+        return false;
+      }
+    }
+    await env.DB.prepare("update cloud_computers set network_denied_at = null, network_deny_tried_at = null where instance_id = ?").bind(computer.instance_id).run();
+    computer.network_denied_at = null;
+    computer.network_deny_tried_at = null;
+    return true;
+  } catch (error) {
+    reportCloudFailure("cloud.unblock_network_note_failed", { instanceId: computer.instance_id, message: error instanceof Error ? error.message : String(error) });
+    return false;
   }
 }
 
@@ -215,18 +260,9 @@ export async function unblockAccount(env: CloudEnv, provider: CloudProvider | nu
   const removed = await env.DB.prepare("delete from cloud_blocks where user_id = ?").bind(userId).run();
   let reopened = 0;
   if (provider) {
+    // One that fails keeps its deny marks: the minute tick tries it again.
     for (const computer of (await listComputers(env, userId)).filter((row) => !isPendingId(row.instance_id))) {
-      try {
-        await provider.setNetworkPolicy(computer.instance_id, "allow-all");
-      } catch (error) {
-        // `try_again`: the policy is saved and lands within two minutes, as with the block's deny.
-        if (!(error instanceof CloudProviderError && error.code === TRY_AGAIN_CODE)) {
-          reportCloudFailure("cloud.unblock_network_failed", { userId, instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-          continue;
-        }
-      }
-      await env.DB.prepare("update cloud_computers set network_denied_at = null, network_deny_tried_at = null where instance_id = ?").bind(computer.instance_id).run();
-      reopened += 1;
+      if (await reopenComputer(env, provider, computer, now)) reopened += 1;
     }
   }
   logCloud("cloud.account_unblocked", { userId, removed: removed.meta.changes ?? 0, reopened });

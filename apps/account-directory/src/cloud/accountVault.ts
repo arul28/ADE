@@ -169,14 +169,16 @@ export type ServerGitCheck = { ok: true } | { ok: false; code: "git_credential_m
  * read of `GET /repos/{owner}/{repo}` with the App's user token. A user
  * token sees a private repository only where the App is installed with it,
  * so 200 is yes and 404 is "not installed there". A public repository
- * answers 200 either way; it clones without the App. Never throws.
+ * answers 200 either way; it clones without the App. `off`: no App here (or
+ * no repository to ask about). `unknown`: the App was asked and didn't answer
+ * clearly. Never throws.
  */
-async function githubAppRepoAccess(env: GithubAppEnv, userId: string, origin: string): Promise<"ok" | "not_installed" | "not_connected" | "unknown"> {
+async function githubAppRepoAccess(env: GithubAppEnv, userId: string, origin: string): Promise<"ok" | "not_installed" | "not_connected" | "unknown" | "off"> {
   const [, owner, repo] = origin.split("/");
-  if (!owner || !repo) return "unknown";
+  if (!owner || !repo) return "off";
   try {
     const rt = await githubAppRuntime(env);
-    if (!rt) return "unknown";
+    if (!rt) return "off";
     const outcome = await serveToken(rt, userId, { rejectedSha256: null });
     if (outcome.kind === "not_connected" || outcome.kind === "needs_reauth") return "not_connected";
     if (outcome.kind !== "token") return "unknown";
@@ -218,8 +220,9 @@ export async function serverGitCheck(env: RelayEnv & GithubAppEnv, authorization
     logCloud("cloud.git_check_app_not_installed_public", {});
     return { ok: true };
   }
-  if (facts.git === "unknown") {
-    logCloud("cloud.git_check_unknown", { reason: "vault" });
+  if (facts.git === "unknown" || app === "unknown") {
+    // Inconclusive: the vault or the App may hold access, so the launch goes on.
+    logCloud("cloud.git_check_unknown", { reason: facts.git === "unknown" ? "vault" : "github_app" });
     return { ok: true };
   }
   const visibility = await githubRepoVisibility(origin);

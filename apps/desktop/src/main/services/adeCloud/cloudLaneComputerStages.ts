@@ -326,7 +326,8 @@ export function createCloudLaneComputerStages(
     const computerMade = Boolean(server.instanceId) && state !== "making";
     show("computer", computerMade ? "done" : "running", computerWords(record));
     if (!computerMade) return;
-    const joined = state === "joined" || state === "running" || state === "done" || reported.get("join")?.status === "done";
+    // Waiting on a sign-in comes after the join: the computer is in the account already.
+    const joined = state === "joined" || state === "waiting_for_sign_in" || state === "running" || state === "done" || reported.get("join")?.status === "done";
     if (!joined) {
       const approval = state === "needs_approval" ? server.approval : null;
       if (approval?.url) record.snapshot.cloud.approvalUrl = approval.url;
@@ -340,7 +341,9 @@ export function createCloudLaneComputerStages(
     show("clone", clone?.status === "done" ? "done" : "running", clone?.detail?.trim() || repository);
     // The computer waits for the chat's provider sign-in: the card shows the link and code.
     const waiting = state === "waiting_for_sign_in" ? server.signIn ?? null : null;
-    const signIn = waiting ? { label: waiting.label, url: waiting.url, userCode: waiting.userCode, reason: waiting.reason } : null;
+    const signIn = waiting
+      ? { label: waiting.label, url: waiting.url, userCode: waiting.userCode, reason: waiting.reason, jobId: waiting.jobId ?? null, needsPastedCode: waiting.needsPastedCode === true }
+      : null;
     if (JSON.stringify(record.snapshot.cloud.signIn ?? null) !== JSON.stringify(signIn)) {
       if (signIn) record.snapshot.cloud.signIn = signIn;
       else delete record.snapshot.cloud.signIn;

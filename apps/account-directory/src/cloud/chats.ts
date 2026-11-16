@@ -317,7 +317,9 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
   if (seq <= lastSeq) {
     const stored = await bucket.head(key);
     if (stored?.customMetadata?.digest === digest) {
-      // The same part again: nothing to write. Its answer is what the computer missed.
+      // The same part again: nothing to write. Its answer is what the computer missed. A first-chat
+      // note that failed on the first try is tried again here (it is a conditional write).
+      await noteFirstCloudChat(env, userId, now, waitUntil);
       return json({ ok: true, lastSeq } satisfies CloudChatPartResponse);
     }
     if (seq !== lastSeq) {

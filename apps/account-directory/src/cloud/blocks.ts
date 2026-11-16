@@ -192,10 +192,21 @@ export async function claimCardForFreeUnlock(env: CloudEnv, userId: string, fing
 
 /* ---- Owner alerts ---- */
 
-/** Takes `key` for one alert. False when it was taken already: the event was alerted. */
+/** A claim this old with no `sent_at` belongs to a try that died before it sent or gave the key back. */
+const ABANDONED_ALERT_CLAIM_MS = 30 * 60_000;
+
+/**
+ * Takes `key` for one alert. False when it was taken already: the event was
+ * alerted, or another try is sending it now. A claim left unsent for
+ * {@link ABANDONED_ALERT_CLAIM_MS} (its give-back failed too) is taken over,
+ * so a database hiccup can't silence the alert for good.
+ */
 async function claimAlertKey(env: CloudDb, key: string, kind: string, userId: string | null, now: number): Promise<boolean> {
-  const result = await env.DB.prepare("insert into cloud_owner_alerts (alert_key, kind, user_id, created_at) values (?, ?, ?, ?) on conflict do nothing")
-    .bind(key, kind, userId, now).run();
+  const result = await env.DB.prepare(`
+    insert into cloud_owner_alerts (alert_key, kind, user_id, created_at) values (?, ?, ?, ?)
+    on conflict (alert_key) do update set created_at = excluded.created_at
+    where cloud_owner_alerts.sent_at is null and cloud_owner_alerts.created_at < ?
+  `).bind(key, kind, userId, now, now - ABANDONED_ALERT_CLAIM_MS).run();
   return (result.meta.changes ?? 0) === 1;
 }
 
@@ -315,8 +326,8 @@ export async function sendOwnerAlert(env: OwnerAlertEnv, alert: OwnerAlert, now:
     ].join("\n");
     const result = await sendCloudEmail(env, { owner: true, subject: alert.subject, text });
     if (result === "failed") {
-      claimed = false;
       await giveBackAlertKey(env, alert.key);
+      claimed = false;
       return;
     }
     await env.DB.prepare("update cloud_owner_alerts set sent_at = ? where alert_key = ?").bind(now, alert.key).run();

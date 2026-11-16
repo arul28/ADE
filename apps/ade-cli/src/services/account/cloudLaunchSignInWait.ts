@@ -131,11 +131,16 @@ export async function waitForProviderSignIn(
   if (await readiness(true) !== "missing") return { kind: "ready", waited: false };
   const row = cloudRemoteSignInOf(provider);
   const remoteSignIn = row && cloudRemoteSignInRuns(row) ? deps.remoteSignIn : undefined;
+  // A start that threw (the runner wasn't ready): tried again at each refresh, a few times.
+  let startFailed = false;
+  let startRetries = 0;
   const start = async (): Promise<CloudLaunchSignIn> => {
+    startFailed = false;
     if (!remoteSignIn) return signInOf(provider, null, null);
     try {
       return signInOf(provider, await remoteSignIn.start(provider), null);
     } catch (error) {
+      startFailed = true;
       logger.warn("cloud_boot_launch.sign_in_start_failed", { launchId, provider, error: errorText(error) });
       return signInOf(provider, null, errorText(error).slice(0, 300));
     }
@@ -175,6 +180,10 @@ export async function waitForProviderSignIn(
     }
     if (Date.now() >= nextRefresh) {
       nextRefresh = Date.now() + SIGN_IN_REFRESH_MS;
+      if (startFailed && startRetries < SIGN_IN_RESTARTS) {
+        startRetries += 1;
+        signIn = await start();
+      }
       // A key or a desktop sign-in has no job to poll: a report that didn't land goes again here.
       if (!signIn.jobId) await show();
       await deps.refreshVault?.().catch((error: unknown) => logger.warn("cloud_boot_launch.vault_refresh_failed", { launchId, error: errorText(error) }));
