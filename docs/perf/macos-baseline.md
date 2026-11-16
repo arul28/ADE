@@ -683,7 +683,43 @@ you add a poll, a timer, a spawn, a read or a background job.
 - **No `spawnSync` on the main thread of Electron.** A `launchctl` call on
   every status poll older than 2 s blocked the main thread. A `ps` spawn
   every 10 s for one number in the top bar cost a process each time. Cache the
-  answer, or compute it from data the app already holds.
+  answer, or compute it from data the app already holds. A status read that
+  runs only once must also be async: the sync `launchctl` and `osascript`
+  read of the brain service took about 13 ms inside the wait of the first
+  window. Main now uses `getRuntimeServiceStatusAsync`.
+- **A helper that starts on first use also stops when idle.** If the app
+  starts a child process or helper on demand, it must stop that helper when no
+  caller needs it. Found: `ade-desktop-driver` ran until the brain quit, one
+  for each project and one for the window recorder, at 28-55 MB RSS each. The
+  brain's idle release now stops them.
+- **A full walk must not go through an LRU smaller than the walk.** Each read
+  pushes out an entry that the same walk needs later, so the cache never hits.
+  Found: the roster read 2,012 chats through a 1,000-entry cache every 15 s,
+  and up to once a second while a chat streams: 0 hits, 33-35 ms each time. A
+  cache of the small fact, keyed on the file stamp, takes 3-4 ms. Size the
+  cache for the walk, or keep only the fact that the walk needs.
+- **A heavy SDK loads on first use.** Do not import a provider SDK statically
+  in a module that the app builds at start. Found: every brain loaded the
+  Claude Agent SDK at start, with or without a Claude chat (51-54 ms, about
+  5 MB of heap). `claudeSdkLoader.ts` now loads it on the first query, prewarm
+  or keystroke, as the Droid and Cursor loaders do.
+- **A cache that is written only on exit is lost on a kill.** Also write it at
+  a known good point. Found: Node writes its compile cache only on a normal
+  exit, so a brain stopped by SIGKILL compiled `cli.cjs` cold again at the
+  next start (207 ms cold, 27 ms warm). The brain now calls
+  `flushActiveCompileCache()` once it listens, which costs about 1 ms.
+- **A package that Vite bundles must not ship in the app archive too.** Put a
+  package that only the renderer bundle uses in `devDependencies`. Found:
+  `posthog-js` was in the renderer bundle and also in `dependencies`. It added
+  about 5,400 entries and 31.5 MB to the app archive, and the archive header
+  took twice as long to load at launch.
+- **A bundle imports each Node built-in once.** A CommonJS bundle wraps each
+  `import fs from "node:fs"` in its own `__toESM(require())` object, with one
+  getter for each export of the module. Found: Electron main had 1,265 of these
+  wrappers, about 63,000 getters and 4 MB of heap, made again at every launch.
+  The esbuild plugin `scripts/build/sharedNodeBuiltins.ts` gives each built-in
+  one wrapper for each bundle. Add it to the config of each new CommonJS
+  bundle.
 - **A periodic job gets its own small entry point.** The brain watchdog ran
   the full 28.8 MB CLI bundle every minute (0.58 s CPU, 243 MB). The small
   entry `watchdogCheck.cjs` costs 0.06 s and 75 MB. Never run the full CLI for
