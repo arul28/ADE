@@ -25,7 +25,7 @@ export type ActivitySectionDescriptor = {
   order: number;
 };
 
-export const ACTIVITY_SECTION_DESCRIPTORS = ACTIVITY_COLUMNS.map(
+const ACTIVITY_SECTION_DESCRIPTORS = ACTIVITY_COLUMNS.map(
   (id, order) => ({ id, label: ACTIVITY_COLUMN_PRESENTATION[id].label, order }),
 ) as readonly ActivitySectionDescriptor[];
 

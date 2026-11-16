@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { openKvDb, type AdeDb } from "../state/kvDb";
+import { type AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   claimDraft,
   claimScheduledDraft,
@@ -68,7 +69,7 @@ describe("draftService", () => {
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-drafts-"));
     fs.mkdirSync(path.join(root, ".ade", "artifacts"), { recursive: true });
-    db = await openKvDb(path.join(root, ".ade", "ade.db"), createLogger() as never);
+    db = await openFreshKvDb(path.join(root, ".ade", "ade.db"), createLogger() as never);
   });
 
   beforeEach(() => {

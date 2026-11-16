@@ -21,7 +21,7 @@ import "./dialog.css";
  */
 
 export type DialogSize = "sm" | "md" | "lg";
-export type DialogLayer = "dialog" | "nestedDialog";
+export type DialogLayer = "dialog" | "nestedDialog" | "dialogOverToasts";
 /**
  * `center` is the modal. `right` is a side sheet: full height, docked to the
  * window's right edge, floating over the page rather than pushing it aside, for
@@ -33,8 +33,8 @@ export type DialogPlacement = "center" | "right" | "top";
 
 const SIZE_WIDTH: Record<DialogSize, number> = { sm: 400, md: 520, lg: 720 };
 
-/** The scrim: one tint, one blur, everywhere. */
-const DIALOG_SCRIM_STYLE: CSSProperties = {
+/** The scrim: one tint, one blur, everywhere (the command palette uses it too). */
+export const DIALOG_SCRIM_STYLE: CSSProperties = {
   position: "fixed",
   inset: 0,
   background: "rgba(6, 5, 10, 0.58)",
@@ -149,7 +149,11 @@ export type DialogProps = {
   returnFocus?: boolean;
   /** Override the default return-focus behavior on close. */
   onCloseAutoFocus?: (event: Event) => void;
-  /** `nestedDialog` for a dialog raised from inside another dialog. */
+  /**
+   * `nestedDialog` for a dialog raised from inside another dialog.
+   * `dialogOverToasts` for a dialog that raises no toasts of its own and must
+   * not be covered by them (the report dialog, opened from an error toast).
+   */
   layer?: DialogLayer;
   /** Aria role. `alertdialog` for confirmations. */
   role?: "dialog" | "alertdialog";

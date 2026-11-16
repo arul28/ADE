@@ -17,9 +17,9 @@ export const CTO_INTRO_ONBOARDING_STEP = "intro";
  * honest about what happened and costs nothing extra.
  */
 export const CTO_INTRO_PROMPT = [
-  "Introduce yourself: who you are, what you can do for me in this project, and how your memory works across model switches.",
-  "Then scan the project and tell me what you actually see — lanes, open PRs, anything blocked — and what you would look at first.",
-  "Keep it short.",
+  "Introduce yourself in at most three short sentences: who you are and what you can do for me here.",
+  "Then look at the project and give me at most three bullets on what you actually see (lanes, open PRs, anything blocked) and what you would look at first.",
+  "No headings, no ids, no closing offer.",
 ].join(" ");
 
 export function buildCtoCapabilityManifest(): string {
@@ -54,6 +54,10 @@ export function buildCtoCapabilityManifest(): string {
     "- Never say a thing cannot be done because you lack a tool for it until you have checked loadCtoTools for the pack that would own it.",
     "- Secret VALUES are not readable by any tool you have, by design. You can list secret names; the user reads values themselves in Settings.",
     "- Destructive tools (deleting an automation rule, cancelling scheduled work, replacing an existing rule) ask the user to confirm before they run. Expect the pause.",
+    "- When the person writes while you are working and asks something or changes the plan, answer in one or two sentences with replyNow, then keep working. Do not save that answer for your final reply, do not repeat it there either, and do not use replyNow for progress updates.",
+    "- Act on asks, not on mentions. When the person shares a goal or a plan without asking you to do it, offer to start in one short line. Work that pushes, opens or merges a PR, or posts anywhere outside ADE starts only when they asked for it.",
+    "- Stay reachable: start any shell command that may take more than a few seconds in the background (your shell tool's background option), so a message the person sends meanwhile reaches you at once. This holds even when you are asked to wait for it: waiting means waiting for its completion notice, not blocking on it.",
+    "- When a command you moved to the background finishes and you already reported its result, say nothing more about it; if a reply is required, use at most three words.",
     "",
     "# Other machines",
     "",
@@ -72,32 +76,3 @@ export function buildCtoCapabilityManifest(): string {
     "- Ask: fix the flaky login test on my MacBook → spawnChat({ machine: 'MacBook', title, initialPrompt }).",
   ].join("\n");
 }
-
-/**
- * Onboarding step id recording that the nightly memory gardener job was
- * created. It is the idempotency key, not a UI step: once it is set the job is
- * never created again, so a user who pauses or deletes the job keeps that
- * decision instead of having ADE quietly re-arm it on the next CTO open.
- */
-export const CTO_MEMORY_GARDENER_ONBOARDING_STEP = "memory_gardener";
-
-/** Title shown for the gardener in Chat Info's scheduled-work list. */
-export const CTO_MEMORY_GARDENER_TITLE = "Nightly memory gardening";
-
-/**
- * 03:30 in the ADE brain machine's local timezone — after the day's work has
- * settled and before anyone is reading the morning briefing.
- */
-export const CTO_MEMORY_GARDENER_CRON = "30 3 * * *";
-
-/** Id prefix of the gardener's scheduled row; the suffix is the CTO session id. */
-export const CTO_MEMORY_GARDENER_ID_PREFIX = "cto-memory-gardener:";
-
-/**
- * What Chat Info shows for the gardener's row. It is a description, not a
- * prompt: when the row fires, ADE runs the gardening itself on the cheap
- * helper model and sends the CTO nothing. Rows created before that change
- * still carry the old prompt text, and are run the same way.
- */
-export const CTO_MEMORY_GARDENER_DESCRIPTION =
-  "Nightly memory gardening, run by ADE on the cheap helper model, not as a CTO turn: merge facts that say the same thing, retire facts the log shows are no longer true, and file anything durable from the last two days' log. Skipped when nothing was logged.";

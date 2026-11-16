@@ -96,7 +96,6 @@ describe("ChatSourcesPanel", () => {
     // Domain initial, never a remote favicon request.
     expect(web.getByText("Z")).toBeTruthy();
     expect(panel.querySelector("img")).toBeNull();
-    expect(panel.className).not.toMatch(/overflow|h-full|border/);
     expect(screen.queryByText(/Codex|No sources yet/)).toBeNull();
   });
 

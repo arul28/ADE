@@ -593,8 +593,9 @@ matters here; each step below came from a release that waited on CI.
   such as open PRs' CI and the release-notes commit's own push run (the tag
   borrows its parent's result). Restart the PR runs after the tag. A cancelled
   run reports `ci-pass` as **failure**, not cancelled; `verify` still walks past
-  it to the parent because only a failed `validate-docs` blocks a notes-only
-  commit.
+  it to the parent, because on a notes-only commit only CI's `docs` job counts:
+  it blocks when that job failed, was skipped or has no check run, and a
+  cancelled `docs` job walks on.
 - **Do not wait on the notes commit's own CI.** Once the parent's `ci-pass` is
   green, tag. Waiting a second full CI round on a notes-only commit is what
   turned a 30-minute release into an hour.
@@ -1368,9 +1369,11 @@ if a Pages deploy ever behaves differently by hand than in CI, check that first.
 
 What each entry point actually guards, so you know what you lose by bypassing it:
 
-- `apps/account-directory` `deploy:production` = `verify-deployment-config.mjs production`
-  (asserts `DIRECTORY_AUTH_SECRET` is bound and `PUSH_RELAY_URL` is set **for that
-  environment**) → `d1:migrate:production` → `wrangler deploy --env production`.
+- `apps/account-directory` `deploy:production` = `deploy:production:prepare`
+  (`verify-deployment-config.mjs production`, which asserts `DIRECTORY_AUTH_SECRET`
+  is bound and `PUSH_RELAY_URL` is set **for that environment**, then
+  `d1:migrate:production`) → `deploy:production:upload` (`wrangler deploy --env
+  production`). CI runs the two parts as two steps and retries only the upload.
   **Known coverage gap:** that preflight checks one of the four secrets and one
   of the four vars. `CLERK_JWKS_URL`, `CLERK_ISSUER`, `CLERK_OAUTH_CLIENT_ID`,
   `ONLINE_WINDOW_MS`, `WEB_CLIENT_ORIGIN`, and

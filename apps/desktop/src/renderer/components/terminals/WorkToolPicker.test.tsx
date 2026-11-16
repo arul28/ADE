@@ -1,27 +1,83 @@
 /* @vitest-environment jsdom */
 
+import type { ReactNode } from "react";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { WorkSidebarTab } from "../../state/appStore";
 import { WorkToolPicker } from "./WorkToolPicker";
-import {
-  IOS_RUNTIME_UNSUPPORTED_REASON,
-  WORK_TOOL_DEFINITIONS,
-  type WorkToolContext,
-} from "./workTools";
+import type { WorkToolContext } from "./workTools";
 import type { WorkToolStatusMap } from "./useWorkToolStatuses";
+import { useWorkToolCatalog } from "./useWorkToolCatalog";
 
 const LOCAL: WorkToolContext = {
   supportsIosSimulator: true,
   isWebClient: false,
 };
 
-/** Every tool but Side chat, which has a card only while the chat has one. */
-const ALWAYS_LISTED_TOOLS = WORK_TOOL_DEFINITIONS.filter((definition) => definition.id !== "side-chat");
+/** One card per tool, Screen standing for Mac and Windows Desktop; Side chat only with a side chat. */
+const ALWAYS_LISTED_CARD_COUNT = 10;
+const NO_ACTIVITY = { byTool: {}, remoteShellsRunning: 0 } as const;
 
+/** The picker over the catalogue the pane builds, from a tool context and statuses. */
+function Picker({
+  context,
+  statuses,
+  hasSideChat = false,
+  activeTool = null,
+  loading = false,
+  onPick,
+  playing,
+  cardActions,
+}: {
+  context: WorkToolContext;
+  statuses: WorkToolStatusMap;
+  hasSideChat?: boolean;
+  activeTool?: WorkSidebarTab | null;
+  loading?: boolean;
+  onPick: (tool: WorkSidebarTab) => void;
+  playing?: boolean;
+  cardActions?: Partial<Record<WorkSidebarTab, ReactNode>>;
+}) {
+  const tiles = useWorkToolCatalog({
+    context,
+    statuses,
+    machines: [],
+    sources: null,
+    deviceMachines: {},
+    activity: NO_ACTIVITY,
+    probes: {},
+    remoteWork: null,
+    panelSessionId: "chat-1",
+    hasSideChat,
+    appControlSession: null,
+    iosSession: null,
+    browserStatus: null,
+    heldTool: null,
+  });
+  return (
+    <WorkToolPicker
+      activeTool={activeTool}
+      loading={loading}
+      onPick={onPick}
+      playing={playing}
+      cardActions={cardActions}
+      catalog={{ tiles, leftovers: [], cleaningUp: false, onCleanUp: null }}
+    />
+  );
+}
+
+/** A card's open control, by the name on the card. */
 function cardFor(label: string): HTMLButtonElement {
   const card = screen.getByText(label).closest("button");
   if (!card) throw new Error(`No picker card for ${label}`);
   return card as HTMLButtonElement;
+}
+
+/** The whole card (open control, lines and rail), by its tool. */
+function cardBody(label: string): HTMLElement {
+  const body = cardFor(label).closest<HTMLElement>("[data-tool-card]");
+  if (!body) throw new Error(`No card body for ${label}`);
+  return body;
 }
 
 /** By id, for the cases that walk the catalogue rather than name a tool. */
@@ -46,80 +102,25 @@ describe("WorkToolPicker", () => {
 
   afterEach(cleanup);
 
-  it("paints the backdrop from outside the scroll container", () => {
-    render(
-      <WorkToolPicker
-        activeTool={null}
-        context={LOCAL}
-        statuses={{}}
-        loading={false}
-        onPick={vi.fn()}
-      />,
-    );
-
-    const backdrop = document.querySelector("[data-backdrop]");
-    const scroller = document.querySelector("[data-tool-picker-scroll]");
-    expect(backdrop).toBeTruthy();
-    expect(scroller).toBeTruthy();
-    // `inset: 0` inside a scroller resolves against the scroll ORIGIN, so a
-    // pane too short for the column would scroll the mesh off the top and show
-    // bare chrome underneath the rest of the cards.
-    expect(scroller?.contains(backdrop as Node)).toBe(false);
-    expect(backdrop?.parentElement).toBe(scroller?.parentElement);
-    // Still behind the cards: painted first, so the scrolling column sits on
-    // top of it without needing a z-index.
-    expect(backdrop?.nextElementSibling).toBe(scroller);
-    expect(document.querySelector("[data-tool-picker-scrim]")).toBeNull();
-  });
-
-  it("renders an untitled column of cards, each with its live status line", () => {
-    const statuses: WorkToolStatusMap = {
-      terminal: { line: "2 shells", live: true },
-      browser: { line: "3 tabs · agent", live: true },
-    };
-    render(
-      <WorkToolPicker
-        activeTool={null}
-        context={LOCAL}
-        statuses={statuses}
-        loading={false}
-        onPick={vi.fn()}
-      />,
-    );
-
-    // No title and no subline: the tab strip above the page already says
-    // "Tools", and six labelled cards do not need introducing.
-    expect(screen.queryByRole("heading", { name: "Tools" })).toBeNull();
-    expect(screen.queryByText("Pick what this lane works with")).toBeNull();
-
-    expect(screen.getAllByRole("button")).toHaveLength(ALWAYS_LISTED_TOOLS.length);
-    expect(screen.getByText("2 shells")).toBeTruthy();
-    expect(screen.getByText("3 tabs · agent")).toBeTruthy();
-    expect(document.querySelector('button[data-tool-id="side-chat"]')).toBeNull();
-  });
-
   it("offers the Side chat card only for a chat that has a side chat", () => {
     render(
-      <WorkToolPicker
-        activeTool={null}
-        context={{ ...LOCAL, hasSideChat: true }}
+      <Picker
+        context={LOCAL}
+        hasSideChat
         statuses={{}}
-        loading={false}
         onPick={vi.fn()}
       />,
     );
     expect(cardById("side-chat")).toBeTruthy();
-    expect(screen.getAllByRole("button")).toHaveLength(ALWAYS_LISTED_TOOLS.length + 1);
+    expect(document.querySelectorAll("button[data-tool-id]")).toHaveLength(ALWAYS_LISTED_CARD_COUNT + 1);
     expect(screen.getByText("Side chat")).toBeTruthy();
   });
 
   it("falls back to a short description only when a tool has measured nothing", () => {
     render(
-      <WorkToolPicker
-        activeTool={null}
+      <Picker
         context={LOCAL}
         statuses={{ git: { line: "Clean", live: false } }}
-        loading={false}
         onPick={vi.fn()}
       />,
     );
@@ -138,22 +139,20 @@ describe("WorkToolPicker", () => {
   it("shows the reason on a tool that cannot run here and refuses the click", () => {
     const onPick = vi.fn();
     render(
-      <WorkToolPicker
-        activeTool={null}
+      <Picker
         // A cloud lane: the tool exists, but this lane cannot reach it. (A host
         // that can never run a tool hides the card instead.)
         context={{ ...LOCAL, cloudLane: "devin" }}
         statuses={{}}
-        loading={false}
         onPick={onPick}
       />,
     );
 
-    const ios = cardFor("Apple Development");
+    const ios = cardFor("Apple Simulators");
     expect(ios.disabled).toBe(true);
     // The reason replaces the hint rather than joining it.
-    expect(within(ios).getByText(/lives on Devin Cloud/)).toBeTruthy();
-    expect(within(ios).queryByText("Open an Apple device")).toBeNull();
+    expect(within(cardBody("Apple Simulators")).getByText(/lives on Devin Cloud/)).toBeTruthy();
+    expect(within(cardBody("Apple Simulators")).queryByText("Open an Apple device")).toBeNull();
     // The unavailable tool stays visible, but cannot be selected.
     fireEvent.click(ios);
     expect(onPick).not.toHaveBeenCalled();
@@ -162,11 +161,9 @@ describe("WorkToolPicker", () => {
   it("keeps the browser, Apple, and App Control clickable on a remote session", () => {
     const onPick = vi.fn();
     render(
-      <WorkToolPicker
-        activeTool={null}
+      <Picker
         context={LOCAL}
         statuses={{}}
-        loading={false}
         onPick={onPick}
       />,
     );
@@ -180,7 +177,7 @@ describe("WorkToolPicker", () => {
 
     // Apple runs its helper on the bound runtime, so a remote Mac is a live
     // viewer rather than a local-only miss.
-    expect(cardFor("Apple Development").disabled).toBe(false);
+    expect(cardFor("Apple Simulators").disabled).toBe(false);
     expect(cardFor("App Control").disabled).toBe(false);
     expect(screen.queryByText("Runs on this computer only")).toBeNull();
   });
@@ -188,11 +185,10 @@ describe("WorkToolPicker", () => {
   it("activates the tool a card names", () => {
     const onPick = vi.fn();
     render(
-      <WorkToolPicker
+      <Picker
         activeTool="git"
         context={LOCAL}
         statuses={{}}
-        loading={false}
         onPick={onPick}
       />,
     );
@@ -206,8 +202,7 @@ describe("WorkToolPicker", () => {
 
   it("holds a placeholder line while reads settle instead of shifting layout", () => {
     render(
-      <WorkToolPicker
-        activeTool={null}
+      <Picker
         context={LOCAL}
         statuses={{ git: { line: "3 ahead · clean", live: true } }}
         loading
@@ -222,8 +217,7 @@ describe("WorkToolPicker", () => {
 
   it("marks only broken tools, and only with a red dot on the label row", () => {
     render(
-      <WorkToolPicker
-        activeTool={null}
+      <Picker
         context={LOCAL}
         statuses={{
           terminal: { line: "2 shells", live: true },
@@ -231,27 +225,24 @@ describe("WorkToolPicker", () => {
           "app-control": { line: "Finder", live: false, errored: true },
           git: { line: "Clean", live: false },
         }}
-        loading={false}
         onPick={vi.fn()}
       />,
     );
 
     // Activity is NOT a mark: a live shell and a clean worktree are both quiet.
-    expect(cardFor("Terminal").querySelector("[data-tool-error-dot]")).toBeNull();
-    expect(cardFor("Git").querySelector("[data-tool-error-dot]")).toBeNull();
+    expect(cardBody("Terminal").querySelector("[data-tool-error-dot]")).toBeNull();
+    expect(cardBody("Git").querySelector("[data-tool-error-dot]")).toBeNull();
     // A counted tally and a bare error STATE both earn the same dot.
-    expect(cardFor("Browser").querySelector("[data-tool-error-dot]")).toBeTruthy();
-    expect(cardFor("App Control").querySelector("[data-tool-error-dot]")).toBeTruthy();
+    expect(cardBody("Browser").querySelector("[data-tool-error-dot]")).toBeTruthy();
+    expect(cardBody("App Control").querySelector("[data-tool-error-dot]")).toBeTruthy();
     expect(screen.getByLabelText("Browser · errors")).toBeTruthy();
   });
 
   it("moves a highlight with the arrow keys, starting at nothing highlighted", () => {
     render(
-      <WorkToolPicker
-        activeTool={null}
+      <Picker
         context={LOCAL}
         statuses={{}}
-        loading={false}
         onPick={vi.fn()}
       />,
     );
@@ -260,26 +251,24 @@ describe("WorkToolPicker", () => {
     // palette you are already typing into.
     expect(document.querySelector("[data-highlighted='true']")).toBeNull();
 
+    const highlighted = (id: string) => cardById(id).closest("[data-tool-card]")?.getAttribute("data-highlighted");
     fireEvent.keyDown(document.body, { key: "ArrowDown" });
-    const first = WORK_TOOL_DEFINITIONS[0]!;
-    expect(cardById(first.id).getAttribute("data-highlighted")).toBe("true");
+    // The first tile (Apple Simulators) and the last (Files).
+    expect(highlighted("ios")).toBe("true");
     // Focus travels with the highlight, so Enter is the browser's own
     // activation rather than a second key path that could disagree.
-    expect(document.activeElement).toBe(cardById(first.id));
+    expect(document.activeElement).toBe(cardById("ios"));
 
     fireEvent.keyDown(document.body, { key: "ArrowUp" });
-    expect(cardById(first.id).getAttribute("data-highlighted")).toBe(null);
-    const last = WORK_TOOL_DEFINITIONS[WORK_TOOL_DEFINITIONS.length - 1]!;
-    expect(cardById(last.id).getAttribute("data-highlighted")).toBe("true");
+    expect(highlighted("ios")).toBe(null);
+    expect(highlighted("files")).toBe("true");
   });
 
   it("does not steal arrow keys while the picker is paused off-screen", () => {
     render(
-      <WorkToolPicker
-        activeTool={null}
+      <Picker
         context={LOCAL}
         statuses={{}}
-        loading={false}
         onPick={vi.fn()}
         playing={false}
       />,
@@ -290,49 +279,12 @@ describe("WorkToolPicker", () => {
     expect(document.activeElement).toBe(document.body);
   });
 
-  it("shows long tool status", () => {
-    render(
-      <WorkToolPicker
-        activeTool={null}
-        context={LOCAL}
-        statuses={{ terminal: { line: "2 shells · a very long dev server command that would wrap", live: true } }}
-        loading={false}
-        onPick={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByText("2 shells · a very long dev server command that would wrap")).toBeTruthy();
-  });
-
-  it("paints the shader backdrop behind the grid, out of the way of clicks", () => {
-    render(
-      <WorkToolPicker
-        activeTool={null}
-        context={LOCAL}
-        statuses={{}}
-        loading={false}
-        onPick={vi.fn()}
-      />,
-    );
-
-    const backdrop = document.querySelector("[data-backdrop]");
-    expect(backdrop).toBeTruthy();
-    // Decoration, never a target and never announced.
-    expect(backdrop?.getAttribute("aria-hidden")).toBe("true");
-    // Behind the column, not in front of it.
-    expect(backdrop?.nextElementSibling?.contains(
-      screen.getByRole("group", { name: "Work tools" }),
-    )).toBe(true);
-  });
-
   it("keeps the web client's watchable and fully drivable tools pickable", () => {
     const onPick = vi.fn();
     render(
-      <WorkToolPicker
-        activeTool={null}
+      <Picker
         context={{ supportsIosSimulator: true, isWebClient: true }}
         statuses={{}}
-        loading={false}
         onPick={onPick}
       />,
     );
@@ -342,7 +294,7 @@ describe("WorkToolPicker", () => {
     // hosted client drives it in full over the brain's video pipe.
     expect(cardFor("Browser").disabled).toBe(false);
     expect(cardFor("App Control").disabled).toBe(false);
-    expect(cardFor("Apple Development").disabled).toBe(false);
+    expect(cardFor("Apple Simulators").disabled).toBe(false);
 
     fireEvent.click(cardFor("Browser"));
     expect(onPick).toHaveBeenCalledWith("browser");
@@ -350,38 +302,16 @@ describe("WorkToolPicker", () => {
 
   it("dims Apple on the web client when the connected runtime is not a Mac", () => {
     render(
-      <WorkToolPicker
-        activeTool={null}
+      <Picker
         context={{ supportsIosSimulator: false, isWebClient: true }}
         statuses={{}}
-        loading={false}
         onPick={vi.fn()}
       />,
     );
 
-    expect(cardFor("Apple Development").disabled).toBe(true);
-    expect(screen.getByText(IOS_RUNTIME_UNSUPPORTED_REASON)).toBeTruthy();
+    expect(cardFor("Apple Simulators").disabled).toBe(true);
+    // Said as where it runs, not as the runtime's error.
+    expect(within(cardBody("Apple Simulators")).getByText("Runs on a Mac")).toBeTruthy();
     expect(screen.queryByText("Desktop app only")).toBeNull();
-  });
-
-  it("renders a per-tool card action beside the card, never inside its button", () => {
-    render(
-      <WorkToolPicker
-        activeTool={null}
-        context={LOCAL}
-        statuses={{}}
-        loading={false}
-        onPick={vi.fn()}
-        cardActions={{ ios: <button type="button" data-testid="ios-action" /> }}
-      />,
-    );
-
-    const action = screen.getByTestId("ios-action");
-    const card = cardById("ios");
-    // Siblings, not nested: a button inside a button is invalid and unfocusable.
-    expect(card.contains(action)).toBe(false);
-    expect(action.parentElement?.contains(card)).toBe(false);
-    // The grid still has exactly one card button per tool.
-    expect(document.querySelectorAll("button[data-tool-id]")).toHaveLength(ALWAYS_LISTED_TOOLS.length);
   });
 });

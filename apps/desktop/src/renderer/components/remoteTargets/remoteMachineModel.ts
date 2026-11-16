@@ -472,6 +472,10 @@ export function formatMachineEndpoint(
   return detail ? `${endpoint.kind} · ${detail}` : endpoint.kind;
 }
 
+/** A saved machine whose link another ADE app on this computer holds: its state, and the press that takes it back. */
+export const HELD_ELSEWHERE_STATE_LABEL = "In use by another ADE app";
+export const HELD_ELSEWHERE_ACTION_LABEL = "Use it here";
+
 export function connectionStateLabel(
   connection: RemoteRuntimeConnectionStatus | null,
   connectedFallback: boolean,
@@ -481,7 +485,7 @@ export function connectionStateLabel(
   if (connection?.state === "connecting") return "Connecting";
   if (connection?.state === "error") {
     if (connection.recovery === "reconnecting") return "Reconnecting";
-    if (connection.recovery === "held_elsewhere") return "In use by another ADE app";
+    if (connection.recovery === "held_elsewhere") return HELD_ELSEWHERE_STATE_LABEL;
     return "Connection failed";
   }
   return "Not connected";
@@ -493,15 +497,26 @@ export function connectionStateLabel(
  * (a first Connect turns auto-connect on, so there is nothing to explain yet).
  * A manual disconnect is the stronger reason and wins over the preference.
  */
+/** "at 7:51 PM" today, "yesterday", else "on Nov 12". */
+function disconnectedWhen(at: number, now = Date.now()): string {
+  const when = new Date(at);
+  const today = new Date(now);
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (sameDay(when, today)) {
+    return `at ${when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+  }
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (sameDay(when, yesterday)) return "yesterday";
+  return `on ${when.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+}
+
 export function autoConnectOffReason(
   target: Pick<RemoteRuntimeTarget, "autoConnect" | "lastConnectedAt" | "manuallyDisconnectedAt">,
 ): string | null {
   if (target.manuallyDisconnectedAt != null) {
-    const day = new Date(target.manuallyDisconnectedAt).toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-    });
-    return `you disconnected it on ${day}`;
+    return `You disconnected it ${disconnectedWhen(target.manuallyDisconnectedAt)}`;
   }
   if (target.autoConnect === false && target.lastConnectedAt != null) {
     return "Reconnect automatically is off";
@@ -1003,22 +1018,45 @@ function intersects(a: Set<string>, b: Set<string>): boolean {
   return false;
 }
 
-/** True when an account machine is the same host as a saved target. */
-export function accountMachineMatchesTarget(
+/** True when an account machine is the one a saved target was paired with. */
+function accountMachineIsPairedTarget(
   machine: AdeAccountMachine,
   target: RemoteRuntimeTarget,
 ): boolean {
   const pairedHostIdentity = target.pairedMachine?.hostIdentity?.trim();
   const pairedMachineKey = target.pairedMachine?.machineKey?.trim();
-  if (
+  return Boolean(
     (pairedHostIdentity && machine.deviceId?.trim() === pairedHostIdentity)
-    || (pairedMachineKey && machine.machineKey.trim() === pairedMachineKey)
-  ) {
-    return true;
-  }
+    || (pairedMachineKey && machine.machineKey.trim() === pairedMachineKey),
+  );
+}
+
+/** True when an account machine is the same host as a saved target. */
+export function accountMachineMatchesTarget(
+  machine: AdeAccountMachine,
+  target: RemoteRuntimeTarget,
+): boolean {
+  if (accountMachineIsPairedTarget(machine, target)) return true;
   const machineIds = accountMachineRouteIdentities(machine);
   if (machineIds.size === 0) return false;
   return intersects(machineIds, targetRouteIdentities(target));
+}
+
+/**
+ * The directory entry for a saved target. The machine it was paired with wins
+ * over an entry that only shares a route with it: two ADE homes on one
+ * computer publish the same addresses, so a route match can name the other
+ * home and show its presence. A target that names its machine key is matched
+ * by that key only; a shared route is the fallback for a target that names none.
+ */
+export function accountMachineForTarget(
+  machines: readonly AdeAccountMachine[],
+  target: RemoteRuntimeTarget,
+): AdeAccountMachine | null {
+  const paired = machines.find((machine) => accountMachineIsPairedTarget(machine, target));
+  if (paired) return paired;
+  if (target.pairedMachine?.machineKey?.trim()) return null;
+  return machines.find((machine) => accountMachineMatchesTarget(machine, target)) ?? null;
 }
 
 /** True when an account machine is the same host as a locally-discovered machine. */
@@ -1053,6 +1091,8 @@ export function assignMachineSections(args: {
   accountMachines?: AdeAccountMachine[];
   /** Keep discovery useful for saved/account dedupe without rendering raw peers. */
   includeDiscoveredRows?: boolean;
+  /** The relays this client trusts besides ADE's own (ADE Web's configured relay): an account machine there can be dialed. */
+  relayBaseUrls?: readonly string[];
 }): MachineSections {
   const {
     targets,
@@ -1151,7 +1191,7 @@ export function assignMachineSections(args: {
   // AVAILABLE, offline greyed in UNAVAILABLE.
   for (const machine of accountMachines) {
     const matchedTarget = targets.find((target) =>
-      accountMachineMatchesTarget(machine, target),
+      accountMachineForTarget(accountMachines, target) === machine,
     );
     if (matchedTarget) {
       // A saved target already owns this host; only annotate offline account
@@ -1172,7 +1212,7 @@ export function assignMachineSections(args: {
       machine,
       matchedTargetId: null,
     };
-    if (accountMachineConnectionState(machine) === "available") {
+    if (accountMachineConnectionState(machine, args.relayBaseUrls ?? []) === "available") {
       sections.available.push(row);
     } else {
       sections.unavailable.push(row);

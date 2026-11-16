@@ -481,6 +481,8 @@ struct WorkChatMessageBubble: View, Equatable {
   /// Active session model id, used to resolve the per-model accent for the
   /// model badge chip and card border tint.
   @Environment(\.workChatModelId) private var sessionModelId
+  /// The CTO thread: the CTO's own colour, deepened, fills the person's bubbles.
+  @Environment(\.workChatAccentHexOverride) private var accentHexOverride
   /// Pretty model label ("Claude Sonnet 5"), injected by the session view
   /// so each bubble doesn't have to recompute the same string.
   @Environment(\.workChatModelLabel) private var sessionModelLabel
@@ -488,6 +490,8 @@ struct WorkChatMessageBubble: View, Equatable {
   var body: some View {
     if message.role == "assistant" {
       assistantRow
+    } else if let adeReason = message.adeReason {
+      WorkAdeMessageRow(reason: adeReason, hostLabel: message.adeReasonLabel, text: message.markdown)
     } else {
       userRow
     }
@@ -519,6 +523,9 @@ struct WorkChatMessageBubble: View, Equatable {
   /// as anyway. Kept in step with `CHAT_USER_BUBBLE_GRADIENT_*` in
   /// `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts`.
   private var userBubbleFill: Color {
+    if let accentHexOverride, let hex = ctoNormalizedHex(accentHexOverride) {
+      return workMixColors(ctoColor(hex: hex), Color.black, 0.28)
+    }
     // Claude and Codex shipped looking right, so they keep the original stops,
     // which mix toward a fixed violet.
     if ADEColor.chatAccentKeepsOriginalBubble(accent) {
@@ -538,9 +545,12 @@ struct WorkChatMessageBubble: View, Equatable {
   }
 
   private var userBubbleBorder: Color {
+    if let accentHexOverride, let hex = ctoNormalizedHex(accentHexOverride) {
+      return workMixColors(ctoColor(hex: hex), Color.white, 0.14).opacity(0.45)
+    }
     // accent at ~26% over a faint white edge — matches the desktop bubble's
     // `--chat-user-border-accent-mix`.
-    workMixColors(accent, Color.white, 0.14).opacity(0.45)
+    return workMixColors(accent, Color.white, 0.14).opacity(0.45)
   }
 
   private var workViolet: Color { Color(red: 0x7c / 255.0, green: 0x3a / 255.0, blue: 0xed / 255.0) }
@@ -661,7 +671,10 @@ struct WorkChatMessageBubble: View, Equatable {
           // One accessibility element per message: the first piece speaks it.
           .accessibilityHidden(segment.map { !$0.isFirst } ?? false)
         }
-        if isLastPiece, let deliveryBadge {
+        // The CTO answers mid-task input on its own, so its thread shows no
+        // delivery receipts; only a send that actually failed is worth a word.
+        if isLastPiece, let deliveryBadge,
+           accentHexOverride == nil || deliveryBadge == .sendFailed || deliveryBadge == .steerFailed {
           WorkDeliveryBadge(state: deliveryBadge)
             .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
         }
@@ -1109,7 +1122,7 @@ private struct WorkMachineChipFactsSheet: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Label(machine.displayName, systemImage: "desktopcomputer").font(.headline)
+      Label(machine.presentedName, systemImage: "desktopcomputer").font(.headline)
       Text(status).font(.subheadline).foregroundStyle(.secondary)
       if let install = machine.installLabel { Text(install).font(.caption).foregroundStyle(.secondary) }
       if let endpoint = machine.preferredEndpoint {
@@ -1514,6 +1527,79 @@ struct WorkResetCreditNoticeView: View {
       outcome = workResetCreditOutcomeText(
         try await syncService.consumeUsageResetCredit(accountId: accountId)
       )
+    } catch {
+      ADEHaptics.error()
+      outcome = error.localizedDescription
+    }
+  }
+}
+
+/// "Claude doesn't allow Full access as root here", with the way out: allow it
+/// for the chat's machine, after the same warning desktop shows.
+struct WorkRootFullAccessNoticeView: View {
+  let card: WorkEventCardModel
+  let sessionId: String
+
+  /// Not `@EnvironmentObject`: renders inside a transcript cell (see
+  /// `WorkSyncServiceReference`).
+  @Environment(\.workSyncService) private var syncReference
+  @State private var confirming = false
+  @State private var working = false
+  @State private var outcome: String?
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: card.icon)
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(card.tint.color)
+      Text(card.title)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+      Spacer(minLength: 6)
+      if let outcome {
+        Text(outcome)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      } else if syncReference.service?.canAllowRootFullAccess(sessionId: sessionId) == true {
+        Button("Allow") { confirming = true }
+          .buttonStyle(.plain)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .disabled(working)
+          .frame(minHeight: 44)
+          .contentShape(Rectangle())
+          .accessibilityHint("Allows Full access for every chat on this computer.")
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 8)
+    .background(ADEColor.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(ADEColor.warning.opacity(0.18), lineWidth: 0.8)
+    )
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .confirmationDialog("Allow Full access on this machine?", isPresented: $confirming, titleVisibility: .visible) {
+      Button("Allow on this machine", role: .destructive) {
+        Task { await allow() }
+      }
+      Button("Keep Accept edits", role: .cancel) {}
+    } message: {
+      Text("ADE runs as root on this computer. Allowing Full access covers every chat on it, and agents there can then change anything on it without asking.")
+    }
+  }
+
+  @MainActor
+  private func allow() async {
+    guard let syncService = syncReference.service else { return }
+    working = true
+    defer { working = false }
+    do {
+      outcome = try await syncService.allowRootFullAccess(sessionId: sessionId)
+        ? "Allowed. The next message runs with Full access."
+        : "The computer didn't allow it."
     } catch {
       ADEHaptics.error()
       outcome = error.localizedDescription
@@ -2056,6 +2142,16 @@ extension EnvironmentValues {
     get { self[WorkChatModelLabelEnvironmentKey.self] }
     set { self[WorkChatModelLabelEnvironmentKey.self] = newValue }
   }
+
+  /// Set on the CTO thread only: its accent (the avatar colour) as `#rrggbb`.
+  var workChatAccentHexOverride: String? {
+    get { self[WorkChatAccentHexOverrideKey.self] }
+    set { self[WorkChatAccentHexOverrideKey.self] = newValue }
+  }
+}
+
+private struct WorkChatAccentHexOverrideKey: EnvironmentKey {
+  static let defaultValue: String? = nil
 }
 
 struct WorkDeliveryBadge: View {
@@ -2290,5 +2386,87 @@ extension View {
         WorkMessageLinkMenuItems(source: .assistant(linkTexts))
       }
     }
+  }
+}
+
+/// Why ADE wrote a message into the chat (`metadata.hostContinuation.reason`),
+/// for an older host that sends no `label`. A current host stamps the line
+/// itself (desktop `HOST_CONTINUATION_REASON_LABEL`), so a new reason needs no
+/// change here.
+func workAdeMessageReasonLabel(_ reason: String) -> String {
+  switch reason {
+  case "interrupted_turn_recovery": return "Resuming your last request after a restart"
+  case "stall_nudge": return "Asked for a status check"
+  case "continuity_recovery": return "Rebuilt this chat's thread from ADE history"
+  case "plan_followup": return "Sent your plan decision"
+  case "background_work_ended": return "A background job it was waiting on finished"
+  case "background_work_lost": return "Background work it was waiting on was lost"
+  case "chat_wait": return "A chat it was waiting on is ready"
+  case "subagent_question": return "A subagent has a question"
+  case "subagent_awaiting_user": return "A subagent is waiting on you"
+  case "provider_schedule_cleanup": return "Cleaning up old provider schedules"
+  case "cto_intro": return "Started the CTO's introduction"
+  case "cto_handoff_note": return "Asked for a hand-off note"
+  default: return "Sent a message for you"
+  }
+}
+
+/// A message ADE wrote into the chat (a recovery resume, a status check, a
+/// wake). Never the reader's bubble: one quiet "ADE" line with the reason, and
+/// a tap opens the words the agent read (desktop `FoldedMessageRow`, source
+/// `ade`).
+struct WorkAdeMessageRow: View {
+  let reason: String
+  /// The host's line (`metadata.hostContinuation.label`); nil from an older host.
+  var hostLabel: String? = nil
+  let text: String
+  @State private var isExpanded = false
+
+  var body: some View {
+    let label = hostLabel.flatMap { $0.isEmpty ? nil : $0 } ?? workAdeMessageReasonLabel(reason)
+    VStack(alignment: .leading, spacing: 6) {
+      Button {
+        withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() }
+      } label: {
+        HStack(spacing: 6) {
+          Image(systemName: "info.circle")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+          Text("ADE")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+          Text(label)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+          Spacer(minLength: 4)
+          Image(systemName: "chevron.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+        }
+        .frame(minHeight: 32)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Message ADE sent: \(label)")
+      .accessibilityHint(isExpanded ? "Hides what the agent was told." : "Shows what the agent was told.")
+      if isExpanded {
+        Text(text)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 6)
+    .background(ADEColor.textPrimary.opacity(0.03), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.textPrimary.opacity(0.08), lineWidth: 0.8)
+    )
+    .frame(maxWidth: .infinity, alignment: .trailing)
+    .adeInspectable("Work.Chat.AdeMessageRow", metadata: ["reason": reason])
   }
 }

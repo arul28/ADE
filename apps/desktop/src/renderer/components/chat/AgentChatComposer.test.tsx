@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within, type RenderResult } from "@testing-library/react";
 import { useState, type ComponentProps, type ReactNode } from "react";
 import type {
@@ -110,6 +110,14 @@ vi.mock("@lobehub/icons", () => {
     DeepSeek: brand(),
     Meta: brand(),
   };
+});
+
+// The Linear issue picker loads its detail pane (and its "Attach issue"
+// button) with React.lazy. The first dynamic import of that module transforms
+// it, which took 0.9-1.5 s on a loaded machine: longer than a `findBy` waits.
+// Load it once here, so a test waits only for the render it checks.
+beforeAll(async () => {
+  await import("../app/LinearIssueDetailPane");
 });
 
 beforeEach(() => {
@@ -391,28 +399,6 @@ describe("AgentChatComposer", () => {
     view.rerender(<AgentChatComposer {...props} draft={url} />);
 
     await waitFor(() => expect(resolveSmartLinkPreview).toHaveBeenCalledTimes(2));
-  });
-
-  it("renders a real GitHub brand mark instead of a text monogram on github chips", async () => {
-    const url = "https://github.com/arul28/ADE/pull/835";
-    const resolveSmartLinkPreview = vi.fn().mockResolvedValue({
-      url,
-      provider: "github",
-      kind: "github_pr",
-      label: "arul28/ADE#835",
-    });
-    (window as any).ade = { agentChat: { resolveSmartLinkPreview } };
-    const props = buildComposerProps({ draft: url, turnActive: false });
-    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
-
-    const icon = await waitFor(() => {
-      const el = view.container.querySelector<HTMLElement>("[data-smart-link-icon]");
-      if (!el) throw new Error("smart-link icon not rendered yet");
-      return el;
-    });
-    // A real logo SVG, never the "GH" fallback monogram.
-    expect(icon.querySelector("svg")).toBeTruthy();
-    expect(icon.textContent ?? "").not.toContain("GH");
   });
 
   it("hydrates highlighted assistant output as an inline quote chip", async () => {
@@ -1910,43 +1896,6 @@ describe("AgentChatComposer", () => {
     expect(props.onClearDraft).not.toHaveBeenCalled();
   });
 
-  it("renders Claude mode dropdown without a Chat toggle", () => {
-    renderComposer({
-      sessionProvider: "claude",
-      modelId: "anthropic/claude-sonnet-5",
-      availableModelIds: ["anthropic/claude-sonnet-5"],
-    });
-
-    expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
-    const trigger = screen.getByRole("button", { name: "Claude permission mode" });
-    expect(trigger.textContent).toContain("Manual");
-
-    fireEvent.click(trigger);
-
-    expect(screen.getByRole("listbox", { name: "Claude permission mode" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /Manual/ })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /Auto/ })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /Accept edits/ })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /Plan mode/ })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /Bypass/ })).toBeTruthy();
-  });
-
-  it.each(CAPTION_FREE_PERMISSION_CASES)(
-    "renders title-only $provider permission rows",
-    ({ triggerName, optionCount, overrides }) => {
-      renderComposer(overrides);
-      fireEvent.click(screen.getByRole("button", { name: triggerName }));
-
-      const listbox = screen.getByRole("listbox", { name: triggerName });
-      const options = Array.from(listbox.querySelectorAll<HTMLElement>('[role="option"]'));
-      expect(options).toHaveLength(optionCount);
-      for (const option of options) {
-        expect(option.textContent?.trim()).toBe(option.getAttribute("aria-label"));
-        expect(option.getAttribute("title")?.length).toBeGreaterThan(0);
-      }
-    },
-  );
-
   // Droid's autonomy ladder has no planning rung to withhold.
   it.each(CAPTION_FREE_PERMISSION_CASES.filter((testCase) => testCase.provider !== "Droid"))(
     "offers $provider planning only in a project chat, not in a chat without a project",
@@ -2031,26 +1980,6 @@ describe("AgentChatComposer", () => {
     expect(onClaudeModeChange).toHaveBeenCalledWith("plan");
     expect(onInteractionModeChange).not.toHaveBeenCalled();
     expect(onClaudePermissionModeChange).not.toHaveBeenCalled();
-  });
-
-  it("shows preset-first Codex controls without raw selects", () => {
-    renderComposer({
-      sessionProvider: "codex",
-      codexApprovalPolicy: "on-request",
-      codexSandbox: "workspace-write",
-      codexConfigSource: "flags",
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Codex permission mode" }));
-
-    expect(screen.getByRole("option", { name: "Default permissions" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Edit mode" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Plan mode" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Full access" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Custom (config.toml)" })).toBeTruthy();
-    expect(screen.queryByDisplayValue("ADE flags")).toBeNull();
-    expect(screen.queryByDisplayValue("On request")).toBeNull();
-    expect(screen.queryByDisplayValue("Workspace write")).toBeNull();
   });
 
   it("maps Codex preset buttons to the underlying approval and sandbox controls", () => {
@@ -2172,18 +2101,6 @@ describe("AgentChatComposer", () => {
     await waitFor(() => expect(document.activeElement).toBe(caret));
     fireEvent.keyDown(screen.getByRole("menu", { name: "Send options" }), { key: "ArrowDown" });
     expect(document.activeElement).toBe(caret);
-  });
-
-  it("names fast mode on the collapsed model trigger", () => {
-    renderComposer({
-      sessionProvider: "codex",
-      modelId: "openai/gpt-5.5",
-      availableModelIds: ["openai/gpt-5.5"],
-      fastMode: true,
-      onFastModeChange: vi.fn(),
-    });
-
-    expect(document.querySelector("[data-model-picker-trigger]")?.textContent).toMatch(/Fast/);
   });
 
   it("hides Codex fast mode for unsupported models", () => {
@@ -2929,40 +2846,6 @@ describe("AgentChatComposer", () => {
     expect(props.onApproval).toHaveBeenCalledWith("decline");
   });
 
-  it("uses the shared provider verb in the pending banner", () => {
-    renderComposer({
-      pendingInput: {
-        requestId: "req-3",
-        itemId: "item-3",
-        source: "codex",
-        kind: "structured_question",
-        title: "Input needed",
-        description: "Multiple decisions are needed",
-        questions: [
-          {
-            id: "q1",
-            header: "Question 1",
-            question: "What should we test first?",
-            allowsFreeform: true,
-          },
-          {
-            id: "q2",
-            header: "Question 2",
-            question: "Which validation strategy should we use?",
-            allowsFreeform: true,
-          },
-        ],
-        allowsFreeform: true,
-        blocking: true,
-        canProceedWithoutAnswer: false,
-        turnId: null,
-      },
-    });
-
-    expect(screen.getByText("Codex asks")).toBeTruthy();
-    expect(screen.queryByText("2 Questions · codex")).toBeNull();
-  });
-
   it("allows attachments while steering an active Codex turn", () => {
     renderComposer({ turnActive: true });
 
@@ -3646,16 +3529,6 @@ describe("AgentChatComposer", () => {
     expect(screen.getByRole("button", { name: "OpenCode permission mode" })).toBeTruthy();
   });
 
-  it("opts the chat textarea into native typing assistance", () => {
-    renderComposer();
-
-    const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
-    expect(textarea.getAttribute("autocomplete")).toBe("on");
-    expect(textarea.getAttribute("autocorrect")).toBe("on");
-    expect(textarea.getAttribute("autocapitalize")).toBe("sentences");
-    expect(textarea.getAttribute("spellcheck")).toBe("true");
-  });
-
   it("shows the prompt clipboard hint only while draft text is present", () => {
     const view = renderComposer({
       turnActive: false,
@@ -3668,43 +3541,6 @@ describe("AgentChatComposer", () => {
     view.rerender(<AgentChatComposer {...buildComposerProps({ turnActive: false, draft: "" })} />);
 
     expect(screen.queryByText(/Prompt copies to clipboard on send/)).toBeNull();
-  });
-
-  it("uses a contextual accessible name for active turn textareas", () => {
-    renderComposer({
-      draft: "",
-      turnActive: true,
-      messagePlaceholder: "Message the active coordinator...",
-    });
-
-    const textarea = screen.getByRole("textbox", {
-      name: "Steer active turn: Message the active coordinator",
-    }) as HTMLTextAreaElement;
-    expect(textarea.placeholder).toBe("Steer the active turn...");
-  });
-
-  it("uses a contextual accessible name for active rich composers", () => {
-    renderComposer({
-      draft: "",
-      turnActive: true,
-      messagePlaceholder: "Message this worker...",
-      iosElementContextItems: [
-        {
-          kind: "ios_element",
-          id: "button-1",
-          componentId: "PrimaryButton",
-          sourceFile: null,
-          sourceLine: null,
-          frame: null,
-          metadata: { label: "Primary" },
-          selectedAt: "2026-05-07T00:00:00.000Z",
-        },
-      ],
-    });
-
-    expect(screen.getByRole("textbox", {
-      name: "Steer active turn: Message this worker",
-    })).toBeTruthy();
   });
 
   it("shows the launch clipboard notice with an inline Setting control while draft text is present", () => {

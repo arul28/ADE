@@ -1,3 +1,4 @@
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { FileHandle } from "node:fs/promises";
@@ -282,6 +283,14 @@ function startNextHistoryInflateAdmission(): void {
 }
 
 /**
+ * The viewer moved to another chat before this read was admitted. The caller's
+ * retryable history path handles it; it is the queue working, not a defect.
+ */
+function supersededHistoryReadError(): Error {
+  return new AdeExpectedError("compressed_history_read_superseded", "user");
+}
+
+/**
  * Admit one inflater at a time and retain only the newest queued request.
  * Rapid chat switching can therefore leave at most the active archive plus
  * the current destination; superseded queued reads fail through the existing
@@ -296,13 +305,13 @@ function withAsyncHistoryInflateAdmission<T>(
   signal?.throwIfAborted();
   return new Promise<T>((resolve, reject) => {
     if (sequence < latestHistoryInflateRequestSequence) {
-      reject(new Error("compressed_history_read_superseded"));
+      reject(supersededHistoryReadError());
       return;
     }
     while (pendingHistoryInflateAdmissions.length > 0) {
       const superseded = pendingHistoryInflateAdmissions.shift()!;
       superseded.removeAbortListener();
-      superseded.reject(new Error("compressed_history_read_superseded"));
+      superseded.reject(supersededHistoryReadError());
     }
     let admission: HistoryInflateAdmission;
     const onAbort = () => {

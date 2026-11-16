@@ -11,7 +11,10 @@ import "./lib/packagedRuntimeFlag";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
+import type { AccountResetCreditSpender } from "../../desktop/src/main/services/usage/accountUsageLiveRefresh";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
+import { stripAnsiWithOptions } from "../../desktop/src/shared/ansiStrip";
+import type { RemoteWorkChatEnded, RemoteWorkMachineRef, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import {
   LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE,
   laneShareNextDayStart,
@@ -23,6 +26,7 @@ import { CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
+  setSharedAccountResetCreditSpender,
   setSharedAccountRollupFetcher,
 } from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { consumeCliViaCmdMarker } from "../../desktop/src/main/services/cli/windowsCliLauncher";
@@ -55,6 +59,7 @@ import {
   routedToLocation,
   type ChatLocateReport,
 } from "./cliChatLocate";
+import { isDevicesCommand, runDevicesCommand, withChatDeviceChoice } from "./cliDevices";
 import {
   isNoneValue,
   linearLookupNeeds,
@@ -107,7 +112,8 @@ import {
   buildCliDiagnosticReport,
   buildReportIssuePayload,
   describeDiagnosticUpload,
-  openDiagnosticIssue,
+  openPublicIssue,
+  publicIssueUrlForSend,
   saveDiagnosticReportCopy,
   sendDiagnosticReport,
 } from "./commands/reportIssue";
@@ -193,10 +199,6 @@ import { customNotificationProblem, describeCustomNotificationResult } from "../
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
-import {
-  isProjectSecretPullResult,
-  projectSecretPullSummary,
-} from "../../desktop/src/shared/projectSecretPullSummary";
 import { isUuid } from "../../desktop/src/shared/uuid";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import {
@@ -241,6 +243,7 @@ import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projec
 import type { SyncHostReadinessSnapshot } from "../../desktop/src/shared/types/syncHostRecovery";
 import type { SyncHostSingletonConflict } from "./services/sync/syncHostSingleton";
 import {
+  CHAT_PROVIDER_IDS,
   droidPermissionModeFromLegacyPermissionMode,
   isAgentChatDroidPermissionMode,
   type AdeChatSessionSummaryActionResult,
@@ -441,6 +444,7 @@ import {
 import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects/gitOwnership";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import { createAccountProjectSync, readAccountProjectState, type AccountProjectSync } from "./services/projects/accountProjectSync";
+import { noteAccountProjectListChanged } from "./services/projects/accountProjectListChanges";
 import { provideAccountProjectMainHandler } from "./services/projects/accountProjectMain";
 import {
   parseAccountProjectSelector,
@@ -578,13 +582,17 @@ import {
 } from "./cliAndroidFormat";
 import {
   appleLeaseAnswer,
+  appleElementMissExitCode,
   appleLeaseNotAcquired,
   formatAppleDeviceDelete,
+  formatAppleDeviceStart,
+  formatAppleDeviceStop,
   formatAppleInstall,
   formatAppleLease,
   formatAppleTests,
   formatAppleWindow,
   shapeAppleLeaseAnswer,
+  xcodeGenNote,
 } from "./cliAppleFormat";
 import { formatCloudStatus } from "./cliCloudStatus";
 import {
@@ -595,6 +603,7 @@ import {
 import {
   CHAT_PARENT_FLAGS,
   DEFAULT_PARENT_FLAGS,
+  NO_REPORT_FLAGS,
   SPAWN_TYPE_FLAGS,
 } from "./launchFlagNames";
 import {
@@ -613,8 +622,18 @@ import {
   isHarnessPresetAccountProvider,
   isHarnessPresetBody,
   isHarnessPresetSubscriptionProvider,
+  presetLabel,
+  type HarnessPreset,
   type HarnessPresetSource,
 } from "../../desktop/src/shared/harnessPresets";
+import {
+  customProviderHarnessProblem,
+  customProviderModelProblem,
+  findCustomProvider,
+  PRESET_FLAG_GONE_MESSAGE,
+} from "../../desktop/src/shared/customProviderRef";
+import { readHarnessPresetsFromMachine } from "../../desktop/src/main/services/chat/harnessPresetSettings";
+import { launchModelMissing, launchModelRequiredMessage, unknownModelHint, webhookModelRequiredMessage } from "../../desktop/src/shared/launchModelRule";
 import type { ApiCredentialSummary } from "../../desktop/src/shared/types/apiCredentials";
 import {
   competingSyncHostSkipReason,
@@ -676,7 +695,7 @@ import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
-import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
+import { getSharedAccountAttestationConfig, getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
 import { createRemoteProviderSignIn } from "./services/account/remoteProviderSignIn";
 import { startCloudBootLaunch, takeCloudLaunchEnv } from "./services/account/cloudBootLaunch";
 import {
@@ -712,18 +731,28 @@ import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
 import { brainStartIsInRestartLoop, markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
 import {
+  addBrainRunStopIntent,
+  brainRestartCause,
   brainUnplannedRestart,
   markBrainRunStoppedCleanly,
+  readBrainUpdateRequest,
   recordBrainRunStart,
+  writeBrainUpdateRequest,
 } from "../../desktop/src/main/services/runtime/brainUnplannedRestart";
+import { restartCauseLogFields, type BrainStartFacts } from "../../desktop/src/main/services/runtime/brainRestartCause";
 import {
+  clearBrainStopIntent,
   closeLiveTurnProjectsRecord,
   dropLiveTurnProjectsAfterCrash,
   enableLiveTurnProjectsRecord,
+  noteBrainStopIntent,
   noteLiveTurnProjectOpening,
+  recordPlannedBrainStop,
   settleLiveTurnProjectAfterCrash,
   takeLiveTurnProjectsFromStoppedBrains,
 } from "../../desktop/src/main/services/runtime/liveTurnProjects";
+import { RESTART_RESUME_MAX_AGE_MS } from "../../desktop/src/shared/chatAutoResume";
+import type { UpdateRequestedBy } from "../../desktop/src/shared/types/remoteRuntime";
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
@@ -745,6 +774,8 @@ import { publishServedRuntimeSocket } from "./services/runtime/adeCliShim";
 import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverride } from "./lib/cliGlobalArgs";
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
+import { DEVICES_HELP } from "./help/devicesHelp";
+import { DOCTOR_HELP, SETTINGS_HELP, STATUS_HELP, SYNC_HELP } from "./help/systemHelp";
 import { createHelpCatalog, filterHelpTextForScope } from "./help/catalog";
 import { remoteCommandAvailability } from "./services/remoteMcp/remoteMcpCommandPolicy";
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
@@ -1076,6 +1107,7 @@ export type FormatterId =
   | "harness-env"
   | "harness-routes"
   | "harness-test"
+  | "harness-providers"
   | "archive-list"
   | "deleted-chats"
   | "deleted-lanes"
@@ -1201,7 +1233,7 @@ export type CliPlan =
        * null `outPath` saves to a temp file in text mode and leaves `--json`
        * output untouched.
        */
-      saveScreenshot?: { outPath: string | null };
+      saveScreenshot?: { outPath: string | null; surface?: "browser" | "app-control" };
       syncWebOpen?: boolean;
       syncWebNoClipboard?: boolean;
       /**
@@ -1592,7 +1624,12 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
     $ ade machines connect <id|name>                Save an account machine on this install
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
+    $ ade devices [--kind ios|android|screen|app] --text
+                                                    Every device this chat can use, on every machine
+    $ ade devices use <kind>@<machine|here> | current
+                                                    Pick the machine this chat's iPhone, Android, screen or app runs on
+    $ ade new chat --mode chat|cli --provider <p> --model <id> --prompt "fix"
+                                                    Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
     $ ade desktop                                   Launch the installed ADE desktop app
     $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
                                                      or Linux Desktop)
@@ -1611,8 +1648,11 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
+    $ ade status                                    Does the ADE brain answer
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade health --text                             This project's problems and their fixes
+    $ ade report-issue [--send] [--open]            Print a redacted diagnostic report; --send hands it to ADE privately,
+                                                    --open then opens a public GitHub issue that holds only its reference
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade reset --all [--dry-run]                   Remove everything ADE put on this computer (hard reset)
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -1624,7 +1664,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
                                                     Send a push to the phones on your ADE account
     $ ade mcp status | on | off | token create | activity
-                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
+                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this machine
     $ ade prs list | create | show | checks          Manage PRs and their GitHub state
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
@@ -1635,7 +1675,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
-                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
+                                                    A chat or CLI session on the Work board: file it, snooze it until a deadline
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
                                                     Create, read, and edit Linear issues
     $ ade jira status | connect | projects | list | issue | create | edit
@@ -1655,6 +1695,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
+    $ ade scene preview <file> --text              Check a \`\`\`scene before putting it in a reply
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control | android | floating-android
                                                     Show a surface of this chat to the user
@@ -1662,13 +1703,14 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
     $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
+    $ ade harness routes | providers | env | test   Any model in any harness (--via), and your Custom providers
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
     $ ade providers accounts list | add | remove | default
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
     $ ade passwords list | status                     Saved logins agents can use (never a value)
     $ ade code --site <host>                          A site's current sign-in code
     $ ade messages recent | send                      The person's texts, on their Mac
@@ -1689,6 +1731,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
+    --role <cto|agent>      Who the call acts as. Agents run as agent; --role cto is for the person's
+                            own terminal, and a few commands (marked CTO only) need it.
 
   Common agent flows:
     $ ade doctor --text
@@ -1745,11 +1789,13 @@ function remoteMcpHelpScope(): "read" | "write" | undefined {
 /** Whether this account has ADE Cloud, answered by this machine's brain; false until it does. */
 let cliCloudEnabled = false;
 
-const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --prompt "…"
+const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --provider <p> --model <id> --prompt "…"
                                                     A new lane on its own new ADE Cloud computer: ADE makes the
                                                     computer, gets the repository there (the pushed branch) and
                                                     starts the chat there. --size small, medium, large, xlarge
-                                                    (default: the size you saved for new lanes). --lane-name <name>
+                                                    (default: the size you saved for new lanes; a default Small
+                                                    whose setup needs more memory moves to Medium once, and the
+                                                    repo starts at Medium after that). --lane-name <name>
                                                     names the lane and its computer (default: from the prompt).
                                                     Asks you first. Ctrl-C stops only the waiting; the
                                                     same --launch-id <id> again follows it or goes on from a
@@ -1759,7 +1805,8 @@ const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --p
 
 const LANES_CLOUD_HELP = `  ade lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
                    (the lane alone, with no chat, on its own new ADE Cloud computer; asks you first.
-                   No --size: the size you saved for new lanes. The same --launch-id again follows it or
+                   No --size: the size you saved for new lanes (a Small whose setup needs more memory moves
+                   to Medium once, and the repo starts at Medium after that). The same --launch-id again follows it or
                    goes on from a failed step. A Linear issue needs its whole JSON. No --description
                    or --no-template yet.)
 `;
@@ -1873,6 +1920,7 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   sessions: "session",
   project: "projects",
   machine: "machines",
+  device: "devices",
   quota: "usage",
   quotas: "usage",
   disk: "storage",
@@ -1884,6 +1932,10 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
 };
 
 export const HELP_BY_COMMAND: Record<string, string> = {
+  sync: SYNC_HELP,
+  doctor: DOCTOR_HELP,
+  status: STATUS_HELP,
+  settings: SETTINGS_HELP,
   reset: `${ADE_BANNER}
   ADE Reset
 
@@ -2075,16 +2127,16 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   it published — one request, so a failure to clear Activity is reported as a
   failed removal you can retry rather than as a clean one. It is destructive and
   requires \`--confirm REMOVE\`. The removed machine can only rejoin when someone
-  confirms it on that computer (see \`reconnect\`); nothing this machine runs can
+  confirms it on that machine (see \`reconnect\`); nothing this machine runs can
   bring it back.
 
-  Agents cannot remove a computer. Run from a chat, \`remove\` asks the person
-  instead: the chat shows a card with the computer's name, platform, last seen
-  time and online state, and Remove / Keep buttons (an online computer, or the
+  Agents cannot remove a machine. Run from a chat, \`remove\` asks the person
+  instead: the chat shows a card with the machine's name, platform, last seen
+  time and online state, and Remove / Keep buttons (an online machine, or the
   one the chat runs on, needs a second yes). The command waits for the answer
   (--timeout 30m by default) and prints {status, removed, machine, next}:
   status "removed" exits 0, "kept" or "timed_out" exits 2, and
-  "pending_approval" (another chat already asked about that computer) exits 3.
+  "pending_approval" (another chat already asked about that machine) exits 3.
   Only the person can answer the card; stopping the turn closes it.
 
   \`reconnect\` re-pairs THIS machine after it was removed from the account
@@ -2098,6 +2150,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   interactive sign-in, so \`reconnect\` prompts for one when it is needed and
   re-pairs as soon as it lands — no second command.
 `,
+  devices: DEVICES_HELP,
+
   search: `${ADE_BANNER}
   ADE Search
 
@@ -2484,14 +2538,16 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 `,
   new: `${ADE_BANNER}
-  New ADE work session
+  Start a chat or a CLI session
 
   Start either a persistent ADE Work chat or a tracked provider CLI session
-  with one command. This mirrors the desktop New Chat mode toggle.
+  with one command. This mirrors the desktop New Chat mode toggle. Every
+  launch names its model with --model; ADE never picks one.
 
     $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode chat --auto-create-lane --prompt "Fix login"
+    $ ade new chat --mode chat --auto-create-lane --provider codex --model openai/gpt-5.6-sol --prompt "Fix login"
+    $ ade new chat --mode chat --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash --prompt "Fix login"
     $ ade new cli --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --prompt "Review the diff"
 
   Flags:
@@ -2502,11 +2558,21 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --from <default|primary|branch>  Start source for an auto-created lane.
     --on <remote|local|uncommitted>  Which copy of the branch to start from.
     --existing-branch <branch>  Work directly on an existing branch.
-    --type <subagent|peer>  From an agent the new session is a subagent that
-                           reports back (the default). peer: no report.
+    --no-report            From an agent the new session is a subagent that
+                           reports back (the default). --no-report: it does not.
     --provider <name>      Chat: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
                            CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity; CLI mode also accepts shell.
-    --model <id>           Runtime model id.
+    --model <id>           Required (not for a plain shell). The model id:
+                           ade chat models --provider <p> --text, or
+                           ade harness routes --text for any model in any harness.
+    --instance <email>     Which Claude/Codex account signs in (ade providers accounts list --text).
+    --custom-provider <name>, --credential <id>, --via <source>
+                           Where the model runs: a saved Custom provider, a stored
+                           API key, or any model in any harness. Optional; at most
+                           one (ade help providers, ade help harness).
+    --title <text>         The session's title.
+    --print-config         Print what would launch, and launch nothing.
+    --machine <name>       Start it on another of your machines (ade help machines).
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
     --droid-permission-mode <m>
@@ -2527,8 +2593,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Spawn lineage:
     From an agent, the new session is a subagent of that agent's chat and
-    reports back to it. --type peer: no report. --no-parent: a separate chat,
-    only when the user asks. Plain shell terminals do not record lineage.
+    reports back to it. --no-report: it does not report back. --no-parent: a
+    separate chat, only when the user asks. Plain shell terminals do not record
+    lineage.
 
   Compatibility:
     ade chat create still creates persistent Work chats.
@@ -2543,17 +2610,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode chat --lane auto --lane-name fix-login --prompt "Fix login"
-    $ ade new chat --mode chat --lane <lane> --prompt-file brief.md
-    $ ade new chat --mode chat --lane <lane> --prompt-file - <<'EOF'
+    $ ade new chat --mode chat --lane auto --lane-name fix-login --provider codex --model openai/gpt-5.6-sol --prompt "Fix login"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --prompt-file brief.md
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --prompt-file - <<'EOF'
+
+  --model is required (not for a plain shell); see ade help new for every flag.
 
   The first message is --prompt <text>, text after --, or --prompt-file <path|->.
 
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
   From an agent, the new session is a subagent of that agent's chat and
-  reports back to it. --type peer: no report. --no-parent: a separate chat,
-  only when the user asks. --parent <sessionId> names a different parent.
+  reports back to it. --no-report: it does not report back. --no-parent: a
+  separate chat, only when the user asks. --parent <sessionId> names a
+  different parent.
   Without --permissions, both modes start where a chat would: a full-auto
   parent's subagent runs full-auto, otherwise the project's default (full
   access unless configured), never above the agent that started it.
@@ -2570,7 +2640,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                    [--from default|primary|<branch>] [--on remote|local|uncommitted] [--branch-name <branch>]
                    [--existing-branch <branch>]   (no new branch: the lane works directly on <branch>)
                    [--template <id>|--no-template]
-                   [--linear-issue-json '{...}' [--start-chat --type subagent|peer --provider <p> --model <m>]]
+                   [--linear-issue-json '{...}' [--start-chat [--no-report] --provider <p> --model <m>]]
                    [--linear-issues-json '[{...},{...}]'] [--text|--json]
 ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
@@ -2621,7 +2691,7 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade lanes deleted restore <id>                Bring one back, uncommitted files included: as a new lane, or into its lane if space was freed
     $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
     $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
-    $ ade lanes share --lane <lane> --text          List the lane's shares (people, state, preset, risk, end, made by)
+    $ ade lanes share --lane <lane> --text          List the lane's shares (people, state, access, risk, end, made by)
     $ ade lanes share --lane <lane> --add <email> [--ends 1h|today|1w|<ISO date>] [--hide-machines] [--hide-models]
                                                     Share the lane with another ADE account, Watch only: they see
                                                     its chats and sessions and cannot send, run or approve anything.
@@ -2729,6 +2799,7 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   and deployments still resolve through ADE's own row.
 
     $ ade prs list --text                           List PRs known to ADE
+    $ ade prs show <pr> --text                      One PR: state, branch, checks and reviews
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
     $ ade prs create --lane <lane> --base main      Open a GitHub PR from a lane; prints GitHub + ADE URLs
     $ ade prs create --lane <lane> --title "fix(web): new chats no longer spike CPU" --body-file pr.md
@@ -2752,6 +2823,7 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade prs link --lane <lane> --url <pr-url>     Point a lane at an existing GitHub PR
     $ ade prs checks <pr> --text                    Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
     $ ade prs comments <pr> --text                  Show unresolved review work
+    $ ade prs reply <pr> --thread <id> --body "..." Reply to one review thread
     $ ade prs comment-edit <pr> --comment <id> --body "..."
                                                     Edit an issue or review comment
     $ ade prs comment-react <pr> --comment <id> --content +1
@@ -2788,10 +2860,10 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start -- npm test                   Without --lane: your own lane, else the project's primary lane
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
-    $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --prompt "fix tests"
-    $ ade shell start-cli codex --lane <lane> --permission-mode edit
-    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --prompt "fix tests"
-    $ ade shell start --provider claude --lane <lane> --message "fix tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --permission-mode edit --prompt "fix tests"
+    $ ade shell start-cli codex --lane <lane> --model openai/gpt-5.6-sol --permission-mode edit
+    $ ade shell start-cli claude --lane <lane> --model claude-opus-5-5 --reasoning-effort ultracode --prompt "fix tests"
+    $ ade shell start --provider claude --model claude-opus-5-5 --lane <lane> --message "fix tests"
     $ ade shell start --lane <lane> --chat-session <owner-session-id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
     $ ade shell resize <pty-id> --cols 120 --rows 36
@@ -2800,20 +2872,28 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
 
-  On another machine (this chat's work copy there: a hidden worktree at your
-  commit, which must be on origin, with your uncommitted changes applied):
+  On another machine (in your code there: ADE keeps a copy of this chat's code
+  on that machine, at your commit, which must be pushed, with your uncommitted
+  changes applied):
     $ ade shell start --machine <name> --wait -- npm test   Stream the output, exit with its code
-    $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
-    $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
-    $ ade shell clean --machine <name>               Delete this chat's work copy there
-  Each call opens a new shell there and syncs the copy again, so put all the
-  steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+    $ ade shell start --machine <name> --code as-is -- git status   Use your code there as it is now
+    $ ade shell start --machine <name> --code fresh --wait -- npm test   Throw away changes made there first
+    $ ade shell clean --machine <name>               Delete your code there and everything it held
+    $ ade shell start --machine <name> --clone --wait -- npm test   Clone this repo there first if it is missing (GitHub)
+    $ ade shell start --machine <name> --no-code --wait -- nvidia-smi   No code needed: an empty folder there, removed after
+  --code synced (the default) makes your code there match this checkout before
+  the command runs. Each call opens a new shell there and syncs again, so put
+  all the steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+  Files made there that git does not track (a generated .xcodeproj, a pushed
+  file) stay through a sync; edits there to the repo's files refuse it.
+  --no-code needs no commit or push, only a project open in ADE there.
   The shell runs in the background there; no list on that machine shows it.
   To move a file, use ade files push|pull --machine <name> (see ade files
   --help), never base64 or echo inside a shell command.
 
-  Provider CLI launches accept --instance for Claude/Codex accounts and
-  --preset or --credential for saved harness brains.
+  Provider CLI launches take --model (required) and accept --instance for a
+  Claude/Codex account, and --custom-provider, --credential or --via for where
+  the model runs (ade help providers).
 
   Prefer ade new chat --mode cli for new tracked provider CLI sessions. start-cli
   remains as the compatibility command behind that mode.
@@ -2872,13 +2952,15 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade files quick-open --workspace <lane> -q src --include-directories
                                                     Also offer folders; they print with a trailing slash
 
-  On another machine (this chat's work copy there, the one ade shell start
-  --machine uses; paths there are relative to it, / or \\ both work):
-    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (made at your commit if missing)
+  On another machine (your code there, the one ade shell start --machine uses;
+  paths there are relative to its top, / or \\ both work):
+    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (your code is put there at your commit if missing)
     $ ade files pull --machine <name> build/out.log ./logs/          Copy a file back here
   Up to 256 MiB per file, sent in chunks and checked by sha256. Use these, not
-  base64 in shell commands. A pushed file is a change made there, so the next
-  ade shell start --machine needs --no-sync (keep it) or --discard (drop it).
+  base64 in shell commands. A pushed file git does not track stays there
+  through the next sync (--code fresh drops it); one that replaces a file of
+  the repo is a change made there, so the next sync needs --code as-is or
+  --code fresh.
 `,
   session: `${ADE_BANNER}
   Session lifecycle
@@ -2933,7 +3015,7 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade chat list --personal --text               List machine personal chats (no project required)
     $ ade chat list --machine "Mac mini" --text     Chats on another machine on your account (this repo's checkout there)
     $ ade chat list --all-machines --text           Every machine in one table, with a machine column
-    $ ade chat create --machine "Mac mini" --lane <lane there> --type subagent --prompt "…"
+    $ ade chat create --machine "Mac mini" --lane <lane there> --provider <p> --model <id> --type subagent --prompt "…"
                                                     Start a child on another machine; it wakes you when done.
                                                     Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
@@ -2955,7 +3037,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     only level "enforced" means the caller's servers are the whole
                                                     surface. A server the provider cannot carry fails the create.
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --prompt "fix the tests"
-    $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
+    $ ade chat create --from-linear-issue ENG-431 --provider <p> --model <id> --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait
                                                     Start a chat in a brand-new lane (the desktop composer's new-lane
@@ -2968,7 +3050,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     or work directly on --existing-branch <branch>. Also:
                                                     --lane-name, --title, --effort, --permissions, --fast, --launch-id,
                                                     --lane-id (UUIDs; generated when omitted). The chat is top-level;
-                                                    use 'ade new chat --lane auto --type ...' for a parented child.
+                                                    use 'ade new chat --lane auto --model <id> --type ...' for a parented child.
     $ ade chat launches --text                      List new-lane launches running or recently finished on the brain
     $ ade chat launch-status <launch>               One launch's stages (exit 1 when unknown or expired)
     $ ade chat launch-cancel <launch>               Cancel a launch before its agent starts; deletes its chat, lane, and branch
@@ -3046,7 +3128,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     declines inline and stages instead. Other providers
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
-    $ ade chat wait <session> --for idle --timeout-ms 600000
+    $ ade chat wait <session> --for idle --timeout 10m   (or --timeout-ms 600000)
     $ ade chat events <session> --since <cursor> --json   Turn starts and ends, input needed, errors since a cursor; answers at once
     $ ade chat notify <session> --url https://… --token-stdin   POST there each time it goes idle, needs input or fails (7 days)
     $ ade chat notify <session> --list | --cancel
@@ -3075,9 +3157,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Start a new chat with an extra handoff note
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
-    $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
+    $ ade chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
                                                     Move the chat to another machine on your account (brief by
-                                                    default; --fork carries full history). --machine names the
+                                                    default; --fork carries full history). --to names the
                                                     DESTINATION; the chat moves from here. Without --model it
                                                     keeps the chat's own model. Add --effort,
                                                     --permissions, --include-changes (bring uncommitted and unpushed
@@ -3091,9 +3173,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
     $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
     $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
-    $ ade chat move --machine "Mac Studio" <session> [<session>…]
+    $ ade chat move --to "Mac Studio" <session> [<session>…]
                                                     Move selected chats, their lanes, and descendants in tree order
-    $ ade chat move --machine "Mac Studio" --all    Move every active Work chat in this project and its lanes
+    $ ade chat move --to "Mac Studio" --all         Move every active Work chat in this project and its lanes
                                                     Defaults to fork; --brief sends a short context summary.
                                                     An agent batch with any unrelated chat waits for one approval
                                                     card on the caller's chat, listing the chats; deny cancels all.
@@ -3121,6 +3203,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Preview or apply file/context rewind
     $ ade chat subagents <session> --text           List child agents for a chat
     $ ade chat scheduled-work pause <session>        Pause this agent session's durable wakeups/cron/loops
+    $ ade chat scheduled-work resume <session>       Re-arm them
     $ ade chat scheduled-work status <session>       Inspect pause state + next armed wake (resume to re-arm)
     $ ade chat scheduled-work list [session]         List durable jobs (--all includes recent history)
     $ ade chat scheduled-work create --in 12m --prompt "<text>"
@@ -3133,7 +3216,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
                                                     <session> is the chat that owns the job (first), <id> the job id;
                                                     also --session <s> --id <id>. Inside a chat, 'cancel <id>' is enough.
-    $ ade new chat --mode cli --lane <lane> --provider claude --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
+    $ ade new chat --mode cli --lane <lane> --provider claude --model claude-opus-5-5 --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
                                                     Attach a Linear issue to a chat/CLI session
@@ -3156,32 +3239,34 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Also a CLI session: one at its prompt stops (Resume picks it up); mid-turn it finishes first.
                                                     ade chat delete <cli-session> stops it and keeps it in Recently deleted.
                                                     --dry-run prints the call without running it
-    $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
-    $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
+    $ ade chat demote <session>                     Take over a subagent: its reports to its parent stop
+    $ ade chat promote <session>                    Make the chat report back to its parent again
     $ ade chat set-parent <session> --parent <chat> Make <chat> this chat's parent; reports go there from the next turn
-                                                    [--type subagent|peer]; a chat whose old parent is gone becomes a subagent
+                                                    [--no-report]; a chat whose old parent is gone becomes a subagent
     $ ade chat set-parent <session> --no-parent     Detach the chat from its parent
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
-    $ ade new chat --mode cli --lane <lane> --parent <session> --type subagent --prompt "fix"
+    $ ade new chat --mode cli --lane <lane> --provider <p> --model <id> --parent <session> --type subagent --prompt "fix"
                                                     Start a tracked provider CLI session
 
   Create flags:
     --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-    --model <id>            Model id, also sent as modelId for runtime parity.
+    --model <id>            Required. The model id (ade chat models --provider <p> --text).
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
     --prompt <text>         Create the chat, then send this as the first message.
     --prompt-file <path|->  The first message from a file, or stdin with -. Use it
                             for multi-line text (ade.cmd on Windows cuts arguments
                             at the first line break).
-    --instance <email>      Provider account, by its email (its id works too);
-                            --credential <id> and --preset <id> pick a saved
-                            credential or harness preset (ade help providers).
+    --instance <email>      Provider account, by its email (its id works too).
+    --custom-provider <name>, --credential <id>, --via <source>
+                            Where the model runs: a saved Custom provider, a
+                            stored API key, or any model in any harness. Pass
+                            one (ade help providers, ade help harness).
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
-                            The host may lower it for an agent caller (stderr note).
+                            ADE may lower it for an agent: never above the agent's own access (stderr note).
     --fast                  Request fast service tier when the model advertises it.
     --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard   Disable fast mode explicitly.
@@ -3191,8 +3276,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
     --no-parent             A separate top-level chat that does not report back.
                             Only when the user asks for one.
-    --type <subagent|peer>  subagent (default with a parent) reports back after
-                            every turn; peer leaves quiet notes.
+    --no-report             With a parent, the chat does not report back. By
+                            default it reports back after every turn.
 
   Transcript read flags:
     --limit <n>             Messages per bounded window (default 50, max 100).
@@ -3238,7 +3323,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --personal              Use machine-owned chats instead of a project/lane chat.
     --lane <lane>           Lane/worktree for the chat.
     --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-    --model <id>            Model id, also sent as modelId for runtime parity.
+    --model <id>            Required. The model id (ade chat models --provider <p> --text;
+                            ade harness routes --text for any model in any harness).
     --reasoning-effort <v>  Reasoning tier when supported by the model.
     --effort <v>            Alias for --reasoning-effort.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
@@ -3250,11 +3336,16 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --instance <email>      Which provider account to run on, by its email (ade
                             usage limits and ade providers accounts list show
                             them; an account's id works too).
-    --credential <id>       A saved API credential for the provider.
-    --preset <id>           A saved harness preset. See ade help providers.
+    --credential <id>       A stored API key for the provider.
+    --custom-provider <name>
+                            A saved Custom provider, by name or id (or a route id
+                            from ade harness route-id); --model must be its own
+                            model (ade harness providers --text lists them).
+    --via <source>          Any model in any harness: opencode-go, key:<provider>,
+                            account:<claude|codex>:<id>, ... (ade help harness).
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
-                            From an agent, the host may lower it: a chat never
+                            From an agent, ADE may lower it: a chat never
                             gets more access than the agent's own chat or its
                             parent. chat create then prints a note on stderr.
     --droid-permission-mode <m>
@@ -3274,8 +3365,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                             tracked agent shell (the spawning chat).
     --no-parent             A separate top-level chat that does not report back.
                             Only when the user asks for one.
-    --type <subagent|peer>  subagent (default with a parent) reports back after
-                            every turn; peer leaves quiet notes.
+    --no-report             With a parent, the chat does not report back. By
+                            default it reports back after every turn.
 
   With --lane, chat create warns on stderr when another chat on that lane is in
   a turn or waiting on input: the two chats then share one worktree.
@@ -3378,8 +3469,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --in <duration>         One-shot relative time: 45s, 90m, 2h, 3d, 1w.
     --target <session>      Send into an existing chat.
     --new-chat --lane <lane>  Create a chat in that lane at the fire time; also needs --provider and --model.
-    --provider <id> --model <runtime-facing model string> --model-id <id>
-                            Captured for a new chat; --model is required with --new-chat.
+    --provider <id> --model <id>
+                            Captured for a new chat; both are required with --new-chat
+                            (ade chat models --provider <p> --text lists the ids).
     --permission <mode>     Captured permission mode.
     --thinking <effort>     Captured reasoning effort.
     --machine <key>         Which machine delivers it. Omitted: whichever runtime is up.
@@ -3502,6 +3594,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade apple shutdown                End this chat's simulator session (the device stays on)
     $ ade apple shutdown --force        Force-release a session owned by another chat
     $ ade apple launch --force          Take the simulator over in one step
+    $ ade apple launch --foreground     Also open Simulator.app (stays closed by default; the device shows in ADE)
     $ ade apple actions --text                   List every callable ios_simulator action
 
   ADE discovers Xcode projects from the project root and apps/* folders.
@@ -3521,8 +3614,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade apple preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Device sessions:
-    $ ade apple open-device --text      Boot a simulator with no app
-    $ ade apple open-device --no-window Keep the device headless
+    $ ade apple open-device --text      Boot a simulator with no app (headless; shown in ADE)
+    $ ade apple open-device --window    Also open Simulator.app (every booted simulator gets a window)
     $ ade apple device-session --text   Report the tracked device session
     $ ade apple settings --text         Read appearance, text size, a11y
     $ ade apple close-device --text     Release the device session
@@ -3771,6 +3864,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade screen type "hello" --submit --text       Type, then press Return
     $ ade screen press s --ctrl --text              One key, with modifiers
     $ ade screen scroll down --amount 5 --text      Scroll the screen or a target
+    $ ade screen drag --from <handle|x,y> --to <handle|x,y> --text
+                                                    Drag inside a window (--real: onto another app)
+    $ ade screen present main | display --text      Show the lane's windows on the user's screen, and back (Mac)
     $ ade screen wait --label "Done" --timeout 8000 --text
 
   Modifier keys: --ctrl, --alt, --shift, and --win (Windows key, Windows only).
@@ -3788,6 +3884,21 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade screen record stop --text                 Prints the duration and a cite line
     $ ade screen proof --caption "<what>" --text    Capture, re-observe, file proof
   --out must be inside the lane worktree or the OS temp dir (%TEMP%, $TMPDIR).
+
+  Another machine: --machine <name> drives that machine's screen (Mac,
+  Windows or Linux Desktop) with no lane there. The screen belongs to your
+  code there (ADE puts it there at your commit on the first start or open;
+  the commit must be pushed), and this chat owns it, as for a lane. status,
+  windows and stream status put nothing there. --lane is refused. screen
+  proof and a captioned recording are filed in this chat's proof drawer.
+  lease and start --shared ask in a chat on that machine, so they are
+  refused; use the default input instead. ade devices use screen@<name>
+  sends every screen command there with no flag (ade devices --text lists
+  the screens you can use). ade shell clean --machine <name> deletes your
+  code there and closes its screen.
+    $ ade screen start --machine "MacBook Pro" --text
+    $ ade screen open TextEdit --machine "MacBook Pro" --text
+    $ ade screen proof --caption "<what>" --machine "MacBook Pro" --text
 
   Errors (each prints its next step):
     WINDOWS_DESKTOP_SETUP_REQUIRED   ask the user to set up (pane card)
@@ -4042,14 +4153,21 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   start a second emulator or cut every lane's emulator off adb.
 
   Another machine: --machine <name> runs the command on that machine, with
-  no new lane. Without --lane, the emulator there works for this chat's work
-  copy (a hidden worktree at your commit, made on first use; the commit must
-  be on origin). Every view of this chat then shows it in the Android tool.
-  status and devices make no copy. --lane <id> uses a lane on that machine
+  no new lane. Without --lane, the emulator there runs your code there (ADE
+  puts it there at your commit on first use; the commit must be pushed).
+  Every view of this chat then shows it in the Android tool. status and
+  devices put nothing there. --lane <id> uses a lane on that machine
   instead. Files are written there; a screenshot, a recording or a proof
   bundle is also filed in this chat's proof drawer. install and launch with
-  --gradle or --apk, and test, send your checkout and its uncommitted changes
-  first (an APK that git ignores does not travel: use --gradle).
+  --gradle or --apk, test and preview make your code there match this
+  checkout first, uncommitted changes included (--code as-is uses it as it
+  is, --code fresh throws away changes made there; an APK that git ignores
+  does not travel: use --gradle). A Gradle build or a boot there waits as
+  long as it would here and prints "still running" lines to stderr
+  meanwhile. --clone sets this repo up there first. The emulator's lease is
+  let go when this chat's turn ends (it stays on). ade devices use
+  android@<name> sends every android command there with no flag (ade
+  devices --text lists the emulators you can use).
     $ ade android device-create --profile medium_phone --machine windows --text
     $ ade android tap 540 1200 --machine windows --text
 
@@ -4141,7 +4259,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   delay. --session <id> guards a command against a session that has changed.
 
   Capture and proof:
-    $ ade app-control screenshot --text            Capture without filing proof
+    $ ade app-control screenshot --out shot.png    Capture without filing proof (--text alone saves to a temp file)
     $ ade app-control snapshot --text              Screenshot + DOM element refs
     $ ade app-control inspect --x 120 --y 420      Hit-test a point, add nothing to the chat
     $ ade app-control select --x 120 --y 420       Add that element to the chat as context
@@ -4180,6 +4298,20 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade app-control minimize --text              Minimize the app window
     $ ade app-control drivers --text               Driver availability (cdp, computer_use)
     $ ade app-control actions --text               List every callable app_control action
+
+  Another machine: --machine <name> runs the app on that machine with no lane
+  there. The app runs from your code there (at your commit; the commit must
+  be pushed), and this chat owns the session, as for a lane. launch makes
+  your code there match this checkout first, uncommitted changes included
+  (--code as-is uses it as it is, --code fresh throws away changes made
+  there) and runs in a terminal there; --cwd must be inside this checkout and
+  is the same folder there. status and drivers put nothing there. --lane is
+  refused. proof and a captioned recording are filed in this chat's proof
+  drawer. ade devices use app@<name> sends every app-control command there
+  with no flag. ade shell clean --machine <name> deletes your code there and
+  stops its app.
+    $ ade app-control launch --command "npm run dev" --cwd apps/desktop --machine windows --text
+    $ ade app-control observe --map --machine windows --text
 `,
   browser: `${ADE_BANNER}
   ADE browser
@@ -4270,7 +4402,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   --user-data-dir <dir> checks a browser started with that profile directory.
 
   Tabs and navigation:
-    $ ade browser status --text           Every tab on every machine, owners, and the route
+    $ ade browser status --text           Every tab on every machine, owners, and the route (alias: tabs)
     $ ade browser authorize --tab <id>    Ask the user to let this chat use the ADE browser
     $ ade browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade browser panel --text            Open the Work sidebar Browser panel
@@ -4619,14 +4751,14 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade usage limits --machine "Mac mini" --text  Another machine's accounts (it must be online)
     $ ade usage limits --all-machines --text        Every machine on the account in one table
     $ ade usage snapshot --text                     Cached quota, source/stale state, and history
-    $ ade usage stats --preset 7d --text            Tokens, cost, and activity for a range
+    $ ade usage stats --range 7d --text             Tokens, cost, and activity for a range
     $ ade usage stats --scope account --text        Merge every machine on the account
-    $ ade usage stats --scope project --preset 30d  This project only
+    $ ade usage stats --scope project --range 30d   This project only
     $ ade usage stats --scope account --force       Skip the account fan-out rate floor
     $ ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z
     $ ade usage turns --days 14 --text              Per-turn ledger by provider, account, model
     $ ade usage turns --group-by provider --recent 20  Add the 20 newest turns
-    $ ade usage stats --by lane --preset 30d --text  ADE chat spend by chat, lane, or account
+    $ ade usage stats --by lane --range 30d --text   ADE chat spend by chat, lane, or account
     $ ade usage stats --provider claude --model claude-opus-5-5 --text  One model's cost, trend, price
     $ ade usage prices --text                       Custom model prices and Map to mappings
     $ ade --role cto usage prices set my-preview --map-to claude-opus-5-5  Count a model as another
@@ -4792,44 +4924,55 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     For cloud logins, inspect \`ai.opencodeAuthMethods\` first, then call
     \`ai.opencodeCloudConnect\` with \`ade actions run\` and the current prompt answers.
 
-  Use an account for one session:
-    $ ade chat create --lane <lane> --provider claude --instance you@example.com
-    $ ade new chat --mode cli --lane <lane> --provider claude --instance you@example.com
+  Every launch names its model with --model. Use an account for one session:
+    $ ade chat create --lane <lane> --provider claude --model claude-opus-5-5 --instance you@example.com
+    $ ade new chat --mode cli --lane <lane> --provider claude --model claude-opus-5-5 --instance you@example.com
 
-  Use a saved custom setup (agent + model, from Settings > Providers > Custom)
-  or one stored API key for one session:
-    $ ade chat create --lane <lane> --preset hp_opus_work
-    $ ade new chat --mode cli --lane <lane> --provider claude --preset hp_opus_work
-    $ ade chat create --lane <lane> --provider claude --credential openrouter
-  --preset and --credential are mutually exclusive. In CLI mode a preset on
-  cursor launches the native CLI instead: Cursor takes no key or endpoint from
-  the launch.
+  Use a saved Custom provider (Settings › Providers › Custom providers) or one
+  stored API key for one session:
+    $ ade harness providers --text                      Your Custom providers, with the flags to launch each
+    $ ade chat create --lane <lane> --custom-provider "Opus at work" --model claude-opus-5-5
+    $ ade new chat --mode cli --lane <lane> --custom-provider "Opus at work" --model claude-opus-5-5
+    $ ade chat create --lane <lane> --provider claude --model claude-opus-5-5 --credential openrouter
+  --custom-provider, --credential and --via each say where the model runs; pass
+  at most one. A Custom provider runs one model, so --model must be its own. In CLI
+  mode a Custom provider on Cursor launches the native CLI instead: Cursor
+  takes no key or endpoint from the launch.
 
-  Use any model you pay for in any harness, without saving a preset:
+  Use any model you pay for in any harness, with nothing saved:
     $ ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
-    $ ade harness routes --harness claude --text        Everything each harness can reach
+    $ ade harness routes --provider claude --text       Everything each harness can reach
 `,
   harness: `${ADE_BANNER}
-  ADE custom providers: any model you pay for, inside any harness
+  Any model you pay for, inside any harness
+
+  A harness is the agent program ADE runs (the --provider list: claude, codex,
+  opencode, droid, pi, cursor, ...). Every launch names its model with --model.
 
   See what each harness can reach (your Claude, Codex and Grok sign-ins,
   OpenCode sign-ins, stored keys), and how:
-    $ ade harness routes --harness claude --text
+    $ ade harness routes --provider claude --text
 
-  Launch ad-hoc, no saved preset (chat or CLI):
+  Launch any of them with nothing saved (chat or CLI):
     $ ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
     $ ade new chat --mode cli --lane <lane> --provider codex --via opencode-go --model glm-5.3
     $ ade chat create --lane <lane> --provider droid --via account:codex:codex --model gpt-6-luna
     --via takes opencode-go | opencode | opencode:<provider> | key:<provider>[:<credentialId>]
       | account:<claude|codex>:<accountId> | subscription:<claude|codex|grok|kimi|devin|muse>
+    Model ids are examples; the routes list has the current ones.
+
+  Custom providers: a harness, where it runs and one model, saved under a name
+  in Settings › Providers › Custom providers. Launch one by name with its model:
+    $ ade harness providers --text                      Each one, with the exact flags to launch it
+    $ ade chat create --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
 
   Check one pairing with a one-token request (records the verdict for routing):
-    $ ade harness test --harness claude --via opencode-go --model deepseek-v4.1-flash --text
+    $ ade harness test --provider claude --via opencode-go --model deepseek-v4.1-flash --text
 
-  Run a custom provider in your own terminal (the env is printed, never saved;
+  Run a Custom provider in your own terminal (the env is printed, never saved;
   the harness command it defines runs ADE's pinned copy, never one on your PATH):
-    $ eval "$(ade harness env <preset-id> --text)" && claude --model <model>
-    PS> ade harness env <preset-id> --shell pwsh --text | Out-String | Invoke-Expression
+    $ eval "$(ade harness env "DeepSeek on Claude" --text)" && claude --model <model>
+    PS> ade harness env "DeepSeek on Claude" --shell pwsh --text | Out-String | Invoke-Expression
     The output contains the provider token. Do not paste it anywhere.
 `,
   proxy: `${ADE_BANNER}
@@ -4847,34 +4990,34 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade proxy logout <login-id> --text         Remove a separate proxy login (not a lent one)
 `,
   secrets: `${ADE_BANNER}
-  ADE project secrets
+  ADE secrets
 
-  Secrets are encrypted under the active project's .ade/secrets directory.
-  Account-linked projects default to account storage, but only when the account
-  vault is reachable: otherwise the secret is saved for this machine and the
-  list says so. List output never reveals values and shows where each secret
-  lives.
+  A project's secrets live in Passwords & Secrets, encrypted on the person's
+  account and synced to every computer they sign in to: the secrets for every
+  project, then this project's own over them. A secret saved with
+  --storage device stays on this computer only. List output never reveals
+  values and shows where each secret lives.
 
   Agents use secrets, they never read them: \`ade secrets exec\` runs a command
-  with the project's secrets (and Passwords' secrets for it) in its
-  environment, on this computer, and prints its output with every value masked
-  (also in base64 and URL-encoded form; values under 8 characters are not
-  masked, and it says which). \`get\` and \`export\` are the person's, in the ADE
-  desktop app. --env NAME (repeatable) passes only those; --timeout 10m.
+  with the project's secrets in its environment, on this computer, and prints
+  its output with every value masked (also in base64 and URL-encoded form;
+  values under 8 characters are not masked, and it says which). \`get\` is the
+  person's; export is in the ADE desktop app (Settings › Passwords & Secrets).
+  --env NAME (repeatable) passes only those; --timeout 10m.
 
     $ ade secrets list --text                       List secret names and metadata
-    $ ade secrets pull --text                       Take account secrets from the vault
     $ ade secrets exec -- npm run deploy            Run a command with the secrets in its env
     $ ade secrets exec --env STRIPE_API_KEY -- sh -c 'stripe login --api-key "$STRIPE_API_KEY"'
-    $ ade secrets set STRIPE_API_KEY --value sk_... Save in account storage
-    $ ade secrets set TOKEN --value local --storage device
+    $ ade secrets set STRIPE_API_KEY --value sk_... Save for this project, on every computer
+    $ ade secrets set TOKEN --value local --storage device   This computer only
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
     $ ade secrets set TOKEN --value-file token.txt
     $ ade secrets delete STRIPE_API_KEY             Delete a secret
 
   Asking the person for a secret (agents: use this, never ask them to paste a
   secret into chat). The chat shows a private card; the value is saved to this
-  project's secrets and only the outcome comes back — never the value:
+  project's secrets (Passwords & Secrets) and only the outcome comes back —
+  never the value:
 
     $ ade secrets request GITHUB_WEBHOOK_SECRET --reason "Signs GitHub deliveries to your triage webhook" --generate
       --generate offers a strong random value first; --timeout 30m (default)
@@ -4882,7 +5025,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
     $ ade secrets request CLOUDFLARE_API_TOKEN --reason "Deploys the worker with wrangler" --delivery file --request-id cf-deploy
       For a token a shell CLI needs once, not kept in ADE. The person picks
-      "Temporary private file" or "Save to ADE secrets" (your --delivery is the
+      "Temporary private file" or "Save to Passwords & Secrets" (your --delivery is the
       default). A file answer prints {name, saved: true, delivery: "file",
       file, expiresAt}: an owner-only file on this chat's machine. Read it only
       inside a command: CLOUDFLARE_API_TOKEN="$(cat <file>)" wrangler deploy.
@@ -4897,14 +5040,14 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   them and never see them: nothing here prints a password or a secret value.
 
     $ ade passwords list --text      Sites, usernames and kinds of saved items
-    $ ade passwords status --text    Whether Passwords is on for this computer
+    $ ade passwords status --text    Whether Passwords & Secrets is on for this computer
     $ ade passwords sync --text      Pull what other computers saved
 
   To sign in to a site, open its sign-in page and run \`ade browser signin\`:
   ADE types the saved login into the page. With no saved login, the person is
   asked in your chat. To create an account, run \`ade browser signup\` on the
   sign-up form: ADE makes the password, saves it, and types it in. Changing
-  and removing items is the person's, in Settings › Passwords.
+  and removing items is the person's, in Settings › Passwords & Secrets.
 `,
   code: `${ADE_BANNER}
   ADE sign-in codes
@@ -4962,11 +5105,12 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   card only after they say yes.
 `,
   cloud: `${ADE_BANNER}
-  ADE Cloud machines
+  ADE Cloud computers
 
-  Computers on your ADE Cloud account. They sleep on their own after a few
-  idle minutes and use no hours while asleep; a --machine call or opening a
-  lane wakes one in about a second. <machine> is its name or id. Sizes: small,
+  Each computer on your ADE Cloud account is one of your machines: reach it
+  with --machine <its name>. They sleep on their own after a few idle minutes
+  and use no hours while asleep; a --machine call or opening a lane wakes one
+  in about a second. <machine> is its name or id. Sizes: small,
   medium, large, x-large (or 2x4, 4x8, 4x16, 4x32). --kind vm is a full
   computer: Android (medium or bigger) and Docker.
 
@@ -4974,6 +5118,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     plan, hours, disk, computers, each lane, sizes, agent limits
     $ ade cloud list --text                       Computers, state, size, how fast each uses hours
     $ ade cloud hours --text                      Plan, hours left, reset date, earned hours
+    $ ade cloud work-state --text                 On a cloud computer: which lanes have work not on GitHub yet
     $ ade cloud invite --text                     Your invite link: friends joined, rewards left, hours earned
                                                     (enter a friend's invite in Settings › Account)
     $ ade cloud create --kind vm --shape medium --name "android vm"
@@ -4988,7 +5133,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat
     $ ade cloud delete <machine>                  Gone for good, files and all
     $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off)
-    $ ade chat create --machine cloud --size medium --prompt "…"
+    $ ade chat create --machine cloud --size medium --provider <p> --model <id> --prompt "…"
                                                     A new lane on its own new computer (sizes: small, medium,
                                                     large, xlarge); the chat starts there
     $ ade lanes create --machine cloud --name <n>  The lane alone on its own new computer, no chat
@@ -5084,6 +5229,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Attach an issue to the current CLI session
     $ ade linear issues --this-session --text       List issues attached to this session
     $ ade linear issue ENG-431 --text               Read one issue (defaults to the session's attached issue)
+    $ ade linear issue-comments ENG-431 --text      Its comments
+    $ ade linear picker-data --text                 Workflow states and users (for set-state and assign)
+    $ ade linear inbox [--all] --text               Your Linear notifications (unread unless --all)
     $ ade linear comment "Pushed a fix, running CI" Comment on the attached issue (or pass an id first)
     $ ade linear comment ENG-431 "Done"             Comment on a specific issue
     $ ade linear set-state ENG-431 "In Progress"    Move an issue to a state (name in the issue's team, or id)
@@ -5193,8 +5341,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade --role cto automations linear-ingress disconnect
                                                      Remove the Linear webhook (CTO only)
     $ ade automations linear-ingress poll [--text]    Drain queued Linear events now
-    $ ade automations webhook create --preset github [--filter body.action=opened]
-                 [--prompt "…"] [--model <id>] [--in-this-chat | --chat <id>]
+    $ ade automations webhook create --service github --model <id> [--filter body.action=opened]
+                 [--prompt "…"] [--in-this-chat | --chat <id>]
+                 (--model is the chat each event starts; not needed with --in-this-chat / --chat)
                  [--name "…"] [--no-signature] [--any-request] [--confirm <key>]
                                                      One step: a private URL + the rule, then paste steps
     $ ade automations webhook list [--text]          Every webhook automation, its URL and last delivery
@@ -5218,8 +5367,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Create, reuse, or require lane at trigger time;
                                                     pr-branch runs in the trigger PR's own branch
     --lane <id>                                     Target lane (only with --lane-mode reuse)
-    --lane-name-preset <issue-title|issue-num-title|pr-title-author|custom>
-    --lane-name-template <string>                   Template (only with preset custom)
+    --lane-naming <issue-title|issue-num-title|pr-title-author|custom>
+    --lane-name-template <string>                   Template (only with --lane-naming custom)
     --allow-legacy                                  Pass legacy create-lane action through
                                                     unchanged (default: auto-migrate to laneMode)
 
@@ -5445,7 +5594,7 @@ function readDroidPermissionMode(args: string[]): AgentChatDroidPermissionMode |
 /**
  * The non-consuming half of `readValue`: the NAME from `names` that the first
  * matching token in `args` spells, whether it was written bare (`--type`) or
- * joined (`--type=peer`), or `null` when no token matches.
+ * joined (`--type=subagent`), or `null` when no token matches.
  *
  * Two callers need to know a flag was WRITTEN without taking it out of argv —
  * `readAgentSpawnLineage` distinguishing an explicit parent from an ambient
@@ -5483,7 +5632,7 @@ const REMOVED_LAUNCH_FLAGS: Readonly<Record<string, string>> = {
 /** `chat handoff` / `chat fork` flag spellings that were removed. */
 const REMOVED_HANDOFF_FLAGS: Readonly<Record<string, string>> = {
   "--model-id": "--model",
-  "--to-machine": "--machine",
+  "--to-machine": "--to",
   "--where": "--options",
   "--handoff-note": "--note",
   "--from-turn": "--through-turn",
@@ -5529,6 +5678,47 @@ function rejectFlagOperands(args: readonly string[], names: readonly string[]): 
   }
 }
 
+/**
+ * `chat handoff|move`: the machine the chat moves to, `--to <machine>` or
+ * `--machine`, its older spelling. Null when neither is given; both at once,
+ * twice, or with no machine is refused.
+ */
+function readMoveDestination(args: string[]): string | null {
+  const names = ["--to", "--machine"] as const;
+  const flags = flagNamesOutsideFreeText(args);
+  if (flags.has("--to") && flags.has("--machine")) {
+    throw new CliUsageError("--to and --machine name the same destination: use --to.");
+  }
+  // The first destination flag outside free text: `--note "--to"` is a note.
+  let at = -1;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") break;
+    const name = token.split("=")[0]!;
+    if ((names as readonly string[]).includes(name)) {
+      at = index;
+      break;
+    }
+    if (!token.includes("=") && (FREE_TEXT_VALUE_FLAGS.has(name) || VALUE_CARRIER_FLAGS.has(name))) index += 1;
+  }
+  let value: string | null = null;
+  if (at >= 0) {
+    const token = args[at]!;
+    if (token.includes("=")) {
+      value = token.slice(token.indexOf("=") + 1);
+      args.splice(at, 1);
+    } else {
+      const next = args[at + 1];
+      value = next == null || next.startsWith("--") ? "" : next;
+      args.splice(at, next == null || next.startsWith("--") ? 1 : 2);
+    }
+  }
+  if (value !== null && !value.trim()) throw new CliUsageError("--to needs a machine name or key (see `ade machines list`).");
+  const left = flagNamesOutsideFreeText(args);
+  if (value !== null && names.some((name) => left.has(name))) throw new CliUsageError("Name one destination with --to.");
+  return value;
+}
+
 export function readValue(args: string[], names: readonly string[]): string | null {
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
@@ -5536,7 +5726,23 @@ export function readValue(args: string[], names: readonly string[]): string | nu
     const matchedName = names.find(
       (name) => token === name || token.startsWith(`${name}=`),
     );
-    if (!matchedName) continue;
+    if (!matchedName) {
+      // `"--type peer"` quoted as one argument: the flag and its value never
+      // split, so the flag would be ignored without a word. Say so instead.
+      // Not when the token is another flag's value (`--title "--type peer"`).
+      const previous = args[index - 1];
+      const isValue = previous != null && VALUE_CARRIER_FLAGS.has(previous);
+      const glued = isValue
+        ? undefined
+        : names.find((name) => token.startsWith(name) && /^\s+\S+$/.test(token.slice(name.length)));
+      if (glued) {
+        const value = token.slice(glued.length).trim();
+        throw new CliUsageError(
+          `"${token}" reached ADE as one argument. Pass ${glued} and its value as two: ${glued} ${value}, or ${glued}=${value}.`,
+        );
+      }
+      continue;
+    }
     if (token.includes("=")) {
       args.splice(index, 1);
       return token.slice(token.indexOf("=") + 1);
@@ -5871,7 +6077,7 @@ function envLaneIdForLaneCommand(): string | null {
   const laneId = process.env.ADE_LANE_ID?.trim() || null;
   if (isRemoteWorkLaneId(laneId)) {
     throw new CliUsageError(
-      "This shell runs in a work copy that a chat on another machine uses here, so it has no ADE lane. "
+      "This shell runs in the code a chat on another machine keeps here, so it has no ADE lane. "
       + "Pass --lane <lane> to act on a lane of this machine.",
     );
   }
@@ -6270,10 +6476,32 @@ export function readIntOption(
 ): number | undefined {
   const value = readValue(args, names);
   if (value == null) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    throw new CliUsageError(`${names[0]} must be an integer.`);
+  // Whole digits only: `parseInt` read `--timeout 25m` as 25.
+  if (!/^-?\d+$/.test(value.trim())) {
+    throw new CliUsageError(`${names[0]} must be an integer (got "${value}").`);
   }
+  return Number.parseInt(value, 10);
+}
+
+const TIMEOUT_UNIT_MS: Record<string, number> = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 };
+
+/**
+ * A wait's timeout in milliseconds: `--timeout-ms <ms>` (an integer), or
+ * `--timeout <duration>` (`25m`, `90s`, `1h`, `600000ms`; a bare number is
+ * milliseconds, as for `--timeout-ms`). Anything else is refused, never
+ * misread: `--timeout 25m` was once read as 25 ms.
+ */
+export function readTimeoutMsOption(args: string[], fallback: number): number {
+  const ms = readIntOption(args, ["--timeout-ms"]);
+  const value = readValue(args, ["--timeout"]);
+  if (ms != null) return ms;
+  if (value == null) return fallback;
+  const match = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h)?$/i.exec(value.trim());
+  if (!match) {
+    throw new CliUsageError(`--timeout takes a duration such as 25m, 90s, 1h or 600000ms (got "${value}"); --timeout-ms takes milliseconds.`);
+  }
+  const parsed = Math.round(Number(match[1]) * TIMEOUT_UNIT_MS[(match[2] ?? "ms").toLowerCase()]!);
+  if (!Number.isSafeInteger(parsed)) throw new CliUsageError(`--timeout "${value}" is too long.`);
   return parsed;
 }
 
@@ -6388,9 +6616,35 @@ function readJsonPayloadOption(
   return inline ?? fromFile;
 }
 
+/**
+ * The words and the list command for an id a caller left out. Callers pass the
+ * field name they read (`sessionId`), which means nothing to the agent that
+ * forgot it; this says what to pass and where to find one.
+ */
+const REQUIRED_VALUE_HINTS: Readonly<Record<string, string>> = {
+  sessionId: "a chat or CLI session id (`ade chat list --text` lists them)",
+  workSessionId: "a chat, CLI or shell session id (`ade chat list --text` lists chats and CLI sessions; `ade terminal list --text` lists shells)",
+  launchProvider: `a provider (--provider ${CHAT_PROVIDER_IDS.join(" | ")}), or shell for a plain terminal`,
+  signInProvider: "the provider to sign in, as the first word (ade providers sign-in claude --remote)",
+  proxyProvider: "--provider claude or --provider codex",
+  chatSessionId: "a chat id (`ade chat list --text` lists them)",
+  prId: "a PR number or id (`ade prs list --text` lists them)",
+  prUrlOrNumber: "a PR URL or number (`ade prs list --text` lists them)",
+  laneId: "a lane id or name (`ade lanes list --text` lists them)",
+  targetLaneId: "the lane to move to (`ade lanes list --text` lists them)",
+  targetModelId: "the model to hand it to, --model <id> (`ade chat models --text` lists them)",
+  model: "--model <id> (`ade chat models --text` lists them)",
+  provider: `a provider (--provider ${CHAT_PROVIDER_IDS.join(" | ")})`,
+  turnId: "a turn id (`ade chat transcript <chat> --json` shows them)",
+  templateId: "a lane template id (`ade lanes templates list --text` lists them)",
+  terminalId: "a terminal id, --terminal <id> (`ade terminal list --text` lists them)",
+  browserSessionId: "a browser session id, --browser-session <id> (`ade browser status --text` lists them)",
+};
+
 export function requireValue(value: string | null, label: string): string {
   if (value && value.trim().length > 0) return value.trim();
-  throw new CliUsageError(`${label} is required.`);
+  const hint = REQUIRED_VALUE_HINTS[label];
+  throw new CliUsageError(hint ? `Pass ${hint}.` : `${label} is required.`);
 }
 
 /**
@@ -6749,7 +7003,7 @@ function deriveLinearKickoffPrompt(issue: JsonObject): string {
 }
 
 /** Every spelling that reaches `buildMacDesktopPlan`, the `ade screen` family. */
-const SCREEN_COMMAND_NAMES: ReadonlySet<string> = new Set([
+export const SCREEN_COMMAND_NAMES: ReadonlySet<string> = new Set([
   "screen", "mac-desktop", "mac-desk", "desk", "windows-desktop", "windows-desk",
 ]);
 
@@ -7412,18 +7666,18 @@ function buildLaneSharePlan(args: string[]): CliPlan {
   const laneId = requireValue(readLaneId(args) ?? envLaneIdForLaneCommand(), "laneId");
   const add = readValue(args, ["--add"]);
   const remove = readValue(args, ["--remove"]);
-  const preset = readValue(args, ["--preset"]);
+  const preset = readValue(args, ["--access", "--preset"]);
   const endsValue = readValue(args, ["--ends"]);
   const hideMachines = readFlag(args, ["--hide-machines"]);
   const hideModels = readFlag(args, ["--hide-models"]);
   // One flag per meaning: an unknown word is refused, never read as a list.
   const unknown = args.find((word) => !PARSED_SWITCHES.has(word));
   if (unknown !== undefined) {
-    throw new CliUsageError(`ade lanes share does not take ${unknown}. Use --lane, --add <email>, --remove <email|grant id>, --ends, --preset watch, --hide-machines or --hide-models.`);
+    throw new CliUsageError(`ade lanes share does not take ${unknown}. Use --lane, --add <email>, --remove <email|grant id>, --ends, --access watch, --hide-machines or --hide-models.`);
   }
   if (add && remove) throw new CliUsageError("Pass --add or --remove, not both.");
   if (!add && (preset != null || endsValue != null || hideMachines || hideModels)) {
-    throw new CliUsageError("--preset, --ends, --hide-machines and --hide-models go with --add <email>.");
+    throw new CliUsageError("--access, --ends, --hide-machines and --hide-models go with --add <email>.");
   }
   if (add) {
     if (preset != null && preset.trim().toLowerCase() !== "watch") throw new CliUsageError(LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE);
@@ -7516,7 +7770,7 @@ function buildLaneSharePlan(args: string[]): CliPlan {
     formatText: (value) => {
       const shares = (Array.isArray(shareObject(value).shares) ? shareObject(value).shares as unknown[] : []).filter(isRecord);
       return renderTable(
-        ["person", "state", "preset", "risk", "ends", "made by", "grant"],
+        ["person", "state", "access", "risk", "ends", "made by", "grant"],
         shares.map((share) => [
           share.receiverEmail ?? "-",
           share.state ?? "-",
@@ -8132,16 +8386,23 @@ function buildLanePlan(args: string[]): CliPlan {
 }
 
 /**
- * Read the model/provider/effort launch config shared by `--start-chat` and
- * `ade chat create`. Returns only the keys the caller explicitly set so the
- * daemon can fall back to its own defaults.
+ * Read the chat launch config of `lanes create --start-chat`. The model is
+ * required like on every launch; the other keys are sent only when set.
  */
 function readChatLaunchConfig(args: string[]): JsonObject {
   refuseRemovedFlags(args, REMOVED_LAUNCH_FLAGS);
   const modelArg = readValue(args, ["--model"]);
+  const providerRaw = readValue(args, ["--provider"]);
+  const selected = readLaunchIdentitySelectors(args, { provider: providerRaw, model: modelArg });
+  const { instanceId, presetId, credentialId } = selected;
+  const provider = requireChatProvider(selected.provider);
+  if (!modelArg?.trim()) throw new CliUsageError(launchModelRequiredMessage(provider));
   const fastMode = readFastModeFlag(args);
   const config: JsonObject = {};
-  maybePut(config, "provider", readValue(args, ["--provider"]));
+  maybePut(config, "provider", provider);
+  maybePut(config, "instanceId", instanceId);
+  maybePut(config, "presetId", presetId);
+  maybePut(config, "credentialId", credentialId);
   maybePut(config, "model", modelArg);
   maybePut(config, "modelId", modelArg);
   maybePut(config, "reasoningEffort", readValue(args, ["--reasoning-effort", "--effort"]));
@@ -8167,37 +8428,60 @@ function readChatLaunchConfig(args: string[]): JsonObject {
 
 
 /**
- * The three launch-identity selectors every session-creating command accepts:
- * which provider account signs in (`--instance`), and which saved brain the
- * session launches under (`--preset` XOR `--credential`).
+ * The launch-identity selectors every session-creating command accepts: which
+ * provider account signs in (`--instance`), and where the model runs: a saved
+ * Custom provider (`--custom-provider`), a stored API key (`--credential`), or
+ * any model in any harness (`--via`). The last three are exclusive.
  *
- * One reader so the parsing, the flag aliases, and the usage error cannot drift
- * between `ade new`, `ade shell start-cli`, and `ade chat create`. Call it AFTER
- * `takeArgsAfterTerminator`, so a selector written after `--` stays part of the
- * prompt rather than being consumed as a flag. The `--instance`/provider rule
- * is not checked here: `collectLaunchArgs` owns it, because only the merged
- * args know the provider the session actually launches under. Callers read the
- * spawn-lineage flags first, so a command that gets both wrong is answered with
- * the lineage error before the `--instance` one.
+ * A Custom provider runs one model, and the caller still passes it with
+ * `--model` like on every launch; a different model is refused here with the
+ * right one named. The name is resolved against this machine's copy of the
+ * account's Custom providers and only the id travels: a launch sent to another
+ * machine (`--machine`) is resolved again there against that machine's synced
+ * copy, which refuses an id it does not hold yet with its own clear error.
+ * (An agent cannot carry the provider itself: that would write to the
+ * person's list.)
+ *
+ * One reader for every launch command, so the parsing and the usage errors
+ * cannot drift between them.
+ * Call it AFTER `takeArgsAfterTerminator`, so a selector written after `--`
+ * stays part of the prompt rather than being consumed as a flag. The
+ * `--instance`/provider rule is not checked here: `collectLaunchArgs` owns it,
+ * because only the merged args know the provider the session launches under.
  */
 function readLaunchIdentitySelectors(
   args: string[],
   consumed: { provider?: string | null; model?: string | null } = {},
-): { instanceId: string | null; presetId: string | null; credentialId: string | null } {
+): { instanceId: string | null; presetId: string | null; credentialId: string | null; provider: string | null } {
+  if (findFlagName(args, ["--preset", "--preset-id"])) throw new CliUsageError(PRESET_FLAG_GONE_MESSAGE);
+  // Lower-cased like every launch reads it, so `--provider Claude` matches.
+  const providerFlag = (consumed.provider ?? peekValue(args, ["--provider"]))?.trim().toLowerCase() || null;
   const instanceId = readValue(args, ["--instance", "--instance-id"])?.trim() || null;
   const via = readValue(args, ["--via"])?.trim() || null;
   const credentialId = readValue(args, ["--credential", "--credential-id"])?.trim() || null;
-  let presetId = readValue(args, ["--preset", "--preset-id"])?.trim() || null;
+  // An empty `--custom-provider ""` is refused below, never read as absent.
+  const customRef = readValue(args, ["--custom-provider"]);
+  const chosen = [via ? "--via" : null, customRef !== null ? "--custom-provider" : null, credentialId ? "--credential" : null].filter(Boolean);
+  if (chosen.length > 1) {
+    throw new CliUsageError(`${chosen.join(" and ")} each say where the model runs. Pass at most one.`);
+  }
   if (via) {
-    if (presetId || credentialId) {
-      throw new CliUsageError("--via names a brain on its own. Drop --preset / --credential.");
-    }
-    presetId = routePresetIdFromFlags(args, via, consumed);
+    // The route is built for `--provider` (or `--harness`); the launch runs that same harness.
+    const harness = providerFlag ?? peekValue(args, ["--harness"])?.trim().toLowerCase() ?? null;
+    return { instanceId, presetId: routePresetIdFromFlags(args, via, consumed), credentialId, provider: harness };
   }
-  if (presetId && credentialId) {
-    throw new CliUsageError("--preset and --credential name two different brains. Pass one.");
+  if (customRef === null) return { instanceId, presetId: null, credentialId, provider: providerFlag };
+  if (providerFlag && !(CHAT_PROVIDER_IDS as readonly string[]).includes(providerFlag)) {
+    throw new CliUsageError(`--provider must be one of: ${CHAT_PROVIDER_IDS.join(", ")}. With --custom-provider it may be left out.`);
   }
-  return { instanceId, presetId, credentialId };
+  const found = findCustomProvider(readHarnessPresetsFromMachine(resolveMachineAdeDir()), customRef);
+  if (!found.ok) throw new CliUsageError(found.message);
+  const harnessProblem = customProviderHarnessProblem(found.preset, providerFlag);
+  if (harnessProblem) throw new CliUsageError(harnessProblem);
+  const modelProblem = customProviderModelProblem(found.preset, consumed.model ?? peekValue(args, ["--model", "--model-id"]) ?? peekArgModel(args));
+  if (modelProblem) throw new CliUsageError(modelProblem);
+  // A Custom provider names its harness, so `--provider` may be left out.
+  return { instanceId, presetId: found.preset.id, credentialId, provider: providerFlag ?? found.preset.harness };
 }
 
 /**
@@ -8231,6 +8515,20 @@ export function parseViaSourceSpec(spec: string): HarnessPresetSource {
   );
 }
 
+/**
+ * A model given through the `--arg` / `--arg-json` / `--input-json` escape
+ * hatch (`model`, `modelId`, or `chat.create.model`), read from a copy so the
+ * launch still reads the flags itself.
+ */
+function peekArgModel(args: readonly string[]): string | null {
+  const input = collectGenericObjectArgs([...args]);
+  const create = isRecord(input.chat) && isRecord(input.chat.create) ? input.chat.create : {};
+  for (const value of [input.model, input.modelId, create.model, create.modelId]) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
 /** Like `readValue`, but leaves the flag in place for the caller that owns it. */
 function peekValue(args: readonly string[], names: readonly string[]): string | null {
   return readValue([...args], names);
@@ -8257,10 +8555,11 @@ function routePresetIdFromFlags(
 ): string {
   // Peek, never consume: the launch command still reads --provider and
   // --model itself (the model rides the chat as its display id).
+  // `--harness` is the spelling `ade harness routes|test` print; accept it here too.
   const harness = (consumed.provider ?? peekValue(args, ["--provider", "--harness"]))?.trim();
   const model = (consumed.model ?? peekValue(args, ["--model"]))?.trim();
   if (!harness || !isHarnessPresetBody(harness)) {
-    throw new CliUsageError(`--via needs --provider <harness> (${ROUTABLE_HARNESSES.join(", ")}).`);
+    throw new CliUsageError(`--via needs --provider <name> (${ROUTABLE_HARNESSES.join(", ")}).`);
   }
   if (!model) throw new CliUsageError("--via needs --model <model id> (see `ade harness routes --harness <h> --text`).");
   const effort = peekValue(args, ["--reasoning-effort", "--effort"])?.trim();
@@ -8272,18 +8571,65 @@ function routePresetIdFromFlags(
   });
 }
 
+/** The Custom providers saved on this machine, as `ade harness providers` lists them. */
+function customProviderRows(presets: HarnessPreset[] | null): JsonObject[] {
+  return (presets ?? []).map((preset) => {
+    const row: JsonObject = {
+      name: presetLabel(preset),
+      id: preset.id,
+      provider: preset.harness,
+      via: formatViaSourceSpec(preset.source),
+      model: preset.model,
+    };
+    maybePut(row, "reasoningEffort", preset.reasoningEffort);
+    if (preset.subagentModel && preset.subagentModel !== "inherit") row.subagentModel = preset.subagentModel;
+    return row;
+  });
+}
+
+function formatHarnessProviders(value: unknown): string {
+  const rows = isRecord(value) && Array.isArray(value.customProviders) ? value.customProviders.filter(isRecord) : [];
+  if (!rows.length) {
+    return "No Custom providers on this machine. Make one in Settings › Providers › Custom providers,\n"
+      + "or run any model in any harness with --via (ade harness routes --text).\n";
+  }
+  const lines = ["Custom providers (launch one with both flags; the model must be its own):"];
+  for (const row of rows) {
+    const name = asString(row.name) ?? "";
+    const model = asString(row.model) ?? "";
+    lines.push(`  ${name}`);
+    lines.push(`    --custom-provider ${JSON.stringify(name)} --model ${model}`);
+    const effort = asString(row.reasoningEffort);
+    const subagent = asString(row.subagentModel);
+    lines.push(`    ${harnessBodyLabel(asString(row.provider) ?? "")} · --via ${asString(row.via) ?? ""}${effort ? ` · effort ${effort}` : ""}${subagent ? ` · subagents ${subagent}` : ""} · id ${asString(row.id) ?? ""}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 function buildHarnessPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.harness ?? topLevelHelpText() };
   }
   const sub = firstStandalonePositional(args) ?? "routes";
   const rest = args;
+  if (sub === "providers") {
+    return {
+      kind: "static",
+      formatter: "harness-providers",
+      value: { customProviders: customProviderRows(readHarnessPresetsFromMachine(resolveMachineAdeDir())) },
+    };
+  }
   if (sub === "env") {
+    if (findFlagName(rest, ["--preset", "--preset-id"])) throw new CliUsageError(PRESET_FLAG_GONE_MESSAGE);
     const via = readValue(rest, ["--via"])?.trim() || null;
-    const presetId = readValue(rest, ["--preset", "--preset-id"])?.trim()
-      || (via ? routePresetIdFromFlags(rest, via) : null)
-      || firstStandalonePositional(rest);
-    if (!presetId) throw new CliUsageError("ade harness env needs a custom provider id (or --via with --provider and --model).");
+    const customRef = readValue(rest, ["--custom-provider"])?.trim() || (via ? null : firstStandalonePositional(rest));
+    let presetId = via ? routePresetIdFromFlags(rest, via) : null;
+    if (!presetId && customRef) {
+      const found = findCustomProvider(readHarnessPresetsFromMachine(resolveMachineAdeDir()), customRef);
+      if (!found.ok) throw new CliUsageError(found.message);
+      presetId = found.preset.id;
+    }
+    if (!presetId) throw new CliUsageError("ade harness env needs a Custom provider (`ade harness env \"<name>\"`; `ade harness providers --text` lists them), or --via with --provider and --model.");
     // PowerShell by default on Windows, where `export` lines mean nothing.
     const shell = readValue(rest, ["--shell"])?.trim() || (process.platform === "win32" ? "pwsh" : undefined);
     if (shell && shell !== "zsh" && shell !== "bash" && shell !== "pwsh") {
@@ -8303,7 +8649,9 @@ function buildHarnessPlan(args: string[]): CliPlan {
   }
   if (sub === "routes" || sub === "list" || sub === "models") {
     const harness = readValue(rest, ["--harness", "--provider"])?.trim() || null;
-    if (harness && !isHarnessPresetBody(harness)) throw new CliUsageError(`Unknown harness: ${harness}`);
+    if (harness && !isHarnessPresetBody(harness)) {
+      throw new CliUsageError(`Unknown harness '${harness}'. Harnesses: ${ROUTABLE_HARNESSES.join(", ")}.`);
+    }
     return {
       kind: "execute",
       label: harness ? `harness routes ${harness}` : "harness routes",
@@ -8337,9 +8685,11 @@ function buildHarnessPlan(args: string[]): CliPlan {
   if (sub === "route-id" || sub === "id") {
     const via = readValue(rest, ["--via"])?.trim();
     if (!via) throw new CliUsageError("ade harness route-id needs --via <source> --provider <harness> --model <id>.");
-    return { kind: "static", value: { presetId: routePresetIdFromFlags(rest, via) } };
+    // `presetId` is the old key, kept for scripts that read it.
+    const routeId = routePresetIdFromFlags(rest, via);
+    return { kind: "static", value: { routeId, presetId: routeId } };
   }
-  throw new CliUsageError(`Unknown harness command: ${sub}. Try: ade harness routes | env | test | route-id`);
+  throw new CliUsageError(`Unknown harness command: ${sub}. Try: ade harness routes | providers | env | test | route-id`);
 }
 
 function readFastModeFlag(args: string[]): boolean | undefined {
@@ -8559,15 +8909,17 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   // One options object per surface, so the profile the flag is checked against
   // and the profile the merged arg bag is checked against cannot drift.
   const launchOpts = { allowShell: mode !== "chat" };
-  const provider = (mode === "chat" ? requireChatProvider(providerRaw) : requireLaunchProfile(providerRaw, launchOpts)) ?? "codex";
+  const selected = readLaunchIdentitySelectors(args, {
+    provider: providerRaw,
+    model: modelArg,
+  });
+  const { instanceId, presetId, credentialId } = selected;
+  // An unnamed provider (no --provider, no Custom provider) is Codex.
+  const provider = (mode === "chat" ? requireChatProvider(selected.provider) : requireLaunchProfile(selected.provider, launchOpts)) ?? "codex";
   const copilotFlags = readCopilotLaunchFlags(args, provider);
   if (mode !== "chat" && Object.keys(copilotFlags).length > 0) {
     throw new CliUsageError("--copilot-permission-mode, --copilot-context-tier and --copilot-auto-tier apply to chat mode only.");
   }
-  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, {
-    provider: providerRaw,
-    model: modelArg,
-  });
   if (mode === "cli") {
     const effectivePermissionMode = permissionMode ?? "default";
     if (!isTrackedCliPermissionMode(effectivePermissionMode)) {
@@ -8604,8 +8956,8 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         title,
         surface: readValue(args, ["--surface"]) ?? "work",
         ...(instanceId ? { instanceId } : {}),
-        // A saved harness preset (body + brain + model). CLI mode passes the
-        // same id; the runtime is what applies the locked gate for the four
+        // A Custom provider (harness + where it runs + model). CLI mode passes
+        // the same id; the runtime is what applies the locked gate for the four
         // harnesses whose CLI cannot take an outside key.
         ...(presetId ? { presetId } : {}),
         ...(credentialId ? { credentialId } : {}),
@@ -8965,7 +9317,7 @@ function buildChatCreateConfigPreview(
     // The dry run resolves the mode before the host's ceiling, so from an
     // agent it can promise more than the chat gets.
     ...(asString(process.env.ADE_CHAT_SESSION_ID) || asString(input.orchestrationParentSessionId)
-      ? { permissionNote: "The host may lower this mode: an agent cannot start a chat with more access than its own chat or parent has. `chat create` prints a note when it does." }
+      ? { permissionNote: "ADE may lower this mode: an agent cannot start a chat with more access than its own chat or parent has. `chat create` prints a note when it does." }
       : {}),
   };
 }
@@ -8984,7 +9336,7 @@ function buildChatCreateConfigPreview(
  * command the flag names the parent LANE, which is meaningful with or without
  * a chat.
  */
-const CHAT_ONLY_LINEAGE_FLAGS = [...SPAWN_TYPE_FLAGS, ...CHAT_PARENT_FLAGS];
+const CHAT_ONLY_LINEAGE_FLAGS = [...SPAWN_TYPE_FLAGS, ...NO_REPORT_FLAGS, ...CHAT_PARENT_FLAGS];
 
 function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPlan {
   const explicitName = readValue(args, ["--name"]);
@@ -9514,7 +9866,7 @@ function buildGitPlan(args: string[]): CliPlan {
       clear: "stash_clear",
     };
     const toolName = toolNameByAction[action];
-    if (!toolName) throw new CliUsageError(`Unknown stash action '${action}'.`);
+    if (!toolName) throw new CliUsageError(`Unknown stash action '${action}'. Use push, list, apply, pop, drop or clear (ade help git).`);
     const stashRefTool =
       toolName === "stash_apply" || toolName === "stash_pop" || toolName === "stash_drop";
     const common = withLane({
@@ -10701,9 +11053,14 @@ function buildShellPlan(args: string[], inWorkCopy = false, remote: ShellRemoteT
       steps: [actionCallStep("result", "release_remote_work_copy", {})],
       formatText: (result: unknown) => {
         const value = unwrapActionEnvelope(result);
-        return isRecord(value) && value.released === true
-          ? "Deleted this chat's work copy on that machine."
-          : "This chat had no work copy on that machine.";
+        if (!isRecord(value) || value.released !== true) return "This chat had no code on that machine, so nothing was deleted.";
+        // A machine with two checkouts of the repository may have held a copy in each.
+        const removed = Array.isArray(value.removed)
+          ? value.removed.filter(isRecord).map((entry) => asString(entry.path)).filter((entry): entry is string => entry != null)
+          : [];
+        return removed.length
+          ? `Deleted your code on that machine, and everything it held:\n${removed.map((entry) => `  ${entry}`).join("\n")}`
+          : "Deleted your code on that machine, and everything it held.";
       },
     };
   }
@@ -10876,11 +11233,11 @@ function buildCliSessionStartPlan(
     providerArg ??
       readValue(args, ["--provider", "--profile"]) ??
       firstStandalonePositional(args),
-    "provider",
+    "launchProvider",
   );
   const launchOpts = { allowShell: true };
   const provider = requireLaunchProfile(rawProvider, launchOpts);
-  if (!provider) throw new CliUsageError("provider is required.");
+  if (!provider) throw new CliUsageError(`Pass ${REQUIRED_VALUE_HINTS.launchProvider}.`);
   const promptArgs = takeArgsAfterTerminator(args);
   const initialInput = promptArgs
     ? promptArgs.join(" ").trim()
@@ -11398,7 +11755,7 @@ function buildSessionPlan(args: string[]): CliPlan {
   const fallbackSessionId = readSessionId(args);
   const sessionId = requireValue(
     positionalSessionId ?? fallbackSessionId,
-    "sessionId",
+    "workSessionId",
   );
 
   if (sub === "show" || sub === "status" || sub === "get") {
@@ -11541,23 +11898,28 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const foreground = readFlag(args, ["--foreground"]);
   const wait = readFlag(args, ["--wait"]);
   const printConfig = readFlag(args, ["--print-config"]);
-  const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
+  const timeoutMs = readTimeoutMsOption(args, 10 * 60 * 1000);
   const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 1_000) ?? 1_000;
   if (timeoutMs <= 0) throw new CliUsageError("chat launch --timeout-ms must be greater than zero.");
   if (pollIntervalMs <= 0) throw new CliUsageError("chat launch --poll-interval-ms must be greater than zero.");
-  const provider = requireChatProvider(readValue(args, ["--provider"])) ?? "codex";
-  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, {
-    provider,
+  // Text after `--` is the prompt, never flags: split it off before reading selectors.
+  const promptTail = takeArgsAfterTerminator(args);
+  const providerRaw = readValue(args, ["--provider"]);
+  const selected = readLaunchIdentitySelectors(args, {
+    provider: providerRaw,
     model: modelArg,
   });
+  const { instanceId, presetId, credentialId } = selected;
+  const provider = requireChatProvider(selected.provider) ?? "codex";
   const launchId = launchIdFlag == null ? randomUUID() : requireCliUuid(launchIdFlag, "--launch-id");
   const laneId = laneIdFlag == null ? randomUUID() : requireCliUuid(laneIdFlag, "--lane-id");
   const explicitPrompt = readChatTextFile(args, ["--prompt-file", "--text-file"], ["--prompt", "--text", "--message"])
     ?? readValue(args, ["--prompt", "--text", "--message"]);
   const input = collectGenericObjectArgs(args);
-  const prompt = requireValue(explicitPrompt ?? (args.join(" ").trim() || null), "prompt");
+  const prompt = requireValue(explicitPrompt ?? (promptTail?.join(" ").trim() || args.join(" ").trim() || null), "prompt");
 
-  const create: JsonObject = { provider, model: modelArg ?? "" };
+  const create: JsonObject = { provider };
+  maybePut(create, "model", modelArg);
   maybePut(create, "modelId", modelArg);
   maybePut(create, "reasoningEffort", reasoningEffort);
   maybePut(create, "permissionMode", permissionMode);
@@ -11621,6 +11983,10 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const effectiveProvider = nestedOverride ?? topLevelOverride ?? provider;
   launchArgs.provider = effectiveProvider;
   mergedChat.create.provider = effectiveProvider;
+  // Checked on the merged plan, so `--arg chat.create.model=<id>` counts too.
+  if (launchModelMissing(effectiveProvider, mergedChat.create.model, mergedChat.create.modelId)) {
+    throw new CliUsageError(launchModelRequiredMessage(effectiveProvider));
+  }
 
   if (printConfig) {
     return {
@@ -11823,10 +12189,15 @@ export function formatChatLaunch(value: unknown): string {
   const machine = wrapper && isRecord(wrapper.machine) ? wrapper.machine : null;
   // A lane launch (`ade lanes create --machine cloud`) starts no chat.
   const noun = snapshot.kind === "lane" ? "lane" : "chat";
+  // What the running stage says now ("…running again after the disk grew (restart 2)").
+  const live = (Array.isArray(snapshot.stages) ? snapshot.stages.filter(isRecord) : []).find((stage) => stage.status === "running");
+  const liveDetail = live ? asString(live.detail) : null;
   return renderKeyValues(`ADE ${noun} launch ${asString(snapshot.launchId) ?? ""} · ${asString(snapshot.phase) ?? "unknown"}`, [
     ["lane", `${asString(snapshot.laneName) ?? ""} (${asString(snapshot.laneId) ?? ""})`],
     // A lane on ADE Cloud: the computer made for it.
     ["machine", machine ? `ADE Cloud · ${asString(machine.name) ?? ""}${asString(machine.machineKey) ? ` (${asString(machine.machineKey)})` : ""}` : null],
+    // Why its computer is bigger than the size asked for ("Medium: this repo's setup needed more than 4 GB before.").
+    ["size", isRecord(snapshot.cloud) ? asString(snapshot.cloud.sizeNote) : null],
     ["approve", wrapper?.approvalUrl],
     ["base", snapshot.baseRef],
     ["branch", snapshot.branchRef],
@@ -11834,6 +12205,7 @@ export function formatChatLaunch(value: unknown): string {
     ["model", snapshot.modelId],
     ["template", snapshot.templateName],
     ["stages", formatChatLaunchStages(snapshot)],
+    ["now", liveDetail ? `${asString(live!.id) ?? "?"}: ${liveDetail}` : null],
     ["queued", queued > 0 ? `${queued} message${queued === 1 ? "" : "s"}` : null],
     ["error", snapshot.error],
     ["wait", wrapper?.error === "timed_out" ? `timed out after ${String(wrapper.elapsedMs)}ms` : null],
@@ -12083,7 +12455,7 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "move") {
     // `--note --no-changes` reports the missing note instead of eating
     // `--no-changes` and moving the changes the person asked to leave behind.
-    rejectFlagOperands(args, ["--machine", "--note", "--status", "--retry"]);
+    rejectFlagOperands(args, ["--note", "--status", "--retry"]);
     const statusBatchId = readValue(args, ["--status"]);
     const retryBatchId = readValue(args, ["--retry"]);
     if (statusBatchId !== null && retryBatchId !== null) {
@@ -12104,9 +12476,9 @@ function buildChatPlan(args: string[]): CliPlan {
         steps: [actionStep("result", "chat", action, { batchId })],
       };
     }
-    const machine = readValue(args, ["--machine"]);
-    if (machine === null || !machine.trim()) {
-      throw new CliUsageError("chat move requires --machine <name> (see `ade machines list`).");
+    const machine = readMoveDestination(args);
+    if (machine === null) {
+      throw new CliUsageError("chat move requires --to <machine> (see `ade machines list`).");
     }
     const allWorkOnThisMachine = readFlag(args, ["--all"]);
     const includeDescendants = !readFlag(args, ["--no-descendants"]);
@@ -12613,8 +12985,9 @@ function buildChatPlan(args: string[]): CliPlan {
     // use it. A chat is never a shell session, so `shell` is rejected here the
     // same way `ade new chat --mode chat` rejects it.
     const launchOpts = { allowShell: false };
-    const provider = requireChatProvider(readValue(args, ["--provider"]));
-    const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider, model: modelArg });
+    const selected = readLaunchIdentitySelectors(args, { provider: readValue(args, ["--provider"]), model: modelArg });
+    const { instanceId, presetId, credentialId } = selected;
+    const provider = requireChatProvider(selected.provider);
     const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
     const explicitLane = readLaneId(args);
     // Only `--machine cloud` takes these: the same id again follows that
@@ -12641,9 +13014,8 @@ function buildChatPlan(args: string[]): CliPlan {
       // "use the provider's default account" rule instead of receiving a
       // second, CLI-shaped way of saying the same thing.
       ...(instanceId ? { instanceId } : {}),
-      // Which saved harness preset the chat launches under. Same omit-when-
-      // unset rule as the account: the runtime keeps its own default instead
-      // of receiving a second, CLI-shaped way to say "no preset".
+      // Which Custom provider the chat launches under. Same omit-when-unset
+      // rule as the account.
       ...(presetId ? { presetId } : {}),
       ...(credentialId ? { credentialId } : {}),
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
@@ -12861,6 +13233,8 @@ function buildChatPlan(args: string[]): CliPlan {
       text: sendText,
       kind: "auto",
       ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
+      // One id per send: a retried call (a reconnect, an MCP client's retry) is not sent twice.
+      clientSendId: randomUUID(),
     }));
     return {
       kind: "execute",
@@ -12905,6 +13279,7 @@ function buildChatPlan(args: string[]): CliPlan {
             text: messageText,
             kind: normalizeChatMessageKind(selectedKinds[0] ?? null),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
+            clientSendId: randomUUID(),
           })),
         ),
       ],
@@ -13047,7 +13422,10 @@ function buildChatPlan(args: string[]): CliPlan {
       const any = readFlag(args, ["--any"]);
       readFlag(args, ["--all"]);
       const waitForValue = readValue(args, ["--for", "--state", "--until"]);
-      const timeoutMinutes = readIntOption(args, ["--timeout-minutes"], 24 * 60);
+      // `--timeout 2h` (or --timeout-ms) works here too, rounded up to minutes.
+      const timeoutDurationMs = readTimeoutMsOption(args, 0);
+      const timeoutMinutes = readIntOption(args, ["--timeout-minutes"])
+        ?? (timeoutDurationMs > 0 ? Math.ceil(timeoutDurationMs / 60_000) : 24 * 60);
       if (timeoutMinutes !== undefined && timeoutMinutes <= 0) {
         throw new CliUsageError("--timeout-minutes must be a positive number of minutes.");
       }
@@ -13068,7 +13446,7 @@ function buildChatPlan(args: string[]): CliPlan {
         })],
       };
     }
-    const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
+    const timeoutMs = readTimeoutMsOption(args, 10 * 60 * 1000);
     const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 2_000) ?? 2_000;
     if (timeoutMs <= 0) throw new CliUsageError("chat wait --timeout-ms must be greater than zero.");
     if (pollIntervalMs <= 0) throw new CliUsageError("chat wait --poll-interval-ms must be greater than zero.");
@@ -13297,7 +13675,7 @@ function buildChatPlan(args: string[]): CliPlan {
   }
   if (sub === "handoff" || sub === "fork") refuseRemovedFlags(args, REMOVED_HANDOFF_FLAGS);
   if (sub === "handoff") {
-    // The first control flag present wins. --machine with any of them is
+    // The first control flag present wins. --to (or --machine) with any of them is
     // refused earlier, by extractMachineTargeting.
     const controls = [
       { flags: ["--cancel"], label: "chat handoff cancel", action: "cancelCrossMachineHandoff" },
@@ -13306,10 +13684,7 @@ function buildChatPlan(args: string[]): CliPlan {
     ];
     const flagNames = flagNamesOutsideFreeText(args);
     const control = controls.find((entry) => entry.flags.some((flag) => flagNames.has(flag))) ?? null;
-    const handoffMachine = readValue(args, ["--machine"]);
-    if (handoffMachine !== null && !handoffMachine.trim()) {
-      throw new CliUsageError("--machine needs a machine name or key (see `ade machines list`).");
-    }
+    const handoffMachine = readMoveDestination(args);
     if (control) {
       return {
         kind: "execute",
@@ -13320,7 +13695,7 @@ function buildChatPlan(args: string[]): CliPlan {
     if (handoffMachine !== null) {
       // Move the chat to another machine on the account. The brain runs the
       // move (crossMachineHandoffOrchestrator); the chat's banner shows it.
-      // Never forwarded: --machine names the destination (cliMachineTargeting).
+      // Never forwarded: --to names the destination (cliMachineTargeting).
       // Free text first: a prompt of "--fork" is text, not a flag.
       const continuationPrompt = readValue(args, ["--prompt", "--note"]);
       if (readValue(args, ["--target-lane", "--target-lane-id"]) !== null) {
@@ -13636,11 +14011,15 @@ function buildChatPlan(args: string[]): CliPlan {
     if (detach === Boolean(parent)) {
       throw new Error("Pass --parent <session> to set the parent, or --no-parent to detach the chat.");
     }
-    const spawnKind = readValue(args, [...SPAWN_TYPE_FLAGS]);
-    if (spawnKind && spawnKind !== "subagent" && spawnKind !== "peer") {
-      throw new Error("--type must be subagent or peer.");
+    const noReport = readFlag(args, [...NO_REPORT_FLAGS]);
+    const typeArg = readValue(args, [...SPAWN_TYPE_FLAGS]);
+    // `peer` is the stored value behind `--no-report`; old scripts still pass it.
+    if (typeArg && typeArg !== "subagent" && typeArg !== "peer") {
+      throw new Error("--type must be subagent. Use --no-report for a chat that does not report back.");
     }
-    if (detach && spawnKind) throw new Error("--type needs a parent; drop it with --no-parent.");
+    if (noReport && typeArg === "subagent") throw new Error("--no-report cannot be combined with --type subagent.");
+    const spawnKind = noReport ? "peer" : typeArg;
+    if (detach && spawnKind) throw new Error("--type and --no-report need a parent; drop them with --no-parent.");
     return {
       kind: "execute",
       label: "chat set-parent",
@@ -13905,7 +14284,7 @@ function buildDraftScheduleInput(args: string[], existing: JsonObject | null): J
   // A new chat is created by the fire-time delivery, so it must carry its model
   // and provider up front — nobody is there to pick one when it fires.
   if (targetKind === "new" && !model) {
-    throw new CliUsageError("--new-chat needs --model <runtime-facing model string> (with --provider <id>).");
+    throw new CliUsageError(`--new-chat needs --model <id> (with --provider <id>). ${unknownModelHint(provider)}`);
   }
   if (targetKind === "new" && !provider) {
     throw new CliUsageError("--new-chat needs --provider <id> (with --model).");
@@ -14485,7 +14864,8 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
   if (sub === "create") {
     refuseRemovedFlags(args, REMOVED_LAUNCH_FLAGS);
     const model = readValue(args, ["--model"]);
-    const provider = readValue(args, ["--provider"]);
+    const selected = readLaunchIdentitySelectors(args, { provider: readValue(args, ["--provider"]), model });
+    const provider = selected.provider;
     const prompt = readValue(args, ["--prompt"]);
     const droidPermissionMode = readDroidPermissionMode(args);
     const copilotFlags = readCopilotLaunchFlags(args, provider ?? "");
@@ -14506,6 +14886,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
       ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       ...(prompt ? { kickoffText: prompt } : {}),
+      ...(selected.instanceId ? { instanceId: selected.instanceId } : {}),
+      ...(selected.presetId ? { presetId: selected.presetId } : {}),
+      ...(selected.credentialId ? { credentialId: selected.credentialId } : {}),
     });
     requireValue(asString(createArgs.provider), "provider");
     requireValue(asString(createArgs.model), "model");
@@ -14731,7 +15114,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       steps: [personalChatStep("getSummary", { sessionId })],
     };
   }
-  throw new CliUsageError(`Unhandled personal chat subcommand '${sub}'.`);
+  throw new CliUsageError(`Unknown personal chat command '${sub}'. Run ade help chat for the --personal commands.`);
 }
 
 /** `ade scene preview <file|->`: render a scene in the desktop and report what broke. */
@@ -15068,8 +15451,8 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
     // One file into or out of this chat's work copy on another machine
     // (cliRemoteWork.ts sends it in chunks); there is no local form.
     const usage = sub === "push"
-      ? "ade files push --machine <name> <local file> <path in the work copy there>"
-      : "ade files pull --machine <name> <path in the work copy there> <local file or folder>";
+      ? "ade files push --machine <name> <local file> <path in your code there>"
+      : "ade files pull --machine <name> <path in your code there> <local file or folder>";
     if (!machine) {
       throw new CliUsageError(`ade files ${sub} copies a file ${sub === "push" ? "to" : "from"} another machine: ${usage}. Here, use cp.`);
     }
@@ -16012,12 +16395,7 @@ async function runChatHereThenElsewhere(
   if (match?.isThisMachine && match.scope.kind === "project" && match.scope.rootPath
     && !pathsEqual(path.resolve(match.scope.rootPath), path.resolve(resolveRoots(parsed.options).projectRoot))) {
     const there = { ...routedToLocation(parsed, match), options: { ...parsed.options, projectRoot: match.scope.rootPath } };
-    const restoreShellScope = dropShellScopeForOtherProject(there.options);
-    try {
-      return await runParsedCli(there);
-    } finally {
-      restoreShellScope();
-    }
+    return await withShellScopeFor(there.options, () => runParsedCli(there));
   }
   if (!match) chatLookupMiss = report;
   if (!match && report.deleted) process.stderr.write(`${chatDeletedSentence(sessionId, report.deleted)}\n`);
@@ -16415,8 +16793,9 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "launch" || sub === "open") {
-    // Agent launches must not steal the user's screen, so the CLI parks
-    // Simulator.app in the background unless asked otherwise.
+    // Simulator.app stays closed (the device runs inside ADE) unless
+    // --foreground asks for it; sent either way, for an older brain that
+    // opened it unless told to keep it in the background.
     const foreground = readFlag(args, ["--foreground", "--open-simulator"]);
     const openDrawer = readFlag(args, ["--open-drawer", "--drawer"]);
     const follow = readFlag(args, ["--follow"]);
@@ -16517,6 +16896,9 @@ function buildIosSimulatorPlan(
         deviceUdid: readIosSimulatorDevice(args),
         ...rootArgs(),
         ...(noProof ? { proof: false } : {}),
+        // Read by a `--machine` call (cliMachineTargeting), which brings the
+        // shot back here into --out; taken off before the call leaves here.
+        ...(outPath ? { copyToCallerPath: outPath } : {}),
       }),
       ...(outPath ? { shapeResult: (values: JsonObject) => copyAppleScreenshotTo(outPath, values.result) } : {}),
     };
@@ -16870,13 +17252,16 @@ function buildIosSimulatorPlan(
     // Read once: the reader splices `--udid`/`--device` out of `args`, so a
     // second call in the value position returned null and dropped the target.
     const stopUdid = readIosSimulatorDevice(args);
-    return iosAction("Apple device stop", "deviceStop", {
-      chatSessionId: claimArgs.chatSessionId,
-      ...(stopUdid ? { udid: stopUdid } : {}),
-      ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
-      ...readIgnoreOwnershipArg(args),
-      ...rootArgs(),
-    });
+    return {
+      ...iosAction("Apple device stop", "deviceStop", {
+        chatSessionId: claimArgs.chatSessionId,
+        ...(stopUdid ? { udid: stopUdid } : {}),
+        ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
+        ...readIgnoreOwnershipArg(args),
+        ...rootArgs(),
+      }),
+      formatText: formatAppleDeviceStop,
+    };
   }
   if (
     sub === "shutdown" ||
@@ -16919,7 +17304,12 @@ function buildIosSimulatorPlan(
     const device = readIosSimulatorDevice(args);
     // A device session is not an app session: it boots a simulator and makes
     // it streamable, with no build and no install.
+    // Headless by default (the device shows in ADE); Simulator.app opens only
+    // with --window. `--no-window` is the old spelling of the default; sent,
+    // so an older brain that opened the window unless told not to stays headless.
+    const window = readFlag(args, ["--window", "--open-simulator"]);
     const noWindow = readFlag(args, ["--no-window", "--headless"]);
+    if (window && noWindow) throw new CliUsageError("open-device takes --window or --no-window, not both.");
     const force = readFlag(args, ["--force", "-f"]);
     return iosAction("iOS simulator open device", "openDevice", {
       deviceUdid: device,
@@ -16927,7 +17317,7 @@ function buildIosSimulatorPlan(
       ...(claimArgs.chatSessionId
         ? { chatSessionId: claimArgs.chatSessionId }
         : {}),
-      ...(noWindow ? { openWindow: false } : {}),
+      openWindow: window,
       ...(force ? { force: true } : {}),
     });
   }
@@ -17254,14 +17644,22 @@ function buildIosSimulatorPlan(
     const timeoutMs = readNumberOption(args, ["--timeout-ms"]);
     const gone = readFlag(args, ["--gone", "--hidden"]);
     const target = elementTargetArgs();
-    return iosAction("iOS simulator wait for element", "waitForElement", {
-      ...target,
-      ...(timeoutMs == null ? {} : { timeoutMs }),
-      ...(gone ? { state: "gone" } : {}),
-    });
+    // A miss (`ok: false`: it never appeared, or never went) exits 1, so
+    // `wait-for-element … && tap-element …` stops there.
+    return {
+      ...iosAction("iOS simulator wait for element", "waitForElement", {
+        ...target,
+        ...(timeoutMs == null ? {} : { timeoutMs }),
+        ...(gone ? { state: "gone" } : {}),
+      }),
+      exitCodeFromResult: appleElementMissExitCode,
+    };
   }
   if (sub === "assert-visible" || sub === "assert") {
-    return iosAction("iOS simulator assert visible", "assertVisible", elementTargetArgs());
+    return {
+      ...iosAction("iOS simulator assert visible", "assertVisible", elementTargetArgs()),
+      exitCodeFromResult: appleElementMissExitCode,
+    };
   }
   if (sub === "proof-bundle") {
     const device = readIosSimulatorDevice(args);
@@ -17368,19 +17766,22 @@ function buildIosSimulatorPlan(
     if (udid && creating) {
       throw new CliUsageError("apple start takes --udid (attach) or --runtime/--device-type/--create (a new device), not both.");
     }
-    return iosAction("Apple device start", "deviceStart", {
-      ...(laneId ? { laneId } : {}),
-      ...(udid ? { udid } : {}),
-      ...(creating
-        ? {
-          create: {
-            ...(sourceUdid ? { sourceUdid } : {}),
-            ...(runtime ? { runtime } : {}),
-            ...(deviceType ? { deviceType } : {}),
-          },
-        }
-        : {}),
-    });
+    return {
+      ...iosAction("Apple device start", "deviceStart", {
+        ...(laneId ? { laneId } : {}),
+        ...(udid ? { udid } : {}),
+        ...(creating
+          ? {
+            create: {
+              ...(sourceUdid ? { sourceUdid } : {}),
+              ...(runtime ? { runtime } : {}),
+              ...(deviceType ? { deviceType } : {}),
+            },
+          }
+          : {}),
+      }),
+      formatText: formatAppleDeviceStart,
+    };
   }
   if (sub === "device-list") {
     const installed = readFlag(args, ["--installed"]);
@@ -17532,15 +17933,25 @@ function buildIosSimulatorPlan(
       "--id",
     );
     const force = readFlag(args, ["--force", "-f"]);
-    return iosAction("Apple device record delete", "recordDelete", {
-      id,
-      ...rootArgs(),
-      ...(laneId ? { laneId } : {}),
-      ...(claimArgs.chatSessionId
-        ? { chatSessionId: claimArgs.chatSessionId }
-        : {}),
-      ...(force ? { force: true } : {}),
-    });
+    // The proof `record-stop` filed from this recording stays: the brain's
+    // answer says so (`note`); an older brain answers nothing, and the text
+    // still says it.
+    return {
+      ...iosAction("Apple device record delete", "recordDelete", {
+        id,
+        ...rootArgs(),
+        ...(laneId ? { laneId } : {}),
+        ...(claimArgs.chatSessionId
+          ? { chatSessionId: claimArgs.chatSessionId }
+          : {}),
+        ...(force ? { force: true } : {}),
+      }),
+      formatText: (value: unknown) => {
+        const record = unwrapActionEnvelope(value);
+        return (isRecord(record) ? asString(record.note) : null)
+          ?? `Deleted recording ${id}. Any proof record-stop filed from it stays in the proof drawer: ade proof list names it, ade proof rm <id> removes it.`;
+      },
+    };
   }
   if (sub === "frame") {
     return iosAction("Apple device frame", "frame", {
@@ -18236,14 +18647,22 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "screenshot" || sub === "capture") {
+    // Written here, from the image the call returns: `--out` used to be passed
+    // on as an unknown argument, so the command exited 0 and wrote nothing.
+    const outPath = readValue(args, ["--out", "--output", "--path"]);
+    if (outPath != null && (!outPath.trim() || outPath.startsWith("-"))) {
+      throw new CliUsageError("app-control screenshot --out needs a file path.");
+    }
     return {
       kind: "execute",
       label: "App Control screenshot",
       steps: [
+        // A file gets a fresh PNG capture, not the live view's JPEG frame.
         appControlStep("result", "screenshot",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, { format: "png" }),
         ),
       ],
+      saveScreenshot: { outPath, surface: "app-control" },
     };
   }
   if (sub === "snapshot" || sub === "screen" || sub === "elements") {
@@ -19119,7 +19538,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           actionStep("result", "built_in_browser", "endSession", {
             sessionId: requireValue(
               explicitSessionId ?? genericSessionId ?? firstBrowserPositional(args),
-              "sessionId",
+              "browserSessionId",
             ),
             ...genericArgs,
           }),
@@ -19151,14 +19570,14 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           ?? firstStandalonePositional(args, BROWSER_VALUE_CARRIER_FLAGS)
           ?? wrappedTail.shift()
           ?? null,
-        "sessionId",
+        "browserSessionId",
       );
       return buildBrowserPlanWithLiteralTail(
         [mode, "--browser-session", sessionId, ...args],
         wrappedTail,
       );
     }
-    throw new CliUsageError(`Unknown browser session command: ${mode}`);
+    throw new CliUsageError(`Unknown browser session command '${mode}'. Run ade help browser.`);
   }
   if (sub === "handoff" || sub === "hand-off" || sub === "sign-in") {
     return buildBrowserHandoffPlan(args, tail);
@@ -20812,10 +21231,10 @@ function buildUsagePlan(args: string[]): CliPlan {
   // "how much quota is left"; this answers "what has been spent", which is a
   // different service call with its own range and scope.
   if (sub === "stats" || sub === "ade" || sub === "spend") {
-    const preset = readValue(args, ["--preset", "--range"]);
+    const preset = readValue(args, ["--range", "--preset"]);
     if (preset != null && !isAdeUsageRangePreset(preset)) {
       throw new CliUsageError(
-        `usage stats --preset must be one of ${ADE_USAGE_RANGE_PRESETS.join(", ")}.`,
+        `usage stats --range must be one of ${ADE_USAGE_RANGE_PRESETS.join(", ")}.`,
       );
     }
     const scope = readValue(args, ["--scope"]);
@@ -21449,7 +21868,7 @@ function buildCloudPlan(args: string[]): CliPlan {
     }
     case "ready":
       // Ready machines are gone: a new lane gets its own computer when it starts.
-      throw new CliUsageError("ade cloud ready no longer exists: ADE makes a computer for each new lane. Use ade chat create --machine cloud --prompt \"…\".");
+      throw new CliUsageError("ade cloud ready no longer exists: ADE makes a computer for each new lane. Use ade chat create --machine cloud --provider <p> --model <id> --prompt \"…\".");
     default:
       throw new CliUsageError(`Unknown cloud command "${sub}". Use: status, list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, prepare-stop, push-work, work-state.`);
   }
@@ -21662,14 +22081,6 @@ function buildSecretsPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "project_secret", "list", {})],
     };
   }
-  if (sub === "pull" || sub === "sync") {
-    return {
-      kind: "execute",
-      label: "secrets pull",
-      formatter: "project-secrets",
-      steps: [actionStep("result", "project_secret", "pullFromAccount", {})],
-    };
-  }
   if (sub === "get" || sub === "show" || sub === "view" || sub === "read") {
     const name = readValue(args, ["--name"]) ?? firstPositional(args);
     if (!name) throw new CliUsageError("Secret name is required.");
@@ -21797,7 +22208,7 @@ function buildProxyPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "login" || sub === "sign-in") {
-    const provider = requireValue(readValue(args, ["--provider"]), "provider").trim().toLowerCase();
+    const provider = requireValue(readValue(args, ["--provider"]), "proxyProvider").trim().toLowerCase();
     if (provider !== "claude" && provider !== "codex") {
       throw new CliUsageError("proxy login --provider must be claude or codex.");
     }
@@ -21845,7 +22256,7 @@ function buildRemoteSignInPlan(group: "sign-in" | "sign-in-code" | "sign-in-stat
     if (!readFlag(args, ["--remote"])) {
       throw new CliUsageError("ade providers sign-in <provider> --remote: a sign-in finished on another screen. To sign in here, use Settings › Providers.");
     }
-    const provider = requireValue(firstPositional(args), "provider").trim().toLowerCase();
+    const provider = requireValue(firstPositional(args), "signInProvider").trim().toLowerCase();
     return {
       kind: "execute",
       label: "providers sign-in",
@@ -22192,9 +22603,9 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
   const laneId = readLaneId(args);
   const preset = readEnumOption<AutomationLaneNamePresetFlag>(
     args,
-    ["--lane-name-preset"],
+    ["--lane-naming", "--lane-name-preset"],
     AUTOMATION_LANE_NAME_PRESETS,
-    "--lane-name-preset",
+    "--lane-naming",
   );
   const template = readValue(args, ["--lane-name-template"]);
 
@@ -22222,17 +22633,17 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
   const namesLane = effectiveLaneMode === "create" || effectiveLaneMode === "pr-branch";
   if (preset != null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-preset is only valid with --lane-mode create or pr-branch.",
+      "--lane-naming is only valid with --lane-mode create or pr-branch.",
     );
   }
   if (template != null && preset != null && preset !== "custom") {
     throw new CliUsageError(
-      "--lane-name-template is only valid with --lane-name-preset custom.",
+      "--lane-name-template is only valid with --lane-naming custom.",
     );
   }
   if (template != null && preset == null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-template requires --lane-mode create or pr-branch (with --lane-name-preset custom).",
+      "--lane-name-template requires --lane-mode create or pr-branch (with --lane-naming custom).",
     );
   }
 
@@ -22463,8 +22874,8 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     const mode = firstPositional(args) ?? "list";
     const target = () => readValue(args, ["--hook", "--id"]) ?? firstPositional(args);
     if (mode === "create") {
-      // One step: URL + rule. Everything has a sensible default from the preset.
-      const preset = readValue(args, ["--preset", "--service"]);
+      // One step: URL + rule. Everything else has a sensible default from the service.
+      const preset = readValue(args, ["--service", "--preset"]);
       const filters = readRepeatedValues(args, ["--filter", "--only-when"]);
       const confirmations = readRepeatedValues(args, ["--confirm"]);
       const inThisChat = readFlag(args, ["--in-this-chat"]);
@@ -22477,6 +22888,10 @@ function buildAutomationsPlan(args: string[]): CliPlan {
       const prompt = readValue(args, ["--prompt"]);
       const secretName = readValue(args, ["--secret-name"]);
       const modelId = readValue(args, ["--model"]);
+      // Each event starts a new chat unless it goes into an existing one.
+      if (!modelId?.trim() && !inThisChat && !chat) {
+        throw new CliUsageError(webhookModelRequiredMessage("--model"));
+      }
       const reasoningEffort = readValue(args, ["--effort", "--reasoning-effort"]);
       const input: JsonObject = {
         ...(name ? { name } : {}),
@@ -23655,6 +24070,8 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--option",
   "--choice",
   "--answer",
+  // `--code synced|as-is|fresh` on a command bound for another machine.
+  "--code",
   "--answers-json",
   "--schedule-id",
   "--job-id",
@@ -23662,10 +24079,11 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "-m",
   "-q",
   "-t",
-  // `chat handoff` keeps --machine (it names the move's destination, so it
-  // is not extracted for forwarding); a session given after it must not be
-  // read as the machine's value.
+  // `chat handoff|move` keep --to and its alias --machine (they name the
+  // move's destination, so they are not extracted for forwarding); a session
+  // given after one must not be read as the machine's value.
   "--machine",
+  "--to",
   "--additional-instructions",
   "--app",
   "--accent",
@@ -23784,6 +24202,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--instance-id",
   "--preset",
   "--preset-id",
+  "--custom-provider",
   "--via",
   "--harness",
   "--shell",
@@ -25481,7 +25900,8 @@ class SocketJsonRpcClient {
     );
   }
 
-  request(method: string, params?: unknown): Promise<unknown> {
+  /** `requestOptions.timeoutMs` overrides the connection's wait for this one call. */
+  request(method: string, params?: unknown, requestOptions?: { timeoutMs?: number }): Promise<unknown> {
     if (this.closedError) return Promise.reject(this.closedError);
     const id = this.nextId;
     this.nextId += 1;
@@ -25498,7 +25918,7 @@ class SocketJsonRpcClient {
       const timer = setTimeout(() => {
         this.pending.delete(pendingKey);
         reject(new Error(`Timed out waiting for ${method}.`));
-      }, this.timeoutMs);
+      }, requestOptions?.timeoutMs ?? this.timeoutMs);
       this.pending.set(pendingKey, { resolve, reject, timer });
       this.socket.write(body, "utf8", (error) => {
         if (!error) return;
@@ -26458,7 +26878,7 @@ function buildBrainPinPlan(args: string[]): CliPlan {
       steps: [{ key: "result", method: "sync.clearPin" }],
     };
   }
-  throw new CliUsageError(`Unsupported brain pin action: ${action}`);
+  throw new CliUsageError(`Unknown brain pin action '${action}'. Use show, set, generate or clear.`);
 }
 
 function buildSyncPlan(args: string[]): CliPlan {
@@ -26466,19 +26886,7 @@ function buildSyncPlan(args: string[]): CliPlan {
   if (sub === "help") {
     return {
       kind: "help",
-      text: `${ADE_BANNER}
-Usage:
-  ade sync status [--include-transfer-readiness]
-  ade sync web [--open] [--no-clipboard]   Print (and copy) the web client pairing link + code
-  ade sync refresh
-  ade sync devices
-  ade sync name <name>              Name this runtime for easy identification
-  ade sync name get
-  ade sync name clear
-  ade sync security status          Machine sync security posture (require-DPoP)
-  ade sync security require-dpop <on|off>
-  ade sync pair-device --json-stdin Advanced: authorize pairing through a trusted local/SSH session
-`,
+      text: SYNC_HELP,
     };
   }
   if (sub === "web" || sub === "web-pair" || sub === "webclient") {
@@ -26629,7 +27037,7 @@ Usage:
     }
     throw new CliUsageError(`Unsupported sync security action: ${action}`);
   }
-  throw new CliUsageError(`Unsupported sync command: ${sub}`);
+  throw new CliUsageError(`Unknown sync command '${sub}'. Run ade help sync.`);
 }
 
 /** How many projects `withoutMissingProjects` left out; kept off the JSON so `--json` stays the plain list. */
@@ -28352,6 +28760,12 @@ async function runRuntimeCommand(
             };
           }
         }
+        // A person stopped it: the next start continues nothing it had at work.
+        noteBrainStopIntent("stop_for_good", {
+          runtimeDir: path.dirname(lastFailurePathForMachine()),
+          socketPath,
+          pid: runtimeInfo?.pid ?? null,
+        });
         await shutdownMachineRuntimeDaemon(client);
       } finally {
         client.close();
@@ -28363,6 +28777,8 @@ async function runRuntimeCommand(
         message: "ADE runtime endpoint stopped.",
       };
     } catch (error) {
+      // The stop did not happen: a later stop must not read it as one for good.
+      clearBrainStopIntent({ runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath });
       return {
         ok: false,
         running: false,
@@ -28378,7 +28794,12 @@ async function runRuntimeCommand(
   }
   if (sub === "uninstall-service") {
     const { uninstallRuntimeService } = await import("./serviceManager");
-    return uninstallRuntimeService();
+    // A person removed the service: its brain's work is not continued later.
+    const intentTarget = { runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: resolveMachineAdeLayout().socketPath };
+    noteBrainStopIntent("stop_for_good", intentTarget);
+    const removed = await uninstallRuntimeService();
+    if (!removed.ok) clearBrainStopIntent(intentTarget);
+    return removed;
   }
   if (sub === "service-status") {
     const { getRuntimeServiceStatus } = await import("./serviceManager");
@@ -28926,7 +29347,11 @@ async function runBrainCommand(
 
   if (sub === "stop") {
     const { uninstallRuntimeService } = await import("./serviceManager");
+    // A person stopped the brain: the next start continues nothing it had at work.
+    const intentTarget = { runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: resolveMachineAdeLayout().socketPath };
+    noteBrainStopIntent("stop_for_good", intentTarget);
     const stopped = await uninstallRuntimeService();
+    if (!stopped.ok) clearBrainStopIntent(intentTarget);
     // An open ADE app needs its brain: it puts the service back within about
     // a minute (`tryRepairServiceConnection`). Say so, so the stop does not
     // seem to have failed.
@@ -29630,6 +30055,8 @@ async function runServe(
   projectRootAccessMonitor.configureProjectRootAccessMonitor({ logger: headlessProjectLogger });
   // Started below for the machine brain only; the watchdog's five-minute sample drives it.
   let resourcePressureMonitor: { tick: () => Promise<void> } | null = null;
+  // The open projects the simulators' low-memory pass reaches; set once the scope registry exists.
+  let simulatorReclaimScopes: (() => import("./services/runtime/simulatorMemoryReclaimer").SimulatorReclaimScope[]) | null = null;
   // Freeze kills counted against the project that was opening, read once from
   // this machine's runtime folder; the scope registry refuses a project with
   // enough of them (`projectOpenStrikes.ts`).
@@ -29640,6 +30067,18 @@ async function runServe(
   });
   // Read once: the watchdog kills at it, and the scope registry's open queue waits no longer.
   const freezeThresholdMs = resolveBrainLoopWatchdogThresholdMs(process.env.ADE_LOOP_WATCHDOG_MS);
+  // What the previous brain left, read before the watchdog, the heartbeat and
+  // the pressure monitor below rewrite it: the facts that name why it ended
+  // (`brainRestartCause.ts`, used at `recordBrainRunStart`).
+  const restartCauseFacts: BrainStartFacts = {
+    currentVersion: VERSION,
+    lastHeartbeat: readBrainHeartbeat(layout.runtimeDir),
+    wedge: null,
+    memoryPressure: null,
+    updateRequest: readBrainUpdateRequest(layout.runtimeDir),
+  };
+  const { memoryBreachForRestartCause, readResourcePressureRecord } = await import("./services/runtime/resourcePressureMonitor");
+  restartCauseFacts.memoryPressure = memoryBreachForRestartCause(readResourcePressureRecord(layout.runtimeDir));
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     thresholdMs: freezeThresholdMs,
@@ -29651,6 +30090,10 @@ async function runServe(
     info: (event, meta) => headlessProjectLogger.info(event, meta),
     onStall: ({ observedLagMs }) => recordHostStall({ durationMs: observedLagMs }),
     onRecovered: (breadcrumb) => {
+      const wedgeAtMs = Date.parse(breadcrumb.ts);
+      if (Number.isFinite(wedgeAtMs)) {
+        restartCauseFacts.wedge = { atMs: wedgeAtMs, freezeCause: breadcrumb.freezeCause ?? null };
+      }
       // The kill landed while projects were opening: count it against them.
       const struck = projectOpenStrikes.recordFreezeKill(breadcrumb);
       if (struck.length > 0) {
@@ -29739,10 +30182,23 @@ async function runServe(
     // One machine, one sampler: the machine brain watches this computer's
     // memory, swap, database logs and its own CPU (`resourcePressureMonitor.ts`).
     const { createResourcePressureMonitor } = await import("./services/runtime/resourcePressureMonitor");
+    // The iOS simulators give memory back when this computer is short of it
+    // (`simulatorMemoryReclaimer.ts`): on the monitor's samples. The pass
+    // itself does nothing off macOS.
+    const { createSimulatorMemoryReclaimer } = await import("./services/runtime/simulatorMemoryReclaimer");
+    const simulatorReclaimer = createSimulatorMemoryReclaimer({
+      logger: headlessProjectLogger,
+      readSimulatorMb: async () => {
+        const { readProcessGroups, simulatorGroupMb } = await import("../../desktop/src/main/services/machineStats/processGroups");
+        return simulatorGroupMb(await readProcessGroups({ platform: process.platform }));
+      },
+      listScopes: () => simulatorReclaimScopes?.() ?? [],
+    });
     resourcePressureMonitor = createResourcePressureMonitor({
       runtimeDir: layout.runtimeDir,
       logger: headlessProjectLogger,
       capture: (input) => brainProductAnalytics.captureInternal(input),
+      onOpenEpisodeSample: (sample) => simulatorReclaimer.onSample(sample),
     });
   } else {
     headlessProjectLogger.info("brain.heartbeat_skipped_non_machine_socket", {
@@ -29949,6 +30405,10 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
+  // No swap here: when memory runs out the provider restarts the whole computer. The biggest process goes instead.
+  const cloudMemoryGuard = isAdeCloudComputer()
+    ? (await import("./services/power/cloudMemoryGuard")).startCloudMemoryGuard({ logger: headlessProjectLogger })
+    : null;
   // What this computer tells ADE Cloud at its idle step: its lanes' work, its disk, an update, its boot.
   const cloudComputerReports = cloudKeepAwakeModule && isAdeCloudComputer()
     ? (await import("./services/power/cloudComputerReports")).createCloudComputerReports({
@@ -29993,24 +30453,76 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
-  const cloudKeepAwake = cloudKeepAwakeModule && isAdeCloudComputer()
+  const readCloudBusy = cloudKeepAwakeModule && isAdeCloudComputer()
+    ? async () => {
+        const sources = { projectRegistry, scopeRegistry };
+        const [facts, nextWakeAt] = await Promise.all([
+          readMachineBusyFacts({ ...sources, personalChatScope }),
+          readMachineNextScheduledWakeAt(sources),
+        ]);
+        const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
+          ...facts,
+          setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
+          holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
+        }, Date.now());
+        // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
+        // one goes to the account server, which wakes the machine for it.
+        return { busy, reasons, nextWakeAt, waitingOnPerson, laneSetups: facts.laneSetups ?? 0 };
+      }
+    : null;
+  // A lane launch's setup filled the disk: grow it now, while nothing else
+  // runs, and the launch's setup runs again after the restart. The launch
+  // itself still reads as `lane_setup` while it waits, so that one setup
+  // doesn't hold the grow back; a second one running does (the restart
+  // would cut it off).
+  const laneSetupOnlyRuns = async (): Promise<boolean> => {
+    if (!readCloudBusy) return false;
+    const busy = await readCloudBusy();
+    const others = busy.reasons.filter((reason) => reason !== "lane_setup");
+    if (others.length || busy.waitingOnPerson || busy.laneSetups > 1) {
+      headlessProjectLogger.info("cloud.disk_grow_for_setup_busy", {
+        reasons: others,
+        laneSetups: busy.laneSetups,
+        waitingOnPerson: Boolean(busy.waitingOnPerson),
+      });
+      return false;
+    }
+    return true;
+  };
+  // A setup that ran out of memory on a Small whose size was ADE's default
+  // moves the computer to Medium the same way (`cloudSetupUpsize.ts`): one
+  // step, under the same "nothing else runs" rule, and setup runs again.
+  const cloudSetupUpsizer = cloudDiskGrower
+    ? (await import("./services/power/cloudSetupUpsize")).createCloudSetupUpsizer({
+        instanceId: cloudInstanceId,
+        client: async () => (await getCloudBrainAccess()).client(),
+        adeHome: layout.adeDir,
+        logger: headlessProjectLogger,
+        // The launch's own record says whether its size was ADE's default; 404: not a server launch.
+        readLaunch: async (launchId) => {
+          const base = getSharedAccountDirectoryBaseUrl();
+          if (!base || !brainAccountAuthService.getStatus().signedIn) throw new Error("not signed in to an ADE account");
+          const { createCloudApiClient, CloudApiError } = await import("../../desktop/src/shared/cloudApiClient");
+          const api = createCloudApiClient({ baseUrl: base, accessToken: async () => await brainAccountAuthService.getAccessToken() });
+          try {
+            return await api.launchStatus(launchId);
+          } catch (error) {
+            if (error instanceof CloudApiError && error.status === 404) return null;
+            throw error;
+          }
+        },
+      })
+    : null;
+  const laneSetupDisk = cloudDiskGrower && readCloudBusy
+    ? {
+        ...cloudDiskGrower.setupDisk(laneSetupOnlyRuns),
+        ...(cloudSetupUpsizer ? cloudSetupUpsizer.setupMemory(laneSetupOnlyRuns) : {}),
+      }
+    : null;
+  const cloudKeepAwake = cloudKeepAwakeModule && readCloudBusy
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
-        readBusy: async () => {
-          const sources = { projectRegistry, scopeRegistry };
-          const [facts, nextWakeAt] = await Promise.all([
-            readMachineBusyFacts({ ...sources, personalChatScope }),
-            readMachineNextScheduledWakeAt(sources),
-          ]);
-          const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
-            ...facts,
-            setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
-            holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
-          }, Date.now());
-          // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
-          // one goes to the account server, which wakes the machine for it.
-          return { busy, reasons, nextWakeAt, waitingOnPerson };
-        },
+        readBusy: readCloudBusy,
         requestIdleSleep: async (instanceId) => {
           const client = await (await getCloudBrainAccess()).client();
           if (!client) throw new Error("no ADE Cloud access");
@@ -30807,6 +31319,10 @@ async function runServe(
   // Bound once the agents' machine bridge exists (below); a move asked for
   // before then is refused as "can't reach other machines".
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
+  /** Bound with the bridge (below): lets go of what a chat holds on other machines when its turn ends. */
+  let releaseRemoteWorkDevices: ((event: RemoteWorkTurnRelease) => void) | null = null;
+  /** Bound with the bridge (below): removes what an archived or deleted chat added on other machines. */
+  let releaseRemoteWorkOfEndedChat: ((event: RemoteWorkChatEnded) => void) | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
     openStrikes: projectOpenStrikes,
@@ -30814,6 +31330,7 @@ async function runServe(
     logger: headlessProjectLogger,
     terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
+    ...(laneSetupDisk ? { laneSetupDisk } : {}),
     // Older clones saved the GitHub sign-in header in .git/config: take it out
     // once per project, off the open path (one file read when there is none).
     onProjectOpened: createSavedGithubHeaderSweep({ logger: headlessProjectLogger }),
@@ -30826,6 +31343,8 @@ async function runServe(
     // An embedded guest can't reach other machines, so it owns no moves (and
     // its chat services never sweep any).
     ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),
+    ...(embedded ? {} : { releaseRemoteWorkDevices: (event: RemoteWorkTurnRelease) => releaseRemoteWorkDevices?.(event) }),
+    ...(embedded ? {} : { releaseRemoteWorkOfEndedChat: (event: RemoteWorkChatEnded) => releaseRemoteWorkOfEndedChat?.(event) }),
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
@@ -30862,6 +31381,12 @@ async function runServe(
       onRemoteFileWrite: () => { void cloudKeepAwake?.noteUse(); },
     },
   });
+  simulatorReclaimScopes = () => scopeRegistry.listReady().map((scope) => ({
+    simulator: scope.runtime.iosSimulatorService ?? null,
+    chat: scope.runtime.agentChatService ?? null,
+    pty: scope.runtime.ptyService,
+    sessions: scope.runtime.sessionService,
+  }));
   // Lane sharing: a guest of any project of this machine reaches its lane,
   // whatever project the shared listener serves now (`laneShareGuestRouter.ts`).
   sharedSyncListener?.setLaneShareGuestRouter(createLaneShareGuestRouter({
@@ -30900,15 +31425,33 @@ async function runServe(
   /** Set before `finish()` when the brain stops because something failed. */
   let stoppingOnFailure = false;
 
-  const finish = () => {
+  /**
+   * `requested`: someone asked this brain to stop (a signal from the service
+   * manager, an installer, a logout or reboot, or a `shutdown` request). The
+   * brain is a kept-alive service, so a start follows: the chats and CLIs at
+   * work are kept for it (`recordPlannedBrainStop`), first, before the slow
+   * teardown, unless the stop was announced as one for good. Every other stop
+   * (idle, socket lost, parent gone) has nothing at work to keep, or belongs
+   * to a brain the record does not cover.
+   */
+  const finish = (options: { requested?: boolean } = {}) => {
     if (done) return;
     done = true;
     // An orderly stop (an update, the restart button, a shutdown request) is
     // not a crash for the restart-loop report.
     if (!stoppingOnFailure) {
       markBrainStoppedCleanly();
+      // The clean stop first: a kill during the project writes below still
+      // leaves a stopped run record.
       markBrainRunStoppedCleanly();
-      closeLiveTurnProjectsRecord();
+      const kept = options.requested && !embedded
+        ? recordPlannedBrainStop({ runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: serveSocketPath })
+        : null;
+      // The intent the planned-stop record took, so the next start can say an
+      // update ended this brain.
+      addBrainRunStopIntent(kept?.intent ?? null);
+      if (kept) headlessProjectLogger.info("brain.planned_stop_recorded", { ...kept });
+      else closeLiveTurnProjectsRecord();
     }
     resolveDone?.();
   };
@@ -30939,29 +31482,37 @@ async function runServe(
   // install its own update: an app that owns the brain puts its own runtime
   // back over a standalone one. On a Mac or Windows PC whose app runs the
   // brain but is closed, the app is opened to do it (`requestUpdateThroughClosedApp`).
-  const requestDesktopAppUpdateFromServe = async (targetVersion: string | null) => {
+  const requestDesktopAppUpdateFromServe = async (
+    targetVersion: string | null,
+    requestedBy: UpdateRequestedBy | null = null,
+  ) => {
     const { hostAppPath, requestDesktopAppUpdate, requestUpdateThroughClosedApp } = await import(
       "./services/runtime/desktopAppUpdateBridge"
     );
     const socketPath = process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
       || resolveReachableMachineDesktopBridgeSocketPath();
-    let routing = await requestDesktopAppUpdate({ socketPath, targetVersion });
+    let routing = await requestDesktopAppUpdate({ socketPath, targetVersion, requestedBy });
     const closedAppPath = routing.attached ? null : hostAppPath();
     if (closedAppPath && !routing.attached) {
       headlessProjectLogger.info("brain.remote_update_opening_app", {
         appPath: closedAppPath,
         detail: routing.detail,
       });
-      routing = await requestUpdateThroughClosedApp({ appPath: closedAppPath, socketPath, targetVersion });
+      routing = await requestUpdateThroughClosedApp({ appPath: closedAppPath, socketPath, targetVersion, requestedBy });
     }
+    const requester = {
+      requestedByKind: requestedBy?.clientKind ?? "unknown",
+      requestedByName: requestedBy?.machineName ?? null,
+    };
     headlessProjectLogger.info("brain.remote_update_route", routing.attached
       ? {
         route: "desktop_app",
         outcome: routing.result.outcome,
         version: routing.result.version,
         openedClosedApp: closedAppPath != null,
+        ...requester,
       }
-      : { route: "standalone", detail: routing.detail });
+      : { route: "standalone", detail: routing.detail, ...requester });
     return routing;
   };
 
@@ -31035,11 +31586,11 @@ async function runServe(
         callMachineMethod: async <T,>(
           machineKey: string,
           method: string,
-          _params?: Record<string, unknown>,
+          params?: Record<string, unknown>,
           callOptions?: { timeoutMs?: number },
         ): Promise<T> => {
           if (!isAgentUsageMethod(method)) throw new Error(`${method} can't run on another machine from here.`);
-          return await bridge.fetchUsageMethod(machineKey, method, callOptions?.timeoutMs ?? 4_000) as T;
+          return await bridge.fetchUsageMethod(machineKey, method, callOptions?.timeoutMs ?? 4_000, params ?? {}) as T;
         },
         localMachineKey: () => bridge.localMachineKey() ?? "",
         logger: headlessProjectLogger,
@@ -31061,10 +31612,92 @@ async function runServe(
     };
     setSharedAccountRollupFetcher(lazyFetcher((factories, deps) => factories.createAccountRollupFetcher(deps)));
     setSharedAccountLiveQuotaFetcher(lazyFetcher((factories, deps) => factories.createAccountLiveQuotaFetcher(deps)));
+    // The spend rides the same connection, built on its first use.
+    let resetSpender: Promise<AccountResetCreditSpender> | null = null;
+    setSharedAccountResetCreditSpender(async (args) => {
+      resetSpender ??= Promise.all([import("../../desktop/src/main/services/usage/accountUsageLiveRefresh"), fetcherDeps()])
+        .then(([factories, deps]) => factories.createAccountResetCreditSpender(deps))
+        .catch((error) => { resetSpender = null; throw error; });
+      try {
+        return await (await resetSpender)(args);
+      } catch (error) {
+        return { ok: false, status: "failure", message: `Could not reach ${args.label} to spend the reset: ${error instanceof Error ? error.message : String(error)}` };
+      }
+    });
   }
+
+  /**
+   * One `ade/actions/call` to each machine a chat used, as that chat, sent
+   * and never awaited: each machine by its own key, never woken, a failure
+   * there logged and skipped. `logKey` names the logs (`<logKey>_skipped`,
+   * `<logKey>_bridge_failed`, and `<logKey>d` with `logAnswered` when set).
+   */
+  const callRemoteWorkMachines = (
+    uses: readonly RemoteWorkMachineRef[],
+    sessionId: string,
+    call: { name: string; arguments: Record<string, unknown>; timeoutMs: number; logKey: string; logAnswered?: Record<string, unknown> },
+  ): void => {
+    void getAgentMachineBridge().then((bridge) => Promise.all(uses.map((use) => bridge.call({
+      machine: use.machineKey,
+      scope: use.projectId ? { kind: "project", selector: use.projectId } : { kind: "anyProject", originUrl: null },
+      method: "ade/actions/call",
+      params: { name: call.name, arguments: call.arguments },
+      caller: { chatSessionId: sessionId, permissionLevel: null },
+      timeoutMs: call.timeoutMs,
+      wake: false,
+    }).then(() => {
+      if (call.logAnswered) headlessProjectLogger.info(`${call.logKey}d`, { machineKey: use.machineKey, ...call.logAnswered });
+    }).catch((error: unknown) => {
+      headlessProjectLogger.info(`${call.logKey}_skipped`, {
+        machineKey: use.machineKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })))).catch((error: unknown) => {
+      headlessProjectLogger.warn(`${call.logKey}_bridge_failed`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
 
   // Moving a chat to another machine rides the same paired connection. The
   // destination applies its own action policy to every step.
+  // A chat that drove a simulator, emulator or screen on another machine
+  // through its work copy lets go of it there when its turn ends (that
+  // machine never sees the chat end). `release_remote_work_devices` there
+  // frees only this chat's own claims and powers nothing off. Best effort:
+  // a machine that is offline or asleep is skipped (never woken), and the
+  // device leases there still time out by themselves.
+  if (!embedded) {
+    releaseRemoteWorkDevices = ({ sessionId, turnId, uses }) => {
+      callRemoteWorkMachines(uses, sessionId, {
+        name: "release_remote_work_devices",
+        // The ended turn goes in the arguments, not the caller claim: there
+        // it would count as the chat's latest turn, after its next one.
+        arguments: turnId ? { turnId } : {},
+        timeoutMs: 30_000,
+        logKey: "remote_work.turn_release",
+      });
+    };
+  }
+
+  // A chat archived or deleted (on its own or with its lane) has what it
+  // added on each machine it used removed there at once: its work copy in
+  // every checkout, and with it the devices and App Control app it drove.
+  // A copy holding unpushed work stays (`keepUnsynced`). Never awaited by
+  // the archive or delete; a machine that is offline is cleaned by its
+  // hourly sweep instead.
+  if (!embedded) {
+    releaseRemoteWorkOfEndedChat = ({ sessionId, keepUnsynced, uses }) => {
+      callRemoteWorkMachines(uses, sessionId, {
+        name: "release_remote_work_copy",
+        arguments: { keepUnsynced, ended: true },
+        timeoutMs: 120_000,
+        logKey: "remote_work.chat_end_release",
+        logAnswered: { keepUnsynced },
+      });
+    };
+  }
+
   if (!embedded) {
     crossMachineHandoffTransport = {
       listMachines: async (options) => {
@@ -31132,10 +31765,13 @@ async function runServe(
     // start and then hourly deletes copies unused for a week and copies whose
     // chat its own machine says is deleted or archived.
     const sweepWorkCopies = async (): Promise<void> => {
-      const [{ sweepMachineRemoteWork }, { parseForeignCallerSessionId }] = await Promise.all([
+      const [{ sweepMachineRemoteWork }, { sweepRemoteWorkScratch }, { parseForeignCallerSessionId }] = await Promise.all([
         import("../../desktop/src/main/services/remoteWork/remoteWorkCopyService"),
+        import("../../desktop/src/main/services/remoteWork/remoteWorkScratch"),
         import("../../desktop/src/shared/runtimeClientNames"),
       ]);
+      // `--scratch` folders a restart left behind.
+      sweepRemoteWorkScratch(undefined, headlessProjectLogger);
       await sweepMachineRemoteWork({
         logger: headlessProjectLogger,
         ownerGone: async (owner) => {
@@ -31221,11 +31857,33 @@ async function runServe(
   // bridge. Set off the boot path; a launch a quit left behind goes on once
   // the brain is up.
   if (!embedded) {
-    void import("../../desktop/src/main/services/adeCloud/cloudLaneLaunchBrainHost").then(({ setCloudLaneLaunchTransport }) => {
+    void Promise.all([
+      import("../../desktop/src/main/services/adeCloud/cloudLaneLaunchBrainHost"),
+      import("../../desktop/src/main/services/adeCloud/cloudBrainMaker"),
+    ]).then(([{ setCloudLaneLaunchTransport }, { setCloudJoinApprovalPush }]) => {
       setCloudLaneLaunchTransport({
         call: async (input) => await (await getAgentMachineBridge()).call(input),
-        setUpRepository: async (input) => await (await getAgentMachineBridge()).setUpRepository(input),
-        chatLaunchKinds: async (machine) => await (await getAgentMachineBridge()).chatLaunchKinds(machine),
+      });
+      // A machine this brain makes (`ade cloud create`, copy, move with no
+      // desktop) waits for the person's approval: the push reaches their phones.
+      setCloudJoinApprovalPush((notice) => {
+        void import("./services/push/pushPublisherService").then(({ peekSharedPushPublisherService, resolvePushRelayStateFile }) => {
+          // Peek, never create: the publisher is the one the project scopes made.
+          const publisher = peekSharedPushPublisherService(resolvePushRelayStateFile(layout.secretsDir));
+          if (!publisher) {
+            headlessProjectLogger.info("cloud.join_approval_push_skipped", { reason: "no_publisher" });
+            return;
+          }
+          publisher.handleSessionNotice({
+            sessionId: notice.chatSessionId,
+            dedupeKey: notice.dedupeKey,
+            title: notice.title,
+            body: notice.body,
+            deepLink: notice.deepLink,
+          });
+        }).catch((error: unknown) => {
+          headlessProjectLogger.warn("cloud.join_approval_push_failed", { error: error instanceof Error ? error.message : String(error) });
+        });
       });
       const resumeTimer = setTimeout(() => {
         void (async () => {
@@ -31260,6 +31918,27 @@ async function runServe(
     },
   });
 
+  // A lane launch's setup that filled the disk waits through the grow's
+  // restart (`roomMark`): its project opens now, so the launch goes on
+  // (and reads as busy, so the computer stays awake) with nobody watching.
+  if (!embedded && cloudInstanceId) {
+    void (async () => {
+      const [{ hasChatLaunchAwaitingRoom }, { resolveAdeLayout }] = await Promise.all([
+        import("../../desktop/src/main/services/chat/chatLaunchRecords"),
+        import("../../desktop/src/shared/adeLayout"),
+      ]);
+      for (const project of projectRegistry.list()) {
+        if (!hasChatLaunchAwaitingRoom(path.join(resolveAdeLayout(project.rootPath).cacheDir, "chat-launches"))) continue;
+        headlessProjectLogger.info("cloud.lane_setup_resume_open", { projectId: project.projectId });
+        await scopeRegistry.get(project.projectId).catch((error: unknown) => {
+          headlessProjectLogger.warn("cloud.lane_setup_resume_open_failed", { projectId: project.projectId, error: error instanceof Error ? error.message : String(error) });
+        });
+      }
+    })().catch((error: unknown) => {
+      headlessProjectLogger.warn("cloud.lane_setup_resume_scan_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }
+
   // A server launch (C6): ADE's server made this computer for a caller with
   // no computer and named the launch in its env. The computer signs itself
   // in with its join code and runs the launch here. The code leaves this
@@ -31273,6 +31952,7 @@ async function runServe(
       logger: headlessProjectLogger,
       account: brainAccountAuthService,
       directoryBaseUrl: getSharedAccountDirectoryBaseUrl,
+      clerkIssuer: () => getSharedAccountAttestationConfig().issuer,
       projectRegistry,
       chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
       cloudClient: async () => await (await getCloudBrainAccess()).client(),
@@ -31349,7 +32029,7 @@ async function runServe(
       return await handler(request);
     }, handler);
   };
-  const createHandler = (context?: { peerDeviceId: string | null }) =>
+  const createHandler = (context?: { peerDeviceId: string | null; peerDeviceName?: string | null }) =>
     withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
       holdCloudWork,
       remoteProviderSignIn,
@@ -31376,6 +32056,7 @@ async function runServe(
         : null,
       serverVersion: VERSION,
       peerDeviceId: context?.peerDeviceId ?? null,
+      peerDeviceName: context?.peerDeviceName ?? null,
       agentMachineBridge: agentMachineBridgeProxy,
       crossScopeChats,
       projectRegistry,
@@ -31386,6 +32067,26 @@ async function runServe(
       providerStatus,
       keepAwakeService,
       machineAccountDomains,
+      // The machine route's account stores, as a project runtime of this
+      // brain has them: only with sync on. Passwords keeps in step with the
+      // account while it is lent, as `accountVault.call`'s copy does.
+      machineScopeAccountStores: syncEnabled
+        ? () => {
+            const stores = machineAccountStoresForRecords();
+            stores.passwords.startPeriodicSync();
+            return { settings: stores.settings, passwords: stores.passwords };
+          }
+        : null,
+      // Settings › Android devices with no project: the same machine settings
+      // file every project's emulator service reads.
+      machineScopeAndroid: embedded ? null : async () => {
+        const { createAndroidMachineSettingsService } = await import("../../desktop/src/main/services/android/androidMachineSettingsService");
+        return (onEvent) => createAndroidMachineSettingsService({
+          sdkSettingsFile: path.join(layout.adeDir, "android", "settings.json"),
+          logger: headlessProjectLogger,
+          onEvent,
+        });
+      },
       projectRecords,
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,
@@ -31420,6 +32121,8 @@ async function runServe(
             logger: headlessProjectLogger,
             requestRestart: requestBrainServiceRestartFromServe,
             requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
+            // Kept for the next start, which names who asked (`brainRestartCause.ts`).
+            noteAcceptedUpdate: (request) => writeBrainUpdateRequest(path.dirname(lastFailurePathForMachine()), request),
             updateInstallMode: () => readDesktopUpdateInstallMode(),
             // The app this brain reports as `desktopAppVersion`, on every platform.
             installedApp: async () => {
@@ -31447,7 +32150,7 @@ async function runServe(
         };
       },
       disposeScopesOnDispose: false,
-      onShutdown: finish,
+      onShutdown: () => finish({ requested: true }),
     }));
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
   // An embedded runtime belongs to the process that spawned it. On POSIX an
@@ -31659,6 +32362,7 @@ async function runServe(
     for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
     cloudKeepAwake?.dispose();
+    cloudMemoryGuard?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
     stopSyncHostRehostWatch?.();
@@ -32066,7 +32770,10 @@ async function runServe(
       socketPath: serveSocketPath,
       build: computeRuntimeBuildStamp(bundlePath, VERSION),
       writeOwnRecord: writesBrainRun,
+      causeFacts: restartCauseFacts,
     });
+    const restartCause = brainRestartCause();
+    if (restartCause) headlessProjectLogger.info("brain.restart_cause", restartCauseLogFields(restartCause));
     if (writesBrainRun) enableLiveTurnProjectsRecord({ runtimeDir, socketPath: serveSocketPath });
   }
 
@@ -32190,6 +32897,7 @@ async function runServe(
         readFolderStates: (records) => readProjectFolderStates(records),
         isDevTestMachine: () => isDevTestMachineProcess() || isDevTestMachineHome(layout.adeDir),
         logger: headlessProjectLogger,
+        onListChanged: () => noteAccountProjectListChanged(),
       });
       return accountProjectSync;
     };
@@ -32443,15 +33151,25 @@ async function runServe(
   if (!embedded) {
     /**
      * Open, one at a time, the projects in which the brain before this one
-     * had a chat or CLI turn running when it stopped unplanned. Opening a
-     * project is what runs its CLI reopen and chat restart recovery, so they
+     * had a chat or CLI turn running when it stopped: unplanned (a crash), or
+     * planned (a restart, an update, a reboot) no more than 6 h ago. Opening a
+     * project is what runs its CLI reopen and chat continue, so they
      * continue within seconds instead of when a window or phone next opens
      * the project. Only those projects: no other project database is opened.
      * Nothing opens in a restart loop or with "Continue chats after restarts"
      * off; the files are claimed either way.
      */
     const runtimeDir = path.dirname(lastFailurePathForMachine());
-    const roots = takeLiveTurnProjectsFromStoppedBrains({ runtimeDir, socketPath: serveSocketPath });
+    const roots = takeLiveTurnProjectsFromStoppedBrains({
+      runtimeDir,
+      socketPath: serveSocketPath,
+      maxStoppedAgeMs: RESTART_RESUME_MAX_AGE_MS,
+      onStoppedRecord: ({ projects, stale }) => {
+        // A stale stop's projects stay closed; each one says which chats and
+        // CLIs it drops when it next opens (`reopenCliSessionsAfterRestart`).
+        headlessProjectLogger.info("brain.planned_stop_record_taken", { projects, stale });
+      },
+    });
     if (roots.length > 0) {
       const hold = brainStartIsInRestartLoop() ? "restart_loop" : !resolveContinueAfterRestart() ? "disabled" : null;
       if (hold) {
@@ -32524,11 +33242,19 @@ async function runServe(
         try { process.kill(pid, 0); return true; } catch { return false; }
       },
     });
+    // Named by its release as analytics names it (`stable`, `beta`, `alpha`),
+    // `dev` for a development brain. ADE_PACKAGE_CHANNEL alone is set only for
+    // Alpha, so it named every Stable, Beta and ADE Cloud brain "dev".
+    const releaseChannel = resolveReleaseChannel({
+      env: process.env,
+      packaged: brainReportsAsRelease(process.env),
+      version: VERSION,
+    });
     const otherBrains = brainRegistry.join({
       pid: process.pid,
       endpoint: socketPath,
       startedAtMs: readProcessStartTimeMs(process.pid),
-      label: process.env.ADE_PACKAGE_CHANNEL?.trim() || "dev",
+      label: releaseChannel === "development" ? "dev" : releaseChannel,
     });
     const sharedHomeSentence = describeOtherBrains(otherBrains);
     if (sharedHomeSentence) {
@@ -32756,7 +33482,7 @@ async function runServe(
       // outlives its service registration and squats on the channel socket and
       // sync singleton, so force the exit if disposal does not finish in time.
       const finishFromSignal = () => {
-        finish();
+        finish({ requested: true });
         const timer = setTimeout(() => process.exit(0), 10_000);
         timer.unref();
       };
@@ -33666,7 +34392,7 @@ export function formatUsageLimits(value: unknown): string {
   const notes = Array.isArray(report.notes) ? report.notes.map((note) => asString(note)).filter(Boolean) : [];
   if (notes.length) lines.push("", ...notes.map((note) => `note: ${note}`));
   if (accounts.some((account) => asString(account.instanceId))) {
-    lines.push("", "Start a chat on an account: ade chat create --provider <provider> --instance <email>");
+    lines.push("", "Start a chat on an account: ade chat create --provider <provider> --model <id> --instance <email>");
   }
   return lines.join("\n");
 }
@@ -36383,6 +37109,19 @@ function formatIosSimStatus(value: unknown): string {
   const activeSession = isRecord(status.activeSession)
     ? status.activeSession
     : {};
+  // The device a lane drives is its own (`laneDevice`). With no session and
+  // no lane device, `activeDevice` is only a simulator booted on that Mac,
+  // which this lane does not drive: it is named as that, not as "active".
+  const laneDevice = isRecord(status.laneDevice) ? status.laneDevice : null;
+  const claimed = isRecord(status.activeSession) || isRecord(status.deviceSession);
+  const activeIsLanes = Boolean(laneDevice && asString(laneDevice.udid) && asString(laneDevice.udid) === asString(activeDevice.udid));
+  let laneDeviceText: string | null = null;
+  if (laneDevice) {
+    const laneState = activeIsLanes && activeDevice.state ? ` (${String(activeDevice.state)})` : "";
+    laneDeviceText = `${asString(laneDevice.name) ?? asString(laneDevice.udid) ?? "its own"}${laneState}`;
+  } else if (status.supported !== false) {
+    laneDeviceText = "none yet (ade apple start gives this lane its own)";
+  }
   // The device half and the live view, because `status` is the one command an
   // agent is told to poll. Leaving them to `--json` only meant a reader saw no
   // stream block and concluded the live view was off while it was running.
@@ -36396,9 +37135,10 @@ function formatIosSimStatus(value: unknown): string {
     renderKeyValues("ADE iOS simulator", [
       ["supported", status.supported],
       ["platform", status.platform],
+      ["lane device", laneDeviceText],
       [
-        "active device",
-        activeDevice.name
+        claimed || activeIsLanes ? "active device" : "booted, not this lane's",
+        activeDevice.name && !(activeIsLanes && !claimed)
           ? `${activeDevice.name} (${activeDevice.state})`
           : null,
       ],
@@ -36510,6 +37250,8 @@ function formatIosSimLaunch(value: unknown): string {
       "warning: launched a prebuilt binary — current changes not included.",
     );
   }
+  const generated = xcodeGenNote(session.generatedXcodeProjects);
+  if (generated) lines.push(generated);
   return lines.join("\n");
 }
 
@@ -37073,6 +37815,7 @@ function nextTempScreenshotPath(): string {
 function saveScreenshotResult(
   result: unknown,
   outPath: string | null,
+  surface: "browser" | "app-control" = "browser",
 ): { savedPath: string; width: number | null; height: number | null; bytes: number } {
   const unwrapped = unwrapActionEnvelope(result);
   const shot = isRecord(unwrapped) ? unwrapped : {};
@@ -37083,12 +37826,16 @@ function saveScreenshotResult(
     // reach the fallback and print a stack trace instead of one clear line.
     const reason = asString(shot.reason);
     throw new CliToolError(
-      `browser screenshot failed — the browser returned no screenshot image${reason ? ` (${reason})` : ""}.`,
+      `${surface} screenshot failed — ${surface === "browser" ? "the browser" : "the app"} returned no screenshot image${reason ? ` (${reason})` : ""}.`,
       undefined,
     );
   }
   const bytes = Buffer.from(match[1]!, "base64");
-  const savedPath = path.resolve(outPath ?? nextTempScreenshotPath());
+  // Named for what the bytes are: a JPEG (a live frame) never lands under a
+  // .png name, which PNG-only readers refuse.
+  const jpeg = /^data:image\/jpe?g;/.test(dataUrl!);
+  const requested = path.resolve(outPath ?? nextTempScreenshotPath());
+  const savedPath = jpeg && /\.png$/i.test(requested) ? requested.replace(/\.png$/i, ".jpg") : requested;
   fs.mkdirSync(path.dirname(savedPath), { recursive: true });
   // A temp screenshot stays private: exclusive create, owner-only. An explicit
   // `--out` is the caller's own path and keeps the default mode.
@@ -38161,9 +38908,6 @@ function formatMcpServerRemove(value: unknown): string {
 
 function formatProjectSecrets(value: unknown): string {
   const record = isRecord(value) ? value : {};
-  if (isProjectSecretPullResult(value)) {
-    return projectSecretPullSummary(value);
-  }
   if (typeof record.value === "string") {
     return record.value;
   }
@@ -38187,32 +38931,26 @@ function formatProjectSecrets(value: unknown): string {
   }
   if (typeof record.name === "string" && typeof record.deleted === "boolean") {
     return record.deleted
-      ? `Deleted ADE secret ${record.name}.`
-      : `No ADE secret named ${record.name} was found.`;
+      ? `Deleted ${record.name}.`
+      : `This project has no secret of its own named ${record.name}.`;
   }
+  // Where a secret lives, as the person reads it in Passwords & Secrets.
+  const where = (storage: unknown) => (storage === "device" ? "this computer" : "every computer");
   if (typeof record.name === "string") {
-    const storage = typeof record.storage === "string" ? ` in ${record.storage} storage` : "";
-    return `Saved ADE secret ${record.name} (${cell(record.valueLength)} chars${storage}).`;
+    return `Saved ${record.name} (${cell(record.valueLength)} chars) for this project, on ${where(record.storage)}.`;
   }
   const secrets = Array.isArray(record.secrets)
     ? record.secrets.filter(isRecord)
     : Array.isArray(value)
       ? value.filter(isRecord)
       : [];
-  const rows = secrets.map((secret) => [
-    secret.name,
-    secret.valueLength,
-    secret.uploadPending === true ? `${secret.storage} (uploading)` : secret.storage,
-    secret.updatedAt,
-  ]);
-  const storage = isRecord(record.storage) ? record.storage : {};
+  const rows = secrets.map((secret) => [secret.name, secret.valueLength, where(secret.storage), secret.updatedAt]);
   const header = renderTable(
-    ["name", "chars", "where", "updated"],
+    ["name", "chars", "on", "updated"],
     rows,
-    "ADE project secrets\n(no secrets found)",
+    "This project's secrets\n(none yet: add one in Settings › Passwords & Secrets, or ade secrets request)",
   );
-  const pathLine = typeof storage.path === "string" ? `\n\nLocal cache: ${storage.path}` : "";
-  return `${header}${pathLine}`;
+  return `${header}\n\nIn Passwords & Secrets: those for every project, then this project's own.`;
 }
 
 /**
@@ -38832,7 +39570,7 @@ function formatTextOutput(
         // `ade report-issue` exists for: it reads local files only, so it still
         // works on the machine where the brain will not come up.
         if (!doctorRows.some((row) => row.status === "fail")) return table;
-        return `${table}\n\nIf a failure above is unexplained, run \`ade report-issue\` and file the printed report.`;
+        return `${table}\n\nIf a failure above is unexplained, run \`ade report-issue --send\` to send the report to the ADE team privately.`;
       }
       const project =
         isRecord(value) && isRecord(value.project) ? value.project : {};
@@ -39324,6 +40062,8 @@ function formatTextOutput(
       return formatHarnessRoutes(value);
     case "harness-test":
       return formatHarnessTest(value);
+    case "harness-providers":
+      return formatHarnessProviders(value);
     case "history-list":
       return formatHistoryList(value);
     case "history-commits":
@@ -40918,6 +41658,9 @@ function chatCreateNotices(plan: CliPlan & { kind: "execute" }, values: JsonObje
 const FOLLOW_SHELL_POLL_MS = 1_000;
 /** The most output `shell start --wait --json` keeps (the end of it). */
 const FOLLOW_SHELL_MAX_OUTPUT_CHARS = 1024 * 1024;
+/** A screen code cut off at the end of a read: a lone ESC, a CSI with no final byte, an unterminated OSC. */
+// eslint-disable-next-line no-control-regex
+const FOLLOW_SHELL_PARTIAL_CODE = /\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?|[ -/]*)$/;
 
 /**
  * Follow a shell `shell start` just started until it ends: print its output as
@@ -40937,14 +41680,36 @@ async function followShellToExit(
     unwrapActionEnvelope(unwrapToolResult(await connection.request("ade/actions/call", { name: "run_ade_action", arguments: { domain, action, args } })));
   let since: number | undefined;
   let output = "";
-  const readMore = async (): Promise<JsonObject | null> => {
-    const read = await call("terminal", "read", { terminalId, ...(since !== undefined ? { since } : {}) });
-    if (!isRecord(read)) return null;
-    const data = typeof read.data === "string" ? read.data : "";
-    if (data) {
-      if (options.text) process.stdout.write(data);
-      output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
+  // A read can end inside a screen code; its start waits for the next read
+  // so the pipe never gets half a code the stripper could not match.
+  let heldCode = "";
+  const writeText = (data: string, last: boolean): void => {
+    if (!options.text) return;
+    if (process.stdout.isTTY) {
+      if (data) process.stdout.write(data);
+      return;
     }
+    let text = `${heldCode}${data}`;
+    heldCode = "";
+    const partial = last ? null : FOLLOW_SHELL_PARTIAL_CODE.exec(text);
+    if (partial && text.length - partial.index <= 256) {
+      heldCode = text.slice(partial.index);
+      text = text.slice(0, partial.index);
+    }
+    if (text) process.stdout.write(stripAnsiWithOptions(text, { preserveCarriageReturns: true }));
+  };
+  const readMore = async (last = false): Promise<JsonObject | null> => {
+    const read = await call("terminal", "read", { terminalId, ...(since !== undefined ? { since } : {}) });
+    if (!isRecord(read)) {
+      if (last) writeText("", true);
+      return null;
+    }
+    const data = typeof read.data === "string" ? read.data : "";
+    // To a pipe (an agent reading it), without the screen codes a terminal
+    // adds (Windows' console sends a title, clear screen and mode switches
+    // around the first line of output).
+    if (data || last) writeText(data, last);
+    if (data) output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
     if (typeof read.nextSince === "number") since = read.nextSince;
     return read;
   };
@@ -40958,7 +41723,7 @@ async function followShellToExit(
         : null));
     if (!isRecord(state) || state.status !== "running") {
       // One last read: output written just before the end.
-      await readMore();
+      await readMore(true);
       const exitCode = isRecord(state) && typeof state.exitCode === "number" ? state.exitCode : null;
       return {
         ...created,
@@ -41641,19 +42406,19 @@ function isChatLocateCommand(command: string[]): boolean {
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
-  const parsed = extractMachineTargeting(parseCliArgs(argv));
+  // A device command with no --machine and no --lane follows the chat's
+  // device choice (`ade devices use`), exactly as --machine would.
+  const parsed = extractMachineTargeting(await withChatDeviceChoice(parseCliArgs(argv)));
   await applyAccountProjectSelector(parsed.options);
-  const restoreShellScope = dropShellScopeForOtherProject(parsed.options);
-  try {
+  return await withShellScopeFor(parsed.options, async () => {
     if (isChatLocateCommand(parsed.command)) return await runChatLocate(parsed);
+    if (isDevicesCommand(parsed.command)) return await runDevicesCommand(parsed);
     if (!parsed.options.machine) {
       const sessionId = chatIdForLookup(parsed);
       return sessionId ? await runChatHereThenElsewhere(parsed, sessionId) : await runParsedCli(parsed);
     }
     return await runOnMachine(parsed);
-  } finally {
-    restoreShellScope();
-  }
+  });
 }
 
 /**
@@ -41746,47 +42511,79 @@ async function applyAccountProjectSelector(options: GlobalOptions): Promise<void
  * names another project with `--project-root` must not pick that lane or
  * worktree up as its default: the lane is not in the named project, and a
  * worktree there would route the call back to the shell's project. For this
- * run only, the shell's lane and worktree are dropped (an explicit
- * `--workspace-root` still wins). Returns the undo.
+ * run only, the shell's lane and worktree are dropped. An explicit
+ * `--workspace-root` wins, and stands in for the shell's `ADE_WORKSPACE_ROOT`
+ * for the run: plan builders (`proof`'s `callerRoot`) read only the env.
  */
-function dropShellScopeForOtherProject(options: GlobalOptions): () => void {
+function withShellScopeFor<T>(options: GlobalOptions, fn: () => Promise<T>): Promise<T> {
+  const workspaceRoot = options.workspaceRoot;
+  const run = workspaceRoot ? () => withShellEnv({ ADE_WORKSPACE_ROOT: path.resolve(workspaceRoot) }, fn) : fn;
   const explicitRoot = options.projectRoot;
   const shellRoot = process.env.ADE_PROJECT_ROOT?.trim();
-  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return () => {};
-  const saved: Array<[string, string | undefined]> = [];
-  for (const name of ["ADE_PROJECT_ROOT", "ADE_WORKSPACE_ROOT", "ADE_LANE_ID"] as const) {
-    if (name === "ADE_WORKSPACE_ROOT" && options.workspaceRoot) continue;
-    saved.push([name, process.env[name]]);
-    delete process.env[name];
-  }
-  if (saved.some(([name, value]) => name !== "ADE_PROJECT_ROOT" && value?.trim())) {
+  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return run();
+  const names = ["ADE_PROJECT_ROOT", "ADE_LANE_ID", ...(workspaceRoot ? [] : ["ADE_WORKSPACE_ROOT"])];
+  if (names.some((name) => name !== "ADE_PROJECT_ROOT" && process.env[name]?.trim())) {
     process.stderr.write(
       `ade: --project-root ${explicitRoot} is not this shell's project (${shellRoot}); `
       + "ignoring the shell's ADE_LANE_ID and ADE_WORKSPACE_ROOT for this command.\n",
     );
   }
-  return () => {
+  return withoutShellEnv(names, run);
+}
+
+/**
+ * Runs `fn` with the named variables of this shell out of the environment,
+ * and puts them back when it ends (when its promise settles, for an async one).
+ */
+function withoutShellEnv<T>(names: readonly string[], fn: () => T): T {
+  return withShellEnv(Object.fromEntries(names.map((name) => [name, undefined])), fn);
+}
+
+/**
+ * Runs `fn` with these variables set (undefined: removed) in the environment,
+ * and puts them back when it ends (when its promise settles, for an async one).
+ */
+function withShellEnv<T>(values: Readonly<Record<string, string | undefined>>, fn: () => T): T {
+  const names = Object.keys(values);
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  for (const name of names) {
+    const value = values[name];
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  const restore = () => {
     for (const [name, value] of saved) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
   };
+  let result: T;
+  try {
+    result = fn();
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  if (result instanceof Promise) return result.finally(restore) as T;
+  restore();
+  return result;
+}
+
+/**
+ * Runs `fn` without this shell's lane. That lane is a lane on THIS machine:
+ * a plan for another machine that defaulted to it would name a lane that
+ * machine has never heard of. There the caller says `--lane <id>` (from
+ * `ade lanes list --machine …`) or lets the target pick, as `ade chat launch`
+ * does with a new lane.
+ */
+export function withoutShellLane<T>(fn: () => T): T {
+  return withoutShellEnv(["ADE_LANE_ID"], fn);
 }
 
 async function runOnMachine(
   parsed: ReturnType<typeof extractMachineTargeting>,
 ): Promise<{ output: string; exitCode: number }> {
-  // This shell's lane is a lane on THIS machine. Plan builders that default
-  // to it would name a lane the other machine has never heard of; there the
-  // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets the
-  // target pick, as `ade chat launch` does with a new lane. Only for this run.
-  const laneId = process.env.ADE_LANE_ID;
-  delete process.env.ADE_LANE_ID;
-  try {
-    return await runParsedCli(parsed);
-  } finally {
-    if (laneId !== undefined) process.env.ADE_LANE_ID = laneId;
-  }
+  return await withoutShellLane(() => runParsedCli(parsed));
 }
 
 /**
@@ -42075,29 +42872,38 @@ async function runParsedCli(
         projectRoot: fs.existsSync(path.join(projectRoot, ".ade")) ? projectRoot : null,
         cliVersion: VERSION,
       });
-      // Copy-then-open, the same order the desktop button uses: the issue
-      // template asks the user to paste the report from their clipboard, so
-      // opening it without copying first sends them to a form with nothing to
-      // paste. Both steps are best effort and the report is printed regardless.
-      const openedIssue = plan.open ? await openDiagnosticIssue(built) : null;
       // Saved BEFORE the upload is attempted, so the path printed under a
       // failure is a file that already exists rather than one written after we
       // knew we needed it.
       const savedPath = plan.send ? saveDiagnosticReportCopy(built, { surface: "cli" }) : null;
       // Sending is opt-in and never blocks the printed report: a failed upload
-      // still leaves the user holding everything they need to file by hand.
+      // still leaves the user holding everything they need.
       const sent = plan.send ? await sendDiagnosticReport(built) : null;
+      // The full report goes to ADE privately, never to a public page. The
+      // public GitHub issue exists only after a send, and holds only the
+      // reference, the version and the OS family.
+      const publicUrl = publicIssueUrlForSend(built, sent);
+      const opened = publicUrl && plan.open ? await openPublicIssue(publicUrl) : false;
       if (parsed.options.text) {
-        const clipboardNote = openedIssue?.copied ? "\n(the report is on your clipboard)" : "";
         const sendNote = sent ? `\n${describeDiagnosticUpload(sent, savedPath)}` : "";
+        const nextStep = !plan.send
+          ? "\nTo send this report to the ADE team privately, run `ade report-issue --send`. Do not post it on a public page."
+          : publicUrl
+            ? opened
+              ? `\nOpened a public GitHub issue that holds only the reference, ADE version and OS:\n${publicUrl}`
+              : `\nTo also open a public GitHub issue (it holds only the reference, ADE version and OS), use:\n${publicUrl}`
+            : "";
+        const openNote = plan.open && !publicUrl
+          ? "\nNothing opened: a public GitHub issue needs a report sent with --send."
+          : "";
         return {
-          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}${sendNote}\n`,
+          output: `${built.report}${sendNote}${nextStep}${openNote}\n`,
           exitCode: 0,
         };
       }
       return {
         output: formatOutput(
-          buildReportIssuePayload(built, openedIssue, sent, savedPath),
+          buildReportIssuePayload(built, sent, savedPath, publicUrl ? { url: publicUrl, opened } : null),
           parsed.options,
           undefined,
         ),
@@ -42266,10 +43072,11 @@ async function runParsedCli(
       };
     }
     if (plan.saveScreenshot && (plan.saveScreenshot.outPath || parsed.options.text)) {
-      const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath);
+      const surface = plan.saveScreenshot.surface ?? "browser";
+      const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath, surface);
       return {
         output: parsed.options.text
-          ? `${browserTargetLine(unwrapActionEnvelope(result))}${renderKeyValues("ADE browser screenshot", [
+          ? `${surface === "browser" ? browserTargetLine(unwrapActionEnvelope(result)) : ""}${renderKeyValues(surface === "browser" ? "ADE browser screenshot" : "ADE App Control screenshot", [
             ["saved", saved.savedPath],
             ["size", saved.width && saved.height ? `${saved.width}x${saved.height}` : null],
             ["bytes", saved.bytes],
@@ -42447,7 +43254,10 @@ async function main(): Promise<void> {
         iosSimulatorSubcommandFromArgv(process.argv.slice(2)),
       );
       if (iosHint) await writeProcessOutput(process.stderr, `${iosHint}\n`);
-      const desktopHint = macDesktopErrorHint(error.message);
+      // A refusal from another machine (`--machine`) is about that machine,
+      // not this one.
+      const refusedOnOtherMachine = isRecord(error.details) && typeof error.details.machine === "string";
+      const desktopHint = macDesktopErrorHint(error.message, refusedOnOtherMachine ? null : process.platform);
       if (desktopHint) await writeProcessOutput(process.stderr, `${desktopHint}\n`);
       const androidHint = androidEmulatorErrorHint(error.message);
       if (androidHint) await writeProcessOutput(process.stderr, `${androidHint}\n`);

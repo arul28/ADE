@@ -584,7 +584,9 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         assertDeviceOwner(args.chatSessionId, args.force);
         const device = await deps.resolveDevice(args.deviceUdid ?? null);
         const bootedNow = await deps.bootDevice(device);
-        if (args.openWindow !== false) deps.openSimulatorApp();
+        // Opt-in only: once Simulator.app runs, every booted simulator (every
+        // lane's) gets a window. The device is ADE's to show by default.
+        if (args.openWindow === true) deps.openSimulatorApp();
         const previous = deviceSession;
         const isSameDevice = previous?.deviceUdid === device.udid;
         // Re-opening the same device keeps the original answer to "did ADE boot
@@ -674,8 +676,11 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
      * The owner check runs inside the queue, not before it. Read outside, a
      * chat that ended could release a session another chat opened in the gap
      * between the check and the release.
+     *
+     * `keepRunning` lets go of the session only: a device ADE booted stays
+     * on (a turn that ended, not a chat that went away).
      */
-    releaseDeviceIfOwnedBy(chatSessionId: string): Promise<IosSimulatorCloseDeviceResult> {
+    releaseDeviceIfOwnedBy(chatSessionId: string, options: { keepRunning?: boolean } = {}): Promise<IosSimulatorCloseDeviceResult> {
       return serializeDeviceSession(async () => {
         const previous = deviceSession;
         if (!previous || previous.chatSessionId !== chatSessionId) {
@@ -684,7 +689,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         deviceSession = null;
         // Cleanup after a chat that went away. Nobody asked for this, so it
         // never overrides another chat's app session.
-        const shutdown = await releaseTrackedDevice(previous, previous.bootedByAde, {
+        const shutdown = await releaseTrackedDevice(previous, previous.bootedByAde && options.keepRunning !== true, {
           releasedBy: chatSessionId,
           force: false,
         });

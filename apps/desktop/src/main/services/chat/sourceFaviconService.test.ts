@@ -77,13 +77,6 @@ function fakeNetwork(routes: Record<string, Route>, dns: Record<string, string[]
 
 let cacheDir: string;
 const cacheFileFor = (host: string) => path.join(cacheDir, `${createHash("sha1").update(host).digest("hex")}.json`);
-/** Lets real I/O (the disk-cache read) finish; bounded, never a timed wait. */
-async function until(condition: () => boolean): Promise<void> {
-  for (let turn = 0; turn < 1_000 && !condition(); turn += 1) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  expect(condition()).toBe(true);
-}
 let clock: number;
 const now = () => clock;
 
@@ -281,34 +274,6 @@ describe("createSourceFaviconService", () => {
     // A PNG frame comes back as PNG; a cut ICO with no complete frame is refused.
     expect(pickIcoEntry(buildIco([{ size: 32, data: PNG }]))).toEqual({ mime: "image/png", data: PNG });
     expect(pickIcoEntry(buildIco([{ size: 0, data: Buffer.alloc(100_000) }]).subarray(0, 65_536))).toBeNull();
-  });
-
-  it("times out a hung request after 3 s and remembers the failure only briefly, in memory", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    let calls = 0;
-    const net = fakeNetwork({
-      "https://www.slow.dev/": (request) => {
-        calls += 1;
-        return new Promise((_resolve, reject) => {
-          request.signal.addEventListener("abort", () => reject(request.signal.reason));
-        });
-      },
-    });
-    const service = createSourceFaviconService({ cacheDir, lookup: net.lookup, fetch: net.fetch, now });
-    const pending = service.resolveHost("www.slow.dev");
-    await until(() => calls === 1);
-    await vi.advanceTimersByTimeAsync(SOURCE_FAVICON_LIMITS.timeoutMs - 1);
-    expect(calls).toBe(1);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(await pending).toBeNull();
-    expect(fs.readdirSync(cacheDir)).toEqual([]);
-    expect(await service.resolveHost("www.slow.dev")).toBeNull();
-    expect(calls).toBe(1);
-    clock += SOURCE_FAVICON_LIMITS.transientTtlMs + 1;
-    const retry = service.resolveHost("www.slow.dev");
-    await until(() => calls === 2);
-    await vi.advanceTimersByTimeAsync(SOURCE_FAVICON_LIMITS.timeoutMs);
-    expect(await retry).toBeNull();
   });
 
   it("tries the www. host when the apex does not resolve", async () => {

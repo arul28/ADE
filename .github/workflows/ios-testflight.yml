@@ -13,6 +13,12 @@ name: iOS TestFlight
 # whose TestFlight build failed must not hide its iOS changes from the next
 # one.
 #
+# It also skips when the newest build of ios-main.yml on main failed (the
+# iOS build and tests of main, which ci-pass and the beta do not wait for),
+# so a main whose Swift tests fail gets no TestFlight build. A forced
+# dispatch skips this check. When the check cannot read the runs, or finds
+# no build in the newest 100 finished runs, the build goes ahead.
+#
 # It never fails or blocks the desktop beta. The feed does not wait for it,
 # the TestFlight step and its job continue on error, and a failure opens (or
 # comments on) the "iOS TestFlight failed" issue instead of the desktop's
@@ -69,6 +75,8 @@ jobs:
     continue-on-error: true
     permissions:
       contents: read
+      # Reads the newest run of ios-main.yml.
+      actions: read
     outputs:
       run: ${{ steps.gate.outputs.run }}
       sha: ${{ steps.gate.outputs.sha }}
@@ -87,6 +95,7 @@ jobs:
           INPUT_LABEL: ${{ inputs.label }}
           INPUT_REF: ${{ inputs.git_ref }}
           FORCE: ${{ inputs.force && 'true' || '' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ -n "$INPUT_SHA" ]; then
@@ -116,6 +125,45 @@ jobs:
           run=false
           if [ -n "$FORCE" ] || [ "$changed" -gt 0 ]; then run=true; fi
           [ -n "$FORCE" ] && reason="forced; $reason"
+          # A red ios-main.yml on main means main's Swift tests fail. The
+          # check walks the newest 100 finished runs, newest first, and stops
+          # at the first whose build job ended in success or failure. Most
+          # runs skip the build (their gate says no) and still finish with
+          # success, so the check reads each run's jobs instead of its
+          # conclusion. Only a failure stops the build; a failed lookup, or
+          # no build in 100 runs, lets it go ahead.
+          if [ "$run" = true ] && [ -z "$FORCE" ]; then
+            main_conclusion=""
+            main_url=""
+            lookup="none"
+            if runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ios-main.yml/runs?branch=main&status=completed&per_page=100" \
+                --jq '.workflow_runs[] | "\(.id) \(.html_url)"' 2>/dev/null)"; then
+              while read -r run_id run_url; do
+                [ -n "$run_id" ] || continue
+                if ! job="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs" \
+                    --jq '[.jobs[] | select(.name == "build-and-test")][0].conclusion // empty' 2>/dev/null)"; then
+                  lookup="failed"
+                  break
+                fi
+                case "$job" in
+                  success | failure) main_conclusion="$job"; main_url="$run_url"; break ;;
+                esac
+              done <<< "$runs"
+            else
+              lookup="failed"
+            fi
+            if [ "$main_conclusion" = failure ]; then
+              run=false
+              reason="the newest iOS main build failed ($main_url); $reason"
+              echo "::warning::Skipping the TestFlight build: $reason"
+            elif [ -n "$main_conclusion" ]; then
+              echo "The newest iOS main build passed ($main_url)."
+            elif [ "$lookup" = failed ]; then
+              echo "Could not read the iOS main runs; building anyway."
+            else
+              echo "No iOS main build in the newest 100 finished runs; building anyway."
+            fi
+          fi
           {
             echo "run=$run"
             echo "sha=$sha"

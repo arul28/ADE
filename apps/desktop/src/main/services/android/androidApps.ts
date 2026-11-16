@@ -236,7 +236,7 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
     throw new AndroidEmulatorFailure(
       "ANDROID_PATH_OUTSIDE_LANE",
       deps.isWorkCopy(laneId)
-        ? `This chat's work copy on this machine is gone, so ADE has no folder to take ${what} from.`
+        ? `This chat's code on this machine is gone, so ADE has no folder to take ${what} from.`
         : `ADE cannot find this lane's worktree, so it has no folder to take ${what} from.`,
     );
   };

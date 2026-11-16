@@ -286,14 +286,15 @@ ade runtime service-status --text
 ```
 
 `ade report-issue` produces the same redacted Markdown report the desktop's
-**Report issue** button does, and it reads local files only — it never starts or
+report dialog shows, and it reads local files only — it never starts or
 contacts the brain, so it works on a machine where ADE will not come up and on a
-headless host with no error screen to press. `--open` opens a prefilled GitHub
-issue. Prefer it over hand-assembled output: paths, the account name, hostnames,
+headless host with no error screen to press. `--send` sends it to the ADE team
+privately; `--open` after a successful send opens a public GitHub issue that
+holds only the reference, the version and the OS. Prefer it over hand-assembled output: paths, the account name, hostnames,
 tailnet and `.local` names, addresses and credential-shaped values are stripped
 by `redactDiagnosticText` over the whole document, and secrets, environment
 blocks and pairing PINs are never collected at all. See
-[storage and recovery](../features/storage-and-recovery/README.md#diagnostic-reports-report-issue).
+[storage and recovery](../features/storage-and-recovery/README.md#diagnostic-reports-the-report-dialog).
 
 Before sharing anything you assembled by hand, remove user paths, repository
 names, machine/device ids, account details, IPs, URLs with query strings, and

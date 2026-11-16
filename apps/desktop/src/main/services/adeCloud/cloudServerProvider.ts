@@ -29,6 +29,7 @@ import {
   type CloudUpdateCheck,
 } from "./cloudProvider";
 import { cloudSavedChatUrl, cloudSavedChatsUrl, type CloudSavedChatList, type CloudSavedChatPage } from "../../../shared/cloudSavedChats";
+import { markExpected } from "../../../shared/expectedError";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -129,7 +130,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     const controller = new AbortController();
     const timedOut = () => init.signal?.aborted
       ? new CloudProviderError("Cancelled.", "cancelled", 0)
-      : new CloudProviderError("ADE Cloud did not answer in time. Try again.", "timeout", 0);
+      : markExpected(new CloudProviderError("ADE Cloud did not answer in time. Try again.", "timeout", 0), "network");
     // The caller's signal (a cancelled create) stops the request too.
     const onCallerAbort = () => controller.abort();
     if (init.signal?.aborted) controller.abort();
@@ -155,7 +156,11 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
         });
       } catch (error) {
         if (controller.signal.aborted) throw timedOut();
-        throw new CloudProviderError(`Could not reach ADE Cloud: ${error instanceof Error ? error.message : String(error)}`, "network", 0);
+        // Offline, DNS, a dropped connection: the person's network, not a defect.
+        throw markExpected(
+          new CloudProviderError(`Could not reach ADE Cloud: ${error instanceof Error ? error.message : String(error)}`, "network", 0),
+          "network",
+        );
       }
       body = response.status === 204
         ? null
@@ -189,12 +194,18 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     },
 
     async getAccount(): Promise<CloudAccountState> {
-      return await request("GET", "/cloud/account") as CloudAccountState;
+      const account = await request("GET", "/cloud/account");
+      // Every surface reads the plan's period; an answer without it is a failed read, not a crash.
+      if (!record(record(account)?.billing)) throw new Error("ADE Cloud sent account details without billing.");
+      return account as CloudAccountState;
     },
 
     async listInstances(): Promise<CloudInstance[]> {
       const data = record(await request("GET", INSTANCES))?.data;
-      return Array.isArray(data) ? data.map(readInstance) : [];
+      // An unreadable reply is a failed read, never "no computers": a caller
+      // that reads absence as deleted (a launch's gone-computer check) must not.
+      if (!Array.isArray(data)) throw new Error("ADE Cloud sent a list of computers ADE couldn't read.");
+      return data.map(readInstance);
     },
 
     async getInstance(id: string): Promise<CloudInstance> {
@@ -294,6 +305,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
           ...resources,
           ...(options?.computerIdle ? { computerIdle: true } : {}),
           ...(options?.origin === "auto" ? { origin: "auto" } : {}),
+          ...(options?.origin === "auto" && options.launchId ? { launchId: options.launchId } : {}),
         },
         timeoutMs: LIFECYCLE_TIMEOUT_MS,
       }), "updating");

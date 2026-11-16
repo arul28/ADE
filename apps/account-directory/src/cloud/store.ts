@@ -58,6 +58,8 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   STRIPE_DISK_METER_EVENT?: string;
   /** The billing portal setup (card, cancel at period end, invoices). */
   STRIPE_PORTAL_CONFIG_ID?: string;
+  /** A clean https origin on this Worker for Stripe's return pages (`https://account.ade-app.dev`). Unset: the request's own origin. */
+  BILLING_RETURN_ORIGIN?: string;
   /** Server-side product analytics (`analytics.ts`); unset sends nothing. */
   POSTHOG_PROJECT_TOKEN?: string;
   POSTHOG_HOST?: string;
@@ -824,7 +826,38 @@ export async function loadAccount(env: CloudEnv, userId: string, now: number): P
     account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>();
     if (!account) throw new Error("cloud account row missing after insert");
   }
-  return rollPeriodIfDue(env, account, now);
+  return raiseFreeHours(env, await rollPeriodIfDue(env, account, now), now);
+}
+
+/**
+ * A free period that began on fewer hours than the free plan has now (a
+ * release raised them, as Cloud 7 did from 50 to 100) gets the new number at
+ * once: more hours never hurt, and the plan line and the hours line then
+ * agree. Only an account with the free plan's hours: one refused them or held
+ * by the GitHub rules has 0 and keeps it. Its hour warnings clear: they
+ * were for the smaller number. Paid periods keep their own hours
+ * (`old_plan_terms`). Held to the row it read, so a refusal written meanwhile
+ * wins.
+ */
+async function raiseFreeHours(env: CloudEnv, account: AccountRow, now: number): Promise<AccountRow> {
+  if (account.plan !== "free" || account.free_refused_at != null || account.free_github_hold != null) return account;
+  if (account.included_milli <= 0 || account.included_milli >= FREE_INCLUDED_MILLI) return account;
+  const raised = await env.DB.prepare(`
+    update cloud_accounts set included_milli = ?,
+      warned_80_at = null, warned_95_at = null, warned_zero_at = null, hours_restored_at = case when warned_zero_at is not null then ? else hours_restored_at end, updated_at = ?
+    where user_id = ? and plan = 'free' and free_refused_at is null and free_github_hold is null and included_milli = ? and period_start = ?
+  `).bind(FREE_INCLUDED_MILLI, now, now, account.user_id, account.included_milli, account.period_start).run();
+  if ((raised.meta?.changes ?? 0) !== 1) return account;
+  logCloud("cloud.free_hours_raised", { userId: account.user_id, from: account.included_milli, to: FREE_INCLUDED_MILLI });
+  return {
+    ...account,
+    included_milli: FREE_INCLUDED_MILLI,
+    warned_80_at: null,
+    warned_95_at: null,
+    warned_zero_at: null,
+    hours_restored_at: account.warned_zero_at != null ? now : account.hours_restored_at,
+    updated_at: now,
+  };
 }
 
 /** `included: "free"`: the free plan's hours, which an account refused the free plan doesn't get (`freePlan.ts`). */

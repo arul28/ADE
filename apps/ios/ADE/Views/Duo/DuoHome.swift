@@ -253,6 +253,9 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
   @State private var agentFilter: HubRosterFilter?
+  /// The software keyboard is up. Held like a laptop it covers the whole
+  /// lower page, where the agents and the composer sit.
+  @State private var keyboardUp = false
   /// The filter row's bottom edge in the window, so the agent list can start
   /// below the rail's capsule where it runs under the rail's column.
 
@@ -347,10 +350,10 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
     NavigationStack {
       Group {
         if duo.hasEdgeBar {
-          agentsPage
+          agentsPage()
             .duoEdgeBarAlignedBottom(contentBottomPadding: HubInlineComposer.bottomPadding)
         } else {
-          agentsPage
+          agentsPage()
             .hubComposerAtScreenBottom()
         }
       }
@@ -371,7 +374,10 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
       VStack(spacing: 0) {
       headerRow
       DuoLocalFoldReader { localFold, localSize, _ in
-        let top: CGFloat = {
+        // With the keyboard up the projects page steps aside: the agents and
+        // the composer, with Destination and Start on, move up above the
+        // keyboard. It comes back when the keyboard goes down.
+        let top: CGFloat = keyboardUp ? 0 : {
           if case .stacked(let rect) = localFold { return max(0, min(rect.minY, localSize.height)) }
           return floor(localSize.height * 0.5)
         }()
@@ -379,12 +385,17 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
           projects()
             .frame(height: top)
             .frame(maxWidth: .infinity)
-          if case .stacked(let rect) = localFold {
-            DuoSeam(axis: .horizontal, foldRect: rect)
-          } else {
-            DuoSeam(axis: .horizontal)
+            .clipped()
+            .opacity(keyboardUp ? 0 : 1)
+            .accessibilityHidden(keyboardUp)
+          if !keyboardUp {
+            if case .stacked(let rect) = localFold {
+              DuoSeam(axis: .horizontal, foldRect: rect)
+            } else {
+              DuoSeam(axis: .horizontal)
+            }
           }
-          agentsPage
+          agentsPage(composerOnly: keyboardUp)
             .padding(.top, 12)
             .frame(maxHeight: .infinity)
         }
@@ -395,6 +406,7 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
       .toolbar(.hidden, for: .navigationBar)
       .navigationDestination(isPresented: $chatsPresented) { chatsDestination() }
     }
+    .hubReadsSoftwareKeyboard($keyboardUp)
   }
 
   // MARK: Pieces
@@ -402,12 +414,15 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
   /// The filters over the agent list over the composer. The filter row is the
   /// page's first thing, level with the projects page's header row.
   ///
-  private var agentsPage: some View {
+  /// `composerOnly`: held like a laptop with the keyboard up, only the
+  /// composer is left above the keyboard. The filters and the list come back
+  /// when the keyboard goes down.
+  private func agentsPage(composerOnly: Bool = false) -> some View {
     let counts = Dictionary(uniqueKeysWithValues: HubRosterFilter.allCases.map { option in
       (option, duoAgentItems(from: presentations, filter: option).count)
     })
     return VStack(spacing: 0) {
-      if showsOverview {
+      if showsOverview, !composerOnly {
         HubRosterFilterBar(
           counts: counts,
           selection: filterBinding,
@@ -417,7 +432,9 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
         .padding(.horizontal, 16)
       }
       VStack(spacing: 0) {
-        if showsOverview {
+        if composerOnly {
+          Spacer(minLength: 0)
+        } else if showsOverview {
           DuoAgentList(
             filter: filter,
             items: duoAgentItems(from: presentations, filter: filter),
@@ -734,7 +751,7 @@ private struct DuoHomeFixtureScreen: View {
 
   private var title: some View {
     HubConnectionMenu(
-      status: HubConnectionStatus(tone: .ok, label: "2 machines", spokenState: "connected", machineCount: 2),
+      status: HubConnectionStatus(tone: .ok, label: "2 computers", spokenState: "connected", machineCount: 2),
       machines: DuoHomeFixture.machines,
       onOpenSettings: {}
     )
@@ -787,7 +804,7 @@ private enum DuoHomeFixture {
   static func machineLabel(for project: MobileProjectSummary) -> String? {
     let index = Int(project.id.split(separator: "-").last ?? "") ?? 0
     switch index % 5 {
-    case 1: return "2 machines"
+    case 1: return "2 computers"
     case 3: return "Arul’s MacBook Pro"
     default: return "Arul’s Mac Studio"
     }

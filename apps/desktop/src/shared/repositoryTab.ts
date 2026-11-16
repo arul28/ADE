@@ -398,9 +398,13 @@ export function buildRepositoryCopies(
     }
   }
 
-  // 3. Other machines' folders from the connection snapshot.
+  // 3. Other machines' folders from the connection snapshot. A computer this
+  //    app is not connected to keeps the project list of its last connection;
+  //    once the account directory has answered, it alone says which copies an
+  //    offline computer has, so a copy removed there does not stay listed.
   if (tab.kind === "account") {
     for (const connection of inputs.connections) {
+      if (connection.state !== "connected" && inputs.accountCopies != null) continue;
       for (const row of connection.projects ?? []) {
         if (!isUsableRemoteRow(row) || !rowBelongsToTab(tab, row)) continue;
         if (has(connection.target.id, row.rootPath, row.projectId)) continue;
@@ -437,6 +441,53 @@ export function buildRepositoryCopies(
     if (best) best.copy.isMain = true;
   }
   return copies;
+}
+
+/** How many computers have a copy of a repository, and whether one of them is reachable now. */
+export type CopyComputers = {
+  /** Distinct computers with at least one copy, online or offline. ADE Cloud lane computers do not count. */
+  count: number;
+  /** At least one of those computers is reachable now (this computer, or a connected one). */
+  reachable: boolean;
+  /** How many of those computers are reachable now. */
+  reachableCount: number;
+};
+
+/**
+ * The one count rule for a repository's copies. Home, the copies menu and
+ * Settings › Location all use it, so a project shows the same number on each.
+ * A computer counts once however many folders it has. A computer is known by
+ * its account machine key, else by its machine id.
+ */
+export function copyComputers(
+  copies: readonly Pick<RepositoryCopy, "machineKey" | "machineId" | "online" | "isAdeCloud">[],
+): CopyComputers {
+  const online = new Map<string, boolean>();
+  for (const copy of copies) {
+    if (copy.isAdeCloud) continue;
+    const key = copy.machineKey?.trim() || copy.machineId;
+    online.set(key, (online.get(key) ?? false) || copy.online);
+  }
+  const reachableCount = [...online.values()].filter(Boolean).length;
+  return { count: online.size, reachable: reachableCount > 0, reachableCount };
+}
+
+/** "1 computer", "3 computers". */
+export function computerCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "computer" : "computers"}`;
+}
+
+/**
+ * The chip's spoken label: "On 3 computers, reachable now" only when every one
+ * is, else how many are ("On 3 computers, 2 reachable now"), or "none".
+ */
+export function computerReachLabel(computers: Pick<CopyComputers, "count" | "reachableCount">): string {
+  const reach = computers.reachableCount >= computers.count
+    ? "reachable now"
+    : computers.reachableCount > 0
+      ? `${computers.reachableCount} reachable now`
+      : "none reachable now";
+  return `On ${computerCountLabel(computers.count)}, ${reach}`;
 }
 
 function folderName(rootPath: string): string {

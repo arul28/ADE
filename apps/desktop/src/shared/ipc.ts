@@ -131,6 +131,7 @@ export const IPC = {
   projectOpenAdeFolder: "ade.project.openAdeFolder",
   projectClearLocalData: "ade.project.clearLocalData",
   projectListRecent: "ade.project.listRecent",
+  projectListThisComputer: "ade.project.listThisComputer",
   projectAccountList: "ade.project.accountList",
   projectAccountAdd: "ade.project.accountAdd",
   projectAccountRemove: "ade.project.accountRemove",
@@ -178,17 +179,22 @@ export const IPC = {
   machineResetStart: "ade.machineReset.start",
   /** Folder picker for the "move lanes out" rescue option. */
   machineResetChooseRescueDir: "ade.machineReset.chooseRescueDir",
-  /** Assemble, save, copy to the clipboard, and open a prefilled GitHub issue. */
-  diagnosticsOpenIssue: "ade.diagnostics.openIssue",
   /** Renderer-detected failure asking main to consider one automatic send. */
   diagnosticsAutoReport: "ade.diagnostics.autoReport",
   /**
-   * "Send a report to ADE", pressed by hand in Settings, with nothing visibly
-   * broken. Main owns the report, the per-device manual budget and the upload;
-   * unlike the automatic path it answers with what happened, because someone is
-   * watching.
+   * Build and redact one report for the person to read before it is sent
+   * (the report dialog, Settings' "Send a report"). Sends nothing and claims
+   * no budget; answers the text with a one-use id.
    */
-  diagnosticsSendManual: "ade.diagnostics.sendManual",
+  diagnosticsPrepareReport: "ade.diagnostics.prepareReport",
+  /**
+   * Upload a prepared report by id, byte for byte, and claim the manual
+   * budget then. Main owns the report, the budget and the upload; unlike the
+   * automatic path it answers with what happened, because someone is watching.
+   */
+  diagnosticsSendReport: "ade.diagnostics.sendReport",
+  /** Drop a prepared report (Cancel). */
+  diagnosticsDiscardReport: "ade.diagnostics.discardReport",
   /** Read the automatic-report setting. No UI reads it any more; kept for the preload contract. */
   diagnosticsGetSharing: "ade.diagnostics.getSharing",
   /** Flip the automatic-report setting. No UI calls it any more; kept for the preload contract. */
@@ -431,6 +437,8 @@ export const IPC = {
   agentChatHandoff: "ade.agentChat.handoff",
   agentChatStartSideChat: "ade.agentChat.startSideChat",
   agentChatEndSideChat: "ade.agentChat.endSideChat",
+  agentChatGetRootFullAccess: "ade.agentChat.getRootFullAccess",
+  agentChatSetRootFullAccess: "ade.agentChat.setRootFullAccess",
   agentChatPrepareCrossMachineHandoff: "ade.agentChat.prepareCrossMachineHandoff",
   agentChatValidateCrossMachineSource: "ade.agentChat.validateCrossMachineSource",
   agentChatMarkCrossMachineHandoff: "ade.agentChat.markCrossMachineHandoff",
@@ -493,6 +501,8 @@ export const IPC = {
   agentChatContinueUsageLimitOnAlternate: "ade.agentChat.continueUsageLimitOnAlternate",
   agentChatSwitchAccount: "ade.agentChat.switchAccount",
   agentChatSetScheduledWorkPaused: "ade.agentChat.scheduledWork.pause",
+  agentChatSetScheduledWorkItemPaused: "ade.agentChat.scheduledWork.pauseItem",
+  agentChatRunScheduledWorkNow: "ade.agentChat.scheduledWork.runNow",
   agentChatWarmupModel: "ade.agentChat.warmupModel",
   agentChatSlashCommands: "ade.agentChat.slashCommands",
   agentChatListClaudePlugins: "ade.agentChat.claudePlugins.list",
@@ -1046,15 +1056,6 @@ export const IPC = {
   aiGetToolsCache: "ade.ai.getToolsCache",
   aiEnsureToolsCache: "ade.ai.ensureToolsCache",
   aiToolsCacheEvent: "ade.ai.toolsCacheEvent",
-  projectSecretsList: "ade.projectSecrets.list",
-  projectSecretsGet: "ade.projectSecrets.get",
-  projectSecretsSet: "ade.projectSecrets.set",
-  projectSecretsDelete: "ade.projectSecrets.delete",
-  projectSecretsPullFromAccount: "ade.projectSecrets.pullFromAccount",
-  projectSecretsChooseEnvFile: "ade.projectSecrets.chooseEnvFile",
-  projectSecretsPreviewEnvImport: "ade.projectSecrets.previewEnvImport",
-  projectSecretsImportEnv: "ade.projectSecrets.importEnv",
-  projectSecretsExportEnv: "ade.projectSecrets.exportEnv",
   aiCursorCloudListRepositories: "ade.ai.cursorCloud.listRepositories",
   aiCursorCloudListAgents: "ade.ai.cursorCloud.listAgents",
   aiCursorCloudListRuns: "ade.ai.cursorCloud.listRuns",
@@ -1193,6 +1194,9 @@ export const IPC = {
    */
   cloudLaneLaunchCall: "ade.cloud.laneLaunch.call",
   cloudLaneLaunchEvent: "cloud:laneLaunchEvent",
+  /** The CTO's home on ADE Cloud (`ctoCloudHomeService.ts`): one call, and its snapshots to every window. */
+  ctoCloudHomeCall: "ade.cloud.ctoHome.call",
+  ctoCloudHomeEvent: "cloud:ctoHomeEvent",
   cloudSavedChatsList: "ade.cloud.savedChats.list",
   cloudSavedChatsRead: "ade.cloud.savedChats.read",
   cloudSavedChatsDelete: "ade.cloud.savedChats.delete",
@@ -1261,8 +1265,12 @@ export const IPC = {
    * person-only writes; it never exposes `resolveForFill` or a value.
    */
   passwordsCall: "ade.passwords.call",
-  /** Settings › Passwords: Reveal / Copy after Touch ID or Windows Hello, on this computer. */
+  /** Settings › Passwords & Secrets: Reveal / Copy after Touch ID or Windows Hello, on this computer. */
   passwordsReveal: "ade.passwords.reveal",
+  /** Passwords & Secrets: pick a .env file on this computer; its entries come back to choose from. */
+  passwordsChooseEnvFile: "ade.passwords.chooseEnvFile",
+  /** Passwords & Secrets: this computer's projects, by the key their secrets are saved under. */
+  passwordsProjects: "ade.passwords.projects",
 
   /**
    * Settings > Integrations > MCP servers: what the renderer cannot do itself. It reads and
@@ -1404,13 +1412,11 @@ export const IPC = {
   ctoGetState: "ade.cto.getState",
   ctoGetAttention: "ade.cto.getAttention",
   ctoEnsureSession: "ade.cto.ensureSession",
-  ctoStartFreshSession: "ade.cto.startFreshSession",
-  ctoGetThreadHealth: "ade.cto.getThreadHealth",
-  ctoListSessionLogs: "ade.cto.listSessionLogs",
+  ctoRefreshContext: "ade.cto.refreshContext",
   ctoUpdateIdentity: "ade.cto.updateIdentity",
   ctoGetMemory: "ade.cto.getMemory",
-  ctoUpdateMemory: "ade.cto.updateMemory",
-  ctoSearchMemory: "ade.cto.searchMemory",
+  ctoUpdateNotes: "ade.cto.updateNotes",
+  ctoUpdateOpenWork: "ade.cto.updateOpenWork",
   ctoGetLinearConnectionStatus: "ade.cto.getLinearConnectionStatus",
   ctoSetLinearToken: "ade.cto.setLinearToken",
   ctoClearLinearToken: "ade.cto.clearLinearToken",

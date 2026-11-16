@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { createLaneService } from "./laneService";
 import { isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
+import { AdeExpectedError } from "../../../shared/expectedError";
 
 export type LaneLaunchExecStrategy = "local";
 
@@ -11,21 +12,44 @@ export type LaneLaunchContext = {
   execStrategy: LaneLaunchExecStrategy;
 };
 
+/**
+ * The folder is gone (deleted or moved outside ADE) or a step of its path is
+ * a file. Only these two codes are the person's files; EACCES, EMFILE and the
+ * rest are faults on this machine and stay reported.
+ */
+function isMissingFolderError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/**
+ * The folder, or a refusal that names it. A missing folder, or a path that is
+ * a file and not a folder, is an answer about the person's files (the message
+ * says to restore or recreate the lane), so that refusal is marked `user`.
+ * The lane row does not say which machine owns the lane, so a call on the
+ * wrong machine also reads as a missing folder here.
+ */
 function ensureDirectoryExists(targetPath: string, message: string): string {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(targetPath);
-  } catch {
-    throw new Error(message);
+  } catch (error) {
+    throw refusal(message, error);
   }
   if (!stat.isDirectory()) {
-    throw new Error(message);
+    throw new AdeExpectedError(message, "user");
   }
   try {
     return fs.realpathSync(targetPath);
-  } catch {
-    throw new Error(message);
+  } catch (error) {
+    throw refusal(message, error);
   }
+}
+
+function refusal(message: string, cause: unknown): Error {
+  return isMissingFolderError(cause)
+    ? new AdeExpectedError(message, "user", { cause })
+    : new Error(message, { cause });
 }
 
 export function resolveLaneLaunchContext(args: {

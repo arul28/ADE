@@ -84,6 +84,11 @@ export type CodexAppServerHost = {
   kill(): void;
 };
 
+/** False once the app-server exited, was killed by a signal, or closed its input. */
+export function isCodexAppServerProcessAlive(proc: ChildProcessWithoutNullStreams): boolean {
+  return proc.exitCode == null && proc.signalCode == null && proc.stdin.writable;
+}
+
 export type CodexAppServerPool = {
   /** A shared host for `key`, or a new process. `key: null` always starts a private process. */
   acquire(args: { key: string | null; spawn: () => ChildProcessWithoutNullStreams }): CodexAppServerHost;
@@ -422,7 +427,7 @@ export function createCodexAppServerPool(args: {
     acquire: ({ key, spawn }) => {
       if (key != null) {
         const existing = shared.get(key);
-        if (existing && existing.process.exitCode == null && existing.process.stdin.writable) return existing;
+        if (existing && isCodexAppServerProcessAlive(existing.process)) return existing;
         if (existing) shared.delete(key);
       }
       const host = createHost(key, spawn());

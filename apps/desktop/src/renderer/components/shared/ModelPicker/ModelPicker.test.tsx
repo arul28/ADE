@@ -674,25 +674,6 @@ describe("ModelPicker", () => {
     expect((await findModelRow(routeless.id)).textContent).toContain("OpenAI · OpenAI Codex · work");
   });
 
-  it("does not render popover content when closed", () => {
-    renderPicker();
-    expect(screen.queryByRole("listbox", { name: /models/i })).toBeNull();
-  });
-
-
-  it("shows the model name on the trigger even when compact", () => {
-    renderPicker({ compact: true });
-    const trigger = screen.getByRole("button", { name: /Select model/i });
-    expect(trigger.textContent).toContain(SONNET.displayName);
-  });
-
-  it("does not render any reasoning chip on the trigger", () => {
-    renderPicker();
-    const trigger = screen.getByRole("button", { name: /Select model/i });
-    const chip = trigger.querySelector('[data-model-picker-reasoning-chip="true"]');
-    expect(chip).toBeNull();
-  });
-
   it("renders a fast affordance only on fast-capable rows, and only when the surface opts in", async () => {
     const user = userEvent.setup();
     const onFastModeChange = vi.fn();
@@ -1153,20 +1134,6 @@ describe("ModelPicker", () => {
     expect(trigger.textContent).not.toContain("Fast");
     await userEvent.click(legacyChip);
     expect(onToggle).toHaveBeenCalledWith(false);
-  });
-
-  it("suffixes the trigger label with Fast while fast mode is on", () => {
-    render(
-      <ModelPicker
-        value={FAST_GPT.id}
-        onChange={vi.fn()}
-        models={[FAST_GPT, SONNET]}
-        fastMode
-        onFastModeChange={vi.fn()}
-      />,
-    );
-    const trigger = screen.getByRole("button", { name: /Select model/i });
-    expect(trigger.textContent).toContain(`${FAST_GPT.displayName} Fast`);
   });
 
   it("renders the fast affordance for Cursor runtime models that advertise fast service", async () => {

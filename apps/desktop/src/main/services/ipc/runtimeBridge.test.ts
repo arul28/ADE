@@ -1763,7 +1763,8 @@ describe("registerRuntimeBridge", () => {
     expect(remoteCallMachineForTargetMock).toHaveBeenCalledWith(
       target,
       "machine.updateAndRestart",
-      { targetVersion: "1.2.0" },
+      // The target machine learns which machine asked.
+      { targetVersion: "1.2.0", requestedBy: { machineName: expect.any(String), clientKind: "desktop" } },
       // An update downloads a build and then drops the connection to restart,
       // so it gets a long deadline and must never be silently retried.
       expect.objectContaining({
@@ -3361,7 +3362,7 @@ describe("registerIpc sync bridge", () => {
     });
 
     await expect(
-      ipcHandlers.get(IPC.projectSecretsChooseEnvFile)?.(eventForSender()),
+      ipcHandlers.get(IPC.passwordsChooseEnvFile)?.(eventForSender()),
     ).resolves.toBeNull();
 
     expect(showOpenDialogMock).toHaveBeenCalledWith(

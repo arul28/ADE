@@ -188,7 +188,7 @@ import {
 } from "../../../shared/deeplinks";
 import { showToast } from "./toast/toastStore";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
-import { useCrossMachineLaneSync } from "../../state/crossMachineLanes";
+import { CloudViewsShownContext, useCrossMachineLaneSync } from "../../state/crossMachineLanes";
 import { useTabCopyPin } from "../../state/repositoryScope";
 import { runFirstLoadWithRetry } from "../../lib/firstLoadRetry";
 import { useHomeAppEffects } from "../home/useHomeAppEffects";
@@ -579,7 +579,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
             <PageErrorBoundary>
               <React.Suspense fallback={WorkLoadingFallback}>
                 <ProjectSidebarHold held={heldWork}>
-                  <TerminalsPage active={workShown} />
+                  <CloudViewsShownContext.Provider value={workShown}>
+                    <TerminalsPage active={workShown} />
+                  </CloudViewsShownContext.Provider>
                 </ProjectSidebarHold>
               </React.Suspense>
             </PageErrorBoundary>
@@ -600,7 +602,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           <PageErrorBoundary>
             <React.Suspense fallback={LazyFallback}>
               <ProjectSidebarHold held={heldLanes}>
-                <LanesPage active={active && isLanesRoute} />
+                <CloudViewsShownContext.Provider value={active && isLanesRoute}>
+                  <LanesPage active={active && isLanesRoute} />
+                </CloudViewsShownContext.Provider>
               </ProjectSidebarHold>
             </React.Suspense>
           </PageErrorBoundary>
@@ -611,7 +615,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
 
   return (
     <ProjectSidebarSlotProvider>
-      <div className="flex h-full min-h-0 w-full">
+      <div className="relative flex h-full min-h-0 w-full">
         <ProjectSidebar route={route} heldRoute={overlayOpen ? heldRoute : null} />
         <div className="ade-project-main relative h-full min-h-0 min-w-0 flex-1">
           {workSurface}
@@ -1187,7 +1191,8 @@ function ProjectTabHost() {
   const noMachinePage = noMachineTab && !isMachineRoute && !isAccountRoute && !standaloneSettingsRoute ? (
     <PageErrorBoundary>
       <React.Suspense fallback={GuardLoadingFallback}>
-        <ProjectWelcomeNoMachine tab={noMachineTab} />
+        {/* One page per tab: its automatic connects and failures belong to that project. */}
+        <ProjectWelcomeNoMachine key={noMachineTab.id} tab={noMachineTab} />
       </React.Suspense>
     </PageErrorBoundary>
   ) : null;

@@ -6,7 +6,6 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import { createPendingLaneDeleteProgress } from "../../lib/laneDeleteProgress";
-import { eventMatchesBinding } from "../../lib/keybindings";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { useAppStore, type CrossMachineMachineLanes } from "../../state/appStore";
 import { resetCrossMachineLaneSyncForTest } from "../../state/crossMachineLanes";
@@ -23,30 +22,6 @@ vi.mock("./useSessionDelta", () => ({
 vi.mock("./ToolLogos", () => ({
   ToolLogo: () => <span data-testid="tool-logo" />,
 }));
-
-// A pass-through recorder, not a stub: every existing test still renders the
-// real card (and queries its real text), while the prop-contract tests below can
-// read what this pane actually handed each row.
-const { sessionCardPropsForTest } = vi.hoisted(() => ({
-  sessionCardPropsForTest: [] as Record<string, unknown>[],
-}));
-vi.mock("./SessionCard", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./SessionCard")>();
-  return {
-    ...actual,
-    SessionCard: (props: ComponentProps<typeof actual.SessionCard>) => {
-      sessionCardPropsForTest.push(props as unknown as Record<string, unknown>);
-      return <actual.SessionCard {...props} />;
-    },
-  };
-});
-
-/** Props the pane passed for one session id in the most recent render pass. */
-function cardPropsFor(sessionId: string): Record<string, unknown> | undefined {
-  return sessionCardPropsForTest.find(
-    (props) => (props.session as TerminalSessionSummary | undefined)?.id === sessionId,
-  );
-}
 
 // The lane-PR hook does its own coalesced IPC read; the header badge only cares
 // about the map it returns, so tests seed that map directly.
@@ -226,13 +201,6 @@ function seedStudioMachine(
 
 function renderPane(props: Partial<ComponentProps<typeof SessionListPane>> = {}) {
   return render(paneElement(props));
-}
-
-/** The one shared header shape: the wrapper + the hairline row inside it. */
-function headerRow(sectionId: string): HTMLElement | null {
-  return document.querySelector<HTMLElement>(
-    `[data-section-id="${sectionId}"] > div`,
-  );
 }
 
 /**
@@ -1317,18 +1285,19 @@ describe("SessionListPane", () => {
       );
     }
 
-    it("shows an offline marker on the stale foreign lane", () => {
+    it("lists another machine's work only while that machine is connected", () => {
+      // An offline machine past its reconnect window is not listed at all; its
+      // rows come back when it reconnects.
       seedForeignMachine({ online: false });
+      const offline = renderPane();
+      expect(screen.queryByText(/Elsewhere Lane/)).toBeNull();
+      expect(screen.queryByText("Chat on the other machine")).toBeNull();
+      offline.unmount();
+
+      seedForeignMachine({ online: true });
       renderPane();
-
-      expect(screen.getByRole("button", { name: /Elsewhere Lane/ })).toBeTruthy();
-
-      // The foreign lane has a single chat, so its card carries the marker.
-      const marker = document.querySelector('[data-machine-marker-mode][data-machine-online="false"]');
-      // Lanes from two computers are listed, so the marker names its computer.
-      expect(marker?.textContent).toContain("Mac Studio (12)");
-      expect(marker?.getAttribute("aria-label")).toBe("Mac Studio (12), offline");
-      expect(marker?.getAttribute("data-machine-online")).toBe("false");
+      expect(screen.getByText("Chat on the other machine")).toBeTruthy();
+      expect(document.querySelector('[data-session-id="session-elsewhere"]')).not.toBeNull();
     });
 
     /**
@@ -1773,45 +1742,6 @@ describe("SessionListPane", () => {
       );
     });
 
-    it("dims an offline machine's lane and folds its chats away instead of removing them", () => {
-      seedForeignMachine({ online: false });
-      renderPane();
-
-      // The work did not stop existing because the machine went to sleep, so the
-      // group stays — named, dimmed, and collapsed rather than presented as live.
-      const header = screen.getByText("Elsewhere Lane (1)").closest(
-        ".ade-lane-group-header",
-      )!;
-      expect(header.closest("[data-dimmed]")).not.toBeNull();
-      const marker = document.querySelector('[data-machine-marker-mode][data-machine-online="false"]')!;
-      expect(marker.getAttribute("data-machine-online")).toBe("false");
-      // The marker names the unreachable machine and says it is offline.
-      expect(marker.getAttribute("aria-label")).toBe("Mac Studio (12), offline");
-      expect(marker.textContent).toContain("Mac Studio (12)");
-      expect(document.querySelector('[data-session-id="session-elsewhere"]')).toBeNull();
-    });
-
-    it("keeps an expanded offline group open, and its chats inert", async () => {
-      seedForeignMachine({ online: false });
-      const toggleWorkSectionCollapsed = vi.fn();
-      renderPane({
-        workCollapsedSectionIds: ["lane-open:target-studio:lane-elsewhere"],
-        toggleWorkSectionCollapsed,
-      });
-
-      // Reading a dropped machine's last-known work is allowed; acting on it is
-      // not, and the card says which machine is gone rather than failing later.
-      const card = document.querySelector('[data-session-id="session-elsewhere"]')!;
-      expect(card).toBeTruthy();
-      expect(screen.getByText("Mac Studio (12) is offline")).toBeTruthy();
-      expect(card.querySelector('[role="button"]')?.getAttribute("aria-disabled")).toBe("true");
-      // Its chats still LOOK active — that is just the last thing the machine
-      // reported — so nothing may treat that as a reason to slam the group shut.
-      await waitFor(() => {
-        expect(toggleWorkSectionCollapsed).not.toHaveBeenCalled();
-      });
-    });
-
     /**
      * The shelves are a rule about how quiet a lane is, not about which machine
      * the lane sits on. These lock that in: a foreign lane used to render
@@ -1855,14 +1785,11 @@ describe("SessionListPane", () => {
         return Boolean(header && group && header.parentElement!.contains(group));
       };
 
-      it("files a fully settled foreign lane into the Settled shelf, marker intact", () => {
-        seedForeignMachine({ online: false, sessions: [foreignSettled()] });
+      it("files a fully settled foreign lane into the Settled shelf", () => {
+        seedForeignMachine({ sessions: [foreignSettled()] });
         const { container } = renderPane({ workCollapsedSectionIds: OPEN_QUIET_SHELVES });
 
         expect(shelfContains(container, "settled")).toBe(true);
-        // A shelved lane shows nothing but its header, so the header must keep
-        // saying which machine the work is on.
-        expect(foreignGroup(container)!.querySelector("[data-machine-marker-mode]")).toBeTruthy();
       });
 
       it("keeps an attached child settled when search hides its parent", () => {
@@ -2027,26 +1954,6 @@ describe("SessionListPane", () => {
           lanes: [makeLane({ id: "lane-elsewhere", name: "Elsewhere Lane", laneType: "primary" })],
           sessions: [foreignSettled()],
         });
-        const { container } = renderPane({ workCollapsedSectionIds: OPEN_QUIET_SHELVES });
-
-        expect(foreignGroup(container)).toBeTruthy();
-        expect(screen.queryByTestId("work-quiet-zone")).toBeNull();
-      });
-
-      it("shelves an offline machine's lane when every row is quiet", () => {
-        // The machine being unreachable says nothing about whether the work is
-        // done: all-settled is all-settled whether or not the Mac is awake.
-        seedForeignMachine({ online: false, sessions: [foreignSettled()] });
-        const { container } = renderPane({ workCollapsedSectionIds: OPEN_QUIET_SHELVES });
-
-        expect(shelfContains(container, "settled")).toBe(true);
-      });
-
-      it("does not shelve an offline machine's lane whose rows still read as running", () => {
-        // "Running" here is only the last thing that machine reported before it
-        // dropped, so offline must not FORCE a demotion either — the group folds
-        // shut (it is not live), but it keeps its place in the inbox.
-        seedForeignMachine({ online: false });
         const { container } = renderPane({ workCollapsedSectionIds: OPEN_QUIET_SHELVES });
 
         expect(foreignGroup(container)).toBeTruthy();
@@ -2304,14 +2211,6 @@ describe("SessionListPane lane ordering, pins, chips and drag", () => {
     expect(screen.getByText("Your move · Claude")).toBeTruthy();
     fireEvent.click(screen.getByText("Clear filters"));
     expect(setWorkSessionFilters).toHaveBeenCalledWith(EMPTY_WORK_SESSION_FILTERS);
-  });
-
-  it("marks the funnel as active when only chips are set", () => {
-    renderTwoLanes({
-      workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false, machine: [] },
-      setWorkSessionFilters: vi.fn(),
-    });
-    expect(screen.getByTestId("work-lane-filter-active-indicator")).toBeTruthy();
   });
 
   it("keeps every divider in manual sort mode, singleton lanes included", () => {
@@ -2919,21 +2818,6 @@ describe("SessionListPane header shape", () => {
     expect(within(collapsedHeader).getByText("Known Lane (2)")).toBeTruthy();
   });
 
-  it("opens the command palette from the search button", () => {
-    const setQ = vi.fn();
-    renderPane({ setQ });
-
-    const seen: KeyboardEvent[] = [];
-    const listener = (event: KeyboardEvent) => seen.push(event);
-    window.addEventListener("keydown", listener);
-    fireEvent.click(screen.getByTestId("work-sidebar-search"));
-    window.removeEventListener("keydown", listener);
-
-    expect(seen).toHaveLength(1);
-    expect(eventMatchesBinding(seen[0]!, "Mod+K")).toBe(true);
-    expect(setQ).not.toHaveBeenCalled();
-  });
-
 });
 
 describe("SessionListPane visual hierarchy", () => {
@@ -2981,36 +2865,6 @@ describe("SessionListPane visual hierarchy", () => {
       expect(laneOrder(pinned.container)).toEqual(["lane-other", "lane-primary"]);
       pinned.unmount();
       expect(laneOrder(renderWithPrimary().container)).toEqual(["lane-primary", "lane-other"]);
-    });
-
-    it("marks the offline Primary while leaving this computer's Primary alone", () => {
-      // Every ADE machine has a Primary, so an offline one needs its marker to
-      // distinguish stale work from the Primary that remains actionable here.
-      seedStudioMachine(
-        [makeLane({ id: "lane-primary-studio", name: "Primary", laneType: "primary", branchRef: "main" })],
-        [makeSession({
-          id: "session-primary-studio",
-          laneId: "lane-primary-studio",
-          laneName: "Primary",
-          title: "Primary chat elsewhere",
-        })],
-        { online: false },
-      );
-
-      const { container } = renderWithPrimary();
-
-      // This machine's Primary: no badge, and no machine name anywhere on it.
-      const localHeader = container.querySelector('[data-section-id="lane-primary"]') as HTMLElement;
-      expect(localHeader.querySelector("[data-machine-marker-mode]")).toBeNull();
-      expect(within(localHeader).queryByText(THIS_MACHINE_NAME)).toBeNull();
-
-      // The Studio's Primary carries the offline marker in the lane header.
-      const foreignGroup = container.querySelector(
-        '[data-group-id="target-studio:lane-primary-studio"]',
-      ) as HTMLElement;
-      const foreignMarker = foreignGroup.querySelector('[data-machine-marker-mode][data-machine-online="false"]');
-      expect(foreignMarker?.getAttribute("aria-label")).toBe("Mac Studio (12), offline");
-      expect(foreignMarker?.textContent).toContain("Mac Studio (12)");
     });
 
     it("keeps Primary out of the quiet shelves when everything in it has settled", () => {
@@ -3074,107 +2928,6 @@ describe("SessionListPane visual hierarchy", () => {
   });
 });
 
-describe("SessionListPane machine chip suppression", () => {
-  afterEach(() => {
-    cleanup();
-    useAppStore.setState({ crossMachineLanesByMachineId: {}, crossMachineLaneScopeKey: null });
-    resetCrossMachineLaneSyncForTest();
-    sessionCardPropsForTest.length = 0;
-    Reflect.deleteProperty(window, "ade");
-  });
-
-  it("suppresses the row chip under a machine-labelled lane header, but not for a singleton", () => {
-    const foreignLane = makeLane({ id: "lane-elsewhere", name: "Elsewhere Lane", branchRef: "feature/elsewhere" });
-    const foreignA = makeSession({
-      id: "session-foreign-a",
-      laneId: "lane-elsewhere",
-      laneName: "Elsewhere Lane",
-      title: "Foreign first",
-    });
-    const foreignB = makeSession({
-      id: "session-foreign-b",
-      laneId: "lane-elsewhere",
-      laneName: "Elsewhere Lane",
-      title: "Foreign second",
-    });
-    seedStudioMachine([foreignLane], [foreignA, foreignB], { online: false });
-    const local = makeSession({
-      id: "session-local-solo",
-      laneId: "lane-known",
-      laneName: "Known Lane",
-      title: "Local solo chat",
-    });
-
-    sessionCardPropsForTest.length = 0;
-    const { container } = renderPane({
-      lanes: [makeLane()],
-      runningFiltered: [local],
-      allSessionsUnfiltered: [local],
-      sessionsGroupedByLane: new Map([["lane-known", [local]]]),
-      workCollapsedSectionIds: ["lane-open:target-studio:lane-elsewhere"],
-    });
-
-    // The foreign header names the machine, so its rows stop repeating it.
-    const foreignHeader = screen.getByRole("button", { name: /Elsewhere Lane/ }).closest(".ade-lane-group-header")!;
-    expect(foreignHeader.querySelector("[data-machine-marker-mode]")).toBeTruthy();
-    expect(cardPropsFor("session-foreign-a")?.suppressMachineChip).toBe(true);
-    expect(cardPropsFor("session-foreign-b")?.suppressMachineChip).toBe(true);
-
-    // The singleton has no header above it at all, so its chip is the only place
-    // a machine could ever be named.
-    expect(container.querySelector('[data-section-id="lane-known"]')).toBeNull();
-    expect(cardPropsFor("session-local-solo")?.suppressMachineChip).toBeFalsy();
-  });
-
-  it("leaves a local Primary's rows unchipped even opposite another machine's Primary", () => {
-    // The counterpart to "separates two Primaries by badging only the one that
-    // is elsewhere". The LOCAL Primary carries no badge at all, so there is no
-    // header label for its rows to repeat — and nothing to suppress. Work that
-    // is here says so by staying quiet.
-    const foreignPrimary = makeLane({ id: "lane-primary-remote", name: "Primary", laneType: "primary" });
-    seedStudioMachine([foreignPrimary], [
-      makeSession({
-        id: "session-remote-primary",
-        laneId: "lane-primary-remote",
-        laneName: "Primary",
-        title: "Remote primary chat",
-      }),
-    ], { online: false });
-    const localPrimary = makeLane({ id: "lane-primary-local", name: "Primary", laneType: "primary" });
-    const first = makeSession({
-      id: "session-primary-a",
-      laneId: "lane-primary-local",
-      laneName: "Primary",
-      title: "Primary first",
-    });
-    const second = makeSession({
-      id: "session-primary-b",
-      laneId: "lane-primary-local",
-      laneName: "Primary",
-      title: "Primary second",
-    });
-
-    sessionCardPropsForTest.length = 0;
-    const { container } = renderPane({
-      lanes: [localPrimary],
-      runningFiltered: [first, second],
-      allSessionsUnfiltered: [first, second],
-      sessionsGroupedByLane: new Map([["lane-primary-local", [first, second]]]),
-    });
-
-    const localHeader = container.querySelector('[data-section-id="lane-primary-local"]')!;
-    expect(localHeader.querySelector("[data-machine-marker-mode]")).toBeNull();
-    expect(localHeader.textContent).not.toContain(THIS_MACHINE_NAME);
-    expect(cardPropsFor("session-primary-a")?.suppressMachineChip).toBeFalsy();
-    expect(cardPropsFor("session-primary-b")?.suppressMachineChip).toBeFalsy();
-    // Unsuppressed but still unbadged: the card renders a glyph only when the
-    // union hands it a marker, and a lane on this Mac never gets one.
-    expect(
-      container.querySelector('[data-session-id="session-primary-a"] [data-machine-marker-mode]'),
-    ).toBeNull();
-  });
-});
-
 describe("SessionListPane quiet-shelf defaults", () => {
   afterEach(() => {
     cleanup();
@@ -3226,22 +2979,6 @@ describe("SessionListPane quiet-shelf defaults", () => {
     expect(screen.getByText("Snoozed (1)")).toBeTruthy();
     expect(screen.getByText("Settled (1)")).toBeTruthy();
     expect(shelfRows()).toEqual([]);
-  });
-
-  it("leaves every other section expanded by default", () => {
-    const running = makeSession({
-      id: "session-default-running",
-      laneId: "lane-known",
-      laneName: "Known Lane",
-      title: "Working chat",
-    });
-    renderByStatus({
-      runningFiltered: [running],
-      allSessionsUnfiltered: [running, snoozed, settled],
-      sessionsGroupedByLane: new Map([["lane-known", [running, snoozed, settled]]]),
-    });
-
-    expect(document.querySelector('[data-session-id="session-default-running"]')).toBeTruthy();
   });
 
   it("round-trips an explicit expand: stored preference beats the collapsed default", () => {
@@ -3366,22 +3103,6 @@ describe("SessionListPane header chevrons", () => {
   });
   const laneB = makeSession({
     id: "session-chevron-b", laneId: "lane-known", laneName: "Known Lane", title: "Second chat",
-  });
-  const snoozed = makeSession({
-    id: "session-chevron-snoozed",
-    laneId: "lane-known",
-    laneName: "Known Lane",
-    title: "Sleeping chat",
-    snoozedUntil: "2099-01-01T00:00:00.000Z",
-  });
-  const settled = makeSession({
-    id: "session-chevron-settled",
-    laneId: "lane-known",
-    laneName: "Known Lane",
-    title: "Finished chat",
-    status: "completed",
-    runtimeState: "idle",
-    settledAt: "2026-07-23T12:00:00.000Z",
   });
 
   it("toggles an active lane header from its chevron", () => {
@@ -3730,86 +3451,5 @@ describe("SessionListPane shared-branch clusters", () => {
     expect(container.querySelector('[data-testid="shelf-body-settled"]')?.contains(cluster)).toBe(true);
     expect(cluster?.querySelector('[data-group-id="lane-local-mobile"]')).toBeTruthy();
     expect(cluster?.querySelector('[data-group-id="target-studio:lane-studio-mobile"]')).toBeTruthy();
-  });
-});
-
-describe("SessionListPane Apple device marks", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-    cleanup();
-    laneAppleDevicesForTest.clear();
-    Reflect.deleteProperty(window, "ade");
-  });
-
-  const groupLane = makeLane({ id: "lane-group", name: "Group lane", branchRef: "group-lane" });
-  const soloLane = makeLane({ id: "lane-solo", name: "Solo lane", branchRef: "solo-lane" });
-  const plainLane = makeLane({ id: "lane-plain", name: "Plain lane", branchRef: "plain-lane" });
-  const groupA = makeSession({ id: "session-group-a", laneId: "lane-group", laneName: "Group lane", title: "Group A" });
-  const groupB = makeSession({ id: "session-group-b", laneId: "lane-group", laneName: "Group lane", title: "Group B" });
-  const solo = makeSession({ id: "session-solo", laneId: "lane-solo", laneName: "Solo lane", title: "Solo chat" });
-  const plain = makeSession({ id: "session-plain", laneId: "lane-plain", laneName: "Plain lane", title: "Plain chat" });
-
-  function renderLanes() {
-    const sessions = [groupA, groupB, solo, plain];
-    return renderPane({
-      lanes: [groupLane, soloLane, plainLane],
-      runningFiltered: sessions,
-      allSessionsUnfiltered: sessions,
-      sessionsGroupedByLane: new Map([
-        ["lane-group", [groupA, groupB]],
-        ["lane-solo", [solo]],
-        ["lane-plain", [plain]],
-      ]),
-    });
-  }
-
-  it("marks a lane header whose lane holds a device, with the device in the tooltip", () => {
-    laneAppleDevicesForTest.set("lane-group", { udid: "udid-group", name: "iPhone 16 Pro", running: true });
-    vi.useFakeTimers();
-    const { container } = renderLanes();
-
-    const header = container.querySelector('[data-section-id="lane-group"]') as HTMLElement;
-    const mark = within(header).getByRole("img", { name: "iPhone 16 Pro on this lane" });
-    expect(mark.getAttribute("data-lane-apple-device-running")).toBe("true");
-    // The only mark: unclaimed lanes stay bare, and rows under the marked
-    // header do not repeat it.
-    expect(container.querySelectorAll("[data-lane-apple-device]")).toHaveLength(1);
-
-    fireEvent.pointerEnter(mark.parentElement!);
-    act(() => {
-      vi.advanceTimersByTime(600);
-    });
-    expect(screen.getByRole("tooltip").textContent).toBe("iPhone 16 Pro on this lane");
-  });
-
-  it("marks a singleton lane's card, and says when the device is off", () => {
-    laneAppleDevicesForTest.set("lane-solo", { udid: "udid-solo", name: "iPad Air", running: false });
-    const { container } = renderLanes();
-
-    expect(container.querySelector('[data-section-id="lane-solo"]')).toBeNull();
-    const card = container.querySelector('[data-session-id="session-solo"]') as HTMLElement;
-    const identity = card.querySelector('[data-session-lane-identity="Solo lane"]') as HTMLElement;
-    const mark = within(identity).getByRole("img", { name: "iPad Air on this lane (off)" });
-    expect(mark.getAttribute("data-lane-apple-device-running")).toBe("false");
-  });
-
-  it("marks a lane holding a Mac Desktop display, on its header or its lone card, and no other", () => {
-    laneMacDesktopsForTest.add("lane-group");
-    laneMacDesktopsForTest.add("lane-solo");
-    try {
-      const { container } = renderLanes();
-
-      const header = container.querySelector('[data-section-id="lane-group"]') as HTMLElement;
-      expect(within(header).getByRole("img", { name: "Mac Desktop running on this lane" })).toBeTruthy();
-      const soloCard = container.querySelector('[data-session-id="session-solo"]') as HTMLElement;
-      const identity = soloCard.querySelector('[data-session-lane-identity="Solo lane"]') as HTMLElement;
-      expect(identity.querySelector('[data-lane-mac-desktop="lane-solo"]')).toBeTruthy();
-      const plainCard = container.querySelector('[data-session-id="session-plain"]') as HTMLElement;
-      expect(plainCard.querySelector("[data-lane-mac-desktop]")).toBeNull();
-      // Rows under a marked header do not repeat the mark.
-      expect(container.querySelectorAll("[data-lane-mac-desktop]")).toHaveLength(2);
-    } finally {
-      laneMacDesktopsForTest.clear();
-    }
   });
 });

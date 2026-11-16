@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import type { CloudMachine } from "../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../shared/cloudLaneLaunch";
 import { laneComputersOf, parseSavedLaneComputers, savedLaneComputerRows, type LaneComputer } from "../../shared/laneComputer";
+import { machineNameForBinding } from "../../shared/machineIdentity";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import { chatLaunchStore } from "./chatLaunchStore";
 
@@ -13,7 +14,7 @@ import { chatLaunchStore } from "./chatLaunchStore";
  * Two readers need it without a read of their own:
  * - the composer's Run on menu, which opens with the last list in hand while
  *   the account's list is read again;
- * - a chat's machine chip, which says "ADE Cloud" for a chat on a lane
+ * - a chat's machine chip, which says "Cloud · <lane>" for a chat on a lane
  *   computer instead of the computer's own name.
  *
  * `useCloudMachines` fills it on every good read. Nothing here reads the
@@ -24,9 +25,20 @@ import { chatLaunchStore } from "./chatLaunchStore";
 export type AdeCloudLaneComputer = LaneComputer;
 
 const STORAGE_KEY = "ade.cloudLaneComputers.v1";
+/** Every ADE Cloud computer of the account (with a lane or not), by its ids. */
+const CLOUD_COMPUTERS_STORAGE_KEY = "ade.cloudComputerIds.v1";
+
+/** An ADE Cloud computer as the account names it: its id on the provider and its account key. */
+export type AdeCloudComputerId = { instanceId: string; machineKey: string | null };
 
 type IndexState = {
   computers: readonly AdeCloudLaneComputer[];
+  /**
+   * Every ADE Cloud computer of the last read, a lane computer or not: a
+   * computer made without a lane is an ADE Cloud computer too (it sleeps and
+   * wakes the same way).
+   */
+  cloudComputers: readonly AdeCloudComputerId[];
   /** True once a read (or the saved copy) filled it. */
   known: boolean;
   /** When a read in this window last filled it (the saved copy doesn't count), or null. */
@@ -39,20 +51,39 @@ const FRESH_LANE_INDEX_MS = 10 * 60_000;
 let state: IndexState = readSaved();
 const listeners = new Set<() => void>();
 
-function readSaved(): IndexState {
+function readSavedCloudComputers(): AdeCloudComputerId[] {
   try {
-    const raw = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
-    if (!raw) return { computers: [], known: false, readAtMs: null };
-    return { computers: parseSavedLaneComputers(JSON.parse(raw) as unknown), known: true, readAtMs: null };
+    const raw = typeof window !== "undefined" ? window.localStorage.getItem(CLOUD_COMPUTERS_STORAGE_KEY) : null;
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry: unknown) => {
+      if (!entry || typeof entry !== "object") return [];
+      const { instanceId, machineKey } = entry as Record<string, unknown>;
+      return typeof instanceId === "string" && instanceId
+        ? [{ instanceId, machineKey: typeof machineKey === "string" && machineKey ? machineKey : null }]
+        : [];
+    });
   } catch {
-    return { computers: [], known: false, readAtMs: null };
+    return [];
   }
 }
 
-function signature(computers: readonly AdeCloudLaneComputer[]): string {
-  return computers
-    .map((computer) => [computer.instanceId, computer.laneId, computer.laneName, computer.projectOrigin ?? "", computer.machineKey ?? "", computer.state].join("\u0001"))
-    .join("\u0002");
+function readSaved(): IndexState {
+  const cloudComputers = readSavedCloudComputers();
+  try {
+    const raw = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
+    if (!raw) return { computers: [], cloudComputers, known: false, readAtMs: null };
+    return { computers: parseSavedLaneComputers(JSON.parse(raw) as unknown), cloudComputers, known: true, readAtMs: null };
+  } catch {
+    return { computers: [], cloudComputers, known: false, readAtMs: null };
+  }
+}
+
+function signature(computers: readonly AdeCloudLaneComputer[], cloudComputers: readonly AdeCloudComputerId[]): string {
+  return [
+    ...computers.map((computer) => [computer.instanceId, computer.laneId, computer.laneName, computer.projectOrigin ?? "", computer.machineKey ?? "", computer.state].join("\u0001")),
+    ...cloudComputers.map((computer) => `box\u0001${computer.instanceId}\u0001${computer.machineKey ?? ""}`),
+  ].join("\u0002");
 }
 
 /** Records the lane computers of a good read of the account's computers. */
@@ -61,19 +92,26 @@ export function noteCloudLaneMachines(machines: readonly CloudMachine[]): void {
   // a move runs, the lane stays on the old computer.
   const computers = laneComputersOf(machines as readonly CloudLaneMachine[])
     .sort((a, b) => a.laneName.localeCompare(b.laneName) || a.instanceId.localeCompare(b.instanceId));
-  noteCloudLaneComputers(computers);
+  const cloudComputers = machines
+    .map((machine) => ({ instanceId: machine.instanceId, machineKey: machine.machineKey?.trim() || null }))
+    .sort((a, b) => a.instanceId.localeCompare(b.instanceId));
+  noteCloudLaneComputers(computers, cloudComputers);
 }
 
-function noteCloudLaneComputers(computers: readonly AdeCloudLaneComputer[]): void {
+function noteCloudLaneComputers(
+  computers: readonly AdeCloudLaneComputer[],
+  cloudComputers: readonly AdeCloudComputerId[] = state.cloudComputers,
+): void {
   const readAtMs = Date.now();
-  if (state.known && signature(computers) === signature(state.computers)) {
+  if (state.known && signature(computers, cloudComputers) === signature(state.computers, state.cloudComputers)) {
     // Same list: fresher, but nothing for a listener to redraw.
     state = { ...state, readAtMs };
     return;
   }
-  state = { computers, known: true, readAtMs };
+  state = { computers, cloudComputers, known: true, readAtMs };
   try {
     window.localStorage.setItem(STORAGE_KEY, savedLaneComputerRows(computers));
+    window.localStorage.setItem(CLOUD_COMPUTERS_STORAGE_KEY, JSON.stringify(cloudComputers));
   } catch {
     // This computer's copy is a convenience; the next read fills it again.
   }
@@ -86,11 +124,13 @@ function noteCloudLaneComputers(computers: readonly AdeCloudLaneComputer[]): voi
  */
 export function forgetCloudLaneComputer(instanceId: string): void {
   const computers = state.computers.filter((computer) => computer.instanceId !== instanceId);
-  if (computers.length === state.computers.length) return;
-  noteCloudLaneComputers(computers);
+  const cloudComputers = state.cloudComputers.filter((computer) => computer.instanceId !== instanceId);
+  if (computers.length === state.computers.length && cloudComputers.length === state.cloudComputers.length) return;
+  noteCloudLaneComputers(computers, cloudComputers);
 }
 
-function subscribe(listener: () => void): () => void {
+/** Hears each change of the lane computers (not a fresher read of the same list). */
+export function subscribeAdeCloudLaneComputers(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
@@ -113,7 +153,7 @@ export function cloudLaneIndexFresh(nowMs: number = Date.now()): boolean {
 
 /** The lane computers as last read, and whether any read filled the list yet. */
 export function useAdeCloudLaneComputers(): IndexState {
-  return useSyncExternalStore(subscribe, readState, readState);
+  return useSyncExternalStore(subscribeAdeCloudLaneComputers, readState, readState);
 }
 
 /** A chat's ADE Cloud lane, and its computer's ADE Cloud id once known. */
@@ -160,7 +200,91 @@ export function adeCloudLaneComputerForMachine(
   return computers.find((computer) => (host && computer.instanceId.toLowerCase() === host) || (key && computer.machineKey === key)) ?? null;
 }
 
-/** "ADE Cloud · fix-login": how a switcher names a chat's ADE Cloud lane. */
+/**
+ * Whether a machine is an ADE Cloud computer of the account, with a lane or
+ * not: by its remote host name (the computer's ADE Cloud id) or its machine
+ * key. A React caller passes the index it subscribes to.
+ */
+export function isAdeCloudComputer(
+  machine: { hostname?: string | null; machineKey?: string | null },
+  index: Pick<IndexState, "computers" | "cloudComputers"> = state,
+): boolean {
+  return adeCloudInstanceIdForMachine(machine, index) != null;
+}
+
+/** The ADE Cloud id of a machine that is one of the account's ADE Cloud computers; else null. */
+export function adeCloudInstanceIdForMachine(
+  machine: { hostname?: string | null; machineKey?: string | null },
+  index: Pick<IndexState, "computers" | "cloudComputers"> = state,
+): string | null {
+  const lane = adeCloudLaneComputerForMachine(machine, index.computers);
+  if (lane) return lane.instanceId;
+  const host = machine.hostname?.trim().toLowerCase() ?? "";
+  const key = machine.machineKey?.trim() ?? "";
+  if (!host && !key) return null;
+  return index.cloudComputers.find((computer) => (host && computer.instanceId.toLowerCase() === host) || (key && computer.machineKey === key))?.instanceId ?? null;
+}
+
+/**
+ * What a person sees for an ADE Cloud computer: "Cloud", never its generated
+ * name (an instance id as its host name, a lane-derived computer name). The
+ * generated names stay in logs, support views and tooltips.
+ */
+export const ADE_CLOUD_MACHINE_LABEL = "Cloud";
+
+/** "Cloud · fix-login": a lane's cloud computer, with its lane to tell two apart. */
 export function adeCloudLaneLabel(laneName: string): string {
-  return `ADE Cloud · ${laneName}`;
+  return `${ADE_CLOUD_MACHINE_LABEL} · ${laneName}`;
+}
+
+/**
+ * The name a person sees for the machine a binding targets: "Cloud · <lane>"
+ * for an ADE Cloud lane computer, else the machine's own (device) name or
+ * "This computer" (`machineNameForBinding`). A label only: routing keeps the
+ * binding itself.
+ *
+ * For code outside React and for event-time reads (a callback, a toast),
+ * which read the index as it is then. A component that renders the label
+ * uses `useMachineLabelForBinding`, or the label goes stale when the lane
+ * computers are read after it rendered. The machine-row sibling is
+ * `useMachineLabelForMachine` (`components/cloudLane`, apart from here
+ * because it reads the app store, which imports this module).
+ */
+export function machineLabelForBinding(
+  binding: OpenProjectBinding | null | undefined,
+  computers: readonly AdeCloudLaneComputer[] = state.computers,
+): string {
+  const lane = adeCloudLaneForBinding(binding, computers);
+  return lane ? adeCloudLaneLabel(lane.laneName) : machineNameForBinding(binding);
+}
+
+/** `machineLabelForBinding` for a component: it follows the index as reads arrive. */
+export function useMachineLabelForBinding(binding: OpenProjectBinding | null | undefined): string {
+  const { computers } = useAdeCloudLaneComputers();
+  return machineLabelForBinding(binding, computers);
+}
+
+/**
+ * The name a person sees for a machine listed by host name or machine key
+ * (account machine rows, machine pickers): "Cloud · <lane>" for an ADE Cloud
+ * lane computer, else `name`.
+ */
+export function machineLabelForMachine(
+  machine: { hostname?: string | null; machineKey?: string | null; name: string },
+  computers: readonly AdeCloudLaneComputer[] = state.computers,
+): string {
+  return adeCloudLaneLabelForMachine(machine, computers) ?? machine.name;
+}
+
+/**
+ * "Cloud · <lane>" when the machine is an ADE Cloud lane computer, else null:
+ * for a row that shows the machine's own name too (as the tooltip) only when
+ * the label replaced it.
+ */
+export function adeCloudLaneLabelForMachine(
+  machine: { hostname?: string | null; machineKey?: string | null },
+  computers: readonly AdeCloudLaneComputer[] = state.computers,
+): string | null {
+  const computer = adeCloudLaneComputerForMachine(machine, computers);
+  return computer ? adeCloudLaneLabel(computer.laneName) : null;
 }

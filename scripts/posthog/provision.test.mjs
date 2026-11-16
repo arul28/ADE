@@ -46,8 +46,8 @@ test("dashboard queries match the bounded instrumentation semantics", () => {
   assert.equal(surface.query.source.breakdownFilter.breakdown, "surface");
 
   const errors = findInsight("unrecoverable-errors");
-  assert.equal(errors.name, "Errors by action");
-  assert.equal(errors.query.source.breakdownFilter.breakdown, "action");
+  assert.equal(errors.query.source.series[0].event, "ade_error");
+  assert.ok(errors.query.source.breakdownFilter.breakdowns.some((breakdown) => breakdown.property === "action"));
 
   const outcomes = findInsight("work-session-outcomes");
   assert.equal(outcomes.name, "First agent-turn outcomes");

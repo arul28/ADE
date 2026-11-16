@@ -57,54 +57,21 @@ describe("suggestLaneNameFromPrompt", () => {
     });
   }
 
-  it("returns 'parallel-task' for an empty prompt", async () => {
+  it.each([
+    ["an empty prompt", "", "parallel-task"],
+    ["a whitespace-only prompt", "   \t\n  ", "parallel-task"],
+    ["a short prompt (fallback slug, no auth = no models)", "Fix the login bug", "fix-login-bug"],
+    ["a long prompt (first 5 meaningful words)", "Refactor the authentication service to use JWT tokens", "refactor-authentication-service-jwt-tokens"],
+    ["special characters", "Fix bug #123 in module!", "fix-bug-123-module"],
+    ["repeated whitespace", "  fix   the   bug   now   please  ", "fix-bug-now"],
+  ])("suggests a lane name from %s", async (_label, prompt, expected) => {
     const { service } = createSuggestService();
     const result = await service.suggestLaneNameFromPrompt({
-      prompt: "",
+      prompt,
       modelId: "anthropic/claude-haiku-4-5",
       laneId: "lane-1",
     });
-    expect(result).toBe("parallel-task");
-  });
-
-  it("returns 'parallel-task' for a whitespace-only prompt", async () => {
-    const { service } = createSuggestService();
-    const result = await service.suggestLaneNameFromPrompt({
-      prompt: "   \t\n  ",
-      modelId: "anthropic/claude-haiku-4-5",
-      laneId: "lane-1",
-    });
-    expect(result).toBe("parallel-task");
-  });
-
-  it("returns a slug from a short prompt via fallback (no auth = no models)", async () => {
-    const { service } = createSuggestService();
-    const result = await service.suggestLaneNameFromPrompt({
-      prompt: "Fix the login bug",
-      modelId: "anthropic/claude-haiku-4-5",
-      laneId: "lane-1",
-    });
-    expect(result).toBe("fix-login-bug");
-  });
-
-  it("takes the first 5 meaningful words of a long prompt", async () => {
-    const { service } = createSuggestService();
-    const result = await service.suggestLaneNameFromPrompt({
-      prompt: "Refactor the authentication service to use JWT tokens",
-      modelId: "anthropic/claude-haiku-4-5",
-      laneId: "lane-1",
-    });
-    expect(result).toBe("refactor-authentication-service-jwt-tokens");
-  });
-
-  it("strips special characters from the prompt slug", async () => {
-    const { service } = createSuggestService();
-    const result = await service.suggestLaneNameFromPrompt({
-      prompt: "Fix bug #123 in module!",
-      modelId: "anthropic/claude-haiku-4-5",
-      laneId: "lane-1",
-    });
-    expect(result).toBe("fix-bug-123-module");
+    expect(result).toBe(expected);
   });
 
   it("truncates the fallback slug to 48 characters", async () => {
@@ -115,16 +82,6 @@ describe("suggestLaneNameFromPrompt", () => {
       laneId: "lane-1",
     });
     expect(result.length).toBeLessThanOrEqual(48);
-  });
-
-  it("collapses multiple whitespace in the prompt", async () => {
-    const { service } = createSuggestService();
-    const result = await service.suggestLaneNameFromPrompt({
-      prompt: "  fix   the   bug   now   please  ",
-      modelId: "anthropic/claude-haiku-4-5",
-      laneId: "lane-1",
-    });
-    expect(result).toBe("fix-bug-now");
   });
 
   it("falls back when the model runtime throws an error", async () => {

@@ -4,7 +4,9 @@ import type { ProductAnalyticsService } from "../analytics/productAnalyticsServi
 import { cloudAsleepForUse, cloudRestChanged, cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
+import { thisMachineDisplayName } from "../../../../../ade-cli/src/services/sync/deviceRegistryService";
 import { accountProjectIdForCopy, localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
+import { isMachineScopeRootPath, MACHINE_SCOPE_ROOT_PATH } from "../../../shared/machineScope";
 import type { DeeplinkOwnership } from "../../../shared/deeplinks";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
@@ -431,6 +433,9 @@ function resolveAuthorizedLocalRuntimeRootPath(
   requestedRootPath: string | null | undefined,
   authorizeLocalRuntimeRoot?: RuntimeBridgeArgs["authorizeLocalRuntimeRoot"],
 ): string | null {
+  // This computer's own settings (`shared/machineScope.ts`): no project, so
+  // any window of this desktop may reach them.
+  if (isMachineScopeRootPath(requestedRootPath)) return MACHINE_SCOPE_ROOT_PATH;
   const roots = collectAuthorizedLocalRuntimeRoots(session);
   const requested = normalizeLocalRuntimeRootPath(requestedRootPath);
   if (requested) {
@@ -568,9 +573,10 @@ export type RuntimeBridgeRegistration = {
     /**
      * Connects (waking a sleeping cloud computer). Resolves once connected,
      * with the launch kinds its brain advertised (`chatLaunchKinds`; empty
-     * from an older brain); throws otherwise.
+     * from an older brain); throws otherwise. `background`: no person asked,
+     * so it neither wakes the computer nor starts its brain.
      */
-    connect(targetId: string): Promise<{ chatLaunchKinds: string[] }>;
+    connect(targetId: string, options?: { background?: boolean }): Promise<{ chatLaunchKinds: string[] }>;
     projects(targetId: string): Promise<RemoteRuntimeProjectRecord[]>;
     defaultParentDir(targetId: string): Promise<string>;
     /** Clones with the computer's own Git sign-in; no credential from here goes with it. */
@@ -864,9 +870,12 @@ export function registerRuntimeBridge({
       return binding;
     },
     remoteForMain: {
-      connect: async (targetId) => {
+      connect: async (targetId, options) => {
         // Resolves only once connected; a failure throws.
-        const connected = await remoteConnectionService.connect(requireRemoteTarget(targetId).id, { explicit: true });
+        const connected = await remoteConnectionService.connect(requireRemoteTarget(targetId).id, {
+          explicit: true,
+          background: options?.background === true,
+        });
         return { chatLaunchKinds: connected.capabilities?.chatLaunchKinds ?? [] };
       },
       projects: (targetId) => remoteConnectionService.projects(requireRemoteTarget(targetId).id),
@@ -1895,7 +1904,15 @@ export function registerRuntimeBridge({
       >(
         target.id,
         "machine.updateAndRestart",
-        { targetVersion },
+        {
+          targetVersion,
+          // Who asked, for the other machine's logs and its agents' continue
+          // message. An older brain ignores the field.
+          requestedBy: {
+            machineName: (await thisMachineDisplayName()) ?? undefined,
+            clientKind: "desktop",
+          },
+        },
         {
           // Downloading and installing a build can take minutes, and the
           // restart itself drops the connection — a silent retry would run the

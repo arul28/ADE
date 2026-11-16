@@ -200,11 +200,12 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getCrossMachineBatchMove",
       "previewCrossMachineHandoff", "resolveSmartLinkPreview", "resolveSmartLinkImage", "resolveSourceFavicons",
       "readTranscript", "readTranscriptPage", "suggestLaneNameFromPrompt",
-      "generateAutoLaneIdentity", "listDeletedChats", "getDeletedChatDetail",
+      "generateAutoLaneIdentity", "listDeletedChats", "getDeletedChatDetail", "getDeviceSources",
+      "getRootFullAccess",
     ],
     write: [
       "archiveSession", "cancelDispatchedSteer", "cancelSteer", "createSession", "deleteSession",
-      "reopenDeletedChat", "removeDeletedChats",
+      "reopenDeletedChat", "removeDeletedChats", "setRootFullAccess",
       "dispatchSteer", "editSteer", "ensureCtoSession", "moveSteer", "setCodexGoal",
       "setCodexGoalStatus", "clearCodexGoal", "startCodexRealtime", "stopCodexRealtime",
       "resetCodexMemory", "terminateCodexBackgroundTerminal", "interrupt",
@@ -221,13 +222,14 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "acceptCrossMachineHandoff", "markCrossMachineHandoff", "startCrossMachineHandoff",
       "cancelCrossMachineHandoff", "retryCrossMachineHandoff",
       "resolveCrossMachineHandoffApproval", "acknowledgeCrossMachineHandoff", "respondToInput",
-      "clearAsk",
+      "clearAsk", "setDeviceSource",
       "startCrossMachineBatchMove", "retryCrossMachineBatchMove", "importCrossMachineHandoffLane",
       "resolveCrossMachineBatchMoveApproval",
       "dismissPendingInput", "reloadClaudePlugins", "rewindFiles", "saveTempAttachment",
       "copyTempAttachment", "createAttachmentUpload", "sendMessage", "setClaudeOutputStyle",
       "setParallelLaunchState", "cancelScheduledWork", "resumeUsageLimitNow",
-      "continueUsageLimitOnAlternate", "switchAccount", "setScheduledWorkPaused", "steer",
+      "continueUsageLimitOnAlternate", "switchAccount", "setScheduledWorkPaused",
+      "setScheduledWorkItemPaused", "runScheduledWorkNow", "steer",
       "unarchiveSession", "updateSession", "regenerateSessionMetadata", "setSpawnKind", "setParent",
       "dismissSubagentTakeoverPrompt", "warmupModel", "mcpAppRequest", "revokeMcpAppGrant",
     ],
@@ -284,19 +286,18 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   cto_state: {
     live: "all",
     read: [
-      "getAttention", "getIdentity", "getOnboardingState", "getSessionLogs", "getSnapshot",
-      "getThreadHealth", "previewSystemPrompt",
+      "getAccountCopyStatus", "getAttention", "getIdentity", "getOnboardingState", "getSnapshot", "previewSystemPrompt",
     ],
     write: [
-      "completeOnboardingStep", "runProjectScan", "startFreshSession", "updateIdentity",
+      "adoptAccountCopy", "completeOnboardingStep", "refreshContext", "runProjectScan", "updateIdentity",
     ],
   },
   cto_memory: {
     read: [
-      "getSnapshot", "searchMemory",
+      "getSnapshot",
     ],
     write: [
-      "updateMemory", "recordDiscovery",
+      "updateNotes", "updateOpenWork", "recordDiscovery",
     ],
   },
   session: {
@@ -342,8 +343,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "list", "get",
     ],
     write: [
-      "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount",
-      "request", "exec",
+      "set", "delete", "request", "exec",
     ],
   },
   // Passwords: agents read summaries (sites, usernames, never a value). The
@@ -353,7 +353,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     // Sign-in needs the running brain's browser bridge and chats.
     live: ["signin", "signup", "requestLogin"],
     read: ["status", "activity", "code", "list", "loginsForPage"],
-    write: ["saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
+    write: ["saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "exportSecrets", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
   },
   // Messages on the Mac the person sits at: reading follows its Read Texts
   // switch; each text an agent sends is approved on a card first.
@@ -809,6 +809,7 @@ export const ADE_ACTION_THIS_DESKTOP_ONLY: Readonly<Record<string, Readonly<Reco
     revealValue: "A saved value is shown only in ADE on the computer you are using, after Touch ID or Windows Hello.",
     passkeysForRp: "Passkeys are used by ADE's browser on the computer you are using.",
     savePasskey: "Passkeys are saved by ADE's browser on the computer you are using.",
+    exportSecrets: "A .env export is written on the computer you are using, after Touch ID or Windows Hello.",
   },
   provider_logins: {
     allowKeychain: "Run this on that computer. ADE reads a computer's OS keyring only on the computer you are using.",
@@ -898,6 +899,8 @@ const UNREPLAYED_READS = new Set<string>([
  * a person asked: they don't wake a sleeping cloud computer or keep one awake.
  */
 const BACKGROUND_WRITES = new Set<string>([
+  // Reads the repository's origin from git; a composer asks it on mount.
+  "github.detectRepo",
   "pr.reconcileOnFocus",
   "session.backfillDeltas",
   "session.clearWokeMarker",

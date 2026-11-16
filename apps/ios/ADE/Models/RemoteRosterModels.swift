@@ -914,10 +914,14 @@ extension RemoteRosterChat {
   /// (session.status, session.runtimeState) pair that drives the Work row's
   /// status dot via `rawWorkChatSessionStatus`.
   private var sessionStatusStrings: (status: String, runtimeState: String) {
+    // A shell or CLI row keeps the "running" status for as long as its terminal
+    // is open, as on its own machine; only a chat rests with an "idle" status.
+    // Without this, an open shell at its prompt reads as ended.
+    let terminalRow = !isWorkChatToolType(toolType)
     switch status {
     case .running: return ("running", "running")
-    case .awaiting: return ("awaiting-input", "running")
-    case .idle: return ("idle", "idle")
+    case .awaiting: return terminalRow ? ("running", "waiting-input") : ("awaiting-input", "running")
+    case .idle: return terminalRow ? ("running", "idle") : ("idle", "idle")
     case .ended: return ("completed", "exited")
     case .failed: return ("failed", "failed")
     }
@@ -970,6 +974,12 @@ extension RemoteRosterChat {
     )
     session.spawnKind = spawnKind
     session.orchestrationParentSessionId = orchestrationParentSessionId
+    // The roster says "waiting on you" without the pending item the owning
+    // machine holds. The provider asked, so the row reads Needs you here as it
+    // does on that machine, not as a quiet chat.
+    if status == .awaiting, attentionRequestedAt == nil {
+      session.attentionSource = "provider_structured"
+    }
     return session
   }
 }

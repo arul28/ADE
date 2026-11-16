@@ -192,8 +192,8 @@ import type {
   CtoAttentionState,
   CtoRunProjectScanResult,
   CursorCloudServiceTier,
-  CtoStartFreshSessionResult,
-  CtoThreadHealth,
+  CtoRefreshContextResult,
+  CtoUpdateNotesArgs,
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
@@ -251,6 +251,7 @@ import { machineStatsReader } from "../machineStats/machineStatsService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import type { CtoMemoryTags } from "../cto/ctoMemoryService";
+import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { getSourceFaviconService, type ResolveSourceFaviconsArgs } from "../chat/sourceFaviconService";
 import { resolveSmartLinkImage } from "../chat/smartLinkPreviewService";
@@ -319,7 +320,8 @@ import { buildIntegrationConnectAdapters } from "../integrations/integrationConn
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
 import { ADE_CLOUD_HOME_UNAVAILABLE } from "../../../shared/automationCloud";
-import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
+import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudServerFor, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
+import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
 import { claudePassVaultFromStore } from "../adeCloud/claudePassStore";
@@ -334,11 +336,11 @@ import {
   type CloudLaneLaunchBrainHost,
 } from "../adeCloud/cloudLaneLaunchBrainHost";
 import { cloudGitPreflight } from "../adeCloud/cloudGitCredential";
-import { approveInHeadlessChromium, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
+import { approveSignInLink, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
 import { createCloudMachines } from "../adeCloud/cloudMachines";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
-import { getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { getSharedAccountAttestationConfig, getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
@@ -768,7 +770,8 @@ async function withLaneShareErrorCode<T>(call: () => Promise<T>): Promise<T> {
     return await call();
   } catch (error) {
     if (error instanceof LaneShareError) {
-      throw codedError(encodeCodedErrorMessage(error.wireCode, error.message), error.wireCode);
+      // Keeps the "expected" mark of an unreachable account directory.
+      throw carryExpected(error, codedError(encodeCodedErrorMessage(error.wireCode, error.message), error.wireCode));
     }
     throw error;
   }
@@ -1048,8 +1051,15 @@ function requireCallerSessionId(value: unknown): string {
   return sessionId;
 }
 
+/**
+ * A send or steer may carry attachments with no words (the composer allows it,
+ * and the chat service routes it), so only a send with nothing at all needs
+ * text.
+ */
 function readSendText(record: Record<string, unknown>): string {
-  if (record.includeThreadComments === true) return typeof record.text === "string" ? record.text : "";
+  const hasAttachments = (Array.isArray(record.attachments) && record.attachments.length > 0)
+    || (Array.isArray(record.contextAttachments) && record.contextAttachments.length > 0);
+  if (record.includeThreadComments === true || hasAttachments) return typeof record.text === "string" ? record.text : "";
   return requireNonEmptyString(record.text, "text");
 }
 
@@ -1561,6 +1571,26 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       });
     };
   }
+  if (typeof base.setScheduledWorkItemPaused === "function") {
+    service.setScheduledWorkItemPaused = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.setScheduledWorkItemPaused");
+      if (typeof record.paused !== "boolean") throw new Error("paused must be a boolean.");
+      return agentChatService.setScheduledWorkItemPaused({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+        scheduleId: requireNonEmptyString(record.scheduleId, "scheduleId"),
+        paused: record.paused,
+      });
+    };
+  }
+  if (typeof base.runScheduledWorkNow === "function") {
+    service.runScheduledWorkNow = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.runScheduledWorkNow");
+      return agentChatService.runScheduledWorkNow({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+        scheduleId: requireNonEmptyString(record.scheduleId, "scheduleId"),
+      });
+    };
+  }
   if (typeof base.resumeUsageLimitNow === "function") {
     service.resumeUsageLimitNow = (args?: unknown) => {
       const record = readObjectActionArg(args, "chat.resumeUsageLimitNow");
@@ -1663,43 +1693,26 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
       (await runtime.agentChatService?.getCtoAttention())
       ?? { status: "unknown", awaitingInput: false, since: null },
     /**
-     * Read-only: can the CTO thread take a turn, and should it be rotated?
-     *
-     * Open to every role for the same reason `getAttention` is — it answers a
-     * question about a badge, creates nothing, and returns no content.
+     * Give the CTO a fresh provider thread; the ADE session and everything
+     * the CTO remembers stay. CTO-only (see `ADE_ACTION_CTO_ONLY.cto_state`).
      */
-    getThreadHealth: async (): Promise<CtoThreadHealth> =>
-      (await runtime.agentChatService?.getCtoThreadHealth())
-      ?? {
-        sessionId: null,
-        canTakeTurn: true,
-        blockedReason: null,
-        lastTurnFailure: null,
-        context: null,
-        rotationAdvised: false,
-      },
-    /**
-     * Retire the CTO thread and start a clean one.
-     *
-     * CTO-only (see `ADE_ACTION_CTO_ONLY.cto_state`): it ends the conversation
-     * every other surface is talking to. Nothing the CTO remembers is touched —
-     * identity, memory, the daily log and project state all carry over, and the
-     * outgoing thread is distilled into memory before it is retired.
-     */
-    startFreshSession: async (): Promise<CtoStartFreshSessionResult> => {
+    refreshContext: async (): Promise<CtoRefreshContextResult> => {
       const agentChatService = runtime.agentChatService;
       if (!agentChatService) throw new Error("The chat service is not available on this machine.");
-      await runtime.laneService?.ensurePrimaryLane();
-      const lanes = (await runtime.laneService?.list()) ?? [];
-      const laneId = lanes.find((lane) => lane.laneType === "primary")?.id;
-      if (!laneId) throw new Error("No primary lane is available to host the CTO chat session.");
-      const result = await agentChatService.startFreshIdentitySession({ identityKey: "cto", laneId });
-      return {
-        sessionId: result.session.id,
-        previousSessionId: result.previousSessionId,
-        handoff: result.handoff,
-      };
+      return agentChatService.refreshCtoContext();
     },
+    /**
+     * This machine is the CTO's home now: take the CTO from its account copy
+     * when another machine wrote it last. Person-only (`ADE_ACTION_USER_ONLY`).
+     */
+    adoptAccountCopy: async (args?: CtoAdoptAccountCopyArgs): Promise<CtoAdoptAccountCopyResult> => {
+      const copy = runtime.ctoAccountCopyService;
+      if (!copy) return { restored: false, fromName: null, savedAt: null };
+      return await copy.adopt({ home: args?.home });
+    },
+    getAccountCopyStatus: async (): Promise<CtoAccountCopyStatus> =>
+      runtime.ctoAccountCopyService?.status()
+      ?? { available: false, savedAt: null, ownerName: null, ownerIsThisMachine: false },
   };
 }
 
@@ -1708,31 +1721,34 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
   if (!ctoMemoryService) return null;
   return {
     getSnapshot: () => ctoMemoryService.getSnapshot(),
-    updateMemory: (args?: { memory?: string }) => {
-      // A missing field must not silently blank the durable memory file; only
-      // an explicit string (including a deliberate "") is a valid rewrite —
-      // and clearing writes archive the replaced content.
-      if (typeof args?.memory !== "string") {
-        throw new Error("updateMemory requires a string `memory` field.");
+    updateNotes: (args?: Partial<CtoUpdateNotesArgs>) => {
+      if (args?.scope !== "project" && args?.scope !== "user") {
+        throw new Error("updateNotes requires `scope`: \"project\" or \"user\".");
       }
-      ctoMemoryService.writeMemory(args.memory);
+      if (typeof args.text !== "string") throw new Error("updateNotes requires a string `text` field.");
+      ctoMemoryService.writeNotes(args.scope, args.text, {
+        baseHash: typeof args.baseHash === "string" ? args.baseHash : null,
+      });
       return ctoMemoryService.getSnapshot();
     },
-    searchMemory: (args?: { query?: string; limit?: number; tags?: CtoMemoryTags }) => {
-      const query = args?.query ?? "";
-      const rows = ctoMemoryService.searchMemory(query, {
-        limit: args?.limit ?? 20,
-        ...(args?.tags ? { tags: args.tags } : {}),
-      });
-      return { query, rows };
+    updateOpenWork: (args?: Partial<{ op: string; text: string; id: string }>) => {
+      const op = args?.op;
+      if (op === "add") {
+        if (typeof args?.text !== "string" || !args.text.trim()) throw new Error("updateOpenWork add requires `text`.");
+        ctoMemoryService.updateOpenWork({ op, text: args.text });
+      } else if (op === "complete" || op === "reopen" || op === "remove") {
+        if (typeof args?.id !== "string" || !args.id.trim()) throw new Error(`updateOpenWork ${op} requires \`id\`.`);
+        ctoMemoryService.updateOpenWork({ op, id: args.id });
+      } else {
+        throw new Error("updateOpenWork requires `op`: add, complete, reopen or remove.");
+      }
+      return ctoMemoryService.getSnapshot();
     },
     /**
-     * One of the three non-CTO methods on this domain — see the `cto_memory`
+     * One of the two non-CTO methods on this domain — see the `cto_memory`
      * rule in `actionPolicy.ts`, which is `allExcept` so everything else here
-     * is CTO-only by omission. Append-only: it cannot read or modify durable
-     * memory, so a worker handing up a finding gains no view of what the CTO
-     * already knows (the other two, `getSnapshot` and `searchMemory`, can read
-     * it; see that rule for why they stay open).
+     * is CTO-only by omission. Append-only: it cannot read or change the
+     * notes, so a worker handing up a finding gains no view of them.
      */
     recordDiscovery: (args?: { fact?: string; tags?: CtoMemoryTags }) => {
       if (typeof args?.fact !== "string" || !args.fact.trim().length) {
@@ -4017,17 +4033,28 @@ function buildRemoteWorkDomainService(runtime: AdeRuntime) {
         lastUsedAt: copy.lastUsedAt,
         running: isRemoteWorkCopyInUse(copy.projectRoot, copy.owner),
         sizeBytes: await measureRemoteWorkCopy(copy.path),
+        keepsUnsynced: true,
       })));
     },
-    async delete(args: unknown): Promise<{ deleted: boolean }> {
+    /**
+     * `keepUnsynced` (the tools pane's Clean up): a copy holding work nobody
+     * pushed stays, and `keptReason` says why. Settings › Machines deletes
+     * without it, after its own confirm.
+     */
+    async delete(args: unknown): Promise<{ deleted: boolean; keptReason?: string }> {
       const owner = isRecord(args) && typeof args.owner === "string" ? args.owner.trim() : "";
       if (!owner) throw new Error("remote_work.delete requires owner.");
       const projectId = isRecord(args) && typeof args.projectId === "string" ? args.projectId.trim() : "";
       if (projectId && projectId !== deriveProjectId(runtime.projectRoot)) {
-        throw new Error("That work copy belongs to another project here; delete it through that project.");
+        throw new Error("That copy of a chat's code belongs to another project here; delete it through that project.");
       }
+      const keepUnsynced = isRecord(args) && args.keepUnsynced === true;
+      const kept: { reason?: string } = {};
       // Refused while a command runs in it (RemoteWorkError "copy_busy").
-      return { deleted: await here().release(owner) };
+      const deleted = await here().release(owner, keepUnsynced
+        ? { keepUnsynced: true, onKeptUnsynced: (reason) => { kept.reason = reason; } }
+        : {});
+      return kept.reason ? { deleted, keptReason: kept.reason } : { deleted };
     },
   };
 }
@@ -4269,13 +4296,13 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
   const agentChatService = runtime.agentChatService;
   return {
     ...(projectSecretService as unknown as OpaqueService),
-    // Callers by name (agents, `ade secrets`, the Secrets page) get the copy
-    // the account holds now, not whatever the last heartbeat brought in.
+    // Callers by name (agents, `ade secrets`) get the copy the account holds
+    // now, not whatever the last heartbeat brought in.
     get: (args?: unknown) => projectSecretService.getFresh(args as Parameters<typeof projectSecretService.getFresh>[0]),
     list: () => projectSecretService.listFresh(),
     // `ade secrets exec -- <command>`: this runtime runs the command with the
-    // project's secrets (and Passwords' secrets for it) in its environment,
-    // and returns its output masked. No value is ever returned.
+    // project's secrets in its environment, and returns its output masked.
+    // No value is ever returned.
     exec: async (args?: unknown) => {
       const input = args && typeof args === "object" ? args as Record<string, unknown> : {};
       const command = Array.isArray(input.command) ? input.command.filter((part): part is string => typeof part === "string") : [];
@@ -4284,13 +4311,7 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
         runtime.logger.warn("project_secret.exec_lanes_failed", { error: getErrorMessage(error) });
         return [];
       });
-      const scope = projectSecretService.accountScope();
-      const fromPasswords = await runtime.passwordService?.secretValuesForProject(scope).catch((error: unknown) => {
-        runtime.logger.warn("project_secret.exec_passwords_secrets_failed", { error: getErrorMessage(error) });
-        return {};
-      }) ?? {};
-      // A project secret of the same name wins: it is the one this project set.
-      const secrets = { ...fromPasswords, ...projectSecretService.valuesForProcess() };
+      const secrets = await projectSecretService.valuesForProcessFresh();
       const only = Array.isArray(input.names) ? input.names.filter((name): name is string => typeof name === "string") : null;
       const chosen = only?.length ? Object.fromEntries(Object.entries(secrets).filter(([name]) => only.includes(name))) : secrets;
       const missing = only?.filter((name) => !(name in secrets)) ?? [];
@@ -4419,6 +4440,8 @@ function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnT
     // A lane's computer is made here, not by the maker: the sign-in renewal learns of it the same way.
     onComputerCreated: noteCloudComputerMade,
     analytics: runtime.productAnalyticsService ?? null,
+    // The launch's computer follows this machine's update track.
+    updateChannel: () => cloudAccessDeps(runtime).updateChannel?.() ?? null,
     // C4: a private repository with no GitHub sign-in in the account is refused before a computer is made.
     gitPreflight: (originUrl) => cloudGitPreflight({
       vault: (key) => (runtime.accountVaultStore && runtime.accountAuthService?.getStatus().signedIn === true
@@ -4459,7 +4482,8 @@ function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType
   });
   // Only a brain on a cloud machine approves the machines it makes; anywhere
   // else a person has a browser, and the sign-in link goes to them.
-  const chromium = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
+  const onCloudMachine = Boolean(process.env.ADE_CLOUD_INSTANCE_ID?.trim());
+  const chromium = onCloudMachine ? findHeadlessChromium() : null;
   return {
     client: () => requireCloudProvider(credentials),
     getAccountToken: async () => (account.getStatus().signedIn ? await account.getAccessToken().catch(() => null) : null),
@@ -4472,9 +4496,20 @@ function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType
     account: () => machines.account(),
     removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
     // No window here: the sign-in of a machine this brain made with an
-    // unattended yes opens in a headless Chromium (the template ships one).
-    ...(chromium ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
-      approveInHeadlessChromium({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
+    // unattended yes is approved without a browser, a headless Chromium (the
+    // template ships one) as the fallback.
+    ...(onCloudMachine ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
+      approveSignInLink({
+        url,
+        signal,
+        binary: chromium,
+        // The link must be on this brain's own Clerk hosts and account directory.
+        trust: () => ({
+          clerkIssuer: getSharedAccountAttestationConfig({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }).issuer,
+          directoryBaseUrl: directoryBaseUrl(),
+        }),
+        logger: runtime.logger,
+      }) } : {}),
     logger: runtime.logger,
   };
 }
@@ -4563,8 +4598,51 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   return {
     ...verbs,
     ...cloudSignIns,
+    ...savedChatReads(credentials),
     /** Whether ADE Cloud exists for this account; the only `cloud` action served when it doesn't. */
     access: async () => ({ enabled: await cloudAccessEnabled(credentials) }),
+  };
+}
+
+/**
+ * The account's saved chats (what each ADE Cloud computer saved before it
+ * slept), for a client that has no cloud credential of its own: ADE Web asks
+ * a connected brain through `cloud.read`, the way the desktop asks its main
+ * process (`registerCloudSavedChatsIpc.ts`). Reads only, and not in the
+ * agents' action list. Null is "couldn't ask"; the caller keeps what it shows.
+ */
+function savedChatReads(credentials: CloudAccessDeps): {
+  saved_chats_list: (args?: unknown) => Promise<CloudSavedChatList | null>;
+  saved_chats_read: (args?: unknown) => Promise<CloudSavedChatPage | null>;
+} {
+  const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
+  const count = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), 500) : undefined);
+  const input = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
+  return {
+    saved_chats_list: async (args) => {
+      const request = input(args);
+      const server = cloudServerFor(credentials);
+      if (!server) return null;
+      return await server.listSavedChats({
+        machineKey: text(request.machineKey),
+        projectKey: text(request.projectKey),
+        limit: count(request.limit),
+        cursor: text(request.cursor),
+      });
+    },
+    saved_chats_read: async (args) => {
+      const request = input(args);
+      const machineKey = text(request.machineKey);
+      const chatId = text(request.chatId);
+      const server = cloudServerFor(credentials);
+      if (!server || !machineKey || !chatId) return null;
+      return await server.readSavedChat({
+        machineKey,
+        chatId,
+        before: typeof request.before === "number" && Number.isFinite(request.before) ? request.before : null,
+        limit: count(request.limit),
+      });
+    },
   };
 }
 
@@ -4586,7 +4664,7 @@ export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime)
     account_vault: cloudOnlyVaultService(buildAccountVaultDomainService(runtime)),
     // The brain's one sign-in sync, the same service a project runtime serves.
     provider_logins: toService(buildProviderLoginsDomainService()),
-    // Settings › Passwords and the browser's fill with no project open.
+    // Settings › Passwords & Secrets and the browser's fill with no project open.
     passwords: buildPasswordsDomainService(runtime),
   };
 }

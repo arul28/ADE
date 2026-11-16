@@ -139,7 +139,14 @@ Browser sync client:
   for the same session join the next unsent frame (at most 16 KB). A frame
   that was sent once never changes, so a retry resends its id with the same
   bytes. `isRetryingDial` tells a dial round that failed and retries apart
-  from a refusal.
+  from a refusal. The project in front belongs to this browser, not to the
+  brain. A brain that restarts on its own default project, or that another
+  client moves to another project, does not move the browser: the client keeps
+  its project and its chat and terminal streams, and sends a
+  `project_switch_request` for its own project again
+  (`ensureHostOnOwnProject`). It sends at most one such request per 15 seconds,
+  so two clients that show different projects of one computer do not keep
+  moving it. A request inside that gap runs when the gap ends.
 - `apps/desktop/src/renderer/webclient/sync/connection.ts` - WebSocket
   lifecycle, account adoption, paired hello, DPoP proof on reconnect,
   heartbeat, reconnect/backoff, project catalog chunks, and auth-failure
@@ -573,15 +580,15 @@ Browser `window.ade` adapter:
   honestly when the host is offline or the action is not advertised. Its
   `cto.*` namespace is wired
   method by method on purpose — the host registers every `cto.*` action as
-  viewer-allowed, so completing the namespace mechanically would hand any
-  connected browser write access to the Linear credential store; only reads and
-  the session ensure are wired, and identity/token writes stay with the
-  fallback proxy, which rejects them as unavailable. CTO onboarding is
-  desktop-first and has no host descriptors, so the web adapter synthesizes a
-  completed onboarding state in browser-local storage — left to the fallback
-  proxy those reads would reject and
-  `CtoPage` parks forever, because its ensure-session effect bails while
-  onboarding state is null. `misc.ts` applies the display zoom preference
+  viewer-allowed, including `setLinearToken`/`clearLinearToken`, so completing
+  the namespace mechanically would hand any connected browser write access to
+  the host's Linear credential store. The namespace wires `getState`,
+  `ensureSession`, `getAttention`, `getMemory`, `updateNotes`, `updateOpenWork`,
+  `updateIdentity`, `refreshContext`, `previewSystemPrompt`, the onboarding
+  reads and the Linear reads; credential writes stay with the fallback proxy.
+  Every CTO method carries the CTO home machine's pin, and a pin naming another
+  machine refuses instead of reading or creating a session on this one.
+  `misc.ts` applies the display zoom preference
   through `applyHostedWebZoom`: CSS zoom still lives on `<body>` (the root
   element is reserved for browser pinch-zoom), but the body's specified
   width/height are divided by the factor first so the zoomed used box is
@@ -706,7 +713,12 @@ Browser shell and routes:
   live catalog frame is written through to IndexedDB, a successful connect
   records the last-active machine key, and forgetting a machine drops its cached
   catalog. The optional store is injected, so a manager without browser storage
-  simply runs without the cache.
+  simply runs without the cache. A `background` connect (a repository tab
+  joins every computer with a copy) never parks another machine for room and
+  skips a machine the person disconnected (`disconnectByUser`). That choice is
+  kept in `localStorage` across reloads, and the person's own connect clears it.
+  A person's connect that finds a background connect in flight waits for it and
+  then runs its own.
 - `apps/desktop/src/renderer/webclient/workspace/machineIdentity.ts` - the
   `machineCatalogKey` identity (`device:<hostDeviceId>`, falling back to the
   environment id) shared by the catalog store, the session pool, and the
@@ -809,7 +821,15 @@ Reused desktop renderer (web-mode adaptation):
   `ConnectionsPanel.tsx` above), and logical repository tabs in the tab strip. Checkouts with the same repository origin
   collapse into one tab; when that repository exists on multiple machines, the
   machine becomes a compact selector inside the tab. Parked and offline bindings
-  remain visible and reconnect when chosen.
+  remain visible and reconnect when chosen. A computer that leaves this tab
+  never closes a tab (`moveWebTabsOffGoneTargets`): it was forgotten or removed
+  (it leaves the connection list), or it stopped (still listed, not connected
+  3 s after the reconnect hold reports it; a project open passes through
+  "idle" for a moment). Each of its tabs moves to a copy on another connected
+  computer and keeps its place in front; a tab with no other copy stays open on
+  its no-machine page (`ProjectWelcomeNoMachine.tsx`), which offers **Open**
+  only on a computer that can answer. When a stopped computer connects again,
+  its waiting tabs open their copy again by themselves.
 - `apps/desktop/src/renderer/components/onboarding/LaunchGate.tsx` - the launch
   gate, split into a web variant and a desktop variant so neither constrains the
   other. The web variant gates on account state alone and offers no way past it:

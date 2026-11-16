@@ -41,6 +41,7 @@ import {
   applyBrowserMockUpdateAndFallback,
   browserMockBrainDownScenario,
   browserMockRecoveryScenario,
+  browserMockReportScenario,
   createBrowserMockRecoveryBridges,
   showBrowserMockBrainDownPending,
   showBrowserMockRecoveryScreen,
@@ -155,6 +156,7 @@ import {
   type KeepAwakeSnapshot,
 } from "../shared/types/keepAwake";
 import { createMockExternalSessionsApi } from "./browserMockExternalSessions";
+import { applyBrowserMockToolsPane } from "./browserMockToolsPane";
 import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { applyHostedWebZoom } from "./lib/webZoom";
@@ -1456,6 +1458,129 @@ function browserMockFlag(name: string): boolean {
   }
 }
 
+function browserMockParam(name: string): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get(name);
+  } catch {
+    return null;
+  }
+}
+
+/** The machine `?mockRemoteWork` names; this window starts with no connection to it. */
+const BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY = "mk_mbp_97";
+const BROWSER_MOCK_REMOTE_WORK_TARGET_ID = "mock-mbp-97";
+
+/** Mac Desktop in the web preview: this computer cannot host one. */
+const BROWSER_MOCK_LOCAL_MAC_DESKTOP_STATUS = {
+  // `?mockHostPlatform=darwin` shows the host-bound tools (Apple
+  // Development) so a pane can be looked at beside them.
+  platform: (new URLSearchParams(window.location.search).get("mockHostPlatform") ?? "browser") as NodeJS.Platform,
+  supported: false,
+  unsupportedReason: "The hosted web client cannot host a Mac display.",
+  driver: {
+    state: "unsupported" as const,
+    title: "Not available here",
+    message: "Mac Desktop runs on the machine that hosts the lane.",
+    recovery: null,
+    version: null,
+  },
+  permissions: { screenRecording: "unknown" as const, accessibility: "unknown" as const },
+  displayMode: "unavailable" as const,
+  display: null,
+  windows: [],
+  lease: null,
+  stream: null,
+  recording: null,
+  lanes: [],
+  hostIsLocal: false,
+};
+
+/** `?mockRemoteWork`'s machine: a Mac whose screen for the work copy is off. */
+function browserMockRemoteMacDesktopStatus() {
+  return {
+    ...BROWSER_MOCK_LOCAL_MAC_DESKTOP_STATUS,
+    platform: "darwin" as NodeJS.Platform,
+    supported: true,
+    unsupportedReason: null,
+    driver: { state: "running" as const, title: "Running", message: "", recovery: null, version: "mock" },
+    permissions: { screenRecording: "granted" as const, accessibility: "granted" as const },
+    displayMode: "virtual" as const,
+  };
+}
+
+function browserMockRemoteWorkKinds(): string[] {
+  return (browserMockParam("mockRemoteWork") ?? "").split(",").map((kind) => kind.trim()).filter(Boolean);
+}
+
+let browserMockRemoteConnects = 0;
+let browserMockIosStopped = false;
+let browserMockIosStopTimer: number | null = null;
+const browserMockIosListeners = new Set<(event: any) => void>();
+
+/** `?mockRemoteConnect=in-use`'s saved machine: another ADE app on this computer holds the link. */
+function browserMockHeldElsewhereConnection(): any[] {
+  if (browserMockParam("mockRemoteConnect") !== "in-use") return [];
+  return [{
+    target: {
+      id: BROWSER_MOCK_REMOTE_WORK_TARGET_ID,
+      name: "MacBook Pro (97)",
+      hostname: "mbp-97.local",
+      transport: "paired",
+      pairedMachine: { hostIdentity: "mock-mbp-97", machineKey: BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY },
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "0.0.0-browser",
+      lastConnectedAt: Date.now() - 60_000,
+    },
+    state: "error",
+    arch: "darwin-arm64",
+    version: "0.0.0-browser",
+    route: null,
+    capabilities: null,
+    projects: [],
+    lastError: "Another ADE app on this computer (for example ADE Beta or a dev build) is using the link to MacBook Pro (97). Use it here instead?",
+    lastAttemptedAt: Date.now() - 30_000,
+    connectedAt: null,
+    reconnectBlocked: "disconnected",
+    recovery: "held_elsewhere",
+  }];
+}
+
+/** `remoteRuntime.connect` on `?mockRemoteConnect=in-use`'s machine ("Use it here"): it connects after a beat. */
+async function browserMockConnectHeldTarget(): Promise<any> {
+  await new Promise((resolve) => window.setTimeout(resolve, 1_500));
+  const [held] = browserMockHeldElsewhereConnection();
+  return { target: { ...held.target, lastConnectedAt: Date.now() }, arch: "darwin-arm64", version: "0.0.0-browser", projects: [] };
+}
+
+/** `remoteRuntime.connect`, except "Use it here" on `?mockRemoteConnect=in-use`'s machine connects it after a beat. */
+function withHeldElsewhereConnect(connect: (id: string) => Promise<any>): (id: string) => Promise<any> {
+  return (id) => (id === BROWSER_MOCK_REMOTE_WORK_TARGET_ID && browserMockParam("mockRemoteConnect") === "in-use"
+    ? browserMockConnectHeldTarget()
+    : connect(id));
+}
+
+/** `window.ade.machines.connect`: the paired machines connect, after a beat; `?mockRemoteConnect` picks a failure. */
+async function browserMockConnectMachine(machineKey: string): Promise<any> {
+  // This call's own attempt number, taken before the wait.
+  const attempt = ++browserMockRemoteConnects;
+  const mode = browserMockParam("mockRemoteConnect");
+  if (mode === "hang") return new Promise(() => undefined);
+  await new Promise((resolve) => window.setTimeout(resolve, 1_500));
+  if (mode === "fail" || (mode === "fail-once" && attempt === 1)) {
+    return { ok: false, reason: "unreachable", machineKey, message: "MacBook Pro (97) did not answer. It may be asleep or off." };
+  }
+  if (machineKey === BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY) {
+    return { ok: true, address: { kind: "remote", machineKey, targetId: BROWSER_MOCK_REMOTE_WORK_TARGET_ID, name: "MacBook Pro (97)" } };
+  }
+  if (machineKey === "mk_studio_mac") {
+    return { ok: true, address: { kind: "remote", machineKey, targetId: "mock-remote", name: "Studio Mac" } };
+  }
+  return { ok: false, reason: "not_in_account", machineKey, message: "That machine is not on this account." };
+}
+
 /**
  * ADE MCP (Settings → You → ADE MCP). `?mockAdeMcp=` stages the page:
  * - `on` (default): three computers, two answering and one on an older ADE,
@@ -1772,6 +1897,7 @@ function browserMockFirstRun(): boolean {
  *   cooldown, so only the named ones can show. Name two to see the cooldown
  *   hold the second back. Reloads keep the state (the seed is per tab).
  * - `?mockOneMachine`: no other machine is connected (the phone suggestion).
+ * - `?mockCloudLaneMachine=1` (with `?mockCloud=plus`): an ADE Cloud lane computer is paired under its generated name.
  * - `?mockRunningChats`: Activity reports three running chats (the grid).
  * - `?mockLinearOff`: Linear is not connected (pasting a Linear issue link).
  * - `?mockGithubOff` / `?mockJiraOff`: GitHub or Jira is not connected
@@ -2297,6 +2423,8 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
     },
     // `?mockAndroidRemote`: the chat drove the Studio Mac's Android emulator
     // through its work copy there (`ade android … --machine "Studio Mac"`).
+    // `=two`: it later ran work on "MacBook Pro (97)" too, whose copy there
+    // has no emulator, so the newest use is not the one with a device.
     ...(browserMockFlag("mockAndroidRemote")
       ? {
         remoteWork: [{
@@ -2309,6 +2437,39 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
           workCopyLaneId: "remote-work-0a1b2c3d4e5f",
           usesSimulator: false,
           usesAndroidEmulator: true,
+          lastStartedAt: new Date(Date.now() - 60_000).toISOString(),
+        }, ...(browserMockParam("mockAndroidRemote") === "two" ? [{
+          machineKey: BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY,
+          machineName: "MacBook Pro (97)",
+          machinePlatform: "darwin",
+          projectId: "mock-project-mbp",
+          projectRootPath: "/Users/mock/Projects/ADE",
+          terminalIds: [],
+          workCopyLaneId: "remote-work-97aa",
+          usesSimulator: true,
+          usesAndroidEmulator: true,
+          lastStartedAt: new Date().toISOString(),
+        }] : [])],
+      }
+      : {}),
+    // `?mockRemoteWork=ios,desktop,app-control`: the chat drove those on
+    // "MacBook Pro (97)", a machine this window has no connection to; the
+    // tool connects on demand (`?mockRemoteConnect=hang|fail|fail-once`), or
+    // `?mockRemoteConnect=in-use`: another ADE app on this computer holds the
+    // link, and "Use it here" takes it back.
+    ...(browserMockParam("mockRemoteWork") !== null
+      ? {
+        remoteWork: [{
+          machineKey: BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY,
+          machineName: "MacBook Pro (97)",
+          machinePlatform: "darwin",
+          projectId: "mock-project-mbp",
+          projectRootPath: "/Users/mock/Projects/ADE",
+          terminalIds: [],
+          workCopyLaneId: "remote-work-97aa",
+          usesSimulator: browserMockRemoteWorkKinds().includes("ios"),
+          usesDesktop: browserMockRemoteWorkKinds().includes("desktop"),
+          usesAppControl: browserMockRemoteWorkKinds().includes("app-control"),
           lastStartedAt: new Date().toISOString(),
         }],
       }
@@ -2930,7 +3091,82 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
   const base = Array.isArray(events)
     ? events.filter((entry) => entry?.sessionId === sessionId && entry?.event)
     : [];
-  return [...base, ...browserMockQuestionEvents(sessionId), ...(browserMockSentEvents.get(sessionId) ?? [])];
+  return [
+    ...base,
+    ...browserMockQuestionEvents(sessionId),
+    ...browserMockCodexStallEvents(sessionId),
+    ...(browserMockSentEvents.get(sessionId) ?? []),
+  ];
+}
+
+/**
+ * `?mockCodexStall=1` (or `=claude`, `=cursor`, …): the question chat (or `mockStallSession`) ends on a turn that has not
+ * answered, so the preview shows the restart card and the ADE rows (a message
+ * ADE wrote, never the user's bubble) without a slow Codex.
+ */
+function browserMockCodexStallEvents(sessionId: string): any[] {
+  const href = typeof window === "undefined" ? "" : window.location.href;
+  const match = /[?&]mockCodexStall=([a-z]+|1)\b/.exec(href);
+  if (!match) return [];
+  // `&mockStallSession=<id>` puts it on that chat instead (a snapshot without the question chat).
+  const target = /[?&]mockStallSession=([A-Za-z0-9-]+)/.exec(href)?.[1] ?? BROWSER_MOCK_QUESTION_SESSION_ID;
+  if (sessionId !== target) return [];
+  // `=1` is Codex; `=claude`, `=cursor`, … shows the same card for that provider.
+  const provider = match[1] === "1" ? "codex" : match[1]!;
+  const name = provider.charAt(0).toUpperCase() + provider.slice(1);
+  const startedAt = Date.now() - 3 * 60_000;
+  const at = (offsetMs: number) => new Date(startedAt + offsetMs).toISOString();
+  const turnId = "mock-stall-turn";
+  return [
+    {
+      sessionId,
+      timestamp: at(0),
+      sequence: 991_000,
+      event: { type: "user_message", text: "Add a settings page with a dark mode toggle.", turnId },
+    },
+    {
+      sessionId,
+      timestamp: at(500),
+      sequence: 991_001,
+      event: {
+        type: "user_message",
+        text: "Status check: briefly report your current progress or what is blocking this turn, then continue the task.",
+        turnId,
+        metadata: { hostContinuation: { reason: "stall_nudge" } },
+      },
+    },
+    {
+      sessionId,
+      timestamp: at(1_000),
+      sequence: 991_002,
+      event: {
+        type: "user_message",
+        text: "Resume the interrupted work from the user's last request. Re-check the current workspace state, continue safely, and report progress.",
+        turnId,
+        metadata: { hostContinuation: { reason: "interrupted_turn_recovery" } },
+      },
+    },
+    {
+      sessionId,
+      timestamp: at(120_000),
+      sequence: 991_003,
+      event: {
+        type: "turn_health",
+        provider,
+        turnId,
+        state: "stalled",
+        reason: "no_output",
+        message: `${name} hasn't answered in 2 minutes. Restart ${name}, or keep waiting.`,
+        turnStartedAt: at(0),
+        lastProgressAt: at(0),
+        detectedAt: at(120_000),
+        recoveryCount: 0,
+        supportedActions: ["wait", "restart_resume"],
+        automaticRecoveryAttempted: false,
+        sourceSessionId: sessionId,
+      },
+    },
+  ];
 }
 
 // Live chat events in the preview: messages sent here and thread-comment
@@ -3002,6 +3238,46 @@ function setBrowserMockDemoChatRunning(sessionId: string, running: boolean): voi
     notifyBrowserMockSessionsChanged(row.id);
   }, 3_000);
 })();
+
+/**
+ * `?mockCloudLaneMachine=1` (with `?mockCloud=plus`): an ADE Cloud lane
+ * computer paired like any machine, under its generated internal name, so the
+ * surfaces that list machines can show "Cloud · <lane>" instead.
+ */
+const MOCK_CLOUD_LANE_ORIGIN = "git@github.com:acme-labs/browser-preview.git";
+
+/** The lane and chat the cloud computer of `?mockCloudLaneMachine=1` reports. */
+function mockCloudLaneRows(): { lanes: any[]; sessions: any[] } {
+  const base = MOCK_LANES.find((lane) => lane.laneType === "primary") ?? MOCK_LANES[0];
+  const lane = { ...base, id: "cloud-lane-checkout", name: "checkout-redesign", branchRef: "checkout-redesign", laneType: "worktree", parentLaneId: base?.id ?? null, worktreePath: "/home/ade/work/browser-preview/.ade/worktrees/checkout-redesign" };
+  const template = MOCK_SESSIONS.find((row) => row.id === "mock-session-codex-1");
+  const session = template
+    ? { ...template, id: "cloud-chat-1", chatSessionId: "cloud-chat-1", laneId: lane.id, laneName: lane.name, title: "Checkout redesign", status: "running", runtimeState: "idle", endedAt: null, currentTurnStartedAt: null }
+    : null;
+  return { lanes: [lane], sessions: session ? [session] : [] };
+}
+
+function mockCloudLaneTargets(): any[] {
+  if (!browserMockFlag("mockCloudLaneMachine")) return [];
+  const target = (id: string, name: string, hostname: string) => ({
+    id,
+    name,
+    hostname,
+    transport: "paired",
+    pairedMachine: { hostIdentity: `mock-cloud-${hostname}`, machineKey: `mock-${hostname}` },
+    sshUser: null,
+    port: null,
+    sshKeyPath: null,
+    lastSeenArch: "linux-x64",
+    runtimeBinaryVersion: "0.0.0-browser",
+    lastConnectedAt: Date.now(),
+  });
+  // One computer under an instance-derived name, one under a prompt-derived name (the lanes' computers of `?mockCloud=plus`).
+  return [
+    target("mock-cloud-lane", "ade-cloud-0t1p52vfqe", "k3j9x0a1"),
+    target("mock-cloud-lane-2", "Live Test ADE Cloud Keep", "m2q8w1b2"),
+  ];
+}
 
 /** A chat the demo's New Chat page starts: a real row in the session list, so the app opens it. */
 function createBrowserMockDemoChat(args: any): any {
@@ -4711,7 +4987,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   const BROWSER_MOCK_LOCAL_DEVICE: any = {
     deviceId: "browser-mock-device",
     siteId: "browser-mock-site",
-    name: "Browser preview",
+    // `?mockSameNameMachines`: this computer and two paired ones all named "Studio Mac".
+    name: browserMockFlag("mockSameNameMachines") ? "Studio Mac" : "Browser preview",
     platform: "macOS",
     deviceType: "desktop",
     createdAt: now,
@@ -4946,6 +5223,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   });
   const BROWSER_MOCK_RECENT_PROJECTS: any[] = [
     { rootPath: "/Users/ada/ADE", displayName: "ADE", lastOpenedAt: browserMockAgo(4 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/acme-shop.git", pinned: true },
+    // `?mockCloudLaneMachine=1`: this preview's own project has an origin, so other machines' copies of it are listed.
+    ...(browserMockFlag("mockCloudLaneMachine")
+      ? [{ rootPath: "/tmp/mock", displayName: "Browser Preview", lastOpenedAt: browserMockAgo(60_000), exists: true, kind: "local", gitOriginUrl: MOCK_CLOUD_LANE_ORIGIN }]
+      : []),
     browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "ade", "ADE", "/Users/admin/ADE", 2 * 3_600_000, "https://github.com/acme-labs/acme-shop"),
     browserMockRemoteRecent("mock-windows", "windows", "win-box.local", "ade", "ADE", "C:/Users/ada/ADE", 3 * 86_400_000, "https://github.com/acme-labs/acme-shop"),
     { rootPath: "/Users/ada/Projects/storefront", displayName: "storefront", lastOpenedAt: browserMockAgo(55 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/storefront.git" },
@@ -5813,6 +6094,28 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     accountSettings: (() => {
       const rows = new Map<string, AccountSettingRow>();
       const rowKey = (scope: string, key: string) => `${scope}\u0000${key}`;
+      // `?mockCtoHome=away|asleep|gone`: the CTO lives on a machine this preview can't reach
+      // (another computer, an ADE Cloud computer asleep, or one the idle cleanup deleted).
+      const ctoHomeSeed = new URLSearchParams(window.location.search).get("mockCtoHome");
+      if (ctoHomeSeed) {
+        const at = new Date().toISOString();
+        const scope = "repo:github.com/acme/ade";
+        rows.set(rowKey(scope, "cto.homeMachine"), {
+          scope,
+          key: "cto.homeMachine",
+          value: {
+            version: 1,
+            deviceId: "mock-away-device",
+            name: ctoHomeSeed === "away" ? "Ada's Mac Studio" : "CTO · acme/ade",
+            hostname: null,
+            chosenAt: at,
+            ...(ctoHomeSeed === "asleep" ? { cloudInstanceId: "p7r4t5c3" } : ctoHomeSeed === "gone" ? { cloudInstanceId: "gone-instance" } : {}),
+          },
+          updatedAt: at,
+          changedAt: at,
+          writerDeviceId: "browser-mock",
+        });
+      }
       return {
         list: async (args?: { scope?: string | null }) => ({
           ok: true as const,
@@ -6041,7 +6344,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         if (BROWSER_MOCK_DEMO) return { ...state, completedAt: state.completedAt ?? new Date().toISOString() };
         // `?mockFirstRun` previews first-run setup on top of the gate.
         if (browserMockFirstRun()) return { ...state, completedAt: null, dismissedAt: null };
-        return browserMockGateState() && !state.completedAt && !state.dismissedAt
+        // The gate's previews and the ADE Cloud dashboard preview (`?mockCloud=`) skip the welcome.
+        return (browserMockGateState() || browserMockFlag("mockCloud")) && !state.completedAt && !state.dismissedAt
           ? { ...state, dismissedAt: new Date().toISOString() }
           : state;
       },
@@ -6159,25 +6463,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       openPathInEditor: resolvedArg(undefined),
       logDebugEvent: () => {},
     },
-    // Sample project secrets so the Secrets page renders its list in the preview.
+    // The project-shaped view of Passwords & Secrets (agents' secret cards use it).
     projectSecrets: {
-      list: resolved({
-        secrets: [
-          { name: "STRIPE_API_KEY", createdAt: now, updatedAt: now, valueLength: 32, storage: "account" },
-          { name: "OPENAI_API_KEY", createdAt: now, updatedAt: now, valueLength: 51, storage: "account" },
-          { name: "DATABASE_URL", createdAt: now, updatedAt: now, valueLength: 64, storage: "device" },
-        ],
-        storage: { path: `${MOCK_PROJECT.rootPath}/.ade/secrets`, encrypted: true, scope: "project" },
-      }),
-      get: resolvedArg({ name: "STRIPE_API_KEY", createdAt: now, updatedAt: now, valueLength: 32, storage: "account", value: "sk_test_preview" }),
-      set: resolvedArg({ name: "NEW_KEY", createdAt: now, updatedAt: now, valueLength: 8, storage: "account" }),
-      delete: resolvedArg({ deleted: true, name: "" }),
-      pullFromAccount: resolved({ state: "pulled" as const, added: 0, updated: 0 }),
-      chooseEnvFile: resolved(null),
-      importEnv: resolvedArg({ imported: [], replaced: [] }),
-      exportEnv: resolved({ filePath: "", secretCount: 0 }),
+      list: resolved({ secrets: [] }),
+      set: resolvedArg({ name: "NEW_KEY", createdAt: now, updatedAt: now, valueLength: 8, storage: "account" as const }),
     },
-    // Sample Passwords items so Settings › Passwords renders its lists in the
+    // Sample Passwords items so Settings › Passwords & Secrets renders its lists in the
     // preview. Fake data only, and no field here holds a value: the real
     // summaries never carry one either.
     passwords: (() => {
@@ -6191,6 +6482,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           hasPassword: true,
           hasTotp: true,
           projectScope: null,
+          deviceOnly: false,
           updatedAt: now,
         },
         {
@@ -6202,6 +6494,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           hasPassword: true,
           hasTotp: false,
           projectScope: null,
+          deviceOnly: false,
           updatedAt: new Date(Date.parse(now) - 3 * 86_400_000).toISOString(),
         },
         {
@@ -6213,6 +6506,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           hasPassword: true,
           hasTotp: false,
           projectScope: null,
+          deviceOnly: false,
           updatedAt: now,
         },
         {
@@ -6223,7 +6517,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           username: null,
           hasPassword: true,
           hasTotp: false,
-          projectScope: "github.com/ade/preview",
+          projectScope: "repo:github.com/ade/preview",
+          deviceOnly: false,
           updatedAt: new Date(Date.parse(now) - 9 * 86_400_000).toISOString(),
         },
       ];
@@ -6257,6 +6552,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           const secondsLeft = 30 - (Math.floor(Date.now() / 1000) % 30);
           return { code: String(Math.floor(Date.now() / 30_000) % 1_000_000).padStart(6, "0"), secondsLeft };
         },
+        reveal: async (args: { copy?: boolean }) => (args.copy ? { copied: true as const } : { value: "preview-value" }),
         saveLogin: async (args: { id?: string; title?: string; origins: string[]; username: string }) => {
           const saved: PasswordItemSummary = {
             id: args.id ?? `pw-login-${items.length + 1}`,
@@ -6267,6 +6563,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             hasPassword: true,
             hasTotp: false,
             projectScope: null,
+            deviceOnly: false,
             updatedAt: new Date().toISOString(),
           };
           const index = items.findIndex((item) => item.id === saved.id);
@@ -6274,7 +6571,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           else items.push(saved);
           return saved;
         },
-        saveSecret: async (args: { id?: string; name: string; projectScope: string | null }) => {
+        saveSecret: async (args: { id?: string; name: string; projectScope: string | null; deviceOnly?: boolean }) => {
           const saved: PasswordItemSummary = {
             id: args.id ?? `pw-secret-${items.length + 1}`,
             kind: "secret",
@@ -6284,6 +6581,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             hasPassword: true,
             hasTotp: false,
             projectScope: args.projectScope,
+            deviceOnly: args.deviceOnly === true,
             updatedAt: new Date().toISOString(),
           };
           const index = items.findIndex((item) => item.id === saved.id);
@@ -6298,6 +6596,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           return true;
         },
         importCsv: async () => ({ imported: 0, skippedDuplicate: 0, skippedInvalid: 0 }),
+        importSecrets: async (args: { entries: Array<{ name: string }> }) => ({ imported: args.entries.map((entry) => entry.name), replaced: [] }),
+        exportSecrets: async () => ({ filePath: "~/Downloads/ade-secrets.env", secretCount: items.filter((item) => item.kind === "secret").length }),
+        chooseEnvFile: async () => null,
+        projects: async () => [{ scope: "repo:github.com/ade/preview", name: "preview", rootPath: "/preview" }],
         sync: async () => undefined,
       };
     })(),
@@ -6345,6 +6647,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     archive: createMockArchive(),
     project: {
       openRepo: resolved(MOCK_PROJECT),
+      // Add project's first screen reads it to fill the folder field.
+      getDefaultParentDir: resolved("/Users/ade/Projects"),
       chooseDirectory: resolvedArg(null),
       browseDirectories: async (args?: { inputPath?: string }) => {
         const inputPath =
@@ -6382,7 +6686,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         deletedPaths: [],
         clearedAt: new Date().toISOString(),
       }),
-      listRecent: resolved(BROWSER_MOCK_RECENT_PROJECTS),
+      // `?mockCtoCloud` gives the open project a GitHub origin, so the CTO page can offer ADE Cloud.
+      listRecent: async () => (new URLSearchParams(window.location.search).has("mockCtoCloud")
+        ? [{ rootPath: MOCK_PROJECT.rootPath, displayName: MOCK_PROJECT.displayName, lastOpenedAt: new Date().toISOString(), exists: true, kind: "local" as const, gitOriginUrl: BUILTIN_MOCK_PROJECT.gitRemoteUrl }, ...BROWSER_MOCK_RECENT_PROJECTS]
+        : BROWSER_MOCK_RECENT_PROJECTS),
+      listThisComputer: resolved([]),
       findForRepo: resolved(null),
       closeCurrent: resolved(undefined),
       resolveIcon: resolvedArg({
@@ -6422,6 +6730,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       runIntegrityCheck: resolved({ changed: false, actions: [] }),
       onMissing: noop,
       onStateEvent: noop,
+    },
+    machines: {
+      connect: browserMockConnectMachine,
+      addressFor: async () => null,
     },
     remoteRuntime: {
       checkReachability: async (_id: string) => {
@@ -6469,7 +6781,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         lastSeenArch: "darwin-arm64",
         runtimeBinaryVersion: "0.0.0-browser",
         lastConnectedAt: Date.now(),
-      }]),
+      }, ...mockCloudLaneTargets()]),
       getConnectionSnapshot: browserMockFlag("mockOneMachine")
         ? resolved({ connections: [], connectedCount: 0, updatedAt: Date.now() })
         : resolved({
@@ -6521,7 +6833,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         }, {
           target: {
             id: "mock-windows",
-            name: "windows",
+            name: browserMockFlag("mockSameNameMachines") ? "Studio Mac" : "windows",
             hostname: "win-box.local",
             transport: "paired",
             pairedMachine: { hostIdentity: "mock-windows" },
@@ -6541,8 +6853,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           lastError: null,
           lastAttemptedAt: Date.now() - 3 * 86_400_000,
           connectedAt: null,
-        }],
-        connectedCount: 1,
+        }, ...browserMockHeldElsewhereConnection(), ...mockCloudLaneTargets().map((target) => ({
+          target,
+          state: "connected" as const,
+          arch: "linux-x64",
+          version: "0.0.0-browser",
+          route: { kind: "relay" as const, endpoint: "relay.ade-app.dev" },
+          capabilities: { projects: true },
+          projects: [{
+            projectId: "mock-cloud-project",
+            rootPath: "/home/ade/work/browser-preview",
+            displayName: "Browser Preview",
+            addedAt: Date.now(),
+            lastOpenedAt: Date.now(),
+            gitOriginUrl: MOCK_CLOUD_LANE_ORIGIN,
+          }],
+          lastError: null,
+          lastAttemptedAt: Date.now(),
+          connectedAt: Date.now(),
+        }))],
+        connectedCount: 1 + mockCloudLaneTargets().length,
         updatedAt: Date.now(),
       }),
       onConnectionSnapshotChanged: noop,
@@ -6571,7 +6901,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         autoConnect: true,
       }),
       removeTarget: resolvedArg({ removed: true }),
-      connect: resolvedArg({
+      connect: withHeldElsewhereConnect(resolvedArg({
         target: {
           id: "mock-remote",
           name: "Mock remote",
@@ -6586,7 +6916,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         arch: "darwin-arm64",
         version: "0.0.0-browser",
         projects: [],
-      }),
+      })),
       listProjects: resolvedArg([{
         projectId: "mock-remote-project",
         rootPath: "/Users/ade/Projects/browser-preview",
@@ -6736,6 +7066,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             },
             statusHints: {},
           };
+        }
+        if (_id === "mock-cloud-lane" && request.domain === "lane" && request.action === "list") {
+          return { domain: request.domain, action: request.action, result: mockCloudLaneRows().lanes, statusHints: {} };
+        }
+        if (_id === "mock-cloud-lane" && request.domain === "session" && request.action === "list") {
+          return { domain: request.domain, action: request.action, result: mockCloudLaneRows().sessions, statusHints: {} };
         }
         return ({
         domain: request.domain,
@@ -8709,21 +9045,31 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
        * preview (jsdom computes no layout). Five simulators on one runtime, two
        * booted, one held by another lane.
        */
-      getStatus: resolved({
-        platform: "darwin",
-        supported: true,
-        tools: [],
-        activeDevice: null,
-        activeSession: null,
-        deviceSession: null,
-        laneDevice: null,
-        helper: { present: true, path: "/mock/ade-sim-helper", version: "mock" },
-      }),
+      // A fresh object per read, as over IPC. On `?mockRemoteWork`'s machine
+      // this chat's agent holds the device, from this (another) computer.
+      getStatus: async (pin?: OpenProjectBinding | null) => {
+        const remote = pin?.kind === "remote" && pin.targetId === BROWSER_MOCK_REMOTE_WORK_TARGET_ID;
+        return {
+          platform: "darwin",
+          supported: true,
+          tools: [],
+          activeDevice: null,
+          activeSession: remote && !browserMockIosStopped
+            ? { id: "mock-remote-session", deviceUdid: "pro", laneId: "remote-work-97aa", chatSessionId: "remote:dev_win:mock-session-codex-1" }
+            : null,
+          remoteHolder: remote && !browserMockIosStopped ? { machineName: "windows" } : null,
+          deviceSession: null,
+          laneDevice: null,
+          helper: { present: true, path: "/mock/ade-sim-helper", version: "mock" },
+        } as any;
+      },
       // `?mockIosLive`: the lane holds the booted iPhone 17 Pro, which streams
       // the Android mock's test picture and records each tap in
       // `window.__adeMockIosTaps`, so iOS taps can be checked by number.
       deviceList: async (args?: { laneId?: string | null }) => ({
-        installed: BROWSER_MOCK_SIMULATORS,
+        installed: browserMockIosStopped
+          ? BROWSER_MOCK_SIMULATORS.map((entry) => (entry.udid === "pro" ? { ...entry, state: "Shutdown" } : entry))
+          : BROWSER_MOCK_SIMULATORS,
         lane: browserMockFlag("mockIosLive") && args?.laneId
           ? { laneId: args.laneId, udid: "pro", name: "iPhone 17 Pro", origin: "attached", family: "iphone", runtime: "iOS 26.3", createdAt: "2026-11-03T09:00:00.000Z" }
           : null,
@@ -8845,14 +9191,27 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       } as any),
       renderPreview: resolvedArg({} as any),
       openPreviewWorkspace: resolved({ ok: true as const, path: "/tmp" }),
+      // `?mockIosStop502`: five seconds in, an agent stops the device. The
+      // stream breaks first and its next read fails, before any "off" news.
       startStream: browserMockFlag("mockIosLive")
-        ? async () => ({
-          deviceUdid: "pro",
-          running: true,
-          streaming: true,
-          streamUrl: MOCK_STREAM_URL,
-          transport: { url: MOCK_STREAM_URL, token: "mock-token", width: 576, height: 1280 },
-        }) as any
+        ? async () => {
+          if (browserMockFlag("mockIosStop502") && !browserMockIosStopTimer) {
+            browserMockIosStopTimer = window.setTimeout(() => {
+              browserMockIosStopped = true;
+              for (const listener of browserMockIosListeners) {
+                listener({ type: "stream-stopped", status: { deviceUdid: "pro", streaming: false, streamUrl: null } });
+              }
+            }, 5_000);
+          }
+          const url = browserMockIosStopped ? "http://127.0.0.1:9/ios-mock-stream-gone" : MOCK_STREAM_URL;
+          return {
+            deviceUdid: "pro",
+            running: true,
+            streaming: true,
+            streamUrl: url,
+            transport: { url, token: "mock-token", width: 576, height: 1280 },
+          } as any;
+        }
         : resolvedArg({ streaming: false, streamUrl: null, transport: null } as any),
       stopStream: resolvedArg({ streaming: false, streamUrl: null } as any),
       getStreamStatus: resolvedArg({ streaming: false, streamUrl: null } as any),
@@ -8928,7 +9287,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       // The pane's recordings drawer reads these on mount.
       recordList: resolvedArg([]),
       recordingsTotalBytes: resolvedArg(0),
-      onEvent: () => () => {},
+      onEvent: (listener: (event: any) => void) => {
+        browserMockIosListeners.add(listener);
+        return () => { browserMockIosListeners.delete(listener); };
+      },
     },
     // Six AVDs, an SDK and one booted lane device; `?mockAndroid=` picks another state.
     androidEmulator: createMockAndroidEmulator(),
@@ -8940,29 +9302,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
      * would throw there rather than hide a tool.
      */
     macDesktop: {
-      getStatus: resolvedArg({
-        // `?mockHostPlatform=darwin` shows the host-bound tools (Apple
-        // Development) so a pane can be looked at beside them.
-        platform: (new URLSearchParams(window.location.search).get("mockHostPlatform") ?? "browser") as NodeJS.Platform,
-        supported: false,
-        unsupportedReason: "The hosted web client cannot host a Mac display.",
-        driver: {
-          state: "unsupported" as const,
-          title: "Not available here",
-          message: "Mac Desktop runs on the machine that hosts the lane.",
-          recovery: null,
-          version: null,
-        },
-        permissions: { screenRecording: "unknown" as const, accessibility: "unknown" as const },
-        displayMode: "unavailable" as const,
-        display: null,
-        windows: [],
-        lease: null,
-        stream: null,
-        recording: null,
-        lanes: [],
-        hostIsLocal: false,
-      }),
+      getStatus: async (_args?: unknown, pin?: OpenProjectBinding | null) => (pin?.kind === "remote" && pin.targetId === BROWSER_MOCK_REMOTE_WORK_TARGET_ID
+        ? browserMockRemoteMacDesktopStatus()
+        : BROWSER_MOCK_LOCAL_MAC_DESKTOP_STATUS) as any,
       start: resolvedArg(null as never),
       stop: resolvedArg({ stopped: false, releasedWindows: 0 }),
       listWindows: resolvedArg([]),
@@ -9112,44 +9454,19 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           "- The team prefers concise status updates with next actions.",
           "- Current focus: hardening the mobile sync transport.",
         ].join("\n"),
-        threadState:
-          "_Updated just now (compaction)_\n- Reviewing PR queue health.\n- Open loop: flaky sync test on CI.",
-        dailyLog: "09:12 — Asked for PR queue summary → 3 PRs ready, 1 blocked on CI.",
-        dailyLogDate: now.slice(0, 10),
         updatedAt: now,
-        projectBrief: [
-          "Goal: Keep one CTO who already knows this project.",
-          "Done when: A new idea can be handed over without restating the repo.",
-          "Constraints: The CTO directs agents. It does not commit the repository.",
-          "Open loops: Account copy still uploads from the brain process.",
-        ].join("\n"),
-        projectItems: [
-          "- (pinned) Desktop releases ship from tagged commits on main.",
-          "- (active) The team prefers concise status updates with a next action.",
-          "- (active) Current focus is the mobile sync transport.",
-        ].join("\n"),
-        projectThreads: "- Sync transport · lane lane-sync · chat chat-sync · Harden the phone sync path",
       }),
-      updateMemory: async (arg: { memory?: string }) => ({
-        memory: arg?.memory ?? "",
-        threadState: "",
-        dailyLog: "",
-        dailyLogDate: now.slice(0, 10),
+      updateNotes: resolvedArg({
+        memory: "", memoryBytes: 0, memoryLimitBytes: 4096,
+        userNotes: "", userNotesBytes: 0, userNotesLimitBytes: 2048, openWork: [],
         updatedAt: now,
-        projectBrief: [
-          "Goal: Keep one CTO who already knows this project.",
-          "Done when: A new idea can be handed over without restating the repo.",
-          "Constraints: The CTO directs agents. It does not commit the repository.",
-          "Open loops: Account copy still uploads from the brain process.",
-        ].join("\n"),
-        projectItems: [
-          "- (pinned) Desktop releases ship from tagged commits on main.",
-          "- (active) The team prefers concise status updates with a next action.",
-          "- (active) Current focus is the mobile sync transport.",
-        ].join("\n"),
-        projectThreads: "- Sync transport · lane lane-sync · chat chat-sync · Harden the phone sync path",
       }),
-      searchMemory: resolvedArg({ query: "", rows: [] }),
+      updateOpenWork: resolvedArg({
+        memory: "", memoryBytes: 0, memoryLimitBytes: 4096,
+        userNotes: "", userNotesBytes: 0, userNotesLimitBytes: 2048, openWork: [],
+        updatedAt: now,
+      }),
+      refreshContext: resolvedArg({ refreshed: true }),
       ensureSession: resolvedArg({
         id: "mock-cto-session",
         laneId: "lane-main",
@@ -9161,7 +9478,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         createdAt: now,
         lastActivityAt: now,
       }),
-      listSessionLogs: resolvedArg([]),
       updateIdentity: resolvedArg({
         identity: {
           name: "CTO",
@@ -10587,6 +10903,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   applyBrowserMockUpdateAndFallback((window as any).ade);
   applyBrowserMockProviderLogins((window as any).ade); // `?mockSignIns=`: ADE Cloud sign-ins
   applyBrowserMockCloud((window as any).ade); // `?mockCloud=`: the ADE Cloud dashboard
+  // `?mockToolsPane=`: the Work tools catalogue across machines.
+  applyBrowserMockToolsPane((window as any).ade, { sessions: MOCK_SESSIONS, emitChatEvent: emitBrowserMockChatEvent });
   void attachBrowserRuntimeBridge();
   if (browserMockBrainDownScenario() === "updating") {
     // After the mock project has opened; that open clears transition errors.
@@ -10596,6 +10914,20 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           (error) => useAppStore.setState({ projectTransitionError: error }),
           MOCK_PROJECT.rootPath,
         );
+      });
+    }, 2_500);
+  }
+  if (browserMockReportScenario()) {
+    // `?adeReport=`: an error toast whose "Report…" opens the report dialog.
+    window.setTimeout(() => {
+      void import("./components/app/toast/toastStore").then(({ showToast }) => {
+        showToast({
+          tone: "error",
+          title: "Couldn't push the lane",
+          message: "Check your connection, then try again.",
+          error: "fatal: unable to access 'https://github.com/acme/web.git/': Could not resolve host: github.com",
+          durationMs: 0,
+        });
       });
     }, 2_500);
   }

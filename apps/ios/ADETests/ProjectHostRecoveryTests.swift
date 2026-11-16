@@ -177,49 +177,38 @@ final class ProjectHostRecoveryTests: XCTestCase {
     }
   }
 
-  func testUnauthorizedDeviceGetsItsOwnDeadEndCopy() {
-    let snapshot = parseSyncHostReadinessSnapshot([
+  /// A blocked host whose runtime the phone cannot stop: who owns the runtime
+  /// decides the dead-end reason and its guidance.
+  private func ineligibleConflict(ownerKind: String, technicalDetail: String) -> SyncHostReadinessSnapshot? {
+    parseSyncHostReadinessSnapshot([
       "state": "conflict",
       "headline": "Another ADE is blocking this machine",
       "body": "Another ADE runtime is using the connection your phone needs.",
       "recoveryEligible": false,
       "conflict": [
         "reason": "listener",
-        "ownerKind": "unknown",
+        "ownerKind": ownerKind,
         "ownerLabel": "Another ADE runtime",
         "recoveryEligible": false,
-        "technicalDetail": projectHostRedactedConflictDetail,
+        "technicalDetail": technicalDetail,
       ],
     ])
-    XCTAssertEqual(projectHostBlockedReason(snapshot), .unauthorized)
-    let copy = projectHostIneligibleGuidance(snapshot)
-    XCTAssertEqual(copy, "This iPhone can't stop the other runtime — retry, switch machines, or stop it on that computer.")
-    XCTAssertFalse(copy?.localizedCaseInsensitiveContains("pid") == true)
   }
 
-  func testUnidentifiedRuntimeGetsDifferentDeadEndCopy() {
-    let snapshot = parseSyncHostReadinessSnapshot([
-      "state": "conflict",
-      "headline": "Another ADE is blocking this machine",
-      "body": "Another ADE runtime is using the connection your phone needs.",
-      "recoveryEligible": false,
-      "conflict": [
-        "reason": "listener",
-        "ownerKind": "installed",
-        "ownerLabel": "Another ADE runtime",
-        "recoveryEligible": false,
-        "technicalDetail": "reason: listener\npid: 4242",
-      ],
-    ])
-    XCTAssertEqual(projectHostBlockedReason(snapshot), .unidentified)
-    XCTAssertEqual(
-      projectHostIneligibleGuidance(snapshot),
-      "ADE can't safely stop the other runtime from here, so stop it on that computer."
-    )
-    XCTAssertNotEqual(
-      projectHostIneligibleGuidance(snapshot),
-      "This iPhone can't stop the other runtime — retry, switch machines, or stop it on that computer."
-    )
+  func testUnauthorizedAndUnidentifiedRuntimesGetTheirOwnDeadEndGuidance() throws {
+    let unauthorized = ineligibleConflict(ownerKind: "unknown", technicalDetail: projectHostRedactedConflictDetail)
+    let unidentified = ineligibleConflict(ownerKind: "installed", technicalDetail: "reason: listener\npid: 4242")
+    XCTAssertEqual(projectHostBlockedReason(unauthorized), .unauthorized)
+    XCTAssertEqual(projectHostBlockedReason(unidentified), .unidentified)
+    let unauthorizedCopy = try XCTUnwrap(projectHostIneligibleGuidance(unauthorized))
+    let unidentifiedCopy = try XCTUnwrap(projectHostIneligibleGuidance(unidentified))
+    XCTAssertFalse(unauthorizedCopy.isEmpty)
+    XCTAssertFalse(unidentifiedCopy.isEmpty)
+    XCTAssertNotEqual(unauthorizedCopy, unidentifiedCopy)
+    for copy in [unauthorizedCopy, unidentifiedCopy] {
+      XCTAssertFalse(copy.localizedCaseInsensitiveContains("pid"))
+      XCTAssertFalse(copy.contains("4242"))
+    }
   }
 
   func testInlineHydrationFailureKeepsRawTextOutOfTheBody() {

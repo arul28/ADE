@@ -135,8 +135,12 @@ export type ChatLaunchQueuedMessage = {
  * runs on a machine that already exists.
  */
 export type ChatLaunchCloudState = {
-  /** The size picked at Send (a `CloudTierId`). */
+  /** The size picked at Send (a `CloudTierId`); Medium once ADE Cloud started a default Small there (`sizeNote`). */
   sizeId: string;
+  /** How the size was chosen (`CloudLaunchSizeChoice`); absent is `picked`. */
+  sizeChoice?: "default" | "picked" | "capped";
+  /** Why the computer is bigger than the size asked for, in plain words ("Medium: this repo's setup needed more than 4 GB before."). */
+  sizeNote?: string | null;
   /** The repository the lane clones, `github.com/owner/repo`: which project's views show this launch. */
   projectOrigin: string;
   /** The ADE Cloud computer, once the create answered. */
@@ -155,12 +159,26 @@ export type ChatLaunchCloudState = {
    */
   handedOff: boolean;
   /**
+   * True once ADE Cloud's list no longer has this launch's computer (deleted
+   * from ADE, the web page, the phone or a cleanup) before it finished: the
+   * launch failed here, nothing reads that brain again, and Delete closes it
+   * without asking the computer.
+   */
+  computerGone?: boolean;
+  /**
    * What the start's GitHub check (contract C4) could not settle, in plain
    * words: GitHub didn't answer whether the repository is public, and the
    * account has no GitHub sign-in, so a private one won't clone. The card
    * shows it until the clone is done. Absent when the check settled it.
    */
   warning?: string;
+  /**
+   * While ADE Cloud waits for a person to let the new computer join: its own
+   * sign-in stopped on a page a person must confirm (the server launcher's
+   * `needs_approval`). The page that approves it, opened where the person is
+   * signed in to ADE; the card shows Approve. Absent otherwise.
+   */
+  approvalUrl?: string;
 };
 
 export type ChatLaunchSnapshot = {
@@ -367,6 +385,12 @@ export type ChatLaunchCloudTarget = {
   /** The size, as `cloudTiers` names it: `small`, `medium`, `large` or `xlarge`. */
   sizeId: string;
   /**
+   * How it was chosen (`CloudLaunchSizeChoice`): `default` when nobody picked
+   * one for this launch, so a Small may move to Medium when its setup needs
+   * more memory. Absent is `picked`: the size stays.
+   */
+  sizeChoice?: "default" | "picked" | "capped";
+  /**
    * The project's git origin as the launching window knows it (the one its
    * composer checked before Send), so main clones the same repository the
    * composer allowed. Absent: main reads the project's origin itself.
@@ -381,6 +405,13 @@ export type ChatLaunchQueueMessageArgs = {
   text: string;
   displayText?: string | null;
   attachments?: AgentChatFileRef[];
+  /**
+   * The message's id from whoever queued it first (an ADE Cloud launch hands
+   * its queued messages to the computer with their ids). It becomes the queued
+   * message's id and its `clientSendId`, so a retried hand-off is queued and
+   * sent once. Absent: the host makes one.
+   */
+  clientSendId?: string;
 };
 
 /** CLI launches: the launching client reports the PTY session it started in the lane. */

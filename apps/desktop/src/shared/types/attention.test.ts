@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ATTENTION_ACKNOWLEDGMENT_BATCH_LIMIT,
   ATTENTION_CONTRACT_VERSION,
-  DEFAULT_ATTENTION_PREFERENCES,
   activityItemIsAmbient,
   activityItemTier,
   attentionDestinationDeepLink,
@@ -72,11 +71,6 @@ describe("attention contract helpers", () => {
     expect(activityItemIsAmbient(idleOutcome)).toBe(true);
     expect(activityItemTier(item({ phase: "needs_you" }))).toBe("signal");
     expect(activityItemTier(item({ phase: "running", eventKind: "agent_running" }))).toBe("ambient");
-  });
-
-  it("defaults machine overrides empty and the dock badge to this Mac", () => {
-    expect(DEFAULT_ATTENTION_PREFERENCES.machines).toEqual({});
-    expect(DEFAULT_ATTENTION_PREFERENCES.account.dockBadgeScope).toBe("local");
   });
 
   it("builds exact session and PR deep links", () => {

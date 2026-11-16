@@ -102,6 +102,9 @@ export function ToastCard({
     error: model.error,
     logged: true,
   });
+  // "Report…" keeps the toast: after a send it shows the reference, and after
+  // a Cancel the person can press it again. The report dialog draws above the
+  // toast stack (`dialogOverToasts`), so the toast never covers its footer.
   const actions: ToastCardAction[] | undefined = failure.action
     ? [...(model.actions ?? []), { ...failure.action, keepOpen: true }]
     : model.actions;

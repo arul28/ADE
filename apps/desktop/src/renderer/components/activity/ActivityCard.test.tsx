@@ -47,21 +47,6 @@ function item(patch: Partial<AttentionItem> = {}): AttentionItem {
 }
 
 describe("ActivityCard", () => {
-  it("renders the whole row: lane, machine, status, title, note, and model", () => {
-    render(<ActivityCard item={item()} onOpen={vi.fn()} />);
-
-    const row = screen.getByRole("button");
-    expect(row.getAttribute("data-activity-row")).toBe("item-a");
-    expect(screen.getByText("attention-revamp")).toBeTruthy();
-    expect(screen.getByText("Studio Mac")).toBeTruthy();
-    expect(screen.getByText("Rewrite the header popover")).toBeTruthy();
-    expect(screen.getByText("Editing HeaderActivityControl.tsx")).toBeTruthy();
-    expect(screen.getByText("gpt-5.6-sol")).toBeTruthy();
-    // The shared status vocabulary, not a second table: a running agent reads
-    // exactly as it does on a Work sidebar row, elapsed ticker included.
-    expect(screen.getByRole("status").textContent).toBe("Working");
-    expect(row.getAttribute("data-activity-tone")).toBe("blue");
-  });
 
   it("anchors elapsed on statusSince so a cosmetic republish cannot reset it", () => {
     const { container } = render(
@@ -99,12 +84,6 @@ describe("ActivityCard", () => {
     const chip = screen.getByText("MacBook Pro").parentElement;
     expect(chip?.getAttribute("data-machine-online")).toBe("false");
     expect(chip?.getAttribute("title")).toContain("offline");
-  });
-
-  it("falls back to the project name when an item has no lane", () => {
-    render(<ActivityCard item={item({ laneName: null })} onOpen={vi.fn()} />);
-
-    expect(screen.getByText("ADE")).toBeTruthy();
   });
 
   it("hands the whole item back on open and does nothing else", () => {

@@ -498,9 +498,35 @@ export function applyCliSubagentChange(
 }
 
 /**
- * Drops the agents started at or after `sinceMs`. An interrupted turn
- * (Esc / Ctrl-C) cancels the agents it started, and Claude sends no
- * SubagentStop for them; agents from earlier turns keep running.
+ * How long a reported agent counts as live when ADE decides that a CLI is
+ * owed a "continue" after a stop. An agent whose SubagentStop never came (a
+ * lost hook process, an interrupt the screen check missed) would otherwise
+ * keep an idle CLI owed one for as long as the CLI lives.
+ */
+export const CLI_SUBAGENT_LIVE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * The start time of the oldest agent that still counts as live at `now`
+ * (younger than `CLI_SUBAGENT_LIVE_MAX_AGE_MS`), or null when none does.
+ */
+export function oldestCountedCliSubagentStart(
+  tracker: CliSubagentTracker | null | undefined,
+  now: number,
+): number | null {
+  if (!tracker) return null;
+  let oldest: number | null = null;
+  for (const startedAt of tracker.live.values()) {
+    if (now - startedAt >= CLI_SUBAGENT_LIVE_MAX_AGE_MS) continue;
+    if (oldest == null || startedAt < oldest) oldest = startedAt;
+  }
+  return oldest;
+}
+
+/**
+ * Drops the agents started at or after `sinceMs`. A turn that ends with no
+ * Stop (an interrupt with Esc / Ctrl-C, or the quiet fallback) cancels the
+ * agents it started, and Claude sends no SubagentStop for them; agents from
+ * earlier turns keep running.
  */
 export function pruneCliSubagentsSince(tracker: CliSubagentTracker, sinceMs: number): boolean {
   let pruned = false;

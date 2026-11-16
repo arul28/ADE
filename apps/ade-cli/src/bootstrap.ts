@@ -2,6 +2,7 @@ import "./lib/packagedRuntimeFlag";
 import type { PasswordService } from "./services/passwords/passwordService";
 import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
 import { registerProviderLoginRuntime } from "../../desktop/src/main/services/providerLogins/providerLoginHooks";
+import { onAccountProjectListChanged } from "./services/projects/accountProjectListChanges";
 import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
 import { assertProjectRootReadable } from "./services/projects/projectRootAccess";
 import {
@@ -10,7 +11,9 @@ import {
   watchProjectRoot,
 } from "./services/projects/projectRootAccessMonitor";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
+import type { RemoteWorkChatEnded, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
+import { defaultCliShimsRoot } from "../../desktop/src/main/services/shared/cliShimsRoot";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
 import os from "node:os";
@@ -80,7 +83,7 @@ import {
   runDefaultLaneEnvironmentSetup,
   runLaneEnvironmentSetup,
 } from "../../desktop/src/main/services/lanes/laneEnvironmentSetup";
-import { createChatLaunchService, type ChatLaunchService } from "../../desktop/src/main/services/chat/chatLaunchService";
+import { createChatLaunchService, type ChatLaunchService, type ChatLaunchServiceDeps } from "../../desktop/src/main/services/chat/chatLaunchService";
 import { resolveChatCreateModel } from "../../desktop/src/main/services/chat/chatCreateModelResolution";
 import { fetchLaneStartBranch } from "../../desktop/src/main/services/chat/chatLaunchStartFetch";
 import { resolveGitCommit, runGit } from "../../desktop/src/main/services/git/git";
@@ -130,7 +133,9 @@ import { createSettledLaneReleaseActions, createSettledLaneReleaseService } from
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
-import { projectContextAccountPort } from "../../desktop/src/main/services/cto/projectContextStore";
+import { createCtoAccountCopyService, type CtoAccountCopyService } from "../../desktop/src/main/services/cto/ctoAccountCopyService";
+import { reportCtoHomeMove } from "../../desktop/src/main/services/analytics/ctoHomeProductAnalytics";
+import { accountRepoScopeKey } from "../../desktop/src/shared/accountSettingsScope";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
@@ -560,6 +565,8 @@ export type AdeRuntime = {
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
+  /** The CTO's account copy (ctoAccountCopyService.ts); null when this brain has no account vault. */
+  ctoAccountCopyService?: CtoAccountCopyService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   linearAgentRuntime?: LinearAgentRuntime | null;
@@ -727,7 +734,7 @@ function ensureAdeCliShim(entryPath: string, brain: AdeCliShimBrain) {
     entryPath,
     execPath: process.execPath,
     brain,
-    shimsRoot: path.join(os.tmpdir(), "ade-cli-shims"),
+    shimsRoot: defaultCliShimsRoot(),
     resourcesPath: (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? null,
     nodeModulePaths: packagedCliNodeModulePaths(entryPath),
   });
@@ -1077,8 +1084,14 @@ export async function createAdeRuntime(args: {
   syncRuntime?: AdeRuntimeSyncOptions;
   /** The brain's way to another machine, for moving a chat there. */
   crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
+  /** The brain's way to let go of what a chat holds on other machines when its turn ends. */
+  releaseRemoteWorkDevices?: (event: RemoteWorkTurnRelease) => void;
+  /** The brain's way to remove what an archived or deleted chat added on other machines. */
+  releaseRemoteWorkOfEndedChat?: (event: RemoteWorkChatEnded) => void;
   /** Machine-scoped power service shared by every project runtime in a brain. */
   keepAwakeService?: BrainKeepAwakeService | null;
+  /** An ADE Cloud computer's way to grow its disk when a lane launch's setup fills it (`cloudDiskGrow.ts`). */
+  laneSetupDisk?: ChatLaunchServiceDeps["environmentDisk"];
   /**
    * The clock that times this open, when a caller times a larger open around
    * it (the brain's scope registry, which also tells the freeze guard each
@@ -1368,6 +1381,7 @@ export async function createAdeRuntime(args: {
     } = { current: null };
     // Built after the chat service; a lane's delete reaches it through here.
     const cloudChatUploaderRef: { current: ReturnType<typeof createCloudChatUploader> | null } = { current: null };
+    const ctoAccountCopyRef: { current: CtoAccountCopyService | null } = { current: null };
     const cloudLaneNameSyncRef: { current: CloudLaneNameSync | null } = { current: null };
     let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
     let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
@@ -1689,12 +1703,16 @@ export async function createAdeRuntime(args: {
           error: error instanceof Error ? error.name : "unknown",
         });
       });
+    // The project's view of Passwords & Secrets. Secrets saved by the old
+    // per-project store move in on their own (again on each account sync, a
+    // no-op once nothing old is left).
     const projectSecretService = createProjectSecretService(projectRoot, {
+      getPasswordService: () => passwordService ?? null,
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
-      getAccountUserId: () => accountAuthService.getStatus().userId,
       logger,
     });
     projectSecretServiceForAccount = projectSecretService;
+    void projectSecretService.migrateLegacy();
     const onboardingService = createOnboardingService({
       db,
       logger,
@@ -2050,8 +2068,22 @@ export async function createAdeRuntime(args: {
     // A chat on another machine runs commands in a work copy here; its shells
     // are this runtime's terminals (remoteWorkCopyService.ts).
     // A row still marked running after its PTY ended does not count: only a live PTY does.
-    teardown.push(registerRemoteWorkShellCheck(projectRoot, (owner) =>
-      ptyService.list({ chatSessionId: owner, status: "running", limit: null }).some((row) => ptyService.hasLivePty(row.id))));
+    teardown.push(registerRemoteWorkShellCheck(
+      projectRoot,
+      (owner, ignoring) =>
+        ptyService.list({ chatSessionId: owner, status: "running", limit: null })
+          .some((row) => !ignoring.has(row.id) && ptyService.hasLivePty(row.id)),
+      // Its chat was archived or deleted on its own machine: every shell it runs here stops.
+      (owner) => {
+        for (const row of ptyService.list({ chatSessionId: owner, status: "running", limit: null })) {
+          try {
+            if (row.ptyId) ptyService.dispose({ ptyId: row.ptyId, sessionId: row.id });
+          } catch (error) {
+            logger.warn("remote_work.ended_shell_stop_failed", { error: error instanceof Error ? error.message : String(error) });
+          }
+        }
+      },
+    ));
     ptyServiceForSessionChanges = ptyService;
     // The runtime is stopping (an update, a reboot, the brain quitting): its
     // open agent CLIs reopen when the project's next runtime starts.
@@ -2151,9 +2183,9 @@ export async function createAdeRuntime(args: {
     const ctoMemoryService = createCtoMemoryService({
       adeDir: paths.adeDir,
       logger,
-      account: accountSettingsStore
-        ? projectContextAccountPort({ projectRoot, store: accountSettingsStore })
-        : null,
+      // Edits made while no turn runs (Settings, the side panel, another
+      // device) reach the account copy too, not only at a turn's end.
+      onChanged: () => ctoAccountCopyRef.current?.noteTurnEnded(),
     });
     const ctoAppVersion = process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0";
     // The CTO's generic actions on this machine run through the same RPC
@@ -2187,6 +2219,7 @@ export async function createAdeRuntime(args: {
     };
     const ctoStateService = createCtoStateService({
       db,
+      onIdentityChanged: () => ctoAccountCopyRef.current?.noteTurnEnded(),
       projectId,
       adeDir: paths.adeDir,
       ctoMemoryService,
@@ -2447,6 +2480,9 @@ export async function createAdeRuntime(args: {
         // A lane may not attach to an app another lane's Mac Desktop holds.
         // Read at call time: the Mac Desktop service is built just below.
         macDesktopLaneForProcess: (pid: number): string | null => macDesktopService?.laneForProcess(pid) ?? null,
+        // Linux: a launch with no display here runs on the lane's own screen.
+        laneScreenLaunchEnv: async (request) => await macDesktopService?.laneScreenLaunchEnv(request) ?? null,
+        noteLaneScreenUse: (laneId: string) => macDesktopService?.noteLaneScreenUse?.(laneId),
         ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
         resolvePrimaryPrUrl: (laneId: string): string | null =>
           prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
@@ -2458,6 +2494,9 @@ export async function createAdeRuntime(args: {
           const lane = await laneService.getSummary(laneId, { includeStatus: false }).catch(() => null);
           return lane?.worktreePath ?? null;
         },
+        // A chat on another machine runs its app in this lane's terminal, in its work copy.
+        resolvePrimaryLaneId: () => laneService.getPrimaryLane()?.laneId ?? null,
+        archiveTerminal: (sessionId: string) => { sessionService.archiveSession(sessionId); },
         // No fallback lane: a session whose lane cannot be resolved is refused.
         resolveLaneId: ({ cwd, laneId, chatSessionId }) => resolveSessionLaneId({
           laneId,
@@ -3063,6 +3102,10 @@ export async function createAdeRuntime(args: {
       cloudLaneNameSyncRef.current = createCloudLaneNameSync({
         instanceId: process.env.ADE_CLOUD_INSTANCE_ID.trim(),
         client: async () => laneNameClient,
+        // This computer's own machine, as the signed-in account (the directory scopes it to the account).
+        renameMachine: async (machineKey, name) => await new AccountMachineDirectoryService(accountAuthService, {
+          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,
+        }).renameMachine(machineKey, name),
         logger,
       });
     }
@@ -3257,6 +3300,10 @@ export async function createAdeRuntime(args: {
           linearAgentRuntime?.onChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
           if (event.event.type === "done") cloudChatUploader?.noteTurnEnded(event.sessionId);
+          // A routine added, changed or removed between turns is part of the copy too.
+          if ((event.event.type === "done" || event.event.type === "scheduled_work_update") && ctoAccountCopyRef.current && agentChatServiceHolder.current?.sessionIdentityKeyNow(event.sessionId) === "cto") {
+            ctoAccountCopyRef.current.noteTurnEnded();
+          }
           if (event.event.type === "done") chatBrowserLifecycleHolder.current?.(event.sessionId, "idle");
           else if (event.event.type === "status" && event.event.turnStatus === "started") {
             chatBrowserLifecycleHolder.current?.(event.sessionId, "running");
@@ -3316,6 +3363,12 @@ export async function createAdeRuntime(args: {
         }),
         // This brain forwards the chat's calls to the other machine, so it
         // records that the chat used one.
+        ...(typeof args !== "string" && args.releaseRemoteWorkDevices
+          ? { onRemoteWorkTurnSettled: args.releaseRemoteWorkDevices }
+          : {}),
+        ...(typeof args !== "string" && args.releaseRemoteWorkOfEndedChat
+          ? { onRemoteWorkChatEnded: args.releaseRemoteWorkOfEndedChat }
+          : {}),
         onRemoteWorkStarted: (event) => captureRemoteWorkAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -3350,6 +3403,64 @@ export async function createAdeRuntime(args: {
       }
     }
     agentChatServiceHolder.current = agentChatService;
+    // The CTO's account copy: written here while this machine is the CTO's
+    // home, and what a new home restores it from (ctoAccountCopyService.ts).
+    let ctoOriginCache: { at: number; scope: string | null } | null = null;
+    const ctoRepoScope = (): string | null => {
+      if (!ctoOriginCache || Date.now() - ctoOriginCache.at > 60_000) {
+        let origin: string | null = null;
+        try {
+          origin = readGitOriginUrl(projectRoot);
+        } catch {
+          origin = null;
+        }
+        ctoOriginCache = { at: Date.now(), scope: accountRepoScopeKey(origin) };
+      }
+      return ctoOriginCache.scope;
+    };
+    const chatServiceForCtoCopy = agentChatService;
+    const ctoAccountCopy: CtoAccountCopyService | null = chatServiceForCtoCopy && accountVaultStore
+      ? createCtoAccountCopyService({
+          adeDir: paths.adeDir,
+          repoScope: ctoRepoScope,
+          vault: accountVaultStore,
+          settings: accountSettingsStore
+            ? {
+                get: (scope, key) => accountSettingsStore.get(scope, key),
+                set: (scope, key, value) => accountSettingsStore.set(scope, key, value),
+                sync: () => accountSettingsStore.sync(),
+              }
+            : null,
+          deviceId: readSyncDeviceId,
+          deviceName: () => {
+            try {
+              return syncService?.getDeviceRegistryService().ensureLocalDevice().name ?? null;
+            } catch {
+              return null;
+            }
+          },
+          ctoState: ctoStateService,
+          ctoMemory: ctoMemoryService,
+          readSources: () => chatServiceForCtoCopy.readCtoAccountCopySources(),
+          replaceRoutines: (routines) => chatServiceForCtoCopy.replaceCtoRoutines(routines),
+          startFreshThread: () => chatServiceForCtoCopy.startFreshCtoThread(),
+          threadIsBusy: () => chatServiceForCtoCopy.isCtoThreadBusy(),
+          onMoveLanded: (outcome) => reportCtoHomeMove(productAnalyticsService, outcome),
+          logger,
+        })
+      : null;
+    if (ctoAccountCopy && chatServiceForCtoCopy) {
+      chatServiceForCtoCopy.setCtoAccountCopyHooks({
+        homeGate: (ctoName) => ctoAccountCopy.homeGate(ctoName),
+        routineHoldReason: () => ctoAccountCopy.routineHoldReason(),
+        carriedTail: () => ctoAccountCopy.carriedTail(),
+        dropCarriedTail: () => ctoAccountCopy.dropCarriedTail(),
+        applyCarriedRoutines: () => ctoAccountCopy.applyCarriedRoutines(),
+        save: (reason) => ctoAccountCopy.save(reason),
+      });
+      teardown.push(() => ctoAccountCopy.dispose());
+    }
+    ctoAccountCopyRef.current = ctoAccountCopy;
     // A new CLI session that names no account starts where a new chat would.
     const chatServiceForCliAccounts = agentChatService;
     if (chatServiceForCliAccounts) {
@@ -3368,7 +3479,17 @@ export async function createAdeRuntime(args: {
       restartProviderRuntimesWhenIdle: (provider, options) => {
         chatServiceForLogins?.restartProviderRuntimesWhenIdle(provider, options);
       },
-      notifyChanged: () => pushEvent("runtime", { type: "provider_logins_changed" }),
+      notifyChanged: () => {
+        pushEvent("runtime", { type: "provider_logins_changed" });
+        // The phone hears it too: an open sign-ins card reads again at once.
+        syncService?.notifyProviderLoginsChanged();
+      },
+    }));
+    // The account's project list changed on this brain: the desktop and the
+    // sync clients read it again (a new copy joins an open tab).
+    teardown.push(onAccountProjectListChanged(() => {
+      pushEvent("runtime", { type: "account_projects_changed" });
+      syncService?.notifyAccountProjectsChanged();
     }));
     if (resolvedArgs.chatRuntime === "agent" && agentChatService) {
       const settleNudgeSweep = createSettleNudgeSweep({
@@ -3376,6 +3497,7 @@ export async function createAdeRuntime(args: {
         agentChatService,
         jevService,
         isEnabled: () => jevEnabled(projectConfigService.get().effective.ai?.chat, "settle_nudge"),
+        logger,
       });
       settleNudgeSweep.start();
       teardown.push(() => settleNudgeSweep.dispose());
@@ -3436,6 +3558,7 @@ export async function createAdeRuntime(args: {
       laneTeardownDeps.agentChatService = {
         countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
         disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
+        releaseRemoteWorkForLane: (laneId, ended) => agentChatService.releaseRemoteWorkForLane(laneId, ended),
       };
       lateSettle.bind(createSettleWiring({
         agentChatService,
@@ -3494,6 +3617,7 @@ export async function createAdeRuntime(args: {
         abortEnvironment: ({ laneId, worktreePath }) => {
           laneEnvironmentService.abortLaneEnvironment(laneId, worktreePath);
         },
+        ...(typeof args !== "string" && args.laneSetupDisk ? { environmentDisk: args.laneSetupDisk } : {}),
         emit: (event) => pushEvent("runtime", { type: "chat_launch_event", event }),
         onOutcome: ({ outcome, provider }) => captureNewLaneLaunchAnalytics({
           analytics: productAnalyticsService,
@@ -4436,6 +4560,7 @@ export async function createAdeRuntime(args: {
         pushPublisherService,
         ctoStateService,
         ctoMemoryService,
+        ctoAccountCopyService: () => ctoAccountCopyRef.current,
         linearCredentialService: headlessLinearServices.linearCredentialService,
         linearOAuthService,
         getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
@@ -4620,6 +4745,7 @@ export async function createAdeRuntime(args: {
       cloudAgentsService,
       ctoStateService,
       ctoMemoryService,
+      ctoAccountCopyService: ctoAccountCopyRef.current,
       adeProjectService,
       githubService: headlessLinearServices.githubService,
       jiraService: jiraServiceRef,

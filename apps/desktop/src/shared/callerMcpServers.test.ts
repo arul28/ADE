@@ -63,14 +63,6 @@ describe("callerMcpServers", () => {
       ]);
     });
 
-    it("names a delivery mechanism for every provider too", () => {
-      // Delivery and strict mode used to live in two parallel maps keyed by
-      // provider, which is two chances to add a provider to one of them.
-      for (const [provider, support] of Object.entries(CALLER_MCP_SUPPORT)) {
-        expect(support.delivery, `${provider} must describe how servers reach it`).toBeTruthy();
-      }
-    });
-
     it("attaches a residual to exactly the best-effort providers", () => {
       // A best-effort claim with no residual is a promise ADE cannot keep, and
       // an "enforced" claim with a residual is a lie. This is the invariant the

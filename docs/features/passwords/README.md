@@ -1,10 +1,15 @@
-# Passwords
+# Passwords & Secrets
 
-Passwords is ADE's password manager. It keeps saved **logins** (sites,
+Passwords & Secrets is ADE's vault. It keeps saved **logins** (sites,
 username, password, notes, an authenticator code), **passkeys** that ADE's
-browser made, and **secrets** (API keys, by project) for the signed-in
-account, on every computer that has it turned on. Agents can **use** anything in it and never **see** a value: they sign in
-with `ade browser signin`, and ADE types the login into the page itself.
+browser made, and **secrets** (API keys: for every project, or for one) for the
+signed-in account, on every computer the person signs in to. Agents can **use**
+anything in it and never **see** a value: they sign in with
+`ade browser signin`, and run commands with secrets through `ade secrets exec`.
+
+It replaced the old per-project Secrets store and Settings › Secrets: a
+project's secrets are now Passwords & Secrets items for that project (see
+[Secrets](#secrets-use-never-read)).
 
 It is not the account vault (`account_vault`, `AccountVault*`), which is the
 sync store for ADE's own account data.
@@ -24,56 +29,65 @@ sync store for ADE's own account data.
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts`, `builtInBrowserLoginOffers.ts`, `builtInBrowserPasskeys.ts`, `passkeys/` | Filling and signing up in the page, "Save to Passwords?", and the ES256 authenticator. |
 | `apps/desktop/src/preload/browserMedia.ts` | The tab preload: login capture and the page-world passkey hook. |
 | `apps/desktop/src/shared/passwordFillTarget.ts` | The one rule for which pages Passwords acts on. |
-| `apps/desktop/src/main/services/secrets/secretExec.ts` | `ade secrets exec`: run with secrets, mask the output, stop the whole tree on a timeout. |
+| `apps/desktop/src/main/services/secrets/projectSecretService.ts` | One project's view of the secrets (`ade secrets`, process env, webhook checks), and the one-time move of the old per-project store. |
+| `apps/desktop/src/main/services/secrets/secretExec.ts`, `projectSecretEnv.ts` | `ade secrets exec`: run with secrets, mask the output, stop the whole tree on a timeout; `.env` parsing and the export file. |
 | `apps/desktop/src/main/services/messages/`, `messagesIntegration/` | The Messages reader worker, sender, code finder, and the `messages` domain. |
-| `apps/desktop/src/renderer/components/settings/passwords/`, `chat/PasswordLoginCard.tsx`, `chat/browser/BrowserPasswordsButton.tsx` | Settings › Passwords, the sign-in card, and the browser's key button. |
+| `apps/desktop/src/renderer/components/settings/passwords/`, `chat/PasswordLoginCard.tsx`, `chat/browser/BrowserPasswordsButton.tsx` | Settings › Passwords & Secrets, the sign-in card, and the browser's key button. |
 | `apps/ios/ADE/Services/PasswordsVault.swift`, `Views/Account/PasswordsViews.swift` | The iPhone's read-only view. |
 
-## Turning it on
+## On by default
 
-- **Off until the person turns it on, on each computer:** Settings ›
-  Passwords › **Use Passwords on this computer**. The switch is stored in
-  `<ade home>/passwords/state.json` (only `{ "enabled": true|false }`).
-  Turning it off forgets the key and every cached item on that computer; the
-  account's copy stays.
+- **On on every computer**, with nothing to turn on: a computer signed in to
+  ADE opens the account's vault on its own. The only switch is the rarely
+  wanted **Turn off on this computer** (Settings › Passwords & Secrets › ⋯),
+  stored in `<ade home>/passwords/state.json` (`{ "enabled": false }`; no file
+  means on). Off forgets the key and every cached item on that computer, and
+  nothing there uses the vault or that computer's own secrets; the account's
+  copy stays. Turning it back on syncs before it answers.
 - **ADE Cloud computers** follow one account-wide switch, **ADE Cloud
-  computers can use Passwords** (the account setting
-  `passwords.cloudEnabled`). It starts on the first time any computer turns
-  Passwords on. A cloud brain checks it before every use and forgets the key
-  when it goes off.
-- **Reset Passwords** starts a new, empty vault under a new key, for every
-  computer. The person types `reset`, then confirms with Touch ID or Windows
-  Hello (a confirm dialog on a computer with neither).
+  computers can use it** (the ⋯ menu; the account setting
+  `passwords.cloudEnabled`, on unless set off). A cloud brain checks it before
+  every use and forgets the key when it goes off.
+- **Off, sign-out and Reset win over a sync in flight.** A sync or an open
+  that started before one of them writes, fetches and opens nothing after it,
+  and stops when Passwords is off or another account is signed in.
+- **Reset Passwords & Secrets** (⋯ menu) starts a new, empty vault under a new
+  key, for every computer. The person types `reset`, then confirms with Touch ID
+  or Windows Hello (a confirm dialog on a computer with neither). Secrets kept
+  on one computer only stay.
 
 ## In Settings
 
-Settings › Passwords follows one machine at a time (the machine picker in the
-title, like Providers). The two switches are the page's own: this computer's,
-and the account-wide ADE Cloud one.
-
-Saving, importing and **Reset** run on this computer when Passwords is on
-here, and the machine the page follows pulls the change at once. When it is
-off here, they go to that machine over the paired connection instead; Reset
-still asks for Touch ID or Windows Hello on this computer first.
+Settings › Passwords & Secrets has no machine picker: the vault is the
+account's, so the page always reads and writes this computer's brain
+(`passwords.call` through main), whatever project tab the window is on. A
+status bar holds the counts, **Import** (logins from a CSV, secrets from a
+`.env`), **New** (login or secret) and the ⋯ menu (the ADE Cloud switch, Turn
+off, Reset). The result of every action is a toast, so it shows wherever the
+page is scrolled. Each view has its own empty state with what to do next.
 
 - **Logins** lists the saved logins and passkeys with their username and
   sites. A login's details show its password as dots with **Show** (for 30 s)
-  and **Copy**, the live authenticator code, and when it last changed.
-  **Change password…** saves a new password and keeps the login's exact sites,
-  username, notes and code; **Delete** confirms first. A login can be saved
-  with an authenticator key (the `otpauth://` link or the key a site shows).
-- **Secrets** lists the saved API keys by name and project scope, with Show,
-  Copy, **Change value…** and **Delete**.
+  and **Copy**, the live 2FA code, and when it last changed. **Change
+  password** saves a new password and keeps the login's exact sites, username,
+  notes and code; **Delete** confirms first. A login can be saved with an
+  authenticator key (the `otpauth://` link or the key a site shows).
+- **Secrets** groups the saved secrets by project ("Every project" first), with
+  Show, Copy, change and delete on each row, and **Export .env** on each group.
+  A secret kept on this computer only wears a **This computer** tag; a synced
+  one, a cloud mark. **New secret** defaults to the open project; **Keep on
+  this computer only** is under **More options**, never the default.
 - **Activity** lists this computer's recorded uses, newest first: each agent
   or person sign-in (site, account) and each `ade secrets exec` (which names,
   which command), with who, which computer and when. It is kept on the
   computer only, sealed in its encrypted store, at most 500 rows.
 
-**Show** and **Copy** ask for Touch ID (macOS) or Windows Hello first, and
-run in desktop main on this computer's own brain (`passwords.revealValue`,
-person-only and this-desktop-only). A copy goes to the clipboard in main, so
-the value never reaches the page, and the clipboard is cleared after 90 s if it
-still holds it. A passkey's private key is never shown.
+**Show**, **Copy** and **Export .env** ask for Touch ID (macOS) or Windows
+Hello first, and run in desktop main on this computer's own brain. A copy goes
+to the clipboard in main, so the value never reaches the page, and the
+clipboard is cleared after 90 s if it still holds it. An export is a new
+mode-`0600` file in this computer's Downloads. A passkey's private key is never
+shown.
 
 ## How it is kept
 
@@ -140,8 +154,54 @@ output open.
 
 ## Secrets: use, never read
 
-`ade secrets get` and `ade secrets export` are the person's (the desktop app's
-Secrets page); an agent calling them is refused. Agents use secrets with
+A secret is for **every project** (`projectScope: null`) or for **one
+project**: its repository (`repo:<host>/<owner>/<name>`, so every clone on
+every computer shares it) or, with no remote, its folder (`path:<dir>`). A
+project's commands get the secrets for every project, then the project's own
+over them; within each, a this-computer-only secret over a synced one. One name
+per project per place: saving a name that is already there updates it.
+
+A **this computer only** secret (`deviceOnly`, ids `dev_…`) is kept in the
+machine-sealed cache and never synced, so it shows, and works, only on the
+computer that has it (not on the iPhone, not on other computers).
+
+`ade secrets` is a project's view of them (`project_secret`, through
+`projectSecretService`): `list`, `set` (`--storage device` for this computer
+only; without it, a name this computer keeps for itself stays here), `delete` (the project's own), `request` (the private secret card) and
+`exec`. A caller that cannot wait (a webhook's signature check) reads what this
+computer already holds; the open is kept warm by the minute's sync, and a cold
+process opens the cached copy from disk.
+
+**The move from the old store.** A project that still has the old
+`.ade/secrets/project-secrets.v1.enc`, or old `project_secret` rows in the
+account vault from an older ADE, has them moved into Passwords & Secrets for
+that project when it opens and on each account sync
+(`projectSecretService.migrateLegacy`), without any notice. The rules:
+
+- Only the runtime that owns the project moves it. Another process (desktop
+  main without a Passwords service) reports the move as not done, so the
+  runtime still runs it.
+- While Passwords & Secrets is off nothing moves. Account entries wait for
+  sign-in and for a fresh pull of the account's rows (at most a minute old).
+- Device-only entries stay this computer only. So do a value too big for the
+  relay, sign-in's own config names, and every entry of a project with no
+  repository remote.
+- A name already there with a newer value is left alone. A name the account
+  deleted after the old copy was saved stays deleted. An entry the old store
+  pulled from another account is dropped, never moved into this one.
+- Two computers that move the same old secret write the same item id (derived
+  under the vault key), so the relay keeps one copy.
+- Each old copy is removed only once the new place holds its value: an account
+  secret once the relay holds it at the same or a newer version. Until then,
+  processes still read it from the old store.
+- An old account row is removed only while it is still the one the move read;
+  a row another computer changed since stays for the next run.
+- `ade secrets delete` removes the old copies of the name too (the file entry
+  and live old account rows), so it cannot come back from them. A delete and
+  the move run one at a time.
+
+`ade secrets get` is the person's (the desktop app); an agent calling it is
+refused. Agents use secrets with
 `ade secrets exec` (`project_secret.exec`): the brain runs the command, so the
 values go only into the child's environment, and the output comes back with
 each value masked as `[secret]`, also in base64, base64url and URL-encoded
@@ -183,7 +243,8 @@ independent relying-party library (SimpleWebAuthn).
 
 ## On the iPhone
 
-Settings › Account › Passwords lists logins and secrets (read only). The phone
+Settings › Account › Passwords & Secrets lists logins and secrets (read only),
+secrets with their project's name. The phone
 fetches the sealed items and the key from the relay itself and opens them with
 CryptoKit; the key stays in the Keychain (this device only) and is deleted on
 sign-out. Reveal and Copy ask for Face ID; a copy stays on the device and
@@ -193,18 +254,20 @@ listed there.
 
 ## Import
 
-Settings › Passwords › **Import…** reads a CSV export from Apple Passwords,
-Chrome, Firefox, 1Password or Bitwarden (up to 5 MB). Rows without an https
-site or a password, and exact duplicates, are skipped. The file never leaves
-the computer except as sealed items (or, with Passwords off here, to the
-machine Settings follows, over the paired connection); delete it afterwards.
+Settings › Passwords & Secrets › **Import** › **Logins from a CSV…** reads a
+CSV export from Apple Passwords, Chrome, Firefox, 1Password or Bitwarden (up to
+5 MB). Rows without an https site or a password, and exact duplicates, are
+skipped. **Secrets from a .env…** reads a `.env` file the person picks on this
+computer (1 MB), lists its names with each value's length, and saves the
+chosen ones for one project or every project (`passwords.importSecrets`). Files
+never leave the computer except as sealed items; delete them afterwards.
 
 ## In the browser, for the person
 
 - **The key button** in the address bar shows when Passwords has logins for the
   open page's site. Picking one fills it into the page (desktop main reads the
   tab's own URL; the renderer never gets a value). **Manage passwords…** opens
-  Settings › Passwords.
+  Settings › Passwords & Secrets.
 - **"Save to Passwords?"** After the person sends a login form by hand, the tab
   preload (`preload/browserMedia.ts`, isolated world) hands the typed username
   and password to desktop main (`builtInBrowserLoginOffers.ts`). Main keeps
@@ -220,9 +283,6 @@ machine Settings follows, over the paired connection); delete it afterwards.
 - **Apple Passwords "Export to app" and Mac-wide AutoFill** need an AutoFill
   capability on ADE's App ID and new Developer ID provisioning profiles; CSV
   import covers moving logins in meanwhile.
-- **Moving existing project secrets into Passwords**: project secrets keep
-  working where they are (and `ade secrets exec` gives both kinds); a move
-  would make them depend on Passwords being on, per computer.
 - **Activity across computers**: each computer keeps its own.
 
 ## Deploying

@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openKvDb, type AdeDb } from "../state/kvDb";
+import { type AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createDeletedChatsService, recordChatsDeletedWithLane } from "./deletedChats";
 
 const CODEX_THREAD_ID = "11111111-2222-4333-8444-555555555555";
@@ -20,7 +21,7 @@ let db: AdeDb;
 
 beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-deleted-chats-"));
-  db = await openKvDb(path.join(root, "ade.db"), logger);
+  db = await openFreshKvDb(path.join(root, "ade.db"), logger);
 });
 
 afterEach(() => {

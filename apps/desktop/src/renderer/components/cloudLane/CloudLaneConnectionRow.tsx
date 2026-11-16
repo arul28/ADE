@@ -22,7 +22,7 @@ const STATE_TEXT: Record<CloudLaneMachine["state"], string> = {
 
 /**
  * Connections › ADE Cloud: one small row per lane's computer. It names the
- * lane ("ADE Cloud · fix-login"), its size, whether it is awake and when it
+ * lane ("Cloud · fix-login"), its size, whether it is awake and when it
  * last ran; ADE connects to it by itself when the lane is used. "Details"
  * opens the machine's full row (connect, actions) for the rare case someone
  * needs it.
@@ -69,7 +69,7 @@ export function CloudLaneConnectionRow({
             onClick={() => setOpen((value) => !value)}
           >
             {open ? <CaretDown size={11} /> : <CaretRight size={11} />}
-            Details
+            <span className="adecl-cx-details-label">Details</span>
           </button>
         </div>
       </div>

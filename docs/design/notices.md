@@ -209,8 +209,11 @@ owner:
 - a × even when `dismiss` is omitted; it hides that exact failure until its
   text changes or the owner stops rendering it;
 - **Details**, a fold with the raw error when it is not already on screen;
-- **Report issue** (`ReportIssueButton`), which sends a redacted diagnostic
-  report to ADE;
+- **Report…** ("Report this error to ADE…", `useNoticeFailure`), which opens
+  the report dialog (`ReportIssueDialog.tsx`): the person reads the redacted
+  report, adds a note and presses Send. The dialog draws above the toast
+  stack, so the toast that opened it stays up and shows the reference after a
+  send;
 - one Sentry log, `notice.<surface>`, the first time that failure is shown.
 
 `BannerModel.report` (`NoticeReport` in `ui/notice/NoticeReport.tsx`) names

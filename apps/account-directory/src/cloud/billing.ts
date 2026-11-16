@@ -1,9 +1,10 @@
-import { BRAND_IMG_SRC, brandDocument, escapeHtml } from "../brandPage";
+import { trustedHttpsOrigin } from "../trustedOrigin";
 import { captureCloudAction, captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
 import { CLOUD_WEB_BILLING_RETURN_PARAM, formatCloudCents, isCloudBillingReturnOutcome, type CloudBillingReturnOutcome, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
 import { unlockFreePlanWithCard } from "./freePlanGithub";
 import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
+import { cloudReturnPageHtml } from "./returnPage";
 import { checkPlanCleanupPick, planCleanupFor, planCleanupTargetOf, recordPlanCleanupPick, waitingPlanOf, warnPlanCleanupAhead } from "./planCleanup";
 import { CENT_MICROS, EXTRA_DISK_MONTH_DAYS, extraDiskGbDaysIn, extraDiskMonthFits, extraDiskMonthMicros, utcDay, type CloudPaidPlanId } from "./plans";
 import {
@@ -13,6 +14,7 @@ import {
   applyCloudPlanChange,
   boughtPlanIdOf,
   countedPlanDiskGb,
+  diskDayStatement,
   groupByUser,
   isPaidDowngrade,
   paidPlanOf,
@@ -54,12 +56,19 @@ const MAX_REPORTS_PER_ACCOUNT_TICK = 60;
 const RETURN_PATH = "/billing/return";
 const WEBHOOK_PATH = "/webhooks/stripe";
 
-/** The address Stripe sends the person back to, for each way its page can end. */
-export type CloudBillingReturnUrl = (outcome: CloudBillingReturnOutcome) => string;
+/** The address Stripe sends the person back to, for each way its page can end; `plan` names what was bought. */
+export type CloudBillingReturnUrl = (outcome: CloudBillingReturnOutcome, plan?: CloudPaidPlanId) => string;
 
-/** This server's own page (`returnPage`), which says to go back to ADE. */
-export function accountReturnUrl(origin: string): CloudBillingReturnUrl {
-  return (outcome) => `${origin}${RETURN_PATH}?to=${outcome}`;
+/**
+ * This server's own page (`returnPage`), which says to go back to ADE. It is on
+ * `BILLING_RETURN_ORIGIN` (a clean domain on this Worker, e.g.
+ * https://account.ade-app.dev) when set, else the origin the request came in
+ * on. Only an exact https origin is taken. The plan only picks the page's
+ * words, never grants anything.
+ */
+export function accountReturnUrl(env: CloudEnv, origin: string): CloudBillingReturnUrl {
+  const base = trustedHttpsOrigin(env.BILLING_RETURN_ORIGIN, { requireExactOrigin: true }) ?? origin;
+  return (outcome, plan) => `${base}${RETURN_PATH}?to=${outcome}${plan ? `&plan=${plan}` : ""}`;
 }
 
 /** The hosted web client, which opens Settings › ADE Cloud. `webOrigin` is this server's own `WEB_CLIENT_ORIGIN`, never a request's. */
@@ -154,14 +163,14 @@ function extraHoursPrices(env: CloudEnv): Set<string> {
   return new Set(prices.filter((price): price is string => Boolean(price)));
 }
 
-function billingConfig(env: CloudEnv, plan: CloudPaidPlanId): { planPrice: string; extraPrice: string; diskPrice: string | null } {
+/** The plan's price. Its extra-hours price must be set too: a plan is sold only once extra hours can be turned on. */
+function billingConfig(env: CloudEnv, plan: CloudPaidPlanId): { planPrice: string } {
   const planPrice = planPriceIds(env)[plan];
-  const extraPrice = extraHoursPriceFor(env, plan);
-  if (!planPrice || !extraPrice || !env.STRIPE_SECRET_KEY?.trim()) {
+  if (!planPrice || !extraHoursPriceFor(env, plan) || !env.STRIPE_SECRET_KEY?.trim()) {
     reportCloudFailure("cloud.billing_not_configured", { plan });
     throw unavailable();
   }
-  return { planPrice, extraPrice, diskPrice: env.STRIPE_DISK_PRICE_ID?.trim() || null };
+  return { planPrice };
 }
 
 /**
@@ -224,7 +233,7 @@ export async function createCheckoutUrl(
   cleanup?: CloudPlanCleanupPick,
 ): Promise<CloudCheckoutResult> {
   const plan = requested ?? "plus";
-  const { planPrice, extraPrice, diskPrice } = billingConfig(env, plan);
+  const { planPrice } = billingConfig(env, plan);
   const account = await loadAccount(env, userId, now);
   if (account.plan === "paid") {
     // A build that knows one paid plan names none: it only ever buys, never switches.
@@ -243,14 +252,13 @@ export async function createCheckoutUrl(
       customer,
       client_reference_id: userId,
       "managed_payments[enabled]": "true",
+      // Only the plan: extra hours and extra disk join the subscription when the person turns
+      // them on (`setExtraHours`, `setExtraDisk`), so Checkout and the portal show one price.
       "line_items[0][price]": planPrice,
       "line_items[0][quantity]": "1",
-      "line_items[1][price]": extraPrice,
-      // Extra disk rides its own meter and price, never the hours price.
-      ...(diskPrice ? { "line_items[2][price]": diskPrice } : {}),
       "metadata[ade_user_id]": userId,
       "subscription_data[metadata][ade_user_id]": userId,
-      success_url: back("done"),
+      success_url: back("done", plan),
       cancel_url: back("cancelled"),
     });
     const url = textOf(session.url);
@@ -402,9 +410,9 @@ async function moveMeteredItems(env: CloudEnv, subscriptionId: string, plan: Clo
     logCloud("cloud.metered_price_moved", { subscriptionId, what, plan, from: item.price, to: price });
   };
   const hoursPrice = extraHoursPriceFor(env, plan);
+  // None until the person turns extra hours on (Checkout sells only the plan); that adds it at the plan's price.
   const hoursItem = items.find((item) => item.price != null && hoursPrices.has(item.price));
-  if (!hoursItem) reportCloudFailure("cloud.extra_hours_item_missing", { subscriptionId });
-  else if (hoursPrice && hoursItem.price !== hoursPrice) await move(hoursItem, hoursPrice, "extra_hours");
+  if (hoursItem && hoursPrice && hoursItem.price !== hoursPrice) await move(hoursItem, hoursPrice, "extra_hours");
   const diskPrice = env.STRIPE_DISK_PRICE_ID?.trim();
   if (!options.disk || !diskPrice) return { diskCurrent: false };
   // An older disk price is a metered item that is neither the plan nor extra hours, on the disk price's meter.
@@ -417,10 +425,10 @@ async function moveMeteredItems(env: CloudEnv, subscriptionId: string, plan: Clo
 }
 
 /**
- * A move between paid plans (Plus, Pro, Max) on the subscription itself. The
- * billing portal can't do it: Stripe refuses a portal plan switch on a
- * subscription with more than one item, and every ADE subscription has the
- * plan plus its meters.
+ * A move between paid plans (Plus, Pro, Max) on the subscription itself, never
+ * the billing portal: Stripe refuses a portal plan switch on a subscription
+ * with more than one item (one with extra hours or extra disk on), and ADE's
+ * own switch is the one that checks a downgrade's cleanup pick.
  * - Upgrade: charged now for the rest of the period; a declined card changes
  *   nothing. The higher plan's hours apply at once, the hours used stay, and
  *   extra hours move to its cheaper price.
@@ -635,9 +643,70 @@ export async function createPortalUrl(env: CloudEnv, userId: string, back: Cloud
   }
 }
 
+/**
+ * Makes sure the subscription bills extra hours before they can be used: a
+ * subscription bought since Cloud 8 has only the plan until the person turns
+ * extra hours on. Any extra-hours price counts as held (one from an older
+ * plan or before Cloud 7 moves at the renewal), so there is never a second
+ * item on the hours meter. Meter events bill by customer, so the item must be
+ * there before the first extra hour is reported; once added it stays, at
+ * zero while extra hours are off, which also keeps billing what was used
+ * before they went off.
+ *
+ * Stripe keeps a key's first answer for a day, a 500 too, so a create that
+ * failed on Stripe's side would fail every later turn-on the same way. After a
+ * 5xx the subscription is read again: an item that landed is enough, and with
+ * none the create is tried once more under a key of its own (`now`). Stripe
+ * refuses a second item with a price the subscription already has.
+ */
+async function ensureExtraHoursItem(env: CloudEnv, account: AccountRow, now: number): Promise<void> {
+  const subscriptionId = account.stripe_subscription_id;
+  // The plan in force: a downgrade waiting for the period end still bills the higher plan's hour.
+  const price = extraHoursPriceFor(env, paidPlanOf(account));
+  if (!subscriptionId || !price) {
+    reportCloudFailure("cloud.extra_hours_not_configured", { userId: account.user_id });
+    throw unavailable();
+  }
+  try {
+    const hoursPrices = extraHoursPrices(env);
+    const items = await subscriptionItems(env, subscriptionId);
+    if (items.some((item) => item.price != null && hoursPrices.has(item.price))) return;
+    const key = `ade-cloud-hours-item-${subscriptionId}-${price}`;
+    const create = (idempotencyKey: string) => stripeRequest(env, "POST", "/subscription_items", { subscription: subscriptionId, price }, idempotencyKey);
+    await create(key).catch(async (error: unknown) => {
+      if (!(error instanceof StripeRequestError) || error.status < 500) throw error;
+      if (await holdsExtraHoursItem(env, subscriptionId)) return;
+      await create(`${key}-${now}`);
+    });
+    logCloud("cloud.extra_hours_item_added", { userId: account.user_id, subscriptionId });
+  } catch (error) {
+    if (error instanceof StripeRequestError) {
+      // A 409 is usually a second turn-on racing this one: the item it added is all that's needed.
+      if (error.status === 409 && await holdsExtraHoursItem(env, subscriptionId)) return;
+      reportCloudFailure("cloud.extra_hours_item_failed", { status: error.status, message: error.stripeMessage });
+      throw unavailable();
+    }
+    throw error;
+  }
+}
+
+/** Whether the subscription now holds an extra-hours item; false when Stripe can't say. */
+async function holdsExtraHoursItem(env: CloudEnv, subscriptionId: string): Promise<boolean> {
+  try {
+    const hoursPrices = extraHoursPrices(env);
+    return (await subscriptionItems(env, subscriptionId)).some((item) => item.price != null && hoursPrices.has(item.price));
+  } catch (error) {
+    if (!(error instanceof StripeRequestError)) throw error;
+    reportCloudFailure("cloud.extra_hours_item_reread_failed", { status: error.status, message: error.stripeMessage });
+    return false;
+  }
+}
+
 export async function setExtraHours(env: CloudEnv, userId: string, enabled: boolean, now: number): Promise<void> {
   const account = await loadAccount(env, userId, now);
   if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra hours need a paid plan.", 403);
+  // Before the switch goes on: an extra hour with nothing on the subscription to bill it would be free.
+  if (enabled) await ensureExtraHoursItem(env, account, now);
   // Turning them off stops new use; what was already used is still reported.
   const owed = !enabled && extraActive(account)
     ? extraOwedMilli(account, liveUsedMilli(account, await listComputers(env, userId), now))
@@ -650,10 +719,52 @@ export async function setExtraHours(env: CloudEnv, userId: string, enabled: bool
 }
 
 /**
+ * Makes sure the subscription bills extra disk, and says at which price: 1
+ * for an item still on the price from before Cloud 7, else 0. The same
+ * retry as `ensureExtraHoursItem`: after a 5xx the subscription is read
+ * again, and with no item the create is tried once more under a key of its
+ * own, since Stripe keeps a key's first answer (a 500 too) for a day.
+ */
+async function ensureExtraDiskItem(env: CloudEnv, subscriptionId: string, diskPrice: string, now: number): Promise<0 | 1> {
+  const held = await diskItemOf(env, await subscriptionItems(env, subscriptionId), diskPrice);
+  if (held) return held === "older" ? 1 : 0;
+  const key = `ade-cloud-disk-item-${subscriptionId}`;
+  const create = (idempotencyKey: string) => stripeRequest(env, "POST", "/subscription_items", { subscription: subscriptionId, price: diskPrice }, idempotencyKey);
+  // A reread finds the item another turn-on (or the create whose answer was
+  // lost) added: its price is the one billed, older or current.
+  const reread = async () => await diskItemOf(env, await subscriptionItems(env, subscriptionId), diskPrice);
+  try {
+    try {
+      await create(key);
+    } catch (error) {
+      if (!(error instanceof StripeRequestError) || error.status < 500) throw error;
+      const found = await reread();
+      if (found) return found === "older" ? 1 : 0;
+      await create(`${key}-${now}`);
+    }
+  } catch (error) {
+    // A 409 is usually a second turn-on racing this one: the item it added is all that's needed.
+    if (error instanceof StripeRequestError && error.status === 409) {
+      const found = await reread();
+      if (found) return found === "older" ? 1 : 0;
+    }
+    throw error;
+  }
+  return 0;
+}
+
+/**
  * Extra disk: on with a monthly limit, or off. Turning it on makes sure the
  * subscription has the extra-disk price (subscriptions bought before it
  * existed don't). Turning it off while the computers hold more than the
  * plan's disk is refused: that disk would still be there, unpaid.
+ *
+ * The day it goes on is never billed. Stripe bills a meter event to an item
+ * only from the item's start, and a day's event is stamped at its midday, so
+ * a day billed whole would be dropped unbilled whenever the item came later
+ * that day. Today's disk-day is written as it stands before the switch
+ * (not billable), in the same batch, even when nothing wrote one yet today
+ * (no computers at the daily run).
  */
 export async function setExtraDisk(
   env: CloudEnv,
@@ -673,15 +784,7 @@ export async function setExtraDisk(
     // price from before Cloud 7 pays that price, a new item the current one.
     let oldPrice: 0 | 1;
     try {
-      const items = await subscriptionItems(env, account.stripe_subscription_id);
-      const held = await diskItemOf(env, items, diskPrice);
-      if (!held) {
-        await stripeRequest(env, "POST", "/subscription_items", {
-          subscription: account.stripe_subscription_id,
-          price: diskPrice,
-        }, `ade-cloud-disk-item-${account.stripe_subscription_id}`);
-      }
-      oldPrice = held === "older" ? 1 : 0;
+      oldPrice = await ensureExtraDiskItem(env, account.stripe_subscription_id, diskPrice, now);
     } catch (error) {
       if (error instanceof StripeRequestError) {
         reportCloudFailure("cloud.extra_disk_item_failed", { status: error.status, message: error.stripeMessage });
@@ -689,8 +792,10 @@ export async function setExtraDisk(
       }
       throw error;
     }
-    await env.DB.prepare("update cloud_accounts set extra_disk_state = 'on', extra_disk_limit_cents = ?, extra_disk_old_price = ?, extra_disk_asked_at = coalesce(extra_disk_asked_at, ?), updated_at = ? where user_id = ?")
-      .bind(choice.monthlyLimitCents, oldPrice, now, now, userId).run();
+    const turnOn = env.DB.prepare("update cloud_accounts set extra_disk_state = 'on', extra_disk_limit_cents = ?, extra_disk_old_price = ?, extra_disk_asked_at = coalesce(extra_disk_asked_at, ?), updated_at = ? where user_id = ?")
+      .bind(choice.monthlyLimitCents, oldPrice, now, now, userId);
+    // A new limit on extra disk already on changes nothing about today.
+    await env.DB.batch(account.extra_disk_state === "on" ? [turnOn] : [diskDayStatement(env, account, now), turnOn]);
     return;
   }
   // A downgrade waiting for the period end counts already: the next plan's disk is what stays paid.
@@ -1065,29 +1170,15 @@ async function handleStripeWebhook(request: Request, env: CloudEnv, waitUntil: C
 
 /* ---- Public routes ---- */
 
-const RETURN_MESSAGES: Record<CloudBillingReturnOutcome, { heading: string; line: string }> = {
-  done: { heading: "You're all set", line: "Your plan will show in ADE in a moment." },
-  cancelled: { heading: "Nothing changed", line: "You left checkout before paying." },
-  portal: { heading: "Back to ADE", line: "Any changes you made will show in ADE in a moment." },
-  card: { heading: "Card saved", line: "You weren't charged. Your free hours will show in ADE in a moment." },
-  card_cancelled: { heading: "Nothing changed", line: "You left before saving a card. Your free hours start when your GitHub account is 30 days old." },
-};
-
 function returnPage(url: URL, method: string): Response {
   if (method !== "GET") return json({ error: "method not allowed" }, 405);
-  // Known outcomes only: `?to=constructor` or `?to=__proto__` must not read an inherited value.
-  const to = url.searchParams.get("to") ?? "";
-  const message = isCloudBillingReturnOutcome(to) ? RETURN_MESSAGES[to] : RETURN_MESSAGES.portal;
-  const html = brandDocument({
-    title: message.heading,
-    card: `<p class="sub">${escapeHtml(message.line)}</p>`,
-    foot: "You can close this page and go back to ADE.",
-  });
+  const html = cloudReturnPageHtml(url.searchParams.get("to") ?? "", url.searchParams.get("plan"));
   return new Response(html, {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; ${BRAND_IMG_SRC}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+      // Inline styles and inline SVG only: no script, no image, nothing from the network.
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       "referrer-policy": "no-referrer",
     },
   });

@@ -65,13 +65,16 @@ import { detectDevServersInChunk, devServerRegistry } from "../devServers/devSer
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
-import { noteLiveTurn } from "../runtime/liveTurnProjects";
+import { noteLiveTurn, plannedStopRecordedFor, registerPlannedStopCliSource } from "../runtime/liveTurnProjects";
+import { trackedCliReopensAfterRestart } from "../../../shared/cliChildSession";
+import { CLI_NOT_REOPENED_NOTICE } from "../../../shared/chatAutoResume";
 import { createCliTurnRecorder, recordCliSessionsToReopen, resetCliCrashReopenCount, type CliReopenEntry } from "./cliReopenAfterRestart";
 import { ensureNodePtySpawnHelperExecutable } from "./nodePtySpawnHelper";
 import { remoteWorkLaneIdFor } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
+  getPathEnvValue,
   setPathEnvValue,
 } from "../ai/cliExecutableResolver";
 import type {
@@ -146,6 +149,7 @@ import {
   trackedCliResumeCredentialId,
   trackedCliResumeInstanceId,
   trackedCliResumePresetId,
+  trackedCliResumeRouteHomeId,
   trackedCliTitleFromPromptSeed,
   type ProviderInstanceLaunchTarget,
   type TrackedCliLaunchCommand,
@@ -174,6 +178,7 @@ import {
 import { claudeProjectSlugForCwd } from "../externalSessions/discoveryUtils";
 import { discoverPiSessions } from "../externalSessions/discoverPi";
 import { droidProjectSlugForCwd } from "../externalSessions/discoverDroid";
+import { routeHomeLaunchEnv } from "../externalSessions/adeConfigHomes";
 import {
   captureProviderSessionFromPidTree,
   PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS,
@@ -191,6 +196,8 @@ import {
   buildClaudeTurnHookSettings,
   claudeHookSubagentChange,
   createCliSubagentTracker,
+  CLI_SUBAGENT_LIVE_MAX_AGE_MS,
+  oldestCountedCliSubagentStart,
   pruneCliSubagentsSince,
   type CliSubagentTracker,
   claudeHookTurnSignal,
@@ -233,6 +240,7 @@ import { antigravityCredentialEnv, readAntigravitySettings } from "../ai/antigra
 import { holdToolInstalls } from "../../../../../ade-cli/src/services/tools/inUse";
 import { museCredentialEnv } from "../ai/museAuth";
 import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
+import { claudeCodeRefusesBypassHere, claudeRootRuleApplies, rootFullAccessAllowed } from "../chat/claudeRootFullAccess";
 import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
@@ -879,6 +887,8 @@ type PtyEntry = {
   cliSubagents: CliSubagentTracker | null;
   /** After an Esc / Ctrl-C in a Claude turn: end it once the screen goes quiet. */
   cliTurnInterruptTimer: ReturnType<typeof setTimeout> | null;
+  /** Records the turn again when the oldest live agent stops counting (`recordCliTurnRunning`). */
+  cliSubagentRecheckTimer: ReturnType<typeof setTimeout> | null;
   /**
    * For a resume/reattach launch only: the terminal end state this launch took
    * over. If the new process dies immediately (a launch failure — a bad flag,
@@ -1209,7 +1219,16 @@ function cleanShellSpec(file: string): ShellSpec {
   return { file, args: [], env: { ENV: "" } };
 }
 
+/**
+ * A shell the person opens to type in. macOS starts a login shell, as
+ * Terminal and iTerm do. Linux starts an interactive non-login shell, as GNOME
+ * Terminal, Konsole and VS Code do: a login shell runs /etc/profile, which on
+ * Debian sets PATH from scratch and drops ADE's `ade` and `gh` shims. The
+ * login shell's PATH still arrives, resolved into the terminal's environment
+ * (withResolvedCliLaunchPath), and ~/.bashrc or ~/.zshrc still runs.
+ */
 function loginShellSpec(file: string): ShellSpec {
+  if (process.platform === "linux") return { file, args: [] };
   const name = path.basename(file).toLowerCase();
   if (name === "zsh" || name === "bash") return { file, args: ["-l"] };
   if (name === "fish") return { file, args: ["--login"] };
@@ -2886,15 +2905,89 @@ export function createPtyService({
         logger.warn("pty.cli_turn_record_failed", { error: error instanceof Error ? error.message : String(error) });
       })
     : null;
-  /** Only an exact signal counts: a turn guessed from output is not evidence enough to continue it. */
+  /**
+   * The one rule for "this CLI is owed a continue if it stops now". Its own
+   * exact turn report (Claude hooks, Codex OSC) says working, or it reported
+   * background agents (Claude hooks) that still count as live: the stop kills
+   * them, and the CLI would wait for their report forever. An agent older than
+   * `CLI_SUBAGENT_LIVE_MAX_AGE_MS` does not count: its stop most likely never
+   * reached ADE. A CLI with no exact report counts only with `screenFallback`
+   * (a planned stop): still printing and not at its prompt, or live agents.
+   */
+  const cliTurnOwedContinue = (
+    entry: PtyEntry,
+    options: { screenFallback?: TerminalResumeProvider | null } = {},
+  ): boolean => {
+    const agentsLive = oldestCountedCliSubagentStart(entry.cliSubagents, Date.now()) != null;
+    const turn = entry.cliTurn;
+    if (turn && isExactCliTurnSource(turn.source)) return turn.phase === "working" || agentsLive;
+    const provider = options.screenFallback;
+    if (provider == null) return false;
+    const screenRunning = runtimeStates.get(entry.sessionId)?.state === "running"
+      && !agentCliInputReadyNow(entry.sessionId, provider);
+    return screenRunning || agentsLive;
+  };
+  /**
+   * Only an exact signal counts: a turn guessed from output is not evidence
+   * enough to continue it (see `cliTurnOwedContinue`). While live agents alone
+   * keep it owed, it is checked again when the oldest of them stops counting,
+   * so an idle CLI does not stay recorded as mid-turn.
+   */
   const recordCliTurnRunning = (entry: PtyEntry): void => {
     if (!cliTurnRecorder || !entry.tracked) return;
-    const turn = entry.cliTurn;
-    const running = !entry.disposed && turn != null && isExactCliTurnSource(turn.source) && turn.phase === "working";
+    if (entry.cliSubagentRecheckTimer) {
+      clearTimeout(entry.cliSubagentRecheckTimer);
+      entry.cliSubagentRecheckTimer = null;
+    }
+    const running = !entry.disposed && cliTurnOwedContinue(entry);
     cliTurnRecorder.setRunning(entry.sessionId, running);
     // The next brain opens this project at once if this one crashes mid-turn.
     noteLiveTurn(projectRoot, `cli:${entry.sessionId}`, running);
+    const oldestAgent = running ? oldestCountedCliSubagentStart(entry.cliSubagents, Date.now()) : null;
+    if (oldestAgent != null) {
+      const timer = setTimeout(() => {
+        entry.cliSubagentRecheckTimer = null;
+        recordCliTurnRunning(entry);
+      }, Math.max(0, oldestAgent + CLI_SUBAGENT_LIVE_MAX_AGE_MS - Date.now()) + 1_000);
+      timer.unref?.();
+      entry.cliSubagentRecheckTimer = timer;
+    }
   };
+  /**
+   * The tracked agent CLIs still open here, for the project's next runtime to
+   * reopen (`cliReopenAfterRestart.ts`), each with whether it is owed a
+   * continue. Mid-turn, by the best signal the CLI gives: its own turn report
+   * (Claude hooks, Codex OSC) when it has one, else still printing and not at
+   * its prompt. Claude draws its input box while it works, so for it the
+   * screen check alone misses any quiet moment. A CLI waiting on background
+   * agents it started (Stop came when they started) is owed one too: the stop
+   * kills them, and it would wait for their report forever. Waiting on the
+   * person (a permission prompt) is not a turn to continue. When in doubt it
+   * only reopens: a "continue" typed into an idle CLI would start work nobody
+   * asked for. A CLI ADE cannot reopen (Devin) is left out, with one line.
+   */
+  const plannedCliReopenEntries = (): CliReopenEntry[] => {
+    const entries: CliReopenEntry[] = [];
+    for (const entry of ptys.values()) {
+      if (entry.disposed || !entry.tracked || !isTrackedAgentCliToolType(entry.toolTypeHint)) continue;
+      const session = sessionService.get(entry.sessionId);
+      if (!session || session.archivedAt || !isTrackedAgentCliToolType(session.toolType)) continue;
+      if (!trackedCliReopensAfterRestart(session.toolType)) {
+        logger.info("pty.cli_reopen_not_supported", { sessionId: entry.sessionId, toolType: session.toolType });
+        // Its terminal ends with the stop; the line it keeps says why it stays closed.
+        entry.processOutputData?.(`\r\n${CLI_NOT_REOPENED_NOTICE}\r\n`);
+        continue;
+      }
+      const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
+      const midTurn = provider != null
+        && !session.attentionRequestedAt
+        && cliTurnOwedContinue(entry, { screenFallback: provider });
+      entries.push({ sessionId: entry.sessionId, midTurn });
+    }
+    return entries;
+  };
+  // A planned brain stop saves this list first, before any slow teardown.
+  const unregisterPlannedStopCliSource = registerPlannedStopCliSource(projectRoot, plannedCliReopenEntries);
   const piLeaseIdentity = processRegistry
     ? {
         processStartedAt: ownerProcessStartedAt,
@@ -4439,6 +4532,9 @@ export function createPtyService({
     try {
       const sessions = await discoverPiSessions({
         ...(args.env ? { env: args.env } : {}),
+        // This launch's own store only: its env already names the agent
+        // folder, and a session in another preset's home is never this one.
+        defaultHomeOnly: true,
         cwd: args.cwd,
         scopeRoots: [args.cwd],
         limit: 200,
@@ -5254,6 +5350,8 @@ export function createPtyService({
     scheduleTranscriptDependentWork(entry, "close");
     if (entry.cliTurnInterruptTimer) clearTimeout(entry.cliTurnInterruptTimer);
     entry.cliTurnInterruptTimer = null;
+    if (entry.cliSubagentRecheckTimer) clearTimeout(entry.cliSubagentRecheckTimer);
+    entry.cliSubagentRecheckTimer = null;
     // A prompt the terminal showed is gone with it; an agent's own ask stays.
     resolveCliTurnAttention(entry);
     clearIdleTimer(entry.sessionId);
@@ -5686,6 +5784,8 @@ export function createPtyService({
 
   /** The CLI's live agents changed: refresh the row and tell the push publisher now. */
   const publishCliSubagentsChanged = (entry: PtyEntry): void => {
+    // A CLI waiting only on its agents is still owed a continue after a crash.
+    recordCliTurnRunning(entry);
     try {
       sessionService.notifyChanged(entry.sessionId);
     } catch (error) {
@@ -5699,7 +5799,10 @@ export function createPtyService({
     if (!turn || entry.disposed) return;
     const wasExact = isExactCliTurnSource(turn.source);
     const now = Date.now();
-    const interruptedTurnStartedAt = signal.kind === "ended" && signal.reason === "interrupted"
+    // A turn that ended with no Stop (an interrupt, or the quiet fallback
+    // when the interrupt watch missed it) cancelled the agents it started.
+    const interruptedTurnStartedAt = signal.kind === "ended"
+      && (signal.reason === "interrupted" || signal.reason === "quiet")
       ? turn.turnStartedAt
       : null;
     const transition = reduceCliTurn(turn, signal, origin, now);
@@ -6566,12 +6669,40 @@ export function createPtyService({
     if (!metadata) return null;
     const presetId = trackedCliResumePresetId(metadata);
     const credentialId = trackedCliResumeCredentialId(metadata);
-    if (!presetId && !credentialId) return null;
+    if (!presetId && !credentialId) {
+      // An Import from a route home ADE could not name again: no route env,
+      // only the home, so the CLI finds the session on its own sign-in.
+      const routeHomeId = trackedCliResumeRouteHomeId(metadata);
+      const env = routeHomeId ? routeHomeLaunchEnv(provider, routeHomeId) : null;
+      return env ? { env } : null;
+    }
     try {
       return resolveTrackedCliPreset(provider, { presetId, credentialId })?.preset ?? null;
     } catch {
       return null;
     }
+  };
+
+  /**
+   * A routed preset whose model goes through ADE's proxy resolves only once
+   * the proxy runs. After a brain restart nothing has started it, so a resume
+   * came back with the right home but none of the route's env. New launches
+   * prepare the same way before their synchronous resolve.
+   */
+  const prepareResumePresetLaunch = async (
+    provider: string,
+    metadata: Pick<TerminalResumeMetadata, "launch" | "presetId" | "credentialId"> | null | undefined,
+  ): Promise<void> => {
+    if (!metadata) return;
+    const presetId = trackedCliResumePresetId(metadata);
+    const credentialId = trackedCliResumeCredentialId(metadata);
+    if (!presetId && !credentialId) return;
+    await prepareHarnessLaunch({ provider, presetId, credentialId }).catch((error: unknown) => {
+      logger.warn("pty.resume_preset_prepare_failed", {
+        provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   /**
@@ -6917,7 +7048,18 @@ export function createPtyService({
       });
       const { laneWorktreePath: worktreePath, cwd } = launchContext;
       const { cols, rows } = clampDims(args.cols, args.rows);
-      const runtimeCliLaunch = withNewCliSessionAccount(args);
+      let runtimeCliLaunch = withNewCliSessionAccount(args);
+      // Claude Code exits at once when told to skip permissions as root. A
+      // launch nobody could be asked about (an agent's, a batch's) starts in
+      // Accept edits on a root machine the person hasn't allowed, not dead.
+      if (
+        runtimeCliLaunch?.provider === "claude"
+        && runtimeCliLaunch.permissionMode === "full-auto"
+        && claudeCodeRefusesBypassHere(process.env)
+      ) {
+        logger.warn("pty.claude_root_full_access_downgraded", { laneId: args.laneId });
+        runtimeCliLaunch = { ...runtimeCliLaunch, permissionMode: "edit" };
+      }
       if (runtimeCliLaunch) {
         // A routed CLI (Claude Code on an OpenAI-only model) needs ADE's proxy
         // running before the synchronous materializer resolves its endpoint.
@@ -7527,6 +7669,19 @@ export function createPtyService({
           shellCandidates = [preferred, ...shellCandidates.filter((shell) => pathKey(shell.file) !== preferredKey)];
         }
       }
+      // Linux opens this shell without `-l` (loginShellSpec), so its login PATH
+      // comes from the probe above, which ran `$SHELL`. A saved shell other
+      // than `$SHELL` (zsh picked, SHELL=/bin/bash) adds its own login PATH
+      // (~/.zprofile), behind ADE's entries.
+      const chosenShell = shellCandidates[0]?.file;
+      if (
+        process.platform === "linux"
+        && useLoginInteractiveShell
+        && chosenShell
+        && pathKey(chosenShell) !== pathKey(launchEnv.SHELL?.trim() || "/bin/sh")
+      ) {
+        setPathEnvValue(launchEnv, getPathEnvValue(withResolvedCliLaunchPath({ ...launchEnv, SHELL: chosenShell })) ?? "");
+      }
       let launchedDirectCommand = false;
       // Set when the launch names a provider CLI: its pinned copy runs, and a
       // caller's per-shell Windows lines (bare words) no longer apply.
@@ -7795,9 +7950,14 @@ export function createPtyService({
         // A Claude CLI on a Claude pass account gets the pass here, at the
         // spawn: never in `launchEnv`, which a tracked command can carry. The
         // Copilot CLI on a cloud computer gets the account's Copilot token the same way.
-        const spawnEnv = isClaudeTrackedCliToolType(toolTypeHint)
-          ? withClaudePassEnv(launchEnv)
-          : toolTypeHint === "copilot" ? withCopilotCarriedEnv(launchEnv) : launchEnv;
+        const claudePassEnv = isClaudeTrackedCliToolType(toolTypeHint) ? withClaudePassEnv(launchEnv) : null;
+        // Claude CLI as root: the person allowed Full access for agents on this
+        // machine (`claudeRootFullAccess.ts`), so Claude is told it runs in a sandbox.
+        const claudeSpawnEnv = claudePassEnv && claudeRootRuleApplies(claudePassEnv) && rootFullAccessAllowed()
+          ? { ...claudePassEnv, IS_SANDBOX: "1" }
+          : claudePassEnv;
+        const spawnEnv = claudeSpawnEnv
+          ?? (toolTypeHint === "copilot" ? withCopilotCarriedEnv(launchEnv) : launchEnv);
         const opts: IWindowsPtyForkOptions = {
           name: "xterm-256color",
           cols,
@@ -8029,6 +8189,7 @@ export function createPtyService({
           )
           : null,
         cliTurnInterruptTimer: null,
+        cliSubagentRecheckTimer: null,
         cliTurnHookToken: launchEnv[CLI_TURN_HOOK_TOKEN_ENV] ?? null,
         cliSubagents: null,
         priorEndState,
@@ -8853,6 +9014,7 @@ export function createPtyService({
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
+      await prepareResumePresetLaunch(provider, resumableSession.resumeMetadata);
       const resumeUserMcp = await resolveResumeUserMcp(resumableSession, provider);
       // Resolve Computer Use before this single-flight snapshot. Once the
       // snapshot is taken, command construction and flight creation must stay
@@ -8954,6 +9116,7 @@ export function createPtyService({
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
+      await prepareResumePresetLaunch(provider, resumableSession.resumeMetadata);
       const resumeUserMcp = await resolveResumeUserMcp(resumableSession, provider);
       const { launch: resumeLaunch } = buildResumeCommandForSession(
         resumableSession,
@@ -9419,12 +9582,21 @@ export function createPtyService({
                 ) ?? {},
               } satisfies TerminalResumeMetadata
             : null);
+        // `chat:<provider>[:<id>]` marks a chat ADE drives through an SDK or
+        // protocol: it has no CLI to relaunch, and run as a shell command it
+        // only fails (exit 127) and stamps the live chat's row `failed`, which
+        // then makes its scheduled work, update resume included, read as ended.
+        if (!metadata && /^chat:/i.test(session.resumeCommand?.trim() ?? "")) {
+          logger.info("pty.reattach_chat_cli_refused", { chatSessionId, toolType: session.toolType, reason: "sdk_chat" });
+          throw markExpected(new Error(`Session '${chatSessionId}' is an agent chat, not a CLI session; it has no terminal to reattach.`), "user");
+        }
         const codexComputerUse = metadata?.provider === "codex"
           ? await resolveCodexComputerUseMcpConfig()
           : null;
         const reattachInstance = metadata
           ? resolveProviderInstanceForLaunch(metadata.provider, trackedCliResumeInstanceId(metadata))
           : null;
+        if (metadata) await prepareResumePresetLaunch(metadata.provider, metadata);
         const reattachPreset = metadata
           ? resolveResumePresetLaunch(metadata.provider, metadata)
           : null;
@@ -10340,6 +10512,8 @@ export function createPtyService({
       scheduleTranscriptDependentWork(entry, "dispose");
       if (entry.cliTurnInterruptTimer) clearTimeout(entry.cliTurnInterruptTimer);
       entry.cliTurnInterruptTimer = null;
+      if (entry.cliSubagentRecheckTimer) clearTimeout(entry.cliSubagentRecheckTimer);
+      entry.cliSubagentRecheckTimer = null;
       clearIdleTimer(entry.sessionId);
       setRuntimeState(entry.sessionId, "killed", { touch: false });
       runtimeStates.delete(entry.sessionId);
@@ -10378,24 +10552,12 @@ export function createPtyService({
     disposeAll(options?: { reopenAfterRestart?: boolean }): void {
       // An orderly stop: no turn of this runtime is cut off by a crash.
       cliTurnRecorder?.close();
-      if (options?.reopenAfterRestart) {
+      unregisterPlannedStopCliSource();
+      // A planned brain stop already saved this list, first thing in the stop
+      // (`recordPlannedBrainStop`), with the chats at work beside it.
+      if (options?.reopenAfterRestart && !plannedStopRecordedFor(projectRoot)) {
         try {
-          const entries: CliReopenEntry[] = [];
-          for (const entry of ptys.values()) {
-            if (entry.disposed || !entry.tracked || !isTrackedAgentCliToolType(entry.toolTypeHint)) continue;
-            const session = sessionService.get(entry.sessionId);
-            if (!session || session.archivedAt || !isTrackedAgentCliToolType(session.toolType)) continue;
-            const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
-            // Mid-turn: still printing and not at its prompt. Waiting on the
-            // person (a permission prompt) is not a turn to continue. When in
-            // doubt it only reopens: a "continue" typed into an idle CLI would
-            // start work nobody asked for.
-            const midTurn = provider != null
-              && !session.attentionRequestedAt
-              && runtimeStates.get(entry.sessionId)?.state === "running"
-              && !agentCliInputReadyNow(entry.sessionId, provider);
-            entries.push({ sessionId: entry.sessionId, midTurn });
-          }
+          const entries = plannedCliReopenEntries();
           recordCliSessionsToReopen(projectRoot, entries);
           if (entries.length > 0) {
             logger.info("pty.cli_reopen_recorded", {

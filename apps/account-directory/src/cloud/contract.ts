@@ -126,6 +126,11 @@
  * sends it, and it settles a waiting update.
  * `POST /cloud/instances/:id/resize` takes `{ origin: "auto" }` from the
  * computer's own disk grower, so analytics can tell it from a person's grow.
+ * With `{ origin: "auto", launchId }` it is a server launch's setup moving its
+ * own computer from Small to Medium (`CLOUD_AUTO_SIZE`): only for a launch
+ * whose size was ADE's default, on the launch's own computer, once. 409
+ * `size_kept` says why not (`CloudAutoSizeRefusal` in `error.reason`); on
+ * success the repository's setup is remembered as needing Medium.
  * The checkout and portal URLs open in the person's browser and come back to
  * a plain page; read `GET /cloud/account` again to see what changed.
  * `POST /cloud/billing/checkout`, `/portal` and `/free-unlock` take an
@@ -991,20 +996,101 @@ export const CLOUD_LAUNCH_MAX_FILE_BYTES = 25 * 1024 * 1024;
 export const CLOUD_LAUNCH_MAX_FILES = 10;
 export const CLOUD_LAUNCH_MAX_PROMPT_CHARS = 100_000;
 
+/**
+ * A CLI launch (a tracked CLI session the launching ADE app starts in the
+ * lane once the computer's brain has it) is sent as `lane`, with `cli` in
+ * `launch.kind`: a server or computer that predates it runs the lane alone
+ * instead of refusing the launch.
+ */
 export type CloudLaunchKind = "chat" | "lane";
+/**
+ * The most an ADE app's full launch args (`CloudServerLaunchRequest.launch`)
+ * may weigh, as JSON. The whole start is one request body of at most 256 KB,
+ * so the first message itself travels once, in `chat.prompt`.
+ */
+export const CLOUD_LAUNCH_MAX_ARGS_BYTES = 96 * 1024;
 
 /** A file uploaded first (`PUT .../files/:fileId`), named in the start. */
 export type CloudLaunchAttachment = { fileId: string; name: string; contentType: string; sizeBytes: number };
 
 /** `POST /cloud/launches`. `launchId` is a UUID and idempotent: the same id answers the same launch. */
+/**
+ * How a launch's size was chosen:
+ * - `default`: nobody picked one (the person's saved size for new lanes, else
+ *   Small). A Small may move to Medium when its setup needs more memory
+ *   (`CLOUD_AUTO_SIZE`), and starts at Medium for a repository whose setup
+ *   already needed it.
+ * - `picked`: the person (or the agent) chose it. It stays.
+ * - `capped`: ADE's default, but the agent limits keep an unattended agent's
+ *   launch at Small. It stays.
+ * Left out (an older ADE): `picked`.
+ */
+export type CloudLaunchSizeChoice = "default" | "picked" | "capped";
+
+/**
+ * The one step a default-size launch takes on its own: Small (4 GB) to Medium
+ * (8 GB, 2x hours), never further. The server's sizes (`plans.ts`) hold the
+ * same numbers.
+ */
+export const CLOUD_AUTO_SIZE = { from: "small", to: "medium", fromMemoryGb: 4, toLabel: "Medium", toHoursRate: "2×" } as const;
+/** A repository remembered as needing Medium is started there for this long after its setup last needed it; then Small is tried again. */
+export const CLOUD_AUTO_SIZE_MEMORY_MS = 90 * 24 * 60 * 60_000;
+
+/** Why a launch's computer is bigger than the size it asked for. */
+export type CloudLaunchAutoSize = {
+  from: CloudTierId;
+  to: CloudTierId;
+  /** `remembered`: this repository's setup needed more memory before. `setup_memory`: this launch's setup did. */
+  why: "remembered" | "setup_memory";
+};
+
+/** The words for `CloudLaunchAutoSize`, the same on the server, the computer, the CLI and the app. */
+export function cloudAutoSizeSentence(why: CloudLaunchAutoSize["why"] | "checking" | "moving"): string {
+  const { fromMemoryGb, toLabel, toHoursRate } = CLOUD_AUTO_SIZE;
+  if (why === "remembered") return `${toLabel}: this repo's setup needed more than ${fromMemoryGb} GB before.`;
+  if (why === "checking") return `Setup needed more than this computer's memory. ADE is checking whether it can move it to ${toLabel}…`;
+  if (why === "moving") return `Setup needed more than ${fromMemoryGb} GB, so ADE is moving this computer to ${toLabel} (${toHoursRate} hours). It restarts for a moment, then setup runs again.`;
+  return `Setup needed more than ${fromMemoryGb} GB, so ADE moved this computer to ${toLabel} (${toHoursRate} hours).`;
+}
+
+/**
+ * Why a launch's computer stayed at its size when setup ran out of memory
+ * (409 `size_kept` on the resize, `error.reason`):
+ * - `picked`: the size was chosen for this launch.
+ * - `capped`: the agent limits keep an unattended agent's launch at Small.
+ * - `moved`: it already moved up once, or isn't a Small.
+ * - `not_launch`: the computer isn't this launch's.
+ */
+export type CloudAutoSizeRefusal = "picked" | "capped" | "moved" | "not_launch";
+
+export function cloudAutoSizeRefusalSentence(reason: CloudAutoSizeRefusal): string {
+  const { toLabel, toHoursRate } = CLOUD_AUTO_SIZE;
+  switch (reason) {
+    case "picked":
+      return `Small was picked for this launch, so ADE didn't move it up. Start it again on ${toLabel} (${toHoursRate} hours).`;
+    case "capped":
+      return `Your agent limits keep agents nobody watches at Small, so ADE didn't move it up. Start it again on ${toLabel}, or raise the limit in Settings › ADE Cloud.`;
+    case "moved":
+      return "ADE already moved this computer up once for this launch. Pick a bigger size, or make setup use less memory.";
+    case "not_launch":
+      return "ADE moves a computer up only for the launch that made it.";
+  }
+}
+
 export type CloudServerLaunchRequest = {
   launchId: string;
   kind: CloudLaunchKind;
   sizeId: CloudTierId;
+  /** How `sizeId` was chosen (`CloudLaunchSizeChoice`); left out is `picked`. */
+  sizeChoice?: CloudLaunchSizeChoice;
   /** A GitHub origin, `github.com/owner/repo` (any spelling a git remote has). */
   project: { origin: string };
-  /** `from` is the branch a new lane starts from (its pushed copy); `existingBranch` works on that branch instead. */
-  lane: { id: string; name: string; from?: string | null; existingBranch?: string | null };
+  /**
+   * `from` is the branch a new lane starts from (its pushed copy); `existingBranch` works on that branch instead.
+   * `autoName`: `name` is only the name from the prompt; the computer's brain renames the lane and its branch with
+   * the AI name, as a lane on the person's own computer is. Left out: `name` is the person's and is kept.
+   */
+  lane: { id: string; name: string; from?: string | null; existingBranch?: string | null; autoName?: boolean };
   chat?: {
     provider: string;
     modelId: string;
@@ -1022,9 +1108,37 @@ export type CloudServerLaunchRequest = {
    * in the desktop's vault, which the server can't read), so an automation
    * checks its own limits before it calls.
    */
-  madeBy?: { kind: "person" } | { kind: "automation"; ruleId?: string | null };
+  madeBy?:
+    | { kind: "person" }
+    | { kind: "automation"; ruleId?: string | null }
+    /**
+     * An agent through an ADE app (`ade chat create --machine cloud`, ADE
+     * MCP): `agent` and `chatSessionId` land on the computer as
+     * `ade_made_by_agent` and `ade_made_by_chat`, so the app's own agent
+     * limits count it.
+     */
+    | { kind: "agent"; agent: "chat" | "automation" | "mcp"; chatSessionId?: string | null };
   /** The app's update track; left out is `stable`. */
   channel?: CloudUpdateChannel;
+  /**
+   * From an ADE app: the launch exactly as the person set it up there
+   * (`ChatLaunchArgs` minus its cloud target, its stages, its files from
+   * that computer and a chat's first message, which `chat.prompt` carries),
+   * kept as sent, at most `CLOUD_LAUNCH_MAX_ARGS_BYTES`. The
+   * computer starts from it, so what the facts above leave out (plan mode, a
+   * provider's own permission modes, a lane template, a branch name, linked
+   * issues) carries too. The facts above win where both say something: ids,
+   * names, kind, lane start and the first message's files. A computer too
+   * old to read it starts from the facts alone.
+   */
+  launch?: Record<string, unknown>;
+  /**
+   * Start only, never kept: a launch whose computer failed before its agent
+   * started (it couldn't join, clone or start) begins again on a new
+   * computer, under the same id. Left out, the same id answers the launch
+   * as it is.
+   */
+  retry?: boolean;
 };
 
 /**
@@ -1046,7 +1160,10 @@ export type CloudLaunchRecord = {
   launchId: string;
   state: CloudLaunchState;
   kind: CloudLaunchKind | null;
+  /** The size its computer is now: Medium once ADE moved a default Small up (`autoSize`); `request.sizeId` keeps what was asked. */
   sizeId: CloudTierId | null;
+  /** Why the computer is bigger than the size asked for; absent or null when it isn't. */
+  autoSize?: CloudLaunchAutoSize | null;
   projectOrigin: string | null;
   laneId: string | null;
   laneName: string | null;

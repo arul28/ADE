@@ -1,0 +1,137 @@
+name: iOS main
+
+# Builds and tests the iOS app for each push to main that touches iOS, and
+# saves the caches that pull requests restore (only main's are visible to
+# every pull request).
+#
+# ci.yml's test-ios job does not build on main: the pull request already
+# passed it, and ci-pass gates the betas, so main's green does not wait for a
+# second iOS build. This workflow is the second build. It catches a break
+# that two green iOS pull requests make together. It is not part of ci.yml
+# because beta.yml starts when the CI workflow completes, and a job in CI
+# would make every beta wait for it.
+#
+# A failure here does not block ci-pass, a desktop beta or a release. It
+# opens (or comments on) the "iOS main failed" issue, and ios-testflight.yml
+# makes no TestFlight build while the newest build of this workflow on main
+# failed (a forced TestFlight dispatch still builds). The next passing build
+# closes the issue.
+#
+# A dispatch always builds. Only a run on main saves caches. The `cold`
+# input skips the restore of the build folder, so everything compiles once
+# and the saved folder starts a fresh chain.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      cold:
+        description: Build without the saved build folder (a full build), then save a fresh one.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# No concurrency group: a group keeps one pending run and cancels the others,
+# which would drop the check of a pending commit.
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The push's commit and its parent, for the diff.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Decide whether iOS is affected
+        id: gate
+        run: scripts/ci/ios-gate.sh >> "$GITHUB_OUTPUT"
+
+  build-and-test:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: xcode-27
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # Deletes the cache entries that this run's save replaces.
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build and test
+        uses: ./.github/actions/ios-build-test
+        with:
+          save-caches: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
+          github-token: ${{ github.token }}
+          cold: ${{ inputs.cold && 'true' || 'false' }}
+
+  report:
+    needs: [gate, build-and-test]
+    # A run that did not build (gate said no, or it was cancelled) changes
+    # nothing in the issue.
+    if: >-
+      always() && github.ref == 'refs/heads/main'
+      && (needs.build-and-test.result == 'success' || needs.build-and-test.result == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      # Reads the newer runs of this workflow (see "superseded" below).
+      actions: read
+    steps:
+      - name: Open or close the "iOS main failed" issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RESULT: ${{ needs.build-and-test.result }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # A run that finishes late must not close the issue of a newer
+          # failure, or open one after a newer pass. When a newer run on main
+          # already has a finished build, this result is superseded. A failed
+          # lookup goes on: the alert matters more than the order.
+          if newer="$(gh api "repos/$GH_REPO/actions/workflows/ios-main.yml/runs?branch=main&per_page=100" \
+              --jq '.workflow_runs[] | select(.run_number > (env.RUN_NUMBER | tonumber)) | "\(.id) \(.html_url)"' 2>/dev/null)"; then
+            while read -r run_id run_url; do
+              [ -n "$run_id" ] || continue
+              job="$(gh api "repos/$GH_REPO/actions/runs/$run_id/jobs" \
+                --jq '[.jobs[] | select(.name == "build-and-test")][0].conclusion // empty' 2>/dev/null)" || continue
+              case "$job" in
+                success | failure)
+                  echo "Superseded: the newer run $run_url has a finished build ($job). The issue is not changed."
+                  exit 0
+                  ;;
+              esac
+            done <<< "$newer"
+          else
+            echo "::warning::Could not read the newer runs of this workflow; updating the issue anyway."
+          fi
+          title="iOS main failed"
+          gh label create ci --color 0E8A16 --description "CI on main" >/dev/null 2>&1 || true
+          issue="$(gh issue list --state open --label ci --limit 100 --json number,title \
+            --jq "[.[] | select(.title == \"$title\")][0].number // empty")"
+          if [ "$RESULT" = success ]; then
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "Fixed: the iOS build and tests pass on main at $SHA. $RUN_URL"
+              gh issue close "$issue"
+            fi
+            exit 0
+          fi
+          body="$(printf 'Run: %s\nCommit: %s\n\nThe iOS build or ADETests failed on main. ci-pass, the desktop beta and releases are not blocked. ios-testflight.yml makes no TestFlight build until a run of this workflow on main passes. The next pull request that touches iOS will fail on the same break.\n' \
+            "$RUN_URL" "$SHA")"
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "$title" --label ci --body "$body"
+          fi

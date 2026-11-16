@@ -3059,6 +3059,8 @@ export type SyncRemoteCommandAction =
   | "chat.setParallelLaunchState"
   | "chat.getFastModeEnabled"
   | "chat.setFastModeEnabled"
+  | "chat.getRootFullAccess"
+  | "chat.setRootFullAccess"
   | "chat.handoff"
   | "chat.startSideChat"
   | "chat.endSideChat"
@@ -3123,10 +3125,13 @@ export type SyncRemoteCommandAction =
   | "chat.continueUsageLimitOnAlternate"
   | "chat.switchAccount"
   | "chat.setScheduledWorkPaused"
+  | "chat.setScheduledWorkItemPaused"
+  | "chat.runScheduledWorkNow"
   | "chat.getTranscript"
   | "chat.getChatEventHistory"
   | "chat.listSubagents"
   | "chat.listPendingInputs"
+  | "chat.getSessionCapabilities"
   | "chat.getSubagentTranscript"
   | "chat.getMainTranscript"
   | "chat.create"
@@ -3195,6 +3200,12 @@ export type SyncRemoteCommandAction =
   | "cto.countLinearIssues"
   | "cto.getLinearCustomViews"
   | "cto.updateIdentity"
+  | "cto.updateNotes"
+  | "cto.updateOpenWork"
+  | "cto.refreshContext"
+  | "cto.adoptAccountCopy"
+  | "cto.getAccountCopyStatus"
+  | "cto.previewSystemPrompt"
   | "git.getChanges"
   | "git.getBranchChanges"
   | "git.getFile"
@@ -3696,6 +3707,10 @@ export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", Sy
  */
 export type SyncHostHealthEnvelope = SyncEnvelopeWithPayload<"host_health", SyncHostHealth>;
 export type SyncPrsUpdatedEnvelope = SyncEnvelopeWithPayload<"prs_updated", { updatedAt: string }>;
+/** Host to the person's devices: the provider sign-ins changed; read `providerLogins.status` again. Older clients ignore it. */
+export type SyncProviderLoginsChangedEnvelope = SyncEnvelopeWithPayload<"provider_logins_changed", { changedAt: string }>;
+/** Host to the person's devices: the account's project list changed; read it again. Older clients ignore it. */
+export type SyncAccountProjectsChangedEnvelope = SyncEnvelopeWithPayload<"account_projects_changed", { changedAt: string }>;
 /**
  * Host to a lane share guest only: its presence, rights or limits changed.
  * Only the grant id; the guest reads `laneShare.getGuestState` again.
@@ -3796,6 +3811,8 @@ export type SyncEnvelope =
   | SyncBrainStatusEnvelope
   | SyncHostHealthEnvelope
   | SyncPrsUpdatedEnvelope
+  | SyncProviderLoginsChangedEnvelope
+  | SyncAccountProjectsChangedEnvelope
   | SyncLaneShareGuestChangedEnvelope
   | SyncRosterSubscribeEnvelope
   | SyncRosterUnsubscribeEnvelope

@@ -35,6 +35,12 @@ export type RemoveProjectTarget = {
   copies: readonly RemovalCopy[];
   /** The account project (`ap_…`) when the account lists it: then "From my account" shows. */
   accountProjectId: string | null;
+  /**
+   * Home's row: "From this list" shows first and is the default. It changes
+   * only this computer's Home list (the caller hides the row, with Undo);
+   * every copy, folder and the account keep the project.
+   */
+  onRemoveFromList?: (() => void) | null;
 };
 
 export type RemoveProjectResult = {
@@ -67,7 +73,7 @@ type RowResult =
   /** The request went out and the answer never came back. */
   | { kind: "unknown" };
 
-type Scope = "this" | "all" | "account";
+type Scope = "list" | "this" | "all" | "account";
 
 type AccountStep =
   | { kind: "idle" }
@@ -100,6 +106,32 @@ async function removeCopy(copy: RemovalCopy, request: ProjectRemovalRequest): Pr
     throw new Error(`Update ADE on this computer to remove a project from ${copy.machine.name}.`);
   }
   return await remove(copy.machine.targetId, copy.projectId, request);
+}
+
+/** How long a removal whose answer was lost waits for its machine to list its projects again. */
+const UNKNOWN_RECHECK_MS = 12_000;
+const UNKNOWN_RECHECK_GAP_MS = 1_500;
+
+/**
+ * The answer to a removal never came back (the machine's connection dropped,
+ * often because the copy it served just went away): asks the machine for its
+ * projects again, for a few seconds. True when it answers without the copy,
+ * false when it still lists it, null when it never answered.
+ */
+async function copyGoneAfterLostAnswer(copy: RemovalCopy): Promise<boolean | null> {
+  const listProjects = window.ade?.remoteRuntime?.listProjects;
+  const targetId = copy.machine.targetId;
+  if (copy.machine.isLocal || !targetId || typeof listProjects !== "function") return null;
+  const deadline = Date.now() + UNKNOWN_RECHECK_MS;
+  for (;;) {
+    try {
+      const projects = await listProjects(targetId);
+      return !projects.some((project) => project.projectId === copy.projectId || project.rootPath === copy.rootPath);
+    } catch {
+      if (Date.now() + UNKNOWN_RECHECK_GAP_MS >= deadline) return null;
+      await new Promise((resolve) => window.setTimeout(resolve, UNKNOWN_RECHECK_GAP_MS));
+    }
+  }
 }
 
 /** What a row allows for a delete, from its report. */
@@ -136,9 +168,9 @@ export function RemoveProjectDialog({
   onClose: () => void;
   onRemoved: (result: RemoveProjectResult) => void;
 }) {
-  const { projectName, repoKey, current, copies, accountProjectId } = target;
+  const { projectName, repoKey, current, copies, accountProjectId, onRemoveFromList } = target;
   const canLeaveAccount = accountProjectId != null && typeof window.ade?.project?.accountRemove === "function";
-  const [scope, setScope] = useState<Scope>(current ? "this" : "account");
+  const [scope, setScope] = useState<Scope>(onRemoveFromList ? "list" : current ? "this" : "account");
   const [accountStep, setAccountStep] = useState<AccountStep>({ kind: "idle" });
   const [deleteFolders, setDeleteFolders] = useState(false);
   const [reports, setReports] = useState<Record<string, ReportState>>({});
@@ -151,11 +183,11 @@ export function RemoveProjectDialog({
   useEffect(() => (repoKey ? watchCopyJobs(repoKey) : undefined), [repoKey]);
 
   const rows = useMemo<readonly RemovalCopy[]>(
-    () => (scope === "this" || !repoKey ? (current ? [current] : []) : copies),
+    () => (scope === "list" ? [] : scope === "this" || !repoKey ? (current ? [current] : []) : copies),
     [copies, current, repoKey, scope],
   );
   const cloningMachines = useMemo(
-    () => (scope !== "this"
+    () => (scope !== "this" && scope !== "list"
       ? jobs.filter((job) => job.status === "cloning" && !copies.some((copy) => copy.machine.machineId === job.machine.machineId))
       : []),
     [copies, jobs, scope],
@@ -196,6 +228,7 @@ export function RemoveProjectDialog({
 
   const confirmLabel = (() => {
     if (deleting.length > 0) return `Remove and delete ${plural(deleting.length, "folder", "folders")}`;
+    if (scope === "list") return "Remove from this list";
     if (scope === "account") return "Remove from my account";
     if (scope === "this" || actionable.length <= 1) {
       const machine = actionable[0]?.machine ?? current?.machine ?? null;
@@ -207,6 +240,12 @@ export function RemoveProjectDialog({
 
   // Runs once, from the confirm button; a plain function reads this render's choices.
   const run = async () => {
+    if (scope === "list") {
+      // Only this list changes; the caller offers Undo.
+      onRemoveFromList?.();
+      onClose();
+      return;
+    }
     setPhase("running");
     const outcomes = await Promise.all(actionable.map(async (copy) => {
       const key = copy.bindingKey;
@@ -228,6 +267,15 @@ export function RemoveProjectDialog({
         // A dropped connection or a timeout after the request went out: the
         // machine may have finished. It is never reported as kept.
         if (isRemoteOutcomeUnknownError(error)) {
+          // The machine's own list says what happened, once it answers again.
+          const gone = await copyGoneAfterLostAnswer(copy);
+          if (gone === true) {
+            // The entry is gone, so the tab leaves the copy. What happened to
+            // a folder it was asked to delete is still not known.
+            if (willDelete) setResults((prev) => ({ ...prev, [key]: { kind: "unknown" } }));
+            else setResults((prev) => ({ ...prev, [key]: { kind: "done", outcome: { status: "removed", folder: "kept", outsideLaneFolders: [] } } }));
+            return { copy, result: "removed" as const };
+          }
           setResults((prev) => ({ ...prev, [key]: { kind: "unknown" } }));
           return { copy, result: "unknown" as const };
         }
@@ -269,9 +317,11 @@ export function RemoveProjectDialog({
 
   const busy = phase === "running";
   const machineName = current?.machine.name ?? null;
-  const keptLine = deleteFolders && deleting.length > 0
-    ? "Folders that are not ticked stay on disk."
-    : "ADE keeps the folders. Each copy stays on disk where it is.";
+  const keptLine = scope === "list"
+    ? "Only this list changes. Every computer keeps its copy, and your account keeps the project."
+    : deleteFolders && deleting.length > 0
+      ? "Folders that are not ticked stay on disk."
+      : "ADE keeps the folders. Each copy stays on disk where it is.";
   const accountOnly = scope === "account" && actionable.length === 0;
 
   return (
@@ -295,7 +345,9 @@ export function RemoveProjectDialog({
             variant: "solid",
             onClick: () => void run(),
             busy,
-            disabled: busy || (actionable.length === 0 && !(scope === "account" && canLeaveAccount)) || stillLoading,
+            disabled: busy
+              || (actionable.length === 0 && scope !== "list" && !(scope === "account" && canLeaveAccount))
+              || stillLoading,
           },
           { label: "Cancel", variant: "secondary", onClick: onClose, disabled: busy },
         ]}
@@ -306,6 +358,15 @@ export function RemoveProjectDialog({
             <legend style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
               Where to remove it from
             </legend>
+            {onRemoveFromList ? (
+              <ChoiceRow
+                type="radio"
+                checked={scope === "list"}
+                onChange={() => setScope("list")}
+                label="From this list"
+                hint="Home on this computer hides it. It still counts, and you can show it again."
+              />
+            ) : null}
             {current ? (
               <ChoiceRow
                 type="radio"
@@ -345,7 +406,7 @@ export function RemoveProjectDialog({
           </fieldset>
         ) : null}
 
-        <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
+        {scope === "list" ? null : <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
           {rows.length === 0 && !accountOnly ? (
             <div style={rowStyle(true, true)}>
               <span style={glyphStyle}><CloudSlash size={13} aria-hidden /></span>
@@ -381,7 +442,7 @@ export function RemoveProjectDialog({
               <span style={detailStyle}>Adding a copy now. It is not removed.</span>
             </div>
           ))}
-        </div>
+        </div>}
 
         {phase === "choose" && deleting.length > 0 ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 4, color: COLORS.textMuted }}>

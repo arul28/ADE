@@ -35,8 +35,23 @@ export function useLaneShareGuestShelfShares(): LaneShareReceivedEntry[] {
   return React.useMemo(() => activeLaneShares(received), [received]);
 }
 
-function ShelfLane({ entry, selected }: { entry: LaneShareReceivedEntry; selected: { grantId: string; sessionId: string | null } | null }) {
-  const [expanded, setExpanded] = React.useState(false);
+/**
+ * One shared lane and its sessions, as a tree: the Work sidebar's group and
+ * the Shared with me page both use it. Expanding it opens the connection.
+ */
+export function LaneShareGuestLaneTree({
+  entry,
+  selected,
+  onSelect = selectLaneShareInWork,
+  defaultExpanded = false,
+}: {
+  entry: LaneShareReceivedEntry;
+  selected: { grantId: string; sessionId: string | null } | null;
+  onSelect?: (grantId: string, sessionId: string | null) => void;
+  defaultExpanded?: boolean;
+}) {
+  const [expanded, setExpanded] = React.useState(defaultExpanded);
+  React.useEffect(() => { if (defaultExpanded) setExpanded(true); }, [defaultExpanded]);
   React.useEffect(() => (expanded ? retainLaneShareGuestConnection(entry) : undefined), [expanded, entry.grantId, entry.laneId]); // eslint-disable-line react-hooks/exhaustive-deps
   const sessions = useLaneShareGuestStore((state) => state.sessions[entry.grantId] ?? EMPTY_SESSIONS);
   const connectionState = useLaneShareGuestStore((state) => state.connections[entry.grantId]);
@@ -56,7 +71,7 @@ function ShelfLane({ entry, selected }: { entry: LaneShareReceivedEntry; selecte
         selected?.grantId === entry.grantId && selected.sessionId === session.sessionId && "bg-fg/[0.07] text-fg",
       )}
       style={{ paddingLeft: 22 + depth * 12 }}
-      onClick={() => selectLaneShareInWork(entry.grantId, session.sessionId)}
+      onClick={() => onSelect(entry.grantId, session.sessionId)}
     >
       <span className="shrink-0 text-fg/45">{laneShareGuestSessionIcon(session.kind, 12)}</span>
       <span className="min-w-0 flex-1 truncate" title={session.title}>{session.title}</span>
@@ -78,12 +93,11 @@ function ShelfLane({ entry, selected }: { entry: LaneShareReceivedEntry; selecte
         <button
           type="button"
           className="flex min-w-0 flex-1 flex-col py-1 text-left"
-          onClick={() => selectLaneShareInWork(entry.grantId, null)}
+          onClick={() => onSelect(entry.grantId, null)}
         >
           <span className="min-w-0 truncate text-[12px] text-fg/85" title={laneName ?? undefined}>{laneName ?? "Shared lane"}</span>
           <span className="min-w-0 truncate text-[10.5px] text-fg/45" title={entry.giverLabel ?? undefined}>
-            {entry.giverLabel ?? "Another account"}
-            {connectionState ? ` · ${label.text}` : ""}
+            {connectionState && connectionState.kind !== "connected" ? label.text : `From ${entry.giverLabel ?? "another account"}`}
           </span>
         </button>
       </div>
@@ -113,7 +127,7 @@ export function LaneShareGuestShelfRows({ shares }: { shares: readonly LaneShare
   const selected = useLaneShareGuestStore((state) => state.workSelection);
   return (
     <div className="flex min-w-0 flex-col gap-0.5 px-1" data-testid="shelf-body-shared-with-me">
-      {shares.map((entry) => <ShelfLane key={entry.grantId} entry={entry} selected={selected} />)}
+      {shares.map((entry) => <LaneShareGuestLaneTree key={entry.grantId} entry={entry} selected={selected} />)}
     </div>
   );
 }

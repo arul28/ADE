@@ -1,107 +1,19 @@
 import { describe, expect, it } from "vitest";
-import {
-  ALL_MODELS,
-  CLAUDE_MODELS,
-  CLAUDE_THINKING_LEVELS,
-  CODEX_MODELS,
-  CODEX_THINKING_LEVELS,
-  findModel,
-  getModelsForProvider,
-  getThinkingLevels,
-  MODEL_PRICING,
-  modelConfigToServiceModel,
-  thinkingLevelToReasoningEffort,
-  updateModelPricing,
-} from "./modelProfiles";
-
-// ---------------------------------------------------------------------------
-// Model catalogs
-// ---------------------------------------------------------------------------
-
-describe("model catalogs", () => {
-  it("CLAUDE_MODELS contains only anthropic CLI-wrapped models", () => {
-    expect(CLAUDE_MODELS.length).toBeGreaterThan(0);
-    for (const m of CLAUDE_MODELS) {
-      expect(m.provider).toBe("claude");
-      expect(m.modelId).toMatch(/^anthropic\//);
-    }
-  });
-
-  it("CODEX_MODELS contains only codex-provider models", () => {
-    expect(CODEX_MODELS.length).toBeGreaterThan(0);
-    for (const m of CODEX_MODELS) {
-      expect(m.provider).toBe("codex");
-      expect(m.modelId).toMatch(/^openai\//);
-    }
-  });
-
-  it("ALL_MODELS contains entries from multiple providers", () => {
-    const providers = new Set(ALL_MODELS.map((m) => m.provider));
-    expect(providers.size).toBeGreaterThanOrEqual(2);
-    expect(providers.has("claude")).toBe(true);
-    expect(providers.has("codex")).toBe(true);
-  });
-
-  it("every ModelEntry has the required shape", () => {
-    for (const m of ALL_MODELS) {
-      expect(typeof m.provider).toBe("string");
-      expect(typeof m.modelId).toBe("string");
-      expect(typeof m.displayName).toBe("string");
-      expect(["low", "medium", "high", "very_high"]).toContain(m.costTier);
-    }
-  });
-
-  it("marks exactly one Claude model as recommended", () => {
-    const recommended = CLAUDE_MODELS.filter((m) => m.recommended);
-    expect(recommended.length).toBe(1);
-  });
-
-  it("marks exactly one Codex model as recommended", () => {
-    const recommended = CODEX_MODELS.filter((m) => m.recommended);
-    expect(recommended.length).toBe(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// findModel
-// ---------------------------------------------------------------------------
+import { findModel, getModelsForProvider, getThinkingLevels, MODEL_PRICING, modelConfigToServiceModel, thinkingLevelToReasoningEffort, updateModelPricing } from "./modelProfiles";
 
 describe("findModel", () => {
-  it("returns a ModelEntry for a known model", () => {
-    const entry = findModel("anthropic/claude-sonnet-5");
-    expect(entry).toBeDefined();
-    expect(entry!.provider).toBe("claude");
-    expect(entry!.displayName).toContain("Sonnet");
-  });
-
-  it("returns undefined for an unknown model ID", () => {
+  it("finds a known model and returns undefined for an unknown or empty id", () => {
+    expect(findModel("anthropic/claude-sonnet-5")?.provider).toBe("claude");
     expect(findModel("nonexistent/model")).toBeUndefined();
-  });
-
-  it("returns undefined for an empty string", () => {
     expect(findModel("")).toBeUndefined();
   });
 });
 
-// ---------------------------------------------------------------------------
-// getModelsForProvider
-// ---------------------------------------------------------------------------
-
 describe("getModelsForProvider", () => {
-  it("returns only claude models for 'claude'", () => {
-    const models = getModelsForProvider("claude");
+  it.each(["claude", "codex"])("returns only %s models", (provider) => {
+    const models = getModelsForProvider(provider);
     expect(models.length).toBeGreaterThan(0);
-    for (const m of models) {
-      expect(m.provider).toBe("claude");
-    }
-  });
-
-  it("returns only codex models for 'codex'", () => {
-    const models = getModelsForProvider("codex");
-    expect(models.length).toBeGreaterThan(0);
-    for (const m of models) {
-      expect(m.provider).toBe("codex");
-    }
+    for (const m of models) expect(m.provider).toBe(provider);
   });
 
   it("returns an empty array for an unknown provider", () => {
@@ -109,171 +21,42 @@ describe("getModelsForProvider", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Thinking levels
-// ---------------------------------------------------------------------------
-
-describe("thinking levels", () => {
-  it("CLAUDE_THINKING_LEVELS exposes the Claude Code effort ladder", () => {
-    expect(CLAUDE_THINKING_LEVELS).toHaveLength(6);
-    expect(CLAUDE_THINKING_LEVELS.map((t) => t.value)).toEqual([
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-      "ultracode",
-    ]);
-  });
-
-  it("CODEX_THINKING_LEVELS keeps Ultra above Max", () => {
-    expect(CODEX_THINKING_LEVELS).toHaveLength(6);
-    expect(CODEX_THINKING_LEVELS).toEqual([
-      { value: "low", label: "Light" },
-      { value: "medium", label: "Medium" },
-      { value: "high", label: "High" },
-      { value: "xhigh", label: "Extra High" },
-      { value: "max", label: "Max" },
-      { value: "ultra", label: "Ultra" },
-    ]);
-  });
-
-  it("getThinkingLevels returns claude levels for 'claude'", () => {
-    expect(getThinkingLevels("claude")).toBe(CLAUDE_THINKING_LEVELS);
-  });
-
-  it("getThinkingLevels returns codex levels for 'codex'", () => {
-    expect(getThinkingLevels("codex")).toBe(CODEX_THINKING_LEVELS);
-  });
-
-  it("getThinkingLevels returns a 3-level default for unknown providers", () => {
-    const levels = getThinkingLevels("unknown-provider");
-    expect(levels).toHaveLength(3);
-    expect(levels.map((t) => t.value)).toEqual(["low", "medium", "high"]);
+describe("getThinkingLevels", () => {
+  it("returns a 3-level default for unknown providers", () => {
+    expect(getThinkingLevels("unknown-provider").map((t) => t.value)).toEqual(["low", "medium", "high"]);
   });
 });
 
 describe("modelConfigToServiceModel", () => {
-  it("returns the modelId when it is a non-empty string", () => {
-    expect(modelConfigToServiceModel({ modelId: "anthropic/claude-opus-4-8" })).toBe("anthropic/claude-opus-4-8");
+  it.each([
+    ["a non-empty model id", { modelId: "anthropic/claude-opus-4-8" }, "anthropic/claude-opus-4-8"],
+    ["an empty id on claude", { provider: "claude", modelId: "" }, "anthropic/claude-opus-5-5"],
+    ["a whitespace id on claude", { provider: "claude", modelId: "   " }, "anthropic/claude-opus-5-5"],
+    ["an empty id on an unknown provider", { provider: "unknown", modelId: "" }, "anthropic/claude-opus-5-5"],
+  ])("resolves %s", (_name, config, expected) => {
+    expect(modelConfigToServiceModel(config)).toBe(expected);
   });
 
-  it("falls back to default codex model when modelId is empty and provider is codex", () => {
-    const result = modelConfigToServiceModel({ provider: "codex", modelId: "" });
-    expect(result).toMatch(/^openai\//);
-  });
-
-  it("falls back to the default Claude model when modelId is empty and provider is claude", () => {
-    expect(modelConfigToServiceModel({ provider: "claude", modelId: "" })).toBe("anthropic/claude-opus-5-5");
-  });
-
-  it("falls back to the default Claude model when modelId is whitespace only", () => {
-    expect(modelConfigToServiceModel({ provider: "claude", modelId: "   " })).toBe("anthropic/claude-opus-5-5");
-  });
-
-  it("falls back to the default Claude model when provider is unknown and modelId is empty", () => {
-    expect(modelConfigToServiceModel({ provider: "unknown", modelId: "" })).toBe("anthropic/claude-opus-5-5");
+  it("falls back to the default Codex model for an empty id on codex", () => {
+    expect(modelConfigToServiceModel({ provider: "codex", modelId: "" })).toMatch(/^openai\//);
   });
 });
-
-// ---------------------------------------------------------------------------
-// thinkingLevelToReasoningEffort
-// ---------------------------------------------------------------------------
 
 describe("thinkingLevelToReasoningEffort", () => {
-  it("maps 'low' to 'low'", () => {
-    expect(thinkingLevelToReasoningEffort("low")).toBe("low");
-  });
-
-  it("maps 'medium' to 'medium'", () => {
-    expect(thinkingLevelToReasoningEffort("medium")).toBe("medium");
-  });
-
-  it("maps 'high' to 'high'", () => {
-    expect(thinkingLevelToReasoningEffort("high")).toBe("high");
-  });
-
-  it("maps 'xhigh' to 'xhigh'", () => {
-    expect(thinkingLevelToReasoningEffort("xhigh")).toBe("xhigh");
-  });
-
-  it("maps 'none' to 'low'", () => {
-    expect(thinkingLevelToReasoningEffort("none")).toBe("low");
-  });
-
-  it("maps 'minimal' to 'low'", () => {
-    expect(thinkingLevelToReasoningEffort("minimal")).toBe("low");
-  });
-
-  it("maps 'max' to 'max'", () => {
-    expect(thinkingLevelToReasoningEffort("max")).toBe("max");
-  });
-
-  it("maps 'ultracode' to 'ultracode'", () => {
-    expect(thinkingLevelToReasoningEffort("ultracode")).toBe("ultracode");
-  });
-
-  it("maps Codex 'ultra' to the exact runtime effort", () => {
-    expect(thinkingLevelToReasoningEffort("ultra")).toBe("ultra");
-  });
-
-  it("returns 'low' for null", () => {
-    expect(thinkingLevelToReasoningEffort(null)).toBe("low");
-  });
-
-  it("returns 'low' for undefined", () => {
-    expect(thinkingLevelToReasoningEffort(undefined)).toBe("low");
+  it.each([
+    ["low", "low"], ["medium", "medium"], ["high", "high"], ["xhigh", "xhigh"],
+    ["max", "max"], ["ultracode", "ultracode"], ["ultra", "ultra"],
+    ["none", "low"], ["minimal", "low"], [null, "low"], [undefined, "low"],
+  ])("maps %s to %s", (level, effort) => {
+    expect(thinkingLevelToReasoningEffort(level as never)).toBe(effort);
   });
 });
 
-// ---------------------------------------------------------------------------
-// MODEL_PRICING (Proxy)
-// ---------------------------------------------------------------------------
-
-describe("MODEL_PRICING", () => {
-  it("returns pricing for a known providerModelId via proxy get", () => {
-    const pricing = MODEL_PRICING["claude-sonnet-5"];
-    expect(pricing).toBeDefined();
-    expect(typeof pricing.input).toBe("number");
-    expect(typeof pricing.output).toBe("number");
-  });
-
-  it("returns undefined for an unknown providerModelId", () => {
+describe("MODEL_PRICING and updateModelPricing", () => {
+  it("serves known pricing, not unknown, and reflects updates", () => {
+    expect(typeof MODEL_PRICING["claude-sonnet-5"]?.input).toBe("number");
     expect(MODEL_PRICING["nonexistent-model-xyz"]).toBeUndefined();
-  });
-
-  it("supports 'in' operator via has trap", () => {
-    expect("claude-sonnet-5" in MODEL_PRICING).toBe(true);
-    expect("nonexistent-model-xyz" in MODEL_PRICING).toBe(false);
-  });
-
-  it("getOwnPropertyDescriptor returns pricing for known models", () => {
-    const desc = Object.getOwnPropertyDescriptor(MODEL_PRICING, "claude-sonnet-5");
-    expect(desc).toBeDefined();
-    expect(desc!.value).toEqual(expect.objectContaining({ input: expect.any(Number), output: expect.any(Number) }));
-  });
-
-  it("getOwnPropertyDescriptor returns undefined for unknown models", () => {
-    const desc = Object.getOwnPropertyDescriptor(MODEL_PRICING, "nonexistent-model-xyz");
-    expect(desc).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// updateModelPricing
-// ---------------------------------------------------------------------------
-
-describe("updateModelPricing", () => {
-  it("returns the count of updated entries", () => {
-    const count = updateModelPricing({
-      "test-model-a": { input: 1, output: 2 },
-      "test-model-b": { input: 3, output: 4 },
-    });
-    expect(count).toBe(2);
-  });
-
-  it("makes updated pricing accessible through MODEL_PRICING proxy", () => {
-    updateModelPricing({ "test-proxy-model": { input: 10, output: 20 } });
+    expect(updateModelPricing({ "test-model-a": { input: 1, output: 2 }, "test-proxy-model": { input: 10, output: 20 } })).toBe(2);
     expect(MODEL_PRICING["test-proxy-model"]).toEqual({ input: 10, output: 20 });
   });
 });

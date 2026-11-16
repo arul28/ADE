@@ -2,6 +2,7 @@ import { qwenSessionRoot } from "./discoverQwen";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { resolveHomeDir } from "./discoveryUtils";
+import { adeHarnessConfigHomes } from "./adeConfigHomes";
 import { claudeConfigHomeDirs } from "./discoverClaude";
 import { codexConfigHomeDirs } from "./discoverCodex";
 import { piSessionRootForEnvironment } from "../chat/piSessionStore";
@@ -130,19 +131,36 @@ export function providerSessionRoots(args: {
       root: path.join(home.dir, "sessions"),
     })),
     { provider: "droid", root: path.join(factoryConfigHome(providerHome), "sessions") },
+    // The same for the preset, route and API-key homes ADE runs these CLIs on.
+    ...adeHarnessConfigHomes("droid", providerHome).map((home) => ({
+      provider: "droid" as const,
+      root: path.join(home.dir, ".factory", "sessions"),
+    })),
     { provider: "cursor", root: path.join(homeDir, ".cursor", "chats") },
     { provider: "cursor", root: path.join(homeDir, ".cursor", "projects") },
     { provider: "opencode", root: path.join(xdgData, "opencode") },
     { provider: "opencode", root: path.join(homeDir, ".local", "share", "opencode") },
     { provider: "pi", root: piSessionRootForEnvironment(env) },
+    ...adeHarnessConfigHomes("pi", providerHome).map((home) => ({
+      provider: "pi" as const,
+      root: piSessionRootForEnvironment({ ...env, PI_CODING_AGENT_DIR: home.dir }),
+    })),
     { provider: "muse", root: museSessionsRoot({ env, homeDir }) },
     // ACP CLIs. Each one has its own layout; see `sessionIdFromLayout`.
     // Same root discovery uses (`QWEN_RUNTIME_DIR`, then `QWEN_HOME`), so a
     // session an ADE terminal runs is recognized wherever Qwen writes it.
     { provider: "qwen", root: path.join(qwenSessionRoot({ env, homeDir }), "projects") },
     { provider: "grok", root: path.join(grokConfigHome(providerHome), "sessions") },
+    ...adeHarnessConfigHomes("grok", providerHome).map((home) => ({
+      provider: "grok" as const,
+      root: path.join(home.dir, "sessions"),
+    })),
     { provider: "copilot", root: path.join(copilotConfigHome(providerHome), "session-state") },
     { provider: "kimi", root: path.join(kimiCodeConfigHome(providerHome), "sessions") },
+    ...adeHarnessConfigHomes("kimi", providerHome).map((home) => ({
+      provider: "kimi" as const,
+      root: path.join(home.dir, "sessions"),
+    })),
     // agy: <conversations>/<id>.db, held open (with its WAL) while it runs.
     { provider: "antigravity", root: path.join(homeDir, ".gemini", "antigravity-cli", "conversations") },
   ];

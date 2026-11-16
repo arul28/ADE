@@ -32,6 +32,10 @@ struct DuoWindowPresentations: ViewModifier {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @ObservedObject private var chrome = DuoShellChrome.shared
   @State private var isLandscape = false
+  /// The Settings row whose page is open. Here, not in Settings: a pose
+  /// change moves Settings between its sheet and its window, which builds it
+  /// again.
+  @State private var settingsOpenPage: String?
 
   private var wideLandscape: Bool { duo.isWide && isLandscape }
   /// Activity as the app-wide trailing column: held landscape, unless the
@@ -83,6 +87,10 @@ struct DuoWindowPresentations: ViewModifier {
     .fullScreenCover(isPresented: shown(syncService.bindings.settingsPresented, when: settingsWindow)) {
       settings
     }
+    // Settings opens on its list each time it is opened.
+    .onChange(of: syncService.settingsPresented) { _, presented in
+      if !presented { settingsOpenPage = nil }
+    }
     .sheet(isPresented: shown(syncService.bindings.attentionDrawerPresented, when: activitySheet)) {
       ActivityDrawerSheet()
         .environmentObject(syncService)
@@ -97,7 +105,7 @@ struct DuoWindowPresentations: ViewModifier {
   }
 
   private var settings: some View {
-    ConnectionSettingsView(syncService: syncService)
+    ConnectionSettingsView(syncService: syncService, openPage: $settingsOpenPage)
       .environmentObject(appUpdateAdvisor)
   }
 
@@ -196,6 +204,9 @@ struct DuoSettingsSplit<Sidebar: View, Landing: View, Page: View>: View {
   /// The row the landing page belongs to, drawn selected until another row
   /// is picked.
   var landingTitle: String?
+  /// The open row, owned by the caller so it outlives a pose change (this
+  /// view's own state goes with its layout). Nil keeps it here.
+  var openPage: Binding<String?>? = nil
   @ViewBuilder var sidebar: () -> Sidebar
   @ViewBuilder var landing: () -> Landing
   /// The page for a picked row's title. Built on every pass, not kept from
@@ -204,7 +215,13 @@ struct DuoSettingsSplit<Sidebar: View, Landing: View, Page: View>: View {
 
   /// The row whose page fills the right column; nil while the landing page
   /// shows. Rows read it through `\.duoSettingsSelection`.
-  @State private var selection: String?
+  @State private var ownSelection: String?
+  private var selection: String? {
+    get { openPage?.wrappedValue ?? ownSelection }
+    nonmutating set {
+      if let openPage { openPage.wrappedValue = newValue } else { ownSelection = newValue }
+    }
+  }
   /// Counts the picks; each one rebuilds the right column's stack.
   @State private var picks = 0
 
@@ -245,8 +262,17 @@ struct DuoSettingsSplit<Sidebar: View, Landing: View, Page: View>: View {
           .environment(\.settingsClose, onClose)
         }
       } else {
-        NavigationStack {
+        // Held upright: one stack. The open row is its pushed page, so a fold
+        // from the two columns keeps the page that was open.
+        NavigationStack(path: Binding(
+          get: { selection.map { [$0] } ?? [] },
+          set: { selection = $0.first }
+        )) {
           sidebar()
+            .environment(\.settingsRootPush, SettingsRootPushAction { selection = $0 })
+            .navigationDestination(for: String.self) { title in
+              page(title).environment(\.settingsRootPush, nil)
+            }
         }
         .environment(\.settingsClose, onClose)
       }
@@ -266,6 +292,21 @@ struct DuoSettingsSplit<Sidebar: View, Landing: View, Page: View>: View {
     }
     return min(340, size.width * 0.38)
   }
+}
+
+/// Opens a Settings root row's page by pushing its title on a stack the
+/// caller keeps, so the open page outlives a pose change.
+struct SettingsRootPushAction: Equatable {
+  let push: (String) -> Void
+
+  func callAsFunction(_ title: String) { push(title) }
+
+  static func == (_: Self, _: Self) -> Bool { true }
+}
+
+extension EnvironmentValues {
+  /// Pushes a Settings root row's page by title. Nil outside the root list.
+  @Entry var settingsRootPush: SettingsRootPushAction? = nil
 }
 
 extension EnvironmentValues {

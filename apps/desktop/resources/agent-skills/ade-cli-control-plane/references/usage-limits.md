@@ -65,9 +65,9 @@ between steps rather than in a loop. Common requests:
   `ade chat scheduled-work create --at <the window's reset time> --prompt "Limits reset; continue <task>"`
   and stop. Reset times come from `--json` (`windows[].resetsAt`).
 - **Start a chat on the account with the most room.**
-  `ade chat create --lane <lane> --provider claude --instance <account> --prompt "…"`.
+  `ade chat create --lane <lane> --provider claude --instance <account> --model <id> --prompt "…"`.
 - **Use another machine's accounts.** Read them with `--machine <name>`, then
-  start the chat there: `ade chat create --machine <name> --lane <lane there> --instance <account> …`.
+  start the chat there: `ade chat create --machine <name> --lane <lane there> --provider claude --instance <account> --model <id> …`.
   An offline machine answers with an error and can't take chats either.
 
 The same login on two machines is one quota; `--all-machines` says so under the

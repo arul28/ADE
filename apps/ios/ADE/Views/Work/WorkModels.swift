@@ -187,6 +187,11 @@ struct WorkChatMessage: Identifiable, Equatable {
   var writtenByAde = false
   /// True for a message the chat's side chat sent here; the bubble says so.
   var fromSideChat = false
+  /// Set when ADE wrote this message (`metadata.hostContinuation.reason`): it
+  /// draws as an "ADE" row with the reason, not as the reader's bubble.
+  var adeReason: String? = nil
+  /// The host's line for `adeReason`; nil from an older host.
+  var adeReasonLabel: String? = nil
   /// Set for a message another person wrote on a shared lane: "From <name>".
   var guestAuthorName: String? = nil
   var attachments: [AgentChatFileRef]? = nil
@@ -722,6 +727,10 @@ struct WorkActiveSendCapability: Equatable {
     // no cancel-and-resend, so interrupt just stops the turn.
     case "copilot":
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "GitHub Copilot", interruptContinues: false)
+    // Pi's SDK `steer` joins the running turn; like Copilot there is no
+    // cancel-and-resend.
+    case "pi":
+      return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "Pi", interruptContinues: false)
     // Qwen and Grok are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
     // so the label reads with the provider's name instead of "the agent", and
@@ -805,10 +814,11 @@ func workBoardColumnLabel(_ column: String) -> String {
 ///
 /// Deliberately separate from `WorkActiveSendCapability` above, exactly as it is
 /// on the desktop. That table governs the composer's staged-message menu; this
-/// is the CTO's own eligibility contract, and Cursor qualifies here through
-/// interrupt-and-resend despite having no inline channel at all, and OpenCode
-/// through its inbox, which delivers an inline message at the next step.
-let ctoLiveRedirectProviders: [String] = ["claude", "codex", "cursor", "opencode"]
+/// is the CTO's own eligibility contract: Cursor qualifies through
+/// interrupt-and-resend, OpenCode through its inbox (an inline message lands
+/// at the next step) and Copilot through an immediate send. Pi and Muse steer in
+/// a plain chat but are not CTO providers until they pass the CTO's live check.
+let ctoLiveRedirectProviders: [String] = ["claude", "codex", "cursor", "opencode", "copilot"]
 
 /// True when `provider` can redirect a turn already in flight, so it is allowed
 /// to be the CTO.
@@ -1695,7 +1705,7 @@ struct WorkSubagentSnapshot: Identifiable, Hashable {
   let label: String?
   let model: String?
   let reasoningEffort: String?
-  let status: Status
+  var status: Status
   let lastToolName: String?
   let latestSummary: String?
   let turnId: String?
@@ -1841,6 +1851,36 @@ func workCanPromoteChatToSubagent(
   guard hostSupportsSpawnKindUpdate, isChat, spawnKind == .peer else { return false }
   let parent = parentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   return !parent.isEmpty
+}
+
+/// The menu labels for the reporting switch, named after the parent chat:
+/// "Stop reports to <parent>" and "Report back to <parent>". A long title is
+/// cut in the middle; with no title the label says "parent".
+enum WorkReportingMenuAction {
+  case stopReports
+  case reportBack
+
+  var prefix: String {
+    switch self {
+    case .stopReports: return "Stop reports to"
+    case .reportBack: return "Report back to"
+    }
+  }
+}
+
+func workReportingMenuLabel(_ action: WorkReportingMenuAction, parentTitle: String?, maxTitleLength: Int = 28) -> String {
+  let title = parentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !title.isEmpty else { return "\(action.prefix) parent" }
+  return "\(action.prefix) \(workMiddleTruncated(title, maxLength: maxTitleLength))"
+}
+
+/// Cuts a string in the middle with an ellipsis so both ends stay readable.
+func workMiddleTruncated(_ value: String, maxLength: Int) -> String {
+  guard maxLength > 1, value.count > maxLength else { return value }
+  let kept = maxLength - 1
+  let head = (kept + 1) / 2
+  let tail = kept - head
+  return String(value.prefix(head)) + "…" + String(value.suffix(tail))
 }
 
 /// Apply a successful spawn-kind or takeover-banner write onto the live
@@ -2347,6 +2387,11 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   var userMessageWrittenByAde = false
   /// True for a user message a side chat sent to this chat (`metadata.sideChat`).
   var userMessageFromSideChat = false
+  /// Why ADE wrote this user message (`metadata.hostContinuation.reason`); nil
+  /// for anything else. Draws as an ADE row, never a bubble.
+  var userMessageAdeReason: String? = nil
+  /// The host's line for that reason (`metadata.hostContinuation.label`).
+  var userMessageAdeReasonLabel: String? = nil
   /// The other person on a shared lane who wrote this user message (`metadata.author`).
   var userMessageGuestAuthorName: String? = nil
   var userMessageIsRecoveryHandOff = false

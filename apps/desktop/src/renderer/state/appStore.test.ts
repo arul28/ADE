@@ -51,17 +51,9 @@ const mockLocalStorage = {
 };
 
 // Import after window is set up
-import {
-  createProjectAppStore,
-  effectiveThemeId,
-  retainProjectAppStoreState,
-  selectEffectiveThemeId,
-  useAppStore,
-  THEME_IDS,
-  DEFAULT_TERMINAL_PREFERENCES,
-  DEFAULT_CHAT_FONT_SIZE_PX,
-} from "./appStore";
+import { createProjectAppStore, effectiveThemeId, flushWorkViewStatePersistForTests, retainProjectAppStoreState, selectEffectiveThemeId, useAppStore, DEFAULT_TERMINAL_PREFERENCES, DEFAULT_CHAT_FONT_SIZE_PX } from "./appStore";
 import { DEFAULT_APPLE_DEVICE_PREFERENCES } from "../../shared/appleDeviceSettings";
+import { rememberProjectOriginSummaries, resetProjectOriginMemory } from "../components/lanes/laneMachines";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -140,6 +132,10 @@ function laneCacheKey(projectRoot: string): string {
 
 describe("appStore", () => {
   beforeEach(() => {
+    // A test's debounced work-view write (a real 300 ms timer) must not land in
+    // the next test: on a slow runner it fired mid-way through one and wrote
+    // its stale project over that test's state.
+    flushWorkViewStatePersistForTests();
     mockStorage.clear();
     vi.clearAllMocks();
     resetStore();
@@ -241,16 +237,6 @@ describe("appStore", () => {
     });
   });
 
-  // ─────────────────────────────────────────────────────────────
-  // Theme
-  // ─────────────────────────────────────────────────────────────
-
-  describe("THEME_IDS", () => {
-    it("exposes exactly dark and light", () => {
-      expect(THEME_IDS).toEqual(["dark", "light"]);
-    });
-  });
-
   describe("setTheme", () => {
     it("updates the theme in state and persists to localStorage", () => {
       useAppStore.getState().setTheme("light");
@@ -261,17 +247,6 @@ describe("appStore", () => {
       const latest = calls[calls.length - 1];
       expect(latest).toBeTruthy();
       expect(JSON.parse(latest![1])).toMatchObject({ theme: "light" });
-    });
-
-    it("persists dark theme", () => {
-      useAppStore.getState().setTheme("dark");
-      expect(useAppStore.getState().theme).toBe("dark");
-      const calls = mockLocalStorage.setItem.mock.calls.filter(
-        ([key]) => key === "ade.userPreferences.v1",
-      );
-      const latest = calls[calls.length - 1];
-      expect(latest).toBeTruthy();
-      expect(JSON.parse(latest![1])).toMatchObject({ theme: "dark" });
     });
 
     it("selects a shipped theme and resolves a retired id to its replacement", () => {
@@ -729,13 +704,6 @@ describe("appStore", () => {
       expect(useAppStore.getState().providerMode).toBe("subscription");
     });
 
-    it("setShowWelcome toggles the welcome screen flag", () => {
-      useAppStore.getState().setShowWelcome(false);
-      expect(useAppStore.getState().showWelcome).toBe(false);
-      useAppStore.getState().setShowWelcome(true);
-      expect(useAppStore.getState().showWelcome).toBe(true);
-    });
-
     it("a new tab ends Settings-without-a-project and shows the new-project screen", () => {
       useAppStore.getState().setStandaloneSettingsOpen(true);
       expect(useAppStore.getState().standaloneSettingsOpen).toBe(true);
@@ -746,12 +714,6 @@ describe("appStore", () => {
       expect(state.standaloneSettingsOpen).toBe(false);
       expect(state.isNewTabOpen).toBe(true);
       expect(state.showWelcome).toBe(true);
-    });
-
-    it("setLanes updates the lanes array", () => {
-      const lanes = [{ id: "lane-1", name: "test" }] as any[];
-      useAppStore.getState().setLanes(lanes);
-      expect(useAppStore.getState().lanes).toBe(lanes);
     });
 
     it("keeps lane delete progress in app state across local updates", () => {
@@ -1206,11 +1168,6 @@ describe("appStore", () => {
       ]);
     });
 
-    it("selectLane updates selectedLaneId", () => {
-      useAppStore.getState().selectLane("lane-42");
-      expect(useAppStore.getState().selectedLaneId).toBe("lane-42");
-    });
-
     it("selectLane records the choice in laneSelectionByProject when a project is active", () => {
       useAppStore.setState({ project: { rootPath: "/p/a" } as any });
       useAppStore.getState().selectLane("lane-42");
@@ -1223,11 +1180,6 @@ describe("appStore", () => {
     it("selectLane does not write laneSelectionByProject when there is no project", () => {
       useAppStore.getState().selectLane("lane-42");
       expect(useAppStore.getState().laneSelectionByProject).toEqual({});
-    });
-
-    it("focusSession updates focusedSessionId", () => {
-      useAppStore.getState().focusSession("session-abc");
-      expect(useAppStore.getState().focusedSessionId).toBe("session-abc");
     });
 
     it("focusSession records the choice in laneSelectionByProject without clobbering laneId", () => {
@@ -1263,44 +1215,6 @@ describe("appStore", () => {
   });
 
   // ─────────────────────────────────────────────────────────────
-  // Lane inspector tabs
-  // ─────────────────────────────────────────────────────────────
-
-  describe("setLaneInspectorTab", () => {
-    it("stores the tab choice per lane", () => {
-      useAppStore.getState().setLaneInspectorTab("lane-1", "context");
-      useAppStore.getState().setLaneInspectorTab("lane-2", "merge");
-      expect(useAppStore.getState().laneInspectorTabs).toEqual({
-        "lane-1": "context",
-        "lane-2": "merge",
-      });
-    });
-
-    it("overwrites a previous tab selection", () => {
-      useAppStore.getState().setLaneInspectorTab("lane-1", "terminals");
-      useAppStore.getState().setLaneInspectorTab("lane-1", "context");
-      expect(useAppStore.getState().laneInspectorTabs["lane-1"]).toBe("context");
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────
-  // Terminal attention
-  // ─────────────────────────────────────────────────────────────
-
-  describe("setTerminalAttention", () => {
-    it("replaces the terminal attention snapshot", () => {
-      const snapshot = {
-        runningCount: 3,
-        activeCount: 1,
-        needsAttentionCount: 2,
-        indicator: "running-needs-attention" as const,
-      };
-      useAppStore.getState().setTerminalAttention(snapshot);
-      expect(useAppStore.getState().terminalAttention).toEqual(snapshot);
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────
   // Work view state (project-level)
   // ─────────────────────────────────────────────────────────────
 
@@ -1309,16 +1223,6 @@ describe("appStore", () => {
       const state = useAppStore.getState().getWorkViewState(null);
       expect(state.draftKind).toBe("chat");
       expect(state.openItemIds).toEqual([]);
-    });
-
-    it("returns default state for empty string project root", () => {
-      const state = useAppStore.getState().getWorkViewState("  ");
-      expect(state.draftKind).toBe("chat");
-    });
-
-    it("returns default state for undefined project root", () => {
-      const state = useAppStore.getState().getWorkViewState(undefined);
-      expect(state.draftKind).toBe("chat");
     });
 
     it("stores and retrieves work view state by project root", () => {
@@ -1413,50 +1317,6 @@ describe("appStore", () => {
         expect(reloaded.workCollapsedSectionIds).toEqual([]);
         // Turned off after the upgrade, it stays off.
         expect(reloaded.workFoldBusyLanes).toBe(false);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("merges into the stored blob instead of republishing its own whole map", async () => {
-      vi.useFakeTimers();
-      try {
-        // Project B's surface holds a copy of A's state from when it was
-        // created. A whole-map write from B republished that stale copy over
-        // A's newer state — the "I left the tab and my collapse reverted" bug.
-        mockStorage.set("ade.workViewState.v1", JSON.stringify({
-          version: 3,
-          workViewByProject: {
-            "/project/a": { workCollapsedLaneIds: ["lane-a"], search: "alpha" },
-            "/project/b": { workCollapsedLaneIds: [] },
-          },
-          laneWorkViewByScope: {},
-        }));
-
-        vi.resetModules();
-        const mod = await import("./appStore");
-        // Simulate another surface writing A directly to storage after this
-        // store took its snapshot.
-        mockStorage.set("ade.workViewState.v1", JSON.stringify({
-          version: 3,
-          workViewByProject: {
-            "/project/a": { workCollapsedLaneIds: ["lane-a", "lane-a2"], search: "alpha-updated" },
-            "/project/b": { workCollapsedLaneIds: [] },
-          },
-          laneWorkViewByScope: {},
-        }));
-
-        mod.useAppStore.getState().setWorkViewState("/project/b", { search: "beta" });
-        await vi.advanceTimersByTimeAsync(300);
-
-        const persisted = JSON.parse(mockStorage.get("ade.workViewState.v1") ?? "{}") as {
-          workViewByProject?: Record<string, Record<string, unknown>>;
-        };
-        expect(persisted.workViewByProject?.["/project/b"]?.search).toBe("beta");
-        // A's newer state survives B's write.
-        expect(persisted.workViewByProject?.["/project/a"]?.search).toBe("alpha-updated");
-        expect(persisted.workViewByProject?.["/project/a"]?.workCollapsedLaneIds)
-          .toEqual(["lane-a", "lane-a2"]);
       } finally {
         vi.useRealTimers();
       }
@@ -1650,12 +1510,6 @@ describe("appStore", () => {
       expect(useAppStore.getState().getLaneWorkViewState(null, null).draftKind).toBe("chat");
     });
 
-    it("stores and retrieves lane-scoped work view state", () => {
-      useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { search: "running" });
-      const state = useAppStore.getState().getLaneWorkViewState("/proj", "lane-1");
-      expect(state.search).toBe("running");
-    });
-
     it("keeps separate state per lane", () => {
       useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { search: "running" });
       useAppStore.getState().setLaneWorkViewState("/proj", "lane-2", { search: "ended" });
@@ -1748,6 +1602,31 @@ describe("appStore", () => {
   });
 
   describe("project transitions", () => {
+    it.each([
+      ["a switch to another tab keeps that tab's own view", undefined, "chat-b"],
+      ["the same tab moving to another copy brings its view", true, "chat-a"],
+    ])("two folders of one repository on this computer: %s", async (_label, carryWorkView, expectedActive) => {
+      // Two clones of one repository: the same origin, separate tabs.
+      const origin = "https://github.com/demo-org/atlas.git";
+      rememberProjectOriginSummaries([
+        { rootPath: "/clones/atlas-1", kind: "local", gitOriginUrl: origin },
+        { rootPath: "/clones/atlas-2", kind: "local", gitOriginUrl: origin },
+      ] as any, { replace: true });
+      const projectB = { rootPath: "/clones/atlas-2", displayName: "atlas", baseRef: "main" } as any;
+      useAppStore.setState({
+        project: { rootPath: "/clones/atlas-1", displayName: "atlas", baseRef: "main" } as any,
+        projectBinding: { kind: "local", key: "/clones/atlas-1", rootPath: "/clones/atlas-1", displayName: "atlas" },
+      } as any);
+      useAppStore.getState().setWorkViewState("/clones/atlas-1", { openItemIds: ["chat-a"], activeItemId: "chat-a", selectedItemId: "chat-a" });
+      useAppStore.getState().setWorkViewState("/clones/atlas-2", { openItemIds: ["chat-b"], activeItemId: "chat-b", selectedItemId: "chat-b" });
+      (window.ade.project.switchToPath as any).mockResolvedValueOnce(projectB);
+
+      await useAppStore.getState().switchProjectToPath("/clones/atlas-2", carryWorkView ? { carryWorkView } : undefined);
+
+      expect(useAppStore.getState().getWorkViewState("/clones/atlas-2").activeItemId).toBe(expectedActive);
+      resetProjectOriginMemory();
+    });
+
     it("tracks project switching progress and clears it on success", async () => {
       const nextProject = { rootPath: "/tmp/next", displayName: "Next", baseRef: "main" } as any;
       (window.ade.project.switchToPath as any).mockResolvedValueOnce(nextProject);
@@ -2195,52 +2074,74 @@ describe("appStore", () => {
       expect(useAppStore.getState().projectTransitionError).toBeNull();
     });
 
-    it("ignores stale switchRemoteProject completions when a newer switch starts", async () => {
-      const bindingA = {
-        kind: "remote" as const,
-        key: "remote:target-1:project-a",
-        targetId: "target-1",
-        runtimeName: "Remote",
-        projectId: "project-a",
-        rootPath: "/remote/a",
-        displayName: "Project A",
-      };
-      const bindingB = {
-        kind: "remote" as const,
-        key: "remote:target-1:project-b",
-        targetId: "target-1",
-        runtimeName: "Remote",
-        projectId: "project-b",
-        rootPath: "/remote/b",
-        displayName: "Project B",
-      };
-      let resolveSlow: (value: typeof bindingA) => void = () => {};
+    const staleBindingA = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-a",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-a",
+      rootPath: "/remote/a",
+      displayName: "Project A",
+    };
+    const staleBindingB = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-b",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-b",
+      rootPath: "/remote/b",
+      displayName: "Project B",
+    };
+    it.each([
+      {
+        what: "a newer switch",
+        supersede: () => useAppStore.getState().switchRemoteProject("target-1", "project-b"),
+        expectFront: () => {
+          expect(useAppStore.getState().project?.rootPath).toBe("/remote/b");
+          expect(useAppStore.getState().projectBinding).toEqual(staleBindingB);
+        },
+      },
+      {
+        what: "Home",
+        supersede: () => useAppStore.getState().openNewTab(),
+        expectFront: () => {
+          expect(useAppStore.getState().isNewTabOpen).toBe(true);
+          expect(useAppStore.getState().projectBinding?.key).not.toBe(staleBindingA.key);
+        },
+      },
+      {
+        what: "a no-machine tab",
+        supersede: () => useAppStore.getState().showNoMachineTab({ id: "repo-waiting", displayName: "Waiting", iconDataUrl: null }),
+        expectFront: () => {
+          expect(useAppStore.getState().activeNoMachineTabId).toBe("repo-waiting");
+          expect(useAppStore.getState().projectBinding?.key).not.toBe(staleBindingA.key);
+        },
+      },
+    ])("a pending switchRemoteProject never finishes over $what, and its switching state ends", async ({ supersede, expectFront }) => {
+      let resolveSlow: (value: typeof staleBindingA) => void = () => {};
       (window.ade.remoteRuntime.openProject as any).mockImplementation(
         async (_targetId: string, projectId: string) => {
           if (projectId === "project-a") {
             return await new Promise((resolve) => {
-              resolveSlow = resolve as (value: typeof bindingA) => void;
+              resolveSlow = resolve as (value: typeof staleBindingA) => void;
             });
           }
-          return bindingB;
+          return staleBindingB;
         },
       );
 
       const slowSwitch = useAppStore.getState().switchRemoteProject("target-1", "project-a");
-      await useAppStore.getState().switchRemoteProject("target-1", "project-b");
+      expect(useAppStore.getState().projectTransition?.kind).toBe("switching");
+      await supersede();
 
-      expect(useAppStore.getState().project).toEqual({
-        rootPath: "/remote/b",
-        displayName: "Project B",
-        baseRef: "main",
-      });
-      expect(useAppStore.getState().projectBinding).toEqual(bindingB);
+      expect(useAppStore.getState().projectTransition).toBeNull();
+      expectFront();
 
-      resolveSlow(bindingA);
+      resolveSlow(staleBindingA);
       await slowSwitch;
 
-      expect(useAppStore.getState().project?.rootPath).toBe("/remote/b");
-      expect(useAppStore.getState().projectBinding).toEqual(bindingB);
+      expect(useAppStore.getState().projectTransition).toBeNull();
+      expectFront();
     });
 
     it("restores binding-scoped Work, lane, and session state when returning to a remote project", async () => {

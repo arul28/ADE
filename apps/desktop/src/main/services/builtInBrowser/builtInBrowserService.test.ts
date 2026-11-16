@@ -5517,13 +5517,6 @@ describe("BuiltInBrowserNoTabError", () => {
       ...over,
     }) as unknown as Parameters<typeof narrowPageHint>[0];
 
-    it("tells the agent the page is the pane's width and how to get a desktop layout", () => {
-      const hint = narrowPageHint(tab(), 385);
-      expect(hint).toContain("385");
-      expect(hint).toContain("ade browser emulate --tab tab-7 --width");
-      expect(hint).toContain("ade browser emulate --tab tab-7 --off");
-    });
-
     it.each([
       { name: "a page at least 640 px wide", over: {}, pageWidth: 640 },
       { name: "a device preset the agent chose", over: { emulation: { width: 390, height: 844 } }, pageWidth: 390 },

@@ -20,11 +20,11 @@ manages lanes, not computers.
 
 ## 2. Start a lane
 
-`ade chat create --machine cloud --launch-id <a new UUID> --prompt "<task>"` starts a lane with a chat.
+`ade chat create --machine cloud --launch-id <a new UUID> --provider <p> --model <id> --prompt "<task>"` starts a lane with a chat (the model is required, as for every launch).
 `ade lanes create --machine cloud --launch-id <a new UUID> --name "<name>"` makes the lane alone, with no chat.
 Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `chat create`, `lanes create` and `chat launch-status`; every other `--machine` is refused. An app is an unattended agent there (the next point).
 
-- Size: leave out `--size` to use the person's saved size (`defaultSize`). Medium when Small is too slow. Large or X-Large (full computers) only for Android or Docker.
+- Size: leave out `--size` to use the person's saved size (`defaultSize`). Medium when Small is too slow. Large or X-Large (full computers) only for Android or Docker. With no `--size`, a Small whose setup runs out of memory moves to Medium once by itself (the launch says so), and that repository starts at Medium after that; a size you pass stays, so passing `--size small` turns this off.
 - Push the branch first. The lane starts from the pushed copy; uncommitted changes stay here.
 - The approval card asks the person in your chat, with the size and its hours rate. No answer in 5 minutes means no.
 - In a full-auto chat, an automation or an ADE MCP app, nobody watches. ADE answers with the agent limits (`agents` in the status): only sizes in `sizesAllowed`, at most `newComputersLeftToday` new computers today. Each new lane counts one. A person never counts.
@@ -40,7 +40,7 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 - Follow: `ade chat launch-status <id> --machine cloud`.
 - Retry after a failure: the same command with the same `--launch-id`. It goes on from the failed step, on the same computer.
 - Cancel, which deletes its computer: `ade chat launch-cancel <id> --machine cloud`. Only the chat that started it, or the person. ADE MCP apps can't.
-- The new chat doesn't report back. Read it: `ade chat read --machine <its computer>`.
+- The new chat doesn't report back. Read it: `ade chat read <chat id> --machine <computer name>` (a cloud computer is one of the person's machines, so `--machine` takes its name). Over ADE MCP, call `chat_read` with the chat id; it finds the chat's machine itself.
 
 ## 4. What a refusal means, and the one next step
 
@@ -103,6 +103,6 @@ Use `ade cloud update <machine>` only to update now or to retry a failed one.
 Your chat needs Android but runs on a standard computer (`ade android start`
 says so): tell the person, then `ade cloud create --kind vm --shape <the size
 the message names> --name "<name>"`, then `ade chat handoff
-"$ADE_CHAT_SESSION_ID" --machine "<name>" --fork --include-changes --clone
+"$ADE_CHAT_SESSION_ID" --to "<name>" --fork --include-changes --clone
 --when-turn-ends --note "<the task>"`, and end your turn. The old computer
 stays; offer to delete it from the new chat.

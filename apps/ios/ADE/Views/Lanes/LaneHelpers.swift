@@ -705,7 +705,7 @@ func conflictSummary(_ status: ConflictStatus) -> String {
   case "conflict-active":
     return "\(status.overlappingFileCount) overlapping file(s) in active conflict."
   case "conflict-predicted":
-    return "\(status.overlappingFileCount) overlapping file(s) predicted across \(status.peerConflictCount) peer(s)."
+    return "\(status.overlappingFileCount) overlapping file(s) predicted across \(status.peerConflictCount) other lane(s)."
   case "behind-base":
     return "Behind base. Rebase before merging."
   case "merge-ready":

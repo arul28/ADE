@@ -1196,7 +1196,10 @@ describe("preload Apple device input routing", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.aiIsOpenCodeInstalled, expect.anything());
   });
 
-  it("reads env files locally while importing and exporting secrets on the bound remote machine", async () => {
+  // Passwords & Secrets is the account's vault, read on the computer the
+  // person is using: a window bound to another machine's project must not
+  // send its reads, saves, imports or exports there.
+  it("keeps Passwords & Secrets on this computer while a remote project is bound", async () => {
     const binding = {
       kind: "remote",
       key: "remote:target-1:project-1",
@@ -1206,20 +1209,9 @@ describe("preload Apple device input routing", () => {
       rootPath: "/remote/project",
       displayName: "Project",
     };
-    const envFile = { fileName: ".env", content: "API_KEY=local-file-value\n" };
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
-      if (channel === IPC.projectSecretsChooseEnvFile) return envFile;
       if (channel === IPC.appGetWindowSession) return { windowId: 1, project: null, binding };
-      if (channel === IPC.remoteRuntimeCallAction) {
-        const request = (payload as { request: { domain: string; action: string } }).request;
-        if (request.action === "previewEnvImport") {
-          return { domain: request.domain, action: request.action, result: { fileName: ".env", secrets: [{ name: "API_KEY", value: "local-file-value", exists: false }] }, statusHints: {} };
-        }
-        if (request.action === "importEnv") {
-          return { domain: request.domain, action: request.action, result: { imported: ["API_KEY"], replaced: [] }, statusHints: {} };
-        }
-        return { domain: request.domain, action: request.action, result: { filePath: "/Users/remote/Downloads/ade-secrets.env", secretCount: 1 }, statusHints: {} };
-      }
+      if (channel === IPC.passwordsCall) return { action: (payload as { action: string }).action };
       throw new Error(`unexpected IPC: ${channel}`);
     });
     const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
@@ -1232,27 +1224,15 @@ describe("preload Apple device input routing", () => {
     }));
 
     await import("./preload");
-    const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.projectSecrets.chooseEnvFile()).resolves.toMatchObject({ fileName: ".env" });
-    await expect(bridge.projectSecrets.importEnv({ secrets: [{ name: "API_KEY", value: "local-file-value" }] }))
-      .resolves.toEqual({ imported: ["API_KEY"], replaced: [] });
-    await expect(bridge.projectSecrets.exportEnv()).resolves.toEqual({
-      filePath: "/Users/remote/Downloads/ade-secrets.env",
-      secretCount: 1,
-    });
+    const passwords = (globalThis as any).__adeBridge.passwords;
+    await passwords.list({});
+    await passwords.saveSecret({ name: "API_KEY", value: "local-value", projectScope: null });
+    await passwords.importSecrets({ projectScope: null, entries: [{ name: "API_KEY", value: "local-value" }] });
+    await passwords.exportSecrets({ projectScope: null });
 
-    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
-      id: "target-1",
-      projectId: "project-1",
-      request: { domain: "project_secret", action: "previewEnvImport", args: envFile },
-    });
-    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
-      id: "target-1",
-      projectId: "project-1",
-      request: { domain: "project_secret", action: "exportEnv" },
-    });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.projectSecretsPreviewEnvImport, expect.anything());
-    expect(invoke).not.toHaveBeenCalledWith(IPC.projectSecretsExportEnv);
+    expect(invoke.mock.calls.filter(([channel]) => channel === IPC.passwordsCall).map(([, payload]) => (payload as { action: string }).action))
+      .toEqual(["list", "saveSecret", "importSecrets", "exportSecrets"]);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
   });
 
   it("allows local temp path actions while a remote project is bound", async () => {

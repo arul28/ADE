@@ -89,7 +89,7 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `@ade-dev/chat-ui` | React components. React is a peer; `@ade-dev/sdk` is an optional peer used for types only. No lanes, projects, or worktrees in any prop. |
 | `@ade-dev/demo` | Private DataDesk reference. `e2e:preflight` is the CI-safe check; `e2e:live` spends provider tokens and is **not** in root `npm test`. |
 
-Published as `@ade-dev/sdk` and `@ade-dev/chat-ui` on npm (`npm install @ade-dev/sdk`). In this repo, `npm run install:apps` covers `packages/sdk` and `packages/chat-ui`. Each package builds with tsup to `dist/`, which is gitignored — CI's `test-chat-ui` job builds `@ade-dev/sdk` first because chat-ui's `file:../sdk` exports point at that dist.
+Published as `@ade-dev/sdk` and `@ade-dev/chat-ui` on npm (`npm install @ade-dev/sdk`). In this repo, `npm run install:apps` covers `packages/sdk` and `packages/chat-ui`. Each package builds with tsup to `dist/`, which is gitignored — CI's `packages` job builds `@ade-dev/sdk` before its chat-ui steps because chat-ui's `file:../sdk` exports point at that dist.
 
 ## Sidecar architecture
 
@@ -1026,7 +1026,7 @@ Native `windows-latest` CI still has to repeat the Windows-sensitive files; para
 
 - Public page: [`sdk/license.mdx`](../../../sdk/license.mdx) states the per-artifact table and answers whether a proprietary app may ship the runtime. It is the one place a decision gets recorded, so update it first.
 - Exception: [`RUNTIME-EMBEDDING-EXCEPTION.md`](../../../RUNTIME-EMBEDDING-EXCEPTION.md) at the repository root. It permits an unmodified runtime binary inside a larger work that consumes it through the documented `@ade-dev/sdk` interface. Modifying the runtime, or linking ADE source, keeps the AGPL in force.
-- Check: `scripts/check-package-licenses.mjs` asserts, for every non-private `packages/*`, that the SPDX field, the package `LICENSE` file, the tarball file list, and the README `## License` section all agree. The `test-sdk` CI job runs it with `--pack`; `scripts/check-package-licenses.test.mjs` unit-tests it.
+- Check: `scripts/check-package-licenses.mjs` asserts, for every non-private `packages/*`, that the SPDX field, the package `LICENSE` file, the tarball file list, and the README `## License` section all agree. The `packages` CI job runs it with `--require-pack`; `scripts/check-package-licenses.test.mjs` unit-tests it.
 - Runtime packages: `apps/ade-cli/scripts/build-runtime-npm-packages.mjs` copies both the root `LICENSE` and `RUNTIME-EMBEDDING-EXCEPTION.md` into each of the six `@ade-dev/runtime-*` packages, and its pack assertion fails a tarball missing either. That script's packages live in `runtime-packages/`, which the check script never walks.
 
 A relicense is four coordinated edits per package plus the docs page. The check script exists so none of the five can be forgotten.

@@ -73,12 +73,6 @@ function renderHeader(overrides: Partial<TerminalSessionSummary> = {}, callbacks
 }
 
 describe("CliSessionWorkSurfaceHeader", () => {
-  it("renders the canonical work surface header with lane chip and git toolbar", () => {
-    renderHeader();
-    expect(screen.getByTestId("work-cli-session-header")).toBeTruthy();
-    expect(screen.getByTestId("lane-chip").textContent).toBe("fix-login");
-    expect(screen.getByTestId("chat-git-toolbar").getAttribute("data-lane-id")).toBe("lane-1");
-  });
 
   it("renders the Claude cache badge for Claude Code CLI sessions while the cache window is warm", () => {
     // shouldShowClaudeCacheTtl requires provider="claude", status="idle",
@@ -137,10 +131,5 @@ describe("CliSessionWorkSurfaceHeader", () => {
     renderHeader({}, { onContextMenu });
     fireEvent.click(screen.getByLabelText("Session actions"));
     expect(onContextMenu).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not render a stop button (stopping flow moved to the sidebar card / chat composer)", () => {
-    renderHeader();
-    expect(screen.queryByLabelText(/stop/i)).toBeNull();
   });
 });

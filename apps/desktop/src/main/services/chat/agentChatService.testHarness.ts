@@ -22,7 +22,6 @@ import type * as AcpHostModule from "./acpHost";
 import type * as TurnUsageReconcilersModule from "../usage/turnUsageReconcilers";
 import type * as PiSdkPoolModule from "./piSdkPool";
 import type * as PiInstallationModule from "../ai/piInstallation";
-import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "../cto/ctoStateService";
 import { createCtoMemoryService } from "../cto/ctoMemoryService";
 import {
@@ -93,6 +92,32 @@ async function waitForFakeTimers(
     if (options.realYield) await new Promise<void>((resolve) => realSetImmediate(() => resolve()));
   }
   throw lastError;
+}
+
+/**
+ * Runs `work` with fake timeouts, stepping them a quarter second at a time
+ * until it settles, then puts real timers back. For a Claude turn whose fake
+ * stream stays open after its result (as a live SDK query does): the turn
+ * then waits out the one-second post-result drain for a tail message, and
+ * stepping turns that second of sleep into a few microtask flushes. Stepping
+ * stops the moment `work` settles, so no later timer fires early.
+ */
+async function settleSteppingTimeouts<T>(work: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    let settled = false;
+    const pending = work().finally(() => { settled = true; });
+    pending.catch(() => {});
+    // At most 60 s of fake time (past any turn timeout these tests pass), so
+    // a turn that never settles fails here instead of spinning to the test timeout.
+    for (let elapsedMs = 0; !settled && elapsedMs < 60_000; elapsedMs += 250) {
+      await vi.advanceTimersByTimeAsync(250);
+    }
+    if (!settled) throw new Error("settleSteppingTimeouts: the work did not settle within 60 s of fake time");
+    return await pending;
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 const streamText = vi.fn();
@@ -206,6 +231,8 @@ const mockState = vi.hoisted(() => ({
   codexLineHandler: null as ((line: string) => void) | null,
   cursorSdkAcquireCalls: [] as Array<Record<string, unknown>>,
   cursorSdkSendCalls: [] as Array<Record<string, unknown>>,
+  /** Waiting on `cursorSendsReached`; settled as each send is recorded. */
+  cursorSendWaiters: [] as Array<{ count: number; resolve: () => void }>,
   cursorSdkPolicyUpdates: [] as Array<Record<string, unknown>>,
   cursorSdkPooled: null as any,
   /** Text pushed through `Run.steer()`, in call order. */
@@ -229,6 +256,8 @@ const mockState = vi.hoisted(() => ({
   piInstallation: null as null | Record<string, unknown>,
   cursorSendPromptGate: null as Promise<void> | null,
   cursorSendPromptError: null as unknown,
+  /** How many sends have thrown `cursorSendPromptError`. */
+  cursorSendPromptErrorThrows: 0,
   cursorSendPromptResult: null as unknown,
   onCursorSendPrompt: null as ((pooled: any) => void) | null,
   cursorAcquireErrorOnCall: null as number | null,
@@ -948,10 +977,21 @@ vi.mock("./cursorSdkPool", () => ({
         // test's ledger; see `mockState.generation`.
         if (acquiredGeneration === mockState.generation) {
           mockState.cursorSdkSendCalls.push(payload);
+          const sent = mockState.cursorSdkSendCalls.length;
+          mockState.cursorSendWaiters = mockState.cursorSendWaiters.filter((waiter) => {
+            if (sent < waiter.count) return true;
+            waiter.resolve();
+            return false;
+          });
         }
         mockState.onCursorSendPrompt?.(pooled);
         if (mockState.cursorSendPromptGate) await mockState.cursorSendPromptGate;
-        if (mockState.cursorSendPromptError) throw mockState.cursorSendPromptError;
+        // Only this test's sends fail: a send leaked by an earlier test that
+        // read it would recycle too and take an acquire slot this test armed.
+        if (mockState.cursorSendPromptError && acquiredGeneration === mockState.generation) {
+          mockState.cursorSendPromptErrorThrows += 1;
+          throw mockState.cursorSendPromptError;
+        }
         if (mockState.cursorSendPromptResult) return mockState.cursorSendPromptResult;
         return { id: "cursor-sdk-run-1", status: "finished" };
       }),
@@ -1056,6 +1096,7 @@ vi.mock("./droidSdkPool", () => ({
     };
   }),
   releaseDroidSdkConnection: vi.fn(),
+  isDroidSdkPooledAlive: vi.fn(() => true),
 }));
 
 // The Copilot SDK worker is a forked process: the pool is its boundary. The fake
@@ -1999,6 +2040,19 @@ function createService(overrides: Record<string, unknown> = {}) {
   return { service, logger, laneService, sessionService, projectConfigService, aiIntegrationService };
 }
 
+/**
+ * Resolves once this test has recorded `count` Cursor sends. It waits on the
+ * send itself, not a poll against the wall clock: a recycle re-send can take
+ * longer than a poll's budget on a loaded CI runner. Real timers only; a test
+ * that must advance fake timers to reach the send keeps `vi.waitFor`.
+ */
+function cursorSendsReached(count: number): Promise<void> {
+  if (mockState.cursorSdkSendCalls.length >= count) return Promise.resolve();
+  return new Promise((resolve) => {
+    mockState.cursorSendWaiters.push({ count, resolve });
+  });
+}
+
 async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
@@ -2296,6 +2350,7 @@ beforeEach(() => {
   mockState.codexLineHandler = null;
   mockState.cursorSdkAcquireCalls = [];
   mockState.cursorSdkSendCalls = [];
+  mockState.cursorSendWaiters = [];
   mockState.cursorSdkPolicyUpdates = [];
   mockState.cursorSdkPooled = null;
   mockState.cursorSdkSteerCalls = [];
@@ -2315,6 +2370,7 @@ beforeEach(() => {
   mockState.cursorSendParks = [];
   mockState.cursorSendPromptGate = null;
   mockState.cursorSendPromptError = null;
+  mockState.cursorSendPromptErrorThrows = 0;
   mockState.cursorSendPromptResult = null;
   mockState.onCursorSendPrompt = null;
   mockState.cursorAcquireErrorOnCall = null;
@@ -2383,6 +2439,7 @@ afterEach(async () => {
   // next test (the recycle-copy cancel notice becomes "turn failed").
   vi.useRealTimers();
   mockState.cursorSendPromptError = null;
+  mockState.cursorSendPromptErrorThrows = 0;
   mockState.cursorSteerError = null;
   mockState.cursorSteerOutcome = "complete_delivered";
   mockState.releaseCursorSendPrompt?.();
@@ -2434,6 +2491,7 @@ const flushCursorSdkSilenceRecycle = async (): Promise<void> => {
 
 
 export {
+  settleSteppingTimeouts,
   CLAUDE_MUTATING_BUILTIN_TOOLS,
   CLAUDE_READ_ONLY_TOOLS,
   CODEX_REPLAY_MAX_CHARS,
@@ -2513,7 +2571,6 @@ export {
   mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
-  openKvDb,
   os,
   parkCursorSend,
   parseAgentChatTranscript,
@@ -2546,6 +2603,7 @@ export {
   tmpHomeRoot,
   tmpRoot,
   turnDiffMockState,
+  cursorSendsReached,
   waitFor,
   waitForCondition,
   waitForEvent,

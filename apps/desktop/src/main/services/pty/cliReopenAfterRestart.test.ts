@@ -11,6 +11,7 @@ import {
   resetCliCrashReopenCount,
   takeCliSessionsToReopen,
 } from "./cliReopenAfterRestart";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 const DAY_MS = 24 * 60 * 60_000;
 const HOUR_MS = 60 * 60_000;
@@ -49,6 +50,41 @@ describe("CLI reopen after restart", () => {
     // A list older than the bound names work that is stale.
     recordCliSessionsToReopen(root, [{ sessionId: "cli-c", midTurn: true }], () => stoppedAt);
     expect(takeCliSessionsToReopen(root, 1_000, () => new Date(stoppedAt.getTime() + 2_000))).toEqual([]);
+
+    // One stop writes in two steps (a planned brain stop saves the chats, the
+    // terminals' teardown its CLIs): the list holds both.
+    recordCliSessionsToReopen(root, [{ sessionId: "chat-mine", midTurn: true, kind: "chat" }], () => stoppedAt);
+    recordCliSessionsToReopen(root, [
+      { sessionId: "chat-machine", midTurn: true, kind: "chat" },
+      { sessionId: "cli-e", midTurn: false },
+    ], () => stoppedAt);
+    // A runtime that is not the entry's owner leaves it, with its list's time,
+    // for the owner's next start.
+    expect(takeCliSessionsToReopen(root, DAY_MS, aMinuteLater, undefined, (entry) => entry.sessionId === "chat-machine"))
+      .toEqual([
+        { sessionId: "chat-mine", midTurn: true, kind: "chat" },
+        { sessionId: "cli-e", midTurn: false },
+      ]);
+    expect(takeCliSessionsToReopen(root, DAY_MS, aMinuteLater)).toEqual([
+      { sessionId: "chat-machine", midTurn: true, kind: "chat" },
+    ]);
+
+    // The left entries cannot be written back (the temp file's name is
+    // taken by a folder): the list goes back whole, and this runtime takes
+    // nothing from it, least of all the entry left for the other runtime.
+    recordCliSessionsToReopen(root, [
+      { sessionId: "chat-machine", midTurn: true, kind: "chat" },
+      { sessionId: "cli-f", midTurn: false },
+    ], () => stoppedAt);
+    const blockedWrite = path.join(resolveAdeLayout(root).cacheDir, `reopen-cli-after-restart.${process.pid}.json.${process.pid}.tmp`);
+    fs.mkdirSync(blockedWrite);
+    expect(takeCliSessionsToReopen(root, DAY_MS, aMinuteLater, undefined, (entry) => entry.sessionId === "chat-machine"))
+      .toEqual([]);
+    fs.rmdirSync(blockedWrite);
+    expect(takeCliSessionsToReopen(root, DAY_MS, aMinuteLater)).toEqual([
+      { sessionId: "chat-machine", midTurn: true, kind: "chat" },
+      { sessionId: "cli-f", midTurn: false },
+    ]);
 
     // A project removed from the machine forgets its list.
     recordCliSessionsToReopen(root, [{ sessionId: "cli-d", midTurn: false }], () => stoppedAt);

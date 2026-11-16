@@ -14,7 +14,19 @@ export type CtoHomeMachineRecord = {
   name: string;
   hostname: string | null;
   chosenAt: string;
+  /**
+   * The ADE Cloud computer the CTO lives on, when its home is one
+   * (`ctoCloudHome.ts`). Lets every surface wake it, and make a new one when
+   * the idle cleanup deleted it. Absent for the person's own machines.
+   */
+  cloudInstanceId?: string | null;
 };
+
+/** The ADE Cloud computer a home record names, or null for the person's own machine. */
+export function ctoHomeCloudInstanceId(record: CtoHomeMachineRecord | null | undefined): string | null {
+  const id = record?.cloudInstanceId;
+  return typeof id === "string" && id.trim().length > 0 ? id.trim() : null;
+}
 
 export function isCtoHomeMachineRecord(value: unknown): value is CtoHomeMachineRecord {
   if (!value || typeof value !== "object") return false;

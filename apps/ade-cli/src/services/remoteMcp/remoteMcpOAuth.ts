@@ -465,7 +465,7 @@ function appLine(request: AuthorizeRequest, target: SignInTarget): string {
   }
   const names = [...new Set(target.machineNames.filter((name) => name.trim()))];
   const which = names.length ? `: ${computerList(names)}` : "";
-  return `<p class="sub"><strong>${appName}</strong> (${host}) wants to use your <strong>ADE account</strong>, on every computer you include in ADE MCP${which}.</p>`;
+  return `<p class="sub"><strong>${appName}</strong> (${host}) wants to use your <strong>ADE account</strong>, on every machine you include in ADE MCP${which}.</p>`;
 }
 
 /** Step 1: the app sent the person here. Signing in to ADE is the only way on. */

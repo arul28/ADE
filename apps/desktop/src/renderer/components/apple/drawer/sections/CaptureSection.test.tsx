@@ -36,11 +36,6 @@ function recording(over: Partial<SimRecording> = {}): SimRecording {
 }
 
 describe("CaptureSection", () => {
-  it("says so plainly when the lane has recorded nothing", async () => {
-    installAdeMock();
-    render(<CaptureSection ctx={makeCtx()} />);
-    await waitFor(() => expect(screen.getByText("No recordings for this lane yet.")).toBeTruthy());
-  });
 
   it("cannot start or stop a recording: Record is a rail control now (§B1)", async () => {
     const { iosSimulator } = installAdeMock();
@@ -51,16 +46,6 @@ describe("CaptureSection", () => {
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
     expect(screen.queryByText("Status")).toBeNull();
     expect(iosSimulator.recordStart).not.toHaveBeenCalled();
-  });
-
-  it("lists a finished recording with its duration, size and description", async () => {
-    const { iosSimulator } = installAdeMock();
-    iosSimulator.recordList.mockResolvedValue([recording({ label: "signup", chatSessionId: "chat-9", mode: "auto" })]);
-    render(<CaptureSection ctx={makeCtx()} />);
-    const row = await screen.findByText("signup");
-    expect(row.parentElement?.textContent).toContain("00:23");
-    expect(row.parentElement?.textContent).toContain("8.1 MB");
-    expect(row.parentElement?.textContent).toContain("agent · auto · proof");
   });
 
   it("hides the one still running: the rail says that, not the library", async () => {

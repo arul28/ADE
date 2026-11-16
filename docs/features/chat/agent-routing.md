@@ -18,7 +18,6 @@ where the machinery lives.
 | `apps/desktop/src/main/services/chat/claudeReplayOverflowRecovery.ts` | Claude-only repair for a handoff replay that does not fit, as one factory taking every dependency by injection (`createClaudeReplayOverflowRecovery`). Owns `TranscriptReplayOrigin` + `normalizeTranscriptReplayOrigin`, the `ReplayForkProvenance` shape, the `CLAUDE_REPLAY_OVERFLOW_MIN_BUDGET_CHARS` floor (2,000), and the four entry points the chat service calls: `noteConsumedReplay` / `forgetConsumedReplay`, `recoverFromOverflow`, `noteRetrySucceeded`, and `reportRetryFailed`. The consumed and staged records live in `WeakMap`s keyed by the runtime, so they die with it rather than being persisted or leaking across a rebind. |
 | `apps/desktop/src/main/services/chat/providerThreadContinuity.ts` | Which provider-side thread a chat is talking to, and whether it has moved. `persistedPointerState()` is the one complete pointer mapping across every provider's thread field (`threadId`, `sdkSessionId`, `providerSessionId`, `droidSdkSessionId`, `piSessionId`/`piSessionFile`, `cursorSdkAgentId`/`cursorCloudAgentId`, `acpSessionId`) and is shared with the thread-pointer ledger, so the two cannot disagree; `providerThreadRef()` renders it, with `UNOPENED_PROVIDER_THREAD_REF` (`"none"`) meaning unknown rather than absent, and `providerThreadContinuityChanged()` is the verdict. On top of it sits `StagedSection` and its four operations — `newStagedSection()`, `armIfStale()`, `resetStagedSection()` (the thread is gone; re-stage) and `suppressStagedSection()` — which decide whether a large static block or the conversation tail rides a turn at all. The CTO's ~21 KB context block is the heaviest caller; see [CTO](../cto/README.md). |
 | `apps/desktop/src/main/services/chat/sessionTurnHealth.ts` | A session's durable turn health, as pure functions over plain records — answered from what is already on disk rather than from a provider, so it outlives a restart. `normalizeLastTurnFailure()` and `normalizeSessionContextHealth()` read the persisted records back, `shouldAdviseSessionRotation()` is the occupancy-streak verdict (`AGENT_CHAT_CONTEXT_ROTATION_PCT` / `_TURNS`), and the `nextSessionTurnHealth()` reducer is what `recordSettledTurnHealth` spends on every `done`. It reports whether the record actually moved, compared field by field rather than by `JSON.stringify`, because a false "changed" costs a disk write on every settled turn of every chat. |
-| `apps/desktop/src/main/services/chat/identityThreadRotation.ts` | The way out of an identity thread that is finished, over an injected deps bag (the same shape `claudeReplayOverflowRecovery.ts` uses): `getSessionTurnHealth()`, `getCtoThreadHealth()`, `distilIdentityHandoff()`, and `startFreshIdentitySession()`, which retires a full thread and opens a clean one carrying the distillation. Identity threads are the CTO's; the product behaviour is in [CTO › One thread, and the way out of one that is finished](../cto/README.md#one-thread-and-the-way-out-of-one-that-is-finished). |
 | `apps/desktop/src/shared/cursorModes.ts` | Canonical Cursor mode vocabulary and compatibility mapping from the legacy ADE permission field; permission-only full-auto/plan launches persist the native mode that the UI and later clients read. |
 | `apps/desktop/src/main/services/chat/cursorModelSelection.ts` | Turns a chat's Cursor effort, Fast/tier, and model options into `ModelSelection.params`, for local sends, cloud creates, and cloud follow-ups. Reads the catalog that `cursorModelsDiscovery.ts` owns. See "Model params: local, cloud, and model options". |
 | `apps/desktop/src/main/services/chat/servedModelMismatch.ts` | Decides whether a served model is another model (`isServedModelMismatch`) or another route (`isServedRouteMismatch`: a different upstream is always a mismatch). |
@@ -50,7 +49,7 @@ for vendored runtimes without changing the union.
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, ADE's pinned Claude Code binary (with the [fall-forward](../onboarding-and-settings/agent-tools-cache.md#claude-fall-forward) override when Anthropic refuses the pin), SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
 | `codex` | Pinned `@openai/codex` 0.167.0 `codex app-server` subprocess, JSON-RPC protocol, shared by every chat whose process would launch identically (see [One app-server for many Codex chats](#one-app-server-for-many-codex-chats)). Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); the shared process in `codexAppServerPool.ts`; executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
-| `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
+| `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so a local turn silent for 90 s raises the shared "Cursor hasn't answered" card (Restart / Keep waiting), and a transport error before any event recycles and re-sends once — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `copilot` | ADE's pinned Copilot runtime (`copilot` tools-cache pin, version-paired with `@github/copilot-sdk`) driven through `@github/copilot-sdk` over stdio. Each Copilot chat gets its own forked worker. Workers are keyed by the CLI path, `COPILOT_HOME`, and the environment, which carries the chat id. The model list is `client.listModels()`; an Auto-only plan shows one `auto` model. Permissions use ADE's five levels (plan, ask, assisted, auto-edit, full-auto). Background utility tasks run on a session that never starts a user MCP server. | `copilotSdkPool.ts`, `copilotSdkWorker.ts`, `copilotSdkProtocol.ts`, `copilotSdkEventMapper.ts`, `copilotModelsDiscovery.ts`, `ai/copilotSdkLoader.ts`; the Copilot branch of `agentChatService.ts`. Full design: [copilot-sdk-provider.md](copilot-sdk-provider.md). |
 | `devin` | ADE's pinned `devin` CLI spawned as `devin acp` over the shared ACP host (JSON-RPC stdio). Devin Cloud chats use the same CLI login over the cloud relay, `devin acp --cloud`, listed and launched through the provider-neutral cloud agents service. The same provider id covers the tracked `devin` CLI for PTY sessions. | `acpHost/acpDialects/devin.ts`, `acpHost/acpDialects/devinCloud.ts`; cloud listing in `services/chat/cloudAgentsService.ts` and `devinCloudDirectory.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The adapter reports cumulative turn token usage, live context occupancy, provider-reported compaction, and Factory subscription account identity; mission-worker token usage is derived from the worker's bounded local settings file. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
@@ -806,6 +805,20 @@ Two independent controls:
 - `AgentChatCodexConfigSource` -- `flags | config-toml`. When
   `config-toml`, ADE defers both controls to the project's
   `.codex/config.toml`.
+
+Codex commands reach the network in every chat mode ADE sets and in a
+terminal's Default and Edit (owner's decision, 2026-11-16). Codex's own
+default keeps `read-only` and `workspace-write` offline, so `gh`,
+`npm install` and `git push` used to work only in Full auto. Each chat turn
+sends `sandboxPolicy: { type, networkAccess: true }` (`codexTurnSandboxPolicy`).
+A terminal Codex gets its flags from `codexSandboxCliArgs` in
+`shared/pinnedToolSpawnEnv.ts`: `-c sandbox_workspace_write.network_access=true`
+for `workspace-write`. Plan in a terminal keeps Codex's own
+`--sandbox read-only`, offline: its only network switch is a custom permission
+profile, and an organization's managed Codex policy (requirements.toml, MDM, a
+ChatGPT workspace) that doesn't list it makes Codex fall back to the policy's
+default, which can be writable. The file limits are unchanged, and
+`config-toml` still leaves both to the person's config.
 
 The chat adapter translates ADE's persisted kebab-case approval/sandbox
 values into the Codex app-server wire format at the JSON-RPC boundary:
@@ -1613,9 +1626,9 @@ worker marks that run's `status` events, and the status-text match
 (`detectCompactionSignalText`) stays quiet.
 `ADE_CURSOR_PRECOMPACT_HOOK=0` in the worker environment, or
 `CursorSdkWorkerInit.preCompactHook: false`, removes the entry and turns the
-path off. `cursorSdkPreCompactContract.test.ts` reads the installed SDK's `cjs`
-and `esm` dist. It fails with "The Cursor SDK changed its undocumented
-PreCompact hook" and names the step or field that disappeared.
+path off. The hook's step and fields are undocumented, and no check reads the
+installed SDK. If an SDK bump drops one, compaction falls back to the
+status-text match.
 
 `done.account` is always `{ provider: "cursor", kind: "subscription" }`, because
 every Cursor run, local or cloud, bills the signed-in Cursor plan. The worker
@@ -2287,25 +2300,35 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
 
 1. `sessionProfile: "persistent_identity"` drives a distinct
    `ChatSurfaceProfile` in the UI.
-2. Identity and recent context are reconstructed from `ctoStateService`
-   on session start and re-injected via `buildReconstructionContext()`.
+2. Identity, notes, open work and the live project state are rebuilt from
+   `ctoStateService` into the volatile turn prefix on every send, and the
+   static prompt block is staged once per provider thread.
 3. The CTO system prompt is built from one immutable doctrine plus
-   environment knowledge. The doctrine carries the CTO's voice and its
-   ADE-product-help rules; there is no per-user personality overlay to
-   layer on top. See `ctoStateService.ts`.
+   environment knowledge. The doctrine carries the CTO's voice, its
+   precision rules and its ADE-product-help rules; the `focused`,
+   `friendly` and `playful` personalities only adjust the tone, never the
+   rules. See `ctoStateService.ts`.
 4. Extra tooling: CTO sessions receive `ctoOperatorTools` (including the
-   `saveMemory` / `searchMemory` / `readMemory` memory tools) and Linear
-   tools when connected. `createCtoRuntimeToolMap` registers them on the
-   live session through each provider's tool transport — an `ade-cto` SDK
-   MCP server (Claude), the `ade_cto` dynamic-tool namespace (Codex), or a
-   dedicated HTTP MCP lease (Cursor / Droid / OpenCode). See
+   `remember` / `forget` / `trackWork` / `finishWork` / `readHistory`
+   memory tools) and Linear tools when connected. `createCtoRuntimeToolMap`
+   registers them on the live session through each provider's tool
+   transport — an `ade-cto` SDK MCP server (Claude), the `ade_cto`
+   dynamic-tool namespace (Codex), or a dedicated HTTP MCP lease (Cursor /
+   Droid / OpenCode). See
    [tool-system](tool-system.md#registration-on-a-live-session).
 5. Pinned permission mode: `normalizeIdentityPermissionMode` in
    `identitySessionPolicy.ts` pins the CTO to `full-auto` on every
    provider. The mode is not a default a caller can override.
    `ensureIdentitySession` re-normalizes the session before every turn,
    so a mode written once is snapped back.
-6. Work the CTO launches never lands on the primary lane.
+6. The CTO's provider thread is disposable. `refreshCtoProviderThread` tears
+   down the runtime, forgets every provider pointer, re-stages the static
+   prompt and conversation tail, and lets the next send open a new thread on
+   the same ADE session. It runs when a settled turn is at or past 55%
+   occupancy, after a compaction, after a context overflow, on a model
+   fallback, or when the person asks. There is no thread rotation and no
+   second ADE session.
+7. Work the CTO launches never lands on the primary lane.
    `resolveCtoExecutionLane` honors an explicit `laneId` and otherwise
    creates a dedicated lane; it has no fallback to the CTO session's
    lane, because that lane is the project's primary lane. The capability
@@ -2313,11 +2336,11 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
    thing in the first place. Mutating git tools follow the same rule
    through `requireMutationLaneId`, which refuses to default at all. See
    [CTO](../cto/README.md#where-cto-launched-work-runs).
-7. Creating the CTO thread seeds one real, visible opening user turn
+8. Creating the CTO thread seeds one real, visible opening user turn
    (`seedCtoIntroTurn`) so a first-run thread is not blank. It fires only
    on creation, once per project, and is recorded in CTO onboarding
    state.
-8. Because the thread is hidden from every session roster, its
+9. Because the thread is hidden from every session roster, its
    "needs you" state is read through the dedicated read-only
    `getCtoAttention` probe rather than the shared attention summary.
 

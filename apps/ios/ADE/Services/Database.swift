@@ -239,6 +239,13 @@ final class DatabaseService {
   /// version on every relay tick and heartbeat: through the queue it waited
   /// for the apply (55-120 ms frames).
   private let publishedDbVersion = OSAllocatedUnfairLock(initialState: 0)
+  /// Moves on each `resetReplica`, inside the access queue. A write whose
+  /// rows came before an account change passes the epoch it read; the write
+  /// is dropped inside the queue when the replica was reset in between, so
+  /// the former account's rows cannot reach the new, empty replica.
+  /// Readable without the access queue, like `publishedDbVersion`.
+  private let replicaEpochState = OSAllocatedUnfairLock(initialState: 0)
+  var replicaEpoch: Int { replicaEpochState.withLock { $0 } }
   private var cachedSiteIdHex = ""
   private var cachedSiteIdBlob = Data()
   private var shouldCaptureLocalChanges = true
@@ -286,12 +293,50 @@ final class DatabaseService {
   }
 
   func close() {
-    withLock {
-      if let db {
-        sqlite3_close(db)
-        self.db = nil
+    withLock { closeLocked() }
+  }
+
+  private func closeLocked() {
+    if let db {
+      sqlite3_close(db)
+      self.db = nil
+    }
+  }
+
+  /// Deletes this phone's replica and opens an empty one under a new site id,
+  /// as a fresh install does. Used when an account leaves the phone: every
+  /// row its computers synced (sessions, chats, lanes, PRs, file caches) goes
+  /// at once. A file delete writes no change rows, so nothing of it can sync
+  /// back to a machine; a machine still paired by code sends its data again
+  /// to the new site.
+  func resetReplica() throws {
+    try withLock {
+      replicaEpochState.withLock { $0 &+= 1 }
+      closeLocked()
+      for suffix in ["", "-wal", "-shm"] {
+        let url = URL(fileURLWithPath: dbURL.path + suffix)
+        if fileManager.fileExists(atPath: url.path) {
+          try fileManager.removeItem(at: url)
+        }
+      }
+      if fileManager.fileExists(atPath: siteIdURL.path) {
+        try fileManager.removeItem(at: siteIdURL)
+      }
+      syncTableInfoCache = [:]
+      activeProjectIdOverride = nil
+      shouldCaptureLocalChanges = true
+      skippedUnknownSyncTables = []
+      do {
+        try openConnection(at: dbURL)
+        try migrateAndPrepare()
+        initializationError = nil
+      } catch {
+        closeLocked()
+        initializationError = error as NSError
+        throw error
       }
     }
+    notifyDidChange()
   }
 
   func localSiteId() -> String {
@@ -398,8 +443,18 @@ final class DatabaseService {
     return rows
   }
 
-  func applyChanges(_ changes: [CrsqlChangeRow]) throws -> ApplyRemoteChangesResult {
-    try withLock { try applyChangesLocked(changes) }
+  /// `replicaEpoch`: the epoch read when the batch was accepted. A batch of a
+  /// connection from before a `resetReplica` throws `CancellationError`.
+  func applyChanges(_ changes: [CrsqlChangeRow], replicaEpoch: Int? = nil) throws -> ApplyRemoteChangesResult {
+    try withLock {
+      try requireReplicaEpochLocked(replicaEpoch)
+      return try applyChangesLocked(changes)
+    }
+  }
+
+  private func requireReplicaEpochLocked(_ expected: Int?) throws {
+    guard let expected, expected != replicaEpoch else { return }
+    throw CancellationError()
   }
 
   private func applyChangesLocked(_ changes: [CrsqlChangeRow]) throws -> ApplyRemoteChangesResult {
@@ -2764,7 +2819,7 @@ final class DatabaseService {
     cachedSiteIdBlob = Data(hex: desiredSiteId) ?? Data()
     try forceSiteId(desiredSiteId)
     if readCurrentSiteId() != desiredSiteId {
-      close()
+      closeLocked()
       try openConnection(at: dbURL)
       try exec("pragma journal_mode = wal")
       try exec("pragma synchronous = normal")
@@ -3627,8 +3682,12 @@ final class DatabaseService {
     ) ?? false
   }
 
-  func upsertMobileProjectCache(_ project: MobileProjectSummary) throws {
-    try withLock { try upsertMobileProjectCacheLocked(project) }
+  /// `replicaEpoch`: as for `applyChanges`.
+  func upsertMobileProjectCache(_ project: MobileProjectSummary, replicaEpoch: Int? = nil) throws {
+    try withLock {
+      try requireReplicaEpochLocked(replicaEpoch)
+      try upsertMobileProjectCacheLocked(project)
+    }
   }
 
   private func upsertMobileProjectCacheLocked(_ project: MobileProjectSummary) throws {

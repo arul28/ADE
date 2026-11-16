@@ -71,7 +71,7 @@ them to the provider adapter:
 - **Spawned helpers:** there is no separate orchestration mode. A
   coordinating agent spawns its own helpers from any thread with
   `ade chat create --type subagent --provider <p> --model <m>
-  [--instance <id>] [--preset <id>]`, and each child is an ordinary agent
+  [--instance <id>] [--custom-provider <name>]`, and each child is an ordinary agent
   with the same runtime, permissions, and tools.
 
 ### ADE CLI path
@@ -206,16 +206,16 @@ calls return a structured error with retry-after guidance.
 
 ## Capability mode
 
-When a session starts, the ADE CLI records the resolved
-`capabilityMode` for the session log:
+When a session starts, ADE records the resolved `capabilityMode` on the
+chat session:
 
 - `full_tooling` -- the session connected to the ADE CLI and the
   action list resolved successfully.
 - `fallback` -- the ADE CLI/action bridge was unavailable; only the
   provider adapter's built-in tools are available.
 
-`agentChatService` persists this mode on the session log entry so
-history shows which mode the agent actually ran in.
+`agentChatService` persists this mode on the session so a chat summary
+shows which mode the agent actually ran in.
 
 ## Tool execution flow
 
@@ -301,7 +301,9 @@ gives it an ordered fallback chain when `command -v ade` fails:
 For agents a brain launches, `ADE_CLI_PATH` is a shim written by
 `createHeadlessAdeCliAgentEnv` (`apps/ade-cli/src/bootstrap.ts`, body from
 `apps/ade-cli/src/services/runtime/adeCliShim.ts`) under
-`<tmpdir>/ade-cli-shims/<hash>/`. It names the brain that wrote it: when
+`<tmpdir>/ade-cli-shims/<hash>/` (`ade-cli-shims-<uid>` on Linux, whose `/tmp`
+is shared and where another user's folder is private to them:
+`defaultCliShimsRoot`). It names the brain that wrote it: when
 the caller's env sets neither `ADE_HOME` nor `ADE_RUNTIME_SOCKET_PATH`, it
 defaults both to that brain's (`ade serve` records the socket it serves in
 `ADE_RUNTIME_SOCKET_PATH`, including a launchd brain started with only

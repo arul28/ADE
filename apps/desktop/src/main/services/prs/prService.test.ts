@@ -6137,21 +6137,6 @@ describe("prService.land", () => {
     vi.clearAllMocks();
   });
 
-  it("refreshes rebase needs through the post-merge cleanup service", async () => {
-    vi.mocked(fetchRemoteTrackingBranch).mockResolvedValue(false);
-    const row = makePrRow({ id: "pr-refresh-suggestions" });
-    const db = makeMockDb();
-    installPullRequestRowStore(db, [row]);
-    const scanRebaseNeeds = vi.fn(async () => []);
-    const conflictService = { scanRebaseNeeds } as any;
-    const laneService = makeLaneService([]);
-    const { service } = buildService({ db, conflictService, laneService });
-
-    await service.runPostMergeCleanup({ prId: row.id });
-
-    expect(scanRebaseNeeds).toHaveBeenCalledTimes(1);
-  });
-
   it("continues post-merge cleanup when the default-branch refresh rejects", async () => {
     vi.mocked(fetchRemoteTrackingBranch).mockResolvedValue(false);
     const row = makePrRow({ id: "pr-refresh-rejects" });

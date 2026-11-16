@@ -142,6 +142,23 @@ private func hubKeyWindowScene() -> UIWindowScene? {
   return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
 }
 
+extension View {
+  /// Sets `up` while the software keyboard covers the bottom of the screen:
+  /// the view's bottom safe area then runs far past what the window keeps
+  /// there (a home indicator, or the outer display's camera held sideways).
+  /// A hardware keyboard's short bar does not count. Read from the layout, so
+  /// a keyboard that a popover or a pose change hid never leaves it set.
+  func hubReadsSoftwareKeyboard(_ up: Binding<Bool>) -> some View {
+    onGeometryChange(for: Bool.self) { proxy in
+      let windowInset = hubKeyWindowScene()?.windows.first?.safeAreaInsets.bottom ?? 0
+      return proxy.safeAreaInsets.bottom > max(100, windowInset + 60)
+    } action: { value in
+      guard value != up.wrappedValue else { return }
+      withAnimation(.easeOut(duration: 0.2)) { up.wrappedValue = value }
+    }
+  }
+}
+
 private struct HubComposerScreenBottom: ViewModifier {
   /// What the display keeps at the bottom: a home indicator (the column runs
   /// past it), and on the Duo's outer display held landscape the camera in
@@ -320,7 +337,7 @@ func hubConnectionStatus(
   let liveCount = (health.transport == .connected ? 1 : 0)
     + machineFleet.machines.filter { $0.state == .live }.count
   let label = health.transport == .connected && liveCount > 1
-    ? "\(liveCount) machines"
+    ? "\(liveCount) computers"
     : machineName ?? transportWord
   let switching = syncService.isProjectSwitching
     ? syncService.projects.first(where: { syncService.isSwitchingProject($0) })?.displayName
@@ -1173,7 +1190,9 @@ struct HubProjectTile: View, Equatable {
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
               .frame(maxWidth: .infinity, alignment: .leading)
-            trailingMark
+            // The computer chip sits on the bottom line here: beside the
+            // name it left a narrow tile (the tent pose) one letter.
+            if let selection { HubSelectionMark(selected: selection) }
           }
           // Under the row, not beside the name: the chip or the selection
           // mark would leave the subtitle a few characters.
@@ -1222,10 +1241,16 @@ struct HubProjectTile: View, Equatable {
               .lineLimit(presentation.metaLineIsNote ? 2 : 1)
               .fixedSize(horizontal: false, vertical: presentation.metaLineIsNote)
           }
+          .layoutPriority(1)
           Spacer(minLength: 4)
+          // A short tile has no room for the chip and the chevron beside the
+          // lane count; the chip takes the chevron's place (the tile itself
+          // is the button).
+          let chipOnBottomLine = isShort && selection == nil && showsMachineChip
+          if chipOnBottomLine { machineChip }
           if presentation.isSwitching {
             ProgressView().controlSize(.small)
-          } else if selection == nil {
+          } else if selection == nil, !chipOnBottomLine {
             ADESettingsChevron()
           }
         }
@@ -1338,7 +1363,16 @@ struct HubProjectTile: View, Equatable {
   private var trailingMark: some View {
     if let selection {
       HubSelectionMark(selected: selection)
-    } else if machineLabel != nil, machineCount > 0 {
+    } else {
+      machineChip
+    }
+  }
+
+  private var showsMachineChip: Bool { machineLabel != nil && machineCount > 0 }
+
+  @ViewBuilder
+  private var machineChip: some View {
+    if showsMachineChip {
       HubProjectMachineChip(count: machineCount, live: machineLive)
     }
   }
@@ -1346,7 +1380,10 @@ struct HubProjectTile: View, Equatable {
   private var tileSpokenLabel: String {
     var parts = [project.displayName]
     if let subtitle { parts.append(subtitle) }
-    if let machineLabel { parts.append("on \(machineLabel)") }
+    // Spoken like the chip: a count, never a machine name.
+    if machineLabel != nil, machineCount > 0, !presentation.metaLineIsNote {
+      parts.append(machineCount == 1 ? "on 1 computer" : "on \(machineCount) computers")
+    }
     if let machineLive, machineCount > 0 { parts.append("\(machineLive) of \(machineCount) online") }
     if !presentation.stateCounts.isEmpty { parts.append(hubStateSummaryLabel(presentation.stateCounts)) }
     parts.append(presentation.metaLine)
@@ -1512,9 +1549,6 @@ struct HubLaneSection: View, Equatable {
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(laneTint)
             .lineLimit(1)
-          if isWorkRemoteLaneId(lane.id) {
-            WorkRemoteLaneGlyph()
-          }
           Spacer(minLength: 6)
           // The whole trailing edge, in the same glyph+count language as the
           // project header above it. It replaced a live summary followed by a
@@ -1685,7 +1719,7 @@ struct HubEmptyProjectsCard: View {
       Image(systemName: "folder.badge.plus")
         .font(.system(size: 22, weight: .regular))
         .foregroundStyle(ADEColor.textMuted)
-      Text("No projects on \(syncService.hostName ?? "this machine")")
+      Text("No projects on \(syncService.hostName ?? "this computer")")
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.textPrimary)
       Text("Add a project to start vibecoding from your phone.")
@@ -1857,12 +1891,12 @@ struct HubNoMachineState: View {
         attemptMachineName: syncService.connectAttemptTarget?.machineName,
         hostDisplayName: machineDisplayName
       )
-      return "Cannot reach \(subject ?? "machine")"
+      return "Cannot reach \(subject ?? "the computer")"
     }
     if hasSavedMachine {
-      return "Disconnected from \(machineDisplayName ?? "saved machine")"
+      return "Disconnected from \(machineDisplayName ?? "the saved computer")"
     }
-    return "No machine attached"
+    return "No computer connected"
   }
 }
 

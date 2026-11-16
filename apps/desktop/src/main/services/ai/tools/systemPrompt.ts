@@ -67,7 +67,7 @@ const nativeSubagentGuidanceByFamily: Record<NativeSubagentFamily, string> = {
   droid: "For short-lived delegation whose result belongs in this Droid thread, prefer Droid's native worker/subagent capability.",
   copilot: "Copilot has no native subagent tool here. Delegate with an ADE subagent chat.",
   opencode: "For short-lived delegation whose result belongs in this OpenCode thread, prefer OpenCode's native `task` tool.",
-  pi: "Pi has no native subagent tool here. Delegate with `ade new chat --mode chat --prompt \"<task>\"`: it is your subagent and reports back. Keep the brief self-contained.",
+  pi: "Pi has no native subagent tool here. Delegate with `ade new chat --mode chat --provider <p> --model <m> --prompt \"<task>\"`: it is your subagent and reports back. Keep the brief self-contained.",
 };
 
 export function buildNativeSubagentRoutingGuidance(runtime: AdeRuntimeKind): string {

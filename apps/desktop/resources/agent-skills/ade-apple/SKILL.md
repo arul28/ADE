@@ -10,9 +10,10 @@ Electron app or a web page, the **ade-computer-use** skill picks the right
 surface.
 
 Drive the lane's Apple simulator with `"$ADE_CLI_PATH" apple <command>`.
-`$ADE_CLI_PATH` is the CLI of the ADE that launched you and already targets
-its brain, so your calls and the desktop's Apple Development tool share one
-session. A bare `ade` goes through PATH and can reach a different ADE.
+`$ADE_CLI_PATH` is the CLI of the ADE that launched you, so your calls and the
+desktop's Apple Development tool share one session. A bare `ade` goes through
+PATH and can reach a different ADE. Commands below written as `ade …` mean
+`"$ADE_CLI_PATH" …` too.
 
 The pixels come from a vendored Swift helper (`ade-sim-helper`) reading the
 device framebuffer. There is no Screen Recording grant, no Simulator window to
@@ -27,8 +28,10 @@ feature that no longer exists.
   'apple'", "Domain 'apple' is unavailable", or a runtime version mismatch.
   Do not add `--socket`: `"$ADE_CLI_PATH"` already names the right one.
 - **Never open or script the Simulator app.** No `open -a Simulator`, no
-  AppleScript or System Events. ADE drives the device directly; the Simulator
-  window is not needed and adds nothing.
+  AppleScript or System Events, no `launch --foreground` or
+  `open-device --window`. ADE drives the device directly and shows it in its
+  own stream. Once Simulator.app runs, every booted simulator (every lane's)
+  gets a window on the person's screen.
 - **Never capture proof with `xcrun simctl io … screenshot` or
   `recordVideo`.** `apple screenshot` and `apple record-start` /
   `record-stop` file proof to the lane automatically. See below for why the
@@ -137,6 +140,11 @@ claim the drawer session. Add `--open-drawer` when a human asked to watch.
 So you do **not** run `xcodebuild` by hand to put an app on a screen, and you
 do not need to know the scheme. Run `"$ADE_CLI_PATH" apple apps --text` first only
 when you must choose between several targets, then pass `--target <id>`.
+A project that has only a `project.yml` (XcodeGen) is generated before the
+build when `xcodegen` is installed there; if it is not, the error says how.
+From Windows or Linux, `ade devices use "ios@<Mac>"` (or `--machine "<Mac>"`)
+reaches a Mac's simulator; see ade-computer-use `references/other-machines.md`.
+There `screenshot --out <path>` copies the shot back to this machine.
 
 Use `--no-build` when the app is already installed and you only want it in
 front. Use `relaunch` or `terminate` for an app that is already there.
@@ -222,8 +230,10 @@ free" is almost never true. Runtimes and devices in full:
 
 - `start` is the one-step bring-up: make a device when the lane has none, boot it
   if it is off, wait for the boot, then stream. Prefer it. `start --udid` works
-  only for the device this lane already holds.
-- `stop` powers the device **off**. `shutdown` only ends this chat's session
+  only for the device this lane already holds. Its answer says whether it made
+  a new simulator or attached an installed one.
+- `stop` powers the device **off** and keeps it registered as the lane's (the
+  next `start` boots it; ADE deletes a device it made with the lane). `shutdown` only ends this chat's session
   and leaves the simulator running — the two are not the same, and a verb named
   `stop` that left a booted device behind was a real bug.
 - `device-create`, `device-attach`, `device-delete`, `device-detach`, what
@@ -378,7 +388,7 @@ not a detail.
 "$ADE_CLI_PATH" apple record-start --overlays on --label "signup" --text
 "$ADE_CLI_PATH" apple record-stop --keep --text
 "$ADE_CLI_PATH" apple record-list --text
-"$ADE_CLI_PATH" apple record-delete --id <id> --text
+"$ADE_CLI_PATH" apple record-delete --id <id> --text   # the proof record-stop filed stays: ade proof rm <id>
 ```
 
 1. **Your input starts a recording; the user's never does.** Any input from

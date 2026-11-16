@@ -203,7 +203,6 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
 
   // ── Unified ADE work feed ─────────────────────────────────
   "chat.session":     { label: "Chat Session",    category: "session", iconName: "ChatCircleText", description: "ADE chat session activity",      importance: "medium" },
-  "cto.session":      { label: "CTO Session",     category: "session", iconName: "Strategy",       description: "CTO coordinator session update", importance: "medium" },
 
   // ── Noise-level events (hidden by default) ─────────────────
   "tool_call":         { label: "Tool Call",         category: "system", iconName: "Wrench",          description: "Tool invocation",              importance: "noise" },

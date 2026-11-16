@@ -257,7 +257,7 @@ export function createRemoteMcpStore(args: {
         ...(input.clientKey ? { clientKey: input.clientKey } : {}),
         ...(input.machineKey && isRemoteMcpMachineKey(input.machineKey) ? { machineKey: input.machineKey } : {}),
       };
-      if (input.machineKey && !connection.machineKey) throw new Error("ADE couldn't tell which computer this connection is for.");
+      if (input.machineKey && !connection.machineKey) throw new Error("ADE couldn't tell which machine this connection is for.");
       save(connection);
       for (const old of replaced) drop(old.id);
       return { token, connection: summarize(connection) };

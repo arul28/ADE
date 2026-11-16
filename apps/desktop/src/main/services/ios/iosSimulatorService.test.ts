@@ -10,7 +10,6 @@ import {
   clampStreamBitrateKbps,
   clampStreamFps,
   createIosSimulatorService,
-  IOS_SIMULATOR_STREAM_BACKEND,
   IosSimulatorOwnedBySessionError,
   parseXcodePreviewWindows,
   shouldOpenSimulatorAppForLaunch,
@@ -187,12 +186,9 @@ afterEach(() => {
 
 describe("iosSimulatorService Simulator.app live view defaults", () => {
   it("documents launch and stream backend defaults with pure helpers", () => {
-    expect(shouldOpenSimulatorAppForLaunch(undefined)).toBe(true);
+    expect(shouldOpenSimulatorAppForLaunch(undefined)).toBe(false);
     expect(shouldOpenSimulatorAppForLaunch(true)).toBe(false);
     expect(shouldOpenSimulatorAppForLaunch(false)).toBe(true);
-    // One engine now: the vendored Swift helper. The name survives so a status
-    // read still says which engine produced the pixels; it just has one answer.
-    expect(IOS_SIMULATOR_STREAM_BACKEND).toBe("helper-h264");
   });
 
   it("answers a usable frame rate for every input", () => {
@@ -213,17 +209,6 @@ describe("iosSimulatorService Simulator.app live view defaults", () => {
 });
 
 describe("iosSimulatorService cross-platform safety", () => {
-  it("constructs without throwing on non-darwin platforms", () => {
-    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-    expect(() => {
-      const service = createIosSimulatorService({
-        projectRoot: os.tmpdir(),
-        logger: noopLogger,
-      });
-      service.dispose();
-    }).not.toThrow();
-    platformSpy.mockRestore();
-  });
 
   it("reports supported=false and structured tool statuses on non-darwin", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
@@ -814,7 +799,7 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
     }
   });
 
-  it("opens Simulator.app by default during launch", async () => {
+  it("opens Simulator.app during launch only when asked (keepSimulatorInBackground: false)", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
       if (command === "ps") return { stdout: "", stderr: "" };
@@ -847,6 +832,7 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
         appBundlePath: "/tmp/Example.app",
         bundleId: "com.example.app",
         build: false,
+        keepSimulatorInBackground: false,
       });
       expect(session.keepSimulatorInBackground).toBe(false);
       expect(spawnMock).toHaveBeenCalledWith("open", ["-a", "Simulator"], { detached: true, stdio: "ignore" });
@@ -859,7 +845,7 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
     }
   });
 
-  it("leaves Simulator.app in the background when explicitly requested", async () => {
+  it("leaves Simulator.app closed when the caller says nothing (a raw action call)", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
       if (command === "ps") return { stdout: "", stderr: "" };
@@ -892,7 +878,6 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
         appBundlePath: "/tmp/Example.app",
         bundleId: "com.example.app",
         build: false,
-        keepSimulatorInBackground: true,
       });
       expect(session.keepSimulatorInBackground).toBe(true);
       expect(spawnMock.mock.calls.some(([command]) => command === "open")).toBe(false);

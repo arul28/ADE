@@ -132,9 +132,10 @@ public final class ActivityDrawerModel: ObservableObject {
     /// which is how the home dropdown could show a working Claude session at
     /// the same instant this drawer showed only week-old idle rows.
     ///
-    /// Scope is deliberately narrow: only the live machine's own rows are
-    /// replaced. Every other machine keeps its relay rows, so the feed stays
-    /// account-wide.
+    /// Scope: the rows of every computer the live snapshot speaks for (the
+    /// focused one and `otherMachines`) are replaced, so Activity counts what
+    /// the Hub and Work list. A computer the phone does not hold at all keeps
+    /// its relay rows, so the feed stays account-wide.
     public func rebuild(
         from snapshot: AccountAttentionSnapshot,
         live: WorkspaceSnapshot? = nil
@@ -161,6 +162,7 @@ public final class ActivityDrawerModel: ObservableObject {
             // none. Degrading to a narrower merge is always better than
             // degrading to stale data.
             let liveMachine = Self.liveMachine(from: live, knownTo: machines)
+            let otherMachines = Self.otherLiveMachines(from: live, knownTo: machines)
             // The relay row for a session carries the brain's Work-board column;
             // the socket row does not. Keep the relay's wait on the live row.
             let relayBySession = Dictionary(
@@ -171,7 +173,8 @@ public final class ActivityDrawerModel: ObservableObject {
             )
             let liveItems = Self.accountItems(
                 from: live,
-                machine: liveMachine ?? Self.unidentifiedLiveMachine(from: live)
+                machine: liveMachine ?? Self.unidentifiedLiveMachine(from: live),
+                otherMachines: otherMachines.listed
             ).map { item in
                 guard let session = Self.sessionId(item), let relay = relayBySession[session] else {
                     return item
@@ -184,7 +187,7 @@ public final class ActivityDrawerModel: ObservableObject {
             // session renders twice under two id schemes.
             let replacedSessions = Set(liveItems.compactMap(Self.sessionId))
             let replacedPullRequests = Set(liveItems.compactMap(Self.pullRequestId))
-            let replacedKeys = liveMachine.map(Self.machineIdentity) ?? []
+            let replacedKeys = (liveMachine.map(Self.machineIdentity) ?? []).union(otherMachines.identities)
 
             items = active.filter { item in
                 // Live PRs replace the relay copy of the same GitHub identity.
@@ -202,10 +205,10 @@ public final class ActivityDrawerModel: ObservableObject {
                 return Self.machineIdentity(item.machine).isDisjoint(with: replacedKeys)
             } + liveItems
 
-            if let liveMachine {
+            if !replacedKeys.isEmpty {
                 machines = machines.filter {
                     Self.machineIdentity($0).isDisjoint(with: replacedKeys)
-                } + [liveMachine]
+                } + (liveMachine.map { [$0] } ?? []) + otherMachines.listed.values.sorted { $0.name < $1.name }
             }
         }
 
@@ -294,6 +297,37 @@ public final class ActivityDrawerModel: ObservableObject {
         )
     }
 
+    /// The other computers a live snapshot speaks for. `listed` holds the ones
+    /// whose sessions it carries, keyed by the id its agents name, resolved
+    /// against the account roster like `liveMachine`. `identities` holds
+    /// every key of every one of them, listed or not: the relay rows of those
+    /// computers give way to this phone's view, which lists no rows for a
+    /// computer that is offline or not connected (as the Hub).
+    static func otherLiveMachines(
+        from snapshot: WorkspaceSnapshot,
+        knownTo roster: [AccountAttentionMachine]
+    ) -> (listed: [String: AccountAttentionMachine], identities: Set<String>) {
+        var listed: [String: AccountAttentionMachine] = [:]
+        var identities = Set<String>()
+        for other in snapshot.otherMachines {
+            guard let id = nonEmpty(other.id) else { continue }
+            let known = roster.first { machineIdentity($0).contains(id) }
+            identities.insert(id)
+            if let known { identities.formUnion(machineIdentity(known)) }
+            guard other.listed else { continue }
+            listed[id] = AccountAttentionMachine(
+                machineKey: known?.machineKey ?? id,
+                accountMachineKey: known?.accountMachineKey,
+                name: known?.name ?? nonEmpty(other.name) ?? "Connected computer",
+                // Listed: live, inside its reconnect window, or an ADE Cloud
+                // computer (asleep too; a tap wakes it).
+                online: true,
+                lastSeenAt: snapshot.generatedAt
+            )
+        }
+        return (listed, identities)
+    }
+
     /// Rebuild from this machine's workspace snapshot. Projected into the same
     /// account item shape first, so the fallback path shares every rule above
     /// it instead of maintaining a parallel one.
@@ -304,15 +338,29 @@ public final class ActivityDrawerModel: ObservableObject {
             online: snapshot.connection.lowercased() != "disconnected",
             lastSeenAt: snapshot.generatedAt
         )
+        let otherMachines = Self.otherLiveMachines(from: snapshot, knownTo: [])
         apply(
-            items: Self.accountItems(from: snapshot, machine: machine),
-            machines: [machine],
+            items: Self.accountItems(from: snapshot, machine: machine, otherMachines: otherMachines.listed),
+            machines: [machine] + otherMachines.listed.values.sorted { $0.name < $1.name },
             source: .machineFallback,
             truncated: false,
             // These rows belong to the paired host, so inline App Intents are
             // pointed at the machine that actually owns them.
             inlineActionsAllowed: true
         )
+    }
+
+    /// An account left the phone: the rows it saw and dismissed go, in memory
+    /// and in the App Group.
+    public func forgetSeenAndDismissed() {
+        dismissedItemIDs = []
+        seenItemIDs = []
+        // The last account's "all seen" time must not mark the next account's rows as read.
+        lastSeenAt = .distantPast
+        for key in [Self.lastSeenAtKey, Self.dismissedItemIDsKey, Self.seenItemIDsKey] {
+            defaults.removeObject(forKey: key)
+        }
+        recomputeUnreadCount()
     }
 
     /// Clear everything — used when no snapshot of any kind is available, so an
@@ -550,9 +598,12 @@ extension ActivityDrawerModel {
     /// Project the machine-local snapshot into account items. Ids keep their
     /// historical prefixes (`awaiting:`, `live:`, `ci:` …) so dismissals
     /// persisted before this rewrite still match their rows.
+    /// `otherMachines`: the computers of agents that name one (keyed by that
+    /// id). An agent that names none, or one not in the map, is on `machine`.
     static func accountItems(
         from snapshot: WorkspaceSnapshot,
-        machine: AccountAttentionMachine
+        machine: AccountAttentionMachine,
+        otherMachines: [String: AccountAttentionMachine] = [:]
     ) -> [AccountAttentionItem] {
         let project = AccountAttentionProject(
             projectId: nonEmpty(snapshot.projectId) ?? "current-project",
@@ -561,7 +612,11 @@ extension ActivityDrawerModel {
         var items: [AccountAttentionItem] = []
 
         for agent in snapshot.agents {
-            let phase = agentPhase(agent, machineOnline: machine.online)
+            let agentMachine = agent.machineId.flatMap { otherMachines[$0] } ?? machine
+            let agentProject = nonEmpty(agent.projectName).map { name in
+                AccountAttentionProject(projectId: nonEmpty(agent.projectId) ?? project.projectId, name: name)
+            } ?? project
+            let phase = agentPhase(agent, machineOnline: agentMachine.online)
             let idPrefix: String
             switch phase {
             case .needsYou: idPrefix = "awaiting"
@@ -579,8 +634,8 @@ extension ActivityDrawerModel {
                     kind: .agent,
                     eventKind: agentEventKind(phase),
                     phase: phase,
-                    machine: machine,
-                    project: project,
+                    machine: agentMachine,
+                    project: agentProject,
                     laneName: agent.laneName,
                     provider: agent.provider,
                     model: agent.modelId,

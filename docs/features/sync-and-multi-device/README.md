@@ -24,9 +24,15 @@ does and does not travel, and the layers that implement it. Deep-dives:
   remote commands.
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
   turns client actions into runtime-executed mutations.
+- [`devices-and-machines.md`](./devices-and-machines.md) — the one model
+  agents learn for using a device on any machine: the words (machine, device,
+  source, lane, "your code there"), `ade devices`, `devices use|current`,
+  `--machine`, `--code synced|as-is|fresh`, `--clone`,
+  `--no-code`, `--to` on `chat handoff|move`, MCP, and the ADE Cloud iPhone.
 - `cross-machine-agents.md` — agents and the CLI on other machines:
   `--machine`, `--all-machines`, children that wake parents across machines and
-  projects, remote device drive with proof filed back.
+  projects, remote device drive with proof filed back (the implementation
+  under `devices-and-machines.md`).
 - `cross-machine-session-handoff.md` — moving a Work chat to another
   machine: the brain-owned move record and its states, agent and CLI control,
   approval, the source banner and send routing, the Git contract (clean and
@@ -310,8 +316,9 @@ project-published discovery to re-run), `sync.listDevices` returns an empty list
 runtime state that fills that list is a project's device registry), and
 `sync.getRuntimeName` returns `null` because a runtime name is a per-project
 setting. Mutating project-scoped methods (`sync.setRuntimeName`,
-`sync.updateLocalDevice`, transfer readiness, lane presence) keep failing with
-the register-a-project error, which is the truth for them. A
+`sync.updateLocalDevice`, transfer readiness) keep failing with the
+register-a-project error, which is the truth for them. Lane presence is the
+exception: the call is accepted, and the list waits for the sync host. A
 just-written PIN is echoed back on the returned snapshot by
 `machineSyncStatusWithPin`, because a store only reports a plaintext code it set
 itself and the snapshot builder may read through a different handle — without
@@ -677,7 +684,8 @@ see your change.
 
 The iOS companion keeps a focused machine connection and a separate roster
 connection to each connected machine. `MachineFleet` owns the connected set,
-the four-machine limit, and foreground/background lifecycle; `MachineConnection`
+the open project's machines (every paired machine with a copy is kept live,
+with no pick), the eight-machine limit, and foreground/background lifecycle; `MachineConnection`
 owns each roster socket and its bounded retry state. The Lanes and PRs screens
 read each live machine's checkout on demand, while chat, file, and CTO commands
 carry that machine and project identity back to the owning runtime.
@@ -705,6 +713,13 @@ Runtime support files outside `services/sync/`:
   [cross-machine agents](cross-machine-agents.md)). `apps/ade-cli/src/cliRemoteWork.ts`
   builds what a `--machine` call sends for it, and moves `ade files push|pull`
   chunks; `remoteWork/remoteWorkFiles.ts` is the host side of those transfers.
+  `remoteWork/remoteWorkScratch.ts` makes and sweeps the empty folders a
+  `--no-code` command runs in (`<ADE_HOME>/remote-work/scratch/`).
+- `apps/ade-cli/src/cliDevices.ts` — `ade devices` (list, `use`, `current`)
+  and the device commands following a chat's choice; the ids, the choice's
+  shape and the subcommand parse ADE MCP's command check shares live in
+  `apps/desktop/src/shared/types/deviceSources.ts` (see
+  [devices and machines](devices-and-machines.md)).
 - `apps/desktop/src/shared/rpcLiveness.ts` — whether a connection that went
   quiet still answers (`probeRpcLiveness`), shared by the desktop's
   `remoteConnectionPool.ts` and the brains' machine link pool
@@ -1304,26 +1319,21 @@ Runtime support files outside `services/sync/`:
 - `apps/desktop/src/main/services/account/accountVaultBridge.ts` and
   `apps/desktop/src/main/services/account/accountMigrationRunner.ts` — the
   desktop-main bridge to the brain vault and the silent, receipt-backed sign-in
-  migration for provider API keys, Linear OAuth refresh credentials, and
-  repository-scoped project secrets. Migration is write-confirmed, per account
-  and per source, and hydrates local stores without replacing device-origin
-  values. A source that stays pending or fails clears the runtime latch so a
-  later vault-ready tick can retry it; completed sources stay protected by
-  their receipts.
-- `apps/ade-cli/src/services/account/accountRuntimeLifecycle.ts` — pulls
-  `project_secret` rows out of the vault on every vault-ready sync tick and on
-  the initial sync, deliberately outside the migration latch. A secret another
-  machine adds tomorrow still has to arrive, and the one-shot migration can
-  never see it. `project_secret.pullFromAccount` (`ade secrets pull`, Settings >
-  Secrets > Pull from account) forces a vault sync with the relay and then runs
-  the same pull. `project_secret.get` / `list` / `exec` (`ade secrets list|exec`, the
-  person's own `get`, the Secrets page) refresh from the account first — at most one request per
-  10 s, and waiting at most 3 s before answering from this machine's copy — so
-  a secret added on another machine moments ago is found. A miss says whether
-  the account was checked or could not be reached. Rows this machine saved
-  that have not uploaded yet carry `uploadPending` (Settings shows
-  "Uploading", the CLI `account (uploading)`), read from the vault's
-  `pendingKeys(scope, kind)`.
+  migration for provider API keys and Linear OAuth refresh credentials (and
+  the move of a project's old secrets into Passwords & Secrets). Migration is
+  write-confirmed, per account and per source, and hydrates local stores
+  without replacing device-origin values. A source that stays pending or fails
+  clears the runtime latch so a later vault-ready tick can retry it; completed
+  sources stay protected by their receipts.
+- `apps/ade-cli/src/services/account/accountRuntimeLifecycle.ts` — on every
+  vault-ready sync tick, moves anything still in a project's old secret store
+  (the `.ade/secrets/project-secrets.v1.enc` file, and the account's old
+  `project_secret` vault rows from an older ADE) into Passwords & Secrets
+  (`projectSecretService.migrateLegacy`). A name already there with a newer
+  value is left alone; each old copy is removed only once its value is saved in
+  the new place; account rows wait until Passwords & Secrets is usable. Secrets
+  themselves sync as Passwords & Secrets items (see
+  [Passwords & Secrets](../passwords/README.md)).
 - `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) and
   `account_vault` action domain (`list`, `get`, `set`, `remove`, `sync`,
   `pendingKeys`) — how
@@ -1405,7 +1415,7 @@ Runtime support files outside `services/sync/`:
   `wrangler d1 execute --env production` already reaches, so support recovery is
   a direct D1 statement after these logs identify the row.
 - `apps/account-directory/src/diagnostics.ts` — `POST /diagnostics/upload`, the
-  write-only R2 sink behind the desktop's **Report issue** button and
+  write-only R2 sink behind the desktop's report dialog and
   `ade report-issue --send`. It is matched in `index.ts` *before* the directory
   router, because it is the one route here that is not account-scoped and the
   directory's exact-origin CORS rule and 404-on-unknown-`OPTIONS` fit neither an
@@ -1426,7 +1436,7 @@ Runtime support files outside `services/sync/`:
   fleet-wide stop as its own quota would retry forever. Uploads also carry
   optional `auto` / `failureCode` metadata so automatic and hand-pressed
   reports stay separable in the bucket. See
-  [storage and recovery → Diagnostic reports](../storage-and-recovery/README.md#diagnostic-reports-report-issue)
+  [storage and recovery → Diagnostic reports](../storage-and-recovery/README.md#diagnostic-reports-the-report-dialog)
   for the client half, and `apps/account-directory/README.md` for the full
   contract and the R2 bucket + lifecycle setup the deploy does not do for you.
 - `apps/desktop/src/shared/accountDirectory.ts` — canonical account-directory
@@ -2542,6 +2552,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   tried to, is ready, it answers as it is and host activation is not re-entered.
   A blocked or backed-off activation therefore no longer turns the Phone tab
   into "Another ADE brain is already hosting mobile sync".
+  `sync.getStatus` is a read too. It answers from the ready scope of the project
+  it names, else the ready scope of the sync host, else any booted project
+  scope, else the machine's own state. A status read never starts a sync host.
+  Lane presence (`sync.setActiveLanePresence`) is kept for the host. The newest
+  list goes to the host's sync service only when that host's scope is ready.
+  It goes out again on each scope-ready or host-switch notice until the host
+  has it, and a failed send never brings back an older list.
 
   The loop also classifies what it caught rather than retrying everything the
   same way. Each failure goes through `classifyStorageFault`
@@ -4466,10 +4483,8 @@ feature is merged or because a deliberately isolated-port host is running.
   and device-only credentials remain per-machine. Account-scoped AI provider
   keys use the `provider_api_key` vault kind, Linear OAuth refresh tokens use
   `linear_refresh_token` with a per-device `refreshOwner` so only one machine
-  exchanges the rotating grant, and repository account secrets use `project_secret`
-  under the normalized repository scope. The vault is not write-only: a
-  vault-ready sync tick pulls repository account secrets back down, so a secret
-  added on one machine reaches the other. Local credential stores retain
+  exchanges the rotating grant. Secrets are Passwords & Secrets items, sealed
+  under the account's vault key; a "this computer only" secret never syncs. Local credential stores retain
   provenance and purge account-origin values on sign-out or account switch;
   access tokens, a machine's own GitHub App device-flow sign-in, environment
   GitHub tokens and vendor CLI refresh credentials stay on the machine that

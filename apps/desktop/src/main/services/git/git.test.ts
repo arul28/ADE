@@ -171,16 +171,6 @@ describe("macOS git selection", () => {
     expect(shouldProbeLoginShellForGit("/usr/bin/git", "linux")).toBe(false);
   });
 
-  it("explains that an Xcode license failure comes from Git, not iOS features", () => {
-    const message = formatGitExecutionError(
-      "You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license'.",
-    );
-
-    expect(message).toContain("ADE needs Git");
-    expect(message).toContain("not an ADE iOS Simulator or code-signing requirement");
-    expect(message).toContain("sudo xcodebuild -license");
-  });
-
   // Git for Windows output cannot be produced on a macOS/Linux runner, so the
   // parser is pinned against the real message shapes here.
   it.each([
@@ -484,13 +474,13 @@ describe("runGit cancellation", () => {
         idleTimeoutMs: 300,
       })).rejects.toMatchObject({ name: "GitTimeoutError", stalled: true });
 
-      // Slow but talking: runs well past the limit, a line every 150 ms, a
+      // Slow but talking: runs well past the limit, a line every 80 ms, a
       // tenth of the limit, so a loaded machine does not read as a stall.
-      fs.writeFileSync(hook, "#!/bin/sh\nfor i in $(seq 1 16); do echo working >&2; sleep 0.15; done\n", { mode: 0o755 });
+      fs.writeFileSync(hook, "#!/bin/sh\nfor i in $(seq 1 14); do echo working >&2; sleep 0.08; done\n", { mode: 0o755 });
       const busy = await runGit(["worktree", "add", "-b", "busy", path.join(worktrees, "busy"), "main"], {
         cwd: repo,
         timeoutMs: 30_000,
-        idleTimeoutMs: 1_500,
+        idleTimeoutMs: 800,
       });
       expect(busy.exitCode).toBe(0);
       expect(busy.timedOut).toBeUndefined();

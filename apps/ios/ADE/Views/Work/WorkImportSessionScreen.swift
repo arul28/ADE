@@ -495,7 +495,7 @@ struct WorkImportSessionScreen: View {
           Button {
             selectMachine(option)
           } label: {
-            Label(option.isPrimary ? "\(option.name) · Primary" : option.name, systemImage: option.symbol)
+            Label(option.name, systemImage: option.symbol)
           }
         }
       }

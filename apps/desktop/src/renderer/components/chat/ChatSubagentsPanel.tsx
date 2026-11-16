@@ -59,11 +59,11 @@ import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { GoalCard } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
-import { selfHealBackgroundSnapshots, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
+import { selfHealBackgroundSnapshots } from "./chatPaneSelfHeal";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { requestChatActionsPane } from "./chatActionsPaneRequests";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
-import { useChatChildRoster } from "./chatSubagentRoster";
+import { useChatSubagentRows } from "./chatSubagentRoster";
 import { ChatShellsSection } from "./ChatShellsSection";
 import { TerminalWatchRow } from "./ChatTerminalWatches";
 import { Banner } from "../ui/notice";
@@ -225,7 +225,7 @@ const COMPACT_PANE_WORD: Record<string, string> = {
   "needs you": "you",
   "need you": "you",
   failed: "fail",
-  halted: "halt",
+  stopped: "stop",
   done: "done",
   scheduled: "sched",
 };
@@ -427,7 +427,7 @@ function EarlierToggle({
       className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:text-fg/60"
     >
       <span aria-hidden>{expanded ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}</span>
-      <span className="whitespace-nowrap">Completed ({count}){clearedCount ? ` · ${clearedCount} hidden` : ""}</span>
+      <span className="whitespace-nowrap">Done ({count}){clearedCount ? ` · ${clearedCount} hidden` : ""}</span>
     </button>
   );
 }
@@ -631,7 +631,7 @@ const STATUS_LABEL: Record<ChatSubagentSnapshot["status"], string> = {
   running: "running",
   completed: "done",
   failed: "failed",
-  stopped: "halted",
+  stopped: "stopped",
 };
 
 // Elapsed-time chip for the right rail — duration only (no tool/token noise),
@@ -1529,16 +1529,13 @@ export function ChatSubagentsPanel({
   // The chat's filed subagents (the Work list leaves them out) and the child
   // chats its rows name, from the sessions of the machine it runs on.
   const scope = useChatRuntimeScope();
-  const { snapshots: snapshotsWithRoster, childById, childStatuses } = useChatChildRoster(
+  // Self-healed first, so every count, cap, grouping and label below reads the
+  // truthful status rather than a "running" the event stream never closed.
+  const { rows: healedSnapshots, childById } = useChatSubagentRows(
     sessionId,
     snapshots,
     childChatStatuses,
-  );
-  // Self-heal first, so every count, cap, grouping and label below reads the
-  // truthful status rather than a "running" the event stream never closed.
-  const healedSnapshots = useMemo(
-    () => selfHealSubagentSnapshots(snapshotsWithRoster, { runtimeAlive, childChatStatuses: childStatuses }),
-    [snapshotsWithRoster, runtimeAlive, childStatuses],
+    runtimeAlive,
   );
   // The workflow card owns these rows, so it reads the same healed status:
   // a run whose runtime died must not stay "Active" with a live Stop.

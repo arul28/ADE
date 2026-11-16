@@ -1,6 +1,5 @@
 import {
   AGENT_CHAT_CONTEXT_ROTATION_PCT,
-  AGENT_CHAT_CONTEXT_ROTATION_TURNS,
   isContextOverflowFailureText,
   type AgentChatLastTurnFailure,
   type AgentChatSessionContextHealth,
@@ -11,8 +10,8 @@ import {
  *
  * Two questions, answered from what is already on disk rather than from a
  * provider: "can this thread take another turn at all" (the overflow verdict,
- * which outlives restarts) and "is this thread getting close" (the occupancy
- * streak the CTO page offers a rotation on).
+ * which outlives restarts) and "how full is this thread" (the occupancy
+ * streak).
  *
  * They live outside `agentChatService` because they touch no runtime — they
  * take a settled turn's facts and return the next record — and because their
@@ -49,27 +48,6 @@ export function normalizeSessionContextHealth(value: unknown): AgentChatSessionC
     compactionSeen: record.compactionSeen === true,
     updatedAt: at,
   };
-}
-
-/**
- * Should this thread be rotated before it wedges?
- *
- * Two conditions, both deliberately conservative. A thread that has ALREADY
- * failed on overflow is past advice — it is broken, and saying so is the honest
- * answer. Short of that, ADE only speaks up once the thread has sat above the
- * high-water mark for two settled turns in a row AND a compaction has already
- * run, because before compaction the occupancy number is not yet the thread's
- * floor: the next compaction may win most of it back.
- */
-export function shouldAdviseSessionRotation(
-  failure: AgentChatLastTurnFailure | null,
-  context: AgentChatSessionContextHealth | null,
-): boolean {
-  if (failure?.kind === "context_overflow") return true;
-  if (!context?.compactionSeen) return false;
-  if (context.occupancyPct == null) return false;
-  if (context.occupancyPct < AGENT_CHAT_CONTEXT_ROTATION_PCT) return false;
-  return context.aboveHighWaterTurns >= AGENT_CHAT_CONTEXT_ROTATION_TURNS;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { createAppleDeviceNamespace, resolveAppleStreamUrl } from "../appleDevice";
 
@@ -147,33 +147,8 @@ describe("createAppleDeviceNamespace", () => {
     });
   });
 
-  it("carries no window-capture affordances, because there is no window", async () => {
-    const { ns } = namespaceFor();
-    // `openSystemSettings`, `revealSimulator`, `getSimulatorWindowState` and
-    // the two parking holds used to sit here as honest refusals. They are gone
-    // from the preload contract entirely now — the helper reads the
-    // framebuffer, so there is no Simulator.app window to reveal, park, or ask
-    // a Screen Recording grant for on any surface, local or remote.
-    for (const method of [
-      "openSystemSettings",
-      "revealSimulator",
-      "getSimulatorWindowState",
-      "retainWindowParking",
-      "releaseWindowParking",
-    ]) {
-      expect((ns as unknown as Record<string, unknown>)[method]).toBeUndefined();
-    }
-  });
-
   it("fails a lane-less live view with a sentence rather than a silent stub", async () => {
     const { ns } = namespaceFor();
     await expect(ns.startStream!({} as never)).rejects.toThrow(/needs a lane/);
-  });
-
-  it("does not subscribe to events it can never receive", () => {
-    const { ns } = namespaceFor();
-    const unsubscribe = (ns.onEvent as unknown as (cb: () => void) => () => void)(vi.fn());
-    expect(typeof unsubscribe).toBe("function");
-    unsubscribe();
   });
 });

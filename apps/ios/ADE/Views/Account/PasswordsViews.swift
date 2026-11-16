@@ -3,23 +3,23 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-// Settings › Account › Passwords: the account's saved logins and secrets,
+// Settings › Account › Passwords & Secrets: the account's saved logins and secrets,
 // to view and copy. Read only on the phone; they are added and changed in
 // ADE on a computer.
 
 // MARK: - Account page entry
 
-/// The Account page's Passwords row. The page shows it only while signed in.
+/// The Account page's Passwords & Secrets row. The page shows it only while signed in.
 struct SettingsPasswordsSection: View {
   var body: some View {
     ADESettingsSection(
-      "Passwords",
+      "Passwords & Secrets",
       hint: "Your saved logins and API secrets. View and copy them here; add or change them in ADE on a computer.",
       symbol: "key",
       tint: .amber
     ) {
       ADESettingsRows {
-        ADESettingsLink(title: "Passwords", symbol: "key.fill", tint: .amber) {
+        ADESettingsLink(title: "Passwords & Secrets", symbol: "key.fill", tint: .amber) {
           PasswordsListPage()
         }
       }
@@ -35,10 +35,10 @@ struct PasswordsListPage: View {
   @State private var query = ""
 
   var body: some View {
-    ADESettingsPage(title: "Passwords") {
+    ADESettingsPage(title: "Passwords & Secrets") {
       content
     }
-    .searchable(text: $query, prompt: "Search passwords")
+    .searchable(text: $query, prompt: "Search logins and secrets")
     .refreshable { await vault.refresh() }
     .task(id: account.identity?.userId) {
       if account.phase == .signedIn { await vault.refresh() }
@@ -49,16 +49,16 @@ struct PasswordsListPage: View {
   private var content: some View {
     switch vault.phase {
     case .inactive:
-      ADESettingsRows { ADESettingsLoadingRow(title: "Opening your passwords…") }
+      ADESettingsRows { ADESettingsLoadingRow(title: "Opening Passwords & Secrets…") }
     case .loading where vault.items.isEmpty:
-      ADESettingsRows { ADESettingsLoadingRow(title: "Opening your passwords…") }
+      ADESettingsRows { ADESettingsLoadingRow(title: "Opening Passwords & Secrets…") }
     case .notSetUp:
       PasswordsEmptyState(
-        title: "Passwords isn't set up",
-        message: "Turn on Passwords in ADE on a computer (Settings › Passwords). Logins and secrets you save there show here."
+        title: "Nothing here yet",
+        message: "Open ADE on a computer you're signed in to. It sets up your vault, and the logins and secrets you save there show here."
       )
     case .failed(let message) where vault.items.isEmpty:
-      PasswordsEmptyState(title: "Couldn't open your passwords", message: message, retry: { Task { await vault.refresh() } })
+      PasswordsEmptyState(title: "Couldn't open Passwords & Secrets", message: message, retry: { Task { await vault.refresh() } })
     default:
       lists
     }
@@ -202,8 +202,17 @@ enum PasswordsDisplay {
     return [login.username, shownSites].filter { !$0.isEmpty }.joined(separator: " · ")
   }
 
+  /// "Every project", or a project's repository (owner/name) or folder name.
   static func projectLabel(_ scope: String?) -> String {
-    guard let scope, !scope.isEmpty else { return "All projects" }
+    guard let scope, !scope.isEmpty else { return "Every project" }
+    if scope.hasPrefix("repo:") {
+      let path = scope.dropFirst("repo:".count)
+      if let slash = path.firstIndex(of: "/") { return String(path[path.index(after: slash)...]) }
+      return String(path)
+    }
+    if scope.hasPrefix("path:") {
+      return (String(scope.dropFirst("path:".count)) as NSString).lastPathComponent
+    }
     return scope
   }
 }

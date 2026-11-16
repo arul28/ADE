@@ -205,7 +205,8 @@ describe("Grok discovery", () => {
   function writeGrokSession(grokHome: string, cwd: string, id: string, options: {
     summary?: Record<string, unknown>;
     history?: unknown[];
-    acp?: boolean;
+    /** Grok 1.0.46 writes `updates.jsonl` from its own TUI too. */
+    updates?: boolean;
   } = {}): string {
     const dir = grokSessionDir(grokHome, cwd, id);
     writeJson(path.join(dir, "summary.json"), {
@@ -233,7 +234,7 @@ describe("Grok discovery", () => {
       },
       { type: "tool_result", tool_call_id: "call-1", content: "ok" },
     ]);
-    if (options.acp) writeJsonl(path.join(dir, "updates.jsonl"), [{ sessionUpdate: "agent_message_chunk" }]);
+    if (options.updates) writeJsonl(path.join(dir, "updates.jsonl"), [{ sessionUpdate: "agent_message_chunk" }]);
     return historyPath;
   }
 
@@ -263,10 +264,18 @@ describe("Grok discovery", () => {
     ]);
   });
 
-  it("leaves out ADE ACP sessions, subagents, and sessions without a prompt", async () => {
+  it("leaves out ADE chats, subagents, headless runs, and sessions without a prompt", async () => {
     const grokHome = path.join(homeDir, ".grok");
-    writeGrokSession(grokHome, repo, "01a05adf-eea3-79e3-b424-e97868ea4bc2", { acp: true });
+    writeGrokSession(grokHome, repo, "01a05adf-eea3-79e3-b424-e97868ea4bc2", {
+      updates: true,
+      history: [
+        { type: "system", content: "You are Grok." },
+        { type: "user", content: [{ type: "text", text: userInfo }] },
+        { type: "user", content: [{ type: "text", text: "<user_query>\n## ADE\nADE is a local-first dev environment.\n</user_query>" }], prompt_index: 0 },
+      ],
+    });
     writeGrokSession(grokHome, repo, "01a06e82-0000-7000-8000-000000000001", { summary: { session_kind: "subagent" } });
+    writeGrokSession(grokHome, repo, "01a06e82-0000-7000-8000-000000000003", { summary: { session_kind: "headless" } });
     writeGrokSession(grokHome, repo, "01a05adf-e67b-79a0-bf4f-38c5b47abbbf", {
       history: [
         { type: "system", content: "You are Grok." },
@@ -274,7 +283,7 @@ describe("Grok discovery", () => {
       ],
     });
     const kept = "01a0cda4-0000-7000-8000-000000000002";
-    writeGrokSession(grokHome, repo, kept);
+    writeGrokSession(grokHome, repo, kept, { updates: true });
 
     const sessions = await discoverGrokSessions({ homeDir, env, limit: 10 });
     expect(sessions.map((session) => session.id)).toEqual([kept]);

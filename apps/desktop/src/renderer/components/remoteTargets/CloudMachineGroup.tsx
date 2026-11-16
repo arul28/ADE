@@ -272,12 +272,12 @@ export function CloudBoxOnlyRow({
         : `Not in ADE. Delete it if you don't need it.`;
   return (
     <div style={machineRowStyle} data-cloud-box-only={box.instanceId}>
-      <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 12, alignItems: "center" }}>
+      <div className="ade-cx-row-grid">
         <span className="ade-cx-cloud-avatar" aria-hidden>
           <CloudMark size={18} bold />
         </span>
         <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
-          <span className="ade-cx-machine-name" style={nameStyle}>{name}</span>
+          <span style={nameStyle}>{name}</span>
           <span style={subTextStyle}>{line}</span>
         </div>
         <MachineActionsMenu label={`Actions for ${name}`} actions={actions} />

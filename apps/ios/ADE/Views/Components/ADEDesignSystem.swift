@@ -1,5 +1,6 @@
 import CryptoKit
 import SwiftUI
+import os
 import UIKit
 
 enum ADEColorSchemeChoice: String, CaseIterable, Identifiable {
@@ -593,6 +594,8 @@ final class ADEImageCache {
   private let memoryCache = NSCache<NSString, NSData>()
   private let cacheDirectory: URL
   private let fileManager: FileManager
+  /// Counts the wipes. A download that started before a wipe does not save.
+  private let wipeCount = OSAllocatedUnfairLock(initialState: 0)
 
   init(cacheDirectory: URL? = nil, fileManager: FileManager = .default) {
     self.fileManager = fileManager
@@ -619,6 +622,15 @@ final class ADEImageCache {
     return UIImage(data: data)
   }
 
+  /// An account left this phone: the pictures its screens loaded (people and
+  /// repositories of its pull requests) go from memory and disk.
+  func removeAll() {
+    wipeCount.withLock { $0 += 1 }
+    memoryCache.removeAllObjects()
+    let files = (try? fileManager.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: nil)) ?? []
+    for file in files { try? fileManager.removeItem(at: file) }
+  }
+
   func store(_ data: Data, for key: String) {
     memoryCache.setObject(data as NSData, forKey: key as NSString)
     let url = cacheDirectory.appendingPathComponent(diskFilename(for: key))
@@ -631,8 +643,12 @@ final class ADEImageCache {
       return image
     }
 
+    let wipesAtStart = wipeCount.withLock { $0 }
     let (data, _) = try await URLSession.shared.data(from: url)
-    store(data, for: key)
+    // The account left during the download: its picture is not saved again.
+    if wipeCount.withLock({ $0 }) == wipesAtStart {
+      store(data, for: key)
+    }
 
     guard let image = UIImage(data: data) else {
       throw NSError(

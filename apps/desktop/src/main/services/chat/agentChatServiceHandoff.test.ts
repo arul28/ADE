@@ -32,12 +32,13 @@ import {
   writeTestTranscriptEnvelopes,
   zlib,
   dedicatedTranscriptPath,
+  settleSteppingTimeouts,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { crossMachineMoveLock } from "../../../shared/crossMachineMoveLock";
 import { landHandoffGitBundle } from "./handoffGitBundle";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { listDrafts } from "./draftService";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { sessionPermissionLevel } from "../../../shared/permissionLadder";
@@ -1169,11 +1170,11 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(result.session.id).transcriptReplayOrigin)
         .toMatchObject({ sourceSessionId: source.id, keptTurnCount: 4, turnCount: 4 });
 
-      await service.runSessionTurn({ sessionId: result.session.id, text: "first message" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: result.session.id, text: "first message" }));
       expect(readPersistedChatState(result.session.id).pendingTranscriptReplay).toBeNull();
 
       const streamCallsBefore = stream.mock.calls.length;
-      await service.runSessionTurn({ sessionId: result.session.id, text: "second message" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: result.session.id, text: "second message" }));
 
       await vi.waitFor(() => {
         expect(send.mock.calls
@@ -1278,7 +1279,7 @@ describe("createAgentChatService", () => {
       })) as AgentChatEventEnvelope[]);
       expect(readPersistedChatState(stuck.id).transcriptReplayOrigin).toBeUndefined();
 
-      await service.runSessionTurn({ sessionId: stuck.id, text: "stuck message" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: stuck.id, text: "stuck message" }));
 
       await vi.waitFor(() => {
         expect(send.mock.calls
@@ -1357,7 +1358,7 @@ describe("createAgentChatService", () => {
         provenance: { providerOrigin: "handoff_fork", sourceSessionId: source.id },
       }] as AgentChatEventEnvelope[]);
 
-      await service.runSessionTurn({ sessionId: forked.id, text: "native message" });
+      await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: forked.id, text: "native message" }));
 
       // The normal overflow handling runs instead: no rebuild, no reset.
       await vi.waitFor(() => {
@@ -1540,11 +1541,11 @@ describe("createAgentChatService", () => {
         "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489",
         "hex",
       ));
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: result.session.id,
         text: "look at this",
         attachments: [{ path: imagePath, type: "image" }],
-      });
+      }));
 
       await vi.waitFor(() => {
         expect(send.mock.calls
@@ -4725,7 +4726,7 @@ describe("lane share move: the moved chat on the receiving machine", () => {
   ])("lands a %s chat read only, with no turn and the brief in Drafts", async (provider, modelHint, nativeFields) => {
     installMoveGitFixture();
     const root = fs.mkdtempSync(path.join(tmpRoot, "move-db-"));
-    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as never);
+    const db = await openFreshKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as never);
     try {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({ db, onEvent: (event: AgentChatEventEnvelope) => events.push(event) });

@@ -28,6 +28,8 @@ import type {
   AdeUsageRollup,
   AdeUsageRollupRow,
   UsageAccount,
+  UsageResetCreditResult,
+  UsageResetCreditStatus,
   UsageWindow,
 } from "../../../shared/types";
 import type { PeerLiveQuota } from "../../../shared/usageLiveQuota";
@@ -117,6 +119,8 @@ const MAX_PEER_ROOT_LENGTH = 128;
 const MAX_PEER_ID_LENGTH = 128;
 /** Per-model caps on one window (Claude's Fable); a handful at most. */
 const MAX_PEER_MODEL_CAPS = 8;
+/** A credit count past this is junk; providers bank a handful at most. */
+const MAX_PEER_RESET_CREDITS = 99;
 const PEER_LOGIN_STATES = new Set<NonNullable<UsageAccount["login"]>>(["ok", "expired", "signed_out"]);
 
 function boundedString(value: unknown, maxLength: number): string | null {
@@ -242,11 +246,11 @@ function boundPeerWindow(value: unknown): UsageWindow | null {
 /**
  * One peer account, or null.
  *
- * `resetCredits` is deliberately dropped: a reset credit is a per-machine
- * credential the local host redeems against its own account registry, so a
- * peer's credit would render a "Use reset" the local host cannot spend. The
- * same goes for `notice` — it describes the peer's last polling attempt, and
- * showing it here would name this machine's connection as the problem.
+ * `resetCredits` is kept: credits belong to the login, and a machine that
+ * cannot read them itself shows the peer's count and sends the spend to that
+ * peer (`resetCreditsOn`). `notice` is dropped — it describes the peer's last
+ * polling attempt, and showing it here would name this machine's connection as
+ * the problem.
  */
 function boundPeerAccount(value: unknown): UsageAccount | null {
   if (!value || typeof value !== "object") return null;
@@ -264,6 +268,7 @@ function boundPeerAccount(value: unknown): UsageAccount | null {
   const login = PEER_LOGIN_STATES.has(record.login as NonNullable<UsageAccount["login"]>)
     ? record.login as NonNullable<UsageAccount["login"]>
     : null;
+  const resetCredits = boundPeerResetCredits(record.resetCredits);
   const machines = Array.isArray(record.machines)
     ? record.machines.slice(0, MAX_PEER_ROOTS).flatMap((raw) => {
       if (!raw || typeof raw !== "object") return [];
@@ -284,6 +289,20 @@ function boundPeerAccount(value: unknown): UsageAccount | null {
     machines,
     ...(url ? { url } : {}),
     ...(login ? { login } : {}),
+    ...(resetCredits ? { resetCredits } : {}),
+  };
+}
+
+/** A peer's banked credit count (zero included, so "none left" is news), or null for junk. */
+function boundPeerResetCredits(value: unknown): UsageAccount["resetCredits"] | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const count = record.availableCount;
+  if (typeof count !== "number" || !Number.isInteger(count) || count < 0) return null;
+  const nextExpiresAt = boundedString(record.nextExpiresAt, MAX_PEER_ID_LENGTH);
+  return {
+    availableCount: Math.min(count, MAX_PEER_RESET_CREDITS),
+    ...(nextExpiresAt && Number.isFinite(Date.parse(nextExpiresAt)) ? { nextExpiresAt } : {}),
   };
 }
 
@@ -553,5 +572,70 @@ export function createAccountLiveQuotaFetcher(transport: AccountPeerTransport) {
       }
     }));
     return results.filter((result): result is PeerLiveQuota => result !== null);
+  };
+}
+
+/** The method a peer answers by spending one of its own banked resets. */
+export const PEER_RESET_CREDIT_METHOD = "usage.consumeResetCredit";
+
+/** Spends a reset banked on another machine, on that machine. Never throws. */
+export type AccountResetCreditSpender = (args: {
+  machineKey: string;
+  label: string;
+  /** The peer's own id for the account. */
+  accountId: string;
+  /**
+   * The login the row showed. The peer refuses the spend when its account now
+   * holds another login (a new sign-in in the same folder keeps the id).
+   */
+  email: string;
+  timeoutMs: number;
+}) => Promise<UsageResetCreditResult>;
+
+const RESET_CREDIT_STATUSES = new Set<UsageResetCreditStatus>([
+  "reset", "nothingToReset", "noCredit", "alreadyRedeemed", "failure",
+]);
+/** An older peer's answer when its agent gate does not list the method yet. */
+const AGENT_METHOD_REFUSED = /isn't available to agents on another machine/i;
+
+/**
+ * The spend half of the cross-machine limits view: a login that this machine
+ * cannot read shows the resets another machine banked, and "Use reset" runs
+ * the claim there. Unlike the reads, a user asked for this, so a target that
+ * is paired but not connected right now is still dialled.
+ */
+export function createAccountResetCreditSpender(transport: AccountPeerTransport): AccountResetCreditSpender {
+  return async ({ machineKey, label, accountId, email, timeoutMs }) => {
+    const failure = (message: string): UsageResetCreditResult => ({ ok: false, status: "failure", message });
+    const targetId = transport.resolveTargetIdForMachineKey(machineKey);
+    if (!targetId) return failure(`This reset is banked on ${label}, which is not paired with this computer. Spend it there.`);
+    try {
+      const answer = await transport.callMachineMethod<unknown>(
+        targetId,
+        PEER_RESET_CREDIT_METHOD,
+        { accountId, email },
+        { timeoutMs },
+      );
+      if (!answer || typeof answer !== "object") return failure(`${label} did not answer the reset.`);
+      const record = answer as Record<string, unknown>;
+      const status = RESET_CREDIT_STATUSES.has(record.status as UsageResetCreditStatus)
+        ? record.status as UsageResetCreditStatus
+        : null;
+      const message = boundedString(record.message, 500);
+      return {
+        ok: record.ok === true,
+        ...(status ? { status } : {}),
+        ...(message ? { message } : {}),
+      };
+    } catch (error) {
+      if (isMethodNotFound(error) || AGENT_METHOD_REFUSED.test(getErrorMessage(error))) {
+        return failure(`Update ADE on ${label} to spend its reset from here, or spend it there.`);
+      }
+      transport.logger?.warn?.("usage.account.peer_reset_credit_failed", {
+        machineKey,
+        error: getErrorMessage(error),
+      });
+      return failure(`Could not reach ${label} to spend the reset: ${getErrorMessage(error)}`);
+    }
   };
 }

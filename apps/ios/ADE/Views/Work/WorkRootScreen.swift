@@ -174,6 +174,9 @@ struct WorkRootSyncInputs: Equatable {
   // Always tracked.
   var listVisible = false
   var isLive = false
+  /// The paired machines with a live link. An open chat on another machine
+  /// gates its composer on its own machine, also while the list is hidden.
+  var liveMachineKeys: Set<String> = []
   var isAttached = false
   var hostUnreachable = false
   var activeProjectId: String?
@@ -219,6 +222,14 @@ struct WorkRootSyncInputs: Equatable {
   /// The Machine filter's choices: the focused machine, then the machines in
   /// `remoteMachineRepos`. Tracked only while the list is visible.
   var machineFilterOptions: [WorkMachineFilterOption] = []
+  /// False while the focused machine is off past its reconnect window: its
+  /// rows are not listed (`SyncService.focusedMachineListsWork`).
+  var primaryListsWork = true
+  /// An ADE Cloud computer an open from this list waits on while it wakes.
+  var wakingCloudMachineName: String?
+  /// The last failed wake of an ADE Cloud computer, when none is waking.
+  var cloudWakeFailureKey: String?
+  var cloudWakeFailureMessage: String?
 
   init() {}
 
@@ -231,6 +242,7 @@ struct WorkRootSyncInputs: Equatable {
     if WorkRootPreviewFixture.active?.forcesLive == true { isLive = true }
     #endif
     hostUnreachable = sync.connectionState.isHostUnreachable
+    liveMachineKeys = Set(fleet?.liveMachineKeys ?? [])
     activeProjectId = sync.activeProjectId
     activeProjectRootPath = sync.activeProjectRootPath
     activeProjectHostIdentity = sync.activeProjectHostIdentity
@@ -267,12 +279,18 @@ struct WorkRootSyncInputs: Equatable {
     crossMachineHandoffAvailable = sync.canInvokeRemoteAction("chat.getCrossMachineHandoffOptions")
       && sync.canInvokeRemoteAction("chat.startCrossMachineHandoff")
     autoHandoffAvailable = sync.autoHandoffRulesAvailable && sync.canInvokeRemoteAction("automations.saveDraft")
-    // Only machines the user keeps connected; a disconnected one stays off.
-    if let fleet, case let connected = fleet.machines.filter(\.isPinned), !connected.isEmpty, let activeProject {
+    primaryListsWork = sync.focusedMachineListsWork
+    wakingCloudMachineName = sync.anyWakingCloudMachineName
+    cloudWakeFailureKey = sync.anyCloudWakeFailure?.fleetKey
+    cloudWakeFailureMessage = sync.anyCloudWakeFailure?.message
+    // Every paired machine with a copy whose work lists: live, reconnecting,
+    // or an ADE Cloud computer. An offline, parked or disconnected computer's
+    // rows are not listed.
+    if let fleet, !fleet.listedMachines.isEmpty, let activeProject {
       let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
         ?? workRepoIdentity(originUrl: sync.rosterProject(for: activeProject)?.repoOriginUrl)
       remoteMachineRepos = workRemoteMachineRepos(
-        machines: connected,
+        machines: fleet.listedMachines,
         identity: identity,
         folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
         account: sync.accountCopiesOfActiveProject()
@@ -317,6 +335,7 @@ struct WorkRootSyncInputs: Equatable {
 struct WorkRootScreen: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
+
   @EnvironmentObject private var machineFleet: MachineFleet
   @EnvironmentObject private var dictationController: DictationController
   var isTabActive = true
@@ -356,6 +375,16 @@ struct WorkRootListScreen: View, Equatable {
   let isTabActive: Bool
   let inputs: WorkRootSyncInputs
   @Binding var path: NavigationPath
+
+  /// Whether a chat destination's own computer is live. A chat on another
+  /// computer follows that computer's link; the focused computer's chats keep
+  /// the focused gate (connected and its project host ready).
+  func workDestinationIsLive(sessionId: String, remoteChat: WorkChatCrossProjectContext?) -> Bool {
+    guard let key = remoteChat?.machineKey ?? syncService.remoteChatMachineKey(sessionId: sessionId),
+          key != syncService.focusedMachineKey
+    else { return inputs.isLive }
+    return inputs.liveMachineKeys.contains(key)
+  }
 
   init(
     syncService: SyncService,
@@ -1067,6 +1096,17 @@ struct WorkRootListScreen: View, Equatable {
     case empty
   }
 
+  /// The chat beside the list in the wide split already shows the wake
+  /// (or the failed wake) of the computer it lives on.
+  private var splitChatShowsWakeStatus: Bool {
+    guard duoLayout.isWide, duoComposeRoute == nil, let route = duoSelectedRoute else { return false }
+    let key = route.remoteChat?.machineKey
+      ?? syncService.remoteChatMachineKey(sessionId: route.sessionId)
+      ?? syncService.focusedMachineKey
+    return syncService.wakingCloudMachineName(fleetKey: key) != nil
+      || syncService.cloudWakeFailure(fleetKey: key) != nil
+  }
+
   private var duoDetail: DuoDetail {
     if let route = duoComposeRoute { return .compose(route) }
     if let route = duoSelectedRoute { return .chat(route) }
@@ -1583,7 +1623,6 @@ struct WorkRootListScreen: View, Equatable {
     }
     .padding(.horizontal, 16)
     .padding(.bottom, 6)
-    .background(ADEColor.pageBackground.opacity(0.94))
   }
 
   /// The chat awaits one constructor in both layouts; only the chrome and the
@@ -1637,7 +1676,7 @@ struct WorkRootListScreen: View, Equatable {
         initialChatSummary: chatSummaries[route.sessionId]
           ?? workRemoteMachineRosterChat(sessionId: route.sessionId, in: inputs.remoteMachineRepos)?.rosterChatSummary,
         transitionNamespace: routeTransitionNamespace,
-        isLive: inputs.isLive,
+        isLive: workDestinationIsLive(sessionId: route.sessionId, remoteChat: route.remoteChat),
         navigationChrome: inColumn ? .column : .pushedDetail,
         // `sessionPresentationTaskKey` goes nil once a screen is pushed off the
         // root, so `workOrderedLanes` stops refreshing there — fall back to the
@@ -1889,6 +1928,19 @@ struct WorkRootListScreen: View, Equatable {
     // The filter panel drops from under the header (search and its filter
     // chip), not over it: on the rows, whose safe area the header insets.
     let rowsWithFilters = rows
+      // A CLI row on an ADE Cloud computer that is asleep opens once the
+      // computer is awake; the list says so meanwhile.
+      .safeAreaInset(edge: .top, spacing: 0) {
+        // A chat beside the list (the wide split) shows its own computer's
+        // wake; the list does not say it twice.
+        if !splitChatShowsWakeStatus {
+          CloudComputerWakeStatusLine(
+            wakingName: inputs.wakingCloudMachineName,
+            failure: inputs.cloudWakeFailureKey.flatMap { key in inputs.cloudWakeFailureMessage.map { (key, $0) } },
+            onDismissFailure: { SyncService.shared?.clearCloudWakeFailure(fleetKey: $0) }
+          )
+        }
+      }
       .overlay(alignment: .top) {
         if filterPanelOpen {
           ZStack(alignment: .top) {
@@ -1939,7 +1991,9 @@ struct WorkRootListScreen: View, Equatable {
           syncService.clearOpenWorkSessionRoute()
         }
       }
-      .sheet(item: $bulkExportShare) { share in
+      // The export file holds chat titles and summaries: it goes once the
+      // share sheet has handed it on.
+      .sheet(item: $bulkExportShare, onDismiss: { SyncService.removeSessionExports() }) { share in
         WorkActivityViewController(items: share.items)
       }
       .sheet(item: $manageLaneTarget) { snapshot in
@@ -2129,6 +2183,26 @@ struct WorkRootListScreen: View, Equatable {
                 duoSessionsTitleRow
               }
               duoSessionsSearchRow
+            }
+            // One backing for both rows, up through the top edge (the title
+            // row's bar padding and the safe area): rows that scroll past the
+            // top go under the header, as under the phone's Work header,
+            // and never draw through the title or the search field. A short
+            // fade below it eases the rows in instead of a hard cut.
+            .background {
+              ADEColor.pageBackground
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+            }
+            .overlay(alignment: .bottom) {
+              LinearGradient(
+                colors: [ADEColor.pageBackground, ADEColor.pageBackground.opacity(0)],
+                startPoint: .top,
+                endPoint: .bottom
+              )
+              .frame(height: 10)
+              .offset(y: 10)
+              .allowsHitTesting(false)
             }
           }
         }
@@ -2506,7 +2580,7 @@ struct WorkRootListScreen: View, Equatable {
     transitionNamespace: Namespace.ID?,
     boardCard: Bool = false
   ) -> WorkSessionListRow {
-    WorkSessionListRow(
+    return WorkSessionListRow(
       session: session,
       lane: laneById[session.laneId],
       // Fall back to the resolved lane (name/branch match) so legacy sessions
@@ -2516,6 +2590,7 @@ struct WorkRootListScreen: View, Equatable {
       chatSummary: chatSummaries[session.id],
       isArchived: archivedSessionIds.contains(session.id),
       transitionNamespace: transitionNamespace,
+      machineName: workSessionMachineName(laneId: session.laneId, options: inputs.machineFilterOptions),
       compact: compact,
       subagentMark: sessionPresentation.subagentMarkByParentId[session.id],
       showsLaneIdentity: showsLaneIdentity,
@@ -2524,7 +2599,6 @@ struct WorkRootListScreen: View, Equatable {
       // The Duo's sessions column (and an iPad's) draws the wide row; a phone
       // keeps its own full-width row, and drawer shells their compact form.
       duoRow: duoLayout.isWide && !boardCard && !compact,
-      machineName: workRemoteLaneMachineName(session.laneId, options: inputs.machineFilterOptions),
       isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,
@@ -2550,6 +2624,9 @@ struct WorkRootListScreen: View, Equatable {
       onWake: wakeSession,
       onDemoteToPeer: demoteSessionToPeer,
       onPromoteToSubagent: promoteSessionToSubagent,
+      parentChatTitle: chatSummaries[session.id]?.orchestrationParentSessionId.flatMap { parentId in
+        chatSummaries[parentId]?.title ?? syncService.chatSummaryCache[parentId]?.title
+      },
       spawnKindUpdateAvailable: inputs.spawnKindUpdateAvailable,
       deleteSessionAvailable: inputs.deleteSessionAvailable,
       onDeleteSession: deleteWorkSession,

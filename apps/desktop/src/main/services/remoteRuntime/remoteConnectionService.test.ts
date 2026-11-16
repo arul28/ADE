@@ -1340,6 +1340,12 @@ describe("RemoteConnectionService", () => {
       }),
     ).rejects.toThrow(/manually disconnected/i);
     expect(pool.callActionForTarget).not.toHaveBeenCalled();
+    // A window's connect that no person asked for (a project tab joining every
+    // computer with a copy) leaves the Disconnect standing.
+    await expect(
+      service.connect(previouslyConnected.id, { explicit: true, background: true }),
+    ).rejects.toThrow(/manually disconnected/i);
+    expect(pool.connect).not.toHaveBeenCalled();
 
     await service.connect(previouslyConnected.id, { explicit: true });
     await expect(
@@ -1354,6 +1360,36 @@ describe("RemoteConnectionService", () => {
       initiatedBy: "user",
     });
     expect(pool.callActionForTarget).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a development build dial in the background only a machine the person connected in it", async () => {
+    const saved = target("saved-elsewhere", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [saved]),
+      get: vi.fn((id: string) => (id === saved.id ? saved : null)),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => ({ ...saved, ...patch })),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (entry: RemoteRuntimeTarget) => connectResult(entry)),
+      disconnect: vi.fn(),
+      callActionForTarget: vi.fn(),
+      onHostStorageWait: vi.fn(() => () => {}),
+      onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
+      onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool, { explicitConnectOnly: true });
+
+    // A project tab joining every computer with a copy: the installed ADE on
+    // this computer keeps its connection.
+    await expect(service.connect(saved.id, { explicit: true, background: true }))
+      .rejects.toThrow(/only when you press Connect/i);
+    expect(pool.connect).not.toHaveBeenCalled();
+
+    await service.connect(saved.id, { explicit: true });
+    await service.connect(saved.id, { explicit: true, background: true });
+    expect(pool.connect).toHaveBeenLastCalledWith(saved, { bypassFailureBackoff: true, initiatedBy: "background" });
   });
 
   it("does not publish connected after a manual disconnect during pending connect", async () => {
@@ -1789,11 +1825,21 @@ describe("RemoteConnectionService", () => {
       get: vi.fn((id: string) => (id === computer.id ? computer : null)),
     } as unknown as RemoteTargetRegistry;
     let frozen = false;
+    // Up per the provider, but ADE there does not answer yet: one dial fails.
+    let starting = false;
+    const notUpYet = () => new PairedRuntimeTransportUnavailableError("Can't reach cloud-computer — it may be asleep or ADE may be stopped there.");
     const pool = {
-      connect: vi.fn(async (target: RemoteRuntimeTarget) => connectResult(target)),
+      connect: vi.fn(async (target: RemoteRuntimeTarget) => {
+        if (starting) {
+          starting = false;
+          throw notUpYet();
+        }
+        return connectResult(target);
+      }),
       disconnect: vi.fn(),
       callActionForTarget: vi.fn(async (_target: RemoteRuntimeTarget, _projectId: string, request: { domain: string; action: string }) => {
         if (frozen) throw new Error("Remote ADE service timed out waiting for method ade/actions/call (25000ms).");
+        if (starting) throw notUpYet();
         return { domain: request.domain, action: request.action, result: { ok: true }, statusHints: {} };
       }),
       onHostStorageWait: vi.fn(() => () => {}),
@@ -1846,6 +1892,25 @@ describe("RemoteConnectionService", () => {
     asleep = false;
     wokenElsewhere = true;
     await service.callAction(computer.id, "project-1", { domain: "lane", action: "create" });
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+
+    // Asleep again, then woken elsewhere and still starting: the write waits
+    // for its link, as after its own wake, instead of failing on the first dial.
+    asleep = true;
+    frozen = true;
+    await expect(read()).rejects.toThrow(/timed out/i);
+    await vi.waitFor(() => expect(service.snapshot().connections[0]?.state).toBe("idle"));
+    frozen = false;
+    asleep = false;
+    starting = true;
+    vi.useFakeTimers();
+    try {
+      const settle = service.callAction(computer.id, "project-1", { domain: "session", action: "settleSession" });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(settle).resolves.toMatchObject({ action: "settleSession" });
+    } finally {
+      vi.useRealTimers();
+    }
     expect(service.snapshot().connections[0]?.state).toBe("connected");
   });
 

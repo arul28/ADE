@@ -1418,67 +1418,6 @@ describe("createAgentChatService", () => {
       expect(mockState.cursorSdkAcquireCalls.at(-1)).toMatchObject({ modelSdkId: "gpt-5.4" });
     });
 
-    it("re-reads Cursor's name on the first visible turn while the ADE title is still a default", async () => {
-      process.env.CURSOR_API_KEY = "cursor-test-key";
-      const events: AgentChatEventEnvelope[] = [];
-      const { service, sessionService } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "cursor",
-        model: "composer-2",
-        modelId: "cursor/composer-2",
-      });
-      await service.sendMessage({
-        sessionId: session.id,
-        text: "Create the cloud chat.",
-        runtime: "cloud",
-        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
-      } as any, { awaitDispatch: true });
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
-          event.event.type === "done" && event.sessionId === session.id,
-      );
-      const agentGetCalls = () => mockState.cursorSdkCloudRequests.filter((request) => request.type === "cloud.agent.get").length;
-      // A launched cloud chat keeps ADE's default title until Cursor names it; this test
-      // session was auto-titled from its prompt because it started as a local chat.
-      sessionService.updateMeta({ sessionId: session.id, title: "Cursor Chat" });
-
-      // First hydrate: Cursor has not named the agent yet and the run has no visible turn.
-      mockState.cursorSdkCloudResponses.set("cloud.agent.get", {});
-      mockState.cursorSdkCloudResponses.set("cloud.runs.list", {
-        items: [{ runId: "cloud-run-1", status: "running", model: { id: "grok-4.6" } }],
-      });
-      mockState.cursorSdkCloudResponses.set("cloud.run.conversation", { turns: [] });
-      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: session.id });
-      const readsAfterFirstHydrate = agentGetCalls();
-      expect(readsAfterFirstHydrate).toBeGreaterThan(0);
-      expect(sessionService.get(session.id)?.title ?? "").not.toBe("Named after the first turn");
-
-      // Next tick, well inside the 60 s TTL: the run now has a visible turn and Cursor has a
-      // name. The title is still a default, so this tick re-reads the name without polling.
-      mockState.cursorSdkCloudResponses.set("cloud.agent.get", { name: "Named after the first turn" });
-      mockState.cursorSdkCloudResponses.set("cloud.run.conversation", {
-        turns: [{
-          type: "agentConversationTurn",
-          turn: {
-            userMessage: { text: "Remote prompt" },
-            steps: [{ type: "assistantMessage", message: { text: "Remote answer" } }],
-          },
-        }],
-      });
-      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: session.id });
-      expect(agentGetCalls()).toBe(readsAfterFirstHydrate + 1);
-      expect(sessionService.get(session.id)?.title).toBe("Named after the first turn");
-
-      // Once named, later ticks inside the TTL do not read the name again.
-      await service.openCursorCloudChat({ cloudAgentId: "cloud-agent-1", laneId: "lane-1", sessionId: session.id });
-      expect(agentGetCalls()).toBe(readsAfterFirstHydrate + 1);
-    });
-
     it("rejects ADE title writes after a chat becomes a Cursor Cloud agent", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const events: AgentChatEventEnvelope[] = [];

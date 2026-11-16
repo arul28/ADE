@@ -118,6 +118,8 @@ export type NoticeAction = {
   busy?: boolean;
   /** Tooltip. */
   title?: string;
+  /** Accessible name, when the visible label is a short form of it. */
+  ariaLabel?: string;
   /** For disclosure actions (for example, "Details"), announces open state via `aria-expanded`. */
   expanded?: boolean;
 };
@@ -193,6 +195,7 @@ export function NoticeButton({
       disabled={disabled}
       aria-busy={action.busy || undefined}
       aria-expanded={action.expanded}
+      aria-label={action.ariaLabel}
       title={action.title}
       onClick={() => {
         if (action.onClick) action.onClick();

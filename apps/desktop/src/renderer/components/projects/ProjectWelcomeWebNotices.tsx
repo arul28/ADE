@@ -47,10 +47,21 @@ export function webZeroMachinesNotice(args: {
   onGetAde: () => void;
   /** How many projects the account lists (they show below, each opens with no computer). */
   accountProjectCount: number;
+  /** Lanes other accounts share with this one, and open invites: they run on the owner's computer. */
+  sharedLaneCount: number;
 }): WebZeroMachinesNotice {
   const { account, directoryLoading } = args;
   switch (account.state) {
     case "signed_in":
+      // A guest needs no computer: a shared lane runs on its owner's.
+      if (args.sharedLaneCount > 0 && args.accountProjectCount === 0) {
+        return {
+          kind: "no_machines",
+          headline: "Shared lanes need no computer.",
+          detail: "They run on the owner's computer and open from Projects below. Install ADE only to work on projects of your own.",
+          action: { label: "Get ADE", onSelect: args.onGetAde, busy: false },
+        };
+      }
       // Not a dead end (S14): the account's projects still list below, and
       // the next step is a computer to run them on.
       return {

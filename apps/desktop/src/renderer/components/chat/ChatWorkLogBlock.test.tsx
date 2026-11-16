@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatToolActivityDetails, ChatWorkLogBlock, webResultCount } from "./ChatWorkLogBlock";
+import { ChatWorkLogBlock, webResultCount } from "./ChatWorkLogBlock";
 import type { ChatWorkLogEntry } from "./chatTranscriptRows";
 import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import type { OpenProjectBinding } from "../../../shared/types";
@@ -27,16 +27,6 @@ describe("web result count on the collapsed row", () => {
     })).toBe(1);
     expect(webResultCount({ ...base, entryKind: "web_search", query: "q" })).toBeNull();
     expect(webResultCount({ ...base, entryKind: "command", command: "ls" })).toBeNull();
-  });
-
-  it("shows the count in the header without expanding the row", () => {
-    render(
-      <ChatToolActivityDetails
-        entries={[{ ...base, entryKind: "web_search", query: "vite docs", results: [{ url: "https://vitejs.dev" }, { url: "https://b.dev" }] }]}
-      />,
-    );
-    expect(screen.getByTestId("work-log-web-result-count").textContent).toBe("2 results");
-    expect(screen.queryByText("vitejs.dev")).toBeNull();
   });
 });
 

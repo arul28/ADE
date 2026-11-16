@@ -904,7 +904,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       }
       resetCreateDialogState();
       onOpenChange(false);
-      void startAdeCloudLaunch({ args, sizeId: adeCloud.tierId, originUrl: repoOriginUrl, binding: readerPin });
+      void startAdeCloudLaunch({ args, sizeId: adeCloud.tierId, sizeChoice: adeCloud.sizeChoice, originUrl: repoOriginUrl, binding: readerPin });
       return;
     }
 
@@ -1008,6 +1008,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     machineTargets,
     adeCloudPicked,
     adeCloud.tierId,
+    adeCloud.sizeChoice,
     adeCloud.account,
     repoOriginUrl,
     createBranches,

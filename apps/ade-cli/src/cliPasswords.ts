@@ -116,7 +116,7 @@ export function buildPasswordsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   const action = PASSWORDS_SUBCOMMANDS[sub];
   if (!action) {
-    throw new CliUsageError(`Unknown passwords command "${sub}". Use list, status or sync; the person adds and changes items in Settings › Passwords.`);
+    throw new CliUsageError(`Unknown passwords command "${sub}". Use list, status or sync; the person adds and changes items in Settings › Passwords & Secrets.`);
   }
   return {
     kind: "execute",
@@ -146,7 +146,7 @@ export function formatSecretsExec(value: unknown): string {
 export function formatPasswords(value: unknown): string {
   const result = unwrapActionEnvelope(value);
   if (Array.isArray(result)) {
-    if (result.length === 0) return "No saved logins or secrets. The person adds them in Settings › Passwords.";
+    if (result.length === 0) return "No saved logins or secrets. The person adds them in Settings › Passwords & Secrets.";
     return result.filter(isRecord).map((item) => {
       if (item.kind === "secret") {
         return `secret  ${asString(item.title) ?? "?"}${typeof item.projectScope === "string" ? `  (project ${item.projectScope})` : "  (all projects)"}`;
@@ -176,6 +176,6 @@ export function formatPasswordsCode(value: unknown): string {
   if (isRecord(result) && result.source === "authenticator") {
     return `${asString(result.code) ?? ""}  (authenticator; valid ${String(result.secondsLeft ?? "?")} s more)`;
   }
-  if (!isRecord(result)) return "No authenticator code for that site. The person can add the site's authenticator key to its login in Settings › Passwords, or the code comes by text or email (open the mail in the ADE browser).";
+  if (!isRecord(result)) return "No authenticator code for that site. The person can add the site's authenticator key to its login in Settings › Passwords & Secrets, or the code comes by text or email (open the mail in the ADE browser).";
   return `${asString(result.code) ?? ""}  (${asString(result.site) ?? ""}${asString(result.username) ? ` as ${asString(result.username)}` : ""}; valid ${String(result.secondsLeft ?? "?")} s more)`;
 }

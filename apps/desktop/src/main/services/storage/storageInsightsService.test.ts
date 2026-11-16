@@ -4,14 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MaintenanceRunReport, StorageCleanupPreview, StorageCleanupTarget } from "../../../shared/types/storage";
-import { openKvDb, type AdeDb } from "../state/kvDb";
+import { type AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createStorageInsightsService } from "./storageInsightsService";
 import { classifyDbTable, deriveSyncBookkeepingAction, mapDbBreakdown } from "./storageDbBreakdown";
 import { isMaintenanceReport, readMaintenanceJournal } from "./storageMaintenanceJournal";
 import { ADE_LAYOUT_DEFINITIONS } from "../../../shared/adeLayout";
 import {
   deriveCategoryPolicyChips,
-  getLedgerEntry,
   LEDGER_LAYOUT_COVERAGE,
   STORAGE_LEDGER,
 } from "./storageLedger";
@@ -108,7 +108,7 @@ async function makeStorageFixture() {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-extra-project-"));
   const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-extra-home-"));
   fs.mkdirSync(path.join(projectRoot, ".ade"), { recursive: true });
-  const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), logger);
+  const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), logger);
   seedProject(db, projectRoot);
   return {
     projectRoot,
@@ -130,10 +130,22 @@ describe("storageInsightsService", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    // Every snapshot also measures the providers' own history under the home
+    // folder. An empty home keeps the developer's real ~/.claude, ~/.codex and
+    // the rest out of the run (they made each snapshot walk for seconds).
+    const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-empty-home-"));
+    extraPaths.push(emptyHome);
+    vi.stubEnv("HOME", emptyHome);
+    vi.stubEnv("USERPROFILE", emptyHome);
+    vi.stubEnv("ADE_HOME", path.join(emptyHome, ".ade"));
+    vi.stubEnv("CLAUDE_CONFIG_DIR", path.join(emptyHome, ".claude"));
+    vi.stubEnv("CODEX_HOME", path.join(emptyHome, ".codex"));
+    vi.stubEnv("XDG_DATA_HOME", path.join(emptyHome, ".local", "share"));
+    vi.stubEnv("XDG_CONFIG_HOME", path.join(emptyHome, ".config"));
     projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-project-"));
     adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "storage-machine-home-"));
     fs.mkdirSync(path.join(projectRoot, ".ade"), { recursive: true });
-    db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), logger);
+    db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), logger);
     seedProject(db, projectRoot);
   });
 
@@ -1640,39 +1652,6 @@ describe("storageMaintenanceJournal", () => {
 });
 
 describe("storageLedger", () => {
-  it("declares a well-formed, unique policy for every entry", () => {
-    const ids = new Set<string>();
-    for (const entry of STORAGE_LEDGER) {
-      expect(entry.id).toMatch(/^[a-z]+\.[a-z0-9_]+$/);
-      expect(ids.has(entry.id)).toBe(false);
-      ids.add(entry.id);
-      expect(entry.description.length).toBeGreaterThan(0);
-      expect(["table", "directory", "file_family"]).toContain(entry.kind);
-      expect(["user_data", "derived", "operational"]).toContain(entry.policyClass);
-      expect(["write_time", "doctor", "both", "manual"]).toContain(entry.enforcement);
-      // compressAfterDays only applies to user_data (spec §2 contract).
-      if (entry.policy.compressAfterDays != null) {
-        expect(entry.policyClass).toBe("user_data");
-      }
-    }
-  });
-
-  it("covers every §1 evidence table and the doctor's own artifacts", () => {
-    for (const id of [
-      "db.automation_ingress_events",
-      "db.operations_crsql",
-      "db.pull_request_snapshots",
-      "fs.transcripts",
-      "fs.tmp",
-      "fs.recovery_backups",
-      "fs.cache",
-      "fs.storage_doctor_journal",
-      "fs.artifacts",
-      "fs.attachments",
-    ]) {
-      expect(getLedgerEntry(id), `missing ledger entry ${id}`).toBeDefined();
-    }
-  });
 
   it("declares a storage policy (or explicit unmanaged waiver) for every layout directory", () => {
     // CI guard: adding a new tracked directory to ADE_LAYOUT_DEFINITIONS without

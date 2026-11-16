@@ -28,6 +28,7 @@
   color: var(--kit-text-2);
   cursor: pointer;
 }
+.ade-ls-disclosure-hint { margin-left: 6px; font-weight: 400; color: var(--kit-text-3); }
 .ade-ls-disclosure:hover { color: var(--color-fg); }
 .ade-ls-disclosure:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 4px; }
 .ade-ls-models { display: flex; flex: 1 1 100%; min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; }
@@ -51,11 +52,8 @@
 .ade-ls-risk-detail { color: var(--kit-text-2); }
 
 /* ── Share sheet ──────────────────────────────────────────────────────────── */
-.ade-ls-sheet { display: grid; min-width: 0; grid-template-columns: minmax(0, 270px) minmax(0, 1fr); gap: 20px; }
-/* A narrow window stacks the panes, so the rights editor keeps its width. */
-@media (max-width: 820px) {
-  .ade-ls-sheet { grid-template-columns: minmax(0, 1fr); }
-}
+.ade-ls-sheet { display: flex; min-width: 0; flex-direction: column; gap: 16px; }
+.ade-ls-invite-input { width: 100%; height: 34px; font-size: 13px; }
 .ade-ls-people { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
 .ade-ls-pane-title {
   display: flex;
@@ -67,9 +65,6 @@
   font-weight: 500;
   color: var(--kit-text-2);
 }
-.ade-ls-pane-title .kit-num { font-weight: 400; color: var(--kit-text-3); }
-.ade-ls-invite { display: flex; min-width: 0; gap: 6px; }
-.ade-ls-invite > .kit-input { min-width: 0; flex: 1 1 auto; }
 .ade-ls-person-list { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .ade-ls-person {
   display: flex;
@@ -92,13 +87,13 @@
 .ade-ls-person-text { min-width: 0; flex: 1 1 auto; }
 .ade-ls-person-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--color-fg); }
 .ade-ls-empty { padding: 6px 8px; font-size: 12px; color: var(--kit-text-3); }
-.ade-ls-access { display: flex; min-width: 0; flex-direction: column; gap: 12px; }
+.ade-ls-access { display: flex; min-width: 0; flex-direction: column; gap: 12px; padding-top: 14px; border-top: 1px solid var(--kit-rule); }
 .ade-ls-access-head { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .ade-ls-access-who { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .ade-ls-access-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; color: var(--color-fg); }
 .ade-ls-access-actions { display: flex; flex: none; gap: 6px; margin-left: auto; }
 .ade-ls-line { font-size: 12px; line-height: 1.45; color: var(--kit-text-2); }
-.ade-ls-scroll { min-height: 0; max-height: 46vh; overflow-y: auto; padding-right: 4px; }
+.ade-ls-line[data-tone="crit"] { color: var(--kit-crit); }
 
 /* ── Guest view ───────────────────────────────────────────────────────────── */
 /* A connection state as a dot and a word, never a pill. */
@@ -125,5 +120,20 @@
 .ade-ls-rights .ade-ap-rowcard { padding-top: 9px; padding-bottom: 9px; }
 .ade-ls-rights .ade-ap-rowtitle { font-size: 12.5px; }
 .ade-ls-rights .ade-ap-rowhint { font-size: 11.5px; }
-.ade-ls-lock { display: inline-block; margin-right: 3px; vertical-align: -1px; }
 .ade-ls-meta [data-tone="warn"] { color: var(--kit-warn); }
+
+/* The one Accept of an invite, on the lane it opens. */
+.ade-ls-invite-strip {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--kit-panel-edge);
+  border-left: 2px solid var(--kit-tag-accent);
+  border-radius: 8px;
+  background: var(--kit-panel-bg);
+}
+@media (max-width: 560px) {
+  .ade-ls-invite-strip { flex-direction: column; align-items: stretch; }
+}

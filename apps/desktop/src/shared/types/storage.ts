@@ -23,6 +23,68 @@ export function isUrgentDiskPressure(state: DiskPressureState): boolean {
   return state === "critical" || state === "exhausted";
 }
 
+/**
+ * A lane's setup ran out of disk: the sentence its step shows instead of the
+ * tool's own output (npm's is pages of warnings before the one line that
+ * matters). Every ADE Cloud size starts with the same disk, so it never says
+ * to pick a bigger size; a cloud computer grows its disk and runs setup again
+ * (`makeRoomForEnvironment` in chatLaunchService.ts).
+ */
+export const LANE_SETUP_DISK_FULL_ERROR = "Setup ran out of disk space (no space left on device). Free up space on the computer the lane is on, then retry.";
+
+/**
+ * Linux reports a full file-watcher table with the same code as a full disk
+ * ("ENOSPC: System limit for number of file watchers reached"): webpack, vite,
+ * jest and next all hit it. More disk never helps it.
+ */
+const WATCHER_LIMIT = /file watchers|inotify|max_user_watches|watch(?:er)? limit/i;
+const DISK_FULL_LINE = /\bENOSPC\b|no space left on device/i;
+
+/** The first line of `text` that says the disk is full, never a file-watcher limit; null when none does. */
+export function diskFullLine(text: string | null | undefined): string | null {
+  if (!text || !DISK_FULL_LINE.test(text)) return null;
+  for (const line of text.split(/\r?\n/)) {
+    if (DISK_FULL_LINE.test(line) && !WATCHER_LIMIT.test(line)) return line.trim().slice(0, 200);
+  }
+  return null;
+}
+
+const LANE_SETUP_OUT_OF_MEMORY_LEAD = "Setup used nearly all of this computer's memory";
+
+/**
+ * A lane's setup took nearly all of an ADE Cloud computer's memory and ADE
+ * stopped it (`laneSetupMemoryGuard.ts`): with no swap, the provider would
+ * otherwise restart the whole computer and the setup would run, and fill it,
+ * again. Unlike the disk, memory comes only with a bigger size.
+ */
+export function laneSetupOutOfMemoryError(totalMb: number): string {
+  const gb = Math.max(1, Math.round(totalMb / 1024));
+  return `${LANE_SETUP_OUT_OF_MEMORY_LEAD} (${gb} GB), so ADE stopped it before the computer had to restart. Use a bigger size, or make setup use less memory, then retry.`;
+}
+
+/**
+ * Whether a setup step's error is the memory guard's sentence
+ * (`laneSetupOutOfMemoryError`), alone or among an install's other failures.
+ * An ADE Cloud launch whose size was ADE's default moves its computer up a
+ * size on it (`cloudSetupUpsize.ts`).
+ */
+export function isLaneSetupOutOfMemoryText(text: string | null | undefined): boolean {
+  return Boolean(text?.includes(LANE_SETUP_OUT_OF_MEMORY_LEAD));
+}
+
+/** A setup filled the disk, and the note that a grow is under way couldn't be saved: no grow without it. */
+export const LANE_SETUP_NO_ROOM_TO_SAVE_ERROR = "Setup filled this computer's disk, and ADE couldn't save its place to grow it. Free some space (or use Clear caches in Settings > ADE Cloud), then retry.";
+
+/** The setup's disk-full sentence with the line that said so (`diskFullLine`), for the person and for the host's own check. */
+export function laneSetupDiskFullError(line: string | null): string {
+  return line ? `${LANE_SETUP_DISK_FULL_ERROR} Last error: ${line}` : LANE_SETUP_DISK_FULL_ERROR;
+}
+
+/** Whether a command's output or an error says the disk is full (`ENOSPC`, not a watcher limit). The sentence above says so too. */
+export function isDiskFullText(text: string | null | undefined): boolean {
+  return diskFullLine(text) !== null;
+}
+
 export type StorageCategoryId =
   | "chats_history"
   | "lanes_worktrees"

@@ -1,20 +1,44 @@
 /**
- * The dialogs of Settings › Passwords.
+ * The dialogs of Settings › Passwords & Secrets. Each talks to this
+ * computer's brain: the vault is the account's, and a this-computer-only
+ * secret lives here.
  *
  * Each one is mounted only while it is open, so its fields — a password or a
  * secret value included — live no longer than the dialog itself. Closing it
  * unmounts the component and the value is gone from the renderer.
  */
 import { useRef, useState } from "react";
-import { Eye, EyeSlash, Key, Password, ShieldWarning } from "@phosphor-icons/react";
-import type { PasswordItemSummary, PasswordsStatus } from "../../../../shared/types/passwords";
-import type { OpenProjectBinding } from "../../../../shared/types";
+import { CaretRight, Eye, EyeSlash, FileText, Key, Password, ShieldWarning } from "@phosphor-icons/react";
+import { SECRET_NAME_PATTERN, SECRET_NAME_RULE, type PasswordItemSummary, type PasswordsProject, type PasswordsStatus } from "../../../../shared/types/passwords";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
-import { ipcErrorMessage } from "../../../lib/format";
+import { errorText, personCheckDeclined, scopeLabel } from "./passwordsFormat";
 
-/** The brain's own rule for a secret's name (`passwordService.saveSecret`). */
-const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
+/** The project picker of a secret: every project, then this computer's projects. */
+function ProjectSelect({
+  value,
+  onChange,
+  projects,
+  label = "Project",
+}: {
+  value: string | null;
+  onChange: (scope: string | null) => void;
+  projects: readonly PasswordsProject[];
+  label?: string;
+}) {
+  return (
+    <label className="ade-pw-field">
+      <span>{label}</span>
+      <select className="kit-input" value={value ?? ""} onChange={(event) => onChange(event.target.value || null)}>
+        <option value="">Every project</option>
+        {projects.map((project) => (
+          <option key={project.scope} value={project.scope}>{project.name}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
 /**
  * What the brain will accept as a site, checked here first so a typo is a
@@ -91,16 +115,19 @@ function SecretField({
   );
 }
 
-function errorText(error: unknown, fallback: string): string {
-  return ipcErrorMessage(error) || fallback;
+/**
+ * The project a dialog saves for: the open project until the person picks
+ * one, also when this computer's projects arrive after the dialog opened.
+ */
+function useScopeChoice(defaultScope: string | null): [string | null, (next: string | null) => void] {
+  const [picked, setPicked] = useState<{ scope: string | null } | null>(null);
+  return [picked ? picked.scope : defaultScope, (next) => setPicked({ scope: next })];
 }
 
 export function NewLoginDialog({
-  pin,
   onClose,
   onSaved,
 }: {
-  pin: OpenProjectBinding | null;
   onClose: () => void;
   onSaved: (item: PasswordItemSummary) => void;
 }) {
@@ -137,7 +164,7 @@ export function NewLoginDialog({
         password,
         ...(notes.trim() ? { notes } : {}),
         ...(totp.trim() ? { totpUri: totp.trim() } : {}),
-      }, pin);
+      });
       setPassword("");
       setTotp("");
       onSaved(saved);
@@ -234,16 +261,22 @@ export function NewLoginDialog({
 }
 
 export function NewSecretDialog({
-  pin,
+  projects,
+  defaultScope,
   onClose,
   onSaved,
 }: {
-  pin: OpenProjectBinding | null;
+  projects: readonly PasswordsProject[];
+  /** The open project's, when it is one of `projects`; else every project. */
+  defaultScope: string | null;
   onClose: () => void;
   onSaved: (item: PasswordItemSummary) => void;
 }) {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
+  const [scope, setScope] = useScopeChoice(defaultScope);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [deviceOnly, setDeviceOnly] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -252,8 +285,8 @@ export function NewSecretDialog({
   const submit = async () => {
     if (saving) return;
     const trimmed = name.trim();
-    if (!SECRET_NAME.test(trimmed)) {
-      setNameError("Use letters, numbers and underscores, and start with a letter or underscore.");
+    if (!SECRET_NAME_PATTERN.test(trimmed)) {
+      setNameError(SECRET_NAME_RULE);
       nameRef.current?.focus();
       return;
     }
@@ -264,11 +297,7 @@ export function NewSecretDialog({
     setSaving(true);
     setError(null);
     try {
-      const saved = await window.ade.passwords.saveSecret({
-        name: trimmed,
-        value,
-        projectScope: null,
-      }, pin);
+      const saved = await window.ade.passwords.saveSecret({ name: trimmed, value, projectScope: scope, deviceOnly });
       setValue("");
       onSaved(saved);
     } catch (err) {
@@ -284,7 +313,7 @@ export function NewSecretDialog({
       open
       onOpenChange={(open) => { if (!open && !saving) onClose(); }}
       title="New secret"
-      description="An API key or token agents can use in commands they run. They never see its value."
+      description="An API key or token agents can use in the commands they run. They never see its value."
       icon={<Key size={16} weight="duotone" />}
       tone="accent"
       size="md"
@@ -317,12 +346,25 @@ export function NewSecretDialog({
           <span>Value</span>
           <SecretField value={value} onChange={setValue} placeholder="Value" />
         </div>
-        <label className="ade-pw-field">
-          <span>Project</span>
-          <select className="kit-input" value="all" disabled>
-            <option value="all">All projects</option>
-          </select>
-        </label>
+        <ProjectSelect value={scope} onChange={setScope} projects={projects} />
+        <button
+          type="button"
+          className="ade-pw-more"
+          aria-expanded={moreOpen}
+          onClick={() => setMoreOpen((open) => !open)}
+        >
+          <CaretRight size={11} weight="bold" className="ade-pw-more-caret" />
+          More options
+        </button>
+        {moreOpen ? (
+          <label className="ade-pw-check">
+            <input type="checkbox" checked={deviceOnly} onChange={(event) => setDeviceOnly(event.target.checked)} />
+            <span>
+              Keep on this computer only
+              <small>Never synced. It shows, and works, only on this computer.</small>
+            </span>
+          </label>
+        ) : null}
         {error ? (
           <Banner layout="inline" model={{ id: "passwords-new-secret-error", tone: "error", title: error, report: false }} />
         ) : null}
@@ -333,17 +375,117 @@ export function NewSecretDialog({
 }
 
 /**
+ * Import secrets from a `.env` file the person picked on this computer: pick
+ * which, and for which project. Values are shown as their length only.
+ */
+export function ImportEnvDialog({
+  file,
+  projects,
+  defaultScope,
+  existing,
+  onClose,
+  onImported,
+}: {
+  file: { fileName: string; entries: Array<{ name: string; value: string }> };
+  projects: readonly PasswordsProject[];
+  defaultScope: string | null;
+  /** Names already saved, by scope (null: every project), to say what is replaced. */
+  existing: ReadonlyMap<string | null, ReadonlySet<string>>;
+  onClose: () => void;
+  onImported: (result: { imported: string[]; replaced: string[] }, scope: string | null) => void;
+}) {
+  const [scope, setScope] = useScopeChoice(defaultScope);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(file.entries.map((entry) => entry.name)));
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const taken = existing.get(scope) ?? new Set<string>();
+  const allSelected = selected.size === file.entries.length;
+
+  const submit = async () => {
+    if (busy || selected.size === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const entries = file.entries.filter((entry) => selected.has(entry.name));
+      const result = await window.ade.passwords.importSecrets({ projectScope: scope, entries });
+      onImported(result, scope);
+    } catch (err) {
+      setError(errorText(err, "ADE couldn't import those secrets."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => { if (!open && !busy) onClose(); }}
+      title={`Import from ${file.fileName}`}
+      description="Pick the secrets to save. Agents can use them in commands but never see them."
+      icon={<FileText size={16} weight="duotone" />}
+      tone="accent"
+      size="md"
+      dismissible={!busy}
+      actions={[
+        {
+          label: busy ? "Importing…" : `Import ${selected.size} secret${selected.size === 1 ? "" : "s"}`,
+          variant: "solid",
+          onClick: () => void submit(),
+          disabled: busy || selected.size === 0,
+          busy,
+        },
+        { label: "Cancel", variant: "secondary", onClick: onClose, disabled: busy },
+      ]}
+    >
+      <div className="ade-pw-form">
+        <ProjectSelect value={scope} onChange={setScope} projects={projects} label="For" />
+        <div className="ade-pw-import-head">
+          <span>{selected.size} of {file.entries.length} selected</span>
+          <button
+            type="button"
+            className="ade-pw-link"
+            onClick={() => setSelected(allSelected ? new Set() : new Set(file.entries.map((entry) => entry.name)))}
+          >
+            {allSelected ? "Clear all" : "Select all"}
+          </button>
+        </div>
+        <div className="ade-pw-import-list" role="group" aria-label="Secrets in the file">
+          {file.entries.map((entry) => (
+            <label key={entry.name} className="ade-pw-import-row">
+              <input
+                type="checkbox"
+                checked={selected.has(entry.name)}
+                onChange={() => {
+                  const next = new Set(selected);
+                  if (next.has(entry.name)) next.delete(entry.name);
+                  else next.add(entry.name);
+                  setSelected(next);
+                }}
+              />
+              <span className="ade-pw-import-name">{entry.name}</span>
+              {taken.has(entry.name) ? <span className="kit-tag" data-tone="warn">Replaces</span> : null}
+              <span className="ade-pw-import-len">{entry.value.length} characters</span>
+            </label>
+          ))}
+        </div>
+        {error ? (
+          <Banner layout="inline" model={{ id: "passwords-import-env-error", tone: "error", title: error, report: false }} />
+        ) : null}
+      </div>
+    </Dialog>
+  );
+}
+
+/**
  * Change a saved item's one secret part: a login's password or a secret's
  * value. Only that is sent; the brain keeps the rest of the item as it is.
  */
 export function ChangeValueDialog({
   item,
-  pin,
   onClose,
   onSaved,
 }: {
   item: PasswordItemSummary;
-  pin: OpenProjectBinding | null;
   onClose: () => void;
   onSaved: (item: PasswordItemSummary) => void;
 }) {
@@ -363,8 +505,8 @@ export function ChangeValueDialog({
     setError(null);
     try {
       const saved = isLogin
-        ? await window.ade.passwords.saveLogin({ id: item.id, password: value }, pin)
-        : await window.ade.passwords.saveSecret({ id: item.id, name: item.title, value, projectScope: item.projectScope }, pin);
+        ? await window.ade.passwords.saveLogin({ id: item.id, password: value })
+        : await window.ade.passwords.saveSecret({ id: item.id, name: item.title, value, projectScope: item.projectScope });
       setValue("");
       onSaved(saved);
     } catch (err) {
@@ -413,11 +555,9 @@ export function ChangeValueDialog({
 const RESET_WORD = "reset";
 
 export function ResetPasswordsDialog({
-  pin,
   onClose,
   onReset,
 }: {
-  pin: OpenProjectBinding | null;
   onClose: () => void;
   onReset: (status: PasswordsStatus) => void;
 }) {
@@ -432,10 +572,10 @@ export function ResetPasswordsDialog({
     setBusy(true);
     setError(null);
     try {
-      const next = await window.ade.passwords.reset({ confirm: "reset" }, pin);
+      const next = await window.ade.passwords.reset({ confirm: "reset" });
       onReset(next);
     } catch (err) {
-      setError(errorText(err, "ADE couldn't reset Passwords."));
+      if (!personCheckDeclined(err)) setError(errorText(err, "ADE couldn't reset Passwords."));
     } finally {
       setBusy(false);
     }
@@ -445,8 +585,8 @@ export function ResetPasswordsDialog({
     <Dialog
       open
       onOpenChange={(open) => { if (!open && !busy) onClose(); }}
-      title="Reset Passwords"
-      description="Deletes every saved login and secret on every computer, and starts an empty vault. This can't be undone."
+      title="Reset Passwords & Secrets"
+      description="Deletes every saved login, code, passkey and secret on every computer, and starts an empty vault. Secrets kept on one computer only stay. This can't be undone."
       icon={<ShieldWarning size={16} weight="duotone" />}
       tone="error"
       size="md"
@@ -454,7 +594,7 @@ export function ResetPasswordsDialog({
       initialFocusRef={inputRef}
       dismissible={!busy}
       actions={[
-        { label: busy ? "Resetting…" : "Reset Passwords", variant: "solid", onClick: () => void submit(), disabled: !armed || busy, busy },
+        { label: busy ? "Resetting…" : "Reset everything", variant: "solid", onClick: () => void submit(), disabled: !armed || busy, busy },
         { label: "Cancel", variant: "secondary", onClick: onClose, disabled: busy },
       ]}
     >

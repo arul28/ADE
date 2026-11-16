@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --var SENTRY_ENVIRONMENT:development",
-    "deploy": "npm run d1:migrate:remote && wrangler deploy",
+    "deploy": "npm run deploy:prepare && npm run deploy:upload",
+    "deploy:prepare": "npm run d1:migrate:remote",
+    "deploy:upload": "wrangler deploy",
     "d1:migrate:local": "wrangler d1 migrations apply ade-github-relay --local",
     "d1:migrate:remote": "wrangler d1 migrations apply ade-github-relay --remote",
     "build": "wrangler deploy --dry-run --outdir dist",

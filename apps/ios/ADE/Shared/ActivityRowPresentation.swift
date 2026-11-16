@@ -876,8 +876,8 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
     /// glyph, so it identifies nothing while still making a claim about what is
     /// running. The word identifies; that is the whole job of this slot.
     ///
-    /// The machine is deliberately absent — it already sits on line one, next
-    /// to the lane.
+    /// The machine is deliberately absent: rows name no computer (the
+    /// long-press menu and the chat do).
     ///
     /// The model and the status note are deliberately EXCLUSIVE, where the
     /// model used to be unconditional. One `caption2` line clipped at
@@ -938,15 +938,6 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
                 return false
             }
         }
-    }
-
-    /// "Studio Mac · ADE" — the row's scope in one line.
-    public var scopeLabel: String {
-        let project = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let machine = machineName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if machine.isEmpty { return project }
-        if project.isEmpty { return machine }
-        return "\(machine) · \(project)"
     }
 
     /// Compact elapsed copy for the "Working 14s" ticker. Mirrors

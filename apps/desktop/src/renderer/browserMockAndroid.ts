@@ -73,8 +73,10 @@ const VIDEO_HEIGHT = 1280;
 let mockOrientation: "portrait" | "landscape" = mockParam("mockAndroidLandscape") !== null ? "landscape" : "portrait";
 const LCD = { width: 1080, height: 2400 };
 
-function remoteWorkCopyEmpty(): boolean {
-  return mockParam("mockAndroidRemote") === "none";
+/** `=two` adds a newer work copy on "MacBook Pro (97)" that holds no device. */
+function remoteWorkCopyEmpty(laneId: string): boolean {
+  const mode = mockParam("mockAndroidRemote");
+  return mode === "none" || (mode === "two" && laneId === "remote-work-97aa");
 }
 
 function scenario(): Scenario {
@@ -302,7 +304,7 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
   /** `remote`: another machine answers (a pinned call), which can always run an emulator. */
   const status = (forLane: string | null | undefined, remote = false): AndroidEmulatorStatus => {
     const answer: Scenario = remote ? "live" : which;
-    if (forLane?.startsWith("remote-work-") && remoteWorkCopyEmpty()) {
+    if (forLane?.startsWith("remote-work-") && remoteWorkCopyEmpty(forLane)) {
       return {
         platformSupported: true,
         unsupportedReason: null,

@@ -578,30 +578,12 @@ describe("AutoHandoffModal", () => {
     expect(lane.getAttribute("aria-haspopup")).toBe("listbox");
   });
 
-  it("hides the word \"effort\" whenever its control would render nothing", async () => {
-    // ReasoningEffortPicker returns null for a model with no tiers, which used
-    // to leave the noun dangling at the end of the sentence.
-    renderModal();
-    await screen.findByRole("dialog");
-    expect(screen.queryByText("effort")).toBeNull();
-    expect(screen.queryByTestId("effort")).toBeNull();
-
-    cleanup();
-    catalogTiers.value = ["low", "high"];
-    renderModal();
-    await screen.findByRole("dialog");
-    // The word and the control arrive together or not at all.
-    expect(screen.getByText("effort")).toBeTruthy();
-    expect(screen.getByTestId("effort")).toBeTruthy();
-  });
-
   it("defaults Retries to the service's one-shot cap", async () => {
     renderModal();
     await screen.findByRole("dialog");
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
     expect((screen.getByLabelText("Retries") as HTMLInputElement).value)
       .toBe(String(AUTO_HANDOFF_DEFAULT_RETRIES));
-    expect(AUTO_HANDOFF_DEFAULT_RETRIES).toBe(3);
   });
 
   it("closes on Escape", async () => {

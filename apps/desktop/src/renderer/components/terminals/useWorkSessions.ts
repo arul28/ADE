@@ -30,6 +30,7 @@ import {
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { runFirstLoadWithRetry } from "../../lib/firstLoadRetry";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
+import { ensureRootFullAccessFor } from "../chat/rootFullAccessPrompt";
 import {
   canonicalInputFromSummary,
   effectiveSessionFilingBuckets,
@@ -68,7 +69,7 @@ import {
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
-import { requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
+import { requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, unionSlotIdForBinding, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
 import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
@@ -94,6 +95,12 @@ const OPTIMISTIC_PTY_SESSION_TTL_MS = 2 * 60 * 1000;
 /** Upper bound on the single snooze-expiry timer (setTimeout overflows past ~24.8 days). */
 const SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 const STOPPED_RUNTIME_GUARD_TTL_MS = 12_000;
+/**
+ * How long an open row this page has not seen yet stays open after the project
+ * opens. Another computer's rows arrive after the tab's own list (a connect, a
+ * saved chat list), so a reload must not close the chat that was open there.
+ */
+const UNSEEN_OPEN_ROW_GRACE_MS = 30_000;
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_LANE_SESSION_ORDER: Record<string, string[]> = {};
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -243,7 +250,7 @@ export type WorkBoardBuckets = Record<WorkBoardColumn, TerminalSessionSummary[]>
 import type { WorkBoardWaitingReason } from "../../../shared/types/chat";
 import { lanePrWaitingReason } from "../../../shared/sessionCanonicalState";
 import { useTabCopyPin } from "../../state/repositoryScope";
-import { NO_CHAT_MACHINE_MESSAGE } from "../chat/chatMachinePin";
+import { noChatMachineError } from "../chat/chatMachinePin";
 
 export type { WorkBoardWaitingReason };
 export { lanePrWaitingReason };
@@ -847,7 +854,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       if (!binding || bindingKey === activeChatLaunchBindingKey || !crossMachineBindingKeys.has(bindingKey)) continue;
       if (foreignLaunchRefreshRequestedRef.current.has(snapshot.launchId)) continue;
       foreignLaunchRefreshRequestedRef.current.add(snapshot.launchId);
-      requestCrossMachineLanesForMachine(machineIdForBinding(binding));
+      requestCrossMachineLanesForMachine(unionSlotIdForBinding(binding));
     }
   }, [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys]);
   // Once the roster has listed a launch's real chat, its stand-in never bridges
@@ -1770,6 +1777,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }
     const hostPin = tabCopyPinRef.current;
     if (!hostPin) {
+      // No address for the tab's computer (it is offline, or the tab is just
+      // coming back to the front): an empty list here is not the computer's
+      // answer, so it must not close the chats the tab has open.
+      hasAuthoritativeSessionsRef.current = false;
       setHostSessions([]);
       setLoading(false);
       return;
@@ -2498,6 +2509,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     () => (selectedSessionId ? sessionsById.get(selectedSessionId) ?? null : null),
     [selectedSessionId, sessionsById],
   );
+  // Rows this page has listed since the project opened. Until the grace ends,
+  // an open row never listed yet is still loading, not gone.
+  const seenSessionIdsRef = useRef(new Set<string>());
+  const [unseenOpenRowGraceOver, setUnseenOpenRowGraceOver] = useState(false);
+  useEffect(() => {
+    seenSessionIdsRef.current = new Set();
+    setUnseenOpenRowGraceOver(false);
+    const timer = window.setTimeout(() => setUnseenOpenRowGraceOver(true), UNSEEN_OPEN_ROW_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [projectStateKey]);
   const canPruneSessionIndex = useCallback(
     () => pendingProjectSwitchRef.current == null && hasAuthoritativeSessionsRef.current,
     [],
@@ -2527,8 +2548,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const sessionId of knownLaunchSessionIds) {
       validIds.add(sessionId);
     }
+    const seen = seenSessionIdsRef.current;
+    for (const sessionId of sessionsById.keys()) seen.add(sessionId);
 
     setProjectViewState((prev) => {
+      if (!unseenOpenRowGraceOver) {
+        for (const id of prev.openItemIds) if (!seen.has(id)) validIds.add(id);
+        if (prev.selectedItemId && !seen.has(prev.selectedItemId)) validIds.add(prev.selectedItemId);
+      }
       const nextOpen = prev.openItemIds.filter((id) => validIds.has(id));
       const userIsViewingDraft = prev.activeItemId == null && prev.selectedItemId == null;
       const nextActive =
@@ -2559,7 +2586,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         selectedItemId: nextSelected,
       };
     });
-  }, [knownLaunchSessionIds, projectStateKey, sessionsById, setProjectViewState]);
+  }, [knownLaunchSessionIds, projectStateKey, sessionsById, setProjectViewState, unseenOpenRowGraceOver]);
 
   const rememberStoppedRuntime = (ptyId: string, sessionId: string | undefined, endedAt: string) => {
     if (!sessionId) return;
@@ -2621,7 +2648,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       try {
         const disposeArgs = { ptyId, ...(sessionId ? { sessionId } : {}) };
         // No machine for the session: the stop cannot reach it.
-        if (!pin) throw new Error(NO_CHAT_MACHINE_MESSAGE);
+        if (!pin) throw noChatMachineError();
         const result = await window.ade.pty.dispose(disposeArgs, pin);
         if (result?.disposed === false) {
           if (result.reason === "owned-by-peer" || result.reason === "session-mismatch") {
@@ -2697,6 +2724,22 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           };
         }
       }
+      // The lane's machine starts the shell. A lane with no known machine has
+      // nowhere to start it.
+      const createPin = args.pin ?? machineRouter.pinForSession({ laneId: args.laneId });
+      if (!createPin) throw noChatMachineError();
+      // Claude Code exits at once when told to skip permissions as root. On a
+      // root machine that hasn't allowed it, ask once for the machine; a no
+      // starts the terminal in Accept edits instead of a dead one.
+      const claudeFullAccess = args.runtimeCliLaunch
+        ? args.runtimeCliLaunch.provider === "claude" && args.runtimeCliLaunch.permissionMode === "full-auto"
+        : args.profile === "claude" && args.permissionMode === "full-auto"
+          && args.startupCommand === undefined && args.command === undefined && args.args === undefined;
+      if (claudeFullAccess && !(await ensureRootFullAccessFor(createPin))) {
+        args = args.runtimeCliLaunch
+          ? { ...args, runtimeCliLaunch: { ...args.runtimeCliLaunch, permissionMode: "edit" } }
+          : { ...args, permissionMode: "edit" };
+      }
       // resolveLaunchFields preserves caller intent: any caller-supplied
       // startupCommand/command/args is used as-is, never mixed with defaults
       // from the other fields. Only when the caller passes none of them do
@@ -2729,10 +2772,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // owns the lane, out of the same account-settings copy the renderer
       // syncs. Make sure that copy holds the preset before the spawn, or the
       // CLI starts on the harness's own sign-in and reports the preset gone.
-      // The lane's machine starts the shell. A lane with no known machine has
-      // nowhere to start it.
-      const createPin = args.pin ?? machineRouter.pinForSession({ laneId: args.laneId });
-      if (!createPin) throw new Error(NO_CHAT_MACHINE_MESSAGE);
       await ensureHarnessPresetOnBrain(args.runtimeCliLaunch?.presetId, {
         targetsAnotherMachine: createPin.kind === "remote",
       });

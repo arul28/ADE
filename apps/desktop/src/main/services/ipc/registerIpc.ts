@@ -15,7 +15,7 @@ import type { MachineResetOptions, MachineResetPlan } from "../../../shared/type
 import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
 import type { IpcMainInvokeEvent } from "electron";
 import { isUnsupportedAdeActionError, stripElectronErrorWrapper } from "../../../shared/codedError";
-import { AdeExpectedError, carryExpected, expectedErrorKind } from "../../../shared/expectedError";
+import { AdeExpectedError, carryExpected, expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import { isExpectedFailure, isExpectedOutcome } from "../../../shared/sentry/expectedFailure";
 import { withoutCrossMachineCallerFields } from "../../../shared/crossMachineHandoff";
 import {
@@ -101,7 +101,6 @@ import { createSyncStatusReaders } from "../sync/syncStatusReaders";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import { normalizeAppPackageChannel, resolveReleaseChannel } from "../../../shared/packageChannel";
-import { loadMachineTelemetryId } from "../analytics/machineTelemetryId";
 import { reportsAsPackagedRelease } from "../../sentry/releaseBuild";
 import {
   findProjectCopyOnMachineForRepo,
@@ -205,7 +204,7 @@ import {
 } from "../../../shared/types/productAnalytics";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import { createAccountSignInAnalytics } from "../analytics/accountSignInAnalytics";
-import { sendSentryUserFeedback } from "../../sentry/userFeedback";
+import { NO_NOTE_FEEDBACK_MESSAGE, sendSentryUserFeedback } from "../../sentry/userFeedback";
 import { IpcHandlerTimeoutError } from "../../sentry/ipcHandlerTimeout";
 import { armDeadline } from "../../../shared/deadlineTimer";
 import { noteRendererMemory } from "../../rendererMemoryLedger";
@@ -213,25 +212,14 @@ import {
   brainActionErrorCode,
   createMachineRegisterRefusalObserver,
 } from "../analytics/reliabilityTelemetry";
-import type { createProjectSecretService } from "../secrets/projectSecretService";
+import { projectSecretScopeForRoot, type createProjectSecretService } from "../secrets/projectSecretService";
 import { purgeAccountApiKeys } from "../ai/apiKeyStore";
-import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
+import { parseProjectSecretEnv, PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
+import { PASSWORDS_PERSON_CHECK_DECLINED, type PasswordEnvFile, type PasswordsProject } from "../../../shared/types/passwords";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
 import type {
   AdeCleanupResult,
   AdeProjectSnapshot,
-  ProjectSecretDeleteArgs,
-  ProjectSecretEnvFile,
-  ProjectSecretGetArgs,
-  ProjectSecretPullResult,
-  ProjectSecretsExportResult,
-  ProjectSecretsImportArgs,
-  ProjectSecretsImportPreview,
-  ProjectSecretsImportResult,
-  ProjectSecretsListResult,
-  ProjectSecretSetArgs,
-  ProjectSecretSummary,
-  ProjectSecretValueResult,
 } from "../../../shared/types";
 import type { LaneJiraIssue } from "../../../shared/types/jira";
 import {
@@ -512,6 +500,8 @@ import type {
   AgentChatStartSideChatArgs,
   AgentChatStartSideChatResult,
   AgentChatEndSideChatArgs,
+  AgentChatRootFullAccessState,
+  AgentChatSetRootFullAccessArgs,
   AgentChatEndSideChatResult,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffArgs,
@@ -587,6 +577,10 @@ import type {
   AgentChatCancelDispatchedSteerResult,
   AgentChatUpdateSessionArgs,
   AgentChatSetScheduledWorkPausedArgs,
+  AgentChatSetScheduledWorkItemPausedArgs,
+  AgentChatSetScheduledWorkItemPausedResult,
+  AgentChatRunScheduledWorkNowArgs,
+  AgentChatRunScheduledWorkNowResult,
   AgentChatSetScheduledWorkPausedResult,
   AgentChatCreateScheduledWorkArgs,
   AgentChatCreateScheduledWorkResult,
@@ -740,16 +734,12 @@ import type {
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateIdentityArgs,
-  CtoListSessionLogsArgs,
   CtoSnapshot,
-  CtoSessionLogEntry,
-  CtoStartFreshSessionResult,
-  CtoThreadHealth,
   CtoGetMemoryArgs,
-  CtoUpdateMemoryArgs,
-  CtoSearchMemoryArgs,
+  CtoUpdateNotesArgs,
+  CtoUpdateOpenWorkArgs,
+  CtoRefreshContextResult,
   CtoMemorySnapshot,
-  CtoSearchMemoryResult,
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoGetLinearIssuePickerDataResult,
@@ -1057,7 +1047,7 @@ import {
   getSharedAccountAuthService,
   setSharedAccountRefreshBroker,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
@@ -1093,7 +1083,7 @@ import {
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { createProjectRecoveryService, ProjectRecoveryService, restartBrainForRepair } from "../runtime/projectRecoveryService";
 import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
-import { forgetLocalProjectDatabaseIdentity } from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import { forgetLocalProjectDatabaseIdentity, ProjectRegistry } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
@@ -1155,10 +1145,8 @@ import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
 import {
-  collectDiagnosticReport,
   diagnosticReportRoots,
   resolveRevealableDiagnosticReport,
-  writeDiagnosticReportFile,
 } from "../diagnostics/diagnosticReportService";
 import type { AutoDiagnosticsService } from "../diagnostics/autoDiagnosticsService";
 import {
@@ -1166,13 +1154,14 @@ import {
   MAX_MANUAL_DIAGNOSTICS_PER_WINDOW,
 } from "../diagnostics/autoDiagnosticsStore";
 import type {
-  DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
   DiagnosticsManualSendOptions,
   DiagnosticsManualSendResult,
+  DiagnosticsPrepareResult,
   DiagnosticsSharingStatus,
 } from "../../../shared/types/diagnostics";
+import { buildPublicIssueUrl, osFamilyOf } from "../../../shared/publicIssueLink";
 import { listWebhookAutomations } from "../automations/webhookAutomationFactory";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
@@ -1622,9 +1611,10 @@ function redactedCliAuthFromStatuses(
 }
 
 /**
- * How long the no-project status read may take before the window gets the
- * "unavailable" status instead of an IPC timeout. A cold Windows machine took
- * all 30 s here; the read keeps going and fills the cache for the next call.
+ * How long a plain status read may take, with or without a project, before
+ * the window gets a fallback status instead of an IPC timeout. A cold Windows
+ * machine took all 30 s here; the read keeps going and fills the cache for the
+ * next call.
  */
 const GLOBAL_AI_STATUS_BUDGET_MS = 20_000;
 
@@ -2782,7 +2772,9 @@ export function registerIpc({
   const ensureAndroidEmulator = (): AndroidEmulatorServiceApi => {
     const service = getCtx().androidEmulatorService;
     if (!service) {
-      throw new Error("The Android emulator service is not available. Open a project so ADE can reach the machine that runs its emulators.");
+      // Expected, like Mac Desktop above: the emulator service lives in the
+      // project's brain, and no project is open yet.
+      throw new AdeExpectedError("The Android emulator service is not available. Open a project so ADE can reach the machine that runs its emulators.", "environment");
     }
     return service;
   };
@@ -4068,6 +4060,22 @@ export function registerIpc({
         }
       }) || getCtx().fileService?.isExternalWorkspaceRoot(rootPath) === true;
       if (!rootAllowed) {
+        // No path in the line: which case it was is enough. A root that does
+        // not exist here is another machine's folder (a lane that lives on a
+        // paired computer); one that matches an allowed root only when case
+        // is ignored is a path-spelling mismatch (a Windows drive letter).
+        const loweredRoot = rootPath.toLowerCase();
+        getCtx().logger?.warn("editor.open_root_refused", {
+          platform: process.platform,
+          allowedRootCount: allowedRoots.length,
+          windowHasProject: Boolean(getCtx().project?.rootPath?.trim()),
+          rootExists: fs.existsSync(rootPath),
+          caseOnlyMismatch: allowedRoots.some((dir) => {
+            const allowed = path.resolve(dir).toLowerCase();
+            return loweredRoot === allowed || loweredRoot.startsWith(`${allowed}${path.sep}`);
+          }),
+          laneWorktreeShape: /[\\/]\.ade[\\/]worktrees[\\/]/.test(rootPath),
+        });
         throw new Error("rootPath is outside allowed directories.");
       }
 
@@ -4077,8 +4085,9 @@ export function registerIpc({
         targetPath = resolvePathWithinRoot(rootPath, candidatePath, { allowMissing: true });
       } catch (resolveError: unknown) {
         // Only translate containment errors; rethrow unexpected failures.
+        // The relative path is the renderer's (a file the person picked).
         if (isPathEscapeError(resolveError)) {
-          throw new Error("relativePath escapes rootPath.");
+          throw markExpected(new Error("relativePath escapes rootPath."), "user");
         }
         throw resolveError;
       }
@@ -4684,6 +4693,36 @@ export function registerIpc({
     listRecentProjectSummaries()
   );
 
+  // This computer's folders as its brain registers them: the catalog other
+  // machines read through `projects.list`. The desktop's own recents stop at
+  // 24 (`RECENT_PROJECT_CAP`); Home lists every folder. Machine-local by
+  // design (no pin): another computer's folders come from its connection's
+  // catalog. Only while the brain is connected: Home never starts or repairs
+  // it for this. `null` means the catalog could not be read (no brain, or the
+  // read failed), never "no folders": Home keeps the catalog it last read.
+  handle(IPC.projectListThisComputer, async (): Promise<RecentProjectSummary[] | null> => {
+    const pool = localRuntimeConnectionPool;
+    if (!pool || pool.getStatus().connectionState !== "connected") return null;
+    const records = await pool.projects().catch((error: unknown) => {
+      // Home keeps its last catalog; it reads again on its next open.
+      getCtx().logger.warn("project.list_this_computer_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    });
+    if (!records) return null;
+    return records
+      .filter((record) => record.catalogVisibility !== "system" && record.exists !== false)
+      .map((record): RecentProjectSummary => ({
+        rootPath: record.rootPath,
+        displayName: record.displayName,
+        lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : "",
+        exists: true,
+        kind: "local",
+        gitOriginUrl: record.gitOriginUrl ?? null,
+      }));
+  });
+
   // The account's project list as a machine last read it: this computer's
   // brain, or a connected machine (`targetId`) for a client with no brain of
   // its own. A read of a JSON file on that machine; no server call.
@@ -4805,6 +4844,8 @@ export function registerIpc({
     },
   );
 
+  /** This machine's project list (cached on the file's identity), read only to authorize a local runtime root. */
+  let localProjectRegistryForAuthorization: ProjectRegistry | null = null;
   const runtimeBridge = registerRuntimeBridge({
     productAnalyticsService,
     appVersion: app.getVersion(),
@@ -4834,6 +4875,14 @@ export function registerIpc({
         activeGitOriginUrl: activeOrigin,
         activeOriginIsPeer: binding?.kind === "remote",
         localRecentProjects: listLocalRecentProjectSummaries(),
+        // A chat on another machine keeps its work copy in this machine's
+        // checkout of the repository, which this window may never have opened
+        // (not a recent project). Still the same repository as the binding.
+        findRegisteredProject: (rootPath) => {
+          const record = (localProjectRegistryForAuthorization ??= new ProjectRegistry()).findAtRootPath(rootPath);
+          return record ? { rootPath: record.rootPath, gitOriginUrl: record.gitOriginUrl } : null;
+        },
+        logger: getCtx().logger,
       });
     },
     bindRemoteProject,
@@ -4930,6 +4979,22 @@ export function registerIpc({
     }
     writeGlobalState(globalStatePath, next);
     clearRecentProjectSummaryCache();
+    let catalogLeaveError: unknown = null;
+    // A folder Home lists from this computer's catalog alone (no desktop
+    // recent, see `projectListThisComputer`) leaves that catalog the same way.
+    // That is the whole forget, so a failed call throws: Home says why the row
+    // stays. With no background service there is no catalog row to leave.
+    // The folder can still be open here (its recent fell off the 24-entry
+    // list while it stayed open), so it closes as a recent one does.
+    if (!removed && path.isAbsolute(targetKey)) {
+      const catalogPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
+      await catalogPool?.setProjectCatalogVisibility(targetKey, "system", "desktop");
+      try {
+        await closeProjectByPath(targetKey);
+      } catch {
+        // Best effort, as for a recent local project below.
+      }
+    }
     if (removed && !removed.remote) {
       // Removing a project is the person's way to start over with it: adding
       // it back no longer expects the old database. A project whose whole
@@ -4948,9 +5013,11 @@ export function registerIpc({
             "system",
             "desktop",
           );
-        } catch {
-          // Best effort; the desktop recent remains forgotten even if the
-          // background service is temporarily unavailable.
+        } catch (error) {
+          // Home lists this catalog, so the folder would come back with no
+          // word. The rest of the forget runs; then the error says why the
+          // row stays, and a retry takes the catalog-only path above.
+          catalogLeaveError = error;
         }
       }
     }
@@ -4962,6 +5029,7 @@ export function registerIpc({
         // Best effort; forgetting a project should still update recents even if teardown fails.
       }
     }
+    if (catalogLeaveError) throw catalogLeaveError;
   };
 
   handle(IPC.projectForgetRecent, async (_event, arg: { rootPath?: string; key?: string }): Promise<RecentProjectSummary[]> => {
@@ -5376,78 +5444,6 @@ export function registerIpc({
   };
 
   /**
-   * Assembles the redacted diagnostic report for whichever error screen asked.
-   * Read-only and best effort: a missing log, a wedged brain or a runtime mode
-   * without a recovery service must never stop someone from filing an issue,
-   * so every optional input degrades to "unknown" rather than throwing.
-   */
-  const buildDiagnosticsReport = async (
-    arg: DiagnosticReportRequestPayload | undefined,
-  ) => {
-    return await collectDiagnosticReport(
-      {
-        appVersion: app.getVersion(),
-        packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
-        releaseChannel: resolveReleaseChannel({
-          env: process.env,
-          packaged: reportsAsPackagedRelease(app.isPackaged),
-          version: app.getVersion(),
-        }),
-        isPackaged: app.isPackaged,
-        machineId: await loadMachineTelemetryId(resolveMachineAdeDir()),
-        userDataPath: app.getPath("userData"),
-        reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
-        installId: productAnalyticsService?.getDistinctId() ?? null,
-        accountUserId: getCurrentAccountOwnerId?.() ?? null,
-        getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatusAfterServiceProbe() ?? null,
-        getRemoteRuntimeSnapshot: () => runtimeBridge.snapshot(),
-        diagnoseProject: projectRecoveryService
-          ? (root: string) => projectRecoveryService.diagnose(root)
-          : undefined,
-      },
-      readDiagnosticReportContext(arg),
-    );
-  };
-
-  handle(
-    IPC.diagnosticsOpenIssue,
-    async (_event, arg: DiagnosticReportRequestPayload): Promise<DiagnosticReportPayload> => {
-      const result = await buildDiagnosticsReport(arg);
-      const written = writeDiagnosticReportFile(result.filePath, result.report);
-      let copied = false;
-      try {
-        await clipboard.writeText(result.report);
-        copied = true;
-      } catch {
-        copied = false;
-      }
-      let opened = false;
-      try {
-        await openExternalUrl(result.issueUrl);
-        opened = true;
-      } catch {
-        opened = false;
-      }
-      productAnalyticsService?.capture({
-        event: "ade_feature_used",
-        surface: "desktop",
-        properties: { feature: "connections", action: "issue_report", outcome: opened ? "opened" : "failed" },
-        projectId: null,
-        dedupeKey: `issue_report:${opened ? "opened" : "failed"}`,
-        minimumIntervalMs: 60 * 60 * 1_000,
-      });
-      return {
-        report: result.report,
-        filePath: written ? result.filePath : "",
-        issueUrl: result.issueUrl,
-        installId: result.installId,
-        copied,
-        opened,
-      };
-    },
-  );
-
-  /**
    * The renderer's failure surfaces (the crash boundaries) asking for one
    * automatic send. Main decides: the setting, the budget and the send all live
    * there, so a renderer that fires this repeatedly changes nothing.
@@ -5456,8 +5452,9 @@ export function registerIpc({
    * project's log directory gets read into the report, and a renderer is the
    * one participant here that must not choose that — the callers (the window
    * and page crash boundaries) never send one anyway. Main uses the project it
-   * already has open, or none. The manual `openIssue` path is unchanged: there
-   * a person is choosing to file about the screen they are looking at.
+   * already has open, or none. The manual report path differs: there a person
+   * is choosing to file about the screen they are looking at, and reads the
+   * report before it goes.
    */
   handle(
     IPC.diagnosticsAutoReport,
@@ -5477,55 +5474,106 @@ export function registerIpc({
   );
 
   /**
-   * "Send a report to ADE" from the Settings section of that name, and
-   * "Report issue" on an error screen.
+   * Step one of "Send a report to ADE" (Settings) and of an error screen's
+   * "Report this error to ADE…" dialog: build and redact the report for the
+   * person to read. Nothing is sent and no budget is claimed.
    *
    * Settings passes no argument: that report is about nothing in particular,
    * so main names the surface itself (`settings_manual`). An error screen
-   * passes its context, read exactly as `openIssue` reads it — same caps, and
-   * a project root only when main recognises it — so the report it sends is
-   * about the screen the person is looking at, and a renderer still cannot
+   * passes its context, read by `readDiagnosticReportContext` — same caps, and
+   * a project root only when main recognises it — so a renderer still cannot
    * choose an arbitrary folder's logs.
+   *
+   * Always this computer and this window, whichever machine the screen was
+   * showing: the report describes the app the person is looking at, so it is
+   * never routed through a pin.
+   */
+  handle(
+    IPC.diagnosticsPrepareReport,
+    async (_event, arg: DiagnosticReportRequestPayload | undefined): Promise<DiagnosticsPrepareResult> => {
+      const context = arg && typeof arg === "object" ? readDiagnosticReportContext(arg) : undefined;
+      return (await autoDiagnosticsService?.prepareManual(context)) ?? { ok: false, reason: "failed" };
+    },
+  );
+
+  handle(IPC.diagnosticsDiscardReport, async (_event, id: unknown): Promise<void> => {
+    if (typeof id === "string") autoDiagnosticsService?.discardPrepared(id);
+  });
+
+  /**
+   * Step two: upload the prepared report the person read, by its id. An id
+   * main no longer holds answers `expired` and sends nothing; the surface
+   * prepares again and shows the new text.
    *
    * A `failed` answer rather than a throw when the service is absent (a
    * runtime mode without it): the caller renders a plain sentence instead of
    * an exception it would have to translate.
    */
   handle(
-    IPC.diagnosticsSendManual,
+    IPC.diagnosticsSendReport,
     async (
       _event,
-      arg: DiagnosticReportRequestPayload | undefined,
+      id: unknown,
       options?: DiagnosticsManualSendOptions,
     ): Promise<DiagnosticsManualSendResult> => {
-      const context = arg && typeof arg === "object" ? readDiagnosticReportContext(arg) : undefined;
-      const result = (await autoDiagnosticsService?.sendManual(context)) ?? { ok: false, reason: "failed" };
-      // The person's own note goes to Sentry as User Feedback, from this app's
-      // main process (the report is about this computer, whatever machine the
-      // screen showed). The R2 report above stays as it was. Skipped when this
-      // computer's own guard refused the send, so the daily limit holds.
-      if (typeof options?.userMessage === "string" && !(!result.ok && result.reason === "local_limit")) {
+      if (!autoDiagnosticsService) return { ok: false, reason: "failed" };
+      const sent = await autoDiagnosticsService.sendPrepared(typeof id === "string" ? id : "");
+      let result = sent.result;
+      const context = sent.context;
+      // Nothing was attempted for an id main no longer holds: no note, no event.
+      if (!result.ok && result.reason === "expired") return result;
+      const surface = context?.surface ?? "settings_manual";
+      const note = typeof options?.userMessage === "string" ? options.userMessage.trim() : "";
+      // The team sees every report that arrived: one User Feedback entry per
+      // successful send, with the person's words or a fixed line when they
+      // wrote none. A failed upload with a note still sends the note, so a
+      // report that arrives on "Try again" finds it. From this app's main
+      // process only (`userFeedback.ts`).
+      // No claim on the manual ledger means no upload was tried: the daily
+      // limit, a ledger that could not be read or locked, or a busy wait that
+      // ran out. Such a send files no note either, so the limit holds for
+      // notes too.
+      const tried = sent.claimed === true;
+      const refusedHere = !result.ok && result.reason === "local_limit";
+      // A second Send that joined a send already running gets its answer, but
+      // the note and the count belong to the first call only.
+      const firstCall = sent.joined !== true;
+      if (firstCall && tried && (result.ok || note)) {
         sendSentryUserFeedback({
           onError: (error) => getCtx().logger.warn("diagnostics.user_feedback_failed", {
             errorKind: error instanceof Error ? error.name : "unknown",
           }),
-          message: options.userMessage,
+          message: note || NO_NOTE_FEEDBACK_MESSAGE,
           tags: {
-            "report.surface": context?.surface ?? "settings_manual",
+            "report.surface": surface,
             "report.code": context?.code ?? null,
             "report.reference": result.ok ? result.reference : null,
           },
         });
       }
-      // "Report issue" sends here first now, so its one coarse fact moved with
-      // it: `success` is a report ADE received, next to `opened` for the GitHub
-      // path. Settings' send (no context) is not a Report issue press.
-      if (context) {
+      if (result.ok) {
+        const publicIssueUrl = buildPublicIssueUrl({
+          reference: result.reference,
+          appVersion: app.getVersion(),
+          channel: resolveReleaseChannel({
+            env: process.env,
+            packaged: reportsAsPackagedRelease(app.isPackaged),
+            version: app.getVersion(),
+          }),
+          osFamily: osFamilyOf(process.platform),
+        });
+        if (publicIssueUrl) result = { ...result, publicIssueUrl };
+      }
+      // One coarse fact per send from an error screen: `success` is a report
+      // ADE received. Settings' send (no screen) is not counted here.
+      // A send that tried nothing for a reason other than the daily limit is
+      // not counted: nothing was sent, and the person was not refused.
+      if (firstCall && (tried || refusedHere) && surface !== "settings_manual") {
         const outcome = result.ok ? "success" : "failed";
         productAnalyticsService?.capture({
           event: "ade_feature_used",
           surface: "desktop",
-          properties: { feature: "connections", action: "issue_report", outcome },
+          properties: { feature: "issue_report", action: "issue_report", outcome },
           projectId: null,
           dedupeKey: `issue_report:${outcome}`,
           minimumIntervalMs: 60 * 60 * 1_000,
@@ -5686,13 +5734,36 @@ export function registerIpc({
       }
     }
     try {
-      const status = await aiIntegrationService.getStatus({
-        force: arg?.force === true,
-        refreshOpenCodeInventory: arg?.refreshOpenCodeInventory === true,
-      });
+      // A plain read gets the same budget as the no-project read: past it the
+      // window gets this project's last good status (or "unavailable")
+      // instead of the 30 s IPC timeout. A forced read is the user asking for
+      // a fresh check and keeps its own longer IPC limit.
+      let status: Awaited<ReturnType<typeof aiIntegrationService.getStatus>>;
+      if (arg?.force === true) {
+        status = await aiIntegrationService.getStatus({
+          force: true,
+          refreshOpenCodeInventory: arg?.refreshOpenCodeInventory === true,
+        });
+      } else {
+        const answer = await aiIntegrationService.getStatusWithinBudget({
+          budgetMs: GLOBAL_AI_STATUS_BUDGET_MS,
+          refreshOpenCodeInventory: arg?.refreshOpenCodeInventory === true,
+        });
+        if (answer.slow) {
+          // Which step was still running, for the next report of a slow machine.
+          ctx.logger.warn("ai.get_status.open_project_slow", {
+            phase: answer.slow.phase,
+            budgetMs: GLOBAL_AI_STATUS_BUDGET_MS,
+            elapsedMs: answer.slow.elapsedMs,
+            servedLastGood: answer.status != null,
+          });
+        }
+        if (!answer.status) return getUnavailableAiStatus();
+        status = answer.status;
+      }
       // Single query for all feature daily usage instead of N individual queries
       const usageBatch = aiIntegrationService.getDailyUsageBatch(AI_USAGE_FEATURE_KEYS);
-      return {
+      const result: AiSettingsStatus = {
         mode: status.mode,
         availableProviders: status.availableProviders,
         models: status.models,
@@ -5717,6 +5788,7 @@ export function registerIpc({
           dailyLimit: aiIntegrationService.getDailyBudgetLimit(feature)
         }))
       };
+      return result;
     } catch (error) {
       if (isDatabaseClosedError(error)) {
         ctx.logger.info("ai.get_status.unavailable_during_shutdown", {
@@ -6277,41 +6349,29 @@ export function registerIpc({
     return { lastFetchedAt: getModelsDevLastFetchedAt() };
   });
 
-  handle(IPC.projectSecretsList, async (): Promise<ProjectSecretsListResult> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    // Same freshness as the `project_secret` action domain (adeActions/registry.ts).
-    return await ctx.projectSecretService.listFresh();
+  // Passwords & Secrets: the projects on this computer a secret can be for,
+  // each by the key its secrets are saved under (its repository, so every
+  // clone on every computer shares them).
+  handle(IPC.passwordsProjects, async (): Promise<PasswordsProject[]> => {
+    const out = new Map<string, PasswordsProject>();
+    const refusalPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
+    for (const root of localRecentRoots()) {
+      // A project the brain refused as too slow to open is left out: reading
+      // its git config here could freeze this process's main thread.
+      if (refusalPool?.isKnownRefused(root)) continue;
+      const scope = projectSecretScopeForRoot(root);
+      if (!out.has(scope)) out.set(scope, { scope, name: path.basename(root), rootPath: root });
+    }
+    return [...out.values()];
   });
 
-  handle(IPC.projectSecretsGet, async (_event, arg: ProjectSecretGetArgs): Promise<ProjectSecretValueResult> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return await ctx.projectSecretService.getFresh(arg);
-  });
-
-  handle(IPC.projectSecretsSet, async (_event, arg: ProjectSecretSetArgs): Promise<ProjectSecretSummary> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return ctx.projectSecretService.set(arg);
-  });
-
-  handle(IPC.projectSecretsDelete, async (_event, arg: ProjectSecretDeleteArgs): Promise<{ deleted: boolean; name: string }> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return ctx.projectSecretService.delete(arg);
-  });
-
-  handle(IPC.projectSecretsPullFromAccount, async (): Promise<ProjectSecretPullResult> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return await ctx.projectSecretService.pullFromAccount();
-  });
-
-  handle(IPC.projectSecretsChooseEnvFile, async (event): Promise<ProjectSecretEnvFile | null> => {
+  // Passwords & Secrets › Import .env: the person picks a file on this
+  // computer; its entries come back to pick from, and are saved through
+  // `passwords.importSecrets`.
+  handle(IPC.passwordsChooseEnvFile, async (event): Promise<PasswordEnvFile | null> => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     const options: Electron.OpenDialogOptions = {
-      title: "Import ADE secrets from .env",
+      title: "Import secrets from a .env file",
       defaultPath: app.getPath("home"),
       properties: ["openFile", "showHiddenFiles"],
     };
@@ -6319,30 +6379,12 @@ export function registerIpc({
     const selectedPath = result.canceled ? null : result.filePaths[0];
     if (!selectedPath) return null;
     const stat = await fs.promises.stat(selectedPath);
-    if (!stat.isFile()) throw new Error("Select a .env file to import.");
-    if (stat.size > PROJECT_SECRET_ENV_MAX_BYTES) throw new Error("The selected .env file is larger than 1 MB.");
+    if (!stat.isFile()) throw new AdeExpectedError("Pick a .env file to import.", "user");
+    if (stat.size > PROJECT_SECRET_ENV_MAX_BYTES) throw new AdeExpectedError("That .env file is larger than 1 MB.", "user");
     return {
       fileName: path.basename(selectedPath),
-      content: await fs.promises.readFile(selectedPath, "utf8"),
+      entries: parseProjectSecretEnv(await fs.promises.readFile(selectedPath, "utf8")),
     };
-  });
-
-  handle(IPC.projectSecretsPreviewEnvImport, async (_event, arg: ProjectSecretEnvFile): Promise<ProjectSecretsImportPreview> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return ctx.projectSecretService.previewEnvImport(arg);
-  });
-
-  handle(IPC.projectSecretsImportEnv, async (_event, arg: ProjectSecretsImportArgs): Promise<ProjectSecretsImportResult> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return ctx.projectSecretService.importEnv(arg);
-  });
-
-  handle(IPC.projectSecretsExportEnv, async (): Promise<ProjectSecretsExportResult> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return ctx.projectSecretService.exportEnv();
   });
 
   handle(
@@ -9422,6 +9464,16 @@ export function registerIpc({
     return await ctx.agentChatService.endSideChat(arg);
   });
 
+  handle(IPC.agentChatGetRootFullAccess, async (): Promise<AgentChatRootFullAccessState> => {
+    const ctx = ensureAgentChatContext();
+    return await ctx.agentChatService.getRootFullAccess();
+  });
+
+  handle(IPC.agentChatSetRootFullAccess, async (_event, arg: AgentChatSetRootFullAccessArgs): Promise<AgentChatRootFullAccessState> => {
+    const ctx = ensureAgentChatContext();
+    return await ctx.agentChatService.setRootFullAccess(arg);
+  });
+
   handle(
     IPC.agentChatPrepareCrossMachineHandoff,
     async (_event, arg: AgentChatPrepareCrossMachineHandoffArgs): Promise<AgentChatPrepareCrossMachineHandoffResult> => {
@@ -9913,6 +9965,25 @@ export function registerIpc({
     async (_event, arg: AgentChatSetScheduledWorkPausedArgs): Promise<AgentChatSetScheduledWorkPausedResult> => {
       const ctx = ensureAgentChatContext();
       return ctx.agentChatService.setScheduledWorkPaused(arg);
+    },
+  );
+
+  handle(
+    IPC.agentChatSetScheduledWorkItemPaused,
+    async (
+      _event,
+      arg: AgentChatSetScheduledWorkItemPausedArgs,
+    ): Promise<AgentChatSetScheduledWorkItemPausedResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.setScheduledWorkItemPaused(arg);
+    },
+  );
+
+  handle(
+    IPC.agentChatRunScheduledWorkNow,
+    async (_event, arg: AgentChatRunScheduledWorkNowArgs): Promise<AgentChatRunScheduledWorkNowResult> => {
+      const ctx = ensureAgentChatContext();
+      return ctx.agentChatService.runScheduledWorkNow(arg);
     },
   );
 
@@ -12564,13 +12635,6 @@ export function registerIpc({
       }
       for (const context of openAccountContexts()) {
         try {
-          context.projectSecretService?.purgeAccountCredentials();
-        } catch (error) {
-          getCtx().logger.warn("account.local_project_secrets_purge_failed", {
-            error: error instanceof Error ? error.message : String(error ?? ""),
-          });
-        }
-        try {
           context.linearCredentialService?.purgeAccountCredentials();
         } catch (error) {
           getCtx().logger.warn("account.local_linear_credentials_purge_failed", {
@@ -12854,7 +12918,7 @@ export function registerIpc({
     return await callLocalMachineDomain("providerLogins.call", "provider_logins", action, args);
   });
 
-  // Passwords with no project bound: this computer's brain, through its
+  // Settings › Passwords & Secrets: always this computer's brain, through its
   // machine route (`passwords.call`). Summaries and the person's own writes
   // only — the value reads (`resolveForFill`, `loginsForPage`) are refused
   // here, so a renderer can never ask for one.
@@ -12868,32 +12932,33 @@ export function registerIpc({
     "saveSecret",
     "remove",
     "importCsv",
+    "importSecrets",
+    "exportSecrets",
     "sync",
     "activity",
     "code",
   ]);
   handle(IPC.passwordsCall, async (_event, arg: unknown): Promise<unknown> => {
     const { action, args } = readActionRequest(arg);
-    // A reset Settings sends to another machine: the person proves it is them
-    // here, on the computer they sit at, first.
-    if (action === "confirmReset") {
-      return Boolean(await checkPerson("reset Passwords and delete every saved login and secret", "Reset"));
-    }
     if (!PASSWORDS_CALL_ACTIONS.has(action)) {
       throw new Error(`passwords has no ${action || "?"} action.`);
     }
     // Starting over deletes every saved item on every computer: the person
     // proves it is them first (Touch ID / Windows Hello, else a confirm).
-    if (action === "reset" && !(await checkPerson("reset Passwords and delete every saved login and secret", "Reset"))) {
-      throw new AdeExpectedError("Reset cancelled.", "user");
+    if (action === "reset" && !(await checkPerson("reset Passwords & Secrets and delete every saved login and secret in your account", "Reset"))) {
+      throw new AdeExpectedError(PASSWORDS_PERSON_CHECK_DECLINED, "user");
+    }
+    // An export writes every value unencrypted to Downloads: the person proves it is them.
+    if (action === "exportSecrets" && !(await checkPerson("export secrets to a plain .env file", "Export"))) {
+      throw new AdeExpectedError(PASSWORDS_PERSON_CHECK_DECLINED, "user");
     }
     return await callLocalMachineDomain("passwords.call", "passwords", action, args);
   });
 
-  // Settings › Passwords › Reveal / Copy. The person proves it is them first;
+  // Settings › Passwords & Secrets › Reveal / Copy. The person proves it is them first;
   // a copy goes to the clipboard here in main (the value never reaches the
   // renderer) and is cleared after 90 s if it is still there. This computer's
-  // own brain answers, whatever machine the page follows: values are the account's.
+  // own brain answers: the page always shows this computer's vault.
   let clearCopiedTimer: ReturnType<typeof setTimeout> | null = null;
   handle(IPC.passwordsReveal, async (_event, arg: unknown): Promise<{ value?: string; copied?: true }> => {
     const request = arg && typeof arg === "object" ? arg as Record<string, unknown> : {};
@@ -12904,7 +12969,7 @@ export function registerIpc({
     if (!itemId) throw new Error("passwords.reveal needs an itemId.");
     // A username is not a secret: no prompt for it.
     if (field !== "username" && !(await checkPerson(`${copy ? "copy" : "show"} the saved ${field === "value" ? "secret" : field} for ${label}`, copy ? "Copy" : "Show"))) {
-      throw new AdeExpectedError("Cancelled.", "user");
+      throw new AdeExpectedError(PASSWORDS_PERSON_CHECK_DECLINED, "user");
     }
     const revealed = await callLocalMachineDomain("passwords.call", "passwords", "revealValue", { itemId, field });
     const value = typeof revealed === "string" ? revealed : null;
@@ -12933,15 +12998,24 @@ export function registerIpc({
       return id ? { id, name: runtimeBridge.resolveTargetNameForMachineKey(machineKey) ?? "" } : null;
     },
     isConnected: (targetId) => runtimeBridge.isTargetConnected(targetId),
+    // The person's Disconnect, or "Reconnect automatically" off: a repository
+    // tab opening does not connect that machine on its own. A target that never
+    // connected still has the saved default (off); that is not the person's
+    // choice, so its background connects keep trying.
+    declined: (targetId) => {
+      const connection = runtimeBridge.snapshot().connections.find((entry) => entry.target.id === targetId);
+      if (connection?.reconnectBlocked === "disconnected") return true;
+      return connection?.target.autoConnect === false && connection.target.lastConnectedAt != null;
+    },
     listAccountMachines: () => accountBridge.listMachines(),
     pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
-    connect: (targetId) => runtimeBridge.remoteForMain.connect(targetId),
+    connect: (targetId, options) => runtimeBridge.remoteForMain.connect(targetId, options),
     wake: (machineKey) => cloudWakeForPair?.(machineKey) ?? Promise.resolve({ state: "not_cloud" as const }),
     logger: getMachineMainLogger(),
   });
 
   // the provider: the account-wide key and new machines made on it (no pin; see the module).
-  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient, wakeForPair: cloudWakeForPairFn, gitPreflight: cloudGitPreflightFn } = registerCloudIpc({
+  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient, wakeForPair: cloudWakeForPairFn, gitPreflight: cloudGitPreflightFn, updateChannel: cloudUpdateChannel } = registerCloudIpc({
     machineConnector: () => machineConnector,
     // Its items in this computer's brain, also with no project here: then the
     // brain opens only those (`accountVault.call`).
@@ -13051,6 +13125,7 @@ export function registerIpc({
     analytics: productAnalyticsService ?? null,
     // C4: the account's GitHub sign-in, checked before a computer is made.
     gitPreflight: cloudGitPreflightFn,
+    updateChannel: cloudUpdateChannel,
     logger: getMachineMainLogger(),
   });
 
@@ -14097,12 +14172,12 @@ export function registerIpc({
 
   // ── CTO state IPC ─────────────────────────────────────────────────
 
-  handle(IPC.ctoGetState, async (_event, arg: CtoGetStateArgs = {}): Promise<CtoSnapshot> => {
+  handle(IPC.ctoGetState, async (_event, _arg: CtoGetStateArgs = {}): Promise<CtoSnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) {
       throw new Error("CTO state service is not available.");
     }
-    return ctx.ctoStateService.getSnapshot(arg.recentLimit ?? 20);
+    return ctx.ctoStateService.getSnapshot();
   });
 
   /**
@@ -14135,42 +14210,10 @@ export function registerIpc({
     });
   });
 
-  handle(IPC.ctoGetThreadHealth, async (): Promise<CtoThreadHealth> => {
-    const ctx = getCtx();
-    const service = ctx.agentChatService;
-    return service
-      ? await service.getCtoThreadHealth()
-      : {
-          sessionId: null,
-          canTakeTurn: true,
-          blockedReason: null,
-          lastTurnFailure: null,
-          context: null,
-          rotationAdvised: false,
-        };
-  });
-
-  handle(IPC.ctoStartFreshSession, async (): Promise<CtoStartFreshSessionResult> => {
+  handle(IPC.ctoRefreshContext, async (): Promise<CtoRefreshContextResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["agentChatService"] as const);
-    const laneId = await resolvePrimaryLaneIdOnly(ctx);
-    if (!laneId) {
-      throw new Error("No primary lane is available to host the CTO chat session.");
-    }
-    const result = await ctx.agentChatService.startFreshIdentitySession({ identityKey: "cto", laneId });
-    return {
-      sessionId: result.session.id,
-      previousSessionId: result.previousSessionId,
-      handoff: result.handoff,
-    };
-  });
-
-  handle(IPC.ctoListSessionLogs, async (_event, arg: CtoListSessionLogsArgs = {}): Promise<CtoSessionLogEntry[]> => {
-    const ctx = getCtx();
-    if (!ctx.ctoStateService) {
-      throw new Error("CTO state service is not available.");
-    }
-    return ctx.ctoStateService.getSessionLogs(arg.limit ?? 40);
+    return ctx.agentChatService.refreshCtoContext();
   });
 
   handle(IPC.ctoUpdateIdentity, async (_event, arg: CtoUpdateIdentityArgs): Promise<CtoSnapshot> => {
@@ -14187,24 +14230,22 @@ export function registerIpc({
     return ctx.ctoMemoryService.getSnapshot();
   });
 
-  handle(IPC.ctoUpdateMemory, async (_event, arg: CtoUpdateMemoryArgs): Promise<CtoMemorySnapshot> => {
+  handle(IPC.ctoUpdateNotes, async (_event, arg: CtoUpdateNotesArgs): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
-    // Only an explicit string may rewrite MEMORY.md — a missing field must not
-    // silently blank the durable memory file.
-    if (typeof arg?.memory !== "string") {
-      throw new Error("updateMemory requires a string `memory` field.");
-    }
-    ctx.ctoMemoryService.writeMemory(arg.memory);
+    if (arg?.scope !== "project" && arg?.scope !== "user") throw new Error("updateNotes requires a scope.");
+    if (typeof arg.text !== "string") throw new Error("updateNotes requires a string `text` field.");
+    ctx.ctoMemoryService.writeNotes(arg.scope, arg.text, {
+      baseHash: typeof arg.baseHash === "string" ? arg.baseHash : null,
+    });
     return ctx.ctoMemoryService.getSnapshot();
   });
 
-  handle(IPC.ctoSearchMemory, async (_event, arg: CtoSearchMemoryArgs): Promise<CtoSearchMemoryResult> => {
+  handle(IPC.ctoUpdateOpenWork, async (_event, arg: CtoUpdateOpenWorkArgs): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
-    const query = arg?.query ?? "";
-    const rows = ctx.ctoMemoryService.searchMemory(query, { limit: arg?.limit ?? 20 });
-    return { query, rows };
+    ctx.ctoMemoryService.updateOpenWork(arg);
+    return ctx.ctoMemoryService.getSnapshot();
   });
 
   // -- Linear connection & credentials --

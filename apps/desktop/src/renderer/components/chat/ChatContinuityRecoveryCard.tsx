@@ -150,7 +150,7 @@ export function ChatContinuityRecoveryCard({
   const [result, setResult] = useState<AgentChatContinuityRecoveryResult | null>(null);
   const agentChatApi = useAgentChatApi();
   // The chat's machine; a personal chat's adapter names its own.
-  const recoveryPin = chatApiPin(useChatRuntimeScope().pin, useChatPaneScope()?.kind === "personal");
+  const recoveryPin = chatApiPin(useChatRuntimeScope().pin, useChatPaneScope() != null);
   const autoRecoveryPending = useAutoRecoveryPending(detail);
 
   const runRecovery = useCallback(

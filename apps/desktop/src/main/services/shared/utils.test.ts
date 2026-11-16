@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { expectedErrorKind } from "../../../shared/expectedError";
 import {
   parseNumstatRecordsZ,
   isRecord,
@@ -19,6 +20,7 @@ import {
   safeJsonParse,
   isWithinDir,
   resolvePathWithinRoot,
+  withUserPath,
   toOptionalString,
   normalizeRelative,
   normalizeBranchName,
@@ -512,6 +514,43 @@ describe("createPkcePair", () => {
     const pair1 = createPkcePair();
     const pair2 = createPkcePair();
     expect(pair1.verifier).not.toBe(pair2.verifier);
+  });
+});
+
+describe("path escapes from a person or an agent", () => {
+  it.each([
+    ["a relative path with ..", "../outside.txt"],
+    ["an absolute path outside the root", "outside-absolute"],
+  ])("marks %s as a user refusal through withUserPath, and leaves the shared check unmarked", (_label, shape) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-root-"));
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-utils-outside-"));
+    try {
+      const candidate = shape === "outside-absolute" ? path.join(outsideDir, "secret.txt") : shape;
+
+      let userError: unknown = null;
+      try {
+        withUserPath(() => resolvePathWithinRoot(root, candidate, { allowMissing: true }));
+      } catch (error) {
+        userError = error;
+      }
+      expect(userError).toBeInstanceOf(Error);
+      expect(expectedErrorKind(userError)).toBe("user");
+      expect((userError as Error).message).toBe("Path escapes root");
+
+      // The shared check throws the same message without the mark: a path ADE
+      // computed itself is still reported as a defect.
+      let sharedError: unknown = null;
+      try {
+        resolvePathWithinRoot(root, candidate, { allowMissing: true });
+      } catch (error) {
+        sharedError = error;
+      }
+      expect((sharedError as Error).message).toBe("Path escapes root");
+      expect(expectedErrorKind(sharedError)).toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 });
 

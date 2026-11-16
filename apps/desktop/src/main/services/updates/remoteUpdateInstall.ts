@@ -225,6 +225,8 @@ export function createRemoteUpdateInstaller(args: {
         let snapshot = service.getSnapshot();
         args.logger.info("autoUpdate.remote_install_requested", {
           targetVersion,
+          requestedByKind: request.requestedBy?.clientKind ?? "unknown",
+          requestedByName: request.requestedBy?.machineName ?? null,
           currentVersion: snapshot.currentVersion,
           status: snapshot.status,
           version: snapshot.version,

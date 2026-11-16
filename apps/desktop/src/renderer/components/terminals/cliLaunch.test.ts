@@ -28,7 +28,8 @@ import {
   withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
 } from "./cliLaunch";
-import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
+// Built inside each test: the file runs as Linux, and the guidance lists only the skills the host can run.
+import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { PI_THINKING_LEVELS } from "../../../shared/cliLaunch";
 import { PI_THINKING_LEVELS as PI_SDK_THINKING_LEVELS } from "../../../main/services/chat/piSdkProtocol";
 import { ADE_AGENT_SKILLS_DIRS_ENV } from "../../../shared/agentSkillRoots";
@@ -905,7 +906,7 @@ describe("buildTrackedCliStartupCommand", () => {
         "--session-id",
         "00000000-0000-0000-0000-000000000001",
         "--append-system-prompt",
-        expect.stringContaining(ADE_CLI_AGENT_GUIDANCE),
+        expect.stringContaining(buildAdeCliAgentGuidance()),
         "--permission-mode",
         "default",
       ]));
@@ -913,7 +914,7 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.args).toContain("--append-system-prompt");
       const promptIndex = launch.args.indexOf("--append-system-prompt");
       const prompt = launch.args[promptIndex + 1] ?? "";
-      expect(prompt).toContain(ADE_CLI_AGENT_GUIDANCE);
+      expect(prompt).toContain(buildAdeCliAgentGuidance());
       expect(prompt).not.toContain('"$ADE_CLI_PATH" chat activity testing');
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
@@ -1062,7 +1063,7 @@ describe("buildTrackedCliStartupCommand", () => {
 
     it("adds supported workspace-write defaults for default", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "default" });
-      expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request");
+      expect(command).toContain("codex --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request");
       expect(command).not.toContain("mcp_servers.linear");
       expect(command).not.toContain("control plane for ADE state");
     });
@@ -1122,7 +1123,7 @@ describe("buildTrackedCliStartupCommand", () => {
 
     it("adds on-request approval and workspace-write sandbox for edit", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "edit" });
-      expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request");
+      expect(command).toContain("codex --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request");
       expect(command).not.toContain("control plane for ADE state");
     });
 
@@ -1418,7 +1419,7 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.args).toEqual(expect.arrayContaining([
         "--model", "openai/gpt-5.4", "--thinking", "high", "--append-system-prompt",
       ]));
-      expect(launch.args.join("\n")).toContain(ADE_CLI_AGENT_GUIDANCE);
+      expect(launch.args.join("\n")).toContain(buildAdeCliAgentGuidance());
       expect(launch.startupCommand).toBe("pi --model \"openai/gpt-5.4\" --thinking high --tools read,bash,edit,write,grep,find,ls --tui-mode regular");
       expect(launch.initialInput).toBe("Run the Pi path.");
       expect(launch.args.join("\n")).toContain("ADE permission policy for this Pi session: full-auto");
@@ -1651,7 +1652,7 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "thread",
       targetId: "thread-99",
       launch: { permissionMode: "edit" },
-    })).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-99");
+    })).toBe("codex --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "cursor",
@@ -1707,7 +1708,7 @@ describe("tracked CLI resume helpers", () => {
         codexConfigSource: "flags",
       },
     })).toBe(
-      "codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-workspace-on-request",
+      "codex --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-workspace-on-request",
     );
   });
 
@@ -1816,7 +1817,7 @@ describe("tracked CLI resume helpers", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium", fastMode: true },
     })).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write --ask-for-approval on-request resume thread-99",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-99",
     );
 
     expect(buildTrackedCliResumeCommand({

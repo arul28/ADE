@@ -14,6 +14,11 @@ import {
 import { readChildPullRequestNumber } from "./ctoTurnContext";
 
 /** One child completion for its parent: the card to close and the wake to send. */
+
+/** How a wake names the CLI child: a subagent, or a chat that does not report back. */
+function cliChildNoun(spawnKind: "subagent" | "peer"): string {
+  return spawnKind === "subagent" ? "subagent CLI session" : "CLI session";
+}
 export type ChildCompletionDelivery = {
   parentSessionId: string;
   childSessionId: string;
@@ -158,7 +163,7 @@ export function createCliChildReports(deps: {
       ctoPrNumber: readChildPullRequestNumber(null, summary),
       emitCtoSubagentResult: true,
       routeQuietly: trigger === "reconcile" || repeatsTurnReport,
-      wakeText: `Your ${lineage.spawnKind} CLI session "${childTitle}" ${outcome} — ${summary}\n(Full terminal output: \`ade terminal read ${row.id}\`.)`,
+      wakeText: `Your ${cliChildNoun(lineage.spawnKind)} "${childTitle}" ${outcome} — ${summary}\n(Full terminal output: \`ade terminal read ${row.id}\`.)`,
       onParentGone: (reason) => {
         deps.logger.info("agent_chat.cli_child_completion_parent_gone", {
           childSessionId: row.id,
@@ -240,7 +245,7 @@ export function createCliChildReports(deps: {
       ctoPrNumber: readChildPullRequestNumber(null, summary),
       emitCtoSubagentResult: true,
       routeQuietly: selfReported,
-      wakeText: `Your ${lineage.spawnKind} CLI session "${childTitle}" ${resultStatus === "failed" ? "ended a turn on an error" : "finished a turn"} — ${summary}\n`
+      wakeText: `Your ${cliChildNoun(lineage.spawnKind)} "${childTitle}" ${resultStatus === "failed" ? "ended a turn on an error" : "finished a turn"} — ${summary}\n`
         + `(It is still open at its prompt. Full terminal output: \`ade terminal read ${row.id}\`.)`,
       onParentGone: (reason) => {
         deps.logger.info("agent_chat.cli_child_turn_report_parent_gone", {

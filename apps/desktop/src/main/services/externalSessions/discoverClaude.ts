@@ -9,7 +9,6 @@ import {
   isUuidLike,
   normalizeExternalSessionLimit,
   normalizeProviderCwd,
-  providerConfigHomeDirs,
   readFileWindow,
   readJsonlRecords,
   readJsonlRecordsFromSuffix,
@@ -30,6 +29,7 @@ import {
   type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+import { providerConfigHomeDirs } from "./adeConfigHomes";
 
 /** Window read when looking for the first or last record uuid, and when probing. */
 const CLAUDE_CHAIN_WINDOW_BYTES = JSONL_SCAN_BYTE_LIMIT;

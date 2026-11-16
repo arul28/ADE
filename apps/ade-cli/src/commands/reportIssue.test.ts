@@ -31,7 +31,8 @@ import {
   buildCliDiagnosticReportAsync,
   buildReportIssuePayload,
   describeDiagnosticUpload,
-  openDiagnosticIssue,
+  openPublicIssue,
+  publicIssueUrlForSend,
   saveDiagnosticReportCopy,
   sendDiagnosticReport,
 } from "./reportIssue";
@@ -80,14 +81,13 @@ describe("buildCliDiagnosticReportAsync", () => {
 
     expect(async_.report).toBe(sync.report);
     expect(async_.installId).toBe(sync.installId);
-    expect(async_.issueUrl).toBe(sync.issueUrl);
     expect(async_.reportsDir).toBe(sync.reportsDir);
     expect(async_.secretsDir).toBe(sync.secretsDir);
   });
 });
 
 describe("buildCliDiagnosticReport", () => {
-  it("reports the PostHog distinct_id and a prefilled issue URL", () => {
+  it("reports the PostHog distinct_id", () => {
     const built = buildCliDiagnosticReport({
       env: { ADE_HOME: adeHome({ identifiedUserHash: "hash-1", anonymousId: "anon-1" }) },
       cliVersion: "1.2.60",
@@ -95,8 +95,6 @@ describe("buildCliDiagnosticReport", () => {
     });
 
     expect(built.installId).toBe("hash-1");
-    expect(built.issueUrl.startsWith("https://github.com/")).toBe(true);
-    expect(built.issueUrl).toContain("/issues/new");
     expect(built.report).toContain("1.2.60");
   });
 
@@ -134,79 +132,83 @@ describe("buildCliDiagnosticReport", () => {
   });
 });
 
-describe("openDiagnosticIssue", () => {
-  it("puts the report on the clipboard before it opens the issue template", async () => {
-    // The template says "paste the report from your clipboard", so the copy has
-    // to have happened by the time the browser is opened -- otherwise the user
-    // lands on a form asking for something that is not on their clipboard.
-    const order: string[] = [];
-    let copiedText: string | null = null;
+describe("publicIssueUrlForSend", () => {
+  const built = { appVersion: "1.2.60", releaseChannel: "stable" };
 
-    const result = await openDiagnosticIssue(
-      { report: "REPORT BODY", issueUrl: "https://github.com/acme/ade/issues/new?title=x" },
-      {
-        copy: (text) => {
-          order.push("copy");
-          copiedText = text;
-          return true;
-        },
-        open: async (url) => {
-          order.push(`open:${url}`);
-        },
-      },
-    );
-
-    expect(order).toEqual(["copy", "open:https://github.com/acme/ade/issues/new?title=x"]);
-    expect(copiedText).toBe("REPORT BODY");
-    expect(result).toEqual({ copied: true, opened: true });
+  it("names no public issue before the report reached ADE", () => {
+    // The report itself never goes to a public page, so a failed or skipped
+    // send has no issue to offer.
+    expect(publicIssueUrlForSend(built, null)).toBeNull();
+    expect(publicIssueUrlForSend(built, { ok: false, reason: "network" })).toBeNull();
   });
 
-  it("still opens the issue when the machine has no clipboard, and survives a browserless box", async () => {
-    const result = await openDiagnosticIssue(
-      { report: "REPORT BODY", issueUrl: "https://github.com/acme/ade/issues/new" },
-      {
-        copy: () => {
-          throw new Error("no pbcopy here");
-        },
-        open: async () => {
-          throw new Error("no browser here");
-        },
-      },
-    );
+  it("links the public issue under the reference that ADE holds", () => {
+    const url = publicIssueUrlForSend(built, { ok: true, id: "abcdef12-3456-4789-8abc-def012345678", reference: "abcdef12" });
 
-    expect(result).toEqual({ copied: false, opened: false });
+    expect(url).not.toBeNull();
+    expect(new URL(url!).searchParams.get("title")).toContain("abcdef12");
+  });
+});
+
+describe("openPublicIssue", () => {
+  it("reports that the issue opened when the browser accepted the link", async () => {
+    const opened: string[] = [];
+
+    await expect(openPublicIssue("https://github.com/arul28/ADE/issues/new?title=x", {
+      open: async (url) => {
+        opened.push(url);
+      },
+    })).resolves.toBe(true);
+    expect(opened).toEqual(["https://github.com/arul28/ADE/issues/new?title=x"]);
+  });
+
+  it("reports that the issue did not open on a box with no browser, without throwing", async () => {
+    await expect(openPublicIssue("https://github.com/arul28/ADE/issues/new", {
+      open: async () => {
+        throw new Error("no browser here");
+      },
+    })).resolves.toBe(false);
   });
 });
 
 describe("buildReportIssuePayload", () => {
   const built = {
     report: "REPORT BODY",
-    issueUrl: "https://github.com/acme/ade/issues/new",
     installId: "install-abc",
   };
 
-  it("tells a scripted caller whether --open actually reached the clipboard", () => {
-    // `--open` copies the report and then opens a template that says "paste the
-    // report from your clipboard". A box with no clipboard binary silently
-    // skips the copy, so the JSON has to say so -- otherwise the only way to
-    // find out is a user pasting nothing into a GitHub issue.
-    expect(buildReportIssuePayload(built, { copied: true })).toEqual({
+  it("reports the send outcome, the saved file and the public issue when each exists", () => {
+    const payload = buildReportIssuePayload(
+      built,
+      { ok: true, id: "abcdef12-3456-4789-8abc-def012345678", reference: "abcdef12" },
+      "/tmp/reports/2026-08-19-cli.md",
+      { url: "https://github.com/arul28/ADE/issues/new?title=x", opened: true },
+    );
+
+    expect(payload).toEqual({
       ok: true,
       installId: "install-abc",
-      issueUrl: "https://github.com/acme/ade/issues/new",
-      copied: true,
       report: "REPORT BODY",
+      reportPath: "/tmp/reports/2026-08-19-cli.md",
+      sent: { ok: true, reference: "abcdef12" },
+      issueUrl: "https://github.com/arul28/ADE/issues/new?title=x",
+      opened: true,
     });
-    expect(buildReportIssuePayload(built, { copied: false }).copied).toBe(false);
   });
 
-  it("reports nothing copied when --open was not asked for", () => {
+  it("names the failure reason for a send that did not reach ADE", () => {
+    expect(buildReportIssuePayload(built, { ok: false, reason: "rate_limited" }).sent)
+      .toEqual({ ok: false, reason: "rate_limited" });
+  });
+
+  it("omits the send, file and issue keys when none was asked for", () => {
+    // A script tells "not asked for" from "asked for and failed" by the key being absent.
     const payload = buildReportIssuePayload(built, null);
 
-    expect(payload.copied).toBe(false);
-    // The rest of the contract is unchanged: same keys, same `ok`.
-    expect(payload.ok).toBe(true);
-    expect(payload.issueUrl).toBe(built.issueUrl);
+    expect(payload).toEqual({ ok: true, installId: "install-abc", report: "REPORT BODY" });
+    expect("sent" in payload).toBe(false);
+    expect("issueUrl" in payload).toBe(false);
+    expect("reportPath" in payload).toBe(false);
   });
 });
 
@@ -303,7 +305,7 @@ describe("sendDiagnosticReport", () => {
     // And when even the local write failed, it says where the report *is*
     // rather than pointing at a file that does not exist.
     expect(describeDiagnosticUpload({ ok: false, reason: "network" }, null))
-      .toContain("the full report is above");
+      .toContain("Send the report above");
   });
 });
 

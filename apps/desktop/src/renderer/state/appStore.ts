@@ -14,6 +14,7 @@ import type { CtoAttentionState, KeybindingsSnapshot, LaneDeleteProgress, LaneLi
 import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { originUrlForBinding } from "../components/lanes/laneMachines";
+import { normalizeGitRemoteIdentity } from "../../shared/crossMachineHandoff";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import {
   normalizeHarnessPresetList,
@@ -104,7 +105,6 @@ export type { InterfaceMonoFont, InterfacePreferences, InterfaceSansFont, ThemeI
 import { captureHomeTabOpened } from "../components/home/homeAnalytics";
 import { applyInterfacePreferences } from "../theme/applyInterface";
 
-export const THEME_IDS: ThemeId[] = ["dark", "light"];
 export const DEFAULT_TERMINAL_FONT_FAMILY = [
   "ui-monospace",
   "SFMono-Regular",
@@ -425,6 +425,16 @@ export type NoMachineRepositoryTab = {
   id: string;
   displayName: string;
   iconDataUrl: string | null;
+  /**
+   * The copy the tab showed before its computer left (a binding key). When
+   * that computer is back, the tab opens this copy again, not another one.
+   */
+  lastCopyKey?: string | null;
+  /**
+   * The repository, when `id` is a copy's own key: a second folder of one
+   * repository on one computer has its own tab, keyed by that folder.
+   */
+  repositoryId?: string | null;
 };
 
 /**
@@ -442,7 +452,13 @@ function readNoMachineTabs(): NoMachineRepositoryTab[] {
       if (!entry || typeof entry !== "object") return [];
       const row = entry as Record<string, unknown>;
       if (typeof row.id !== "string" || !row.id || typeof row.displayName !== "string") return [];
-      return [{ id: row.id, displayName: row.displayName, iconDataUrl: typeof row.iconDataUrl === "string" ? row.iconDataUrl : null }];
+      return [{
+        id: row.id,
+        displayName: row.displayName,
+        iconDataUrl: typeof row.iconDataUrl === "string" ? row.iconDataUrl : null,
+        lastCopyKey: typeof row.lastCopyKey === "string" && row.lastCopyKey ? row.lastCopyKey : null,
+        repositoryId: typeof row.repositoryId === "string" && row.repositoryId ? row.repositoryId : null,
+      }];
     });
   } catch {
     return [];
@@ -454,7 +470,12 @@ function writeNoMachineTabs(tabs: readonly NoMachineRepositoryTab[]): void {
     // No icons: a data URL can be large, and the tab reads the icon again from the account.
     window.sessionStorage.setItem(
       NO_MACHINE_TABS_STORAGE_KEY,
-      JSON.stringify(tabs.map((tab) => ({ id: tab.id, displayName: tab.displayName }))),
+      JSON.stringify(tabs.map((tab) => ({
+        id: tab.id,
+        displayName: tab.displayName,
+        lastCopyKey: tab.lastCopyKey ?? null,
+        repositoryId: tab.repositoryId ?? null,
+      }))),
     );
   } catch {
     // Storage unavailable: the tabs still hold until the window reloads.
@@ -2030,16 +2051,37 @@ export type AppState = {
    */
   requestLaneStatusRead: (options?: { maxAgeMs?: number }) => void;
   openRepo: () => Promise<ProjectInfo | null>;
+  /**
+   * Opens a folder of this computer in front. `carryWorkView`: the same tab
+   * moves here from another copy of its repository (its computer went away or
+   * its copy was removed), so the open chat, tabs and grid come along. A
+   * switch to another tab never passes it: each tab keeps its own view.
+   */
   switchProjectToPath: (
     rootPath: string,
-    opts?: { skipWorktreeGate?: boolean },
+    opts?: { skipWorktreeGate?: boolean; carryWorkView?: boolean },
   ) => Promise<void>;
   dismissWorktreeOpenPrompt: () => void;
   /** The user said Trust: add this folder to git's safe.directory and open it. */
   trustGitFolderAndOpen: () => Promise<ProjectInfo | null>;
   /** The user said Cancel: nothing is trusted, the folder stays closed. */
   dismissGitFolderTrustPrompt: () => void;
-  switchRemoteProject: (targetId: string, projectId: string) => Promise<OpenProjectBinding>;
+  /**
+   * Opens a remote copy in front. `keepNoMachineTab`: a waiting tab in front
+   * stays on its page until this copy is open, instead of showing the project
+   * under it while the open runs. `carryWorkView`: as for `switchProjectToPath`.
+   */
+  switchRemoteProject: (
+    targetId: string,
+    projectId: string,
+    options?: { keepNoMachineTab?: boolean; carryWorkView?: boolean },
+  ) => Promise<OpenProjectBinding>;
+  /**
+   * True once for the binding of a remote open that Home superseded: the
+   * open still reports its project, which then opens under Home instead of
+   * replacing it.
+   */
+  takeRemoteOpenSupersededByHome: (binding: { targetId: string; projectId: string }) => boolean;
   /// `preserveRemoteViewState` keeps open remote tabs' `workViewByProject` /
   /// `laneWorkViewByScope` while still dropping their stale data caches. Pass it
   /// when closing because a remote *disconnected*, not because the user closed
@@ -2226,6 +2268,25 @@ const createAppState: StateCreator<AppState> = (set, get) => {
    *  Slower responses whose token doesn't match the latest value are discarded. */
   let laneRefreshVersion = 0;
   let remoteProjectSwitchGeneration = 0;
+  /** The remote project open still on its way, if any, with its transition. */
+  let pendingRemoteSwitch: { transition: AppState["projectTransition"]; targetId: string; projectId: string } | null = null;
+  /** The remote open that Home superseded, until its project report arrives or another open starts. */
+  let remoteOpenSupersededByHome: { targetId: string; projectId: string } | null = null;
+  /**
+   * Home or a no-machine tab opened in front wins over a remote project open
+   * still on its way: that open must not finish over it, and its "switching"
+   * state ends here, since the open's own end skips a superseded switch. The
+   * open still reports its project when it lands (`app.onProjectChanged`, the
+   * web adapter's swap); for Home that report opens it under Home.
+   */
+  const supersedeRemoteProjectSwitch = (prev: AppState, by: "home" | "no-machine-tab"): Partial<AppState> => {
+    if (!pendingRemoteSwitch) return {};
+    ++remoteProjectSwitchGeneration;
+    const ownsTransition = prev.projectTransition === pendingRemoteSwitch.transition;
+    if (by === "home") remoteOpenSupersededByHome = { targetId: pendingRemoteSwitch.targetId, projectId: pendingRemoteSwitch.projectId };
+    pendingRemoteSwitch = null;
+    return ownsTransition ? { projectTransition: null } : {};
+  };
   let laneRefreshInFlight: Promise<void> | null = null;
   let activeLaneRefreshProjectKey: string | null = null;
   let activeLaneRefreshToken = 0;
@@ -2769,11 +2830,18 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           : Array.from(new Set(
               intendedMachineIds.map((machineId) => machineId.trim()).filter(Boolean),
             )).sort();
+      // Preserve the membership needle across the wholesale clear. A later
+      // sync pass replaces it once the new scope's machine set is known. A tab
+      // moving to another copy passes through more than one scope in a row; the
+      // second change finds the slices already cleared, and an empty needle
+      // would read as "no machine belongs here" and drop every retained slice
+      // (and with them every open chat of another machine).
+      const unionMachineIds = Object.keys(prev.crossMachineLanesByMachineId);
       const nextIntendedMachineIds = normalizedIntendedMachineIds === undefined
         ? scopeChanged
-          // Preserve the membership needle across the wholesale clear. A later
-          // sync pass replaces it once the new scope's machine set is known.
-          ? Object.keys(prev.crossMachineLanesByMachineId).sort()
+          ? unionMachineIds.length > 0
+            ? unionMachineIds.sort()
+            : prev.crossMachineLaneIntendedMachineIds
           : prev.crossMachineLaneIntendedMachineIds
         : normalizedIntendedMachineIds;
       const stableIntendedMachineIds = reuseStructurallyEqualArray(
@@ -3192,7 +3260,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         : prev,
     ),
   // A new tab is the new-project screen, so it also ends Settings-without-a-project.
-  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true, standaloneSettingsOpen: false, activeNoMachineTabId: null }),
+  openNewTab: () => set((prev) => ({
+    isNewTabOpen: true,
+    showWelcome: true,
+    standaloneSettingsOpen: false,
+    activeNoMachineTabId: null,
+    ...supersedeRemoteProjectSwitch(prev, "home"),
+  })),
   cancelNewTab: () => {
     const hasProject = get().project != null;
     set({ isNewTabOpen: false, showWelcome: !hasProject, activeNoMachineTabId: null });
@@ -3205,7 +3279,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ? [...prev.noMachineTabs, tab]
         : prev.noMachineTabs.map((entry, at) => (at === index ? { ...entry, ...tab } : entry));
       return activate
-        ? { noMachineTabs, activeNoMachineTabId: tab.id, isNewTabOpen: false, standaloneSettingsOpen: false }
+        ? {
+            noMachineTabs,
+            activeNoMachineTabId: tab.id,
+            isNewTabOpen: false,
+            standaloneSettingsOpen: false,
+            ...supersedeRemoteProjectSwitch(prev, "no-machine-tab"),
+          }
         : { noMachineTabs };
     });
     writeNoMachineTabs(get().noMachineTabs);
@@ -3664,7 +3744,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   switchProjectToPath: async (
     rootPath: string,
-    opts?: { skipWorktreeGate?: boolean },
+    opts?: { skipWorktreeGate?: boolean; carryWorkView?: boolean },
   ) => {
     // Worktree gate: when opening a path that is NOT already a warm tab, inspect
     // it first. If it's an external linked worktree whose owning repo resolves,
@@ -3689,6 +3769,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // Invalidate in-flight lane refreshes before the async switch so stale
     // responses from the previous project are discarded immediately.
     ++laneRefreshVersion;
+    // The copy the tab leaves: a move to this computer's copy of the same
+    // repository (a Disconnect of the tab's computer) keeps the open chat,
+    // tabs and grid, as a move to a remote copy does.
+    const outgoingBinding = get().projectBinding;
     // Stash the OUTGOING project's lane/session selection so switching back
     // restores it instead of falling through to "first lane".
     const outgoingProjectKey = selectActiveProjectStateKey(get());
@@ -3701,6 +3785,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       cachedProject != null && get().openProjectTabRoots.includes(rootPath);
     if (isWarmTabSwitch && cachedProject) {
       get().setProject(cachedProject, { replaceBinding: true });
+      if (opts?.carryWorkView) carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, cachedProject));
     }
     const cachedWarmLanes =
       cachedProject != null ? get().laneCacheByProject[cachedProject.rootPath] : undefined;
@@ -3755,6 +3840,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     try {
       const project = await window.ade.project.switchToPath(rootPath);
       get().setProject(project, { replaceBinding: true });
+      if (opts?.carryWorkView) carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, project));
       const restoredSelection =
         get().laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
       // Stale-while-revalidate: if we have cached lanes for the destination
@@ -3896,21 +3982,25 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }
   },
 
-  switchRemoteProject: async (targetId: string, projectId: string) => {
+  switchRemoteProject: async (targetId: string, projectId: string, options) => {
     const switchGeneration = ++remoteProjectSwitchGeneration;
-    if (get().activeNoMachineTabId) set({ activeNoMachineTabId: null });
+    const outgoingBinding = get().projectBinding;
+    if (!options?.keepNoMachineTab && get().activeNoMachineTabId) set({ activeNoMachineTabId: null });
     ++laneRefreshVersion;
     const outgoingProjectKey = selectActiveProjectStateKey(get());
     const outgoingSelection = {
       laneId: get().selectedLaneId,
       sessionId: get().focusedSessionId,
     };
+    const transition: AppState["projectTransition"] = {
+      kind: "switching",
+      rootPath: null,
+      startedAtMs: Date.now(),
+    };
+    pendingRemoteSwitch = { transition, targetId, projectId };
+    remoteOpenSupersededByHome = null;
     set((prev) => ({
-      projectTransition: {
-        kind: "switching",
-        rootPath: null,
-        startedAtMs: Date.now(),
-      },
+      projectTransition: transition,
       projectTransitionError: null,
       ...(outgoingProjectKey
         ? {
@@ -3926,9 +4016,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       if (switchGeneration !== remoteProjectSwitchGeneration) {
         return binding;
       }
+      pendingRemoteSwitch = null;
       if (binding.kind !== "remote") {
         throw new Error("Remote project open returned a local project binding.");
       }
+      if (options?.carryWorkView) carryWorkViewToCopy(outgoingBinding, binding);
       set((prev) => {
         const projectKey = normalizeProjectKey(binding.key);
         const cachedLanes =
@@ -3973,6 +4065,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           projectTransitionError: null,
           isNewTabOpen: false,
           standaloneSettingsOpen: false,
+          // A no-machine tab put in front during the open superseded it, so
+          // the one still in front here is the tab this open replaces.
+          activeNoMachineTabId: null,
           openRemoteProjectTabs,
           laneSnapshots: cachedLanes?.laneSnapshots ?? [],
           lanes: cachedLanes?.lanes ?? [],
@@ -3998,6 +4093,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       return binding;
     } catch (error) {
       if (switchGeneration === remoteProjectSwitchGeneration) {
+        pendingRemoteSwitch = null;
         set({
           projectTransition: null,
           lanesLoading: false,
@@ -4006,6 +4102,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       }
       throw error;
     }
+  },
+
+  takeRemoteOpenSupersededByHome: (binding) => {
+    const superseded = remoteOpenSupersededByHome;
+    if (!superseded || superseded.targetId !== binding.targetId || superseded.projectId !== binding.projectId) return false;
+    remoteOpenSupersededByHome = null;
+    return true;
   },
 
   closeProject: async (options) => {
@@ -4267,6 +4370,51 @@ export function unregisterProjectSurfaceStore(projectKey: string, store: AppStor
   const key = normalizeProjectKey(projectKey);
   if (!key) return;
   if (_projectSurfaceStores.get(key) === store) _projectSurfaceStores.delete(key);
+}
+
+/** This computer's binding for a project just opened by path, for `carryWorkViewToCopy`. */
+function localBindingForCarry(current: OpenProjectBinding | null, project: ProjectInfo): OpenProjectBinding {
+  if (current?.kind === "local" && current.rootPath === project.rootPath) return current;
+  return { kind: "local", key: project.rootPath, rootPath: project.rootPath, displayName: project.displayName };
+}
+
+/**
+ * A tab that moves to another copy of the same repository keeps what it had
+ * open: the chat in front, its open tabs and grid. Only a caller that moves
+ * the same tab asks for it (`carryWorkView`); two folders of one repository
+ * on this computer are separate tabs with separate views. Each copy keeps its own
+ * view under its own key, so without this the open chat closed whenever the
+ * tab's computer went away and the tab moved to a copy on another computer.
+ */
+function carryWorkViewToCopy(
+  from: OpenProjectBinding | null,
+  to: OpenProjectBinding,
+): void {
+  if (!from) return;
+  const fromKey = projectStateKeyForBinding(from);
+  const toKey = projectStateKeyForBinding(to);
+  if (!fromKey || !toKey || fromKey === toKey) return;
+  const fromOrigin = normalizeGitRemoteIdentity(originUrlForBinding(from));
+  if (!fromOrigin || fromOrigin !== normalizeGitRemoteIdentity(originUrlForBinding(to))) return;
+  const fromView = (_projectSurfaceStores.get(fromKey) ?? rootAppStore).getState().workViewByProject[fromKey]
+    ?? readPersistedWorkViewForProject(fromKey).view;
+  if (!fromView?.activeItemId) return;
+  const toStore = _projectSurfaceStores.get(toKey) ?? null;
+  const toView = toStore?.getState().workViewByProject[toKey]
+    ?? readPersistedWorkViewForProject(toKey).view
+    ?? rootAppStore.getState().workViewByProject[toKey]
+    ?? null;
+  const carried: WorkProjectViewState = {
+    ...(toView ?? fromView),
+    openItemIds: fromView.openItemIds,
+    activeItemId: fromView.activeItemId,
+    selectedItemId: fromView.selectedItemId,
+    gridSets: fromView.gridSets,
+    activeGridSetId: fromView.activeGridSetId,
+  };
+  persistWorkViewState({ upsertProjects: { [toKey]: carried } });
+  rootAppStore.setState((prev) => ({ workViewByProject: { ...prev.workViewByProject, [toKey]: carried } }));
+  toStore?.setState((prev) => ({ workViewByProject: { ...prev.workViewByProject, [toKey]: carried } }));
 }
 
 /** The store that owns per-project view state for `projectRootOrKey`. */

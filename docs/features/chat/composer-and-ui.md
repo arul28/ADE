@@ -1125,7 +1125,7 @@ chat pane mount, which happens either way.
   inherits the user's own `config.toml`. Surfaces that pass no
   `effectiveFastTier` draw nothing.
 
-  Surfaces not yet migrated (`ModelSelector`, `CtoSettingsPage`)
+  Surfaces not yet migrated (`ModelSelector`)
   still pass the deprecated `fastModeActive` / `onFastModeToggle` pair,
   which keeps rendering the old sibling chip. Migrating them is a prop
   rename with nothing else to unwind.
@@ -1346,9 +1346,9 @@ chat pane mount, which happens either way.
   raises "Couldn't remove the queued message: …" in the pane error banner. A
   swallowed rejection read as a cancellation that never happened while the agent
   still sent the message.
-- **Mid-turn split Send button.** While a Claude, Codex, Cursor, or OpenCode
-  turn is
-  active, the composer's primary send control is a split button
+- **Mid-turn split Send button.** While a turn is active on a provider that
+  accepts more than queue-only delivery, the composer's primary send control is
+  a split button
   (`ActiveTurnSendButton`, Claude Code parity). The caret selects a delivery
   mode without sending; the primary click and Enter execute the selected mode,
   and the icon, tooltip, and accessible label follow it. Which modes appear is
@@ -3006,7 +3006,7 @@ action `project_secret.request`), and the chat shows the private secret card in
 the composer's place: the secret name, the agent's reason, a password field
 with show/hide and copy, a "Generate a strong one" button (32 random bytes as
 hex; the agent's `--generate` marks it as suggested), and one line of copy —
-"Saved encrypted to this project's secrets. The agent only sees the name." Enter
+"Saved to Passwords & Secrets for this project. The agent only sees the name." Enter
 saves, Esc declines. When the name already exists the card opens on "Keep
 existing" (Enter) with "Replace" one click away.
 
@@ -3031,7 +3031,7 @@ The card is an ordinary pending-input request (`requestChatInput`, kind
 the answer to the request's `isSecret` question `secret_value`, so the
 transcript writer drops it, and the brain's `requestProjectSecretFromUser`
 (`main/services/secrets/projectSecretRequest.ts`) passes it straight to
-`projectSecretService.set` **before the card resolves**: `requestChatInput`'s
+`projectSecretService.set` (Passwords & Secrets, for the chat's project) **before the card resolves**: `requestChatInput`'s
 `beforeAccept` hook runs inside the user's `respondToInput` call, so a save that
 fails keeps the card open with the error and never produces a "saved" receipt;
 the retry from the same card clears that error. The value is stored exactly as

@@ -87,10 +87,25 @@ const STALE_READING_MS = 10 * 60_000;
  * transport detail the reader cannot act on, and "Waiting · not updated" sat
  * above bars that plainly had numbers.
  */
-function providerFreshness(status: UsageProviderStatus | null, nowMs: number): string | null {
-  const at = Date.parse(status?.updatedAt ?? status?.lastSuccessAt ?? "");
+function providerFreshness(
+  status: UsageProviderStatus | null,
+  accounts: readonly UsageAccountView[],
+  provider: UsageProvider,
+  nowMs: number,
+): string | null {
+  // A fresher reading from another machine is the provider's age too: this
+  // machine's own poll can be hours old while every bar came from a peer a
+  // minute ago.
+  let at = Date.parse(status?.updatedAt ?? status?.lastSuccessAt ?? "");
+  for (const account of accounts) {
+    if (account.provider !== provider) continue;
+    for (const machine of account.machines) {
+      const checkedAt = Date.parse(machine.checkedAt ?? "");
+      if (Number.isFinite(checkedAt) && !(checkedAt <= at)) at = checkedAt;
+    }
+  }
   if (!Number.isFinite(at) || nowMs - at < STALE_READING_MS) return null;
-  return `Updated ${formatUpdatedAge(status?.updatedAt ?? status?.lastSuccessAt, nowMs)}`;
+  return `Updated ${formatUpdatedAge(new Date(at).toISOString(), nowMs)}`;
 }
 
 /**
@@ -468,7 +483,7 @@ function ProviderLimitsRow({
 
   const usageUrl = status?.accountUrl ?? usageProviderAccountUrl(provider);
   const sourceLine = providerSourceLine(status, nowMs);
-  const freshness = providerFreshness(status, nowMs);
+  const freshness = providerFreshness(status, accounts, provider, nowMs);
   // One row per account, each with that account's own windows stacked.
   const rows = buildAccountRows(provider, windows, accounts, nowMs);
   const dim = windows.length === 0 && (!isAuthed || isUsageUnauthed);

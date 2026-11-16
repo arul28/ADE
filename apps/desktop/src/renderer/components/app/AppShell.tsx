@@ -88,6 +88,7 @@ import { GlobalCaptureGestureHost } from "../capture/GlobalCaptureGestureHost";
 import { useActivitySync } from "../activity/useActivitySync";
 import { useAgentMessageToasts } from "../activity/useAgentMessageToasts";
 import { isActivityRoute } from "../../lib/legacyRoutes";
+import { CloudPlanMomentWatcher } from "../settings/cloudDashboard/CloudPlanMomentNotice";
 import {
   BROWSER_TAB_KEYBINDING,
   BROWSER_TAB_ROUTE,
@@ -602,6 +603,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const welcomeChanged = currentShowWelcome === hasStoredProject;
 
       if (remoteBinding) {
+        // A remote open that Home superseded (Home opened while it was on its
+        // way) opens under Home: Home stays in front.
+        const openedUnderHome = currentIsNewTabOpen
+          && useAppStore.getState().takeRemoteOpenSupersededByHome(remoteBinding);
         setProjectBinding(remoteBinding);
         setProject({
           rootPath: remoteBinding.rootPath,
@@ -612,8 +617,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // opening a local one does. Every local open path clears this in the
         // store; this branch bypasses them all, which left a blank "New Tab"
         // pill sitting next to the tab it had just become.
-        if (currentIsNewTabOpen) cancelNewTab();
-        setShowWelcome(false);
+        if (currentIsNewTabOpen && !openedUnderHome) cancelNewTab();
+        if (!openedUnderHome) setShowWelcome(false);
         clearScheduledRefreshes();
         void refreshLanes({ includeStatus: false });
         return;
@@ -1185,6 +1190,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       />
       {/* One ask a minute after the window opens; the card loads only when a survey is due. */}
       <SurveyHost />
+      {/* "You're on Plus": once, when an ADE Cloud plan is bought or moved up. Renders nothing. */}
+      <CloudPlanMomentWatcher />
 
       <div className="flex-1 flex min-h-0">
         <main className={cn("relative flex flex-col min-h-0 min-w-0 flex-1", tintClass)}>

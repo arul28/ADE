@@ -22,7 +22,13 @@ const APPROVAL_TIMEOUT_MS = 5 * 60_000;
  * confirmation they give. ADE never clicks anything on it.
  */
 export function openCloudApprovalWindow(
-  args: { url: string; mode: CloudApprovalMode; title: string; signal: AbortSignal; onNeedsPerson: () => void },
+  args: {
+    url: string;
+    mode: CloudApprovalMode;
+    title: string;
+    signal: AbortSignal;
+    onNeedsPerson: () => void;
+  },
   logger: Logger,
 ): Promise<CloudApprovalWindowResult> {
   const win = new BrowserWindow({

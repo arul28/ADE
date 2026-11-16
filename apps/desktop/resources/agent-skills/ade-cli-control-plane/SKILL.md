@@ -101,7 +101,7 @@ when the user asks, or when they ask another model to do part of the work
 
 ```
 ade new chat --mode chat --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --prompt "Fix the issue"
-ade new chat --mode chat --lane auto --lane-name fix-issue --prompt "Fix the issue"     # only when the user asks for a new lane
+ade new chat --mode chat --lane auto --lane-name fix-issue --provider codex --model <m> --prompt "Fix the issue"   # only when the user asks for a new lane
 ade lanes create --name ENG-431 --issue-id ENG-431 --start-chat --provider codex --model <m>   # a lane for an issue, when asked
 ```
 
@@ -123,7 +123,8 @@ From an agent this is your subagent. It runs in your lane, under your chat,
 and reports back after every turn it finishes: ADE steers you if you are busy
 and wakes you if you are idle. Two opt-outs, used only when the user asks:
 
-- `--type peer`: linked to you, leaves only a quiet note when it finishes.
+- `--no-report`: linked to you, but it does not report back. Nothing is posted
+  to you when it finishes.
 - `--no-parent`: a separate top-level chat that does not report back.
 
 ADE is a mesh. You can read, message, interrupt, or stop any chat, whoever
@@ -157,7 +158,7 @@ it until the running turn ends.
 
 ### Chats and CLI sessions
 
-Every `ade chat` command takes either kind of session id. A chat is ADE's own
+Every `ade chat` command takes a chat id or a CLI-session id. A chat is ADE's own
 agent runtime; a CLI session is a provider's CLI (Claude Code, Codex, Cursor,
 ...) running in an ADE terminal, which ADE drives by typing into it. You can
 be either: `$ADE_CHAT_SESSION_ID` names yours.
@@ -279,7 +280,7 @@ Never poll and never block on a long wait. Match the thing you wait on:
 | A subagent chat | Nothing. Its report wakes you. |
 | A PR the user asked you to watch or land | `ade prs watch <pr>` (or `ade prs ship <pr>` to land it) |
 | A dev server, build or log | `ade terminal watch <terminal-id> [--match "ready"]` |
-| A peer (it does not report back) | `ade chat wait <id> --async [--for idle]` |
+| A chat that does not report back (`--no-report`) | `ade chat wait <id> --async [--for idle]` |
 | A chat, from a script or outside ADE | `ade chat events <id> --since <cursor> --json` answers at once; `ade chat notify <id> --url https://…` POSTs when it goes idle, needs input or fails |
 
 Scratch files belong in the lane's `.ade/tmp` (git-ignored). Apps connected
@@ -352,7 +353,7 @@ They are two separate signals on the row the user is looking at:
 - **Take the hand down when you moved on without an answer.**
   `ade chat ask --clear` drops the marker this chat raised (alias
   `ade chat unask`, TUI `/chat unask`). Use it the moment the question stops
-  being the thing you are waiting on: a coordinator or peer sent new
+  being the thing you are waiting on: a coordinator or another chat sent new
   instructions, or you decided and kept working. Otherwise the row keeps saying
   **Needs you** for the rest of the run, and the person reads a live "blocked on
   you" badge about a decision that was already made. It clears only an
@@ -472,9 +473,9 @@ edits, and is not a subagent: it does not report or wake anyone.
 
 ## Other machines on the account
 
-Chats, lanes and devices on the user's other machines are reachable with
-`--machine <name>` (a machine key or an unambiguous name). You act there as an
-agent, under that machine's own policy.
+Chats, lanes and shells on the user's other machines take `--machine <name>`
+(a machine key or an unambiguous name); for devices, see ade-computer-use
+`references/other-machines.md`. You act there under that machine's own policy.
 
 ```bash
 ade machines list --projects --text              # who is online, what projects each has
@@ -482,13 +483,13 @@ ade chat list --all-machines --text              # every machine in one table
 ade chat create --machine "Mac mini" --lane <lane there> \
   --provider claude --model anthropic/claude-opus-5 --prompt "…"   # your subagent there (no --lane: the primary lane there)
 ade chat read <id> --machine "Mac mini" --text
-ade shell start --machine "Windows PC" --wait -- npm test   # one command there, in this chat's work copy
-ade files push --machine "Windows PC" ./fixture.bin test/   # one file into that work copy (pull copies back)
+ade shell start --machine "Windows PC" --wait -- npm test   # one command there, in your code there
+ade files push --machine "Windows PC" ./fixture.bin test/   # one file into your code there (pull copies back)
 ```
 
 - Put all the steps of a task in one `--machine` call (`-- sh -c "npm ci && npm test"`,
-  or a script you run once). Each call opens a new shell there and syncs the
-  work copy again. Do not run single commands one call at a time. Move files
+  or a script you run once). Each call opens a new shell there and syncs
+  your code there again. Do not run single commands one call at a time. Move files
   with `ade files push|pull --machine`, never as base64 inside shell commands.
 
 - The project there defaults to this repository's checkout; pick another with

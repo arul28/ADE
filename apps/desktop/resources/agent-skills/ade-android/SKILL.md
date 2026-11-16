@@ -6,9 +6,10 @@ description: Use this skill when you need to see an Android app actually running
 # ADE Android Development
 
 Drive the lane's Android emulator with `"$ADE_CLI_PATH" android <command>`.
-`$ADE_CLI_PATH` is the CLI of the ADE that launched you and already targets
-its brain, so your calls and the desktop's Android tool share one emulator. A
-bare `ade` goes through PATH and can reach a different ADE.
+`$ADE_CLI_PATH` is the CLI of the ADE that launched you, so your calls and the
+desktop's Android tool share one emulator. A bare `ade` goes through PATH and
+can reach a different ADE. Commands below written as `ade …` mean
+`"$ADE_CLI_PATH" …` too.
 
 Each lane has one emulator, on the machine that runs the lane. It works on
 macOS, Windows and Linux. ADE starts it without a window and shows it in the
@@ -254,12 +255,13 @@ replacing the lane's one:
 
 ## Another machine
 
-`--machine <name>` runs the command on that machine. Without `--lane`, the
-emulator there works for this chat's work copy (made at your commit, which
-must be on origin). `install`/`launch` with `--gradle` or `--apk` send your
-uncommitted changes first. An APK that git ignores does not travel: use
-`--gradle`. `preview` and `test` send them too. Screenshots, recordings,
-proof bundles and preview images are filed in this chat's proof drawer.
+`ade devices --kind android --text` lists the emulators on the person's
+machines; `ade devices use "android@<machine>"` picks one, then the plain
+`android` commands act on it (`--machine <name>` for one command). It runs
+your code there: `install`/`launch` with `--gradle` or `--apk`, `preview` and
+`test` send your uncommitted changes first. An APK that git ignores does not
+travel: use `--gradle`. Proof lands in this chat's drawer. Flags, long builds,
+turn end and cleanup: ade-computer-use `references/other-machines.md`.
 
 ## The SDK
 

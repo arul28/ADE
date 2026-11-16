@@ -372,6 +372,24 @@ export type RemoteRuntimeConnectionStatus = {
    */
   reconnectBlocked?: "disconnected" | null;
   /**
+   * When the last connection to this machine ended, in this app's run. Null
+   * while it is connected, and before it ever connected here. "Last seen"
+   * counts from this, not from when that connection started.
+   */
+  disconnectedAt?: number | null;
+  /**
+   * ADE Web: this machine is not connected only because the tab already holds
+   * its limit of connections. It is not disconnected and not known offline;
+   * it connects when a connection frees up or when someone opens it.
+   */
+  waitingForSlot?: boolean;
+  /**
+   * Set only while a client shows a dropped connection as `connected` during
+   * its short reconnect window: when the connection dropped. Lists that hide
+   * an unreachable machine count from this time, not from the window's end.
+   */
+  reconnectingSinceMs?: number | null;
+  /**
    * Who brings a failed connection back; only set while `state` is "error".
    * `reconnecting`: this app retries on its own. `waiting_for_user`: ADE on
    * the machine went away and this app waits for Reconnect (a dev app after
@@ -389,6 +407,10 @@ export const REMOTE_TARGET_NOT_FOUND_MESSAGE = "Remote target was not found.";
 /** What a call to a machine the person disconnected is told. */
 export const REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE =
   "Remote machine was manually disconnected. Connect again to use this remote project.";
+
+/** What a development ADE says when it would dial a machine the person did not connect in it. */
+export const REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE =
+  "This development ADE connects to other machines only when you press Connect, so the installed ADE keeps its connections.";
 
 export type RemoteRuntimeParsedPairingInput = {
   hostIdentity: SyncPairingHostIdentity;
@@ -479,6 +501,10 @@ export type RemoteRuntimeCapabilities = {
   clientSendDedupe?: boolean;
   /** The chat launch kinds the brain runs (`CHAT_LAUNCH_KINDS`). Absent on an older brain. */
   chatLaunchKinds?: string[];
+  /** The brain answers its own settings with no project (`shared/machineScope.ts`). Absent on an older brain. */
+  machineScope?: boolean;
+  /** The domains it answers there (`MACHINE_SCOPE_DOMAINS`). Absent on a brain of the route's first version. */
+  machineScopeDomains?: string[];
 };
 
 export type RemoteRuntimeHandoffStoragePreflightArgs = {
@@ -700,3 +726,58 @@ export type RemoteRuntimeLocalWorkCheckResult = {
   matches: RemoteRuntimeLocalWorkMatch[];
   hasDirtyWork: boolean;
 };
+
+/** Which ADE client asked a machine for an update (`machine.updateAndRestart`). */
+export type UpdateRequestClientKind = "desktop" | "ios" | "web" | "cli" | "agent" | "unknown";
+
+export type UpdateRequestedBy = {
+  /** The asking machine's name, as `sanitizeUpdateRequestedBy` leaves it. */
+  machineName?: string | null;
+  clientKind?: UpdateRequestClientKind | null;
+};
+
+const REQUESTED_BY_NAME_CHARS = 48;
+const UPDATE_REQUEST_CLIENT_KINDS: ReadonlySet<string> = new Set<UpdateRequestClientKind>([
+  "desktop",
+  "ios",
+  "web",
+  "cli",
+  "agent",
+  "unknown",
+]);
+
+/**
+ * A machine name safe to log and to put in a prompt: no control, format or
+ * line-separator characters; only letters, digits, spaces and `. _ - ' ’ ( )`;
+ * spaces collapsed; at most 48 characters. Null when nothing is left.
+ */
+export function sanitizeMachineName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")
+    .replace(/[^\p{L}\p{N} ._\-'’()]+/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, REQUESTED_BY_NAME_CHARS)
+    .trim();
+  return cleaned || null;
+}
+
+/** Only a known client kind, lower-cased; null for anything else. */
+export function sanitizeUpdateRequestClientKind(value: unknown): UpdateRequestClientKind | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return UPDATE_REQUEST_CLIENT_KINDS.has(raw) ? raw as UpdateRequestClientKind : null;
+}
+
+/**
+ * A `requestedBy` value from the wire, made safe to log and to show. Null
+ * when nothing usable is left.
+ */
+export function sanitizeUpdateRequestedBy(value: unknown): UpdateRequestedBy | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const machineName = sanitizeMachineName(record.machineName);
+  const clientKind = sanitizeUpdateRequestClientKind(record.clientKind);
+  if (!machineName && !clientKind) return null;
+  return { ...(machineName ? { machineName } : {}), ...(clientKind ? { clientKind } : {}) };
+}

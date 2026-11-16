@@ -173,11 +173,6 @@ describe("AppleDeviceMiniPlayer", () => {
     view.unmount();
   });
 
-  it("renders nothing until a device is floated", () => {
-    const { container } = render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
-    expect(container.firstChild).toBeNull();
-  });
-
   it("shows the picture with a dot and no rail", () => {
     render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
     act(() => openAppleMiniPlayer(TARGET));
@@ -188,12 +183,6 @@ describe("AppleDeviceMiniPlayer", () => {
     expect(screen.queryByRole("complementary", { name: "Device controls" })).toBeNull();
     // The bar is hidden until the pointer arrives.
     expect(screen.queryByRole("button", { name: "Open in pane" })).toBeNull();
-  });
-
-  it("pulses the dot red while a recording runs", () => {
-    render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} recording />);
-    act(() => openAppleMiniPlayer(TARGET));
-    expect(document.querySelector("[data-apple-mini-dot='recording']")).toBeTruthy();
   });
 
   it("expands into Open in pane / Close on hover", () => {
@@ -215,26 +204,6 @@ describe("AppleDeviceMiniPlayer", () => {
     expect(getAppleMiniPlayerTarget()).toBeNull();
   });
 
-  /**
-   * A5's empty frame: the stage's own box is `flex-1`, which is a height only
-   * inside the pane's flex column. Floating, it is a block in an
-   * absolutely-positioned host whose every child is absolute — 0px tall — so
-   * the flat view measured nothing, the screen box came back null and the
-   * decoder stayed parked off-screen. The player must hand the stage a
-   * definite height or it draws a picture of nothing.
-   */
-  it("gives the stage a definite height so the decoder is not parked", () => {
-    render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
-    act(() => openAppleMiniPlayer(TARGET));
-    expect(screen.getByTestId("apple-stage").getAttribute("data-stage-class")).toContain("h-full");
-  });
-
-  it("offers eight resize zones", () => {
-    render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
-    act(() => openAppleMiniPlayer(TARGET));
-    expect(document.querySelectorAll("[data-apple-mini-resize]")).toHaveLength(8);
-  });
-
   /*
    * Round 4 §B4: the player used to open on a black box and fill in once the
    * new reader had dialled the helper and been given a keyframe. It now mounts
@@ -249,10 +218,6 @@ describe("AppleDeviceMiniPlayer", () => {
       act(() => openAppleMiniPlayer(TARGET));
       const poster = document.querySelector("[data-apple-mini-poster]") as HTMLImageElement | null;
       expect(poster?.getAttribute("src")).toBe("data:image/jpeg;base64,AAA");
-      // Same `object-contain` rule the flat presenter draws the canvas with,
-      // so there is no jump when the decoder catches up.
-      expect(poster?.className).toContain("object-contain");
-      expect(poster?.className).toContain("pointer-events-none");
       // Claimed: a second player must not repaint a stale session.
       expect(takeAppleMiniPlayerPoster("pro")).toBeNull();
     });

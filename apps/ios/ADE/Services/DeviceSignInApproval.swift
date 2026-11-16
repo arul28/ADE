@@ -74,7 +74,7 @@ enum DeviceSignInApprovalError: Error, Equatable {
 /// another computer from this phone, which already has the account.
 struct DeviceSignInApprovalClient {
   let baseURL: URL
-  var session: URLSession = .shared
+  var session: URLSession = .adeAccount
 
   /// The page a browser uses for the same code. It needs nothing from this
   /// app, so the sheet offers it when this phone is signed out or the

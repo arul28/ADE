@@ -33,7 +33,7 @@ Default routing for typed commands: prefer the machine brain endpoint if reachab
 | `~/.ade/cache/desktop/` | Partially downloaded desktop installer, kept between `ade setup` runs so an interrupted 1 GB download resumes. Deleted once the install succeeds. |
 | `~/.ade/runtime/launchd.{out,err}.log` | Runtime stdout/stderr when running as a login service on macOS. |
 
-Per-project state stays under `<project>/.ade/` and is governed by `projectConfigService` (see `docs/features/onboarding-and-settings/configuration-schema.md`). Project-scoped ADE secrets use the encrypted local cache at `<project>/.ade/secrets/project-secrets.v1.enc`; signed-in account-scoped entries also sync through the encrypted account vault. They are exposed through `ade secrets` / the `project_secret` action domain.
+Per-project state stays under `<project>/.ade/` and is governed by `projectConfigService` (see `docs/features/onboarding-and-settings/configuration-schema.md`). A project's secrets live in Passwords & Secrets (the account's vault, plus "this computer only" secrets in the machine's encrypted cache): those for every project, then the project's own. `ade secrets` / the `project_secret` action domain is the project's view of them. A project's old `.ade/secrets/project-secrets.v1.enc` moves in on its own the first time it opens.
 
 Channel builds use parallel state roots and binary names so Stable, Beta, and Alpha can coexist:
 
@@ -541,9 +541,9 @@ ade machines reconnect                             # re-pair THIS machine after 
 ade machines connect <machine-key|device-id|name>
 ade doctor --json
 ade doctor --online --text                        # also check the latest desktop release over the network
-ade report-issue --text                           # print a redacted diagnostic report + a prefilled GitHub issue URL (local files only; no brain needed)
-ade report-issue --open                           # also copy the report to the clipboard and open that issue URL in the browser
-ade report-issue --send                           # also upload the same redacted report to ADE and print its reference id
+ade report-issue --text                           # print a redacted diagnostic report (local files only; no brain needed)
+ade report-issue --send                           # also send the same redacted report to the ADE team privately and print its reference id
+ade report-issue --send --open                    # then open a public GitHub issue that holds only that reference, the version and the OS
 ade triage                                        # build a redacted context.md + repair playbook and hand them to the first agent ADE has downloaded
 ade triage --provider codex                       # pick the agent (claude | codex | cursor-agent | opencode | droid | muse)
 ade triage --agent --json                         # launch nothing: print contextPath, playbookPath, playbookSource, suggestedPrompt, detected agents
@@ -667,16 +667,21 @@ ade prs land 'gh:owner/repo#42' --method squash             # id form for a PR A
                                                             # works for land/close/reopen/cleanup-branch/checks/comments/review; threads and deployments still need an ADE row
 ade shell start --lane lane-id -- npm test
 ade shell start --machine windows --wait -- bash ./scripts/check.sh   # run once in this chat's work copy on another machine; put every step in one call
+ade shell start --machine windows --code as-is -- git status       # use the work copy there as it is now (--code fresh throws away changes made there first)
+ade shell start --machine windows --no-code --wait -- nvidia-smi   # no code needed: an empty folder there, removed after
 ade files push --machine windows ./build/app.apk dist/app.apk      # copy one file into this chat's work copy there (chunked, sha256-checked, 256 MiB max)
 ade files pull --machine windows logs/run.log ./run.log            # copy one file back from that work copy
+ade devices --text                                                 # every device this chat can use (ios, android, screen, app), on every machine, as <kind>@<machine|here>
+ade devices use ios@"Mac mini"                                      # keep this chat's iPhone on that machine; device commands follow it as --machine does (use ios@here to undo)
+ade devices current                                                # this chat's choice per kind
 ade terminal list --lane lane-id --text
 ade terminal resume --terminal session-id --text
 ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --prompt "fix failing tests"
 ade new chat --mode chat --lane lane-id --prompt-file brief.md   # a long or multi-line first message from a file, or stdin with -
-ade new chat --mode chat --lane lane-id --prompt "repro the flake"   # from an agent: a subagent that reports back (the default); --type peer for no report
-ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals and show in the parent as a subagent card that closes when the CLI exits (use --mode chat for per-turn reports); shell sessions do not record lineage
+ade new chat --mode chat --lane lane-id --prompt "repro the flake"   # from an agent: a subagent that reports back (the default); --no-report for no report
+ade new chat --mode cli --lane lane-id --provider codex --no-report --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals and show in the parent as a subagent card that closes when the CLI exits (use --mode chat for per-turn reports); shell sessions do not record lineage
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --permissions full-auto --print-config --json
 ade chat create --lane lane-id --provider codex --model openai/gpt-6.1-sol --ultrafast   # Fast at Codex's Ultrafast tier, on accounts whose Codex catalog offers it (also on `new chat` and `chat handoff`)
@@ -725,13 +730,13 @@ ade chat scheduled-work cancel session-id job-id    # cancel one job (owning cha
 ade chat wait session-id --for idle --timeout-ms 600000
 ade chat recover session-id --turn turn-id --action nudge        # provider-neutral wait | nudge | retry | resume; falls back for older Codex brains
 ade chat resolve-unprocessed session-id --steer steer-id --action run-next  # durable/idempotent; action is run-next | dismiss
-ade chat demote [session-id]                                     # take over a subagent: it becomes a peer and reports stop; defaults to $ADE_CHAT_SESSION_ID
-ade chat promote [session-id]                                    # restore a peer as a subagent so it reports to its parent again
-ade chat set-parent <session-id> --parent <chat> [--type subagent|peer]  # relink a chat to a new parent (reports go there next turn)
+ade chat demote [session-id]                                     # take over a subagent: its reports to its parent stop; defaults to $ADE_CHAT_SESSION_ID
+ade chat promote [session-id]                                    # make the chat report back to its parent again
+ade chat set-parent <session-id> --parent <chat> [--no-report]  # relink a chat to a new parent (reports go there next turn)
 ade chat set-parent <session-id> --no-parent                     # detach a chat from its parent
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
-ade chat handoff session-id --machine "Mac mini" --model <model> --prompt "next step"   # move the chat to another machine; --fork, --include-changes, --clone, --when-turn-ends
+ade chat handoff session-id --to "Mac mini" --model <model> --prompt "next step"   # move the chat to another machine (--to names the destination; --machine is its alias); --fork, --include-changes, --clone, --when-turn-ends
 ade chat handoff session-id --options --json                     # where the chat can go, and the blockers with fixes; also --cancel, --retry
 ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history natively (claude/codex/opencode/droid/copilot/muse/pi/kimi); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
 ade chat fork session-id --model openai/gpt-5.6-sol --through-turn turn-id   # keep only the turns through a finished turn (Codex, Copilot and Pi cut natively; others replay the kept turns)
@@ -904,10 +909,9 @@ ade sync web --text                                # print the browser web-clien
 ade sync web --open                                # also open the pairing link in the default browser
 ade sync web --no-clipboard                        # print only; don't copy the link to the clipboard
 ade secrets list --text
-ade secrets pull --text                            # take account secrets out of the vault onto this machine
-ade secrets get STRIPE_API_KEY --text
-ade secrets set STRIPE_API_KEY --value sk_... --storage account
-ade secrets set LOCAL_TOKEN --value local-value --storage device
+ade secrets exec -- npm run deploy                 # run a command with the secrets in its env, output masked
+ade secrets set STRIPE_API_KEY --value sk_...      # this project, on every computer
+ade secrets set LOCAL_TOKEN --value local-value --storage device   # this computer only
 printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
 ade secrets delete STRIPE_API_KEY
@@ -923,9 +927,9 @@ ade cloud work-state --json                       # ADE Cloud: the lanes of this
 ade cloud push-work --check --json                # the same check; without --check it commits and pushes every lane (ADE's server runs it before a free)
 ade cloud resize --request --size large --reason "…"  # ask the person to change this computer's size: a card in the chat, nothing changes; an agent with nobody there cannot resize
 ade usage snapshot --text                          # live quota headroom per window, the account it belongs to, and the provider limits link
-ade usage stats --preset 7d --text                 # tokens, cost, and activity for a range
+ade usage stats --range 7d --text                  # tokens, cost, and activity for a range
 ade usage stats --scope account --text             # merged across every machine on the account
-ade usage stats --scope project --preset 30d --text
+ade usage stats --scope project --range 30d --text
 ade usage stats --scope account --force --text     # skip the account fan-out rate floor (explicit refresh)
 ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z --text
 ade usage turns --days 14 --text                   # per-turn ledger (action usage.getTurnUsageSummary): cost and cache by provider, account, model, plus quota burn rates
@@ -971,8 +975,11 @@ ade --role cto actions run ai.piLoginStart --input-json '{"providerId":"anthropi
 ade actions call stream_events --arg category=runtime --json                                 # drain piAuthStatus prompts/notices raised by an in-flight sign-in
 ade --role cto actions run ai.piLoginSubmit --input-json "$(jq -n --arg v "$PI_API_KEY" '{providerId:"anthropic",requestId:"req-1",value:$v}')"  # answer a prompt; keep the value out of argv and shell history
 ade --role cto actions run ai.piLoginCancel --input-json '{"providerId":"anthropic"}'
-ade actions run cto_state.getThreadHealth --json                           # can the CTO thread take a turn, and is a rotation advised
-ade --role cto actions run cto_state.startFreshSession --json       # retire the CTO thread and open a clean one (CTO-only; memory and identity carry over)
+ade --role cto actions run cto_state.refreshContext --json          # give the CTO a fresh provider thread (CTO-only; the conversation, notes and open work carry over)
+ade --role cto actions run cto_memory.updateNotes --input-json '{"scope":"project","text":"- Deploys go through the release lane"}' --json
+ade --role cto actions run cto_memory.updateOpenWork --input-json '{"op":"add","text":"Land the login fix"}' --json
+ade actions run chat.setScheduledWorkItemPaused --input-json '{"sessionId":"chat-123","scheduleId":"cron-abc","paused":true}' --text
+ade actions run chat.runScheduledWorkNow --input-json '{"sessionId":"chat-123","scheduleId":"cron-abc"}' --text
 ade --role cto actions run computer_use_artifacts.ingestSceneSnapshot --input-json '{"path":".../.ade/artifacts/computer-use/scene.png"}' --json
 ade cursor cloud agents list --text
 ade cursor cloud agents list --archived --limit 100 --text
@@ -1065,19 +1072,20 @@ is the path that checks owner claims and the caller's import root.
 There is no `ade cto` command; `cto_state` and `cto_memory` are reached through `ade actions
 run` only.
 
-Two `cto_state` actions are new and one pair is gone. `getThreadHealth` is a
-read — can the CTO thread take a turn, why not if it cannot, and is a rotation
-advised — and is open to every role like `getAttention`, because it answers a
-question about a badge and returns no content. `startFreshSession` retires the
-CTO thread and opens a clean one on the primary lane; it is CTO-only, because
-deciding a conversation is finished is the operator's call and an agent that
-could make it could quietly drop the context it was being supervised with.
-Nothing it touches is destructive: identity, memory, the daily log and the
-retired transcript all survive, and the outgoing thread is distilled into memory
-first. `cto_state.dismissOnboarding` and `cto_state.resetOnboarding` were removed
+`cto_state.refreshContext` gives the CTO a fresh provider thread: the ADE chat
+stays, and the new thread is told the doctrine, the notes, the open work, the
+live project state and the last 40 messages. It is CTO-only, because when the
+CTO starts over is the operator's call. A CTO that is mid-turn is refreshed when
+the turn ends. `cto_memory.updateNotes` replaces one notes file (`project`:
+`.ade/cto/MEMORY.md`, 4096 bytes; `user`: notes about the person for every
+project on this machine, 2048 bytes) and refuses text over the cap;
+`cto_memory.updateOpenWork` adds, completes, reopens or removes one open-work
+item. `getSnapshot`
+and `recordDiscovery` stay open to every role; the writes are CTO-only.
+`cto_state.dismissOnboarding` and `cto_state.resetOnboarding` were removed
 with the surface they drove, so a script that still calls either now fails with
-an unknown-action error rather than a silent no-op; there is no replacement and
-none is needed — `getOnboardingState` and `completeOnboardingStep` remain.
+an unknown-action error rather than a silent no-op; `getOnboardingState` and
+`completeOnboardingStep` remain.
 
 `ade tools` is deliberately not backed by a service action. The pinned-tool cache
 is a property of the machine's filesystem, not of a project runtime, so the
@@ -1182,9 +1190,9 @@ Legacy opaque refresh tokens still work when local `CLERK_ISSUER` and
 `CLERK_OAUTH_CLIENT_ID` are configured; recreate them with the command above to
 remove that dependency. ADE never logs this environment value.
 
-Provider API keys, Linear OAuth credentials, and project secrets can follow the
-signed-in account through the encrypted account vault; device-only values remain
-in the machine's encrypted stores. GitHub tokens and computer-use policy remain
+Provider API keys and Linear OAuth credentials can follow the signed-in account
+through the encrypted account vault, and secrets through Passwords & Secrets;
+device-only values remain in the machine's encrypted stores. GitHub tokens and computer-use policy remain
 separate and are read from their existing secure stores.
 
 `ade doctor` inspects the installed app and machine-brain health and prints one
@@ -1205,17 +1213,19 @@ status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
 
 When a row fails and the checks above do not explain it, `ade doctor --text`
 points at `ade report-issue`. That command is the headless counterpart to the
-desktop "Report issue" button: it reads only local files — it never starts or
+desktop's "Report this error to ADE…" dialog: it reads only local files — it never starts or
 contacts the brain — so it still works on the machine where ADE itself will not
 come up, and on Windows where there is no desktop error screen to press. It
-prints a redacted diagnostic report plus a prefilled GitHub issue URL (`--open`
-copies the report to the clipboard and opens that URL, `--json` returns
-`{ installId, issueUrl, copied, report }`).
+prints a redacted diagnostic report. Do not post the report on a public page;
+send it with `--send`. `--json` returns `{ installId, report, reportPath?, sent?,
+issueUrl?, opened? }`: `issueUrl` is the public GitHub issue link, present only
+after a successful `--send`, and holds only the reference, the version and
+channel and the OS family; `opened` says whether `--open` opened it.
 
 `--send` is the one part of this command that leaves the machine, and it is
 opt-in: it uploads the same redacted report to ADE over HTTPS and prints the
-reference id support quotes back. It is the headless counterpart to the desktop
-button's "Send to ADE", and it reads everything it needs — the account session,
+reference id support quotes back. It is the headless counterpart to Send in the
+desktop's report dialog, and it reads everything it needs — the account session,
 the directory origin — from local files, so it still works on a machine whose
 brain will not start. A signed-in machine attaches its account token; a
 signed-out one uploads anonymously against the install id already in the report.
@@ -1226,7 +1236,7 @@ asked for, as `{ ok: true, reference }` or `{ ok: false, reason }`, so a script
 can tell "not requested" from "requested and failed".
 
 `ade triage` is the third step after those two: `doctor` says which check
-failed, `report-issue` produces something to file, and `triage` hands the repair
+failed, `report-issue` produces a report to send, and `triage` hands the repair
 to a coding agent. It runs the same doctor checks and the same
 redacted diagnostic collection, writes them as a single `context.md` into a
 fresh temp directory (`ade-triage-<timestamp>-<random>/`) alongside a repair
@@ -1381,10 +1391,10 @@ A webhook automation gives a service (GitHub, Stripe, Linear, Sentry, anything t
 
 ```bash
 # GitHub issues opened → triage, every delivery as a new turn in this chat
-ade automations webhook create --preset github --filter body.action=opened --in-this-chat --text
+ade automations webhook create --service github --filter body.action=opened --in-this-chat --text
 
 # Anything else; no signature; a custom prompt with request fields
-ade automations webhook create --preset generic --no-signature \
+ade automations webhook create --service generic --no-signature \
   --name "Deploy failures" --filter body.status=failed \
   --prompt "The {{trigger.body.service}} deploy failed: {{trigger.body.url}}. Find out why." --text
 ```

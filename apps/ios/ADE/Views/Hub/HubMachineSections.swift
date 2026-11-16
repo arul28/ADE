@@ -301,7 +301,7 @@ func hubSendProjectIcon(
     }
   }
   for location in locations {
-    let name = fleet.machine(for: location.machineKey)?.name ?? "Another machine"
+    let name = fleet.machine(for: location.machineKey)?.name ?? "Another computer"
     guard let connection = fleet.connection(for: location.machineKey),
           connection.isLive, connection.supportsProjectIcon else {
       failures.append("\(name): can’t reach it, or its ADE is too old")
@@ -314,4 +314,24 @@ func hubSendProjectIcon(
     }
   }
   return failures
+}
+
+/// A roster with its chats and lanes taken out: the project card stays.
+func hubRosterWithoutWork(_ roster: RemoteRosterProject) -> RemoteRosterProject {
+  var copy = roster
+  copy.chats = []
+  copy.lanes = []
+  copy.chatTotal = nil
+  copy.runningCount = 0
+  copy.attentionCount = 0
+  return copy
+}
+
+/// A machine as the Hub merges it: one whose work is not listed
+/// (`fleetMachineListsWork`) keeps its project cards, without chats or lanes.
+func hubMachineWithListedWork(_ machine: MachineFleet.Machine) -> MachineFleet.Machine {
+  guard !machine.listsWork else { return machine }
+  var copy = machine
+  copy.projects = machine.projects.map(hubRosterWithoutWork)
+  return copy
 }

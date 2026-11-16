@@ -1,4 +1,5 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { adeCloudInstanceIdForMachine } from "../../state/adeCloudLaneIndex";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
 import { originUrlForBinding } from "../lanes/laneMachines";
@@ -13,16 +14,18 @@ import {
   readLocalCtoHome,
   resolveCtoHomeMachine,
   STILL_IDENTIFYING_THIS_COMPUTER,
-  suggestCtoHomeMachine,
   type CtoHomeMachineRecord,
 } from "./ctoHomeMachine";
+import { ctoHomeCloudInstanceId } from "../../../shared/ctoHomeMachine";
+import type { CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 
 /**
  * Where this project's CTO lives, resolved for the CTO page.
  *
  * `status`:
  *  - `loading`  — the stored choice or the machine list is still arriving.
- *  - `choose`   — no home yet; show the first-run chooser.
+ *  - `choose`   — no home yet; show the first-run chooser. There is no
+ *    default: even with one machine, the person picks it once.
  *  - `ready`    — `pin` addresses the home machine. It is never null when ready.
  *  - `offline`  — a home is chosen but cannot be reached from here right now.
  *
@@ -39,10 +42,17 @@ export type CtoHomeState = {
   /** Why an `offline` home cannot be reached, in one sentence. */
   offlineReason: string | null;
   machines: ProjectMachine[];
-  suggested: ProjectMachine | null;
   /** True when the account store could not be reached: the choice is only local. */
   localOnly: boolean;
-  choose: (machine: ProjectMachine) => Promise<void>;
+  /** The repository's git origin, or null when it has none (no ADE Cloud then). */
+  origin: string | null;
+  /** The ADE Cloud computer the home is, when it is one. */
+  cloudInstanceId: string | null;
+  /**
+   * Records `machine` as the home, then has it take the CTO from the account
+   * copy. Answers what it restored, or null when that machine's ADE can't.
+   */
+  choose: (machine: ProjectMachine, options?: { cloudInstanceId?: string | null }) => Promise<CtoAdoptAccountCopyResult | null>;
 };
 
 type StoredState = {
@@ -88,23 +98,10 @@ function useRepoOrigin(binding: OpenProjectBinding | null): { loaded: boolean; o
   return { loaded: true, origin: state.origin };
 }
 
-/**
- * True when there is nothing to choose between: no other machine is connected
- * and none has this repo. The CTO then can only live on This computer, and the
- * page proceeds without asking.
- */
-function onlyThisMachine(
-  machines: readonly ProjectMachine[],
-  connectedRemoteCount: number,
-): boolean {
-  if (connectedRemoteCount > 0) return false;
-  return !machines.some((machine) => !machine.isThisMachine && machine.hasRepo);
-}
-
 export function useCtoHome(active: boolean): CtoHomeState {
   const binding = useAppStore((state) => state.projectBinding);
   const scopeKey = useAppStore(selectActiveProjectStateKey);
-  const { machines, thisMachineDeviceName, settled, connectedRemoteCount } = useProjectMachines(active);
+  const { machines, thisMachineDeviceName, settled } = useProjectMachines(active);
   const { loaded: originLoaded, origin } = useRepoOrigin(binding);
   const keys = useMemo(
     () => ctoHomeStorageKeys({ gitOriginUrl: origin, binding }),
@@ -164,36 +161,42 @@ export function useCtoHome(active: boolean): CtoHomeState {
     () => (stored.record ? resolveCtoHomeMachine(stored.record, machines) : null),
     [machines, stored.record],
   );
-  const suggested = useMemo(() => suggestCtoHomeMachine(machines), [machines]);
-
-  const choose = useCallback(async (machine: ProjectMachine) => {
+  const choose = useCallback(async (
+    machine: ProjectMachine,
+    options?: { cloudInstanceId?: string | null },
+  ): Promise<CtoAdoptAccountCopyResult | null> => {
     // This computer is recorded by its account device id; without it no other
     // machine could ever find the CTO here, so the choice waits for it.
     if (machine.isThisMachine && !machine.deviceId) throw new Error(STILL_IDENTIFYING_THIS_COMPUTER);
-    const record = ctoHomeRecordFor(machine, thisMachineDeviceName);
+    if (!machine.pin) throw new Error(`${machine.machineName} can't be reached right now.`);
+    const base = ctoHomeRecordFor(machine, thisMachineDeviceName);
+    // An ADE Cloud computer picked from the list is one too: the record says
+    // so, and every surface can wake it or make a new one later.
+    const cloudInstanceId = options?.cloudInstanceId?.trim()
+      || adeCloudInstanceIdForMachine({ hostname: machine.hostname, machineKey: machine.machineId })
+      || null;
+    const record: CtoHomeMachineRecord = cloudInstanceId ? { ...base, cloudInstanceId } : base;
     readGeneration.current += 1;
     const { synced } = await persistCtoHome({ accountScope: keys.accountScope, localKey: keys.localKey, record });
+    // The new home takes the CTO from the account copy: its notes, identity,
+    // routines and last turns, even when the old home is asleep or gone. The
+    // record goes with it so that machine agrees before its next sync.
+    let adopted: CtoAdoptAccountCopyResult | null = null;
+    const adopt = window.ade?.cto?.adoptAccountCopy;
+    if (adopt) {
+      adopted = await adopt({ home: record }, machine.pin).catch(() => null);
+    }
     setStored({ key: storeKey, loaded: true, record, localOnly: !synced });
+    return adopted;
   }, [keys.accountScope, keys.localKey, storeKey, thisMachineDeviceName]);
 
-  // One machine, and it is this one: nothing to choose between. The page runs
-  // against the tab's binding straight away, and records This computer as home
-  // once its device id is known, so a second machine added later still finds
-  // the CTO where it has always been.
-  const implicitThisMachine = settled && onlyThisMachine(machines, connectedRemoteCount);
-  const thisMachine = machines.find((machine) => machine.isThisMachine) ?? null;
-  const autoChoseRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!active || !stored.loaded || stored.record || !implicitThisMachine) return;
-    if (!thisMachine?.deviceId || !thisMachine.hasRepo || !thisMachine.routable) return;
-    const marker = `${storeKey}|${thisMachine.deviceId}`;
-    if (autoChoseRef.current === marker) return;
-    autoChoseRef.current = marker;
-    void choose(thisMachine);
-  }, [active, choose, implicitThisMachine, storeKey, stored.loaded, stored.record, thisMachine]);
-
   const state = useMemo<Omit<CtoHomeState, "choose">>(() => {
-    const base = { machines, suggested, localOnly: stored.localOnly };
+    const base = {
+      machines,
+      localOnly: stored.localOnly,
+      origin,
+      cloudInstanceId: ctoHomeCloudInstanceId(stored.record),
+    };
     if (!originLoaded || !stored.loaded) {
       return { ...base, status: "loading", pin: null, home: null, homeName: null, offlineReason: null };
     }
@@ -201,10 +204,6 @@ export function useCtoHome(active: boolean): CtoHomeState {
     if (!record) {
       if (!settled) {
         return { ...base, status: "loading", pin: null, home: null, homeName: null, offlineReason: null };
-      }
-      if (implicitThisMachine && thisMachine?.isActiveBinding && thisMachine.pin) {
-        // No other machine: this computer's copy is the only possible home.
-        return { ...base, status: "ready", pin: thisMachine.pin, home: thisMachine, homeName: thisMachine.machineName, offlineReason: null };
       }
       return { ...base, status: "choose", pin: null, home: null, homeName: null, offlineReason: null };
     }
@@ -234,7 +233,7 @@ export function useCtoHome(active: boolean): CtoHomeState {
       };
     }
     return { ...base, status: "ready", pin: home.pin, home, homeName, offlineReason: null };
-  }, [home, implicitThisMachine, machines, originLoaded, settled, stored, suggested, thisMachine]);
+  }, [home, machines, origin, originLoaded, settled, stored]);
 
   // Publish for surfaces outside this page (the capture gesture). Only a
   // concrete answer is published; "loading" clears it so a stale pin is never
@@ -255,29 +254,4 @@ export function useCtoHome(active: boolean): CtoHomeState {
   }, [scopeKey, state.homeName, state.pin, state.status]);
 
   return useMemo(() => ({ ...state, choose }), [choose, state]);
-}
-
-// ── Context for the CTO subtree ────────────────────────────────────────────
-
-export type CtoHomeScope = {
-  /** Pass to every CTO preload call. Null until the home is reachable: call nothing then. */
-  pin: OpenProjectBinding | null;
-  machineName: string | null;
-  /** False until the home is resolved and reachable; calls must wait. */
-  ready: boolean;
-};
-
-const FALLBACK_SCOPE: CtoHomeScope = { pin: null, machineName: null, ready: false };
-const CtoHomeContext = createContext<CtoHomeScope | null>(null);
-
-export function CtoHomeProvider({ scope, children }: { scope: CtoHomeScope; children: React.ReactNode }) {
-  return <CtoHomeContext.Provider value={scope}>{children}</CtoHomeContext.Provider>;
-}
-
-/**
- * The CTO's machine for a component inside the CTO page. Outside the page
- * (tests, previews) there is no home: `pin` is null and nothing is called.
- */
-export function useCtoHomeScope(): CtoHomeScope {
-  return useContext(CtoHomeContext) ?? FALLBACK_SCOPE;
 }

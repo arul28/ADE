@@ -2091,7 +2091,7 @@ describe("RemoteConnectionPool", () => {
     expect(client.call).toHaveBeenCalledWith("sync.getStatus", {
       projectId: "project-1",
       includeTransferReadiness: true,
-    });
+    }, { timeoutMs: 30_000 });
   });
 
   it("retries project-scoped sync reads once when the connection closes during the request", async () => {
@@ -2131,11 +2131,11 @@ describe("RemoteConnectionPool", () => {
     expect(firstClient.call).toHaveBeenCalledWith("sync.getStatus", {
       projectId: "project-1",
       includeTransferReadiness: true,
-    });
+    }, { timeoutMs: 30_000 });
     expect(secondClient.call).toHaveBeenCalledWith("sync.getStatus", {
       projectId: "project-1",
       includeTransferReadiness: true,
-    });
+    }, { timeoutMs: 30_000 });
   });
 
   it("does not retry mutating sync RPCs after a connection drop", async () => {
@@ -2170,7 +2170,7 @@ describe("RemoteConnectionPool", () => {
       projectId: "project-1",
       host: "brain.local",
       port: 8765,
-    });
+    }, { timeoutMs: 30_000 });
   });
 
   it("subscribes to runtime event notifications and unsubscribes on cleanup", async () => {

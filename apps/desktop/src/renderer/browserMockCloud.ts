@@ -14,6 +14,12 @@
  *  - `idle`: Free plan, one lane unused 2 days (deleted in 1 day, ignored files listed) and one whose computer the idle cleanup removed.
  *  - `idlepaid`: Plus, one lane unused 7 days (deleted in 3 days, no ignored-files summary yet).
  *  - `idleheld`: Free plan, one lane ADE didn't delete because its push was refused.
+ *  - `pastdue`: Plus with its last payment failed (free plan rules until it's paid).
+ *  - `extradisk`: Plus with extra disk on, past the plan's 30 GB.
+ *  - `upgraded`: Plus a moment after checkout, with this computer last seeing Free
+ *    (79.1 free hours left): the "You're on Plus" confirmation shows once.
+ *  - `emptyplus`: Plus with nothing made yet and no use this period.
+ * On `free`, Get Plus lands the plan a moment later, as a checkout coming back does.
  * `&mockCloudAccess=off` answers "no ADE Cloud" (the hidden state).
  *
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
@@ -31,10 +37,11 @@ import {
   type CloudMachinesResult,
   type CloudPlanCleanup,
 } from "../shared/adeCloud";
-import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
+import { githubRepoOf, type CloudLaneMachine, type CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
+import { CLOUD_PLAN_SEEN_STORAGE_KEY } from "./components/settings/cloudDashboard/cloudPlanMoment";
 
-type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "over" | "full" | "blocked" | "idle" | "idlepaid" | "idleheld";
-const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "over", "full", "blocked", "idle", "idlepaid", "idleheld"];
+type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "over" | "full" | "blocked" | "idle" | "idlepaid" | "idleheld" | "pastdue" | "extradisk" | "upgraded" | "emptyplus";
+const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "over", "full", "blocked", "idle", "idlepaid", "idleheld", "pastdue", "extradisk", "upgraded", "emptyplus"];
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
@@ -142,7 +149,115 @@ type Fixture = {
   downgrade?: boolean;
   /** The plan in force is over its limits: new computers refused until the person picks. */
   over?: boolean;
+  /** The last payment failed: the plan stays, its rules are the free plan's until paid. */
+  pastDue?: boolean;
+  /** Extra disk on, with a $10 monthly limit and some of it used. */
+  extraDiskOn?: boolean;
+  /** The period started an hour ago (a plan just bought). */
+  freshPeriod?: boolean;
 };
+
+/** A CTO cloud home job that walks its three steps on timers. */
+function mockCtoCloudHome(paid: boolean, failClone: boolean) {
+  type Listener = (event: unknown) => void;
+  const listeners = new Set<Listener>();
+  let job: Record<string, any> | null = null;
+  let timers: number[] = [];
+  const emit = () => {
+    if (!job) return;
+    job.updatedAt = new Date().toISOString();
+    const snapshot = { ...job, stages: job.stages.map((stage: Record<string, unknown>) => ({ ...stage })) };
+    for (const listener of listeners) listener({ type: "updated", snapshot });
+  };
+  const stage = (id: string) => ({ id, status: "pending", startedAt: null, endedAt: null, percent: null, detail: null, error: null });
+  const walk = (from: number) => {
+    const ids = ["computer", "join", "clone"];
+    ids.forEach((id, index) => {
+      if (index < from) return;
+      timers.push(window.setTimeout(() => {
+        if (!job) return;
+        const row = job.stages.find((entry: Record<string, unknown>) => entry.id === id);
+        row.status = "running";
+        row.detail = id === "computer" ? "Small · 2 CPU, 4 GB" : null;
+        emit();
+        timers.push(window.setTimeout(() => {
+          if (!job) return;
+          if (id === "clone" && failClone && !job.retried) {
+            row.status = "failed";
+            row.error = "The new computer can't read this repository. Check that ADE Cloud can sign in to GitHub for it, then retry.";
+            job.phase = "failed";
+            job.error = row.error;
+            emit();
+            return;
+          }
+          row.status = "done";
+          if (id === "clone") {
+            job.phase = "ready";
+            job.instanceId = "mock-cto-instance";
+            job.targetId = "mock-cto-target";
+          }
+          emit();
+        }, 1_400));
+      }, (index - from) * 1_600 + 200));
+    });
+  };
+  const clear = () => { for (const timer of timers) window.clearTimeout(timer); timers = []; };
+  const copyJob = () => (job ? { ...job, stages: job.stages.map((entry: Record<string, unknown>) => ({ ...entry })) } : null);
+  return {
+    ctoHome: async (request: { method: string; args: Record<string, unknown> }) => {
+      console.info(`[browser mock] cloud.ctoHome ${request.method}`);
+      if (request.method === "get") return copyJob();
+      if (request.method === "start") {
+        if (!paid) throw new Error("ADE Cloud as the CTO's home needs a paid plan. Upgrade to use it.");
+        if (job) return copyJob();
+        job = {
+          jobId: "mock-cto-job",
+          projectOrigin: githubRepoOf(typeof request.args?.originUrl === "string" ? request.args.originUrl : null)?.identity ?? "github.com/acme/web",
+          phase: "running",
+          stages: [stage("computer"), stage("join"), stage("clone")],
+          error: null,
+          warning: null,
+          computerName: "CTO · acme/web",
+          instanceId: null,
+          machineKey: null,
+          binding: null,
+          targetId: null,
+          reused: false,
+          updatedAt: new Date().toISOString(),
+        };
+        walk(0);
+        return copyJob();
+      }
+      if (request.method === "retry" && job) {
+        job.phase = "running";
+        job.error = null;
+        job.retried = true;
+        const failed = job.stages.find((entry: Record<string, unknown>) => entry.status === "failed");
+        if (failed) { failed.status = "pending"; failed.error = null; }
+        walk(2);
+        emit();
+        return copyJob();
+      }
+      if (request.method === "cancel" && job) {
+        const current: Record<string, any> = job;
+        clear();
+        const done: Record<string, any> = { ...current, phase: "cancelled" };
+        job = null;
+        for (const listener of listeners) listener({ type: "removed", jobId: done.jobId, projectOrigin: done.projectOrigin });
+        return done;
+      }
+      if (request.method === "finish") {
+        job = null;
+        return true;
+      }
+      return null;
+    },
+    onCtoHomeEvent: (cb: Listener) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  };
+}
 
 function fixture(scenario: Scenario): Fixture {
   switch (scenario) {
@@ -184,6 +299,18 @@ function fixture(scenario: Scenario): Fixture {
       };
     case "downgrade":
       return { ...fixture("pro"), downgrade: true };
+    case "pastdue":
+      return { ...fixture("plus"), pastDue: true, extraHours: false };
+    case "extradisk":
+      return {
+        ...fixture("plus"),
+        extraDiskOn: true,
+        lanes: [...fixture("plus").lanes, { id: "x4d5i6s7", lane: "video-pipeline", tier: "large", diskGb: 6, state: "asleep", lastActiveAgoMs: 3 * HOUR, createdAgoMs: 2 * DAY }],
+      };
+    case "upgraded":
+      return { planId: "plus", usedMilli: 200, freshPeriod: true, lanes: fixture("free").lanes.slice(0, 2), without: [] };
+    case "emptyplus":
+      return { planId: "plus", usedMilli: 0, freshPeriod: true, recentUsedMilli: 4_000, lanes: [], without: [] };
     case "over":
       return { ...fixture("plus"), planId: "free", usedMilli: 9_000, extraHours: false, earnedMilli: undefined, over: true };
     case "full":
@@ -270,7 +397,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
   const used = Math.min(fix.usedMilli, includedMilli);
   const left = Math.max(0, includedMilli - used);
   const percent = includedMilli > 0 ? Math.round((used / includedMilli) * 100) : 100;
-  const period = periodBounds(now);
+  const period = fix.freshPeriod ? { start: now - HOUR, end: now - HOUR + 30 * DAY } : periodBounds(now);
   const diskUsed = machines.reduce((total, box) => total + (box.resources?.diskGb ?? 0), 0);
   const extra: Record<string, unknown> = {};
   if (fix.earnedMilli != null) extra.earnedHours = { leftMilli: fix.earnedMilli, usedThisPeriodMilli: 0, grantedMilli: fix.earnedMilli };
@@ -295,7 +422,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
   };
   return {
     plan: fix.planId === "free" ? "free" : "paid",
-    rules: fix.planId === "free" ? "free" : "paid",
+    rules: fix.planId === "free" || fix.pastDue ? "free" : "paid",
     planId: fix.planId,
     hours: {
       includedMilli,
@@ -305,7 +432,9 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       state: left <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
     },
     extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.planId === "pro" ? 4_200 : 0 },
-    extraDisk: fix.planId === "free" ? undefined : { available: true, state: "off", monthlyLimitCents: null, usedCents: 0 },
+    extraDisk: fix.planId === "free" ? undefined : fix.extraDiskOn
+      ? { available: true, state: "on", monthlyLimitCents: 1000, usedCents: 140 }
+      : { available: true, state: "off", monthlyLimitCents: null, usedCents: 0 },
     disk: { usedGb: fix.planId === "free" && fix.lanes.length === 2 && fix.usedMilli === 100_000 ? 11 : diskUsed, limitGb: plan.diskGb },
     computers: {
       total: machines.length,
@@ -331,10 +460,10 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
     billing: {
       periodStart: period.start,
       periodEnd: period.end,
-      stripeStatus: fix.planId === "free" ? null : "active",
+      stripeStatus: fix.planId === "free" ? null : fix.pastDue ? "past_due" : "active",
       cancelAtPeriodEnd: false,
       nextPlanId: fix.downgrade ? "plus" : null,
-      notice: null,
+      notice: fix.pastDue ? "past_due" : null,
     },
     ...(fix.downgrade ? { planCleanup: mockCleanup(machines, "plus", period.end) } : {}),
     ...(fix.over ? { planCleanup: mockCleanup(machines, "free", null) } : {}),
@@ -384,7 +513,21 @@ export function applyBrowserMockCloud(ade: any): void {
   const now = Date.now();
   const fix = fixture(scenario);
   const machines = fix.lanes.map((spec) => machine(spec, now));
-  const state = account(fix, machines, now);
+  let state = account(fix, machines, now);
+  // `upgraded`: this computer last saw the account on Free, a period ago, with 79.1 hours left
+  // (once per tab, as a real checkout coming back is seen once).
+  if (scenario === "upgraded") {
+    try {
+      if (window.sessionStorage.getItem("ade.browserMock.planSeenSeed") !== "1") {
+        window.sessionStorage.setItem("ade.browserMock.planSeenSeed", "1");
+        window.localStorage.setItem(CLOUD_PLAN_SEEN_STORAGE_KEY, JSON.stringify({
+          [state.referral?.code ?? "account"]: { planId: "free", periodStart: state.billing.periodStart - 30 * DAY, leftMilli: 79_100 },
+        }));
+      }
+    } catch {
+      // Storage off: the preview shows Plus without the confirmation.
+    }
+  }
   const without: CloudLaneWithoutComputer[] = fix.without.map((lane, index) => ({
     laneId: `lane-without-${index}`,
     laneName: lane.name,
@@ -426,7 +569,19 @@ export function applyBrowserMockCloud(ade: any): void {
     openCheckout: async (plan?: string, cleanup?: { push: boolean; instanceIds: string[] }) => {
       console.info(`[browser mock] cloud.openCheckout ${plan ?? "plus"}`, cleanup ?? "");
       // A paid account changes plan without a checkout page, as the server does: Pro to Plus waits for the period's end.
-      if (fix.planId === "free" || !plan) return { opened: true };
+      if (fix.planId === "free") {
+        // The checkout page "comes back" a moment later: the plan lands with a fresh period.
+        const landed = (plan ?? "plus") as Fixture["planId"];
+        window.setTimeout(() => {
+          fix.planId = landed;
+          fix.freshPeriod = true;
+          fix.usedMilli = 0;
+          state = account(fix, machines, Date.now());
+          for (const listener of statusListeners) listener();
+        }, 1_500);
+        return { opened: true };
+      }
+      if (!plan) return { opened: true };
       const downgrade = plan === "plus" && fix.planId === "pro";
       if (downgrade && cleanup) {
         state.billing = { ...state.billing, nextPlanId: "plus" };
@@ -465,6 +620,9 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     onLaneJob: () => () => undefined,
     clearCaches: async () => ({ freedGb: 1.2 }),
+    // The CTO's home on ADE Cloud, as the desktop makes it (`ctoCloudHomeService.ts`).
+    // `?mockCtoCloud=fail` fails the clone step, so Retry and Cancel can be seen.
+    ...mockCtoCloudHome(fix.planId !== "free", param("mockCtoCloud") === "fail"),
     redeemInvite: async (code: string) => {
       console.info(`[browser mock] cloud.redeemInvite (${code.length} chars)`);
       if (!code.trim().toUpperCase().includes("FRIEND")) return { ok: false, reason: "unknown_code", message: "That invite code doesn't exist. Check it and try again." };

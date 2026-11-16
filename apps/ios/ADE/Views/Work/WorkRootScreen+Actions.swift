@@ -33,7 +33,7 @@ extension WorkRootListScreen {
       && loadedProjectionProjectId == activeProjectId
     let localSessions = localProjectionIsCurrent ? sessions : []
     let localLanes = localProjectionIsCurrent ? lanes : []
-    let chatSummariesSnapshot = localProjectionIsCurrent ? chatSummaries : [:]
+    var chatSummariesSnapshot = localProjectionIsCurrent ? chatSummaries : [:]
     let knownChatSummaries = syncService.chatSummaryCache.merging(chatSummariesSnapshot) { _, current in current }
     var identitySessionIds = Set<String>(knownChatSummaries.compactMap { sessionId, summary in
       guard let identityKey = summary.identityKey?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -66,19 +66,36 @@ extension WorkRootListScreen {
     )
     // The same repository's chats on the other paired machines (the desktop
     // Work board's union). Their row actions route to their own machine.
+    // The focused machine off past its reconnect window (or disconnected):
+    // its chats, sessions and lanes are not listed until it is back.
+    let focusedListed = inputs.primaryListsWork
     let remoteMerge = workMergeRemoteMachineRows(
-      sessions: activeRosterProjection.sessions,
-      lanes: activeRosterProjection.lanes,
-      remote: localProjectionIsCurrent ? inputs.remoteMachineRepos : []
+      sessions: focusedListed ? activeRosterProjection.sessions : [],
+      lanes: focusedListed ? activeRosterProjection.lanes : [],
+      remote: localProjectionIsCurrent ? inputs.remoteMachineRepos : [],
+      focused: activeRoster
     )
     syncService.setWorkListRemoteChats(remoteMerge.remoteChats)
+    // A chat started here on another computer: once that computer's roster
+    // lists it, its roster row is the live one. The row and summary kept from
+    // its start go, because nothing refreshes them (summaries are read from
+    // the focused computer's lanes): the row kept the first title, such as
+    // "Claude Chat", for minutes after the chat was named.
+    let startedElsewhere = optimisticSessions.keys.filter { remoteMerge.remoteChats[$0] != nil }
+    if !startedElsewhere.isEmpty {
+      for sessionId in startedElsewhere {
+        optimisticSessions[sessionId] = nil
+        chatSummaries[sessionId] = nil
+        chatSummariesSnapshot[sessionId] = nil
+      }
+    }
     let rosterProjection = (sessions: remoteMerge.sessions, lanes: remoteMerge.lanes)
     // Chats launched into a lane that is still being set up: a row under the
     // launch's lane until the real session row lands, then only the status line.
     let launchProjection = workOverlayChatLaunches(
       sessions: rosterProjection.sessions,
       lanes: rosterProjection.lanes,
-      launches: localProjectionIsCurrent ? syncService.activeProjectChatLaunches() : []
+      launches: localProjectionIsCurrent && focusedListed ? syncService.activeProjectChatLaunches() : []
     )
     // Side chats live inside their main chat: never a row, and the main
     // chat's row wears the side-chat mark while it has one.
@@ -95,7 +112,7 @@ extension WorkRootListScreen {
     let githubPrsSnapshot = localProjectionIsCurrent ? syncService.laneGithubPrItems : []
     // Fold offline "Pending sync" chat-creation rows into the optimistic set so
     // they render through the same machinery; committed rows win on id collision.
-    let optimisticSessionsSnapshot = localProjectionIsCurrent
+    let optimisticSessionsSnapshot = localProjectionIsCurrent && focusedListed
       ? optimisticSessions.merging(pendingChatCreationOptimisticSessions) { current, _ in current }
       : [:]
     let archivedSessionIdsSnapshot = resolvedWorkArchivedSessionIds(

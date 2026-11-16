@@ -1,7 +1,9 @@
-import type {
-  TerminalRuntimeState,
-  TerminalSessionStatus,
-  TrackedAgentCliToolType,
+import {
+  isTrackedAgentCliToolType,
+  type TerminalRuntimeState,
+  type TerminalSessionStatus,
+  type TerminalToolType,
+  type TrackedAgentCliToolType,
 } from "./types/sessions";
 
 /**
@@ -26,6 +28,18 @@ export const TRACKED_AGENT_CLI_TOOL_TYPES: readonly TrackedAgentCliToolType[] = 
   "codex-orchestrated",
   "opencode-orchestrated",
 ];
+
+/**
+ * Whether ADE can reopen this agent CLI after a restart, and so tell it to
+ * continue. Every tracked CLI but Devin: ADE never learns a Devin terminal's
+ * session id (no resume target, no resume metadata), and `devin --continue`
+ * would pick the newest Devin session in the folder, which can belong to
+ * another terminal or a Devin chat. A Devin terminal stays closed after a
+ * restart, and the stop logs why (`pty.cli_reopen_not_supported`).
+ */
+export function trackedCliReopensAfterRestart(toolType: TerminalToolType | null | undefined): boolean {
+  return isTrackedAgentCliToolType(toolType) && toolType !== "devin";
+}
 
 /**
  * What `ade chat status` / `ade chat read` add when the id names a tracked CLI

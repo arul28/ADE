@@ -199,6 +199,10 @@
   "env": {
     "production": {
       "name": "ade-account-directory-production",
+      // Billing pages (Checkout/portal return) live on a clean ADE address.
+      // ade-app.dev is a Cloudflare zone, so the deploy makes the DNS record
+      // and certificate. The workers.dev URL keeps working.
+      "routes": [{ "pattern": "account.ade-app.dev", "custom_domain": true }],
       // DIRECTORY_AUTH_SECRET is required here too and is set as a secret:
       //   wrangler secret put DIRECTORY_AUTH_SECRET --env production
       "vars": {
@@ -209,6 +213,8 @@
         // every sign-in link is a 404; the deploy preflight checks the page
         // is live (`scripts/verify-deployment-config.mjs`).
         "DEVICE_PAGE_ORIGIN": "https://ade-app.dev",
+        // Where Stripe sends people back after Checkout and the portal.
+        "BILLING_RETURN_ORIGIN": "https://account.ade-app.dev",
         "ONLINE_WINDOW_MS": "150000",
         // Same public DSN as above; vars do not inherit into an environment.
         "SENTRY_DSN": "https://7b05312b178df4f7d294794aa9ff7cde@o4512249455640576.ingest.us.sentry.io/4512249615024128",

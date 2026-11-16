@@ -148,9 +148,18 @@ function AccountHeader({
           {subtitle ? <span className="ade-cx-head-email">{subtitle}</span> : null}
         </span>
       </button>
-      <button type="button" onClick={onNavigate} className="ade-cx-head-btn" style={{ order: 2 }}>
+      {/* In a narrow panel the signed-in button keeps only its icon. */}
+      <button
+        type="button"
+        onClick={onNavigate}
+        className="ade-cx-head-btn"
+        style={{ order: 2 }}
+        {...(active ? { "aria-label": "Account", "data-icon-only-narrow": "" } : {})}
+      >
         {active ? <UserCircle size={13} weight="bold" /> : null}
-        {active ? "Account" : accountSessionConnectionsAction(sessionState)}
+        {active
+          ? <span className="ade-cx-head-btn-label">Account</span>
+          : accountSessionConnectionsAction(sessionState)}
       </button>
     </div>
   );
@@ -206,7 +215,10 @@ export function ConnectionsPanel(props: ConnectionsPanelProps) {
   return props.variant === "web" ? <HostedConnectionsPanel {...props} /> : <DesktopConnectionsPanel {...props} />;
 }
 
-/** The account machines, read when the panel opens and again on request. */
+/** Longer than the shared cache's 15 s, so each tick is a real directory read. */
+const ACCOUNT_MACHINES_REFRESH_MS = 20_000;
+
+/** The account machines, read when the panel opens, every 20 s while it is open, and on request. */
 function usePanelAccountMachines(enabled: boolean) {
   const [accountMachines, setAccountMachines] = useState<AdeAccountMachinesResult | null>(null);
   const loadAccountMachines = useCallback(async (options?: { force?: boolean }) => {
@@ -223,6 +235,13 @@ function usePanelAccountMachines(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     void loadAccountMachines();
+    // While the panel is open the rows follow the account directory: a
+    // computer that went offline (or came back) changes its words within one
+    // read, not when the panel next opens.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadAccountMachines();
+    }, ACCOUNT_MACHINES_REFRESH_MS);
+    return () => window.clearInterval(timer);
   }, [enabled, loadAccountMachines]);
   return { accountMachines, reloadAccountMachines };
 }
@@ -338,12 +357,12 @@ function HostedConnectionsPanel({
   const { goToAccount, goToCloudSettings } = usePanelNavigation(onClose);
   const sessionLimit = useWebSessionLimitReached();
   return (
-    <div style={PANEL_FRAME_STYLE}>
+    <div className="ade-cx-panel" style={PANEL_FRAME_STYLE}>
       <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} onClose={onClose} />
       <div style={{ overflowY: "auto", padding: 12 }} data-onboarding-anchor="connections-machines">
         {sessionLimit != null ? (
           <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.45, marginBottom: 10 }}>
-            This tab keeps {sessionLimit} machines connected at once. Others stay listed and connect when you
+            This tab keeps {sessionLimit} computers connected at once. Others stay listed and connect when you
             open them.
           </div>
         ) : null}
@@ -351,6 +370,7 @@ function HostedConnectionsPanel({
           onDisconnectRequested={onDisconnectRequested}
           onRemoveRequested={onRemoveRequested}
           accountMachines={accountMachines?.machines}
+          sessionLimit={sessionLimit}
           accountMachinesState={accountMachines?.state}
           accountSignedIn={accountStatus.signedIn}
           onAccountRequested={goToAccount}
@@ -433,7 +453,7 @@ function DesktopConnectionsPanel({
     // Clip to the sheet's own corners, whatever radius the theme gives it, so
     // the coloured header never pokes past the curve. Menus portal out, so
     // nothing that should overflow is cut.
-    <div style={PANEL_FRAME_STYLE}>
+    <div className="ade-cx-panel" style={PANEL_FRAME_STYLE}>
       <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} onClose={onClose} />
 
       <div style={{ padding: "12px 12px 0" }}>

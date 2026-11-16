@@ -430,7 +430,10 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   `agentChatService.generateAutoLaneIdentity` on the host).
   Deterministic fallback (`apps/desktop/src/shared/laneNameFallback.ts`)
   intentionally remains a bounded shared heuristic: stopword/noise removal and
-  capped meaningful tokens drawn from words the prompt actually contains. It
+  capped meaningful tokens drawn from words the prompt actually contains, taken
+  whole clause by whole clause (once the name has two words, a clause that
+  would overflow the five-word cap is left out, so "Live test of ADE Cloud,
+  keep it short" names "Live Test ADE Cloud", not "… Cloud Keep"). It
   carries no keyword rules that substitute a canned phrase for the prompt — an
   earlier trap renamed any prompt mentioning a provider plus a login-ish phrase
   to `<provider>-auth-login`, inventing words the user never wrote. Broader
@@ -442,7 +445,8 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   state simply keeps the deterministic name. The host command is
   deliberately not queueable so an offline phone fails fast to the
   deterministic name instead of queueing a stale suggestion. Covers
-  both the Chat and CLI auto-create paths; the all-projects hub
+  both the Chat and CLI auto-create paths, and new lanes on ADE Cloud (the
+  brain on the lane's computer runs the same naming); the all-projects hub
   composer (`HubComposerDrawer.swift`) runs the same background naming
   with `targetProjectId`/`targetProjectRootPath` scope so it works for
   foreign-project launches.

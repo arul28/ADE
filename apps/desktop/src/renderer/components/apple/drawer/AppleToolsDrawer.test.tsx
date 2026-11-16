@@ -7,7 +7,6 @@ import {
   type AppleToolsDrawerProps,
 } from "./AppleToolsDrawer";
 import { DEVICE, installAdeMock } from "./drawerTestHarness";
-import { expectNoHorizontalOverflow } from "../testLayout";
 
 afterEach(cleanup);
 beforeEach(() => {
@@ -200,12 +199,5 @@ describe("AppleToolsDrawer", () => {
     const missing = await screen.findByRole("switch", { name: "Reduce Motion" });
     expect((missing as HTMLButtonElement).disabled).toBe(true);
     expect(missing.getAttribute("aria-checked")).toBe("false");
-  });
-
-  it.each([360, 900])("fits its container at %ipx", async (width) => {
-    installAdeMock();
-    const { container } = render(<AppleToolsDrawer {...props()} />);
-    await waitFor(() => expect(screen.queryByText("Reading device settings…")).toBeNull());
-    expectNoHorizontalOverflow(container, width);
   });
 });

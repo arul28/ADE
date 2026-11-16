@@ -111,6 +111,12 @@ export type RemoteCallerClaim = {
    */
   permissionLevel?: string | null;
   /**
+   * The calling chat's current turn. The target keeps the latest one per
+   * calling chat, so an end-of-turn release that arrives after the chat's next
+   * turn already called there lets go of nothing. Absent from older callers.
+   */
+  turnId?: string | null;
+  /**
    * Sent only with a request that starts the caller's own child. The target
    * stores it with the child and returns it with every report, so the calling
    * machine accepts the report from that machine and no other.
@@ -154,6 +160,18 @@ export function parseForeignCallerSessionId(
   const [device, chat, ...rest] = raw.slice(FOREIGN_CALLER_PREFIX.length).split(":");
   if (rest.length || !device || !chat || !FOREIGN_SEGMENT.test(device) || !FOREIGN_SEGMENT.test(chat)) return null;
   return { peerDeviceId: device, chatSessionId: chat === "terminal" ? null : chat };
+}
+
+/**
+ * The id of a child chat's parent as the parent's own Work row has it. A child
+ * started from another computer stores `remote:<device id>:<chat id>`; its
+ * parent's row is `<chat id>` on that computer. Null for a terminal caller.
+ */
+export function parentChatRowId(parentId: string | null | undefined): string | null {
+  const raw = parentId?.trim() || null;
+  if (!raw) return null;
+  const foreign = parseForeignCallerSessionId(raw);
+  return foreign ? foreign.chatSessionId : raw;
 }
 
 /**

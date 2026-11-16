@@ -233,15 +233,6 @@ function renderWebWelcome(
 }
 
 describe("ProjectWelcomePage worktree recents", () => {
-  it("renders a worktree chip and a merge action for a worktree recent", async () => {
-    renderWelcome();
-
-    expect(await screen.findByText("app-feature")).toBeTruthy();
-    expect(screen.getByText("worktree of app")).toBeTruthy();
-    expect(
-      screen.getByLabelText("Merge into app as a lane…"),
-    ).toBeTruthy();
-  });
 
   it("merge confirm forgets the recent and navigates to the auto-registered lane", async () => {
     inspectPath.mockResolvedValueOnce(inspection());
@@ -450,9 +441,9 @@ describe("ProjectWelcomePage multi-machine recents", () => {
 
     renderWelcome();
 
-    // One card, carrying both machines behind its "2 machines" chip.
-    fireEvent.click(await screen.findByRole("button", { name: /On 2 machines/ }));
-    const menu = screen.getByRole("menu", { name: "Open on machine" });
+    // One card, carrying both machines behind its count chip.
+    fireEvent.click(await screen.findByRole("button", { name: /^On 2 / }));
+    const menu = screen.getByRole("menu", { name: /^Computers with a copy/ });
     expect(within(menu).getAllByRole("menuitem")).toHaveLength(2);
     expect(within(menu).getByText("Mac Studio", { exact: true })).toBeTruthy();
     expect(

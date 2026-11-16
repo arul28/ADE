@@ -33,6 +33,8 @@ import type {
   AgentChatSessionCapabilities,
   AgentChatSessionSummary,
   AgentChatSetScheduledWorkPausedResult,
+  AgentChatSetScheduledWorkItemPausedResult,
+  AgentChatRunScheduledWorkNowResult,
   AgentChatSteerResult,
   AutoLaneIdentitySuggestion,
   DraftClaimArgs,
@@ -273,6 +275,14 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         await call("chat.setParallelLaunchState", args, undefined, false);
       },
     },
+    getRootFullAccess: async (pin?: RuntimePinArg) => {
+      guardPin("getRootFullAccess", pin);
+      return await callRequired<{ applies: boolean; allowed: boolean }>("chat.getRootFullAccess", {}, "Chat", true);
+    },
+    setRootFullAccess: async (args: { allowed: boolean }, pin?: RuntimePinArg) => {
+      guardPin("setRootFullAccess", pin);
+      return await callRequiredMutation<{ applies: boolean; allowed: boolean }>("chat.setRootFullAccess", args);
+    },
     fastModePolicy: {
       get: async () => {
         // A required read: an unavailable host must reach the caller's catch and
@@ -409,7 +419,13 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     send: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("send", pin);
-      await call("chat.send", args, undefined, false);
+      // One id per send (`AgentChatSendArgs.clientSendId`): a retry of a message
+      // the host already wrote is not sent twice.
+      const record = asRecord(args);
+      const stamped = record && typeof record.clientSendId !== "string"
+        ? { ...record, clientSendId: crypto.randomUUID() }
+        : args;
+      await call("chat.send", stamped, undefined, false);
       ensureChatSubscription(stringField(asRecord(args), "sessionId"));
     },
     // The Work input box on the web: same contract as the desktop's runtime
@@ -631,6 +647,18 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("switchAccount", pin);
       return await callRequired<AgentChatSwitchAccountResult>(
         "chat.switchAccount", args, "Chat", false,
+      );
+    },
+    setScheduledWorkItemPaused: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("setScheduledWorkItemPaused", pin);
+      return await callRequired<AgentChatSetScheduledWorkItemPausedResult>(
+        "chat.setScheduledWorkItemPaused", args, "Scheduled work", false,
+      );
+    },
+    runScheduledWorkNow: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("runScheduledWorkNow", pin);
+      return await callRequired<AgentChatRunScheduledWorkNowResult>(
+        "chat.runScheduledWorkNow", args, "Scheduled work", false,
       );
     },
     setScheduledWorkPaused: async (args: unknown, pin?: RuntimePinArg) => {

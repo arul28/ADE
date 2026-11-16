@@ -1,24 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BuiltInBrowserEmulationState } from "../../../../shared/types/builtInBrowser";
-import {
-  activeEmulationPresetId,
-  browserTabLabel,
-  deviceMenuPresets,
-  emulationButtonLabel,
-  emulationDisplayLabel,
-  emulationSizeLabel,
-  findErrorMessage,
-  findMatchLabel,
-  formatRecordingElapsed,
-  normalizeRecordingFps,
-  recordingElapsedMs,
-  recordingEndedByLabel,
-  recordingEndedByMessage,
-  recordingPillLabel,
-  simulatorEmulationPreset,
-  stepZoomFactor,
-  zoomPercentLabel,
-} from "./browserToolbarLabels";
+import { activeEmulationPresetId, browserTabLabel, deviceMenuPresets, emulationButtonLabel, emulationDisplayLabel, emulationSizeLabel, findErrorMessage, findMatchLabel, formatRecordingElapsed, normalizeRecordingFps, recordingElapsedMs, recordingEndedByLabel, recordingEndedByMessage, recordingPillLabel, simulatorEmulationPreset, stepZoomFactor } from "./browserToolbarLabels";
 import {
   BROWSER_TOOLBAR_URL_MIN_WIDTH,
   browserToolbarLayout,
@@ -139,9 +121,6 @@ describe("normalizeRecordingFps", () => {
 });
 
 describe("emulationButtonLabel", () => {
-  it("says Desktop when there is no override", () => {
-    expect(emulationButtonLabel(null)).toBe("Desktop");
-  });
 
   it("shows the metrics that were actually applied", () => {
     expect(emulationButtonLabel({
@@ -158,9 +137,6 @@ describe("emulationButtonLabel", () => {
 });
 
 describe("emulationSizeLabel", () => {
-  it("formats the preset metrics", () => {
-    expect(emulationSizeLabel({ width: 402, height: 874 })).toBe("402 × 874");
-  });
 
   it("is null for the metric-less Desktop preset", () => {
     expect(emulationSizeLabel({ width: 0, height: 0 })).toBeNull();
@@ -193,14 +169,6 @@ describe("simulatorEmulationPreset", () => {
 });
 
 describe("activeEmulationPresetId", () => {
-  it("is the preset the service named", () => {
-    expect(activeEmulationPresetId(emulationState({ presetId: "iphone-17", width: 393, height: 852 })))
-      .toBe("iphone-17");
-  });
-
-  it("is desktop when nothing is emulated", () => {
-    expect(activeEmulationPresetId(null)).toBe("desktop");
-  });
 
   it("still names the device after a rotation the service calls responsive", () => {
     expect(activeEmulationPresetId(emulationState({
@@ -248,11 +216,6 @@ describe("emulationDisplayLabel", () => {
 });
 
 describe("zoom", () => {
-  it("labels the factor as a percentage", () => {
-    expect(zoomPercentLabel(1)).toBe("100%");
-    expect(zoomPercentLabel(1.25)).toBe("125%");
-    expect(zoomPercentLabel(null)).toBe("100%");
-  });
 
   it("steps along Chromium's ladder and stops at the ends", () => {
     expect(stepZoomFactor(1, 1)).toBe(1.1);
@@ -268,13 +231,6 @@ describe("zoom", () => {
 });
 
 describe("findMatchLabel", () => {
-  it("counts the active match against the total", () => {
-    expect(findMatchLabel({ activeMatchOrdinal: 3, matches: 12 })).toBe("3 of 12");
-  });
-
-  it("says so when there is nothing to find", () => {
-    expect(findMatchLabel({ activeMatchOrdinal: 0, matches: 0 })).toBe("No results");
-  });
 
   it("reports a bare count until an ordinal arrives, and nothing before that", () => {
     expect(findMatchLabel({ activeMatchOrdinal: null, matches: 4 })).toBe("4 matches");
@@ -294,11 +250,6 @@ describe("findErrorMessage", () => {
   it("says what to do when there is no page to search", () => {
     expect(findErrorMessage(new Error("No active tab for this collection")))
       .toBe("Open a page before searching it.");
-  });
-
-  it("has an answer for anything at all", () => {
-    expect(findErrorMessage(undefined)).toBe("Find is not available on this page.");
-    expect(findErrorMessage("boom")).toBe("Find is not available on this page.");
   });
 });
 

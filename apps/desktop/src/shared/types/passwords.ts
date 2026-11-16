@@ -72,10 +72,15 @@ export type PasswordItemSummary = {
   hasTotp: boolean;
   /** Secrets only. */
   projectScope: string | null;
+  /**
+   * Secrets only: kept on this computer and never synced. It shows only on the
+   * computer that holds it.
+   */
+  deviceOnly: boolean;
   updatedAt: string;
 };
 
-/** One use of a saved item, for Settings › Passwords › Activity. */
+/** One use of a saved item, for Settings › Passwords & Secrets › Activity. */
 export type PasswordUseRecord = {
   itemId: string;
   kind: PasswordItemKind;
@@ -93,7 +98,7 @@ export type PasswordImportResult = {
   skippedInvalid: number;
 };
 
-/** What Settings › Passwords sends to save (or change) a login. */
+/** What Settings › Passwords & Secrets sends to save (or change) a login. */
 export type PasswordLoginSaveInput = {
   id?: string;
   title?: string;
@@ -105,15 +110,25 @@ export type PasswordLoginSaveInput = {
   totpUri?: string | null;
 };
 
-/** What Settings › Passwords sends to save (or change) a secret. */
+/** What Settings › Passwords & Secrets sends to save (or change) a secret. */
 export type PasswordSecretSaveInput = {
   id?: string;
   name: string;
   value: string;
   projectScope: string | null;
   notes?: string;
+  /** Keep it on this computer only, never synced. Fixed when the secret is made. */
+  deviceOnly?: boolean;
 };
 
+/** A project on this computer a secret can be for, by the key its secrets are saved under. */
+export type PasswordsProject = { scope: string; name: string; rootPath: string };
+
+/** Secrets from a `.env` file, for one project (or every project when null). */
+export type PasswordSecretsImportInput = {
+  projectScope: string | null;
+  entries: Array<{ name: string; value: string }>;
+};
 
 /** Whether Passwords is on for one computer, for Settings and `ade passwords status`. */
 export type PasswordsStatus = {
@@ -126,3 +141,31 @@ export type PasswordsStatus = {
   /** Saved items this computer can open, or null when it can't open them now. */
   itemCount: number | null;
 };
+
+/** A `.env` file the person picked, read on this computer. */
+export type PasswordEnvFile = { fileName: string; entries: Array<{ name: string; value: string }> };
+
+/** Which names an import added, and which it changed. */
+export type PasswordSecretsImportResult = { imported: string[]; replaced: string[] };
+
+/** Where an export wrote its `.env`, and how many secrets it holds. */
+export type PasswordSecretsExportResult = { filePath: string; secretCount: number };
+
+/** A secret's name: what a process sees as its variable. Old project secrets also allowed `.` and `-`. */
+export const SECRET_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
+export const SECRET_NAME_RULE = "A secret's name is letters, digits, _, . or -, starting with a letter or _ (like STRIPE_API_KEY).";
+
+/**
+ * The secrets that say which account server this computer signs in to (a
+ * development Clerk project, a private account directory). They are read
+ * before anyone is signed in, so they are always this-computer-only.
+ */
+export const SIGN_IN_CONFIG_SECRET_NAMES: ReadonlySet<string> = new Set([
+  "CLERK_ISSUER",
+  "CLERK_OAUTH_CLIENT_ID",
+  "CLERK_JWKS_URL",
+  "ADE_ACCOUNT_DIRECTORY_URL",
+]);
+
+/** What a Passwords call that needs Touch ID / Windows Hello fails with when the person says no. */
+export const PASSWORDS_PERSON_CHECK_DECLINED = "Cancelled.";

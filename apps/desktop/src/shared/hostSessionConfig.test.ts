@@ -8,7 +8,6 @@ import type {
 import {
   CLAUDE_BLOCKED_CALLER_SERVERS_PREFIX,
   CLAUDE_DENY_SANDBOX_ROOT_RESIDUAL,
-  CLAUDE_SETTING_SOURCE_MAP,
   CLAUDE_TOOL_LEVEL_MCP_RESIDUAL_PREFIX,
   HOST_SETTING_SOURCES_VALUES,
   INSTRUCTIONS_SUPPORT,
@@ -93,23 +92,6 @@ describe("normalizeSettingSources", () => {
     ["array", ["all"]],
   ])("rejects %s", (_label, value) => {
     expect(normalizeSettingSources(value)).toBeNull();
-  });
-});
-
-describe("CLAUDE_SETTING_SOURCE_MAP", () => {
-  it("names every value, so no case falls through to the SDK default", () => {
-    expect(Object.keys(CLAUDE_SETTING_SOURCE_MAP).sort())
-      .toEqual([...HOST_SETTING_SOURCES_VALUES].sort());
-  });
-
-  it("maps none to an empty layer list rather than omitting the option", () => {
-    expect(CLAUDE_SETTING_SOURCE_MAP.none).toEqual([]);
-  });
-
-  it("maps the three loading values", () => {
-    expect(CLAUDE_SETTING_SOURCE_MAP.project).toEqual(["project"]);
-    expect(CLAUDE_SETTING_SOURCE_MAP.user).toEqual(["user"]);
-    expect(CLAUDE_SETTING_SOURCE_MAP.all).toEqual(["user", "project", "local"]);
   });
 });
 

@@ -1,3 +1,4 @@
+import { launchModelRequiredMessage } from "../../../../shared/launchModelRule";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { isCredentialKey, normalizeConfigKey } from "../../../../shared/credentialKeys";
@@ -26,6 +27,8 @@ import type {
   AgentChatCreateArgs,
   AgentChatInterruptArgs,
   AgentChatScheduledWorkItem,
+  CtoHistoryPage,
+  CtoReadHistoryArgs,
   AgentChatSendArgs,
   AgentChatSession,
   AgentChatSessionSummary,
@@ -55,8 +58,7 @@ import type { createLaneService } from "../../lanes/laneService";
 import type { createPrService } from "../../prs/prService";
 import type { createSessionService } from "../../sessions/sessionService";
 import { parseSnoozeDeadline } from "../../sessions/sessionRequestValidation";
-import type { createCtoStateService } from "../../cto/ctoStateService";
-import { CTO_MEMORY_FACT_KINDS, type CtoMemoryService } from "../../cto/ctoMemoryService";
+import type { CtoMemoryService } from "../../cto/ctoMemoryService";
 import { getErrorMessage, isRecord, nowIso, parseIsoToEpoch } from "../../shared/utils";
 import { buildAdePrUrl } from "../../../../shared/deeplinks";
 import { normalizeLaneStart } from "../../../../shared/laneStart";
@@ -72,7 +74,6 @@ import {
 export interface CtoOperatorToolDeps {
   currentSessionId: string;
   defaultLaneId: string;
-  defaultModelId?: string | null;
   defaultReasoningEffort?: string | null;
   resolveExecutionLane: (args: {
     requestedLaneId?: string | null;
@@ -157,12 +158,17 @@ export interface CtoOperatorToolDeps {
     updateArtifactReview: (args: any) => any;
   } | null;
   issueTracker?: IssueTracker | null;
-  ctoStateService?: Pick<ReturnType<typeof createCtoStateService>, "getSessionLogs"> | null;
   ctoMemoryService?: Pick<
     CtoMemoryService,
-    | "appendMemoryFact" | "searchMemory" | "getSnapshot" | "readNewDiscoveries" | "setProjectBrief" | "recordThread"
-    | "forgetFact"
+    "remember" | "forget" | "trackWork" | "finishWork" | "readNewDiscoveries"
   > | null;
+  /** The CTO's whole conversation, paged or searched (`readHistory`). */
+  readHistory?: (args: CtoReadHistoryArgs) => Promise<CtoHistoryPage>;
+  /**
+   * `replyNow`: post a short answer into the CTO's own chat while its turn
+   * keeps running. Allowed only for a person's mid-task message.
+   */
+  postInterimReply?: (args: { text: string }) => Promise<{ posted: boolean; note?: string }>;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
   /** Durable wait: wake this thread when other chats reach a state. */
@@ -250,6 +256,7 @@ export interface CtoOperatorToolDeps {
     getState: (args: { sessionId: string }) => Promise<any>;
     cancel: (args: { sessionId: string; scheduleId: string }) => Promise<any>;
     setPaused: (args: { sessionId: string; paused: boolean }) => Promise<any>;
+    setItemPaused?: (args: { sessionId: string; scheduleId: string; paused: boolean }) => Promise<any>;
   } | null;
   /** Proof capture. `ingestAsync` is the only write; there is no delete tool on purpose. */
   proofIngestService?: {
@@ -272,8 +279,8 @@ export interface CtoOperatorToolDeps {
   } | null;
   /**
    * NAMES ONLY. There is deliberately no accessor for a secret VALUE on this
-   * type — `get`/`exportEnv` are not reachable from any CTO tool, so no tool
-   * body can return one even by mistake.
+   * type — `get` and the other value reads are not reachable from any CTO
+   * tool, so no tool body can return one even by mistake.
    */
   projectSecretService?: {
     list: () => any;
@@ -332,43 +339,6 @@ const CLOUD_LANE_START_BUDGET_MS = CLOUD_LANE_START_TIMEOUT_MS + REMOTE_CALL_ALL
 function isCloudLaneMachine(machine: string | undefined): boolean {
   return machine?.trim().toLowerCase() === "cloud";
 }
-
-/**
- * The closed tag vocabulary, mirrored from `ctoMemoryService`. Facts and
- * discoveries share it so a worker's `recordDiscovery` and the CTO's
- * `saveMemory` land in the same index.
- */
-/** Store ids are UUIDs; any other reference is the fact's exact text. */
-function looksLikeFactId(ref: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref.trim());
-}
-
-/** Past chat messages matching `query`, from the project's search index. Never throws. */
-async function searchChatHistory(
-  searchService: NonNullable<CtoOperatorToolDeps["searchService"]>,
-  query: string,
-  limit: number,
-): Promise<Array<{ sessionId: string | null; chat: string; laneId: string | null; at: string; snippet: string }>> {
-  try {
-    const result = await searchService.query({ query, kinds: ["chat"], limit });
-    return (result.results as Array<Record<string, unknown>>).map((row) => ({
-      sessionId: typeof row.sessionId === "string" ? row.sessionId : null,
-      chat: typeof row.title === "string" ? row.title : "",
-      laneId: typeof row.laneId === "string" ? row.laneId : null,
-      at: typeof row.updatedAt === "string" ? row.updatedAt : "",
-      snippet: typeof row.snippet === "string" ? row.snippet.slice(0, 300) : "",
-    }));
-  } catch {
-    return [];
-  }
-}
-
-const memoryTagsSchema = z.object({
-  lane: z.string().trim().min(1).optional().describe("Lane id the fact is about."),
-  pr: z.union([z.string().trim().min(1), z.number().int().positive()]).optional().describe("GitHub PR number."),
-  path: z.string().trim().min(1).optional().describe("Repo path the fact is about."),
-  topic: z.string().trim().min(1).optional().describe("Short topic slug, e.g. 'testing' or 'sync'."),
-});
 
 function deriveChatProvider(args: { modelId?: string | null }): { provider: AgentChatCreateArgs["provider"]; model: string } {
   const descriptor = args.modelId ? getModelById(args.modelId) : null;
@@ -963,10 +933,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   defineLazyTool(tools, "spawnChat", () => core({
     description:
       "Create a native ADE work chat session — the primary way to launch an AI agent in ADE. " +
-      "IMPORTANT: Always pass modelId when the user specifies a model. Use the full model ID " +
+      "Always pass modelId, the full model ID " +
       "(e.g. 'anthropic/claude-opus-5' for Opus, 'anthropic/claude-sonnet-5' for Sonnet, " +
-      "'anthropic/claude-haiku-5-5' for Haiku, 'openai/gpt-5.6-sol' for Sol). " +
-      "If no modelId is passed, the CTO's default model preference is used. " +
+      "'anthropic/claude-haiku-5-5' for Haiku, 'openai/gpt-5.6-sol' for Sol): ADE never picks a model for an agent. " +
       "Set initialPrompt to seed the chat with a task description — the agent will begin working immediately. " +
       "Pass permissionMode only when the user asks for a specific access level; omitting it keeps the provider's " +
       "own default, which is the safe choice. It accepts ADE's full permission contract, including auto and " +
@@ -979,7 +948,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       "A chat on another machine cannot wake you, so a one-time check-in on your own thread is scheduled for checkBackMinutes later.",
     inputSchema: z.object({
       laneId: z.string().optional().describe("Existing lane to run in, on the machine the chat runs on. Omit this for new work: a dedicated lane is created automatically. Never pass the CTO's own lane — that is the primary lane."),
-      modelId: z.string().optional().describe("Full model ID (e.g. 'anthropic/claude-sonnet-5'). MUST be set when user specifies a model."),
+      modelId: z.string().describe("Full model ID (e.g. 'anthropic/claude-sonnet-5'). Required."),
       reasoningEffort: z.string().nullable().optional().describe("Reasoning effort advertised by the model, including 'max' or Codex 'ultra' when supported."),
       title: z.string().optional().describe("Display title for the chat session."),
       initialPrompt: z.string().optional().describe("Task description to seed the chat. The agent starts working immediately."),
@@ -1002,8 +971,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         .default("subagent")
         .describe(
           "How this chat reports back. 'subagent' (the default) wakes you with a summary when it finishes a turn — "
-          + "use it whenever you will need, join, or review the result. 'peer' is fire-and-forget: completions are "
-          + "recorded as quiet notes and never wake you.",
+          + "use it whenever you will need, join, or review the result. 'peer' starts a chat that does not report back: "
+          + "nothing is posted to you when it finishes, and it never wakes you.",
         ),
       openInUi: z.boolean().optional().default(true).describe("Whether to open the chat in the ADE UI."),
       instanceId: z
@@ -1037,8 +1006,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       try {
         // Resolve model: supports full IDs (anthropic/claude-sonnet-5), short IDs (sonnet), and aliases (opus)
         const rawModelId = modelId?.trim() || null;
-        const descriptor = rawModelId ? resolveModelDescriptor(rawModelId) : null;
-        const selectedModelId = descriptor?.id ?? rawModelId ?? deps.defaultModelId ?? null;
+        if (!rawModelId) throw new Error(launchModelRequiredMessage(null, "modelId"));
+        const descriptor = resolveModelDescriptor(rawModelId);
+        const selectedModelId = descriptor?.id ?? rawModelId;
         const resolved = deriveChatProvider({ modelId: selectedModelId });
         if (isCloudLaneMachine(machine)) {
           if (laneId?.trim()) throw new Error("machine \"cloud\" makes a new lane for the chat: leave out laneId.");
@@ -1126,19 +1096,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
             sessionId: session.id,
             text: initialPrompt.trim(),
           });
-        }
-        const memory = deps.ctoMemoryService;
-        if (memory) {
-          try {
-            memory.recordThread({
-              title: title?.trim() || initialPrompt?.trim() || "Thread",
-              sessionId: session.id,
-              laneId: session.laneId,
-              objective: initialPrompt?.trim() || title?.trim() || "",
-            });
-          } catch {
-            // The chat already exists. A missed thread row is recovered on the next spawn, not by failing this one.
-          }
         }
         return {
           success: true,
@@ -2656,25 +2613,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return Number.isFinite(epoch) && epoch >= sinceEpoch;
       };
 
-      // 1. CTO session logs
-      if (deps.ctoStateService) {
-        try {
-          const logs = deps.ctoStateService.getSessionLogs(200);
-          for (const log of logs) {
-            if (!afterCutoff(log.createdAt)) continue;
-            events.push({
-              type: "cto_session",
-              timestamp: log.createdAt,
-              summary: log.summary,
-              ids: { sessionId: log.sessionId, logId: log.id },
-            });
-          }
-        } catch {
-          // CTO state service may not be fully initialized
-        }
-      }
-
-      // 2. Test runs
+      // 1. Test runs
       if (deps.testService) {
         try {
           const runs = deps.testService.listRuns({ limit: 100 });
@@ -3027,60 +2966,48 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   // ---------------------------------------------------------------------------
-  // Persistent Memory
+  // Memory: notes, open work, the conversation
   // ---------------------------------------------------------------------------
 
-  defineLazyTool(tools, "saveMemory", () => core({
+  const notesScopeSchema = z.enum(["project", "user"]).optional().describe(
+    "\"project\" (default): a fact about this project. \"user\": a fact about the person, shared with you in every project on this machine.",
+  );
+
+  defineLazyTool(tools, "remember", () => core({
     description:
-      "Save a durable fact to the project context store (and MEMORY.md, which remains the local notes file). "
-      + "Use for decisions, conventions, traps, user preferences, and standing project context. The store survives a restart, "
-      + "a crash, a cleared CTO session and a model switch, and it follows the ADE account when this repo has a git remote. "
-      + "Keep each fact to one crisp sentence. A fact that says the same thing as a saved one is not saved again: the result "
-      + "names the existing one. When a fact changes (a decision reversed, a convention updated), save the new one with "
-      + "`replaces` so the old one stops being injected.",
+      "Write a note you will see on every turn: a decision, a convention, a trap, how the person likes to work. "
+      + "One short line. To change a note, pass part of the old line in `replaces` and the note is rewritten in place. "
+      + "The notes have a hard size cap; past it the note is refused until you merge or forget others.",
     inputSchema: z.object({
-      fact: z.string().trim().min(1).describe("A single durable fact to remember."),
-      kind: z.enum(CTO_MEMORY_FACT_KINDS).optional().describe(
-        "decision, convention, trap (a gotcha that bit someone), environment, preference (how the user wants to work), or fact.",
-      ),
-      pin: z.boolean().optional().describe("Pin a fact that must be in front of you every turn. Use sparingly."),
-      replaces: z.array(z.string().trim().min(1)).max(10).optional().describe(
-        "Ids (from searchMemory) or exact texts of facts this one supersedes. They are archived, not deleted.",
-      ),
-      tags: memoryTagsSchema.optional().describe(
-        "What the fact is about. Tag whenever you can: a tagged fact is the one a worker chat on that lane, "
-        + "and the nightly gardener, can actually find later.",
+      note: z.string().trim().min(1).max(400).describe("The note, one line."),
+      scope: notesScopeSchema,
+      replaces: z.string().trim().min(1).optional().describe(
+        "Part of the existing line this note replaces (exact text). Must match exactly one note.",
       ),
     }),
-    execute: async ({ fact, kind, pin, replaces, tags }) => {
+    execute: async ({ note, scope, replaces }) => {
       const memory = deps.ctoMemoryService;
-      if (!memory) return { success: false, error: "Memory service is not available." };
+      if (!memory) return { success: false, error: "Memory is not available on this runtime." };
       try {
-        // Retire first: a replacement that rewords the old fact would
-        // otherwise be refused as its near-duplicate.
-        const replaced = (replaces ?? [])
-          .map((ref) => memory.forgetFact(looksLikeFactId(ref) ? { id: ref } : { text: ref }, "replaced by a newer fact"))
-          .filter((row) => row.forgotten)
-          .map((row) => row.fact);
-        const result = memory.appendMemoryFact(fact, tags ?? null, { kind: kind ?? null, pin: pin === true });
+        const result = memory.remember({ note, ...(scope ? { scope } : {}), ...(replaces ? { replaces } : {}) });
+        if (!result.ok) {
+          return { success: false, error: result.error, ...(result.candidates ? { candidates: result.candidates } : {}) };
+        }
+        if (!result.saved) {
+          return {
+            success: true,
+            saved: false,
+            duplicateOf: result.duplicateOf,
+            notice: "Not saved: a note already says this. Pass part of it in `replaces` if your wording should win.",
+          };
+        }
         return {
           success: true,
-          saved: result.saved,
-          fact: result.fact,
-          ...(result.id ? { id: result.id } : {}),
-          ...(result.duplicateOf
-            ? {
-                duplicateOf: result.duplicateOf,
-                notice: "Not saved: this says the same thing as an existing fact. Pass that fact's id in `replaces` if your wording should win.",
-              }
-            : {}),
-          ...(replaced.length ? { replaced } : {}),
-          file: "MEMORY.md",
-          ...(result.evictedCount
-            ? {
-                notice: `MEMORY.md hit its size cap: the ${result.evictedCount} oldest fact(s) were moved to memory-archive.md (still searchable via searchMemory). Consider pruning MEMORY.md.`,
-              }
-            : {}),
+          saved: true,
+          note: result.note,
+          ...(result.replaced ? { replaced: result.replaced } : {}),
+          scope: result.scope,
+          bytes: `${result.bytes} of ${result.limitBytes}`,
         };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
@@ -3088,76 +3015,106 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     },
   }));
 
-  defineLazyTool(tools, "forgetMemory", () => core({
+  defineLazyTool(tools, "forget", () => core({
     description:
-      "Retire a durable fact that is wrong, stale, or no longer true, so it stops being injected. "
-      + "Pass the id searchMemory returned, or the fact's exact text. The fact is archived (still searchable), "
-      + "and the retirement follows the ADE account to other machines. To correct a fact, prefer saveMemory with `replaces`.",
+      "Remove a note that is wrong or no longer true. Pass part of its line (exact text); it must match exactly one note.",
     inputSchema: z.object({
-      id: z.string().trim().min(1).optional(),
-      text: z.string().trim().min(1).optional(),
-      reason: z.string().trim().max(200).optional(),
+      note: z.string().trim().min(1).describe("Part of the note's line (exact text)."),
+      scope: notesScopeSchema,
     }),
-    execute: async ({ id, text, reason }) => {
+    execute: async ({ note, scope }) => {
       const memory = deps.ctoMemoryService;
-      if (!memory) return { success: false, error: "Memory service is not available." };
-      if (!id && !text) return { success: false, error: "Pass the fact's id or its exact text." };
+      if (!memory) return { success: false, error: "Memory is not available on this runtime." };
       try {
-        const result = memory.forgetFact({ id: id ?? null, text: text ?? null }, reason ?? null);
-        if (!result.forgotten) return { success: false, error: "No live fact matched. Search with searchMemory and pass its id." };
-        return { success: true, forgotten: result.fact };
+        const result = memory.forget({ note, ...(scope ? { scope } : {}) });
+        if (!result.ok) {
+          return { success: false, error: result.error, ...(result.candidates ? { candidates: result.candidates } : {}) };
+        }
+        return { success: true, forgotten: result.forgotten, scope: result.scope };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
     },
   }));
 
-  defineLazyTool(tools, "setProjectBrief", () => core({
+  defineLazyTool(tools, "trackWork", () => core({
     description:
-      "Write the one project brief: goal, what done looks like, constraints, conventions, and open loops. "
-      + "There is one brief for the repository. It is injected ahead of other memory and survives a restart, a crash, and a cleared session. "
-      + "Omitted fields stay as they are. Pass an empty string to clear a field.",
+      "Add an open-work item for something you started that outlives this turn: a chat you launched, a PR to land, "
+      + "a check to make. The open list is shown to you on every turn. Returns the item's id for finishWork.",
     inputSchema: z.object({
-      goal: z.string().optional(),
-      success: z.string().optional().describe("What done looks like."),
-      constraints: z.string().optional(),
-      conventions: z.string().optional(),
-      openLoops: z.string().optional(),
+      text: z.string().trim().min(1).max(300).describe("What the work is, in a few words."),
     }),
-    execute: async (input) => {
+    execute: async ({ text }) => {
       const memory = deps.ctoMemoryService;
-      if (!memory) return { success: false, error: "Memory service is not available." };
+      if (!memory) return { success: false, error: "Memory is not available on this runtime." };
       try {
-        const brief = memory.setProjectBrief(input);
-        return { success: true, brief };
+        const result = memory.trackWork(text, "cto");
+        if (!result.ok) return { success: false, error: result.error };
+        return { success: true, id: result.item.id, text: result.item.text };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
     },
   }));
 
-  defineLazyTool(tools, "searchMemory", () => core({
-    description:
-      "Search your persistent memory (MEMORY.md, the project context store, thread state, and the daily logs) and every past "
-      + "chat in this project, including your own retired threads. Rows that are live facts carry an `id` for saveMemory "
-      + "`replaces` and forgetMemory. `history` rows are past chat messages; open one with getChatTranscript. "
-      + "Use this before asking the user to restate something you may already know.",
+  defineLazyTool(tools, "finishWork", () => core({
+    description: "Mark an open-work item done. Add a short outcome when there is one (\"merged as #12\").",
     inputSchema: z.object({
-      query: z.string().trim().min(1),
-      limit: z.number().int().positive().max(100).optional().default(20),
-      tags: memoryTagsSchema.optional().describe("Restrict the search to facts carrying these tags."),
-      includeHistory: z.boolean().optional().default(true).describe("Also search past chat transcripts."),
+      id: z.string().trim().min(1).describe("The id trackWork returned (shown in the open-work list)."),
+      outcome: z.string().trim().max(120).optional(),
     }),
-    execute: async ({ query, limit, tags, includeHistory }) => {
-      if (!deps.ctoMemoryService) return { success: false, error: "Memory service is not available." };
+    execute: async ({ id, outcome }) => {
+      const memory = deps.ctoMemoryService;
+      if (!memory) return { success: false, error: "Memory is not available on this runtime." };
       try {
-        const rows = deps.ctoMemoryService.searchMemory(query, { limit, ...(tags ? { tags } : {}) });
-        // Nothing a retired thread said is lost: its transcript stays in the
-        // project's full-text index. Lexical and local, no embeddings.
-        const history = includeHistory && !tags && deps.searchService
-          ? await searchChatHistory(deps.searchService, query, Math.min(10, limit))
-          : [];
-        return { success: true, query, count: rows.length, rows, ...(history.length ? { history } : {}) };
+        const result = memory.finishWork(id, outcome ?? null);
+        if (!result.ok) return { success: false, error: result.error };
+        return { success: true, id: result.item.id, text: result.item.text };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  }));
+
+  defineLazyTool(tools, "readHistory", () => core({
+    description:
+      "Read your whole conversation with the person, including everything before a fresh context. "
+      + "Without `query`: the newest messages first, a page at a time (pass `nextBefore` as `before` for older ones). "
+      + "With `query`: the messages containing all its words, newest first, each with the message before and after it. "
+      + "Use it before asking the person to repeat anything.",
+    inputSchema: z.object({
+      query: z.string().trim().min(1).optional(),
+      before: z.string().trim().min(1).optional().describe("The nextBefore of the previous page."),
+      limit: z.number().int().min(1).max(50).optional().describe("Default 20."),
+    }),
+    execute: async ({ query, before, limit }) => {
+      if (!deps.readHistory) return { success: false, error: "Conversation history is not available on this runtime." };
+      try {
+        const page = await deps.readHistory({
+          ...(query ? { query } : {}),
+          ...(before ? { before } : {}),
+          ...(limit ? { limit } : {}),
+        });
+        return { success: true, ...page };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  }));
+
+  defineLazyTool(tools, "replyNow", () => core({
+    description:
+      "Answer the person right away while you keep working. Use it only when they wrote to you mid-task and asked "
+      + "something or changed the plan: one or two sentences, then continue the task. Not for progress updates; "
+      + "everything else goes in your final reply.",
+    inputSchema: z.object({
+      message: z.string().trim().min(1).max(600).describe("The answer, 1-600 characters."),
+    }),
+    execute: async ({ message }) => {
+      if (!deps.postInterimReply) return { success: false, error: "Quick replies are not available on this runtime." };
+      try {
+        const result = await deps.postInterimReply({ text: message });
+        return { success: true, ...result };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -3167,45 +3124,17 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   defineLazyTool(tools, "readDiscoveries", () => core({
     description:
       "Drain the worker discovery log: findings agents handed up since you last read it. "
-      + "These are unreviewed — decide which ones deserve saveMemory. Reading advances the cursor, so each "
+      + "These are unreviewed — decide which ones deserve a note. Reading advances the cursor, so each "
       + "discovery is shown once.",
     inputSchema: z.object({}),
     execute: async () => {
-      if (!deps.ctoMemoryService) return { success: false, error: "Memory service is not available." };
+      if (!deps.ctoMemoryService) return { success: false, error: "Memory is not available on this runtime." };
       try {
         const fresh = deps.ctoMemoryService.readNewDiscoveries();
-        // `text` is the budgeted view; `lines` is raw. The drain deliberately
-        // hands out one line even when it alone exceeds the budget, so that a
-        // single oversized entry cannot wedge the queue — returning `lines`
-        // here would let that one entry carry the whole 64 KB window into a
-        // tool result the budget exists to bound.
+        // `text` is the budgeted view; `lines` is raw. The drain hands out one
+        // line even when it alone exceeds the budget, so `lines` could carry
+        // the whole 64 KB window into a tool result the budget exists to bound.
         return { success: true, count: fresh.lines.length, discoveries: fresh.text };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  }));
-
-  defineLazyTool(tools, "readMemory", () => core({
-    description:
-      "Read your persistent memory: durable facts (MEMORY.md), the current thread state, and today's daily journal. " +
-      "Use to review what you already know before making decisions.",
-    inputSchema: z.object({}),
-    execute: async () => {
-      if (!deps.ctoMemoryService) return { success: false, error: "Memory service is not available." };
-      try {
-        const snapshot = deps.ctoMemoryService.getSnapshot();
-        return {
-          success: true,
-          memory: snapshot.memory,
-          threadState: snapshot.threadState,
-          dailyLog: snapshot.dailyLog,
-          dailyLogDate: snapshot.dailyLogDate,
-          updatedAt: snapshot.updatedAt,
-          projectBrief: snapshot.projectBrief,
-          projectThreads: snapshot.projectThreads,
-          projectItems: snapshot.projectItems,
-        };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -3247,6 +3176,17 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
    * there is no one to show a card to, and a tool that blocks forever on an
    * invisible prompt is worse than the write it was guarding.
    */
+  /** A rule's own name for a confirmation, never its id. */
+  const automationRuleName = (id: string): string => {
+    try {
+      const rule = deps.automationRuleService?.get({ id });
+      const name = typeof rule?.name === "string" ? rule.name.trim() : "";
+      return name || "this automation";
+    } catch {
+      return "this automation";
+    }
+  };
+
   const confirmDestructive = async (args: {
     title: string;
     description: string;
@@ -3406,9 +3346,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (existingId) {
         const declined = await confirmDestructive({
           title: "Replace automation rule?",
-          description:
-            `Replace the existing automation rule '${existingId}' with a new definition. `
-            + "The current triggers and actions are overwritten and cannot be restored.",
+          description: `Replace “${automationRuleName(existingId)}” with the new version? Its current setup is overwritten.`,
           detail: { tool: "saveAutomation", ruleId: existingId },
         });
         if (declined) return declined;
@@ -3440,7 +3378,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!automationRules) return unavailable("The automation rule service");
       const declined = await confirmDestructive({
         title: "Delete automation rule?",
-        description: `Permanently delete automation rule '${id}'. This cannot be undone.`,
+        description: `Delete “${automationRuleName(id)}” for good? Turning it off keeps it instead.`,
         detail: { tool: "deleteAutomation", ruleId: id },
       });
       if (declined) return declined;
@@ -3525,11 +3463,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   defineLazyTool(tools, "scheduleWork", () => scheduling({
     description:
       "Schedule durable work on a chat: a one-shot wakeup (delaySeconds or runAt) or a recurring five-field cron in the "
-      + "ADE brain machine's local timezone. Survives restarts. Pass exactly one of cron, runAt, or delaySeconds.",
+      + "person's time zone (the one in your context). Survives restarts. Pass exactly one of cron, runAt, or delaySeconds.",
     inputSchema: z.object({
       sessionId: z.string().min(1).describe("Chat to wake."),
       prompt: z.string().trim().min(1).max(4000).describe("What the chat should do when it wakes."),
-      cron: z.string().optional().describe("Five-field cron, brain-machine local time."),
+      cron: z.string().optional().describe("Five-field cron, in the person's time zone."),
       runAt: z.string().optional().describe("ISO 8601 timestamp with offset or Z."),
       delaySeconds: z.number().int().positive().optional(),
       recurring: z.boolean().optional(),
@@ -3605,11 +3543,18 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     execute: async ({ sessionId, scheduleId }) => {
       const scheduledWork = deps.scheduledWorkService;
       if (!scheduledWork) return unavailable("Scheduled work");
+      // The person confirms what they recognise: the routine's own name and
+      // when it runs, never the job and chat ids.
+      // A failed lookup only costs the name, never the cancel.
+      const item = await Promise.resolve()
+        .then(() => scheduledWork.list({ sessionId }))
+        .then((items) => (Array.isArray(items) ? items.find((entry) => entry.id === scheduleId) ?? null : null))
+        .catch(() => null);
+      const name = item?.title?.trim() || item?.reason?.trim() || "this scheduled job";
       const declined = await confirmDestructive({
         title: "Cancel scheduled work?",
-        description:
-          `Permanently cancel scheduled job '${scheduleId}' on chat '${sessionId}'. `
-          + "It cannot be restored; it would have to be scheduled again.",
+        // The approval card shows this line as its question.
+        description: `Cancel “${name}”? You can schedule it again later.`,
         detail: { tool: "cancelScheduledWork", sessionId, scheduleId },
       });
       if (declined) return declined;
@@ -3618,11 +3563,22 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "setScheduledWorkPaused", () => scheduling({
-    description: "Pause or resume every scheduled job on one chat. Reversible; nothing is lost.",
-    inputSchema: z.object({ sessionId: z.string().min(1), paused: z.boolean() }),
-    execute: async ({ sessionId, paused }) => {
+    description:
+      "Pause or resume scheduled work. With scheduleId, only that job; without it, every job on the chat. "
+      + "Reversible; nothing is lost.",
+    inputSchema: z.object({
+      sessionId: z.string().min(1),
+      paused: z.boolean(),
+      scheduleId: z.string().min(1).optional().describe("One job's id from listScheduledWork. Omit for the whole chat."),
+    }),
+    execute: async ({ sessionId, paused, scheduleId }) => {
       const scheduledWork = deps.scheduledWorkService;
       if (!scheduledWork) return unavailable("Scheduled work");
+      if (scheduleId?.trim()) {
+        const setItemPaused = scheduledWork.setItemPaused;
+        if (!setItemPaused) return unavailable("Pausing one scheduled job");
+        return attempt(() => setItemPaused({ sessionId, scheduleId: scheduleId.trim(), paused }));
+      }
       return attempt(() => scheduledWork.setPaused({ sessionId, paused }));
     },
   }));

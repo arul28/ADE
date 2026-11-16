@@ -188,6 +188,7 @@ import type { createAiIntegrationService } from "../../../../desktop/src/main/se
 import type { JevService } from "../../../../desktop/src/main/services/jev/jevService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
+import type { CtoAccountCopyService } from "../../../../desktop/src/main/services/cto/ctoAccountCopyService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
@@ -1246,6 +1247,7 @@ type SyncHostServiceArgs = {
   pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  ctoAccountCopyService?: () => CtoAccountCopyService | null;
   /**
    * Read-only Work-tools mirror for iOS and the hosted web client.
    *
@@ -2570,6 +2572,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
+    ctoAccountCopyService: args.ctoAccountCopyService,
     workToolsStateService: args.workToolsStateService,
     builtInBrowserService: args.builtInBrowserService ?? null,
     computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
@@ -8596,7 +8599,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // peers; paired phones/browsers get the channel closed with a clear
         // reason instead of reaching the full runtime action registry.
         isRecordBackedSyncAuthKind(peer.authKind) && isRuntimeHostPairingRecord(peer.pairingRecord),
-        { peerDeviceId: isRecordBackedSyncAuthKind(peer.authKind) ? peer.pairedDeviceId : null },
+        isRecordBackedSyncAuthKind(peer.authKind)
+          ? { peerDeviceId: peer.pairedDeviceId, peerDeviceName: peer.pairingRecord?.peerName ?? null }
+          : { peerDeviceId: null },
       );
       return;
     }
@@ -9763,6 +9768,31 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       for (const peer of peers) {
         if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
         send(peer.ws, "prs_updated", payload);
+      }
+    },
+
+    /**
+     * Tell the person's connected devices that the provider sign-ins changed
+     * (a pass or key saved, a sign-in applied here). Only a tiny signal: an
+     * open sign-ins card reads `providerLogins.status` once. Never to a lane
+     * share guest, whose sign-ins these are not. Sent as required: nothing
+     * re-derives it, so a backlogged peer is closed instead and reads again
+     * when it reconnects.
+     */
+    broadcastProviderLoginsChanged(): void {
+      const payload = { changedAt: nowIso() };
+      for (const peer of peers) {
+        if (!peer.authenticated || peer.laneShareGuest || peer.ws.readyState !== WebSocket.OPEN) continue;
+        sendRequired(peer, "provider_logins_changed", payload, null, { action: "provider_logins_changed" });
+      }
+    },
+
+    /** The account's project list changed on this brain: a client reads it again. Older clients ignore the type. */
+    broadcastAccountProjectsChanged(): void {
+      const payload = { changedAt: nowIso() };
+      for (const peer of peers) {
+        if (!peer.authenticated || peer.laneShareGuest || peer.ws.readyState !== WebSocket.OPEN) continue;
+        sendRequired(peer, "account_projects_changed", payload, null, { action: "account_projects_changed" });
       }
     },
 

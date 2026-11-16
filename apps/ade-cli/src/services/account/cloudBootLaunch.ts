@@ -102,6 +102,13 @@ type BootState = {
   projectId?: string | null;
   /** A setup failure's last report that never landed: a later boot sends it before anything else. */
   unsent?: CloudLaunchStagesUpdate | null;
+  /**
+   * The last report that landed, by its shape (phase, then each stage's id,
+   * status and detail). A failed launch is followed across boots (a Retry on
+   * this computer goes on after a restart its disk grow brings), and a boot
+   * doesn't send the same failure again.
+   */
+  reported?: string | null;
 };
 
 /** A just-booted computer's device sign-in is tried this many times (each one retries the network itself). */
@@ -180,12 +187,27 @@ function stagesOf(snapshot: ChatLaunchSnapshot): CloudLaunchStage[] {
   return snapshot.stages.map((stage) => ({ id: stage.id, status: stage.status, detail: stage.detail, error: stage.error }));
 }
 
-/** The lane recipe: always from the pushed copy of its branch, as every ADE Cloud lane starts. */
+/**
+ * What a report says, for "has it changed": the phase and each stage's id
+ * and status, plus a running stage's detail (a disk grow says "growing it to
+ * N GB" there, for the phone and MCP). Never progress: a detail changes only
+ * when a stage's step does, a handful of writes per launch.
+ */
+function reportShapeOf(phase: ChatLaunchPhase, stages: CloudLaunchStage[]): string {
+  return `${phase}|${stages.map((stage) => `${stage.id}:${stage.status}${stage.status === "running" ? `:${stage.detail ?? ""}` : ""}`).join(",")}`;
+}
+
+/**
+ * The lane recipe: always from the pushed copy of its branch, as every ADE
+ * Cloud lane starts. A name from the prompt (`autoName`) is renamed with the AI
+ * name, the lane and its branch, as a lane on the person's own computer is.
+ */
 function laneConfigOf(request: CloudServerLaunchRequest): ChatLaunchLaneConfig {
   if (request.lane.existingBranch) return { mode: "existing", branchRef: request.lane.existingBranch };
   return {
     mode: "new",
     start: request.lane.from ? { from: "branch", branch: request.lane.from, on: "remote" } : { from: "default", on: "remote" },
+    ...(request.lane.autoName === true ? { autoName: true } : {}),
   };
 }
 
@@ -193,7 +215,12 @@ const safeFileName = (name: string): string => name.replace(/[/\\\u0000-\u001f]/
 
 /**
  * The launch as `chat.startLaunch`'s raw payload, before `parseChatLaunchArgs`
- * checks it as it checks every other entry's.
+ * checks it as it checks every other entry's. A launch from an ADE app
+ * carries its own args (`request.launch`): they are the base, so its plan
+ * mode, permission modes, lane template and the rest carry. The facts win
+ * over them where both say something: the ids, names and kind, the lane's
+ * start (always the pushed copy), the files this computer downloaded, and the
+ * stages and clock of this launch.
  */
 function launchPayloadOf(
   launchId: string,
@@ -204,31 +231,60 @@ function launchPayloadOf(
 ): Record<string, unknown> {
   const chat = request.chat;
   const endedAt = new Date().toISOString();
+  const base = request.launch && typeof request.launch === "object" ? request.launch : null;
+  const baseChat = base?.chat && typeof base.chat === "object" ? base.chat as Record<string, unknown> : null;
+  const baseMessage = baseChat?.message && typeof baseChat.message === "object" ? baseChat.message as Record<string, unknown> : null;
+  const baseLane = base?.laneConfig && typeof base.laneConfig === "object" ? base.laneConfig as Record<string, unknown> : null;
+  // Links need no download: they stay as the app sent them, after the files.
+  const links = (list: unknown) => (Array.isArray(list) ? list : []).filter((entry) => entry && typeof entry === "object" && (entry as { type?: unknown }).type === "image-url");
+  const facts = laneConfigOf(request);
+  const laneConfig: Record<string, unknown> = baseLane
+    ? {
+        ...baseLane,
+        mode: facts.mode,
+        ...(facts.mode === "existing"
+          ? { branchRef: facts.branchRef, start: null }
+          : { start: { ...(baseLane.start && typeof baseLane.start === "object" ? baseLane.start : {}), ...facts.start } }),
+        ...(facts.autoName ? { autoName: true } : { autoName: undefined }),
+      }
+    : facts;
+  const chatPayload = chat
+    ? {
+        chat: {
+          create: {
+            ...(baseChat?.create && typeof baseChat.create === "object" ? baseChat.create as Record<string, unknown> : {}),
+            provider: chat.provider,
+            model: chat.modelId,
+            modelId: chat.modelId,
+            ...(chat.effort ? { reasoningEffort: chat.effort } : {}),
+            permissionMode: chat.permissions,
+            ...(chat.fast ? { fastMode: true } : {}),
+          },
+          message: {
+            ...(baseMessage ?? {}),
+            text: chat.prompt,
+            attachments: [...attachments, ...links(baseMessage?.attachments)],
+          },
+        },
+      }
+    : {};
   return {
-    kind: request.kind,
+    ...(base ?? {}),
+    // A CLI launch reaches the server as the lane, with `cli` kept in the app's own args.
+    kind: request.kind === "lane" && base?.kind === "cli" ? "cli" : request.kind,
     mode: "background",
     launchId,
     // The server's launch start: the card's total counts making the computer, the join and the clone too.
     ...(Number.isFinite(record.createdAt) ? { setupStartedAt: new Date(record.createdAt).toISOString() } : {}),
     laneId: request.lane.id,
     laneName: request.lane.name,
-    prompt: chat?.prompt ?? "",
-    laneConfig: laneConfigOf(request),
-    ...(chat ? {
-      provider: chat.provider,
-      modelId: chat.modelId,
-      chat: {
-        create: {
-          provider: chat.provider,
-          model: chat.modelId,
-          modelId: chat.modelId,
-          ...(chat.effort ? { reasoningEffort: chat.effort } : {}),
-          permissionMode: chat.permissions,
-          ...(chat.fast ? { fastMode: true } : {}),
-        },
-        message: { text: chat.prompt, ...(attachments.length ? { attachments } : {}) },
-      },
-    } : {}),
+    prompt: chat?.prompt ?? (typeof base?.prompt === "string" ? base.prompt : ""),
+    attachments: [...attachments, ...links(base?.attachments)],
+    laneConfig,
+    ...(chat ? { provider: chat.provider, modelId: chat.modelId } : {}),
+    ...chatPayload,
+    // Never a target again: this computer is the launch's.
+    cloud: null,
     priorStages: priorStages.map((stage) => ({ id: stage.id, status: "done", endedAt, detail: stage.detail ?? null })),
   };
 }
@@ -258,7 +314,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
   const report = stageReporter(deps);
 
   if (known?.phase === "handed_off" && known.projectId) {
-    await follow(deps, known.projectId, report);
+    await follow(deps, known.projectId, report, known.reported ?? "");
     await reportAutomationRunEnd(deps, known.projectId);
     return;
   }
@@ -338,7 +394,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
 
   const after = readState(deps.stateFile, logger);
   if (after?.launchId === launchId && after.phase === "handed_off" && after.projectId) {
-    await follow(deps, after.projectId, report);
+    await follow(deps, after.projectId, report, after.reported ?? "");
     await reportAutomationRunEnd(deps, after.projectId);
   }
 }
@@ -529,22 +585,30 @@ async function reportFinal(report: ReportStages, update: CloudLaunchStagesUpdate
 
 /**
  * Reports the brain's own launch until it ends: a write when a stage's status
- * changes or the launch ends, never on a timer, one after another so a later
- * write never lands before an earlier one.
+ * (or a running stage's detail) changes or the launch ends, never on a timer,
+ * one after another so a later write never lands before an earlier one. A
+ * failed launch is followed on, here and after a restart (opening its
+ * project at boot): a Retry on this computer, and the restart a disk grow
+ * brings it, go on and are reported with nobody watching.
  */
 async function follow(
   deps: CloudBootLaunchDeps,
   projectId: string,
   report: ReportStages,
+  reported: string,
 ): Promise<void> {
   const { launchId, logger } = deps;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const launches = await deps.launches(projectId);
-  let last = "";
+  let last = reported;
+  // A failure's shape is saved so a restart doesn't report it twice; once a Retry reports a
+  // new attempt it's cleared, or a restart that fails the same step again would match it
+  // (the shape leaves out errors and times) and never be reported.
+  let savedFailure = reported !== "";
   const send = async (snapshot: ChatLaunchSnapshot): Promise<boolean> => {
     const stages = stagesOf(snapshot);
     const terminal = TERMINAL.has(snapshot.phase);
-    const shape = `${snapshot.phase}|${stages.map((stage) => `${stage.id}:${stage.status}`).join(",")}`;
+    const shape = reportShapeOf(snapshot.phase, stages);
     if (shape === last) return terminal;
     last = shape;
     const error = snapshot.phase === "cancelled" ? STOPPED_ON_COMPUTER : snapshot.phase === "failed" ? snapshot.error : null;
@@ -556,10 +620,18 @@ async function follow(
     };
     if (!terminal) {
       await report(update);
+      if (savedFailure) {
+        writeState(deps.stateFile, { launchId, phase: "handed_off", projectId });
+        savedFailure = false;
+      }
       return false;
     }
     if (await reportFinal(report, update, sleep)) {
-      writeState(deps.stateFile, { launchId, phase: "ended", projectId });
+      // Failed: followed on after a restart too, for a Retry (one launch's state file, one write).
+      writeState(deps.stateFile, snapshot.phase === "failed"
+        ? { launchId, phase: "handed_off", projectId, reported: shape }
+        : { launchId, phase: "ended", projectId });
+      savedFailure = snapshot.phase === "failed";
       return true;
     }
     // Still unsent: the state stays `handed_off`, so the next boot follows the
@@ -567,6 +639,7 @@ async function follow(
     last = "";
     logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: snapshot.phase });
     writeState(deps.stateFile, { launchId, phase: "handed_off", projectId });
+    savedFailure = false;
     return true;
   };
   await new Promise<void>((resolve) => {
@@ -579,6 +652,17 @@ async function follow(
       unsubscribe?.();
       resolve();
     };
+    /** The launch is gone here (removed, or expired after it failed): nothing more to follow at a later boot. */
+    const gone = () => {
+      if (ended) return;
+      queue = queue.then(() => {
+        const current = readState(deps.stateFile, logger);
+        if (current?.launchId === launchId && current.phase === "handed_off" && !current.unsent) {
+          writeState(deps.stateFile, { launchId, phase: "ended", projectId });
+        }
+      }).catch((error: unknown) => logger.warn("cloud_boot_launch.state_write_failed", { launchId, error: errorText(error) }));
+      void queue.then(end);
+    };
     // A failed launch waits for a retry on this computer; it is reported once and followed on.
     const onSnapshot = (snapshot: ChatLaunchSnapshot) => {
       queue = queue.then(() => send(snapshot)).then(
@@ -590,12 +674,12 @@ async function follow(
     };
     unsubscribe = launches.subscribe((event) => {
       if (event.type === "launch-updated" && event.launch.launchId === launchId) onSnapshot(event.launch);
-      if (event.type === "launch-removed" && event.launchId === launchId) end();
+      if (event.type === "launch-removed" && event.launchId === launchId) gone();
     });
     launches.get(launchId).then(
       (snapshot) => {
         if (snapshot) onSnapshot(snapshot);
-        else end();
+        else gone();
       },
       (error: unknown) => {
         logger.warn("cloud_boot_launch.follow_read_failed", { launchId, error: errorText(error) });
@@ -616,6 +700,8 @@ export type CloudBootLaunchHost = {
   logger: Logger;
   account: AccountAuthService;
   directoryBaseUrl: () => string | null;
+  /** The Clerk issuer this machine signs in with (`CLERK_ISSUER`); its join link must be on its hosts. */
+  clerkIssuer: () => string;
   projectRegistry: ProjectRegistry;
   /** The launch pipeline of one project's runtime, once its scope is open. */
   chatLaunchService: (projectId: string) => Promise<Pick<ChatLaunchService, "start" | "get" | "subscribe"> | null | undefined>;
@@ -696,9 +782,13 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
         startDeviceLogin: () => account.startDeviceLogin({ retryUnreachableForMs: 60_000 }),
         pollDeviceLogin: (sessionId) => account.pollDeviceLogin(sessionId),
       },
-      approveHeadless: chromium
-        ? (url, signal) => headless.approveInHeadlessChromium({ url, signal, binary: chromium, logger })
-        : null,
+      approveHeadless: (url, signal) => headless.approveSignInLink({
+        url,
+        signal,
+        binary: chromium,
+        trust: () => ({ clerkIssuer: host.clerkIssuer(), directoryBaseUrl: host.directoryBaseUrl() }),
+        logger,
+      }),
       setUpProject: async (originUrl) => await setUpRepositoryOnThisMachine(host.projectRegistry, originUrl, host.holdCloudWork),
       waitForChatEnd: host.waitForChatEnd,
       launches: async (projectId) => {

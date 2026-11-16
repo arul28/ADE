@@ -45,7 +45,7 @@ import {
 import { createLaneShareGuestCommandPrep } from "./laneShareGuestCommandPrep";
 import { LaneShareMoveError, type LaneShareMoveService } from "./laneShareMoveService";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
-import type { ChatScopeRequest, LaneShareGuestPeer, LaneShareGuestSyncHostDeps, LaneShareTurnOwner } from "./laneShareGuestTypes";
+import type { ChatScopeRequest, LaneShareGuestPeer, LaneShareGuestSyncHostDeps, LaneShareTurnOwner, LaneShareWorktreeLookup } from "./laneShareGuestTypes";
 import {
   commandErrorResult,
   evaluateRemoteCommandPolicy,
@@ -69,6 +69,10 @@ export type LaneShareGuestGatesDeps = LaneShareGuestSyncHostDeps & {
     onLaneShareEvent?: (event: LaneShareEvent) => void;
     /** This machine's `process.platform` (the default): a Windows host takes no guest CLI typing. */
     platform?: NodeJS.Platform;
+    /** The project folder (staged chat attachments live in its `.ade/attachments`). */
+    projectRoot?: string | null;
+    /** Where a lane's worktree is on this host (guest image and turn diff reads). */
+    laneService?: LaneShareWorktreeLookup | null;
   };
   /** The guest host's state and rules. */
   host: {
@@ -454,6 +458,16 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     turnOwners: laneShareTurnOwners,
     resolveSession: resolveLaneShareSession,
     laneState: laneShareLaneState,
+    projectRoot: () => toOptionalString(args.projectRoot) ?? null,
+    laneWorktreePath: (laneId) => {
+      try {
+        return toOptionalString(args.laneService?.getLaneBaseAndBranch(laneId)?.worktreePath) ?? null;
+      } catch (error) {
+        args.logger.warn("sync_host.lane_share_worktree_lookup_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+        return null;
+      }
+    },
+    historyCutoff: laneShareHistoryCutoffFor,
   });
   const {
     prepareLaneShareGuestCommand,

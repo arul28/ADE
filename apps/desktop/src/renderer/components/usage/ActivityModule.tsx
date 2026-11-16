@@ -76,7 +76,7 @@ function isPreset(value: unknown): value is AdeUsageRangePreset {
   return RANGE_OPTIONS.some((option) => option.preset === value);
 }
 
-export function readActivityPersisted(): PersistedState {
+function readActivityPersisted(): PersistedState {
   const fallback: PersistedState = { tab: "activity", preset: DEFAULT_PRESET };
   if (typeof localStorage === "undefined") return fallback;
   try {

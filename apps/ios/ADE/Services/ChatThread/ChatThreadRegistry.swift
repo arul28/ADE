@@ -218,6 +218,21 @@ final class ChatThreadRegistry {
     Task { await store.purgeAll() }
   }
 
+  /// `purgeAll()` that returns once the store has closed and deleted its
+  /// files: a sign-out waits for it before it clears its marker.
+  func purgeAllAndWait() async {
+    // An evicted chat can still hold queued saves. Close each chat's save
+    // queue and wait for what it already took, so no save reopens the store
+    // and writes the old account's transcript after the files are deleted.
+    let engines = models.values.map(\.engine)
+    for key in Array(models.keys) { evict(key) }
+    for engine in engines {
+      engine.persistContinuation.finish()
+      await engine.persistTask.value
+    }
+    await store?.purgeAll()
+  }
+
   // MARK: - Older history
 
   func loadOlder(_ key: ChatThreadKey) async -> WorkChatOlderHistoryLoadResult {

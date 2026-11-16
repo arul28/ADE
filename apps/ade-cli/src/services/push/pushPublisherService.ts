@@ -17,7 +17,7 @@ import {
   type AttentionSnapshot,
   type AttentionTombstone,
 } from "../../../../desktop/src/shared/types/attention";
-import type { PtyExitEvent, TerminalSessionStatus } from "../../../../desktop/src/shared/types/sessions";
+import { isTrackedAgentCliToolType, type PtyExitEvent, type TerminalSessionStatus, type TerminalToolType } from "../../../../desktop/src/shared/types/sessions";
 import { canonicalSessionState } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type { PrNotificationKind } from "../../../../desktop/src/shared/types/prs";
 import type {
@@ -160,6 +160,53 @@ const MAX_ALERT_DELIVERY_ATTEMPTS = 20;
  * fingerprint (i.e. a notification).
  */
 const TERMINAL_RESUME_GRACE_MS = 10_000;
+
+/**
+ * Chat events that describe the session rather than an agent at work: a
+ * rename, a context reading, a suggestion. They never start a run and never
+ * lift a finished one back to running, or a new chat with no turn (and a Done
+ * chat that gets renamed) reads as working on every Activity surface.
+ */
+const SESSION_DESCRIPTION_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "session_meta_updated",
+  "context_usage",
+  "prompt_suggestion",
+  "turn_diagnostics",
+]);
+/**
+ * Chat events that report on a chat without its agent working: a notice
+ * ("Session ready", a sign-in problem, a take-over note), a child's report
+ * landing, an error outside a turn, a resolved message, a goal edit. They never
+ * start a run and never lift a finished one back to running. A new chat whose
+ * runtime warmed up, or a Done chat that gets a notice, is not working; a real
+ * turn always sends `user_message` or `status: started` first.
+ */
+const CHAT_REPORT_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "system_notice",
+  "error",
+  "subagent_result",
+  "subagent.completed",
+  "completion_report",
+  "user_message_resolution",
+  "transcript_retraction",
+  "conversation_reset",
+  "interrupt_receipt",
+  "queue_reordered",
+  "queue_recovery",
+  "cloud_status",
+  "cloud_artifact",
+  "model_handoff",
+  "turn_diff_summary",
+  "claude_goal_updated",
+  "claude_goal_cleared",
+  "codex_goal_updated",
+  "codex_goal_cleared",
+  "codex_thread_deleted",
+  "codex_moderation_metadata",
+  "linear_issue",
+  "github_issue",
+  "jira_issue",
+]);
 /**
  * How often a live run re-reads its own session summary — its title and its
  * planning mode. Neither is announced on the chat event stream (a chat is
@@ -1317,7 +1364,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         const record = scope?.resolveCliSession?.(run.sessionId) ?? null;
         // Unknown session or a chat-attached shell: the chat run (or nothing)
         // represents this work — a duplicate CLI row would double-count it.
-        if (!record || record.chatSessionId) {
+        // A plain shell is no agent at all: it never counts as a chat working.
+        if (!record || record.chatSessionId || (record.toolType != null && !isTrackedAgentCliToolType(record.toolType as TerminalToolType))) {
           runs.delete(run.sessionId);
           continue;
         }
@@ -2151,6 +2199,23 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const run = runs.get(sessionId);
       if (!run) return;
     }
+    if (SESSION_DESCRIPTION_EVENT_TYPES.has(event.type)) {
+      // A tracked run may have a new title to publish; nothing else changes.
+      if (runs.has(sessionId)) scheduleFlush(false);
+      return;
+    }
+    const goalNotice = event.type === "system_notice"
+      && (event.status === GOAL_REACHED_NOTICE_STATUS || event.status === GOAL_BLOCKED_NOTICE_STATUS);
+    if (!goalNotice && CHAT_REPORT_EVENT_TYPES.has(event.type)) {
+      // Reported, not worked on: the run (if any) keeps its phase.
+      if (runs.has(sessionId)) scheduleFlush(false);
+      return;
+    }
+    if (goalNotice && !runs.has(sessionId)) {
+      // A goal verdict lands after the turn that reached it. With no run left
+      // to attach it to, the chat is at rest: alert from a settled run.
+      setRunPhase(ensureRun(sessionId, scopeKey), "completed");
+    }
 
     const run = ensureRun(sessionId, scopeKey);
     markRunUpdated(run);
@@ -2283,7 +2348,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         break;
       }
       case "system_notice": {
-        if (event.status === GOAL_REACHED_NOTICE_STATUS || event.status === GOAL_BLOCKED_NOTICE_STATUS) {
+        if (goalNotice) {
           const reached = event.status === GOAL_REACHED_NOTICE_STATUS;
           // The objective stays off the lock screen, like an error's text.
           enqueueAlert({
@@ -2297,9 +2362,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
             fingerprintSalt: event.message,
           });
           immediate = true;
-          break;
         }
-        resumeRunOnActivity(run);
         break;
       }
       default: {
@@ -2336,6 +2399,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     if (disposed || !signal.sessionId) return;
     const existing = runs.get(signal.sessionId);
     const session = scopes.get(scopeKey)?.resolveCliSession?.(signal.sessionId) ?? null;
+    // A plain shell is no agent: its output never makes a chat "working".
+    if (session?.toolType != null && !isTrackedAgentCliToolType(session.toolType as TerminalToolType)) return;
     const atRest = session?.status !== "running" || signal.runtimeState === "idle";
     if (
       atRest
@@ -2850,24 +2915,28 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     },
 
     /**
-     * A one-off alert about a chat that is not "needs you": a move to another
-     * machine landed or failed while the person wasn't watching. Plain
+     * A one-off alert that is not a chat's "needs you": a move to another
+     * machine landed or failed while the person wasn't watching, or a new
+     * cloud computer waits for the person to approve it joining. Plain
      * title/body/deep link through the same alert queue; no run state changes.
+     * With no chat (`sessionId` null) the alert needs its own deep link, and
+     * only the device-wide rules apply.
      */
     handleSessionNotice(notice: {
-      sessionId: string;
+      sessionId: string | null;
       dedupeKey: string;
       title: string;
       body: string | null;
       deepLink?: string | null;
     }): void {
-      if (disposed || !notice.sessionId) return;
+      const sessionId = notice.sessionId?.trim() || null;
+      if (disposed || (!sessionId && !notice.deepLink)) return;
       enqueueAlert({
-        sessionId: notice.sessionId,
-        dedupeKey: `alert:${notice.sessionId}:${notice.dedupeKey}`,
+        sessionId,
+        dedupeKey: sessionId ? `alert:${sessionId}:${notice.dedupeKey}` : `alert:machine:${notice.dedupeKey}`,
         render: () => ({ title: notice.title, body: notice.body }),
-        deepLink: notice.deepLink ?? `ade://session/${notice.sessionId}`,
-        threadId: notice.sessionId,
+        deepLink: notice.deepLink ?? `ade://session/${sessionId}`,
+        threadId: sessionId,
         phase: "terminal",
         interruptionLevel: "active",
         standalone: true,

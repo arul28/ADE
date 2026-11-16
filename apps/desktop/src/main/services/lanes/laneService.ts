@@ -1509,6 +1509,8 @@ export type LaneDeleteTeardownDeps = {
   agentChatService?: {
     countActiveForLane: (laneId: string) => number;
     disposeForLane: (laneId: string) => Promise<number>;
+    /** The lane's chats' work on other machines is removed there (not awaited). */
+    releaseRemoteWorkForLane?: (laneId: string, ended: "archived" | "deleted") => void;
   };
   ptyService?: {
     countActiveForLane: (laneId: string) => number;
@@ -5478,6 +5480,14 @@ export function createLaneService({
 
     const now = new Date().toISOString();
     db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
+    // What the lane's chats added on other machines goes too (unpushed work
+    // in a copy there stays, as an archived chat can come back). Never
+    // awaited: a slow or asleep machine must not hold the archive.
+    try {
+      teardownDeps?.agentChatService?.releaseRemoteWorkForLane?.(laneId, "archived");
+    } catch (error) {
+      logger.warn("lane.archive.remote_work_release_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+    }
     // The lane's chats go with it: a chat with no lane to work in has nothing
     // to do in the Work list. Archived, not deleted — restore brings them back.
     try {
@@ -8607,6 +8617,14 @@ export function createLaneService({
         await runStep("stop_chats", async () => {
           const svc = teardownDeps?.agentChatService;
           if (!svc) return { detail: "no service" };
+          // Before the session rows go: what the lane's chats added on other
+          // machines is removed there, save a copy holding work nobody
+          // pushed (kept, as for an archive). Sent, never awaited.
+          try {
+            svc.releaseRemoteWorkForLane?.(laneId, "deleted");
+          } catch (error) {
+            logger.warn("lane.delete.remote_work_release_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+          }
           const before = svc.countActiveForLane(laneId);
           if (before === 0) return { detail: "none active" };
           const disposed = await svc.disposeForLane(laneId);

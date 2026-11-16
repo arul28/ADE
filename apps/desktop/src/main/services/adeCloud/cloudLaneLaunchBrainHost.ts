@@ -4,15 +4,12 @@
  * actions. The same core as the desktop app's (`cloudLaneLaunchService.ts`),
  * with brain deps:
  *
- * - The computer and join stages use the brain's account, as `cloudBrainMaker`
- *   does. Nobody here has a window, so the join approval is the same rule as
- *   a brain's make: a link for the person (to the agent's chat and the CLI's
- *   status), or this brain approves itself when an unattended agent's yes
- *   allows it and a headless browser is here.
- * - The clone stage and the hand-off reach the new computer through this
- *   brain's agent machine bridge, by its account machine key: the path
- *   `--machine <name>` already takes. The bridge pairs on its own, so the
- *   "target id" is the machine key.
+ * - The server launcher makes the computer with the brain's account token,
+ *   and the computer signs itself in with its join key: no approval, no
+ *   window, no link to tap.
+ * - The hand-off reaches the new computer through this brain's agent machine
+ *   bridge, by its account machine key: the path `--machine <name>` already
+ *   takes. The bridge pairs on its own, so the "target id" is the machine key.
  *
  * The brain owns the launch, not the CLI process: a Ctrl-C in the terminal
  * stops only the following, and the launch goes on. Records sit in the
@@ -34,7 +31,7 @@ import type {
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
 import { getErrorMessage, isRecord } from "../shared/utils";
-import { createCloudSelfApproval, type CloudBrainMakerBase } from "./cloudBrainMaker";
+import type { CloudBrainMakerBase } from "./cloudBrainMaker";
 import { cloudLaneLaunchOutcomes, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
 
@@ -62,14 +59,6 @@ export type CloudLaneLaunchMachineTransport = {
     caller: CloudLaneLaunchCaller;
     timeoutMs?: number;
   }): Promise<{ result: unknown }>;
-  /** Sets the GitHub repository up on that machine with its own Git sign-in; an existing checkout wins. */
-  setUpRepository(input: { machine: string; originUrl: string }): Promise<unknown>;
-  /**
-   * The launch kinds that machine's brain advertised when this brain
-   * connected (`chatLaunchKinds`; empty from an older brain). Unset: the
-   * hand-off doesn't check them.
-   */
-  chatLaunchKinds?(machine: string): Promise<string[]>;
 };
 
 let transport: CloudLaneLaunchMachineTransport | null = null;
@@ -105,6 +94,8 @@ export function hasCloudLaneLaunchRecords(recordsDir: string, logger?: Pick<Logg
 
 /** How often a handed-off launch is read from the computer's brain (the bridge carries no event stream). */
 const FOLLOW_POLL_MS = 5_000;
+/** Polls in a row that can't reach the computer's brain before its follow ends (about 15 s). */
+const BRAIN_POLL_FAILURES_TO_END = 3;
 const PROBE_TIMEOUT_MS = 15_000;
 const CHAT_ACTION_TIMEOUT_MS = 60_000;
 
@@ -155,11 +146,7 @@ export type CloudLaneLaunchBrainHost = {
     madeByChat: string | null;
     /** The kind of agent that asked (written on the computer for the daily limit); null for a person. */
     madeByAgent?: CloudAgentMaker | null;
-    /** The yes came from what the person lets unattended agents do. */
-    selfApprove: boolean;
     caller: CloudLaneLaunchCaller;
-    /** A line in the agent's chat (the approval link), or null. */
-    notice: ((message: string) => void) | null;
   }): Promise<{ status: CloudLaneLaunchStatus; created: boolean }>;
   cancel(launchId: string): Promise<CloudLaneLaunchStatus | null>;
 };
@@ -174,18 +161,13 @@ export function createCloudLaneLaunchBrainHost(deps: {
   analytics?: CloudLaneAnalyticsCapture;
   /** C4: can a new cloud computer clone the repository (`cloudGitPreflight`)? Unset: no check. */
   gitPreflight?: (originUrl: string) => Promise<CloudGitPreflight>;
+  /** This machine's update track: a launch's computer follows the same one. */
+  updateChannel?: () => "stable" | "beta" | null;
 }): CloudLaneLaunchBrainHost {
   const { logger } = deps;
   const countOutcome = cloudLaneLaunchOutcomes(deps.analytics, "api");
-  const selfApproval = createCloudSelfApproval({ client: deps.base.client, account: deps.base.account, logger });
-  /** Per launch, for this process only: a restart falls back to the safe side (a link, no notice). */
-  const live = new Map<string, {
-    selfApprove: boolean;
-    startedAt: number;
-    caller: CloudLaneLaunchCaller;
-    notice: ((message: string) => void) | null;
-  }>();
-  const approvalLinks = new Map<string, string>();
+  /** Who asked, per launch, for this process only: after a restart only the record's chat is known. */
+  const callers = new Map<string, CloudLaneLaunchCaller>();
 
   const requireTransport = (): CloudLaneLaunchMachineTransport => {
     if (!transport) throw new Error(NO_TRANSPORT);
@@ -193,7 +175,7 @@ export function createCloudLaneLaunchBrainHost(deps: {
   };
   // After a restart only the record's chat is known, not its permission level.
   const callerFor = (launchId: string | null): CloudLaneLaunchCaller =>
-    (launchId ? live.get(launchId)?.caller : null)
+    (launchId ? callers.get(launchId) : null)
     ?? { chatSessionId: launchId ? service.facts(launchId)?.madeByChat ?? null : null, permissionLevel: null };
 
   const probe = async (machine: string): Promise<unknown> => (await requireTransport().call({
@@ -224,28 +206,13 @@ export function createCloudLaneLaunchBrainHost(deps: {
     // Nobody here listens for events (the CLI reads `status`), except the outcome count.
     emit: (event: ChatLaunchEvent) => {
       countOutcome(event);
-      if (event.type === "launch-removed") {
-        approvalLinks.delete(event.launchId);
-        live.delete(event.launchId);
-      }
+      if (event.type === "launch-removed") callers.delete(event.launchId);
     },
-    creator: {
-      ...deps.base,
-      // The link reaches the person through `onApprovalLink`, which knows the launch.
-      handOffApproval: () => undefined,
-      selfApproval: async (input) => {
-        const launch = live.get(input.requestId);
-        return await selfApproval(input, { selfApprove: launch?.selfApprove === true, startedAt: launch?.startedAt ?? 0 });
-      },
-    },
+    creator: deps.base,
+    ...(deps.updateChannel ? { updateChannel: deps.updateChannel } : {}),
     removeAccountMachine: deps.base.removeAccountMachine,
     ...(deps.onComputerCreated ? { onComputerCreated: deps.onComputerCreated } : {}),
     ...(deps.gitPreflight ? { gitPreflight: deps.gitPreflight } : {}),
-    onApprovalLink: (launchId, url) => {
-      approvalLinks.set(launchId, url);
-      const name = service.facts(launchId)?.computerName ?? "the new computer";
-      live.get(launchId)?.notice?.(`Approve "${name}" joining your ADE account: open ${url} on your phone or in a browser signed in to ADE. The lane waits up to 10 minutes.`);
-    },
     // The bridge pairs with an account machine on its own and addresses it by key.
     pairMachine: async (machineKey) => ({ targetId: machineKey }),
     connect: async (targetId) => {
@@ -253,14 +220,6 @@ export function createCloudLaneLaunchBrainHost(deps: {
       return true;
     },
     listProjects: async (targetId) => toProjectList(await probe(targetId)),
-    brainLaunchKinds: async (targetId) => (transport?.chatLaunchKinds ? await transport.chatLaunchKinds(targetId) : null),
-    // The computer picks its own projects folder for a clone it is asked for.
-    defaultParentDir: async () => "",
-    cloneProject: async (targetId, input) => {
-      const project = toProjectRecord(await requireTransport().setUpRepository({ machine: targetId, originUrl: input.url }));
-      if (!project) throw new Error("The new computer set the repository up but didn't say where.");
-      return project;
-    },
     resolveBinding: async (targetId, projectId, rootPath) => ({
       kind: "remote",
       key: `cloud-lane:${targetId}:${projectId}`,
@@ -273,9 +232,10 @@ export function createCloudLaneLaunchBrainHost(deps: {
     }),
     callChatAction: (binding, action, request) => callChat(binding, action, request.args),
     // The bridge has no event stream: read the project's launches now and then.
-    subscribeChatLaunchEvents: async (binding, onEvent) => {
+    subscribeChatLaunchEvents: async (binding, onEvent, onEnded) => {
       let stopped = false;
       let failures = 0;
+      let timer: ReturnType<typeof setInterval> | null = null;
       const tick = async () => {
         try {
           const launches = await callChat(binding, "listLaunches", {});
@@ -286,15 +246,22 @@ export function createCloudLaneLaunchBrainHost(deps: {
         } catch (error) {
           failures += 1;
           if (failures === 1) logger.warn("cloud_lane_launch.brain_poll_failed", { error: getErrorMessage(error) });
+          // A brain that stays unreachable ends this follow: the service reads
+          // again on its own clock, and a deleted computer ends the launch there.
+          if (failures >= BRAIN_POLL_FAILURES_TO_END && !stopped) {
+            stopped = true;
+            if (timer) clearInterval(timer);
+            onEnded();
+          }
         }
       };
-      const timer = setInterval(() => {
+      timer = setInterval(() => {
         if (!stopped) void tick();
       }, FOLLOW_POLL_MS);
       timer.unref?.();
       return () => {
         stopped = true;
-        clearInterval(timer);
+        if (timer) clearInterval(timer);
       };
     },
   });
@@ -302,7 +269,6 @@ export function createCloudLaneLaunchBrainHost(deps: {
   const statusOf = (launch: ChatLaunchSnapshot): CloudLaneLaunchStatus => {
     const launchId = launch.launchId;
     const facts = service.facts(launchId);
-    const joinWaiting = launch.stages.some((stage) => stage.id === "join" && stage.status === "running");
     return {
       launch,
       machine: {
@@ -310,7 +276,7 @@ export function createCloudLaneLaunchBrainHost(deps: {
         instanceId: launch.cloud?.instanceId ?? null,
         machineKey: launch.cloud?.machineKey ?? null,
       },
-      approvalUrl: joinWaiting && !isChatLaunchTerminal(launch.phase) ? approvalLinks.get(launchId) ?? null : null,
+      approvalUrl: !isChatLaunchTerminal(launch.phase) ? facts?.approvalUrl ?? null : null,
       madeByChat: facts?.madeByChat ?? null,
       madeByAgent: facts?.madeByAgent ?? null,
     };
@@ -327,23 +293,18 @@ export function createCloudLaneLaunchBrainHost(deps: {
       requireTransport();
       const launchId = String(input.args.launchId ?? "").trim().toLowerCase();
       const known = Boolean(launchId) && service.owns(launchId);
-      const earlier = live.get(launchId);
-      // A repeat keeps the first start's yes; it only adds a chat to tell when none is known.
-      live.set(launchId, known && earlier
-        ? { ...earlier, notice: earlier.notice ?? input.notice }
-        : {
-            selfApprove: known ? false : input.selfApprove,
-            startedAt: Date.now(),
-            caller: input.caller,
-            notice: input.notice,
-          });
+      // A repeat keeps the first start's caller.
+      if (!known || !callers.has(launchId)) callers.set(launchId, input.caller);
       try {
         let launch = await service.start({ args: input.args, originUrl: input.originUrl, madeByChat: input.madeByChat, madeByAgent: input.madeByAgent ?? null });
-        // The same command again resumes a launch that failed, on the same computer.
-        if (known && launch.phase === "failed") launch = (await service.retry({ launchId: launch.launchId })) ?? launch;
+        // The same command again retries a launch that failed.
+        // An unattended agent's retry whose limits now hold it at Small says so ("capped").
+        if (known && launch.phase === "failed") {
+          launch = (await service.retry({ launchId: launch.launchId }, { sizeChoice: input.args.cloud?.sizeChoice })) ?? launch;
+        }
         return { status: statusOf(launch), created: !known };
       } catch (error) {
-        if (!known) live.delete(launchId);
+        if (!known) callers.delete(launchId);
         throw error;
       }
     },

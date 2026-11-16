@@ -3375,6 +3375,7 @@ export function appendCollapsedChatTranscriptEvent(
       lastProgressAt: event.lastProgressAt,
       automaticRecoveryAttempted: event.automaticRecoveryAttempted,
       sourceSessionId: event.sourceSessionId,
+      provider: event.provider,
     };
     appendCollapsedChatTranscriptEvent(
       rows,

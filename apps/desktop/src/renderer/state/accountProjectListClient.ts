@@ -11,9 +11,14 @@
  * - A copy in localStorage paints the first frame and covers a brain that is
  *   still starting or offline. A signed-out answer clears it. ADE Web keeps
  *   no copy: a browser can be shared.
- * - Reads: once at start and on window focus (at most one in 15 s), and when
- *   a caller asks (`refreshAccountProjectList`, after an open or a clone). No
- *   timer and no poll.
+ * - Reads: once at start, on window focus (at most one in 15 s), when a
+ *   caller asks (`refreshAccountProjectList`, after an open or a clone), and
+ *   when a brain this window hears says it read a changed list
+ *   (`project.onAccountListChanged`, after its heartbeat): a copy added on
+ *   another computer joins the open tab with no focus. No poll.
+ * - On the desktop that notice can come from the brain of the tab's copy on
+ *   another computer, before this computer's brain read the change. A read
+ *   that finds nothing new then reads once more after one heartbeat.
  * - Machine names for copies on machines with no saved connection come from
  *   the account's machine list. That is a server call, so it runs only when a
  *   copy names an unknown machine, and at most once in 10 minutes.
@@ -29,6 +34,8 @@ const FOCUS_READ_MIN_MS = 15_000;
 /** The web reads the account directory, a server call: at most once a minute on focus. */
 const WEB_FOCUS_READ_MIN_MS = 60_000;
 const MACHINE_NAMES_MIN_MS = 10 * 60_000;
+/** One account heartbeat of a brain (60 s) and a margin: by then this computer's brain has read the change too. */
+const CHANGE_NOTICE_FOLLOW_UP_MS = 65_000;
 
 type CachedList = {
   v: 1;
@@ -214,6 +221,22 @@ export function refreshAccountProjectList(options?: { force?: boolean }): Promis
   return readInFlight;
 }
 
+let followUpTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** A brain read a changed list: read it now, and on the desktop once more if nothing changed yet. */
+function onChangeNotice(): void {
+  if (followUpTimer) clearTimeout(followUpTimer);
+  followUpTimer = null;
+  const before = current;
+  void refreshAccountProjectList({ force: true }).then(() => {
+    if (current !== before || isWebClientMode() || starts === 0) return;
+    followUpTimer = setTimeout(() => {
+      followUpTimer = null;
+      if (starts > 0) void refreshAccountProjectList({ force: true });
+    }, CHANGE_NOTICE_FOLLOW_UP_MS);
+  });
+}
+
 function start(): () => void {
   starts += 1;
   if (starts === 1) {
@@ -228,9 +251,15 @@ function start(): () => void {
   void refreshAccountProjectList({ force: starts === 1 });
   const onFocus = () => void refreshAccountProjectList();
   window.addEventListener("focus", onFocus);
+  const offChanged = window.ade?.project?.onAccountListChanged?.(onChangeNotice) ?? null;
   return () => {
     starts -= 1;
     window.removeEventListener("focus", onFocus);
+    offChanged?.();
+    if (starts === 0 && followUpTimer) {
+      clearTimeout(followUpTimer);
+      followUpTimer = null;
+    }
   };
 }
 

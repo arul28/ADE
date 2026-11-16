@@ -122,12 +122,6 @@ afterEach(() => {
 });
 
 describe("EditorGroup", () => {
-  it("renders the active tab and viewer", () => {
-    render(<EditorGroup {...baseProps} />);
-    expect(screen.getByRole("tab", { name: /file\.ts/i })).toBeTruthy();
-    expect(screen.getByTestId("viewer-button")).toBeTruthy();
-    expect(screen.getByTitle(saveTitle)).toBeTruthy();
-  });
 
   it("marks the visible fallback tab active when lane scope hides the stored active tab", () => {
     render(

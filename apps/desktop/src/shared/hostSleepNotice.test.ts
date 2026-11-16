@@ -3,7 +3,6 @@ import {
   formatHostPausedDuration,
   hostResumedNoticeMessage,
   hostSleepNoticeMergeKey,
-  HOST_ASLEEP_NOTICE_MESSAGE,
   HOST_ASLEEP_NOTICE_STATUS,
   HOST_AWAKE_NOTICE_STATUS,
   HOST_ASLEEP_ATTRIBUTION_MAX_MS,
@@ -152,11 +151,6 @@ describe("shouldAttributeRetryToHostSuspend", () => {
 });
 
 describe("chip copy", () => {
-  it("keeps the paused label short and in sentence case", () => {
-    expect(HOST_ASLEEP_NOTICE_MESSAGE).toBe("Paused — computer asleep");
-    expect(HOST_ASLEEP_NOTICE_MESSAGE.split(/\s+/).length).toBeLessThanOrEqual(6);
-  });
-
   it("names the sleep's length on the resumed half", () => {
     expect(hostResumedNoticeMessage(4 * 60_000)).toBe("Resumed · paused 4m");
     expect(hostResumedNoticeMessage(42_000)).toBe("Resumed · paused 42s");

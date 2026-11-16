@@ -584,7 +584,7 @@ function ChartCostUnavailable({
  * and when is what keeps the total honest.
  */
 function MachineList({ machines }: { machines: readonly AdeUsageMachineContribution[] }) {
-  // The same names the usage rows show in "via".
+  // The same machine names the usage rows show.
   const machineName = useUsageMachineName();
   // The clock lives here, not on the page, so ageing one relative timestamp
   // re-renders only these rows — never the 365-column chart above them.

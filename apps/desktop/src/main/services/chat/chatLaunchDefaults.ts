@@ -14,7 +14,7 @@ export function chatLaunchDefaultsPath(adeHome: string): string {
   return path.join(adeHome, FILE_NAME);
 }
 
-export function readChatLaunchDefaults(adeHome: string): AgentChatLaunchDefaults | null {
+function readChatLaunchDefaults(adeHome: string): AgentChatLaunchDefaults | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(chatLaunchDefaultsPath(adeHome), "utf8")) as Partial<AgentChatLaunchDefaults>;
     if (parsed?.version !== 1 || typeof parsed.modelId !== "string" || !parsed.modelId.trim()) return null;

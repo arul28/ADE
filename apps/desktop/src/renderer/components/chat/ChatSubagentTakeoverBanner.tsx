@@ -5,7 +5,7 @@ import { Banner } from "../ui/notice";
 
 /**
  * Non-blocking notice above the composer on a subagent chat: this thread still
- * reports to its parent. Take over converts it to a peer; Keep reporting (or
+ * reports to its parent. Take over stops its reports; Keep reporting (or
  * dismiss) leaves the channel open. Sending does not answer the prompt.
  */
 export function ChatSubagentTakeoverBanner({

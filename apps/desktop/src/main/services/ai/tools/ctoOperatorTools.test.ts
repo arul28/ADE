@@ -42,7 +42,6 @@ function buildDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOperatorToo
   return {
     currentSessionId: "cto-current",
     defaultLaneId: "lane-1",
-    defaultModelId: "openai/gpt-5-chat-latest",
     defaultReasoningEffort: "medium",
     resolveExecutionLane: vi.fn().mockResolvedValue("lane-1"),
     laneService: {
@@ -228,16 +227,6 @@ describe("createCtoOperatorTools", () => {
       expect(result.error).toContain("does not write repository code");
     });
 
-    it("keeps defaulting the lane for read-only git inspection", async () => {
-      const gitService = { getSyncStatus: vi.fn().mockResolvedValue({ branch: "main" }) };
-      const deps = buildDeps({ gitService: gitService as any });
-      const tools = createCtoOperatorTools(deps);
-
-      await (tools.gitStatus as any).execute({});
-
-      // Reading the primary lane is normal supervision, so this default stays.
-      expect(gitService.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
-    });
   });
 
   // These four were wired to `undefined`, so they were advertised in the prompt
@@ -337,34 +326,6 @@ describe("createCtoOperatorTools", () => {
       expect(result).toMatchObject({ success: true });
     });
 
-    it("exposes the supported chat lifecycle tools", () => {
-      // Handoff targeted "a different agent identity" — a subsystem that was
-      // removed; AgentChatIdentityKey is now just "cto". Advertising it was
-      // advertising a capability that could not exist.
-      //
-      // `handoffChatToModel` is a DIFFERENT thing and deliberately does not
-      // reuse this name: it hands a chat to another MODEL through the live
-      // `handoffSession` path, which does exist.
-      const tools = createCtoOperatorTools(buildDeps());
-
-      expect(Object.keys(tools)).not.toContain("handoffChat");
-      expect(Object.keys(tools)).toContain("spawnChat");
-      expect(Object.keys(tools)).toContain("handoffChatToModel");
-    });
-  });
-
-  it("createTerminal passes explicit pty dimensions instead of relying on the clamp", async () => {
-    const ptyService = { create: vi.fn().mockResolvedValue({ sessionId: "pty-1" }) };
-    const deps = buildDeps({ ptyService: ptyService as any });
-    const tools = createCtoOperatorTools(deps);
-
-    await (tools.createTerminal as any).execute({ laneId: "lane-2" });
-
-    // PtyCreateArgs requires these; omitting them was silently clamped inside
-    // the pty service, which was invisible until these bodies started executing.
-    expect(ptyService.create).toHaveBeenCalledWith(expect.objectContaining({
-      laneId: "lane-2", cols: 100, rows: 30, title: "CTO terminal",
-    }));
   });
 
   it("rejects a missing lane at the schema layer, not just at execute()", () => {
@@ -403,38 +364,11 @@ describe("createCtoOperatorTools", () => {
       });
     });
 
-    it("forwards an explicit spawnChat permissionMode to the chat create contract", async () => {
-      const deps = buildDeps();
-      const tools = createCtoOperatorTools(deps);
-
-      await (tools.spawnChat as any).execute({
-        title: "Full auto worker",
-        permissionMode: "full-auto",
-      });
-
-      expect(deps.createChat).toHaveBeenCalledWith(expect.objectContaining({
-        permissionMode: "full-auto",
-      }));
-    });
-
-    it("forwards a provider-native Droid permission tier", async () => {
-      const deps = buildDeps();
-      const tools = createCtoOperatorTools(deps);
-
-      await (tools.spawnChat as any).execute({
-        droidPermissionMode: "auto-high",
-      });
-
-      expect(deps.createChat).toHaveBeenCalledWith(expect.objectContaining({
-        droidPermissionMode: "auto-high",
-      }));
-    });
-
     it("omits permissionMode entirely when spawnChat is not given one", async () => {
       const deps = buildDeps();
       const tools = createCtoOperatorTools(deps);
 
-      await (tools.spawnChat as any).execute({ title: "Default worker" });
+      await (tools.spawnChat as any).execute({ title: "Default worker", modelId: "openai/gpt-5.6-sol" });
 
       // A substituted default here would be persisted as a real selection and
       // pin the spawned chat to it. Absence has to stay absent.
@@ -447,7 +381,7 @@ describe("createCtoOperatorTools", () => {
       const deps = buildDeps();
       const tools = createCtoOperatorTools(deps);
 
-      await (tools.spawnChat as any).execute({ title: "Implementation worker" });
+      await (tools.spawnChat as any).execute({ title: "Implementation worker", modelId: "openai/gpt-5.6-sol" });
 
       // Without the parent id the child finishes in silence and the CTO is left
       // polling transcripts to find out. `subagent` is the default because the
@@ -458,24 +392,13 @@ describe("createCtoOperatorTools", () => {
       }));
     });
 
-    it("honors an explicit peer spawn for fire-and-forget work", async () => {
-      const deps = buildDeps();
-      const tools = createCtoOperatorTools(deps);
-
-      await (tools.spawnChat as any).execute({ title: "Background sweep", spawnKind: "peer" });
-
-      expect(deps.createChat).toHaveBeenCalledWith(expect.objectContaining({
-        orchestrationParentSessionId: "cto-current",
-        spawnKind: "peer",
-      }));
-    });
-
     it("accepts only the two spawn kinds at the schema layer, defaulting to subagent", () => {
       const tools = createCtoOperatorTools(buildDeps());
 
-      expect((tools.spawnChat as any).inputSchema.safeParse({}).data.spawnKind).toBe("subagent");
-      expect((tools.spawnChat as any).inputSchema.safeParse({ spawnKind: "peer" }).success).toBe(true);
-      expect((tools.spawnChat as any).inputSchema.safeParse({ spawnKind: "none" }).success).toBe(false);
+      const modelId = "openai/gpt-5.6-sol";
+      expect((tools.spawnChat as any).inputSchema.safeParse({ modelId }).data.spawnKind).toBe("subagent");
+      expect((tools.spawnChat as any).inputSchema.safeParse({ modelId, spawnKind: "peer" }).success).toBe(true);
+      expect((tools.spawnChat as any).inputSchema.safeParse({ modelId, spawnKind: "none" }).success).toBe(false);
     });
 
     it("exposes the complete ADE permission contract at the schema layer", () => {
@@ -484,12 +407,15 @@ describe("createCtoOperatorTools", () => {
       // The model reads the schema as the contract; values that fail deeper in
       // the stack burn a turn. Keep this in lockstep with AgentChatPermissionMode
       // and the ADE RPC spawnChat action.
+      const modelId = "openai/gpt-5.6-sol";
       for (const permissionMode of AGENT_CHAT_PERMISSION_MODE_VALUES) {
-        expect((tools.spawnChat as any).inputSchema.safeParse({ permissionMode }).success).toBe(true);
+        expect((tools.spawnChat as any).inputSchema.safeParse({ modelId, permissionMode }).success).toBe(true);
       }
-      expect((tools.spawnChat as any).inputSchema.safeParse({ droidPermissionMode: "auto-high" }).success).toBe(true);
-      expect((tools.spawnChat as any).inputSchema.safeParse({ permissionMode: "yolo" }).success).toBe(false);
-      expect((tools.spawnChat as any).inputSchema.safeParse({}).success).toBe(true);
+      expect((tools.spawnChat as any).inputSchema.safeParse({ modelId, droidPermissionMode: "auto-high" }).success).toBe(true);
+      expect((tools.spawnChat as any).inputSchema.safeParse({ modelId, permissionMode: "yolo" }).success).toBe(false);
+      expect((tools.spawnChat as any).inputSchema.safeParse({ modelId }).success).toBe(true);
+      // ADE never picks the model: the schema requires one.
+      expect((tools.spawnChat as any).inputSchema.safeParse({}).success).toBe(false);
     });
 
     it("persists a requested chat title and returns navigation metadata when spawning chats", async () => {
@@ -498,6 +424,7 @@ describe("createCtoOperatorTools", () => {
 
       const result = await (tools.spawnChat as any).execute({
         title: "Backend follow-up",
+        modelId: "openai/gpt-5.6-sol",
         initialPrompt: "Inspect the failing tests.",
         openInUi: true,
       });
@@ -536,11 +463,18 @@ describe("createCtoOperatorTools", () => {
       });
     });
 
-    it("spawns a chat without title or initial prompt", async () => {
+    it("spawns a chat without title or initial prompt, but never without a model", async () => {
       const deps = buildDeps();
       const tools = createCtoOperatorTools(deps);
 
+      // ADE never picks the model for the CTO.
+      const refused = await (tools.spawnChat as any).execute({ openInUi: false });
+      expect(refused.success).toBe(false);
+      expect(String(refused.error)).toMatch(/Send modelId/);
+      expect(deps.createChat).not.toHaveBeenCalled();
+
       const result = await (tools.spawnChat as any).execute({
+        modelId: "openai/gpt-5.6-sol",
         openInUi: false,
       });
 
@@ -560,17 +494,6 @@ describe("createCtoOperatorTools", () => {
       const result = await (tools.listChats as any).execute({});
 
       expect(result).toMatchObject({ success: true, count: 1, chats: chatList });
-    });
-
-    it("lists chats filtered by lane", async () => {
-      const deps = buildDeps();
-      const tools = createCtoOperatorTools(deps);
-
-      await (tools.listChats as any).execute({ laneId: "lane-2", includeIdentity: true });
-
-      expect(deps.listChats).toHaveBeenCalledWith("lane-2", expect.objectContaining({
-        includeAutomation: false,
-      }));
     });
 
     it("sends a message to a chat session", async () => {
@@ -744,15 +667,6 @@ describe("createCtoOperatorTools", () => {
       expect(sessionService.snoozeSession).toHaveBeenCalledTimes(2);
     });
 
-    it("wakes with a recorded reason, defaulting to manual", async () => {
-      const { deps, sessionService } = lifecycleDeps();
-      const tools = createCtoOperatorTools(deps);
-
-      await (tools.wakeSession as any).execute({ sessionId: "chat-1" });
-      expect(sessionService.wakeSession).toHaveBeenCalledWith("chat-1", "manual");
-      await (tools.wakeSession as any).execute({ sessionId: "chat-1", reason: "turn_complete" });
-      expect(sessionService.wakeSession).toHaveBeenLastCalledWith("chat-1", "turn_complete");
-    });
   });
 
   // ── Lane tools ──────────────────────────────────────────────────

@@ -69,7 +69,29 @@ function installTrackedTempCleanup(): void {
   process.once("exit", cleanupTrackedTempDirs);
 }
 
+/**
+ * Run as CI does, with no ADE environment of the shell that started the run.
+ * An ADE agent's shell carries its identity (`ADE_CHAT_SESSION_ID`,
+ * `ADE_ACTIVITY_SESSION_ID`, `ADE_LANE_ID`, the brain's socket, …), and the
+ * CLI reads those as defaults, so a suite run from inside an agent got that
+ * agent's session id in plans that must not invent one. A test that needs one
+ * sets it itself.
+ */
+function clearInheritedAdeEnv(): void {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("ADE_")) delete process.env[key];
+  }
+}
+
+clearInheritedAdeEnv();
 installTrackedTempCleanup();
+
+// Tests run on people's real computers. Code that defaults to this machine's
+// ADE home (the account stores, Passwords & Secrets) must never reach the
+// real ~/.ade from a test: a test that wants a home sets ADE_HOME itself.
+if (!process.env.ADE_HOME?.trim()) {
+  process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-test-home-"));
+}
 afterAll(() => {
   cleanupTrackedTempDirs();
 });

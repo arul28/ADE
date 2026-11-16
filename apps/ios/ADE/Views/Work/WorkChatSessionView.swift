@@ -215,6 +215,170 @@ struct WorkChatConnectingFrame: View {
   }
 }
 
+/// The line at the top of a screen while the ADE Cloud computer its work
+/// lives on wakes: the computer starts, and its chats and lanes answer once
+/// it is up.
+struct CloudComputerWakeBanner: View {
+  let machineName: String
+
+  var body: some View {
+    HStack(spacing: 10) {
+      ProgressView()
+        .controlSize(.small)
+      VStack(alignment: .leading, spacing: 1) {
+        Text("Waking \(machineName)…")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        Text("A cloud computer can take a minute to start.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(2)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .padding(.horizontal, 12)
+    .padding(.top, 6)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.updatesFrequently)
+    .adeInspectable("CloudComputer.Waking")
+  }
+}
+
+/// The line at the top of a screen when a wake of the ADE Cloud computer
+/// its work lives on failed: what went wrong, and one action. The rows stay
+/// listed; the person tries again or closes the line.
+struct CloudComputerWakeFailedBanner: View {
+  enum Action {
+    case retry(() -> Void)
+    case dismiss(() -> Void)
+  }
+
+  let message: String
+  let action: Action
+  /// False inside a list that already insets its cards (the Hub).
+  var insetsFromEdges = true
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 10) {
+      Image(systemName: "exclamationmark.icloud")
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.warning)
+        .accessibilityHidden(true)
+      Text(message)
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(3)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      switch action {
+      case .retry(let retry):
+        Button("Try again", action: retry)
+          .font(.subheadline.weight(.semibold))
+          .buttonStyle(.borderless)
+          .foregroundStyle(ADEColor.accent)
+          .adeInspectable("CloudComputer.WakeFailed.Retry")
+      case .dismiss(let dismiss):
+        Button(action: dismiss) {
+          Image(systemName: "xmark")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("Close")
+        .adeInspectable("CloudComputer.WakeFailed.Close")
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .padding(.horizontal, insetsFromEdges ? 12 : 0)
+    .padding(.top, insetsFromEdges ? 6 : 0)
+    .accessibilityElement(children: .contain)
+    .adeInspectable("CloudComputer.WakeFailed")
+  }
+}
+
+/// The top line of the Work list, which belongs to no single machine:
+/// "Waking <name>…" while an open waits, else the last failed wake with a
+/// Close button.
+struct CloudComputerWakeStatusLine: View {
+  let wakingName: String?
+  let failure: (fleetKey: String, message: String)?
+  let onDismissFailure: (String) -> Void
+
+  var body: some View {
+    if let wakingName {
+      CloudComputerWakeBanner(machineName: wakingName)
+    } else if let failure {
+      CloudComputerWakeFailedBanner(message: failure.message, action: .dismiss { onDismissFailure(failure.fleetKey) })
+    }
+  }
+}
+
+extension View {
+  /// Opens work that lives on an ADE Cloud computer: when that computer is
+  /// asleep, the phone wakes it and connects to it (next to the others, or
+  /// as the focused computer), and the screen shows the wake until the
+  /// computer answers. `onAwake` runs once it does. A failed wake shows why,
+  /// with Try again. Any other machine, or one that is already live, changes
+  /// nothing.
+  func wakesCloudComputer(
+    machineKey: String?,
+    wakingName: String?,
+    wakeFailure: String? = nil,
+    onAwake: (() async -> Void)? = nil
+  ) -> some View {
+    modifier(CloudComputerWakeModifier(
+      machineKey: machineKey,
+      wakingName: wakingName,
+      wakeFailure: wakeFailure,
+      onAwake: onAwake
+    ))
+  }
+}
+
+private struct CloudComputerWakeModifier: ViewModifier {
+  let machineKey: String?
+  let wakingName: String?
+  let wakeFailure: String?
+  let onAwake: (() async -> Void)?
+  /// Moves on Try again, so the wake task runs once more.
+  @State private var attempt = 0
+
+  func body(content: Content) -> some View {
+    content
+      .safeAreaInset(edge: .top, spacing: 0) {
+        if let wakingName {
+          CloudComputerWakeBanner(machineName: wakingName)
+        } else if let wakeFailure {
+          CloudComputerWakeFailedBanner(message: wakeFailure, action: .retry { attempt += 1 })
+        }
+      }
+      .task(id: "\(machineKey ?? "")#\(attempt)") {
+        guard let machineKey, let sync = SyncService.shared,
+              sync.cloudMachineFleetKeys.contains(machineKey)
+        else { return }
+        if machineKey == sync.focusedMachineKey {
+          if await sync.wakeFocusedCloudMachineIfAsleep(), !Task.isCancelled {
+            await onAwake?()
+          }
+          return
+        }
+        guard let fleet = sync.machineFleet, !fleet.isLive(machineKey) else { return }
+        if await fleet.connect(machineKey: machineKey, timeout: .seconds(10)), !Task.isCancelled {
+          await onAwake?()
+        }
+      }
+  }
+}
+
+
 /// `distanceFromTop` is how far the reader has scrolled from the first row, so
 /// it grows downward — the inverse of the geometry-probe `topY` this used to
 /// take, which was published from a per-frame `GeometryReader` riding the
@@ -332,6 +496,10 @@ struct WorkChatSummaryRenderContext: Equatable {
   var isSideChat = false
   /// The composer offers `/side` (a Work chat on a provider that can fork).
   var offersSideChat = false
+  /// The chat's work copies on other machines whose simulator, emulator or
+  /// screen it drives (`workRemoteWorkDevices`): their pills sit beside the
+  /// lane's own tools.
+  var remoteDevices: [WorkRemoteWorkDevice] = []
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
@@ -424,6 +592,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.crossMachineBatchApproval = summary.crossMachineBatchApproval
     self.isSideChat = summary.sideChatParentSessionId?
       .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    self.remoteDevices = workRemoteWorkDevices(summary.remoteWork)
   }
 
   var currentModelId: String {
@@ -829,6 +998,10 @@ struct WorkChatSessionView: View {
   /// Opens this chat's side chat. Set only while the chat has one; the badge
   /// row then shows a Side chat chip (never otherwise).
   var onOpenSideChat: (() -> Void)? = nil
+  /// Set on the CTO thread only. Its turns draw calm: quiet chips for state
+  /// changes instead of the turn-end line, one working line while it runs.
+  /// Every other chat leaves it nil and renders exactly as before.
+  var ctoLive: CtoLiveModel? = nil
 
   @State private var threadCommentsSheetPresented = false
   /// Compact first for the next send: nil follows the offer's own default.
@@ -1342,9 +1515,11 @@ struct WorkChatSessionView: View {
         }
         if showsComposerLaneToolChips {
           ForEach(laneTools.chips) { chip in
-            WorkLaneToolChipView(chip: chip, isSelected: pillSelection(chip.duoToolTab, selected)) {
+            WorkLaneToolChipView(chip: chip, isSelected: toolChipSelection(chip, selected)) {
               ADEHaptics.light()
-              if let duoPane {
+              if chip.remote != nil {
+                laneTools.open(chip, macDesktopStream: true)
+              } else if let duoPane {
                 // Wide display: the tool opens beside the thread, seeded from
                 // the state this chip is already showing; tapped again, away.
                 if selected == chip.duoToolTab {
@@ -1404,6 +1579,13 @@ struct WorkChatSessionView: View {
   /// pane shows this pill's surface.
   private func pillSelection(_ tab: DuoToolTab, _ selected: DuoToolTab?) -> Bool? {
     duoPane == nil ? nil : selected == tab
+  }
+
+  /// A lane tool pill's selection. A device on another machine is never the
+  /// pane's tab: it opens on the live stage from every layout.
+  private func toolChipSelection(_ chip: WorkToolChip, _ selected: DuoToolTab?) -> Bool? {
+    guard chip.remote == nil else { return duoPane == nil ? nil : false }
+    return pillSelection(chip.duoToolTab, selected)
   }
 
   var maxUserBubbleWidth: CGFloat? {
@@ -1721,9 +1903,33 @@ struct WorkChatSessionView: View {
     }
   }
 
+  /// The CTO thread's live facts, for its header pill and profile.
+  var ctoLiveFacts: WorkCtoLiveFacts? {
+    guard ctoLive != nil else { return nil }
+    let active = isStreamingTurn
+    return WorkCtoLiveFacts(
+      active: active,
+      streaming: active && streamingAssistantMessageId != nil,
+      awaiting: !pendingInputs.isEmpty,
+      step: active ? ctoLatestStepWords(turnToolActivity.active?.members ?? []) : nil
+    )
+  }
+
   @ViewBuilder
   var streamingStatusSection: some View {
-    if isStreamingTurn {
+    if isStreamingTurn, let ctoLive {
+      CtoWorkingLine(
+        look: ctoLive.look,
+        members: turnToolActivity.active?.members ?? [],
+        streamingText: streamingAssistantMessageId != nil,
+        startedAt: ctoLive.turnStartedAt,
+        onOpenSteps: turnToolActivity.active.map { _ in
+          { toolActivitySheet = .active }
+        }
+      )
+      .id("chat-streaming-status")
+      .frame(maxWidth: .infinity, alignment: .leading)
+    } else if isStreamingTurn {
       WorkActivityIndicator(
         transcript: transcript,
         precomputedPresentation: frame?.activityPresentation,
@@ -2203,6 +2409,7 @@ struct WorkChatSessionView: View {
             .environment(\.workSkillInstructions, skillInstructions)
             .environment(\.workProofCitations, proofCitationContext)
             .environment(\.workSceneBridge, sceneBridge)
+            .environment(\.workChatAccentHexOverride, ctoLive.map { CtoResolvedLook($0.look).hex })
             .modifier(
               WorkChatTranscriptEnvironmentModifier(
                 provider: chatSummaryContext.provider,
@@ -2689,6 +2896,26 @@ struct WorkChatSessionView: View {
         .onChange(of: liveClaudeQuotaCardId) { _, newId in
           handleLiveQuotaCardChange(newId)
         }
+        .onChange(of: ctoLiveFacts, initial: true) { _, facts in
+          publishCtoLiveFacts(facts)
+        }
+  }
+
+  /// Hands the CTO thread's turn facts to its live model (header pill,
+  /// profile). The turn's start is read off the transcript once, when the
+  /// turn begins, never per streamed delta.
+  @MainActor
+  private func publishCtoLiveFacts(_ facts: WorkCtoLiveFacts?) {
+    guard let ctoLive, let facts else { return }
+    if facts.active {
+      if ctoLive.turnStartedAt == nil {
+        ctoLive.turnStartedAt = WorkActivityIndicator.activeTurnStartTimestamp(from: transcript)
+          .flatMap(workActivityTimestamp) ?? Date()
+      }
+    } else if ctoLive.turnStartedAt != nil {
+      ctoLive.turnStartedAt = nil
+    }
+    ctoLive.applyTurn(active: facts.active, streaming: facts.streaming, awaiting: facts.awaiting, step: facts.step, failed: false)
   }
 
   /// Per-frame bookkeeping that is not rendering: a history reset (generation
@@ -2853,6 +3080,7 @@ struct WorkChatSessionView: View {
       chatSessionId: session.id,
       // A side chat's lane tools are its main chat's, already polled there.
       enabled: !isPersonalChat && !chatSummaryContext.isSideChat,
+      remoteDevices: chatSummaryContext.remoteDevices,
       duoPane: duoPane,
       relay: toolsRelay
     )
@@ -3189,6 +3417,7 @@ private struct WorkChatComposerCard: View {
 
 private struct WorkChatComposerDraftInput: View {
   @Environment(\.workChatAttachIssue) private var onAttachIssue
+  @Environment(\.workChatComposerMachineName) private var machineName
   @Environment(\.verticalSizeClass) private var verticalSizeClass
   let chatSummary: WorkChatSummaryRenderContext
   let contextMeter: WorkComposerContextMeterModel?
@@ -3663,6 +3892,10 @@ private struct WorkChatComposerDraftInput: View {
           }
 
           DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
+
+          if !isDictating, let machineName {
+            WorkComposerMachineTag(name: machineName)
+          }
         },
         trailing: {
           if !isDictating, let contextMeter {
@@ -4179,7 +4412,7 @@ private struct WorkSubagentLineageBreadcrumb: View {
 
   private var sourceLabel: String {
     let trimmed = parentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmed.isEmpty ? "parent chat" : trimmed
+    return trimmed.isEmpty ? "another chat" : trimmed
   }
 
   var body: some View {
@@ -4190,10 +4423,10 @@ private struct WorkSubagentLineageBreadcrumb: View {
           .foregroundStyle(ADEColor.accent)
 
         VStack(alignment: .leading, spacing: 1) {
-          Text("Subagent chat")
+          Text("Started by")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.accent)
-          Text("from \(sourceLabel)")
+          Text(sourceLabel)
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
@@ -4217,8 +4450,8 @@ private struct WorkSubagentLineageBreadcrumb: View {
       .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("Open parent chat, \(sourceLabel)")
-    .accessibilityHint("Returns to the chat that spawned this subagent.")
+    .accessibilityLabel("Started by \(sourceLabel)")
+    .accessibilityHint("Opens the chat that started this one.")
   }
 }
 
@@ -4601,5 +4834,42 @@ private struct WorkChatComposerSendButton: View {
         "role": "button"
       ]
     )
+  }
+}
+
+extension EnvironmentValues {
+  /// The computer the open chat runs on, for its prompt box. Nil elsewhere.
+  @Entry var workChatComposerMachineName: String? = nil
+}
+
+/// The open chat's computer, quiet in the prompt box's control row: where a
+/// message sent here runs. Not a control; the chat header names it too.
+struct WorkComposerMachineTag: View {
+  let name: String
+
+  var body: some View {
+    // The model chip keeps its room first. A narrow composer shows only the
+    // computer icon; its label still names the computer.
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 4) {
+        icon
+        Text(name)
+          .font(.system(size: 12, weight: .medium))
+          .lineLimit(1)
+          .fixedSize()
+      }
+      icon
+    }
+    .foregroundStyle(ADEColor.textMuted)
+    .padding(.horizontal, 4)
+    .frame(minHeight: 28)
+    .layoutPriority(-1)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Runs on \(name)")
+  }
+
+  private var icon: some View {
+    Image(systemName: "desktopcomputer")
+      .font(.system(size: 12, weight: .medium))
   }
 }

@@ -15,14 +15,12 @@
 // for the target CPU here; nothing in the build itself loads them.
 //
 //   node scripts/install-cross-arch-packages.mjs --cpu=x64
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { retryTransient } from "./release-retry.mjs";
+import { fetchVerified, unpackLockedTarball } from "../../../scripts/release-tools/lockedPackage.mjs";
 
 const execFileAsync = promisify(execFile);
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -47,22 +45,6 @@ async function exists(target) {
   }
 }
 
-async function fetchVerified(url, integrity) {
-  const [algorithm, expected] = integrity.split(/-(.*)/s);
-  return retryTransient(
-    `download of ${url}`,
-    async () => {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-      const body = Buffer.from(await response.arrayBuffer());
-      const actual = crypto.createHash(algorithm).update(body).digest("base64");
-      if (actual !== expected) throw new Error(`Integrity mismatch for ${url}`);
-      return body;
-    },
-    { attempts: 4, delayMs: 5_000, isTransient: (text) => !text.includes("Integrity mismatch") },
-  );
-}
-
 const lock = JSON.parse(await fs.readFile(path.join(appDir, "package-lock.json"), "utf8"));
 const added = [];
 for (const [packagePath, entry] of Object.entries(lock.packages ?? {})) {
@@ -76,16 +58,7 @@ for (const [packagePath, entry] of Object.entries(lock.packages ?? {})) {
     throw new Error(`[cross-arch] ${packagePath} has no resolved URL or integrity in package-lock.json.`);
   }
 
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ade-cross-arch-"));
-  try {
-    const tarball = path.join(tempDir, "package.tgz");
-    await fs.writeFile(tarball, await fetchVerified(entry.resolved, entry.integrity));
-    await execFileAsync("tar", ["-xzf", tarball, "-C", tempDir]);
-    await fs.mkdir(path.dirname(destination), { recursive: true });
-    await fs.cp(path.join(tempDir, "package"), destination, { recursive: true, verbatimSymlinks: true });
-  } finally {
-    await fs.rm(tempDir, { recursive: true, force: true });
-  }
+  await unpackLockedTarball(await fetchVerified(entry.resolved, entry.integrity, { attempts: 4 }), destination);
   added.push(`${packagePath.replace(/^.*node_modules\//, "")}@${entry.version}`);
 }
 

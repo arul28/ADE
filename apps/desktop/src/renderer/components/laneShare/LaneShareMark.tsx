@@ -21,7 +21,7 @@ export const LaneShareMark = React.memo(function LaneShareMark({
   laneName: string;
   size?: number;
 }) {
-  const { key, entry } = useLaneShareList(pin);
+  const { key, entry, pin: listPin } = useLaneShareList(pin);
   const shares = entry?.shares;
   const summary = React.useMemo(() => laneShareMarkSummary(shares ?? [], laneId), [shares, laneId]);
   if (!summary || !key) return null;
@@ -41,7 +41,7 @@ export const LaneShareMark = React.memo(function LaneShareMark({
           listKey: key,
           laneId,
           laneName,
-          pin,
+          pin: listPin,
           machineName: pin?.kind === "remote" ? pin.runtimeName : null,
           grantId: first?.grantId ?? null,
         });

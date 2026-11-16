@@ -63,7 +63,7 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | Settings › Overview, Project › Lanes, Location, Computer › ADE service, idle after load: main-thread work | — | 0.2–0.4 ms/s (Overview 6.8–9.2 ms/s in the first 26 s while its lazy reads land, then 0.3 ms/s); 1.2–1.6k page elements (Mac Studio M4 Max dev build, 2026-10-18, on top of `13d6f10c2`, not the baseline machine) | 30 ms/s |
 | Settings › Machines (list with each machine's load) and one machine's page (Right now, What it can run), idle after load: main-thread work | — | list 4.7–7.6 ms/s, machine page 2.2–2.4 ms/s, no long task on opening; one `machine_stats.get` per machine on open, no poll (`route-sweep.mjs`, Mac Studio M4 Max dev build, 2026-10-30, branch `ade/machine-stats-and-preferences`, CPU 80–100% busy from other agents, not the baseline machine) | 30 ms/s |
 | Settings › Integrations (home with the 95-server MCP catalogue grid; the MCP servers and GitHub pages), idle after load: main-thread work and page elements | — | 2026-11-09, 95 servers (98 tiles): 2,940 elements against 2,987 for main's 72 servers in the same setup, so 23 more tiles cost nothing; a tile is 19 elements, was 25 (a logo's copies are its own `<svg>` with no wrapping span, and tiles and cards no longer draw the floor shadow they hid), pixel-identical; idle 0.2–0.5 ms/s, no long task on opening (`route-sweep.mjs` with `CDP_PORT`, against the Vite renderer preview in headless Chrome, not the Electron dev build, Mac Studio M4 Max, branch `ade/rakazo-ideas-discussion`). Earlier, home 0.3–1.3 ms/s, 2,480 elements (77 small 3D logos; 4,043 before a straight logo drew its thin edge with fewer copies); MCP page 0.4 ms/s, 808 elements; GitHub page 0.5 ms/s, 625 elements; no long task on opening (`route-sweep.mjs`, Mac Studio M4 Max dev build, 2026-11-04, branch `ade/integration-connect-cards-81787be4` on `27ed4b1dd`, sync off, load average ~5 from other agents, not the baseline machine) | 30 ms/s; 3k elements |
-| Settings › Passwords (Logins with a login selected that has an authenticator code, so the live code counts down), idle after load: main-thread work and page elements | — | 2.4–2.8 ms/s (Settings › Integrations in the same session 1.1–3.3 ms/s), about one layout per second from the code countdown (by design; the code is fetched again only when it runs out, every 30 s), 1,083 elements, no long task on opening (`route-sweep.mjs` with `CDP_PORT`, against the Vite renderer preview in headless Chrome, not the Electron dev build, Mac Studio M4 Max, 2026-11-13, branch `ade/passwords`) | 30 ms/s; 3k elements |
+| Settings › Passwords & Secrets (Logins with a login selected that has an authenticator code, so the live code counts down), idle after load: main-thread work and page elements | 2.4–2.8 ms/s, 1,083 elements (2026-11-13, `ade/passwords`) | 1.5–1.9 ms/s (Settings › Integrations in the same session 0.2–2.6 ms/s), about one layout per second from the code countdown (by design; the code is fetched again only when it runs out, every 30 s), 1,042–1,055 elements, no long task on opening. The redesign (one status bar instead of the switch and danger-zone cards) is lighter (`route-sweep.mjs` with `CDP_PORT`, against the Vite renderer preview in headless Chrome, not the Electron dev build, Mac Studio M4 Max, 2026-11-14, branch `ade/passwords-and-secrets`) | 30 ms/s; 3k elements |
 | Settings › Storage & cleanup › Recently deleted (39-chat list with a conversation preview), idle after load: main-thread work and page elements; list and reopen latency | — | 0.7–3.4 ms/s, 1,204–1,207 elements, no long task on opening, no animation, 0 IPC/min idle; `chat.listDeletedChats` adds no measurable time over an empty action (551–573 ms vs 552–561 ms CLI round trip); a 48 MB Claude conversation previews in ~1.4 s and reopens in ~1.0–1.4 s (`route-sweep.mjs`, Mac Studio M4 Max dev build, 2026-11-05, branch `ade/recently-deleted-chats-ef31f148` on `aa6f998f1`, sync off, not the baseline machine) | 30 ms/s; 3k elements |
 | Settings › Account (profile banner: avatar float + mesh), idle after 30 s: frames drawn, GPU swap, main-thread work | float looped forever: 240 frames/s, 54 ms/s GPU swap, 12.9 style recalcs/s, 7.9 ms/s | float stops after 3 cycles (18 s) and the mesh freezes at 20 s: 0 frames/s, 0.1 style recalcs/s, 6.6 ms/s; the first 18 s draw at the display rate like any CSS animation (Mac Studio M4 Max dev build, 2026-10-29, load average ~8 from other agents, not the baseline machine) | 0 frames/s after 30 s idle; 30 ms/s |
 | PRs with running checks (3 spinners): frames drawn | 63/s | 30/s | 40/s |
@@ -3015,6 +3015,65 @@ change. One earlier branch run read 5.8 ms/s on Providers after a longer
 session with Work visits; the same-steps pair above is the comparison.
 The sync pass runs on the brain's existing 30 s tick; it adds no timer.
 
+### Providers on every computer from any window (Cloud 8, 2026-11-13)
+
+Dev app (own socket, sync off) on `ade/cloud-8-providers` at `d58d97ce9`
+against `origin/ade/cloud-8` at `dbaeb1533`, on the Mac Studio M4 Max (not the
+baseline machine, other agents running). The other computer is the dev test
+machine "dev" (`npm run dev:machine`, same Mac, over its paired connection).
+Three project windows: the ADE repository (a copy on both computers),
+`local-only` (a copy here only) and `remote-only` (a copy on "dev" only, the
+tab bound there). Each number is navigation to Settings › Providers until all
+13 tiles are drawn and none says Checking (`measure-providers.js` over CDP; the
+first open after a fresh launch includes Vite's compile).
+
+| Window → computer | Before | After | Ceiling |
+| --- | --- | --- | --- |
+| ADE → This computer | 659 ms first (compile), then 35–42 ms | 37–46 ms | 150 ms |
+| ADE → "dev" (through its copy) | 138 ms after a brain restart; warm 409–616 ms | 59–115 ms | 750 ms |
+| `local-only` → This computer | 36 ms | 46–47 ms | 150 ms |
+| `local-only` → "dev" (no copy there; machine route) | not reachable ("through its copy of this repository") | 1,189 ms first after a fresh launch, 227 ms warm; after a brain restart 63–117 ms | 750 ms (first open after a brain start: 1.5 s) |
+| `remote-only` → This computer (machine route on this computer) | not reachable, and the page title named the other computer | 53–88 ms | 150 ms |
+| `remote-only` → "dev" (the tab's machine) | 37 ms | 29 ms | 150 ms |
+
+The ceilings (150 ms on This computer, 750 ms on another computer, 1.5 s
+for the first open after a brain start) are approved by owner 2026-11-14.
+
+The minute-long wait in the report was not the page. The installed brain's
+log (`~/.ade/runtime/brain.jsonl`) has `project_root.not_answering` for every
+project on the external `/Volumes/Dev` drive at 20:14–20:17 that day, with
+`waitedMs` up to 48,233: the drive stalled, and every call routed through a
+project on it waited for the drive. The machine route reads only `~/.ade` on
+the internal disk, so a computer's own settings no longer wait on a project
+folder. A read through a copy (the tab's bound remote, or a remote that holds
+this repository) still waits when that copy's drive stalls; that is open.
+
+No timer, poll or subscription is added. A machine route's first call starts
+the computer's personal-chat runtime when nothing has started it yet (the
+first-open row); the brain's start warms it otherwise.
+
+### Providers through This computer's machine route (Cloud 9, 2026-11-14)
+
+Dev app (own socket, sync off) on `ade/cloud-9-machine` against main at
+`31c7cf2fa` (its renderer checked out over the same tree in the same run, so
+both passes share the app and the brain). Mac Studio M4 Max, not the baseline
+machine, other agents running. The ADE window, bound to its copy on This
+computer (on the external `/Volumes/Dev` drive). Each number is navigation
+from General to Settings › Providers until all 13 tiles are drawn and none
+says Checking (CDP, 7 runs after a reload; the first includes Vite's compile).
+
+| Window → computer | Before (main) | After (branch) | Ceiling |
+| --- | --- | --- | --- |
+| ADE → This computer | 73 ms first, then 19–23 ms | 60 ms first, then 19–24 ms | 150 ms (approved by owner 2026-11-14) |
+
+Main read the status through the bound copy, which a stalled project drive
+holds up. The branch reads it on This computer's machine route (`~/.ade`
+only); the first cut of the branch drew in 33–37 ms because that read skipped
+the preload's 10 s status cache, so the cache now keeps a slot for This
+computer's machine pin. Only the project's AI config still goes to the copy,
+bounded at 8 s. A stalled drive was not reproduced here. No timer, poll or
+subscription is added.
+
 ### Events for many machines (S3, 2026-11-12)
 
 Dev app on `ade/account-projects-08-desktop-s3` (the S3 preload) against the
@@ -3269,3 +3328,204 @@ poll while a chat's browser is on another machine, and a frame read every
 250 ms, one in flight, only while someone watches a remote tab) need two
 machines. Sleeping tabs (30 min) and the 320 MB disk-cache cap lower memory and
 disk use over hours; a 15-minute window cannot show them.
+
+### Home lists the account's projects (account list as the one source, 2026-11-12)
+
+Dev app on `ade/account-list-single-source` at `65ed38ee6`, against the base
+`e35917691` renderer checked out over the same tree, so both share the app,
+the brain and the load. Mac Studio M4 Max (not the baseline machine), an
+isolated home (own `ADE_HOME`, user data, socket and CDP port, sync off), a
+loopback account directory with 20 account projects over 5 computers (3
+offline), one project with two folders here, and 60 folders here that are on
+no account project. Three project tabs open, nothing streaming. Passes
+interleaved base, after, base, after; load average 10–16 for the rows below
+(passes at higher load are not used). Probes: scratch CDP scripts, 8 runs a
+pass, the first run after a reload is the cold one.
+
+| Row | Before (`e35917691`) | After | Ceiling |
+| --- | --- | --- | --- |
+| Home "Add project" to the add form ready (input, folder and options filled), warm median | 150 ms (first screen, the tiles, 141 ms; the form one press later); long task 129 ms | 36–37 ms (form shown 30–31 ms); no long task | — |
+| Home "Add project" to the add form ready, cold (first open after a reload) | 156–160 ms; long task 132–135 ms | 43–44 ms; no long task | — |
+| Home: "+" to the first Projects row (the S4 probe: one frame after the row), warm median of each pass | 54.0–56.2 ms; a long frame of 62–64 ms in 5–6 of 14 runs | 48.4–51.2 ms; no long frame in 56 runs | — |
+| Home: "+" to the first Projects row painted / to settled frames (6 frames under 20 ms), warm median of each pass | 27.4–28.3 ms / 133 ms | 34.0–36.6 ms / 91–116 ms | — |
+| Home page elements / Projects card elements | 2,417 / 1,866 (81 rows, most hidden) | 1,422 / 871 (40 rows) | — |
+
+The add window cost one long task of 120–200 ms on every open, in the base
+too. The palette set its mode from the open intent in an effect, so the
+window committed once in the default mode with the whole command list (288
+rows) and removed it in the next commit. Three forced style passes of the
+open (the input focus, the Radix presence animation read and a motion scroll
+measure) each covered those rows: 5,000–6,600 elements a pass in a trace. The
+mode now follows the open in the same render (`65ed38ee6`). With 27 project
+tabs open the same open took 157–192 ms, so the cost grew with the page as
+well as with the list.
+
+Home's Projects card renders at most 40 rows inline (`INLINE_ROW_CAP`); the
+"N more" dialog shows every row. A hidden row still costs style and layout on
+every pass over the page. A cap of 24 measured the same as 40.
+
+The "+" rows were measured again on `1dc88e0c4` (2026-11-13): four
+interleaved pairs, 15 warm runs a pass after a warm-up pass, each pass waiting
+for a 1-minute load under 16 on the 14-core machine (load 9–14 at the start
+of the passes used, one after pass at 25). Two base passes that ran back to
+back measured like the branch code and are left out, since the pass did not
+record which renderer it measured. The base paints the first row 6–9 ms
+sooner, in a frame that then runs long; the branch has no long frame,
+settles sooner, and is not slower on the S4 probe. No ceiling is set for
+these rows.
+
+No timer or poll is added. Home reads this computer's folders from the
+brain's project catalog (`project.listThisComputer`, one local IPC) on mount,
+when the recents change, and when a brain that the last read missed connects
+(one listener on the existing `app.onRuntimeStatusChanged` event; a heartbeat
+of the same brain reads nothing). The recents keep 24 folders, and the
+catalog lists all of them; a read that fails or finds no brain keeps the last
+catalog. Home and the top bar's copies menu build their
+copies from the snapshot and recents they already hold. The computers tag on
+the project page reads the copies sources once on mount and on window focus
+(one `listRecent`).
+
+### One tab, every machine (one-tab-all-machines, 2026-11-13)
+
+Dev app on `ade/one-tab-all-machines` at `01f73282e`, against the `origin/main`
+renderer (`e13e36cc6`) checked out over the same tree, so both share the app,
+the brains and the load. Mac Studio M4 Max (not the baseline machine), an
+isolated home (own `HOME`, `ADE_HOME`, user data, socket and CDP port, sync
+off), a loopback account directory and a local tunnel relay. Four dev test
+brains: this computer's, "Alpha" and "Beta" (copies of the open project) and
+a third with another project, all connected. One project tab open, nothing
+streaming. The desktop rows are `route-sweep.mjs /work,/lanes 12` in a perf
+run, four passes, the first pass left out. The web rows count the bytes each
+machine's route carried through the relay, 3 minutes after a 60 s settle, with
+the web page on the same project tab; the desktop page was idle on Work.
+
+| Row | Before (`e13e36cc6`) | After | Ceiling |
+| --- | --- | --- | --- |
+| Lanes: IPC on open (perf run), 3 machines with the project connected | 46 / 53 / 47 calls; 0.74–0.96 s | 52 / 48 / 53 calls; 0.77–0.89 s | 70 calls (Lanes row) |
+| Work: IPC on open (perf run), same | 21 / 24 / 21 calls | 26 / 29 / 23 calls | — |
+| Idle IPC per minute, Work / Lanes open (perf run) | 175–255 / 235 | 170–225 / 220–250 | — |
+| Idle main-thread work, Work / Lanes | 3.2–3.9 / 5.2–8.0 ms/s | 3.8–4.8 / 5.1–5.5 ms/s | 30 ms/s |
+| ADE Web, idle, N machines connected: KB down per minute (new row) | 3.1 KB down, 1.2 up (1 machine read; the tab showed the other project's lane) | 5.7 KB down, 2.8 up (4 machines, 0.9–2.4 KB each) | not set (new row; ceilings are the owner's call) |
+| ADE Web, idle, 2 and 8 machines connected: KB down / up per minute | — | 2: 9.0 / 4.4; 8: 9.4 / 5.3 | not set |
+
+No row is more than 25% worse or over a ceiling. The Lanes and Work counts
+stay in the same range: the Lanes union already read every connected machine,
+and the branch adds no timer or poll on the desktop. The desktop reaches the
+test brains on this Mac directly, so its relay bytes stay at 0 and the web is
+the only surface whose bytes move.
+
+ADE Web connects to every account machine that has a copy of the open project
+(the product rule: every machine's work shows in one tab). Each connected
+machine costs about 1–2 KB a minute down while idle, and 8 machines cost 9.4
+KB a minute in all. The 2- and 8-machine row is an earlier run of the same
+branch on the 16-brain rig; its conditions differ from the 4-machine row,
+so compare each row with itself. The base row is not a like-for-like pair: on the base the web tab
+read one machine and showed the other project's lane under this project's
+tab, the bug that this branch fixes.
+
+What adds work, and when it runs:
+
+- A background connect, once per account machine with a copy of the open
+  project that is online and not connected (`useConnectRepositoryCopies`). It
+  never wakes a sleeping cloud computer and stops at the person's Disconnect.
+- The no-computer page tries one connect per computer, once, and reads the
+  account machine list on mount and on window focus (desktop; 15 s cache).
+- ADE Web asks its brain to host its own project again after a restart, at
+  most once every 15 s.
+
+#### Fix round (2026-11-14)
+
+Same branch at `2ed6cfa40` plus the fix round, against `2ed6cfa40` with the
+renderer files of the fix round put back (preload and brains the same in both
+arms). Mac Studio M4 Max (not the baseline machine), load average 9–22 from
+other agents. Rig: this computer's dev desktop in an isolated home with 8
+test brains connected, ADE Web in Chrome with the same 8 connected, the atlas
+tab open, "Plan the release" open on the web. Each arm was reloaded, given 60 s
+to settle, then measured: `route-sweep.mjs /work,/lanes 12`, three passes
+without a perf run and four in one (first pass left out), and the web page's
+WebSocket frames over 180 s (counted in the page through CDP, uncompressed
+JSON; not the relay bytes of the rows above, so compare only with each other).
+
+| Row | Before | After | Ceiling |
+| --- | --- | --- | --- |
+| Lanes: IPC on open (perf run), 8 machines | 65 / 59 / 82 calls; 0.71–0.90 s | 60 / 60 / 69 calls; 0.58–0.92 s | 70 calls (Lanes row) |
+| Work: IPC on open (perf run), same | 29 / 41 / 27 calls | 43 / 27 / 58 calls | — |
+| Idle main-thread work, Work / Lanes (no perf run) | 25.3–25.8 / 13.1–19.3 ms/s (60 and 31 style recalcs/s) | 5.0–8.8 / 7.3–8.5 ms/s (2.7 style recalcs/s) | 30 ms/s |
+| ADE Web, idle, 8 machines: WebSocket KB down / up per minute in the page | 285.5 / 41.9 | 270.2 / 41.8 | not set |
+| ADE Web, idle: account directory reads per 3 min | 0 (one account attention read) | 0 (same) | — |
+
+The idle Work drop is the header: on the base two chats still showed a
+spinning "running" glyph from subagents that had stopped with a brain restart,
+and the subagent counts now use each child's own status. The web arms send the
+same commands (40 `work.listSessions` and 40 `android.status` a minute across
+8 machines); the fix round adds none.
+
+What the fix round adds, and when it runs:
+
+- A copy whose computer did not join is tried again on a timer while the page
+  is visible: 15 s after the first failure, doubling to 60 s. A tick that
+  finds nothing due calls nothing. Each try reads the account machine list
+  (15 s cache), so a computer that is off costs at most one directory read a
+  minute, and none while the page is hidden. Measured in the F1 run: the reads
+  came 30–75 s apart for 7 minutes, then stopped when the computer joined.
+- A brain that reads a changed project list (on its 60 s heartbeat, which
+  already ran) sends one event to its windows and its web clients. The
+  desktop reads the list once more one heartbeat later when the first read
+  found nothing new. No new poll.
+
+#### Round 2 fixes (2026-11-14)
+
+Same branch on `a587eeef6` plus the round 2 fixes, against `a587eeef6` (the
+same page before the Android change). Mac Studio M4 Max (not the baseline
+machine). Rig: 8 test brains plus a dev desktop brain, ADE Web in headless
+Chrome with 8 of 9 computers connected, alpha-chat open, the Tools pane
+closed, page visible. Each arm was reloaded and given 20 s or more to settle,
+then the page's WebSocket frames were counted for 120 s through CDP
+(uncompressed JSON, KiB; compare only with each other and with the fix round
+rows above).
+
+| Row | Before | After | Ceiling |
+| --- | --- | --- | --- |
+| ADE Web, idle, 8 machines: commands sent per minute | 118.5 (`work.listSessions` 44, `android.status` 40, `lanes.list` 14, `prs.list` 14) | 79.5 (`android.status` 0; the rest the same) | not set |
+| ADE Web, idle, 8 machines: WebSocket KiB down / up per minute in the page | 332.4 / 43.2 | 303.3 / 29.2 | not set |
+| ADE Web, Android tool open: `android.status` reads per 30 s | 20 | 20 (2 lanes every 3 s, as before) | — |
+
+- `android.status`: ADE Web made Android events by re-reading lane status
+  every 3 s whenever anything listened, and the running pill, the corner card
+  and the tools grid card listen in every chat. It now re-reads only while
+  the Android tool or the floating player is open; the cards read once. The
+  desktop gets these events from the brain and has no such poll.
+- `work.listSessions` (44 a minute) is the 10 s fallback read of each of the
+  7 computers other than the tab's copy (`FOREIGN_MACHINE_REFRESH_MS`); left
+  as is. A per-machine change feed would replace it on ADE Web, but on the
+  desktop each feed costs a relay pump, so it is a design change, not waste.
+- `brain_status` (29 a minute, 61 KiB): relay peers already get the periodic
+  status every 30 s. The rest follow real changes (each brain's `devices` row
+  write moves its database version, the peers' acks report it). Two frames
+  only ~250 ms apart with nothing but the uptime changed were seen once
+  before the brains restarted, not after; left as is.
+
+#### Round 3 fixes (2026-11-14)
+
+Same branch on `029f2c5b2` plus the round 3 fixes. Same rig as round 2 (8
+test brains, a dev desktop brain, ADE Web in headless Chrome with 8 of 9
+computers connected). Mac Studio M4 Max (not the baseline machine). No row
+above was measured again: the round adds reads that run only while a given
+surface is on screen, and removes listeners. Their cost:
+
+| Row | Before | After | Ceiling |
+| --- | --- | --- | --- |
+| New Tab visible: Activity snapshot reads per minute (desktop IPC, or the account `since` read on ADE Web) | 0.5–4 (15 s, backing off to 120 s while nothing changes) | 12 (every 5 s while New Tab is visible and the window is visible), plus the 15 s poll, which is unchanged; 0 while New Tab is closed or hidden. Computed from the timer; the test directory has no Activity endpoint, so the web rig made no such request to count | not set |
+| Connections panel open: account machine list reads per minute | 0 after the one on open | 3 (every 20 s while the panel is open and the window is visible) | — |
+| Desktop: project list re-reads of a connected computer whose list lacks the open project's repository | 0 (read only at connect) | at most 2 a minute for each such computer, and only while that is the case; 0 in the steady state | — |
+| Desktop: `connectionSnapshotChanged` IPC listeners in the window (reload, Connections opened, four chats opened) | 11, Node's `MaxListenersExceededWarning` | below 11, no warning in the same steps: every `useRemoteConnectionSnapshot` caller shares one listener and one snapshot read | — |
+
+- New Tab's "Working now" read Activity on the 15 s poll, which backs off to
+  120 s while nothing changes, so a turn that started after a quiet spell
+  never showed during a 45 s run. New Tab now reads it on open and every 5 s
+  while it is visible. The read carries the store's revision, so an unchanged
+  snapshot answers small.
+- ADE Web parks the least recently used computer that no visible chat or
+  terminal holds; this adds no read or timer.
+- `ade chat status` reads each spawned child's session row once per call (a
+  map lookup in the brain), only for a parent with spawned chats.

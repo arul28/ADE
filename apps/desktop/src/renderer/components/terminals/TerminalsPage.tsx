@@ -63,6 +63,7 @@ import type {
   TerminalSessionSummary,
   WorkBoardWaitingReason,
 } from "../../../shared/types";
+import { parentChatRowId } from "../../../shared/runtimeClientNames";
 import { isTrackedAgentCliToolType } from "../../../shared/types/sessions";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
@@ -73,11 +74,12 @@ import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import {
   canBulkDeleteSession,
   canBulkStopSession,
-  formatSessionActionError,
   formatToolTypeLabel,
   isChatToolType,
   isPtyContextInsertableToolType,
+  primarySessionLabel,
 } from "../../lib/sessions";
+import { formatMachineActionError } from "../../lib/machineErrorText";
 import {
   addSessionBesideTarget,
   findGridSetForSession,
@@ -305,9 +307,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           options.onSuccess?.(result);
         })
         .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
           console.error(`[TerminalsPage] ${options.actionName} failed`, { sessionId, err });
-          setSessionActionError(`${options.errorLabel} failed: ${message}`);
+          setSessionActionError(formatMachineActionError(err, options.errorLabel));
         });
     },
     [refreshWork, setSessionActionError],
@@ -349,6 +350,21 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     }
     return byId;
   }, [crossMachineSlices, selectableSessions]);
+  // The union slice of each other-machine checkout, by its binding key: a
+  // computer's second checkout is its own slice (`checkoutSlotId`).
+  const unionSlotIdByBindingKey = useMemo(() => {
+    const byKey = new Map<string, string>();
+    for (const machine of crossMachineSlices) {
+      const key = machine.binding?.key;
+      if (key && !byKey.has(key)) byKey.set(key, machine.machineId);
+    }
+    return byKey;
+  }, [crossMachineSlices]);
+  const unionSlotIdOf = useCallback(
+    (pin: OpenProjectBinding | null | undefined): string =>
+      (pin ? unionSlotIdByBindingKey.get(pin.key) : undefined) ?? machineIdForBinding(pin),
+    [unionSlotIdByBindingKey],
+  );
 
   useEffect(() => {
     const visibleIds = new Set(selectableSessionsById.keys());
@@ -651,9 +667,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
          */
         binding?: OpenProjectBinding | null;
       }>).detail;
-      const sessionId = detail?.sessionId;
+      const requestedId = detail?.sessionId?.trim() || null;
+      // A child started from another computer names its parent by that
+      // computer's address: open the parent's own row, on the parent's machine,
+      // not on the machine of the child that asked.
+      const sessionId = parentChatRowId(requestedId);
       if (!sessionId) return;
-      const binding = detail.binding ?? null;
+      const binding = sessionId !== requestedId
+        ? resolveSessionRuntimePin({ id: sessionId, sessionId, laneId: null })
+        : detail.binding ?? null;
       // Session focus never rebinds the tab — same rule as a sidebar click.
       // The binding (command palette, foreign thread) is a pin for Work tools,
       // not a request to drag Lanes/PRs/Files onto that machine.
@@ -684,7 +706,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     };
     window.addEventListener("ade:work:select-session", handler as EventListener);
     return () => window.removeEventListener("ade:work:select-session", handler as EventListener);
-  }, [applySessionFocus, machineRouter, refreshLanes, work]);
+  }, [applySessionFocus, machineRouter, refreshLanes, resolveSessionRuntimePin, work]);
 
   // A pane that cannot mount the menu itself (the chat actions pane's shell
   // rows) asks for it here, so there is still exactly one menu host.
@@ -714,14 +736,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // which lists every machine's lanes. The project tab never changes
       // machine to show one lane.
       if (binding) {
-        work.navigate(openLaneOnMachinePath(session.laneId, machineIdForBinding(binding), session.id));
+        work.navigate(openLaneOnMachinePath(session.laneId, unionSlotIdOf(binding), session.id));
         return;
       }
       work.selectLane(session.laneId);
       work.focusSession(session.id);
       work.navigate(openLaneInLanesTabPath(session.laneId, session.id));
     },
-    [work],
+    [unionSlotIdOf, work],
   );
 
   const handleGoToLaneById = useLatestCallback(
@@ -758,7 +780,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               id: toastId,
               tone: "error",
               title: `Couldn't reopen that ${noun === "Chat" ? "chat" : "CLI session"}`,
-              message: formatSessionActionError(error, "Reopen"),
+              message: formatMachineActionError(error, "Reopen"),
               actions: [{ label: "Recently deleted", onClick: openRecentlyDeleted }],
             });
           });
@@ -836,7 +858,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         })
         .catch((err: unknown) => {
           console.error("[TerminalsPage] delete chat failed", { sessionId: session.id, err });
-          setSessionActionError(formatSessionActionError(err, "Delete"));
+          setSessionActionError(formatMachineActionError(err, "Delete"));
         })
         .finally(() => {
           setDeletingSessionId((current) => (current === session.id ? null : current));
@@ -883,7 +905,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         })
         .catch((err: unknown) => {
           console.error("[TerminalsPage] delete session failed", { sessionId: session.id, err });
-          setSessionActionError(formatSessionActionError(err, "Delete"));
+          setSessionActionError(formatMachineActionError(err, "Delete"));
         })
         .finally(() => {
           setDeletingSessionId((current) => (current === session.id ? null : current));
@@ -931,7 +953,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           });
         } catch (err: unknown) {
           console.error("[TerminalsPage] stop-and-delete session failed", { sessionId: session.id, err });
-          setSessionActionError(formatSessionActionError(err, "Stop and delete"));
+          setSessionActionError(formatMachineActionError(err, "Stop and delete"));
         } finally {
           setDeletingSessionId((current) => (current === session.id ? null : current));
         }
@@ -1011,8 +1033,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         return work.refresh({ showLoading: false, force: true });
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`Stop failed: ${message}`);
+        setSessionActionError(formatMachineActionError(err, "Stop"));
       });
   }, [selectedSessions, setSessionActionError, work]);
 
@@ -1065,7 +1086,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           console.error("[TerminalsPage] bulk delete had failures", { failed, firstFailure });
           setSessionActionError(
             `${deletable.length - failed} of ${deletable.length} deleted. ${
-              formatSessionActionError(
+              formatMachineActionError(
                 firstFailure?.status === "rejected" ? firstFailure.reason : null,
                 "Delete",
               )
@@ -1074,7 +1095,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }
       })
       .catch((err: unknown) => {
-        setSessionActionError(formatSessionActionError(err, "Delete"));
+        setSessionActionError(formatMachineActionError(err, "Delete"));
       })
       .finally(() => {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
@@ -1087,8 +1108,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     invalidateSessionListCache();
     void work.refresh({ showLoading: false, force: true })
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        setSessionActionError(`Refresh failed: ${message}`);
+        setSessionActionError(formatMachineActionError(error, "Refresh"));
       })
       .finally(() => {
         setDeletingSessionId((current) => (current === "orphan-refresh" ? null : current));
@@ -1140,7 +1160,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           console.error("[TerminalsPage] bulk stop-and-delete had failures", { failed, firstFailure });
           setSessionActionError(
             `${targets.length - failed} of ${targets.length} deleted. ${
-              formatSessionActionError(
+              formatMachineActionError(
                 firstFailure?.status === "rejected" ? firstFailure.reason : null,
                 "Stop and delete",
               )
@@ -1148,7 +1168,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           );
         }
       } catch (err: unknown) {
-        setSessionActionError(formatSessionActionError(err, "Stop and delete"));
+        setSessionActionError(formatMachineActionError(err, "Stop and delete"));
       } finally {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       }
@@ -1198,7 +1218,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         const result = await request(pin);
         await finalizeCliResumeResult(session, pin, result);
       } catch (err) {
-        setSessionActionError(formatSessionActionError(err, errorLabel));
+        setSessionActionError(formatMachineActionError(err, errorLabel));
         throw err;
       }
     },
@@ -1267,7 +1287,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // A chat on another machine is keyed by its machine, as its lane's delete was (see SessionListPane).
   const activeLaneDeleteKey = activeLaneId && activeWorkSessionRuntimePin
     && activeWorkSessionRuntimePin.key !== projectBinding?.key
-    ? foreignLaneKey(machineIdForBinding(activeWorkSessionRuntimePin), activeLaneId)
+    ? foreignLaneKey(unionSlotIdOf(activeWorkSessionRuntimePin), activeLaneId)
     : activeLaneId;
   const activeLaneDeleteProgress = useAppStore((state) => (
     activeLaneDeleteKey ? state.laneDeleteProgressByLaneId[activeLaneDeleteKey] ?? null : null
@@ -1592,6 +1612,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, [work]);
 
   const gridableSessionIds = useMemo(() => new Set(work.sessionsById.keys()), [work.sessionsById]);
+  // The chat that started the menu's chat, named by its report items.
+  const contextMenuParentId = parentChatRowId(contextMenu?.session.orchestrationParentSessionId);
+  const contextMenuParent = contextMenuParentId ? work.sessionsById.get(contextMenuParentId) ?? null : null;
+  const contextMenuParentTitle = contextMenuParent ? primarySessionLabel(contextMenuParent) : null;
   const localSessionIds = useMemo(() => new Set(work.sessions.map((session) => session.id)), [work.sessions]);
 
   // A selected row on another machine, as the Lanes tab will see it. The row's
@@ -1604,14 +1628,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
   const foreignLaneForSession = useCallback((session: TerminalSessionSummary) => {
     const pin = resolveSessionRuntimePin(session);
-    const own = pin ? foreignSessionLanes.get(machineIdForBinding(pin))?.get(session.id) : undefined;
+    const own = pin ? foreignSessionLanes.get(unionSlotIdOf(pin))?.get(session.id) : undefined;
     if (own) return own;
     for (const bySessionId of foreignSessionLanes.values()) {
       const lane = bySessionId.get(session.id);
       if (lane) return lane;
     }
     return null;
-  }, [foreignSessionLanes, resolveSessionRuntimePin]);
+  }, [foreignSessionLanes, resolveSessionRuntimePin, unionSlotIdOf]);
 
   // Bulk menu → Lanes tab, through the same `action=batch` deep link the Work
   // lane menu's "Manage N Open Lanes" already uses. `open` only selects them.
@@ -2334,6 +2358,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
       <SessionContextMenu
         menu={contextMenu}
+        parentSessionTitle={contextMenuParentTitle}
         onClose={() => setContextMenu(null)}
         onStopRuntime={({ ptyId, sessionId }, runtimePin) => {
           const stop = runtimePin
@@ -2351,7 +2376,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           // A row on another machine is re-read after the move and after an
           // undo, as a board drag does, so the card does not sit stale.
           const refreshForeign = runtimePin && runtimePin.key !== projectBinding?.key
-            ? () => requestCrossMachineLanesForMachine(machineIdForBinding(runtimePin))
+            ? () => requestCrossMachineLanesForMachine(unionSlotIdOf(runtimePin))
             : undefined;
           moveSessionOnBoard({
             session,

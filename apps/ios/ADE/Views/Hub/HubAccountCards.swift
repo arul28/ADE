@@ -75,7 +75,7 @@ func hubAccountStatusInputs(
       },
     focusedLastSeen: hubAccountRelativeTime(epochMs: account.machine(forFleetKey: sync.focusedMachineKey)?.lastSeenAt),
     anyFleetMachineLive: fleetMachines.contains { $0.state == .live },
-    anyFleetMachineConnecting: fleetMachines.contains { $0.isPinned && $0.state == .connecting },
+    anyFleetMachineConnecting: fleetMachines.contains { $0.isWanted && $0.state == .connecting },
     hasPairedComputer: sync.canReconnectToSavedHost || !fleetMachines.isEmpty,
     accountHasComputers: !account.machines.isEmpty,
     hasCards: hasCards,
@@ -247,7 +247,7 @@ func hubAccountProjectChip(_ project: AccountProject, holders: [HubChipHolder], 
   if all.count > 1 {
     label = "\(all.count) computers"
   } else if let key = all.first {
-    label = names[key] ?? machines.first { $0.machineKey == key }?.displayName
+    label = names[key] ?? machines.first { $0.machineKey == key }?.presentedName
   } else {
     label = nil
   }
@@ -259,7 +259,7 @@ func hubAccountProjectChip(_ project: AccountProject, holders: [HubChipHolder], 
 /// name is unknown until the computer list loads; the count still shows.
 func hubAccountOnlyChip(_ project: AccountProject, machines: [AccountMachine]) -> HubComputerChip {
   let held = accountProjectCopyMachines(project, machines: machines)
-  let label = held.count > 1 ? "\(held.count) computers" : held.first?.machine?.displayName
+  let label = held.count > 1 ? "\(held.count) computers" : held.first?.machine?.presentedName
   let online = held.filter { $0.machine?.online == true }.count
   return HubComputerChip(label: label, total: held.count, live: online)
 }
@@ -335,6 +335,23 @@ enum HubLayoutStore {
   static func accountKey(userId: String) -> String { accountPrefix + userId }
 
   static func isAccountKey(_ key: String) -> Bool { key.hasPrefix(accountPrefix) }
+
+  private static let accountDefaultsKeyPrefix = "ade.hub.layout.v2|"
+
+  /// The account-wide orders (account project ids) of every account but
+  /// `keepingUserId`; nil removes all of them.
+  static func removeAccountLayouts(keepingUserId: String?) {
+    let kept = keepingUserId.map { accountDefaultsKeyPrefix + $0 }
+    for key in ADESharedContainer.defaults.dictionaryRepresentation().keys
+      where key.hasPrefix(accountDefaultsKeyPrefix) && key != kept
+    {
+      ADESharedContainer.defaults.removeObject(forKey: key)
+    }
+  }
+
+  static func removeAccountLayout(userId: String) {
+    ADESharedContainer.defaults.removeObject(forKey: accountDefaultsKeyPrefix + userId)
+  }
 
   private static func defaultsKey(_ connectionKey: String) -> String {
     if isAccountKey(connectionKey) {

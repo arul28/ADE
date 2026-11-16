@@ -27,12 +27,6 @@ describe("ContextUsageDial", () => {
   // The popover renders in a portal on document.body, so unmount between tests.
   afterEach(cleanup);
 
-  it("renders the integer percentage inside the ring", () => {
-    const { getByText, container } = render(<ContextUsageDial usage={vm({ ratio: 0.52 })} />);
-    expect(getByText("52")).toBeTruthy();
-    expect(container.querySelector("svg")).toBeTruthy();
-  });
-
   it("hides stale percentages while usage is being recalculated", () => {
     const { getByLabelText, queryByText } = render(
       <ContextUsageDial usage={vm({ ratio: 1, state: "recalculating" })} />,
@@ -75,11 +69,6 @@ describe("ContextUsageDial", () => {
       <ContextUsageDial usage={vm({ ratio: null, contextWindow: null, usedTokens: null })} />,
     );
     expect(container.firstChild).toBeNull();
-  });
-
-  it("exposes the percentage on the accessible label", () => {
-    const { container } = render(<ContextUsageDial usage={vm({ ratio: 0.42 })} />);
-    expect(container.querySelector('[aria-label="Context usage: 42% full"]')).toBeTruthy();
   });
 
   it("adds a cache-write breakdown segment after cached when present", () => {

@@ -13,7 +13,7 @@ its names were ever callable and which were not.
 |---|---|
 | `apps/desktop/src/main/services/ai/tools/executableTool.ts` | Thin wrapper around Zod + a handler function. Produces the common tool interface the Claude/Codex/OpenCode adapters consume. |
 | `apps/desktop/src/main/services/ai/tools/universalTools.ts` | Read, write, bash, todo, web fetch/search, ask-user. Available to every agent. |
-| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only: `spawnChat`, lanes/PRs/git/tests, Linear reads and lightweight updates, and the `saveMemory` / `searchMemory` / `readMemory` memory tools. Git reads default their lane (`resolveReadLaneId`); git mutations require an explicit one (`requireMutationLaneId`). |
+| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only: `spawnChat`, lanes/PRs/git/tests, Linear reads and lightweight updates, and the `remember` / `forget` / `trackWork` / `finishWork` / `readHistory` memory tools. Git reads default their lane (`resolveReadLaneId`); git mutations require an explicit one (`requireMutationLaneId`) and are refused for the CTO. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | `buildCodingAgentSystemPrompt` -- renders the top-of-context system prompt; adapts wording based on available tools and the runtime-specific native-subagent versus ADE-child routing contract. |
 | `apps/desktop/src/main/services/ai/toolExposurePolicy.ts` | Filters tools by context (e.g., frontend-repo discovery tools). |
 | `apps/desktop/src/main/services/ai/tools/readFileRange.ts` / `grepSearch.ts` / `globSearch.ts` / `editFile.ts` | Primitive file/search tools used by every agent. |
@@ -213,13 +213,14 @@ uses to act on ADE itself:
 | `interruptChat`, `steerChat`, `cancelSteer`, `listSubagents`, `approveToolUse` | Mid-session control over other chat sessions: interrupt a turn, inject a steer instruction, cancel a pending steer by its `steerId`, enumerate spawned sub-agents, and answer a pending permission prompt. Each is a **required** dep on `CtoOperatorToolDeps` and maps onto the corresponding `agentChatService` method (`approveToolUse` translates the tool's `toolUseId` to the service's `itemId`), so none of them can be advertised without an implementation behind it. |
 | `createTerminal`, `runCommand` | Create untracked shells or run fire-and-forget commands. `createTerminal` passes explicit `cols: 100`, `rows: 30`, and a title, rather than relying on the pty service's default clamp. |
 | `listLanes`, `createLane`, `renameLane`, `archiveLane`, `inspectLane` | Lane management. |
-| `saveMemory`, `searchMemory`, `readMemory`, `readDiscoveries` | Durable CTO memory: save tagged facts, search prior context by text or tag, review what it knows, and drain the worker-discovery queue any agent can append to. |
+| `remember`, `forget`, `trackWork`, `finishWork`, `readHistory`, `readDiscoveries` | The CTO's memory: write or rewrite a note in the project notes or the notes about the person, remove a stale note, track and close open work, page or search the whole CTO conversation, and drain the worker-discovery queue any agent can append to. |
+| `scheduleWork`, `cancelScheduledWork`, `setScheduledWorkPaused` | The CTO's own routines: arm a one-shot or recurring wake on its chat, cancel one (with a confirm), or pause/resume one row (or every row on the chat) without losing it. |
 | `loadCtoTools` | List the eleven tool packs with their scopes and load state, or load one pack's full descriptions. Loading is a description-level economy — every CTO tool is registered and callable whether or not its pack is loaded. |
 | Linear tools (when connected) | Read and lightly update issues: list/inspect, comment, state, assignee, label. |
 | `listLinearIssues`, `getLinearIssue` | Issue reads. |
 | `listTestSuites`, `runTestSuite`, `stopTestSuite`, `listTestRuns` | Test orchestration. |
 | `gitStatus`, `gitFetch`, `gitListRecentCommits`, `gitListBranches`, `gitStashList`, `gitGetConflictState` | Git reads. `laneId` is optional and defaults to the CTO session's lane. |
-| `gitCommit`, `gitPush`, `gitPull`, `gitUndoLastHeadChange`, `gitRedoLastHeadChange`, `gitCheckoutBranch`, `gitStashPush`, `gitStashPop`, `gitRebaseContinue`, `gitRebaseAbort`, `gitMergeAbort` | Git mutations. `laneId` is **required** — see [Lane defaulting is read-only](#lane-defaulting-is-read-only). |
+| `gitCommit`, `gitPush`, `gitPull`, `gitUndoLastHeadChange`, `gitRedoLastHeadChange`, `gitCheckoutBranch`, `gitStashPush`, `gitStashPop`, `gitRebaseContinue`, `gitRebaseAbort`, `gitMergeAbort` | Git mutations. `laneId` is **required**, and every one of them is refused for the CTO: repository writes belong to an agent it starts. See [Lane defaulting is read-only](#lane-defaulting-is-read-only). |
 
 The curated set reaches well beyond this table — packs cover files, conflicts,
 scheduling, proof, search, usage/budget reads, project config,
@@ -227,7 +228,7 @@ and device control. Two guards apply across it:
 destructive tools (replacing or deleting an automation rule, cancelling
 scheduled work) raise the same approval card an agent tool call raises, and
 `getProjectConfig` redacts env bags and credential-shaped values while leaving
-every key visible. See [CTO › Tool packs](../cto/README.md#tool-packs).
+every key visible. See [CTO](../cto/README.md).
 
 The system prompt's capability manifest is driven by which tool names
 are actually present; `systemPrompt.ts` inspects `toolNames` and

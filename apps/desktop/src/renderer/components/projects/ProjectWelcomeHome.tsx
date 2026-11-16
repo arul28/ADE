@@ -82,7 +82,10 @@ export function WelcomeHero({
       <div className="ade-home-hero-text">
         <div className="kit-eyebrow ade-home-eyebrow">
           {date}
-          {machinesTotal > 1 ? ` · ${machinesOnline} of ${machinesTotal} machines online` : null}
+          {/* The count is of live connections: a computer the directory sees
+              online but this tab has not connected (parked, or never opened)
+              is not counted, so the word is "connected", not "online". */}
+          {machinesTotal > 1 ? ` · ${machinesOnline} of ${machinesTotal} computers connected` : null}
         </div>
         <h1 className="ade-home-title">
           {greetingFor(now.getHours())}

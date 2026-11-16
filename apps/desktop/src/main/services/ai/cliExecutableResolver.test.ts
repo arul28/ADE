@@ -6,6 +6,7 @@ import {
   augmentPathWithKnownCliDirs,
   augmentProcessPathWithShellAndKnownCliDirs,
   getPathEnvValue,
+  onShellPathRefreshed,
   refreshWindowsPersistedPathDirs,
   resolveExecutableCandidatesFromKnownLocations,
   resolveExecutableFromKnownLocations,
@@ -213,22 +214,33 @@ describe("cliExecutableResolver", () => {
     );
     fs.chmodSync(fakeShell, 0o755);
     const env = { SHELL: fakeShell, HOME: tempRoot, PATH: `/usr/bin${currentPathDelimiter()}/bin` };
-    const probe = () => augmentProcessPathWithShellAndKnownCliDirs({ env }).split(currentPathDelimiter());
+    // The fake shell fails by exiting, never by timing out, so a long timeout
+    // only keeps a slow spawn on a loaded machine from being killed.
+    const probe = () => augmentProcessPathWithShellAndKnownCliDirs({ env, timeoutMs: 15_000 }).split(currentPathDelimiter());
+    let backgroundAnswered!: () => void;
+    const answered = new Promise<void>((resolve) => { backgroundAnswered = resolve; });
+    const stopListening = onShellPathRefreshed(() => backgroundAnswered());
 
-    // A shell that fails (a timeout under load, a broken rc file) is not remembered...
-    expect(probe()).not.toContain("/fake/login/bin");
-    fs.writeFileSync(answers, "", "utf8");
-    // ...and the next agent env does not wait on it again: it returns at once
-    // without the login PATH...
-    expect(probe()).not.toContain("/fake/login/bin");
-    // ...and past the short retry gap a background probe retries; once that
-    // answers, agent envs get the login PATH.
-    vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      vi.setSystemTime(Date.now() + 5_000);
-      await vi.waitFor(() => expect(probe()).toContain("/fake/login/bin"));
+      // A shell that fails (a timeout under load, a broken rc file) is not remembered...
+      expect(probe()).not.toContain("/fake/login/bin");
+      fs.writeFileSync(answers, "", "utf8");
+      // ...and the next agent env does not wait on it again: it returns at once
+      // without the login PATH...
+      expect(probe()).not.toContain("/fake/login/bin");
+      // ...and past the short retry gap a background probe retries; once that
+      // answers, agent envs get the login PATH.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(Date.now() + 5_000);
+        expect(probe()).not.toContain("/fake/login/bin");
+        await answered;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(probe()).toContain("/fake/login/bin");
     } finally {
-      vi.useRealTimers();
+      stopListening();
     }
     // An answer is reused instead of spawning a shell per turn.
     fs.rmSync(answers);

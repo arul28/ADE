@@ -37,7 +37,7 @@ skill for the archive commands.
 ## Sharing a lane with another person
 
 ```bash
-ade lanes share --lane <lane> --text                       # who has access, state, preset, made by
+ade lanes share --lane <lane> --text                       # who has access, state, access level, made by
 ade lanes share --lane <lane> --add <email> [--ends 1w]    # a Watch share: they see, they cannot act
 ade lanes share --lane <lane> --remove <email|grant id>
 ```

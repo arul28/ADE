@@ -20,6 +20,9 @@ struct CtoSessionDestinationView: View {
   var duoPane: DuoWorkPaneModel? = nil
   var duoPaneOpen = false
   var title = "CTO"
+  /// The CTO's live state: the header pill reads it, the thread writes it.
+  var live: CtoLiveModel? = nil
+  var store: CtoStore? = nil
   var duoSettings: (() -> AnyView)? = nil
 
   @State private var state: LoadState = .loading
@@ -49,7 +52,8 @@ struct CtoSessionDestinationView: View {
     }
       .adeScreenBackground()
       .adeNavigationGlass()
-      .tint(ADEColor.ctoAccent)
+      .tint(live?.look.ctoAccent ?? ADEColor.ctoAccent)
+      .environment(\.ctoLiveModel, live)
       .task {
         await MainActor.run { startEnsureSession(force: false) }
       }
@@ -91,47 +95,40 @@ struct CtoSessionDestinationView: View {
   }
 
   private var loadingView: some View {
-    VStack(spacing: 16) {
-      ProgressView()
-        .controlSize(.large)
-        .tint(ADEColor.ctoAccent)
-      Text("Opening the CTO")
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textSecondary)
-    }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .ctoSessionNavigationChrome(mode: navigationChrome, title: navigationTitle)
+    CtoStateCard(look: live?.look, name: title, state: .thinking, line: "Waking up…")
+      .ctoSessionNavigationChrome(mode: navigationChrome, title: navigationTitle)
   }
 
   @ViewBuilder
   private func failureView(message: String) -> some View {
-    // When the host isn't reachable, don't flash a big red "Could not open
-    // CTO chat" card — the top-right gear dot already signals offline. Show
-    // a subtle empty state instead so the user knows to reconnect.
-    if syncService.connectionState.isHostUnreachable {
-      ADEEmptyStateView(
-        symbol: "wifi.slash",
-        title: "Connect your ADE machine to open this chat",
-        message: "Tap the settings gear in the top right to reconnect to your ADE machine."
+    // Offline is the asleep avatar, not a red card.
+    if syncService.connectionState.isHostUnreachable || syncService.ctoHomeIsOffline {
+      let copy = ctoHomeOfflineCopy(sync: syncService)
+      CtoStateCard(
+        look: live?.look,
+        name: title,
+        state: .asleep,
+        line: copy.line,
+        message: copy.message,
+        actionTitle: "Reconnect",
+        action: {
+          Task {
+            await syncService.reconnectCtoHome()
+            await startEnsureSession(force: true)
+          }
+        }
       )
-      .padding(16)
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
       .ctoSessionNavigationChrome(mode: navigationChrome, title: navigationTitle)
     } else {
-      VStack(spacing: 16) {
-        ADENoticeCard(
-          title: "Could not open CTO chat",
-          message: message,
-          icon: "exclamationmark.triangle.fill",
-          tint: ADEColor.danger,
-          actionTitle: "Retry",
-          action: {
-            Task { @MainActor in startEnsureSession(force: true) }
-          }
-        )
-      }
-      .padding(16)
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+      CtoStateCard(
+        look: live?.look,
+        name: title,
+        state: .error,
+        line: "Couldn't open the chat",
+        detail: message,
+        actionTitle: "Try again",
+        action: { Task { @MainActor in startEnsureSession(force: true) } }
+      )
       .ctoSessionNavigationChrome(mode: navigationChrome, title: navigationTitle)
     }
   }
@@ -158,6 +155,9 @@ struct CtoSessionDestinationView: View {
         guard !Task.isCancelled else { return }
         state = .ready(summary)
         ensured = true
+        live?.sessionId = summary.sessionId
+        store?.bind(sessionId: summary.sessionId, homeMachineKey: syncService.ctoHomeMachineKey)
+        store?.ctoSession = summary
       } catch {
         guard !Task.isCancelled else { return }
         state = .failed(error.localizedDescription)

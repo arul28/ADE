@@ -1,3 +1,4 @@
+import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 import {
   EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
   peerToRuntimeDeviceState,
@@ -10,6 +11,13 @@ import {
   type CloudAgentRef,
   type CtoAttentionState,
   type CtoSnapshot,
+  type CtoMemorySnapshot,
+  type CtoPreviewSystemPromptArgs,
+  type CtoRefreshContextResult,
+  type CtoSystemPromptPreview,
+  type CtoUpdateIdentityArgs,
+  type CtoUpdateNotesArgs,
+  type CtoUpdateOpenWorkArgs,
   type CursorAgentUsage,
   type CursorCloudAgentSummary,
   type CursorCloudArtifactDownload,
@@ -1225,13 +1233,11 @@ function createLocalPersistenceNamespaces(localState: AdapterInfra["localState"]
 const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
   getState: 1,
   ensureSession: 1,
-  startFreshSession: 0,
-  getThreadHealth: 0,
-  listSessionLogs: 1,
+  refreshContext: 0,
   updateIdentity: 1,
   getMemory: 0,
-  updateMemory: 1,
-  searchMemory: 1,
+  updateNotes: 1,
+  updateOpenWork: 1,
   getLinearConnectionStatus: 0,
   setLinearToken: 1,
   clearLinearToken: 0,
@@ -1250,6 +1256,8 @@ const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
   getLinearOAuthSession: 1,
   runProjectScan: 0,
   getAttention: 0,
+  adoptAccountCopy: 1,
+  getAccountCopyStatus: 0,
 };
 
 function createCtoNamespace(
@@ -1257,9 +1265,9 @@ function createCtoNamespace(
   scope: RuntimePinScope,
 ): NonNullable<Window["ade"]["cto"]> {
   return guardPinnedMembers<NonNullable<Window["ade"]["cto"]>>({
-    getState: (args?: unknown) => call<CtoSnapshot>(
+    getState: () => call<CtoSnapshot>(
       "cto.getState",
-      { recentLimit: asRecord(args).recentLimit ?? 20 },
+      {},
       unavailableOnHost("The CTO isn't available on the connected ADE host."),
     ),
     // Materializes the primary lane's CTO chat session, so it is a write: never
@@ -1277,6 +1285,52 @@ function createCtoNamespace(
       "cto.getAttention",
       {},
       { status: "unknown", awaitingInput: false, since: null },
+    ),
+    getMemory: () => call<CtoMemorySnapshot>(
+      "cto.getMemory",
+      {},
+      unavailableOnHost("The CTO's memory isn't available on the connected ADE host."),
+    ),
+    updateNotes: (args: CtoUpdateNotesArgs) => call<CtoMemorySnapshot>(
+      "cto.updateNotes",
+      args,
+      unavailableOnHost("The CTO's notes can't be changed on the connected ADE host."),
+      false,
+    ),
+    updateOpenWork: (args: CtoUpdateOpenWorkArgs) => call<CtoMemorySnapshot>(
+      "cto.updateOpenWork",
+      args,
+      unavailableOnHost("The CTO's open work can't be changed on the connected ADE host."),
+      false,
+    ),
+    // `crossMachineEnabled` is the desktop's alone; the host strips it.
+    updateIdentity: (args: CtoUpdateIdentityArgs) => call<CtoSnapshot>(
+      "cto.updateIdentity",
+      { patch: args?.patch ?? {} },
+      unavailableOnHost("The CTO's settings can't be changed on the connected ADE host."),
+      false,
+    ),
+    adoptAccountCopy: (args: CtoAdoptAccountCopyArgs) => call<CtoAdoptAccountCopyResult>(
+      "cto.adoptAccountCopy",
+      { home: args?.home ?? null },
+      unavailableOnHost("The connected ADE host can't take the CTO in yet."),
+      false,
+    ),
+    getAccountCopyStatus: () => call<CtoAccountCopyStatus>(
+      "cto.getAccountCopyStatus",
+      {},
+      { available: false, savedAt: null, ownerName: null, ownerIsThisMachine: false },
+    ),
+    refreshContext: () => call<CtoRefreshContextResult>(
+      "cto.refreshContext",
+      {},
+      unavailableOnHost("The CTO can't be refreshed on the connected ADE host."),
+      false,
+    ),
+    previewSystemPrompt: (args?: CtoPreviewSystemPromptArgs) => call<CtoSystemPromptPreview>(
+      "cto.previewSystemPrompt",
+      args?.identityOverride ? { identityOverride: args.identityOverride } : {},
+      unavailableOnHost("The CTO's prompt isn't available on the connected ADE host."),
     ),
     // The host registers this one `viewerAllowed`, and the CTO tab ships on web
     // now, so leaving it unwired made the Linear panel fall through to the
@@ -1371,23 +1425,18 @@ function createCtoNamespace(
   } as unknown as NonNullable<Window["ade"]["cto"]>, "cto", CTO_PINNED_MEMBER_ARG_INDEX, scope);
 }
 
-const PROJECT_SECRETS_DESKTOP_ONLY = "Project secrets can only be changed in the ADE desktop app on that machine.";
+const PROJECT_SECRETS_DESKTOP_ONLY = "Secrets can only be changed in the ADE desktop app (Settings › Passwords & Secrets).";
 
 function createProjectSecretsNamespace(): AdeNamespace<"projectSecrets"> {
   return {
-    list: async () => ({ secrets: [] }),
-    get: async () => ({ value: null }),
-    // Secret values stay on their machine. Saving one here used to resolve as
-    // if it worked while nothing was stored, so a chat asking for a secret
-    // waited forever; every caller shows this message instead.
+    list: async () => ({ secrets: [], storage: { path: "Passwords & Secrets", encrypted: true, scope: "project" as const } }),
+    // Saving one here used to resolve as if it worked while nothing was
+    // stored, so a chat asking for a secret waited forever; every caller
+    // shows this message instead.
     set: async () => {
       throw new Error(PROJECT_SECRETS_DESKTOP_ONLY);
     },
-    delete: async () => {
-      throw new Error(PROJECT_SECRETS_DESKTOP_ONLY);
-    },
-    pullFromAccount: async () => ({ state: "unavailable" as const }),
-  } as unknown as AdeNamespace<"projectSecrets">;
+  };
 }
 
 function createTranscriptionNamespace(): AdeNamespace<"transcription"> {
@@ -1453,7 +1502,7 @@ function createLoginImportUnavailableStub(): Record<string, unknown> {
  * way they read the desktop's — `supported: false` is the flag they check, not
  * a licence to omit the rest of the record.
  */
-export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
+function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
   supported: false;
   available: false;
   state: "unsupported";

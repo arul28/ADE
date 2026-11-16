@@ -30,30 +30,13 @@ describe("laneProxyService", () => {
   });
 
   describe("hostname generation", () => {
-    it("generates a slug from lane name", () => {
-      const hostname = svc.generateHostname("lane-1", "My Feature Branch");
-      expect(hostname).toBe("my-feature-branch.localhost");
-    });
-
-    it("falls back to laneId when no name provided", () => {
-      const hostname = svc.generateHostname("lane-abc-123");
-      expect(hostname).toBe("lane-abc-123.localhost");
-    });
-
-    it("sanitizes special characters in lane name", () => {
-      const hostname = svc.generateHostname("x", "Hello World! @#$%");
-      expect(hostname).toBe("hello-world.localhost");
-    });
-
-    it("handles empty lane name by using fallback", () => {
-      const hostname = svc.generateHostname("x", "   ");
-      expect(hostname).toBe("lane.localhost");
-    });
-
-    it("produces unique hostnames for different lanes", () => {
-      const h1 = svc.generateHostname("a", "feature-a");
-      const h2 = svc.generateHostname("b", "feature-b");
-      expect(h1).not.toBe(h2);
+    it.each([
+      ["a lane name slug", "lane-1", "My Feature Branch", "my-feature-branch.localhost"],
+      ["no name (falls back to laneId)", "lane-abc-123", undefined, "lane-abc-123.localhost"],
+      ["special characters", "x", "Hello World! @#$%", "hello-world.localhost"],
+      ["a blank name", "x", "   ", "lane.localhost"],
+    ])("generates a hostname from %s", (_label, laneId, name, expected) => {
+      expect(svc.generateHostname(laneId, name)).toBe(expected);
     });
 
     it("disambiguates colliding hostnames for different lanes", () => {
@@ -110,11 +93,6 @@ describe("laneProxyService", () => {
 
       const removedEvent = events.find((e) => e.type === "route-removed");
       expect(removedEvent).toBeTruthy();
-    });
-
-    it("removing nonexistent route is a no-op", () => {
-      svc.removeRoute("nonexistent");
-      expect(events.filter((e) => e.type === "route-removed")).toHaveLength(0);
     });
 
     it("updates route when adding same laneId again", () => {

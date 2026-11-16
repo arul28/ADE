@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { CloudAccountState, CloudAgentLimits } from "../../../shared/adeCloud";
 import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { buildCloudAgentActions, type CloudAgentActionDeps, type CloudApproval } from "./cloudAgentActions";
@@ -18,10 +18,18 @@ describe("ADE Cloud agent actions: approvals", () => {
     unattendedSpend?: boolean;
     madeToday?: number;
     spendUnreadable?: boolean;
+    /** A lane launch this brain holds, already in this phase. */
+    launchPhase?: "failed" | "running";
+    /** The size that launch was started with. */
+    savedSize?: string;
+    /** How that size was chosen. */
+    savedChoice?: "default" | "picked";
+    maxShape?: string;
   } = {}) {
     const ran: string[] = [];
     const cards: string[] = [];
-    let limits: CloudAgentLimits = { unattendedSpend: options.unattendedSpend ?? true, machinesPerDay: 3, maxShape: "4x16" };
+    const starts: Array<{ args: { cloud?: unknown } }> = [];
+    let limits: CloudAgentLimits = { unattendedSpend: options.unattendedSpend ?? true, machinesPerDay: 3, maxShape: (options.maxShape ?? "4x16") as CloudAgentLimits["maxShape"] };
     const box = { instanceId: "inst_1", name: "lane box", machineKey: "mk_1", type: "box", hoursRate: 1 };
     const deps = {
       machines: {
@@ -51,6 +59,16 @@ describe("ADE Cloud agent actions: approvals", () => {
           return { instanceId: "inst_new" };
         },
       }),
+      laneLaunch: () => ({
+        status: async (launchId: string) => (options.launchPhase
+          ? { launch: { launchId, kind: "chat", phase: options.launchPhase, cloud: { handedOff: false, sizeId: options.savedSize ?? "small", sizeChoice: options.savedChoice } }, madeByChat: "chat_1" }
+          : null),
+        start: async (input: { args: { cloud?: unknown } }) => {
+          starts.push(input);
+          ran.push("lane_launch");
+          return { status: { launch: { phase: "running" } }, created: !options.launchPhase };
+        },
+      }),
       approvals: {
         requestChatInput: async (card: { title: string }) => {
           cards.push(card.title);
@@ -61,12 +79,16 @@ describe("ADE Cloud agent actions: approvals", () => {
         notice: () => undefined,
       },
     } as unknown as CloudAgentActionDeps;
-    return { actions: buildCloudAgentActions(deps), ran, cards };
+    return { actions: buildCloudAgentActions(deps), ran, cards, starts };
   }
 
   const person: CloudApproval = { by: "person" };
   const agent: CloudApproval = { by: "agent", chatSessionId: "chat_1" };
   const shell: CloudApproval = { by: "agent", chatSessionId: null };
+  const laneLaunchArgs = {
+    originUrl: "https://github.com/acme/widgets.git",
+    launch: { launchId: "0b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a10", kind: "lane", laneName: "Fix login", cloud: { sizeId: "small" } },
+  };
 
   it.each([
     // A size change is the person's alone: nobody is watching these callers, so none may resize, and no card is raised.
@@ -90,6 +112,13 @@ describe("ADE Cloud agent actions: approvals", () => {
     ["with an unreadable month, an automation run resizes nothing", agent, { automation: true, spendUnreadable: true }, "resize", { machine: "lane box", shape: "4x8" }, null, 0],
     ["with an unreadable month, an attended agent asks, and yes runs it", agent, { level: "ask", answer: "yes", spendUnreadable: true }, "create", { kind: "box", shape: "2x4" }, "create", 1],
     ["with an unreadable month, the person makes a machine", person, { spendUnreadable: true }, "create", { kind: "box", shape: "2x4" }, "create", 0],
+    // The same launch id again on a failed launch makes it a new computer: the gates of a first start, now.
+    ["with unattended spending off, a full-auto agent's retry of a failed launch replaces nothing", agent, { level: "full-auto", unattendedSpend: false, launchPhase: "failed" }, "lane_launch", laneLaunchArgs, null, 0],
+    ["at the day's limit, a full-auto agent's retry of a failed launch replaces nothing", agent, { level: "full-auto", madeToday: 3, launchPhase: "failed" }, "lane_launch", laneLaunchArgs, null, 0],
+    ["within the limits, a full-auto agent's retry of a failed launch goes on", agent, { level: "full-auto", launchPhase: "failed" }, "lane_launch", laneLaunchArgs, "lane_launch", 0],
+    ["a full-auto agent's retry is checked at the size the launch starts again, not the one it names", agent, { level: "full-auto", launchPhase: "failed", savedSize: "xlarge", maxShape: "2x4" }, "lane_launch", laneLaunchArgs, null, 0],
+    ["a retry needs no first message: the launch has its own", person, { launchPhase: "failed" }, "lane_launch", { ...laneLaunchArgs, launch: { launchId: laneLaunchArgs.launch.launchId, kind: "chat" } }, "lane_launch", 0],
+    ["a launch still running is only read again, asking nothing", agent, { level: "full-auto", unattendedSpend: false, launchPhase: "running" }, "lane_launch", laneLaunchArgs, "lane_launch", 0],
     ["a full-auto agent may not loosen the limits", agent, { level: "full-auto" }, "set_limits", { preset: "hands_off" }, null, 0],
     ["any agent may tighten the limits", agent, { level: "full-auto" }, "set_limits", { preset: "ask" }, "limits", 0],
   ] as const)("%s", async (_label, approval, options, verb, args, expectedRun, expectedCards) => {
@@ -103,6 +132,28 @@ describe("ADE Cloud agent actions: approvals", () => {
       expect(ran).toEqual([]);
     }
     expect(cards).toHaveLength(expectedCards);
+  });
+
+  // A full-auto agent's retry of a default Small: the limits as they are now decide whether setup may move it up.
+  it.each<[string, string, boolean, string]>([
+    ["limits that allow Medium leave the saved choice", "4x16", false, "2031-03-01T12:00:00Z"],
+    ["limits lowered to Small since the first start hold it there", "2x4", true, "2031-03-02T12:00:00Z"],
+  ])("a full-auto agent's retry of a default Small: %s", async (_label, maxShape, capped, day) => {
+    // A day of its own: the count of computers agents made today lives for the whole process.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(day));
+    try {
+      const { actions, starts } = setup({ level: "full-auto", launchPhase: "failed", savedChoice: "default", maxShape });
+
+      await actions.lane_launch!({ ...laneLaunchArgs, approval: agent } as never);
+
+      expect(starts).toHaveLength(1);
+      const choice = (starts[0]!.args.cloud as { sizeChoice?: string }).sizeChoice;
+      if (capped) expect(choice).toBe("capped");
+      else expect(choice).not.toBe("capped");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("parallel makes by full-auto agents stay within the day's limit, counted on top of the account's", async () => {

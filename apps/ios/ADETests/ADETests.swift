@@ -3938,6 +3938,40 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.focusedMachineKey, "machine:studio-id", "The pairing is kept; only the connection is off.")
   }
 
+  /// Privacy: the ADE Cloud computers, saved chats and wake messages of the
+  /// last account never reach the next one, also across a relaunch.
+  @MainActor
+  func testAccountChangeDropsTheLastAccountsCloudComputersAndSavedChats() throws {
+    let defaultsKey = SyncService.cloudMachineFleetKeysDefaultsKey
+    UserDefaults.standard.set(["machine:old-cloud"], forKey: defaultsKey)
+    defer { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let fleet = MachineFleet()
+    fleet.attach(service)
+    service.cloudSavedChats = [try JSONDecoder().decode(CloudSavedChatRow.self, from: Data("""
+      {"machineKey": "old-cloud-key", "chatId": "chat-1", "title": "Old account chat",
+       "projectKey": "github.com/octocat/hello-world", "updatedAt": 1}
+      """.utf8))]
+    service.cloudServerInstances = [CloudServerInstance(
+      id: "box-1", name: "Old Cloud", status: "asleep", pastDue: false,
+      metadata: ["ade_machine_key": "old-cloud-key"]
+    )]
+    service.recordCloudWakeFailure(fleetKey: "machine:old-cloud", message: "Old Cloud did not answer.")
+    XCTAssertTrue(service.cloudMachineFleetKeys.contains("machine:old-cloud"))
+
+    fleet.reset()
+
+    XCTAssertTrue(service.cloudSavedChats.isEmpty)
+    XCTAssertTrue(service.cloudServerInstances.isEmpty)
+    XCTAssertTrue(service.cloudMachineFleetKeys.isEmpty)
+    XCTAssertTrue(service.cloudWakeFailures.isEmpty)
+    // A wake of the last account that fails after the change stays dropped.
+    service.recordCloudWakeFailure(fleetKey: "machine:old-cloud", message: "Old Cloud did not answer.")
+    XCTAssertTrue(service.cloudWakeFailures.isEmpty)
+    XCTAssertTrue(fleet.restingCloudMachines.isEmpty)
+    XCTAssertEqual(UserDefaults.standard.stringArray(forKey: defaultsKey) ?? [], [], "A relaunch must not bring the old account's cloud computers back.")
+  }
+
   @MainActor
   func testMatchingAccountRelayMetadataPreservesDirectPairingOwnership() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -4074,6 +4108,80 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.savedProfilesForTesting().map(\.hostIdentity), ["current-account-mac"])
     XCTAssertFalse(service.hasCredentialForTesting(previousOwner))
     XCTAssertTrue(service.hasCredentialForTesting(currentOwner))
+  }
+
+  /// When an account leaves this phone, none of its rows stay in the local
+  /// copy (lists, Activity, widgets), also after a relaunch. A computer still
+  /// paired by code stays paired and syncs again from the start.
+  @MainActor
+  func testAccountLeavingResetsLocalCopyAndKeepsCodePairedComputer() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    for (id, root) in [("project_studio", "/demo/studio/hello-world"), ("project_cloud", "/demo/cloud/hello-world")] {
+      try database.upsertMobileProjectCache(MobileProjectSummary(
+        id: id, displayName: "hello-world", rootPath: root, defaultBaseRef: "main",
+        lastOpenedAt: nil, laneCount: 0, isAvailable: true, isCached: true
+      ))
+    }
+    service.refreshProjectCatalog()
+    XCTAssertEqual(Set(service.projects.map(\.id)), ["project_studio", "project_cloud"])
+
+    // Demo Studio is paired by code; Demo Cloud was reached through the account.
+    let studio = HostConnectionProfile(
+      hostIdentity: "studio-device",
+      hostName: "Demo Studio",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 42,
+      lastHostDeviceId: "studio-device",
+      lastSuccessfulAddress: "192.168.1.2",
+      savedAddressCandidates: ["192.168.1.2"],
+      discoveredLanAddresses: ["192.168.1.2"],
+      tailscaleAddress: nil
+    )
+    let cloud = HostConnectionProfile(
+      hostIdentity: "cloud-device",
+      hostName: "Demo Cloud",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 17,
+      lastHostDeviceId: "cloud-device",
+      lastSuccessfulAddress: "wss://relay.ade.app/connect/cloud-device",
+      savedAddressCandidates: [],
+      discoveredLanAddresses: [],
+      tailscaleAddress: nil,
+      savedRelayCandidates: ["wss://relay.ade.app/connect/cloud-device"],
+      accountOwnerId: "user_1",
+      relayAccountOwnerId: "user_1"
+    )
+    service.installSavedProfileForTesting(studio, token: "studio-secret")
+    service.installSavedProfileForTesting(cloud, token: "cloud-secret")
+    // Writes that began before the account left: a changeset batch of its
+    // connection and a project row, both still waiting for the database.
+    let epochBeforeLeave = database.replicaEpoch
+    let formerChanges = database.exportChangesSince(version: 0)
+    let formerProject = MobileProjectSummary(
+      id: "project_cloud", displayName: "hello-world", rootPath: "/demo/cloud/hello-world", defaultBaseRef: "main",
+      lastOpenedAt: nil, laneCount: 0, isAvailable: true, isCached: true
+    )
+
+    service.removeAccountOwnedPairings(ownerId: "user_1")
+
+    XCTAssertThrowsError(try database.applyChanges(formerChanges, replicaEpoch: epochBeforeLeave))
+    XCTAssertThrowsError(try database.upsertMobileProjectCache(formerProject, replicaEpoch: epochBeforeLeave))
+    XCTAssertEqual(database.listMobileProjects().map(\.id), [])
+    XCTAssertEqual(service.projects.map(\.id), [])
+    XCTAssertEqual(SyncService(database: makeProjectLaneForeignKeyDatabase(baseURL: baseURL)).projects.map(\.id), [])
+    let remaining = service.savedProfilesForTesting()
+    XCTAssertEqual(remaining.map(\.hostIdentity), ["studio-device"])
+    XCTAssertEqual(remaining.first?.lastRemoteDbVersion, 0)
+    XCTAssertTrue(service.hasCredentialForTesting(studio))
+    XCTAssertFalse(service.hasCredentialForTesting(cloud))
   }
 
   @MainActor
@@ -14614,7 +14722,11 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(opencode.interruptContinues)
     XCTAssertEqual(opencode.agentLabel, "OpenCode")
 
-    for provider in ["droid", "pi", ""] {
+    let pi = WorkActiveSendCapability.forProvider("pi")
+    XCTAssertEqual(pi.modes, [.inline, .queue])
+    XCTAssertFalse(pi.interruptContinues)
+
+    for provider in ["droid", ""] {
       let capability = WorkActiveSendCapability.forProvider(provider)
       XCTAssertEqual(capability.modes, [.queue], "expected queue-only for \(provider)")
       XCTAssertEqual(capability.atomicDispatchModes, [], "expected no atomic dispatch for \(provider)")
@@ -14627,11 +14739,11 @@ final class ADETests: XCTestCase {
   /// and OpenCode is eligible through its inbox, so a list derived from either
   /// atomic mode would get a provider wrong.
   func testCtoLiveRedirectProvidersMirrorDesktopContract() {
-    XCTAssertEqual(ctoLiveRedirectProviders, ["claude", "codex", "cursor", "opencode"])
-    for provider in ["claude", "claude-code", "anthropic", "codex", "openai", "cursor", "cursor-agent", "opencode"] {
+    XCTAssertEqual(ctoLiveRedirectProviders, ["claude", "codex", "cursor", "opencode", "copilot"])
+    for provider in ["claude", "claude-code", "anthropic", "codex", "openai", "cursor", "cursor-agent", "opencode", "copilot"] {
       XCTAssertTrue(providerSupportsLiveRedirect(provider), "expected \(provider) to be CTO-eligible")
     }
-    for provider in ["droid", "pi", "qwen", "kimi", "grok", "copilot", ""] {
+    for provider in ["droid", "qwen", "kimi", "grok", ""] {
       XCTAssertFalse(providerSupportsLiveRedirect(provider), "expected \(provider) to be rejected")
     }
     XCTAssertFalse(WorkActiveSendCapability.forProvider("codex").modes.contains(.interrupt))
@@ -18196,6 +18308,11 @@ final class ADETests: XCTestCase {
 
   @MainActor
   func testSyncActiveSessionsKeepsFailedChatsForAttentionDrawer() throws {
+    // A user pause left by another test would unlist the focused computer,
+    // and its rows with it (the lists rule Activity follows).
+    let pausedKey = "ade.sync.autoReconnectPausedByUser"
+    UserDefaults.standard.removeObject(forKey: pausedKey)
+    defer { UserDefaults.standard.removeObject(forKey: pausedKey) }
     let baseURL = makeTemporaryDirectory()
     let database = makeTerminalSessionSyncDatabase(baseURL: baseURL)
     XCTAssertNil(database.initializationError)
@@ -18365,7 +18482,8 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "settled-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "stale-running-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "completed-chat" }))
-    XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "failed-shell" }))
+    // A shell counts as the Hub counts it: a failed one is listed, as failed.
+    XCTAssertEqual(service.activeSessions.first(where: { $0.sessionId == "failed-shell" })?.status, "failed")
 
     // A follow-up ask can change only its copy/item id. The active-session
     // signature must still publish that content-only delta to the drawer.
@@ -18922,35 +19040,47 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(plain.supportsCodexFastMode)
   }
 
-  func testCtoMemoryDecodesFullPayload() throws {
+  func testCtoMemoryDecodesV2PayloadAndIgnoresV1Keys() throws {
     let payload: [String: Any] = [
       "memory": "- Prefers monochrome UI\n- Ships mac-only releases",
-      "threadState": "Goal: finish CTO revamp. Open loop: iOS build.",
-      "dailyLog": "09:12 reviewed onboarding card",
-      "dailyLogDate": "2026-07-04",
+      "memoryBytes": 46,
+      "memoryLimitBytes": 4096,
+      "userNotes": "- Short answers",
+      "userNotesLimitBytes": 2048,
+      "memoryHash": "abc",
+      "userNotesHash": "def",
+      "openWork": [
+        ["id": "ow-1", "text": "Land the fix", "createdAt": "2026-11-14T09:00:00Z", "doneAt": NSNull(), "addedBy": "cto"],
+        ["id": "ow-2", "text": "Ship it", "createdAt": "2026-11-14T09:00:00Z", "doneAt": "2026-11-14T10:00:00Z", "addedBy": "user"],
+      ],
+      // An older host's v1 keys still decode as noise.
+      "threadState": "",
+      "dailyLog": "",
+      "projectBrief": NSNull(),
       "updatedAt": "2026-07-04T12:00:00.000Z",
     ]
     let data = try JSONSerialization.data(withJSONObject: payload)
     let memory = try JSONDecoder().decode(CtoMemory.self, from: data)
 
-    XCTAssertTrue(memory.memory.contains("monochrome"))
-    XCTAssertTrue(memory.threadState.contains("Open loop"))
-    XCTAssertEqual(memory.dailyLogDate, "2026-07-04")
-    XCTAssertEqual(memory.updatedAt, "2026-07-04T12:00:00.000Z")
-    XCTAssertNil(memory.projectBrief)
+    XCTAssertEqual(memory.noteLines, ["Prefers monochrome UI", "Ships mac-only releases"])
+    XCTAssertEqual(memory.memoryLimitBytes, 4096)
+    XCTAssertEqual(memory.userNotesLimitBytes, 2048)
+    XCTAssertEqual(memory.memoryHash, "abc")
+    XCTAssertEqual(memory.userNotesHash, "def")
+    XCTAssertEqual(memory.openWork?.map(\.isDone), [false, true])
     XCTAssertFalse(memory.isEmpty)
   }
 
   func testCtoMemoryDecodesPartialAndEmptyPayload() throws {
     // A host that only returns `memory` (missing/null other fields) must still
-    // decode — the tolerant model defaults the rest to empty strings.
-    let partial: [String: Any] = ["memory": "just one fact", "threadState": NSNull()]
+    // decode — every v2 field is optional.
+    let partial: [String: Any] = ["memory": "just one fact", "userNotes": NSNull(), "openWork": NSNull()]
     let partialData = try JSONSerialization.data(withJSONObject: partial)
     let partialMemory = try JSONDecoder().decode(CtoMemory.self, from: partialData)
     XCTAssertEqual(partialMemory.memory, "just one fact")
-    XCTAssertEqual(partialMemory.threadState, "")
-    XCTAssertEqual(partialMemory.dailyLog, "")
-    XCTAssertNil(partialMemory.updatedAt)
+    XCTAssertNil(partialMemory.userNotes)
+    XCTAssertNil(partialMemory.openWork)
+    XCTAssertNil(partialMemory.memoryHash)
     XCTAssertFalse(partialMemory.isEmpty)
 
     let emptyData = try JSONSerialization.data(withJSONObject: [String: Any]())
@@ -19120,10 +19250,10 @@ final class ADETests: XCTestCase {
       .thread
     )
 
-    // No identity yet: the offline case stays on the spinner (the top bar owns
-    // the connection dot); a reachable host surfaces the failure.
+    // No identity yet: an unreachable machine is the asleep "offline" state;
+    // a reachable host surfaces the failure.
     XCTAssertEqual(ctoRootContent(identity: nil, loadError: nil, hostUnreachable: false), .loading)
-    XCTAssertEqual(ctoRootContent(identity: nil, loadError: "boom", hostUnreachable: true), .loading)
+    XCTAssertEqual(ctoRootContent(identity: nil, loadError: "boom", hostUnreachable: true), .offline)
     XCTAssertEqual(
       ctoRootContent(identity: nil, loadError: "boom", hostUnreachable: false),
       .loadError("boom")
@@ -19428,10 +19558,10 @@ final class ADETests: XCTestCase {
       ["steer", "interrupt_retry_same_thread"]
     )
     XCTAssertEqual(
-      workCodexRecoveryActionLabel(for: "restart_resume_thread"),
-      "Restart & resume"
+      workQuietTurnActionLabel(for: "restart_resume_thread"),
+      "Restart Codex"
     )
-    XCTAssertEqual(workCodexRecoveryActionLabel(for: "wait"), "Keep waiting")
+    XCTAssertEqual(workQuietTurnActionLabel(for: "wait"), "Keep waiting")
 
     let raw = #"{"sessionId":"chat-parent","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"codex_turn_stalled","turnId":"turn-child","threadId":"thread-child","reason":"no_output","message":"Codex accepted the turn but has not streamed output yet.","recoveryOptions":["wait","steer","interrupt_retry_same_thread","restart_resume_thread"],"sourceSessionId":"chat-child","automaticRecoveryAttempted":true}}"#
     guard case .codexTurnStalled(_, let parsedOptions, let parsedTurnId, let parsedSourceSessionId, let parsedContext) = parseWorkChatTranscript(raw).first?.event else {
@@ -28638,6 +28768,31 @@ final class WorkChatTranscriptSelfSizingTests: XCTestCase {
     controller.collectionView.layoutIfNeeded()
     for frame in frames(controller).prefix(12) {
       XCTAssertEqual(frame.height, 60 + 14, accuracy: 0.5)
+    }
+  }
+}
+
+/// Runs once for the whole test bundle (`NSPrincipalClass`). Before each
+/// test it clears the saved choices that decide whether the focused computer's
+/// work is listed. Many tests end with `disconnect()`, which saves a user
+/// pause; a later test in any order would then see an unlisted computer and
+/// no rows.
+@objc(ADETestDefaultsObserver)
+final class ADETestDefaultsObserver: NSObject, XCTestObservation {
+  static let listingGateKeys = [
+    "ade.sync.autoReconnectPausedByUser",
+    "ade.sync.autoReconnectPauseSource",
+    "ade.fleet.userDisconnectedMachineKeys.v1",
+  ]
+
+  override init() {
+    super.init()
+    XCTestObservationCenter.shared.addTestObserver(self)
+  }
+
+  func testCaseWillStart(_ testCase: XCTestCase) {
+    for key in Self.listingGateKeys {
+      UserDefaults.standard.removeObject(forKey: key)
     }
   }
 }
