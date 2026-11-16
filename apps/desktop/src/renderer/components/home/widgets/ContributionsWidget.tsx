@@ -6,6 +6,7 @@ import ContributionSkyline, { ContributionSkylineToggle, type ContributionDay } 
 import { formatCompact } from "../../../lib/format";
 import { useHomeData } from "../homeData";
 import { useHomeLayoutStore } from "../homeLayout";
+import { useHasOwnComputer } from "../../../state/ownComputers";
 import { useWidgetPreview, useWidgetVisible } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import "../homeWidgets.css";
@@ -106,21 +107,24 @@ export default function ContributionsWidget({ item }: HomeWidgetProps) {
   // Both reads settle before the chart draws, so it does not rise once for
   // ADE's days and again when GitHub's land.
   const loading = calendar === undefined || !stats;
+  // No computer of their own (ADE Web): no machine has history to read, so
+  // the card is the plain empty map, not "unavailable on this machine".
+  const hasOwnComputer = useHasOwnComputer();
 
   return (
     <section className="kit-card ade-home-card ade-contrib" aria-label="Contributions">
       <WelcomeCardHead icon={SquaresFour} title="Contributions" action={{ label: "Details", onClick: openUsageDetails }}>
         {calendar ? (
           <span className="ade-home-card-scope" title="GitHub's contribution calendar for your account, plus your chats in ADE on this computer.">GitHub + ADE</span>
-        ) : (
+        ) : hasOwnComputer ? (
           <span className="ade-home-card-scope">this machine</span>
-        )}
+        ) : null}
         {any ? <ContributionSkylineToggle className="ade-contrib-view" view={view} onChange={setView} /> : null}
       </WelcomeCardHead>
       <div className="kit-card-body ade-contrib-body">
         {loading ? (
           <div className="ade-home-empty"><span>Reading your activity…</span></div>
-        ) : stats === "unavailable" && !calendar ? (
+        ) : stats === "unavailable" && !calendar && hasOwnComputer ? (
           <div className="ade-home-empty"><span>Activity history is unavailable here.</span></div>
         ) : !any ? (
           <div className="ade-home-empty">
