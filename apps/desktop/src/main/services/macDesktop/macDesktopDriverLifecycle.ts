@@ -102,6 +102,13 @@ export type MacDesktopDriverLifecycle = {
   requestPermission(args: MacDesktopRequestPermissionArgs): Promise<MacDesktopPermissions>;
   addPermissionWatcher(): void;
   removePermissionWatcher(): void;
+  /**
+   * Stops the helper and forgets it, when it is answering nothing. The next
+   * call that needs it (`ensureDriver`) starts a new one, and the permission
+   * watch is sent to it again. False when there is no helper or a request is
+   * still waiting for its answer. The caller decides that no screen is open.
+   */
+  releaseIdleDriver(): boolean;
   dispose(): void;
 };
 
@@ -133,6 +140,8 @@ export function createMacDesktopDriverLifecycle(
   let permissionWatchSent = false;
   let reconciled = false;
   let disposed = false;
+  /** `ensureDriver` calls that have not returned yet. */
+  let ensureDriverCalls = 0;
 
   const onDriverLost = (reason: string): void => {
     reconciled = false;
@@ -234,6 +243,15 @@ export function createMacDesktopDriverLifecycle(
   const ensureDriver = async (): Promise<DriverBackend> => {
     deps.assertSupported();
     if (disposed) throw deps.serviceError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The lane screen service is disposed.");
+    // An idle release must not take the backend while this call waits for it.
+    ensureDriverCalls += 1;
+    try {
+      return await ensureDriverNow();
+    } finally {
+      ensureDriverCalls -= 1;
+    }
+  };
+  const ensureDriverNow = async (): Promise<DriverBackend> => {
     if (!backend) {
       const onHealthChanged = (health: MacDesktopDriverHealth) => deps.emit({ type: "driver-health", health });
       const createProvider = deps.createProvider ?? createMacVirtualDisplayProvider;
@@ -340,6 +358,21 @@ export function createMacDesktopDriverLifecycle(
     removePermissionWatcher() {
       permissionWatchers = Math.max(0, permissionWatchers - 1);
       void syncPermissionWatch();
+    },
+    releaseIdleDriver() {
+      if (disposed || !backend || ensureDriverCalls > 0) return false;
+      if (backend.client.isBusy()) return false;
+      const released = backend;
+      backend = null;
+      driverEventUnsubscribe?.();
+      driverEventUnsubscribe = null;
+      reconciled = false;
+      permissionWatchSent = false;
+      // A disposed client's exit is not a lost driver: no "driver lost" and no
+      // restart. Its private copy of the binary goes with it.
+      released.client.dispose();
+      deps.logger.info("mac_desktop.driver_released_idle", {});
+      return true;
     },
     dispose() {
       if (disposed) return;

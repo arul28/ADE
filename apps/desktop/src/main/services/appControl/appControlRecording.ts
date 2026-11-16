@@ -128,6 +128,11 @@ export type AppControlWindowRecorder = {
   stop(key: string): Promise<AppControlRecordingFinish>;
   /** The helper says a window recording's stream ended (window closed, app quit). */
   onInterrupted(listener: (key: string) => void): () => void;
+  /**
+   * Stops the helper when no window recording runs and no call waits for it.
+   * The next call starts a new one. False when it kept the helper.
+   */
+  releaseIdle?(): boolean;
   dispose(): void;
 };
 

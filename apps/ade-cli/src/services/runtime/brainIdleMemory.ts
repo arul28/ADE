@@ -21,7 +21,9 @@ import { summarizeRuntimeActivity } from "./runtimeWorkSummary";
  * 2. After the last desktop window AND the last connection from another
  *    machine leave, with no chat running and no device on a project's sync
  *    host: each project database's statement cache, page cache and export
- *    thread (`AdeDb.releaseMemory`), then a full garbage collection that
+ *    thread (`AdeDb.releaseMemory`), each project's desktop helper
+ *    (`ade-desktop-driver`) when no lane screen or recording uses it, then a
+ *    full garbage collection that
  *    returns the freed heap pages to the system. V8 does not shrink an idle
  *    heap by itself: in a probe, an idle Node process kept every freed page
  *    for the whole minute, and one collection took it from 316 to 105 MB.
@@ -164,24 +166,50 @@ function anySyncDeviceConnected(runtimes: AdeRuntime[]): boolean {
 
 function releaseIdleMemory(runtimes: AdeRuntime[]): void {
   const before = process.memoryUsage();
+  let desktopHelpers = 0;
   for (const runtime of runtimes) {
     try {
       runtime.db.releaseMemory?.();
     } catch {
       // Memory only.
     }
+    desktopHelpers += releaseDesktopHelpers(runtime);
   }
   const collection = collectGarbage();
   const after = process.memoryUsage();
   const mb = (bytes: number) => Math.round(bytes / 1048576);
   machineLogger()?.info("brain.idle_memory_released", {
     projects: runtimes.length,
+    desktopHelpers,
     gc: collection.kind,
     gcMs: collection.ms,
     heapUsedMb: [mb(before.heapUsed), mb(after.heapUsed)],
     heapTotalMb: [mb(before.heapTotal), mb(after.heapTotal)],
     rssMb: [mb(before.rss), mb(after.rss)],
   });
+}
+
+/**
+ * The project's `ade-desktop-driver` processes: the lane screen helper (Mac,
+ * Windows and Linux Desktop) and App Control's window recorder (macOS). A
+ * window's Work tools start the first with their first status read, and the
+ * helpers then ran until the brain quit (about 55 MB on a reference Mac).
+ * Each stays while a lane screen, a recording or a call still uses it, and
+ * the next call that needs one starts it again. Returns how many stopped.
+ */
+function releaseDesktopHelpers(runtime: AdeRuntime): number {
+  let released = 0;
+  try {
+    if (runtime.macDesktopService?.releaseIdleDriver()) released += 1;
+  } catch {
+    // Memory only: the helper stays.
+  }
+  try {
+    if (runtime.appControlService?.releaseIdleHelpers()) released += 1;
+  } catch {
+    // Memory only.
+  }
+  return released;
 }
 
 let brainLogger: Logger | null | undefined;
