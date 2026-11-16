@@ -185,13 +185,21 @@ export function launchesForOrigin(entries: readonly AccountCloudLaunchEntry[], o
 }
 
 export type StartAccountCloudChat = {
-  accountProjectId: string;
+  /** The account's project; left out, the server reads `origin` (a GitHub repository). */
+  accountProjectId?: string | null;
   origin: string;
   provider: string;
   modelId: string;
   effort?: string | null;
   fast?: boolean;
+  /** The chat's permission mode; left out, `default`. */
+  permissions?: string | null;
   prompt: string;
+  /** Left out, the server picks Small. */
+  sizeId?: CloudLaunchStartRequest["sizeId"];
+  sizeChoice?: CloudLaunchStartRequest["sizeChoice"];
+  /** Left out, a new lane named from the first message. */
+  lane?: CloudLaunchStartRequest["lane"];
 };
 
 /**
@@ -208,14 +216,17 @@ export async function startAccountCloudChat(input: StartAccountCloudChat): Promi
   const request: CloudLaunchStartRequest = {
     launchId,
     kind: "chat",
-    // The server reads the origin from the account's project.
-    project: { accountProjectId: input.accountProjectId },
+    // The server reads the origin from the account's project when there is one.
+    project: input.accountProjectId ? { accountProjectId: input.accountProjectId } : { origin: input.origin },
+    ...(input.sizeId ? { sizeId: input.sizeId } : {}),
+    ...(input.sizeChoice ? { sizeChoice: input.sizeChoice } : {}),
+    ...(input.lane ? { lane: input.lane } : {}),
     chat: {
       provider: input.provider,
       modelId: input.modelId,
       ...(input.effort ? { effort: input.effort } : {}),
       ...(input.fast ? { fast: true } : {}),
-      permissions: "default",
+      permissions: input.permissions || "default",
       prompt: input.prompt,
       messageId,
     },

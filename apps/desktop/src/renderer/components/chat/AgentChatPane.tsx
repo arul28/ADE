@@ -436,6 +436,9 @@ import { describeAutoCreateStart } from "../lanes/laneStartOptions";
 import { autoLaneMachine, isAdeCloudLaneComputer, originUrlForBinding } from "../lanes/laneMachines";
 import { draftCloneRowTargetId, useDraftMachineSetup } from "./useDraftMachineSetup";
 import { ADE_CLOUD_MACHINE_ID, useAdeCloudComposer, useAdeCloudDraft, type AdeCloudSend } from "./useAdeCloudDraft";
+import { WebCloudSetupCards } from "./launch/WebCloudSetupCards";
+import { startAccountCloudChat, type StartAccountCloudChat } from "../../state/accountCloudLaunches";
+import { readAccountProjectList } from "../../state/useRepositoryCopies";
 import { useAdeCloudSignInNeed } from "./useAdeCloudSignInNeed";
 import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
 import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
@@ -487,6 +490,7 @@ import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCr
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import {
   crossMachineSendsElsewhere,
+  normalizeGitRemoteIdentity,
   pickNewerCrossMachineHandoffRecord,
 } from "../../../shared/crossMachineHandoff";
 import { showToast } from "../app/toast/toastStore";
@@ -13920,6 +13924,81 @@ export function AgentChatPane({
   // A foreground chat opens immediately with its prompt bubble and a live
   // setup card; background chats and CLI launches stay on the draft and report
   // in the Launches slide-out. Nothing here awaits before the UI moves.
+  /**
+   * ADE Web's send to a new ADE Cloud lane: the account server starts it
+   * (`POST /cloud/launches` with the account's project, the model and the
+   * first message), as the project page's composer does. No brain makes this
+   * lane, so the web's setup card is the launch's own (`WebCloudSetupCards`),
+   * not a lane launch card. The same request fields as the desktop's main
+   * process sends for a cloud lane (`cloudLaneComputerStages.ts`).
+   */
+  const launchDraftIntoAccountCloud = useCallback((
+    snapshot: DraftLaunchSnapshot,
+    cloud: { sizeId: string; sizeChoice: "default" | "picked"; originUrl: string | null },
+    configuredLane: NewLaneDraftConfig | null,
+  ): boolean => {
+    const origin = normalizeGitRemoteIdentity(cloud.originUrl);
+    if (!origin) {
+      setError({ message: "This project has no GitHub repository for ADE Cloud to clone.", kind: "status" });
+      return false;
+    }
+    const prepared = prepareDraftLaunch(snapshot);
+    let built: ReturnType<typeof buildChatCreateArgs>;
+    try {
+      if (constrainedModelSelectionError) throw new Error(constrainedModelSelectionError);
+      built = buildChatCreateArgs(prepared);
+    } catch (buildError) {
+      setError(errorMessage(buildError));
+      return false;
+    }
+    if (draftKeepsMachineDefaultsRef.current) {
+      draftKeepsMachineDefaultsRef.current = false;
+    } else {
+      rememberLaunchConfig(lastLaunchConfigStorageKey, built, { model: built.createArgs.model }, initialNativeControls);
+    }
+    const create = built.createArgs;
+    const prompt = buildDraftChatMessageArgs(prepared, built.provider, prepared.interactionMode).text ?? "";
+    const laneConfig = configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null;
+    const laneName = configuredLane?.name.trim()
+      || createDeterministicAutoLaneName(buildDraftLaunchNamingSeed(snapshot), { genericSuffix: autoLaneGenericSuffix() });
+    const list = readAccountProjectList();
+    const accountProject = list.state === "ready"
+      ? list.projects.find((project) => normalizeGitRemoteIdentity(`https://${project.host}/${project.owner}/${project.name}`) === origin) ?? null
+      : null;
+    void startAccountCloudChat({
+      accountProjectId: accountProject?.id ?? null,
+      origin: `https://${origin}`,
+      provider: create.provider,
+      modelId: create.modelId ?? create.model,
+      effort: create.reasoningEffort ?? null,
+      fast: create.fastMode === true,
+      permissions: create.permissionMode ?? null,
+      prompt,
+      sizeId: cloud.sizeId as NonNullable<StartAccountCloudChat["sizeId"]>,
+      sizeChoice: cloud.sizeChoice,
+      lane: {
+        name: laneName,
+        ...(laneConfig?.mode === "existing" && laneConfig.branchRef ? { existingBranch: laneConfig.branchRef } : {}),
+        ...(laneConfig?.mode !== "existing" && laneConfig?.start?.from === "branch" && laneConfig.start.branch ? { from: laneConfig.start.branch } : {}),
+        ...(!configuredLane || laneConfig?.autoName ? { autoName: true } : {}),
+      },
+    }).catch((startError: unknown) => setError({ message: errorMessage(startError), kind: "status" }));
+    clearPromptSuggestionForSession(selectedSessionId);
+    setError(null);
+    clearNewLaneConfig();
+    clearDraftLaunchComposer(snapshot);
+    return true;
+  }, [
+    buildChatCreateArgs,
+    clearDraftLaunchComposer,
+    clearNewLaneConfig,
+    clearPromptSuggestionForSession,
+    constrainedModelSelectionError,
+    initialNativeControls,
+    lastLaunchConfigStorageKey,
+    selectedSessionId,
+  ]);
+
   const launchDraftIntoNewLane = useCallback((
     kind: DraftLaunchKind,
     mode: DraftLaunchMode,
@@ -14231,6 +14310,17 @@ export function AgentChatPane({
           draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
           return;
         }
+        if (isWebClientMode()) {
+          // ADE Web: the account server starts the lane; its notice keeps a CLI draft off.
+          const started = kind === "chat" && launchDraftIntoAccountCloud(
+            snapshot,
+            { sizeId: cloudSend.tierId, sizeChoice: cloudSend.sizeChoice, originUrl: cloudSend.originUrl },
+            draftNewLaneConfig,
+          );
+          draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
+          if (started) adeCloudLastStartRef.current = { key: cloudRequestKey, at: Date.now() };
+          return;
+        }
         await ensureHarnessPresetOnBrain(draftLaunchBrainRef.current.presetId, { targetsAnotherMachine: true });
         void copyPromptForLaunch(snapshot.text);
         const started = launchDraftIntoNewLane(
@@ -14404,6 +14494,7 @@ export function AgentChatPane({
     harnessPresets,
     isWorkCliLaunchDraft,
     laneId,
+    launchDraftIntoAccountCloud,
     launchDraftIntoNewLane,
     modelId,
     onLaunchCliSession,
@@ -20938,6 +21029,12 @@ export function AgentChatPane({
       style={{ ...chatAppearanceRootStyle, paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
       className={cn(compactShell ? "min-w-0 w-full" : undefined, "space-y-2")}
     >
+      {forceDraft && isWebClientMode() ? (
+        <WebCloudSetupCards
+          originUrl={originUrlForBinding(projectBinding)}
+          className={layoutVariant === "grid-tile" ? "mx-auto w-full max-w-[var(--chat-column,52rem)]" : "mx-3 max-w-[var(--chat-column,52rem)]"}
+        />
+      ) : null}
       {visibleDraftLaunchJobs.map((job) => {
         const isFailed = job.status === "failed";
         const isReady = job.status === "ready";

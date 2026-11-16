@@ -74,7 +74,8 @@ function subscribeAccountProjectList(listener: () => void): () => void {
   return () => accountProjectListListeners.delete(listener);
 }
 
-const readAccountProjectList = () => accountProjectList;
+/** The account's project list now, for a callback that must not re-render on its changes. */
+export const readAccountProjectList = (): AccountProjectListState => accountProjectList;
 
 /** The account's project list as last published. */
 export function useAccountProjectList(): AccountProjectListState {

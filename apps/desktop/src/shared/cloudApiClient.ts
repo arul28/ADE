@@ -162,6 +162,13 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     cancelLaunch: (launchId: string) => request<CloudLaunchRecord>("DELETE", launchPath(launchId)),
 
     /* ---- One computer ---- */
+    computer: (instanceId: string) => request<CloudInstance>("GET", instancePath(instanceId)),
+    sleep: (instanceId: string) => request<{ status: string }>("POST", `${instancePath(instanceId)}/sleep`, { body: {} }),
+    /** The server restarts the computer on the newest ADE for its channel. */
+    update: (instanceId: string) => request<{ status: string }>("POST", `${instancePath(instanceId)}/update`, { body: {} }),
+    /** At most one every 15 minutes (`rate_limited`). */
+    backup: (instanceId: string) =>
+      request<{ id?: string | null; created?: number | null; sizeBytes?: number | null }>("POST", `${instancePath(instanceId)}/backups`, { body: {}, timeoutMs: timeoutMs * 4 }),
     wake: (instanceId: string, args: { reason?: "push_work" } = {}) =>
       request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: args }),
     /** The server wakes a sleeping computer first. `computerIdle` is needed to grow the disk of a running one. */

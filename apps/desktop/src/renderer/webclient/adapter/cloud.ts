@@ -1,5 +1,6 @@
-import { cloudCatalogOf } from "../../../shared/adeCloud";
-import { cloudMachineOfInstance } from "../../../shared/cloudMachineOfInstance";
+import { cloudCatalogOf, cloudShape } from "../../../shared/adeCloud";
+import { cloudMachineOfInstance, cloudResourcesOfInstance } from "../../../shared/cloudMachineOfInstance";
+import { CloudApiError, type CloudApiClient } from "../../../shared/cloudApiClient";
 import type {
   CloudAgentLimits,
   CloudMachineActionArgs,
@@ -36,14 +37,20 @@ import type { BrowserAccountClient } from "../account/client";
  * server itself with this browser's own account token, as the desktop's main
  * process sends its own (`cloudBilling.ts`): no computer has to be connected.
  *
+ * A computer's sleep, wake, resize, backup and update go to the account
+ * server too (`/cloud/instances/:id/...`), as the desktop's main process
+ * sends them (`cloudMachines.ts`), so they need no computer of the person's.
+ * A chat on a new computer starts there as well (`POST /cloud/launches`,
+ * `accountCloudLaunches.ts`).
+ *
  * What only the desktop app can do stays out, so each caller's own guard
  * hides it: the life of a lane's computer (`laneLife`, `onLaneJob`), saving a
- * key or a Claude pass. Making a computer and the machine actions that delete
- * or resize refuse with a plain sentence. The account's cloud sign-ins (saved
- * keys, passes) are read, never written.
+ * key or a Claude pass. A delete refuses with a plain sentence: the desktop
+ * first checks the lane's work for changes not on GitHub. The account's cloud
+ * sign-ins (saved keys, passes) are read, never written.
  */
 
-const DESKTOP_ONLY = "Do this in the ADE desktop app. The web app reads ADE Cloud but can't change computers.";
+const DELETE_ON_DESKTOP = "Delete computers in the ADE desktop app. It first checks each lane for work that isn't on GitHub yet.";
 
 function isMachinesResult(value: unknown): value is CloudMachinesResult {
   if (!value || typeof value !== "object") return false;
@@ -112,6 +119,90 @@ export function createWebCloudAccessNamespace(
       });
     },
   };
+}
+
+/** A refusal from the account server as the card reads it: plans and hours, the backup window, a disk refusal's reason. */
+function machineActionRefusal(error: unknown): CloudMachineActionResult {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof CloudApiError)) return { ok: false, blocker: null, message };
+  if (error.code === "rate_limited") {
+    return {
+      ok: false,
+      blocker: "rate_limited",
+      message: "ADE Cloud takes one backup of a computer every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
+    };
+  }
+  if (error.code === "out_of_hours" || error.code === "over_plan_disk" || error.code === "over_plan_limits") {
+    return { ok: false, blocker: error.code, message };
+  }
+  const reason = error.code === "disk_limit" || error.code === "needs_paid_plan"
+    ? error.reason ?? (error.code === "needs_paid_plan" ? "plan_disk" : null)
+    : null;
+  return reason
+    ? { ok: false, blocker: null, message, diskRefusal: { reason } }
+    : { ok: false, blocker: null, message };
+}
+
+/** Sleep, wake, resize, backup and update through the account server, as the desktop's main process runs them. */
+async function webMachineAction(api: CloudApiClient, args: CloudMachineActionArgs): Promise<CloudMachineActionResult> {
+  const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
+  if (!instanceId) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
+  try {
+    switch (args.action) {
+      case "sleep":
+        await api.sleep(instanceId);
+        return { ok: true, blocker: null, message: "Asleep. It uses no hours until it wakes." };
+      case "wake": {
+        const { status } = await api.wake(instanceId);
+        return {
+          ok: true,
+          blocker: null,
+          message: status === "running" ? "Awake. ADE on it is starting." : "Waking. ADE Cloud is moving it to a host with room.",
+        };
+      }
+      case "backup":
+        await api.backup(instanceId);
+        return { ok: true, blocker: null, message: "Backed up. ADE Cloud keeps this one until your next backup, plus the last seven nights." };
+      case "update":
+        await api.update(instanceId);
+        return { ok: true, blocker: null, message: "Updating. It restarts and is back in a few minutes." };
+      case "resize": {
+        const shape = args.shape === undefined ? null : cloudShape(args.shape);
+        const disk = typeof args.disk === "number" && Number.isInteger(args.disk) && args.disk > 0 ? args.disk : null;
+        if ((args.shape !== undefined && !shape) || (!shape && disk == null)) return { ok: false, blocker: null, message: "Pick a size." };
+        const current = cloudResourcesOfInstance(await api.computer(instanceId));
+        if (!current) return { ok: false, blocker: null, message: "ADE Cloud didn't say how big this computer is, so ADE can't resize it." };
+        const growDisk = disk != null && disk > current.diskGb;
+        const idle = growDisk && args.computerIdle === true ? { computerIdle: true } : {};
+        if (!shape) {
+          if (!growDisk) return { ok: true, blocker: null, message: "The disk is already that size." };
+          const { status } = await api.resize(instanceId, { cpu: current.cpu, memory: current.memoryGb, disk, ...idle });
+          return {
+            ok: true,
+            blocker: null,
+            message: status === "running"
+              ? `The disk is ${disk} GB now. ADE on it is starting again.`
+              : `Growing the disk to ${disk} GB. The computer restarts and is back in a few minutes.`,
+          };
+        }
+        if (current.cpu === shape.cpu && current.memoryGb === shape.memoryGb && !growDisk) {
+          return { ok: true, blocker: null, message: "It's already that size." };
+        }
+        const { status } = await api.resize(instanceId, { cpu: shape.cpu, memory: shape.memoryGb, ...(growDisk ? { disk } : {}), ...idle });
+        return {
+          ok: true,
+          blocker: null,
+          message: status === "running"
+            ? `Resized to ${shape.label}. ADE on it is starting again.`
+            : `Resizing to ${shape.label}. It is back in a few minutes.`,
+        };
+      }
+      default:
+        return { ok: false, blocker: null, message: "ADE can't do that to a computer." };
+    }
+  } catch (error) {
+    return machineActionRefusal(error);
+  }
 }
 
 export function createWebCloudNamespace(
@@ -190,14 +281,26 @@ export function createWebCloudNamespace(
     }
   };
 
-  /** Sleep and wake only: a delete or resize of a lane's computer needs the desktop app's lane steps. */
+  /**
+   * Through the account server with this browser's account token, with the
+   * desktop's sentences (`cloudMachines.ts`). Without account sign-in here,
+   * sleep and wake still go through a connected computer. A delete stays in
+   * the desktop app (see `DELETE_ON_DESKTOP`).
+   */
   const machineAction = async (args: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> => {
-    if (args.action !== "sleep" && args.action !== "wake") return { ok: false, message: DESKTOP_ONLY } as CloudMachineActionResult;
-    return await commands.call<CloudMachineActionResult>(
-      "cloud.write",
-      { action: args.action, args: { machine: args.instanceId } },
-      { idempotent: false },
-    );
+    if (args.action === "delete") return { ok: false, blocker: null, message: DELETE_ON_DESKTOP };
+    const api = accountClient.cloudApi?.() ?? null;
+    if (!api) {
+      if (args.action !== "sleep" && args.action !== "wake") {
+        return { ok: false, blocker: null, message: "Sign in to your ADE account here to change this computer." };
+      }
+      return await commands.call<CloudMachineActionResult>(
+        "cloud.write",
+        { action: args.action, args: { machine: args.instanceId } },
+        { idempotent: false },
+      );
+    }
+    return await webMachineAction(api, args);
   };
 
   /**
