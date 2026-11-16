@@ -4151,4 +4151,49 @@ describe("the OpenCode Fast chip reads the effort a launch sends", () => {
     expect(chip.disabled).toBe(true);
     expect(chip.title).toBe(`OpenCode cannot run ${model.displayName} in Fast mode at high effort.`);
   });
+
+  it("clears a launch account pick when the draft moves to another machine", async () => {
+    const previousAde = (window as any).ade;
+    const list = vi.fn(async (_args: { provider?: string }, pin?: OpenProjectBinding | null) => {
+      if (pin?.key === "local:/repo-b") throw new Error("machine offline");
+      return [{
+        id: "codex-work",
+        provider: "codex",
+        label: "Work",
+        signedIn: true,
+        isDefault: true,
+        account: { email: "work@example.com" },
+      }];
+    });
+    (window as any).ade = {
+      ...(previousAde ?? {}),
+      providerInstances: { list },
+    };
+    try {
+      const onLaunchAccountChange = vi.fn();
+      const props = buildComposerProps({
+        modelRuntimePin: CHAT_BINDING,
+        launchAccountId: "codex-work",
+        onLaunchAccountChange,
+      });
+      const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
+      await waitFor(() => expect(list).toHaveBeenCalled());
+
+      view.rerender(
+        <AgentChatComposer
+          {...props}
+          modelRuntimePin={{
+            ...CHAT_BINDING,
+            key: "local:/repo-b",
+            rootPath: "/repo-b",
+            displayName: "repo-b",
+          }}
+        />,
+      );
+
+      await waitFor(() => expect(onLaunchAccountChange).toHaveBeenCalledWith(null));
+    } finally {
+      (window as any).ade = previousAde;
+    }
+  });
 });
