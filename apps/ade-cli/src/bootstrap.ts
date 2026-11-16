@@ -134,6 +134,7 @@ import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../de
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
 import { createCtoAccountCopyService, type CtoAccountCopyService } from "../../desktop/src/main/services/cto/ctoAccountCopyService";
+import { reportCtoHomeMove } from "../../desktop/src/main/services/analytics/ctoHomeProductAnalytics";
 import { accountRepoScopeKey } from "../../desktop/src/shared/accountSettingsScope";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
@@ -3444,6 +3445,7 @@ export async function createAdeRuntime(args: {
           replaceRoutines: (routines) => chatServiceForCtoCopy.replaceCtoRoutines(routines),
           startFreshThread: () => chatServiceForCtoCopy.startFreshCtoThread(),
           threadIsBusy: () => chatServiceForCtoCopy.isCtoThreadBusy(),
+          onMoveLanded: (outcome) => reportCtoHomeMove(productAnalyticsService, outcome),
           logger,
         })
       : null;

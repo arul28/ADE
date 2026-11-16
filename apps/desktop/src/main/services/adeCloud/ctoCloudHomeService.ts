@@ -220,7 +220,11 @@ export function createCtoCloudHomeService(deps: Deps) {
     && instance.metadata?.[CLOUD_PROJECT_ORIGIN_METADATA]?.trim().toLowerCase() === identity;
 
   const findEarlierHome = async (client: CloudProvider, identity: string): Promise<CloudInstance | null> => {
-    const listed = await client.listInstances().catch(() => []);
+    // Unlisted: a new computer is made, which is the safe side of a lookup that failed.
+    const listed = await client.listInstances().catch((error: unknown) => {
+      logger.warn("cto_cloud_home.list_failed", { error: error instanceof Error ? error.message : String(error) });
+      return [] as CloudInstance[];
+    });
     return listed.find((instance) => isHomeFor(instance, identity) && UUID_RE.test(instance.metadata?.ade_request_id ?? "")) ?? null;
   };
 

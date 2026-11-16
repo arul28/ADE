@@ -367,6 +367,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // composer. Never the window, its title, the app it belonged to, the path the
   // PNG passed through, or the image.
   "capture_gesture",
+  // How a move of the CTO to a new home landed there: took the CTO another
+  // machine left (`completed`), already had the newest copy (`kept`), or
+  // couldn't read the account yet (`failed`). Never the machine, the
+  // repository, the notes, the conversation, or the routines.
+  "cto_home_move",
   // What became of a handoff's transcript replay. Cross-provider handoffs carry
   // the conversation as text, and the only product question is whether it
   // arrives: whole, in part, not at all, or only after ADE re-sent the message

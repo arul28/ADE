@@ -71712,7 +71712,9 @@ export function createAgentChatService(args: {
     for (const item of existing) {
       if (item.kind !== "cron" || item.source || !item.cancellable) continue;
       if (item.status !== "scheduled" && item.status !== "paused") continue;
-      await cancelScheduledWork({ sessionId: cto.sessionId, scheduleId: item.id }).catch(() => undefined);
+      await cancelScheduledWork({ sessionId: cto.sessionId, scheduleId: item.id }).catch((error: unknown) => {
+        logger.warn("agent_chat.cto_routine_cancel_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
     }
     for (const routine of routines) {
       try {
@@ -71725,7 +71727,9 @@ export function createAgentChatService(args: {
           ...(routine.timeZone ? { timeZone: routine.timeZone } : {}),
         });
         if (routine.paused) {
-          await setScheduledWorkItemPaused({ sessionId: cto.sessionId, scheduleId: created.item.id, paused: true }).catch(() => undefined);
+          await setScheduledWorkItemPaused({ sessionId: cto.sessionId, scheduleId: created.item.id, paused: true }).catch((error: unknown) => {
+            logger.warn("agent_chat.cto_routine_pause_failed", { error: error instanceof Error ? error.message : String(error) });
+          });
         }
       } catch (error) {
         logger.warn("agent_chat.cto_routine_restore_failed", {

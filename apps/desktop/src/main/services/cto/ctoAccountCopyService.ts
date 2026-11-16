@@ -104,6 +104,8 @@ export type CtoAccountCopyServiceArgs = {
   startFreshThread?: () => Promise<void>;
   /** Is the CTO's thread running anything? A late restore waits for it to settle. */
   threadIsBusy?: () => Promise<boolean>;
+  /** How a move here landed, for product analytics (`ctoHomeProductAnalytics.ts`). */
+  onMoveLanded?: (outcome: "completed" | "kept" | "failed") => void;
   logger: Logger;
   now?: () => number;
 };
@@ -515,17 +517,20 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       // answers takes that copy instead (`saveNow`).
       logger.warn("cto.account_copy_adopt_unsynced", { status: synced ?? "timeout" });
       retryAdoptLater();
+      args.onMoveLanded?.("failed");
       return { restored: false, fromName: null, savedAt: null };
     }
     const { copy } = readCopyRow();
     if (!copy || sameDevice(copy.ownerDeviceId, self)) {
       await save("adopt");
+      args.onMoveLanded?.("kept");
       return { restored: false, fromName: null, savedAt: copy?.savedAt ?? null };
     }
     await restore(copy, readHome());
     lastWrittenHash = null;
     logger.info?.("cto.account_copy_restored", { savedAt: copy.savedAt, routines: copy.routines.length, tailChars: copy.tail.length });
     await save("adopt");
+    args.onMoveLanded?.("completed");
     return { restored: true, fromName: copy.ownerName, savedAt: copy.savedAt };
   };
 
