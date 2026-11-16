@@ -10,6 +10,12 @@ import {
   resolveReachableMachineRuntimeSocketPath,
 } from "../services/projects/machineLayout";
 import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
+import {
+  BRAIN_HELPER_EXECUTABLE_ENV,
+  isSameElectronRuntime,
+  resolveBrainNodeExecutable,
+} from "./brainExecutable";
+export { isSameElectronRuntime } from "./brainExecutable";
 import { markBrainStoppedBy } from "../sentry/brainStartsFile";
 import { isAdeRuntimeNamedPipePath } from "../../../desktop/src/shared/adeRuntimeIpc";
 import { lastFailurePathForMachine } from "../../../desktop/src/main/services/runtime/lastFailureStore";
@@ -378,6 +384,9 @@ const RUNTIME_ENV_PASSTHROUGH = [
   "ADE_WINDOWS_USER_SID",
   // The opt-out of whoever installed the service holds for its brain too.
   "DO_NOT_TRACK",
+  // A test override of the brain-executable switch must reach the brain, so
+  // the brain computes the same service command as whoever installed it.
+  BRAIN_HELPER_EXECUTABLE_ENV,
 ] as const;
 
 /**
@@ -505,8 +514,10 @@ function resolveCliDistPath(entryPath: string): string | null {
 
 export function resolveAdeServiceCommandBuildHash(command: AdeServiceCommand): string | null {
   const firstArg = command.args[0] ? path.resolve(command.args[0]) : "";
+  // The app's helper runs this process's own Node, so it hashes like it.
+  const runsThisNode = isSameElectronRuntime(command.command, process.execPath);
   const isNodeServeFallback =
-    command.command === process.execPath
+    runsThisNode
     && command.args.length === 1
     && command.args[0] === "serve";
   if (isNodeServeFallback) {
@@ -516,10 +527,10 @@ export function resolveAdeServiceCommandBuildHash(command: AdeServiceCommand): s
     const distPath = resolveCliDistPath(entry);
     return distPath ? fileSha256(distPath) : null;
   }
-  if (command.command === process.execPath && firstArg && fs.existsSync(firstArg)) {
+  if (runsThisNode && firstArg && fs.existsSync(firstArg)) {
     return fileSha256(firstArg);
   }
-  if (command.command !== process.execPath && fs.existsSync(command.command)) {
+  if (!runsThisNode && fs.existsSync(command.command)) {
     return fileSha256(path.resolve(command.command));
   }
   return null;
@@ -1319,9 +1330,12 @@ export function resolveAdeServeCommand(): AdeServiceCommand {
   // Same path `resolveCliScriptPath` in the desktop pool hands the brain it
   // spawns, so the command matches the running brain's character for character.
   const mainCli = electronMainCliScript();
+  // `process.execPath`, except in a Mac app bundle, where the brain-executable
+  // switch picks the app or its helper (`brainExecutable.ts`).
+  const nodeExecutable = resolveBrainNodeExecutable(process.execPath);
   if (mainCli) {
     return withRuntimeBuildHash({
-      command: process.execPath,
+      command: nodeExecutable,
       args: [mainCli, "serve"],
       env: runtimeEnvironment(mainCli),
     });
@@ -1332,7 +1346,7 @@ export function resolveAdeServeCommand(): AdeServiceCommand {
   const isNodeScript = /\.(?:cjs|mjs|js|ts)$/i.test(entry) && fs.existsSync(entry);
   if (isNodeScript) {
     return withRuntimeBuildHash({
-      command: process.execPath,
+      command: nodeExecutable,
       args: [entry, "serve"],
       env: runtimeEnvironment(entry),
     });
@@ -1345,7 +1359,7 @@ export function resolveAdeServeCommand(): AdeServiceCommand {
     });
   }
   return withRuntimeBuildHash({
-    command: process.execPath,
+    command: nodeExecutable,
     args: ["serve"],
     env: runtimeEnvironment(),
   });

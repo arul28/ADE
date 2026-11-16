@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
+import { electronMacAppBundlePath } from "../../serviceManager/brainExecutable";
 import { JsonRpcClient, JsonRpcResponseError } from "../../lib/jsonRpcClient";
 import type { UpdateRequestedBy } from "../../../../desktop/src/shared/types/remoteRuntime";
 
@@ -184,7 +185,7 @@ export async function requestDesktopAppUpdate(args: {
 /**
  * The installed ADE app this brain runs from, when the brain is the app's own:
  * launchd runs `/Applications/ADE.app/Contents/MacOS/ADE … cli.cjs serve`
- * (the bundle is returned), and the Windows per-user service runs
+ * or the app's helper (the bundle is returned), and the Windows per-user service runs
  * `ADE.exe …\\ade-cli\\cli.cjs serve` as Node (the exe is returned). Null for
  * the standalone runtime (`ade` / `ade.exe`, which is not Electron), a
  * development brain (node, or the bare Electron under `node_modules`, which
@@ -196,7 +197,9 @@ export function hostAppPath(
   electronVersion: string | undefined = process.versions.electron,
 ): string | null {
   if (/[\\/]node_modules[\\/]/.test(execPath)) return null;
-  if (platform === "darwin") return /^(\/.*?\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1] ?? null;
+  // A brain on the app's helper (the brain-executable switch) belongs to the
+  // app around it, never to the nested `ADE Helper.app`.
+  if (platform === "darwin") return electronMacAppBundlePath(execPath);
   if (platform === "win32") return electronVersion && /\.exe$/i.test(execPath) ? execPath : null;
   return null;
 }

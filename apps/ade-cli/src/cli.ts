@@ -643,6 +643,7 @@ import {
 import {
   defaultRuntimeCompileCacheDir,
   isCurrentProcessDescendantOfPid,
+  isSameElectronRuntime,
   resolveAdeServeCommand,
   RuntimeServiceStillStartingError,
   type AdeServiceCommand,
@@ -27761,8 +27762,10 @@ function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): 
   const args = [...serviceCommand.args];
   let buildHash: string | null = null;
   let filePath: string | null = null;
+  // The app's helper (the brain-executable switch) runs this process's Node.
+  const runsThisNode = isSameElectronRuntime(serviceCommand.command, process.execPath);
   if (
-    serviceCommand.command === process.execPath &&
+    runsThisNode &&
     args.length === 1 &&
     args[0] === "serve" &&
     fs.existsSync(CLI_DIST_PATH)
@@ -27770,7 +27773,7 @@ function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): 
     args.splice(0, 1, CLI_DIST_PATH, "serve");
     filePath = CLI_DIST_PATH;
     buildHash = computeRuntimeBuildHash(filePath);
-  } else if (serviceCommand.command === process.execPath && args[0]) {
+  } else if (runsThisNode && args[0]) {
     filePath = path.resolve(args[0]);
     buildHash = computeRuntimeBuildHash(filePath);
   } else if (fs.existsSync(serviceCommand.command)) {
@@ -30050,6 +30053,8 @@ async function runServe(
   // A refused project's folder is not read for account settings, nor counted
   // for this cloud computer's disk report.
   const refusedRoot = (rootPath: string): boolean => {
+    // Asked on every account-settings read; with no refusal the project list is not needed.
+    if (!projectOpenStrikes.anyBlocked()) return false;
     const resolved = path.resolve(rootPath);
     const record = projectRegistry.list().find((entry) => entry.rootPath === resolved);
     return Boolean(record && projectOpenStrikes.blocked(record.projectId));

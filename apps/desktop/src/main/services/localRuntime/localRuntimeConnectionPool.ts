@@ -1394,6 +1394,8 @@ export class LocalRuntimeConnectionPool {
   // still connected may serve the long window; see `serviceHealthReadMaxAgeMs`.
   private serviceHealthSteadyClient: RuntimeRpcClient | null = null;
   private runtimeStatusRefreshPromise: Promise<void> | null = null;
+  /** The last status pushed to the windows, serialized; a refresh that matches it pushes nothing. */
+  private lastEmittedRuntimeStatus: string | null = null;
   // Rolling 24 h aggregate of slow (>500 ms) and of failed daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
   private healthSamples: HealthSample[] = [];
@@ -1567,7 +1569,11 @@ export class LocalRuntimeConnectionPool {
         this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
         this.activeRuntimeLastWedge = runtimeInfo.lastWedge;
         this.activeRuntimeLastUnplannedRestart = runtimeInfo.lastUnplannedRestart;
-        this.emitRuntimeStatusChange();
+        // `app.getInfo` asks for this every 15 s from each window. A status the
+        // same as the last one pushed is not a change: pushing it again would
+        // wake every window's status listeners for nothing. Any other change
+        // since that push (service health, skew, mode) still goes out here.
+        this.emitRuntimeStatusChange({ onlyIfChanged: true });
       } catch (error) {
         this.logger.debug("local_runtime.status_refresh_failed", {
           error: error instanceof Error ? error.message : String(error),
@@ -1582,9 +1588,13 @@ export class LocalRuntimeConnectionPool {
     await refresh;
   }
 
-  private emitRuntimeStatusChange(): void {
+  private emitRuntimeStatusChange(options: { onlyIfChanged?: boolean } = {}): void {
+    const snapshot = this.statusSnapshot();
+    const serialized = JSON.stringify(snapshot);
+    if (options.onlyIfChanged && serialized === this.lastEmittedRuntimeStatus) return;
+    this.lastEmittedRuntimeStatus = serialized;
     try {
-      this.options.onRuntimeStatusChange?.(this.statusSnapshot());
+      this.options.onRuntimeStatusChange?.(snapshot);
     } catch (error) {
       this.logger.warn("local_runtime.status_listener_failed", {
         error: error instanceof Error ? error.message : String(error),

@@ -330,6 +330,16 @@ type CanonicalLookupMode = {
   lookup?: "spawn" | "none";
 };
 
+/** Canonical origins that needed no ssh lookup, by origin text. Bounded like the lookup cache. */
+const SETTLED_CANONICAL_ORIGIN_LIMIT = 128;
+const settledCanonicalOrigins = new Map<string, string>();
+
+function settleCanonicalOrigin(value: string, url: string): string {
+  if (settledCanonicalOrigins.size >= SETTLED_CANONICAL_ORIGIN_LIMIT) settledCanonicalOrigins.clear();
+  settledCanonicalOrigins.set(value, url);
+  return url;
+}
+
 /** {@link canonicalGitOriginUrl}, and whether the ssh lookup failed. */
 export function resolveCanonicalGitOrigin(
   remoteUrl: string | null | undefined,
@@ -337,11 +347,15 @@ export function resolveCanonicalGitOrigin(
 ): CanonicalGitOrigin {
   const value = typeof remoteUrl === "string" ? remoteUrl.trim() : "";
   if (!value) return { url: null, lookupFailed: false };
+  // Main asks this for the window's project on every window-session read. An
+  // answer that needed no ssh lookup depends on the text alone, so it is kept.
+  const settled = settledCanonicalOrigins.get(value);
+  if (settled !== undefined) return { url: settled, lookupFailed: false };
   const remote = parseSshRemote(value);
   if (parseGithubRemoteUrl(value)) {
     // GitHub's port-443 host is the same service: one repository, one key.
     const viaSshHost = remote && remote.host.toLowerCase() === "ssh.github.com" && parseGithubRemoteUrl(remote.withGithubHost);
-    return { url: viaSshHost ? remote.withGithubHost : value, lookupFailed: false };
+    return { url: settleCanonicalOrigin(value, viaSshHost ? remote.withGithubHost : value), lookupFailed: false };
   }
   if (
     !remote
@@ -349,8 +363,9 @@ export function resolveCanonicalGitOrigin(
     || isGithubRemoteHost(remote.host)
     || KNOWN_FORGE_HOSTS.has(remote.host.toLowerCase())
   ) {
-    return { url: value, lookupFailed: false };
+    return { url: settleCanonicalOrigin(value, value), lookupFailed: false };
   }
+  // From here the answer can depend on this machine's ssh config: never kept.
   if (mode.lookup === "none") return { url: value, lookupFailed: false };
   const lookup = resolveSshHostnameSync(remote);
   if (lookup.hostname && isGithubRemoteHost(lookup.hostname) && parseGithubRemoteUrl(remote.withGithubHost)) {
