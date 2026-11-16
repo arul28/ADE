@@ -285,7 +285,7 @@ function PlanFinder() {
           />
           <Slider
             id="finder-hours"
-            label="Hours a month, each"
+            label="Hours a month, each machine"
             value={hoursEach}
             min={HOURS_STEP}
             max={Math.floor(MAX_HOURS_A_MONTH / HOURS_STEP) * HOURS_STEP}
