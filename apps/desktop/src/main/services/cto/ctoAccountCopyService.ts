@@ -27,6 +27,7 @@ import {
   CTO_ACCOUNT_COPY_VAULT_KIND,
   type CtoAccountCopy,
   type CtoAccountCopyRoutine,
+  type CtoAccountCopyStory,
   type CtoAccountCopyStatus,
   type CtoAdoptAccountCopyResult,
 } from "../../../shared/ctoAccountCopy";
@@ -95,7 +96,8 @@ export type CtoAccountCopyServiceArgs = {
     getIdentity: () => CtoIdentity;
     updateIdentity: (patch: Partial<Omit<CtoIdentity, "version" | "updatedAt">>) => unknown;
   };
-  ctoMemory: Pick<CtoMemoryService, "readNotes" | "writeNotes" | "readOpenWorkText" | "replaceOpenWorkText">;
+  ctoMemory: Pick<CtoMemoryService, "readNotes" | "writeNotes" | "readOpenWorkText" | "replaceOpenWorkText">
+    & Partial<Pick<CtoMemoryService, "readStory" | "writeStory">>;
   /** The CTO thread's tail and routines, read when a copy is written. */
   readSources: () => Promise<CtoAccountCopySources>;
   /** Re-creates routines on this machine's CTO thread, replacing the ones it had. Null: the thread doesn't exist yet. */
@@ -146,12 +148,18 @@ function portableIdentity(identity: CtoIdentity): Record<string, unknown> {
 
 export function encodeCtoAccountCopy(copy: CtoAccountCopy): string | null {
   let candidate = copy;
-  // A long tail is what grows past the ceiling: keep its newest half until it fits.
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  // A long tail is what grows past the ceiling: keep its newest half until it
+  // fits. The story (at most 12k) goes only when no tail is left to cut.
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     const encoded = `${ENCODED_PREFIX}${gzipSync(Buffer.from(JSON.stringify(candidate), "utf8")).toString("base64")}`;
     if (encoded.length <= CTO_ACCOUNT_COPY_MAX_CHARS) return encoded;
-    if (!candidate.tail) return null;
-    candidate = { ...candidate, tail: candidate.tail.length < 512 ? "" : candidate.tail.slice(Math.floor(candidate.tail.length / 2)) };
+    if (candidate.tail) {
+      candidate = { ...candidate, tail: candidate.tail.length < 512 ? "" : candidate.tail.slice(Math.floor(candidate.tail.length / 2)) };
+    } else if (candidate.story) {
+      candidate = { ...candidate, story: null };
+    } else {
+      return null;
+    }
   }
   return null;
 }
@@ -175,6 +183,16 @@ export function decodeCtoAccountCopy(value: string | null | undefined): CtoAccou
           Boolean(routine) && typeof routine.prompt === "string" && typeof routine.cron === "string" && routine.cron.trim().length > 0)
         : [],
       tail: typeof parsed.tail === "string" ? parsed.tail : "",
+      story: parsed.story
+        && typeof parsed.story.summary === "string"
+        && parsed.story.summary.trim()
+        && typeof parsed.story.coveredThrough === "string"
+        ? {
+          summary: parsed.story.summary,
+          coveredThrough: parsed.story.coveredThrough,
+          startsAt: typeof parsed.story.startsAt === "string" ? parsed.story.startsAt : parsed.story.coveredThrough,
+        }
+        : null,
     };
   } catch {
     return null;
@@ -251,6 +269,17 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     }
   };
 
+  /** The story as it travels: its summary only (turns a move carried here ride in the tail). */
+  const readPortableStory = (): CtoAccountCopyStory | null => {
+    try {
+      const story = args.ctoMemory.readStory?.() ?? null;
+      if (!story?.summary.trim()) return null;
+      return { summary: story.summary, startsAt: story.startsAt, coveredThrough: story.coveredThrough };
+    } catch {
+      return null;
+    }
+  };
+
   const build = async (): Promise<CtoAccountCopy | null> => {
     const self = me();
     if (!self) return null;
@@ -270,6 +299,7 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       // Routines a move brought that have no CTO thread to land on yet.
       routines: readJson<{ routines?: CtoAccountCopyRoutine[] }>(carriedRoutinesPath)?.routines ?? sources.routines,
       tail,
+      story: readPortableStory(),
     };
   };
 
@@ -476,6 +506,28 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       tail: copy.tail,
     });
     writeJson(carriedRoutinesPath, { routines: copy.routines });
+    // The old home's story, with the carried turns waiting to be folded into
+    // it. It covers through the move: this machine's older turns are from an
+    // earlier stay, older than anything the copy holds.
+    try {
+      const restoredAt = new Date(now()).toISOString();
+      if (copy.story?.summary.trim() || copy.tail.trim()) {
+        args.ctoMemory.writeStory?.({
+          v: 1,
+          summary: copy.story?.summary ?? "",
+          startsAt: copy.story?.startsAt ?? restoredAt,
+          coveredThrough: restoredAt,
+          updatedAt: restoredAt,
+          model: null,
+          carried: copy.tail.trim() ? { fromName: copy.ownerName, text: copy.tail } : null,
+          movedAt: restoredAt,
+        });
+      } else {
+        args.ctoMemory.writeStory?.(null);
+      }
+    } catch (error) {
+      logger.warn("cto.account_copy_story_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
     await applyCarriedRoutines();
     await args.startFreshThread?.().catch((error: unknown) => {
       logger.warn("cto.account_copy_fresh_thread_failed", { error: error instanceof Error ? error.message : String(error) });

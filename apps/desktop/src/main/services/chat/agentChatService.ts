@@ -214,6 +214,20 @@ import {
 } from "./ctoThreadFallback";
 import { createCtoHistoryReader } from "../cto/ctoHistoryReader";
 import {
+  buildCtoHistoryBlock,
+  buildCtoStoryPrompt,
+  cleanCtoStoryAnswer,
+  countUncoveredBeforeTail,
+  CTO_STORY_MAX_BATCHES_PER_RUN,
+  CTO_STORY_RETRY_AFTER_FAILURE_MS,
+  CTO_STORY_SYSTEM_PROMPT,
+  CTO_STORY_TIMEOUT_MS,
+  CTO_STORY_TURNS_BETWEEN_CHECKS,
+  planCtoStoryFold,
+  selectCtoTail,
+  type CtoStoryRecord,
+} from "../cto/ctoStory";
+import {
   drainRunningClaudeWorkflowAgents,
   finalizeClaudeWorkflowProgress,
   parseClaudeWorkflowProgress,
@@ -14150,6 +14164,158 @@ export function createAgentChatService(args: {
     });
   };
 
+  // ── The CTO's story so far (`ctoStory.ts`) ──
+  //
+  // A running summary of the CTO conversation older than what a fresh thread
+  // carries word for word. Written in the background on the helper model that
+  // names chats (same picker, same account, lowest effort, never Fast), a
+  // batch at a time, and only ever moved forward.
+  const ctoStoryJobs = new Map<string, Promise<void>>();
+  const ctoStoryAgain = new Map<string, { force: boolean; reason: string }>();
+  const ctoStoryTurnsSinceCheck = new Map<string, number>();
+  let ctoStoryRetryAfter = 0;
+
+  const readCtoStorySafely = (): CtoStoryRecord | null => {
+    try {
+      return ctoMemoryService?.readStory() ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const pickCtoStoryModel = async (managed: ManagedChatSession): Promise<string | null> => {
+    const auth = await detectAuth();
+    const availableModels = await getAvailableRegistryModels(auth);
+    return buildSessionIntelligenceModelCandidates({
+      availableModels,
+      provider: managed.session.provider,
+      sessionModelId: managed.session.modelId,
+      sessionModel: managed.session.model,
+    })[0] ?? null;
+  };
+
+  const runCtoStoryUpdate = async (managed: ManagedChatSession, options: { force: boolean; reason: string }): Promise<void> => {
+    const sessionId = managed.session.id;
+    if (!ctoMemoryService || managed.session.identityKey !== "cto") return;
+    // After a failure, wait before paying again, unless a fresh thread needs it now.
+    if (!options.force && Date.now() < ctoStoryRetryAfter) return;
+    for (let batch = 0; batch < CTO_STORY_MAX_BATCHES_PER_RUN; batch += 1) {
+      if (managed.closed || managed.deleted) return;
+      const story = readCtoStorySafely();
+      const carried = story?.carried?.text.trim() ? story.carried : null;
+      const plan = planCtoStoryFold({
+        entries: collectConversationEntries(managed),
+        story,
+        force: options.force,
+      });
+      if (!plan && !carried) return;
+      const modelId = await pickCtoStoryModel(managed);
+      if (!modelId) {
+        logger.info("cto.story_skipped", { sessionId, reason: "no_helper_model" });
+        return;
+      }
+      const startedAt = Date.now();
+      let answer: Awaited<ReturnType<typeof runSessionIntelligencePrompt>>;
+      try {
+        answer = await runSessionIntelligencePrompt({
+          cwd: managed.laneWorktreePath,
+          modelId,
+          systemPrompt: CTO_STORY_SYSTEM_PROMPT,
+          prompt: buildCtoStoryPrompt({
+            previousSummary: story?.summary ?? null,
+            carried,
+            batch: plan?.batch ?? [],
+            gap: plan?.gap ?? null,
+          }),
+          timeoutMs: CTO_STORY_TIMEOUT_MS,
+          taskType: "continuity_summary",
+          providerAccount: sessionProviderAccount(managed),
+        });
+      } catch (error) {
+        ctoStoryRetryAfter = Date.now() + CTO_STORY_RETRY_AFTER_FAILURE_MS;
+        logger.warn("cto.story_update_failed", { sessionId, modelId, reason: options.reason, error: getErrorMessage(error) });
+        return;
+      }
+      const summary = cleanCtoStoryAnswer(answer.text);
+      if (!summary) {
+        ctoStoryRetryAfter = Date.now() + CTO_STORY_RETRY_AFTER_FAILURE_MS;
+        logger.warn("cto.story_answer_unusable", { sessionId, modelId, chars: answer.text?.length ?? 0 });
+        return;
+      }
+      // A move may have replaced the story while the helper ran: keep its version.
+      const current = readCtoStorySafely();
+      if ((current?.coveredThrough ?? null) !== (story?.coveredThrough ?? null) || (current?.summary ?? null) !== (story?.summary ?? null)) {
+        logger.info("cto.story_superseded", { sessionId });
+        return;
+      }
+      const coveredThrough = plan?.nextCursor ?? story?.coveredThrough ?? new Date().toISOString();
+      ctoMemoryService.writeStory({
+        v: 1,
+        summary,
+        coveredThrough,
+        startsAt: plan?.startsAt ?? story?.startsAt ?? coveredThrough,
+        updatedAt: new Date().toISOString(),
+        model: answer.model ?? modelId,
+        carried: null,
+        ...(story?.movedAt ? { movedAt: story.movedAt } : {}),
+      });
+      ctoStoryRetryAfter = 0;
+      logger.info("cto.story_updated", {
+        sessionId,
+        reason: options.reason,
+        modelId,
+        folded: plan?.batch.length ?? 0,
+        carried: Boolean(carried),
+        gap: Boolean(plan?.gap),
+        chars: summary.length,
+        durationMs: Date.now() - startedAt,
+      });
+      if (!plan?.more) return;
+    }
+  };
+
+  /**
+   * Brings the story up to date in the background. One run per chat at a
+   * time; a request during a run runs once more after it. `force` folds
+   * whatever is outside the tail, however little (a fresh thread is coming).
+   */
+  const updateCtoStory = (managed: ManagedChatSession, options: { force?: boolean; reason: string }): Promise<void> => {
+    const sessionId = managed.session.id;
+    const request = { force: options.force === true, reason: options.reason };
+    const running = ctoStoryJobs.get(sessionId);
+    if (running) {
+      const queued = ctoStoryAgain.get(sessionId);
+      ctoStoryAgain.set(sessionId, { force: request.force || queued?.force === true, reason: request.reason });
+      return running;
+    }
+    const job = (async () => {
+      try {
+        await runCtoStoryUpdate(managed, request);
+      } catch (error) {
+        logger.warn("cto.story_update_failed", { sessionId, reason: request.reason, error: getErrorMessage(error) });
+      } finally {
+        ctoStoryJobs.delete(sessionId);
+        const again = ctoStoryAgain.get(sessionId);
+        ctoStoryAgain.delete(sessionId);
+        if (again) void updateCtoStory(managed, again);
+      }
+    })();
+    ctoStoryJobs.set(sessionId, job);
+    return job;
+  };
+
+  /** After a CTO turn: check the backlog every few turns, not after every one. */
+  const noteCtoTurnForStory = (managed: ManagedChatSession): void => {
+    if (managed.session.identityKey !== "cto" || !ctoMemoryService) return;
+    const turns = (ctoStoryTurnsSinceCheck.get(managed.session.id) ?? 0) + 1;
+    if (turns < CTO_STORY_TURNS_BETWEEN_CHECKS) {
+      ctoStoryTurnsSinceCheck.set(managed.session.id, turns);
+      return;
+    }
+    ctoStoryTurnsSinceCheck.set(managed.session.id, 0);
+    void updateCtoStory(managed, { reason: "turns" });
+  };
+
   /**
    * A `hydrate: false` attachment on Codex: no staged copy (staging reads every
    * byte, which on macOS downloads a File Provider placeholder), just the
@@ -18143,28 +18309,31 @@ export function createAgentChatService(args: {
   const collectConversationEntries = (
     managed: ManagedChatSession,
     options?: { sinceIso?: string | null },
-  ): Array<SessionMetadataConversationEntry & { displayText?: string }> => {
+  ): Array<SessionMetadataConversationEntry & { displayText?: string; at?: string }> => {
     const sinceIso = options?.sinceIso ?? null;
     // Assistant replies are stored as streamed chunks ("raises a", " Windows
     // admin"), so one reply is many `text` events: join each turn's chunks
     // with `joinAssistantChunk`, the same rule the live ring uses. Only the
     // transcript's recent tail is read, plus events still on their way to
     // disk, so a refresh right after a turn ends sees that turn's last words.
-    const fromTranscript: Array<SessionMetadataConversationEntry & { displayText?: string; turnId?: string; messageId?: string }> = [];
+    // `at` is when the message ended (a reply's last chunk), so a story that
+    // covers through it covers all of it.
+    const fromTranscript: Array<SessionMetadataConversationEntry & { displayText?: string; turnId?: string; messageId?: string; at?: string }> = [];
     try {
       for (const { event, timestamp } of readRecentTranscriptEnvelopes(managed)) {
         if (sinceIso && timestamp < sinceIso) continue;
         if (event.type === "user_message") {
           const text = event.text.trim();
           const displayText = event.displayText?.trim();
-          if (text) fromTranscript.push({ role: "user", text, ...(displayText ? { displayText } : {}) });
+          if (text) fromTranscript.push({ role: "user", text, at: timestamp, ...(displayText ? { displayText } : {}) });
         } else if (event.type === "text") {
           const last = fromTranscript[fromTranscript.length - 1];
           if (last?.role === "assistant" && last.turnId === event.turnId) {
             last.text = joinAssistantChunk(last, event);
+            last.at = timestamp;
             if (event.messageId) last.messageId = event.messageId;
           } else if (event.text.trim()) {
-            fromTranscript.push({ role: "assistant", text: event.text, turnId: event.turnId, messageId: event.messageId });
+            fromTranscript.push({ role: "assistant", text: event.text, turnId: event.turnId, messageId: event.messageId, at: timestamp });
           }
         }
       }
@@ -18183,6 +18352,7 @@ export function createAgentChatService(args: {
         role: entry.role,
         text: entry.text.trim(),
         ...(entry.displayText?.trim() ? { displayText: entry.displayText.trim() } : {}),
+        ...("at" in entry && typeof entry.at === "string" ? { at: entry.at } : {}),
       }))
       .filter((entry) => entry.text.length > 0);
   };
@@ -18447,7 +18617,7 @@ export function createAgentChatService(args: {
     // account copy. They come first, then only this thread's turns since the
     // move (older turns here, from an earlier stay, are older than the
     // carried ones), until it has as many of its own.
-    let carriedConversation = "";
+    let carriedTurns: { fromName: string; text: string } | null = null;
     let sinceMove: ReturnType<typeof collectConversationEntries> | null = null;
     if (isCto && managed.conversationTail.pending && ctoAccountCopyHooks) {
       const carried = ctoAccountCopyHooks.carriedTail();
@@ -18457,23 +18627,30 @@ export function createAgentChatService(args: {
           ctoAccountCopyHooks.dropCarriedTail();
         } else {
           sinceMove = own;
-          carriedConversation = [
-            `Earlier, on ${carried.fromName} (your previous home; ADE moved you to this computer and kept your notes):`,
-            carried.tail,
-          ].join("\n");
+          carriedTurns = { fromName: carried.fromName, text: carried.tail };
         }
       }
     }
-    const recentConversation = !managed.conversationTail.pending
-      ? ""
-      : sinceMove
-        ? formatConversationTranscript(sinceMove.slice(-40))
-        : buildRecentConversationContext(managed, isCto ? 40 : 20);
-    if (recentConversation.length || carriedConversation.length) {
-      sections.push({
-        id: "tail",
-        text: [RECENT_CONVERSATION_TAIL_TITLE, carriedConversation, recentConversation].filter((part) => part.length > 0).join("\n"),
+    if (managed.conversationTail.pending && isCto) {
+      // The CTO's history (`ctoStory.ts`): the story so far, then the newest
+      // messages that fit a size budget, tagged as history so nothing in them
+      // reads as a new instruction.
+      const entries = sinceMove ?? collectConversationEntries(managed);
+      const story = readCtoStorySafely();
+      const { kept: tailEntries, firstKeptIndex } = selectCtoTail(entries);
+      const block = buildCtoHistoryBlock({
+        title: RECENT_CONVERSATION_TAIL_TITLE,
+        story,
+        carried: carriedTurns,
+        tail: tailEntries,
+        omitted: countUncoveredBeforeTail(entries, firstKeptIndex, story),
       });
+      if (block.length) sections.push({ id: "tail", text: block });
+    } else if (managed.conversationTail.pending) {
+      const recentConversation = buildRecentConversationContext(managed, 20);
+      if (recentConversation.length) {
+        sections.push({ id: "tail", text: [RECENT_CONVERSATION_TAIL_TITLE, recentConversation].join("\n") });
+      }
     }
 
     const kept = sections
@@ -24901,6 +25078,7 @@ export function createAgentChatService(args: {
           occupancyPct: readTurnOccupancyPct(managed, storedEvent),
           errorText: turnErrorText,
         });
+        if (storedEvent.status === "completed") noteCtoTurnForStory(managed);
       }
     }
 
@@ -74023,12 +74201,16 @@ export function createAgentChatService(args: {
         provider: managed.session.provider,
         reason,
       });
+      // Fold what fell out of the tail into the story now, however little, so
+      // the next fresh thread (and the first send here, which rebuilds the
+      // block) gets it. In the background: the send never waits on the helper.
+      void updateCtoStory(managed, { force: true, reason: `refresh_${reason}` });
       if (options.notice !== false) {
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
           status: CTO_CONTEXT_REFRESHED_STATUS,
-          message: "Fresh context — notes, open work and the last 40 messages carried over.",
+          message: "Fresh context — notes, open work, the story so far and the newest messages carried over.",
         });
       }
       return { refreshed: true };
