@@ -528,7 +528,7 @@ import { renderScenePreview } from "./services/scenes/scenePreviewRenderer";
 import { configureBuiltInBrowserWebAuthn, openBuiltInBrowserSession } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
-import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
+import { blockPackagedLaunchForCrossChannelSyncConflict, resolveLaunchingDesktopAppName } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService, shouldShowInstalledNotice, WINDOWS_PREPARE_WATCHDOG_MS } from "./services/updates/autoUpdateService";
 import { createLatestByTrackReader } from "./services/updates/latestByTrack";
 import { fetchAdeLatestRelease } from "./services/github/adeReleaseFeed";
@@ -10591,19 +10591,23 @@ app.whenReady().then(async () => {
         fallback,
       );
     };
+    const menuProductName = resolveLaunchingDesktopAppName(normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL));
     const template: Electron.MenuItemConstructorOptions[] = [
       ...(process.platform === "darwin"
         ? [{
-            label: app.name,
+            // Electron labels these roles with `app.name`, which is the
+            // package name ("ade-desktop", or "ade-desktop-alpha" for an Alpha
+            // with its own key, see safeStorageKeyName.ts), not the product.
+            label: menuProductName,
             submenu: [
-              { role: "about" as const },
+              { role: "about" as const, label: `About ${menuProductName}` },
               nativeUpdateMenuItem(autoUpdateService.getSnapshot(), runUpdateFromNativeUi),
               { type: "separator" as const },
-              { role: "hide" as const },
+              { role: "hide" as const, label: `Hide ${menuProductName}` },
               { role: "hideOthers" as const },
               { role: "unhide" as const },
               { type: "separator" as const },
-              { role: "quit" as const },
+              { role: "quit" as const, label: `Quit ${menuProductName}` },
             ],
           }]
         : []),
