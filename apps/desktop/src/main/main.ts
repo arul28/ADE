@@ -11348,6 +11348,13 @@ app.whenReady().then(async () => {
     onCloseRequested: handleMainWindowCloseRequested,
     hidden: quitInstallLaunch,
   });
+  // Node loads its `fetch` code on the first call: about 10 ms of main thread.
+  // The first call came from the window's own launch reads (ADE Cloud access,
+  // analytics), inside its wait for its session. Make that first call now, a
+  // `data:` read with no network, while main only waits for the page to load.
+  setImmediate(() => {
+    void fetch("data:,").catch(() => {});
+  });
   const initialWindow = await initialWindowLoad;
   markMainBoot("firstPageLoadedMs");
   getMachineMainLogger().info("startup.main_boot", { ...mainBootMarks });
