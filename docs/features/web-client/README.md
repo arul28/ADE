@@ -1531,8 +1531,10 @@ URL contract.
   `webRoutes.ts`, then mapped to the same in-app routes the desktop renderer
   uses (`/lanes`, `/work`, `/prs`).
 - The arriving target is kept in localStorage for 10 minutes
-  (`shell/pendingTarget.ts`), like the sign-in stash, so it survives a sign-in
-  round trip that loses session storage.
+  (`shell/pendingTarget.ts`, on the shared `shell/linkStash.ts`), like the
+  sign-in stash, so it survives a sign-in round trip that loses session
+  storage. The stash also reads the field an older build wrote, so a link
+  saved just before a deploy still restores.
 - **Owned links** (chat, lane or PR links carrying `accountMachineKey` +
   `projectId`) are resolved by `shell/ownedLinkResolution.ts` after sign-in,
   instead of restoring the last project: find the account machine by key,
@@ -1555,7 +1557,8 @@ URL contract.
 - Links reach the web client from the website's `/open` page ("Open in your
   browser", or a remembered browser choice), which forwards the query
   unchanged; see [Deeplinks](../deeplinks/README.md).
-- **ADE Cloud plan links** (`shell/cloudPlanLink.ts`, `WebCloudPlanLink.tsx`).
+- **ADE Cloud plan links** (`shell/cloudPlanLink.ts`, `WebCloudPlanLink.tsx`,
+  kept with `shell/linkStash.ts`).
   `https://app.ade-app.dev/?cloudPlan=<free|plus|pro|max>` comes from the
   website's plan buttons; `/?cloudReturn=<done|cancelled|portal|card|card_cancelled>`
   is where Stripe sends the person back (the account server builds it from

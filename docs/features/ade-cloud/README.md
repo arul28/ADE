@@ -51,8 +51,10 @@ carries the provider's own explanation, cleaned: `cloudRefusalMessage` in
 
 `getCloudProvider(deps)` returns ADE Cloud for this account, or null. It needs a
 signed-in ADE account. The bearer is the account token; no provider key exists
-on any desktop or brain. `/cloud/access` is read at most every 10 minutes per
-account (a cached yes survives a failed check). The `signedOut`, `no_access` and
+on any desktop or brain. ADE Cloud is open to every signed-in account: the
+server has no access list, and `/cloud/access` always answers `{ enabled: true }`
+for builds that ask. It is read at most every 10 minutes per account (a cached
+yes survives a failed check). The `signedOut`, `no_access` and
 `unreadable` states keep their sentences (`requireCloudProvider`,
 `readCloudStatus`).
 

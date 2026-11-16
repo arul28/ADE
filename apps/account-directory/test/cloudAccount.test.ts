@@ -1057,6 +1057,31 @@ describe("ADE Cloud account", () => {
     expect(harness.row("select extra_enabled from cloud_accounts where user_id = ?", OWNER).extra_enabled).toBe(1);
   });
 
+  // Where Stripe sends the person back comes only from this server's own settings, never from the request.
+  it.each<[string, Row, Record<string, unknown>, { success: string; cancel: string } | null]>([
+    ["no returnTo: this server's page, on the request's origin", {}, {}, { success: "https://directory.test/billing/return?to=done&plan=plus", cancel: "https://directory.test/billing/return?to=cancelled" }],
+    ["no returnTo with BILLING_RETURN_ORIGIN: the clean domain", { BILLING_RETURN_ORIGIN: "https://account.ade.test" }, {}, { success: "https://account.ade.test/billing/return?to=done&plan=plus", cancel: "https://account.ade.test/billing/return?to=cancelled" }],
+    ["returnTo web: the web client's own origin", { WEB_CLIENT_ORIGIN: "https://app.ade.test" }, { returnTo: "web" }, { success: "https://app.ade.test/?cloudReturn=done", cancel: "https://app.ade.test/?cloudReturn=cancelled" }],
+    ["returnTo web with no web client set up is refused", {}, { returnTo: "web" }, null],
+    ["a returnTo naming an address is refused", { WEB_CLIENT_ORIGIN: "https://app.ade.test" }, { returnTo: "https://evil.test" }, null],
+  ])("checkout's way back: %s", async (_label, env, extra, expected) => {
+    Object.assign(harness.env, MONEY_ENV, env);
+    seedAccount(harness, OWNER, { stripe_customer_id: "cus_1" });
+    harness.net.once.push({ match: /POST .*\/checkout\/sessions$/, reply: harness.net.reply({ url: "https://checkout.stripe.test/s" }) });
+
+    const response = await harness.send(OWNER, "POST", "/cloud/billing/checkout", { plan: "plus", ...extra });
+
+    const sessions = providerCalls(harness, /POST .*\/checkout\/sessions$/);
+    if (!expected) {
+      expect(response.status).toBe(400);
+      expect(sessions).toHaveLength(0);
+      return;
+    }
+    expect(response.status).toBe(200);
+    expect(sessions[0]?.body?.success_url).toBe(expected.success);
+    expect(sessions[0]?.body?.cancel_url).toBe(expected.cancel);
+  });
+
   const ITEM_CREATE = /POST .*\/subscription_items$/;
   it.each<[string, Row, Row[], { status: number; times?: number; landed?: boolean } | null, number, string[]]>([
     // A subscription bought before Cloud 8 already bills extra hours (on the first price until its renewal moves it).

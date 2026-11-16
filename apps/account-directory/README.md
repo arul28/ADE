@@ -874,7 +874,7 @@ this server's own `WEB_CLIENT_ORIGIN`, never from the request, so it is not
 an open redirect; any other `returnTo`, or no web client set, is a 400.
 `POST /cloud/billing/extra-hours` takes `{ enabled }`, paid plan only.
 
-`POST /webhooks/stripe` is outside the access list and is checked with the
+`POST /webhooks/stripe` takes no account bearer and is checked with the
 signature instead. `cloud_stripe_events` makes each event run once. A handler
 uses its event only to find the subscription and re-reads it from Stripe, so
 late or reordered events land in the same place. Checkout completing sets the
