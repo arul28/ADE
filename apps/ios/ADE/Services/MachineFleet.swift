@@ -474,7 +474,8 @@ final class MachineFleet: ObservableObject {
     // dials it at once with what it published (`accountMachinesLoaded`).
     var nextAccountRead = clock.now.advanced(by: .seconds(4))
     var nextFocusedDial = clock.now
-    while clock.now < deadline, !Task.isCancelled {
+    // A Disconnect (or a newer Connect) the user chose ends this wait at once.
+    while clock.now < deadline, !Task.isCancelled, choice == keepLiveChoices {
       // A pairing on a phone with no primary makes this computer the primary.
       // The fleet does not dial the primary: its own link does, so wait for it.
       if let syncService, syncService.focusedMachineKey == machineKey {
