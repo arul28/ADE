@@ -958,6 +958,7 @@ import { registerMachineConnectIpc } from "../machines/registerMachineConnectIpc
 import type { MachineWakeResult } from "../machines/machineConnector";
 import { registerCloudLaneLaunchIpc } from "../adeCloud/registerCloudLaneLaunchIpc";
 import { getMachineMainLogger } from "../logging/machineLogger";
+import { startStartupLoopStallWatch, takeStartupLoopStalls } from "../logging/startupLoopStalls";
 import { registerCloudSavedChatsIpc } from "../cloudChats/registerCloudSavedChatsIpc";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
 import type { McpRegistryServer } from "../../../shared/mcpRegistry";
@@ -3607,22 +3608,33 @@ export function registerIpc({
   });
 
   let windowSessionAnswered = false;
+  let windowSessionReadsBeforeAnswer = 0;
+  // Launch diagnostics for the first answer (see `startupLoopStalls.ts`).
+  startStartupLoopStallWatch();
   handle(IPC.appGetWindowSession, async (event) => {
     const receivedMs = Math.round(process.uptime() * 1000);
+    const receivedAtEpochMs = Date.now();
+    if (!windowSessionAnswered) windowSessionReadsBeforeAnswer += 1;
     // The first window can load before the launch has opened its project.
     await waitForStartupProjectOpen?.();
     // The window can close while the launch is still opening its project.
     if (event.sender.isDestroyed()) return null;
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     if (!windowSessionAnswered) {
-      // Launch report: when main got the first window's session request and
-      // answered it (process uptime and wall clock, to line up with the
-      // renderer's `ade:boot:*` marks), and what the header hook did so far.
+      // Launch report: when main got the first request and answered it
+      // (process uptime, and wall clock to line up with the renderer's
+      // `ade:boot:*` marks), how long it waited for the launch's project
+      // open, and the times main's loop was blocked until then.
       windowSessionAnswered = true;
+      const answeredMs = Math.round(process.uptime() * 1000);
       getCtx().logger.info("startup.window_session_first", {
+        receivedAtEpochMs,
         receivedMs,
-        answeredMs: Math.round(process.uptime() * 1000),
+        startupOpenWaitMs: answeredMs - receivedMs,
+        answeredMs,
         answeredAtEpochMs: Date.now(),
+        readsBeforeAnswer: windowSessionReadsBeforeAnswer,
+        mainLoopStalls: takeStartupLoopStalls(),
         cspHookCalls: rendererCspHookCounts.calls,
         cspHookApplied: rendererCspHookCounts.applied,
       });
