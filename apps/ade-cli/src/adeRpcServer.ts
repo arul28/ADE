@@ -3936,6 +3936,20 @@ function scopeTerminalListArgs(
 }
 
 /**
+ * `terminal.preview` as an agent gets it: the screen as text. The snapshot's
+ * `visibleRows` is a styled cell per column (about 18 KB a row, over 1 MB for
+ * a 228x58 screen), which only the desktop's tile painter reads; desktop,
+ * phone and web clients call as the person and keep it.
+ */
+function agentTerminalPreview(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.snapshot) || !Array.isArray(value.snapshot.visibleRows)) return value;
+  const { visibleRows, screenSerialized: _screenSerialized, ...snapshot } = value.snapshot;
+  const lines = visibleRows.map((row) => (isRecord(row) && typeof row.text === "string" ? row.text.replace(/\s+$/u, "") : ""));
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return { ...value, snapshot: { ...snapshot, screenText: lines.join("\n") } };
+}
+
+/**
  * `terminal.read` / `terminal.preview`: any caller reads any terminal (by id,
  * pty or chat). With no target it reads the caller's own chat's terminal.
  */
@@ -7732,6 +7746,9 @@ async function runTool(args: {
     }
     await rememberCaptureActionResult(runtime, domain, action, result, session);
     if (transformScopedResult) result = transformScopedResult(result);
+    // Any model-driven caller, whatever its role (a CTO, a run, an outside AI
+    // app on ADE MCP), reads the screen as text; a person's client keeps the grid.
+    if (domain === "terminal" && action === "preview" && activityCaller(session) === "agent") result = agentTerminalPreview(result);
     if (domain === "pty" && (action === "resumeSession" || action === "sendToSession") && isRecord(result) && result.resumed === true) {
       const sessionId = typeof result.sessionId === "string"
         ? result.sessionId

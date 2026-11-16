@@ -781,7 +781,9 @@ Shared types and IPC:
   provider continuation internally — and `ade.pty.resumeSession`, which
   relaunches an ended tracked CLI session without sending a prompt),
   the session-owned `ade.terminal.*` family (`list`, `read`, `preview` —
-  serialized xterm snapshot for the mobile renderer, `write`,
+  serialized xterm snapshot for the mobile renderer; an agent caller of any
+  role gets `snapshot.screenText` (the visible rows as plain text) in place
+  of the styled `visibleRows` cell grid, keeping `serialized`, `write`,
   `signal`, `activeForChat`), and the localhost-probe helper
   `ade.localhost.probePort`, plus `ade.externalSessions.list`,
   `.import`, `.getDetail`, `.watchDetail`, `.unwatchDetail`, and the
