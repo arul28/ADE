@@ -7,12 +7,13 @@
       // One address to remember: a signed-in visitor to ade-app.dev/ goes straight to the web app.
       // ADE Web sets `ade_signed_in=1` on .ade-app.dev at sign-in and clears it at sign-out or when
       // its session is gone (webclient/account/client.ts, writeSignedInMarker). It carries no token,
-      // so it only picks the page. Only "/" redirects; `?home` (the app's "ADE website" link) never does.
+      // so it only picks the page. Only a bare "/" redirects: never a section (#...) or `?home` (the app's "ADE website" link).
       (function () {
         try {
           var host = location.hostname;
           if (host !== "ade-app.dev" && host !== "www.ade-app.dev") return;
-          if (location.pathname !== "/" || /(^|[?&])home(=|&|$)/.test(location.search.slice(1))) return;
+          // A section link (/#features) or `?home` asks for the website itself.
+          if (location.pathname !== "/" || location.hash || /(^|[?&])home(=|&|$)/.test(location.search.slice(1))) return;
           if (/(?:^|;\s*)ade_signed_in=1(?:;|$)/.test(document.cookie)) location.replace("https://app.ade-app.dev/");
         } catch (e) {}
       })();
