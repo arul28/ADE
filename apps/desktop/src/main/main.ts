@@ -2,7 +2,7 @@ import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../s
 import { createLocalPasswordsAccess, registerBrowserTabPasswordsIpc } from "./services/passwords/localPasswordsBridge";
 import { createMessagesIntegrationService } from "./services/messagesIntegration/messagesIntegrationService";
 import { readMessagesInWorker, sendMessage, terminateMessagesReadWorkers } from "./services/messages";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, session, type WebContents } from "electron";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { reportsAsPackagedRelease } from "./sentry/releaseBuild";
 import {
@@ -227,7 +227,7 @@ import {
   trustGitSafeDirectory,
 } from "./services/git/git";
 import { ACTION_NOT_CALLABLE_CODE, codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError, isUnsupportedAdeActionError, PROJECT_FOLDER_TOO_SLOW_CODE } from "../shared/codedError";
-import { markExpected } from "../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../shared/expectedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
@@ -1033,6 +1033,7 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
 }
 
 let keychainReadBeforeWindowLogged = false;
+let keychainPendingReadLogged = false;
 
 function buildDesktopPrimaryCredentialStore(
   secretsDir: string,
@@ -1040,8 +1041,18 @@ function buildDesktopPrimaryCredentialStore(
 ): SyncCredentialStore {
   if (isSecureStorageCheckPending()) {
     // Not built yet, and not kept: the next call builds again. Reads as
-    // unreadable meanwhile (`createLazyCredentialStore`).
-    throw new Error("The system keychain has not answered yet; ADE will read these credentials once it does.");
+    // unreadable meanwhile (`createLazyCredentialStore`). A keychain that has
+    // not answered (its prompt is up) is a state, not a failure: the mark
+    // keeps it out of the service-failure count, Sentry and warn logs, and the
+    // one line below is its record.
+    if (!keychainPendingReadLogged) {
+      keychainPendingReadLogged = true;
+      getMachineMainLogger().info("credential_store.keychain_pending_read", {});
+    }
+    throw new AdeExpectedError(
+      "The system keychain has not answered yet; ADE will read these credentials once it does.",
+      "environment",
+    );
   }
   const safeCredentialsPath = path.join(secretsDir, "credentials.safe.enc");
   const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
@@ -9241,6 +9252,28 @@ app.whenReady().then(async () => {
     }
   };
 
+  /**
+   * The quit while the first keychain read still waits on its prompt.
+   *
+   * That read runs on one of Chromium's worker threads and blocks inside the
+   * Keychain call until the person answers. Chromium's own shutdown (app.exit,
+   * and a plain process exit through it) waits for that thread, so the process
+   * stayed alive with no window until the prompt was answered. The shutdown
+   * work is done by now (windows, children, logs), so this writes what the web
+   * storage holds and ends the process at once. Only in this state: every other
+   * quit exits as before.
+   */
+  const exitWithoutKeychainWait = (exitCode: number): void => {
+    try {
+      session.defaultSession.flushStorageData();
+    } catch {
+      // The end below is the point; a failed flush must not stop it.
+    }
+    logMachineEvent("info", "desktop.exit_skips_keychain_wait", { pid: process.pid, exitCode });
+    flushMachineMainLog();
+    process.kill(process.pid, "SIGKILL");
+  };
+
   const finalizeAppExit = (exitCode: number): void => {
     if (shutdownFinalized) return;
     shutdownFinalized = true;
@@ -9252,6 +9285,10 @@ app.whenReady().then(async () => {
     runImmediateProcessCleanup("process_exit_finalize");
     recordMainExit(shutdownReason ?? "finalize", exitCode);
     const exitNow = (): void => {
+      if (process.platform === "darwin" && isSecureStorageCheckPending()) {
+        exitWithoutKeychainWait(exitCode);
+        return;
+      }
       if (app.isReady()) {
         app.exit(exitCode);
         return;

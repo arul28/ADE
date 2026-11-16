@@ -4,6 +4,7 @@ import {
   type SyncCredentialStore,
 } from "./credentialStore";
 import { updateCredentialKeySync } from "./updateCredentialKey";
+import { expectedErrorKind } from "../../../../desktop/src/shared/expectedError";
 
 /**
  * Stores that stand in front of the real ones: the per-key router, and the
@@ -121,6 +122,12 @@ export function createUnavailableCredentialStore(message: string): SyncCredentia
  * missing: "not connected" would invite a reconnect over secrets that are
  * still on disk. The reason is `no_os_key_material` (the OS has not handed
  * over the key), which never counts as corruption.
+ *
+ * A build that throws an expected error (`shared/expectedError.ts`: the desktop
+ * while the OS keychain has not answered) is a state, not a failure. Reads then
+ * return nothing and read as unreadable, as a store that cannot decrypt does,
+ * so readers log no failure. Writes still throw it: a write now could replace
+ * secrets ADE cannot read yet.
  */
 export function createLazyCredentialStore(build: () => SyncCredentialStore): SyncCredentialStore {
   let store: SyncCredentialStore | null = null;
@@ -136,17 +143,30 @@ export function createLazyCredentialStore(build: () => SyncCredentialStore): Syn
     buildFailed = false;
     return store;
   };
+  /** The built store for a read, or null when the build answered "not yet". */
+  const resolveForRead = (): SyncCredentialStore | null => {
+    try {
+      return resolve();
+    } catch (error) {
+      if (expectedErrorKind(error)) return null;
+      throw error;
+    }
+  };
   return {
-    get: async (key) => resolve().get(key),
+    get: async (key) => {
+      const target = resolveForRead();
+      return target ? await target.get(key) : null;
+    },
     getWithReadState: async (key) => {
-      const target = resolve();
+      const target = resolveForRead();
+      if (!target) return { value: null, state: "unreadable" };
       if (target.getWithReadState) return await target.getWithReadState(key);
       const value = await target.get(key);
       return { value, state: target.getLastReadState?.() ?? "missing" };
     },
     set: async (key, value) => resolve().set(key, value),
     delete: async (key) => resolve().delete(key),
-    getSync: (key) => resolve().getSync(key),
+    getSync: (key) => resolveForRead()?.getSync(key) ?? null,
     setSync: (key, value) => resolve().setSync(key, value),
     deleteSync: (key) => resolve().deleteSync(key),
     // Atomic when the built store is: it picks the built store's own update.
