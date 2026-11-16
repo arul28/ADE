@@ -3,7 +3,6 @@ import { Link, useLocation } from "react-router-dom";
 import { ArrowUpRight, Download, Github, Menu, Star, X } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
-import { linkToPricing } from "../../lib/siteFlags";
 import type { InstallPlatform } from "../../lib/installTargets";
 import {
   MARKETING_CTA_LABELS,
@@ -95,16 +94,14 @@ export function SiteNav() {
         </Link>
 
         <nav className="hidden items-center gap-6 md:flex" aria-label="Main">
-          {linkToPricing ? (
-            <Link
-              to="/pricing"
-              aria-current={onPricing ? "page" : undefined}
-              data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}
-              className={cn(linkClass, onPricing && "text-white")}
-            >
-              Pricing
-            </Link>
-          ) : null}
+          <Link
+            to="/pricing"
+            aria-current={onPricing ? "page" : undefined}
+            data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}
+            className={cn(linkClass, onPricing && "text-white")}
+          >
+            Pricing
+          </Link>
           <a href={LINKS.docs} target="_blank" rel="noreferrer" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_DOCS} className={linkClass}>
             Docs
           </a>
@@ -183,7 +180,7 @@ export function SiteNav() {
             aria-label="Main"
             className="relative border-b border-white/[0.08] bg-[#0c0c12] px-5 pb-6 pt-3"
           >
-            {linkToPricing ? <MenuLink to="/pricing" feature={MARKETING_FEATURES.VIEW_PRICING}>Pricing</MenuLink> : null}
+            <MenuLink to="/pricing" feature={MARKETING_FEATURES.VIEW_PRICING}>Pricing</MenuLink>
             <MenuLink href={LINKS.docs} feature={MARKETING_FEATURES.VIEW_DOCS}>Docs</MenuLink>
             <MenuLink href={CHANGELOG_URL} feature={MARKETING_FEATURES.VIEW_RELEASES}>Changelog</MenuLink>
             <MenuLink href={LINKS.github} feature={MARKETING_FEATURES.VIEW_GITHUB}>GitHub</MenuLink>

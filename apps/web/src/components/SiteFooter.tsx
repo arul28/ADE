@@ -3,7 +3,6 @@ import { CloudMark } from "./cloud/CloudMark";
 import { ArrowUpRight } from "lucide-react";
 import { Container } from "./Container";
 import { LINKS } from "../lib/links";
-import { linkToPricing } from "../lib/siteFlags";
 import { useInstallDialog } from "./install/InstallDialogProvider";
 import {
   MARKETING_CTA_LABELS,
@@ -50,11 +49,9 @@ export function SiteFooter() {
                 <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.testflight} data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS} data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_IOS} data-ade-analytics-position={MARKETING_CTA_POSITIONS.FOOTER} target="_blank" rel="noreferrer">
                   Download for iOS
                 </a>
-                {linkToPricing ? (
-                  <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/pricing" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}>
-                    Pricing
-                  </Link>
-                ) : null}
+                <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/pricing" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}>
+                  Pricing
+                </Link>
                 <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/#features" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_FEATURES}>
                   Features
                 </Link>

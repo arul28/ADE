@@ -2438,10 +2438,8 @@ fingerprint beyond the attribution above, and fit inside the unchanged 12-CTA / 
 dialog's client-side click is the funnel signal, and a test pins that the
 handlers make no analytics call for any method.
 
-The pricing page (`/pricing`, screen `pricing`) reuses the same events. It is
-hidden until ADE Cloud launches (`PRICING_PAGE_LIVE` in
-`apps/web/src/lib/siteFlags.ts`): production builds link nowhere to it and
-send the route home; dev servers show it and its links for preview. A paid plan's button links to the web app with
+The pricing page (`/pricing`, screen `pricing`) reuses the same events. The
+navbar, the footer and the download section link to it. A paid plan's button links to the web app with
 `?cloudPlan=<plan>` (it signs in, then opens Stripe's checkout); Free's button
 opens the install dialog. Each records the CTA event with `choose_plan_free`,
 `choose_plan_plus`, `choose_plan_pro` or `choose_plan_max` at position

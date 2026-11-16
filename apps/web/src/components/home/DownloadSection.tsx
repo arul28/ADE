@@ -2,7 +2,6 @@ import { Link } from "react-router-dom";
 import { FREE_PLAN, formatCount } from "../../lib/cloudPricing";
 import { MARKETING_CTA_POSITIONS, MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { InstallBlock } from "./Hero";
-import { linkToPricing } from "../../lib/siteFlags";
 
 /** The last screen: one line, what is free, and the same download choices as the hero. */
 export function DownloadSection() {
@@ -25,17 +24,13 @@ export function DownloadSection() {
         </h2>
         <p className="mx-auto mt-5 max-w-[30rem] text-[15px] leading-[1.6] text-white/55">
           The app costs nothing. ADE Cloud is optional, and starts with{" "}
-          {linkToPricing ? (
-            <Link
-              to="/pricing"
-              data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}
-              className="focus-ring rounded text-white/85 underline decoration-white/25 underline-offset-4 hover:text-white"
-            >
-              {formatCount(FREE_PLAN.hours)} free hours a month
-            </Link>
-          ) : (
-            <span className="text-white/85">{formatCount(FREE_PLAN.hours)} free hours a month</span>
-          )}
+          <Link
+            to="/pricing"
+            data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}
+            className="focus-ring rounded text-white/85 underline decoration-white/25 underline-offset-4 hover:text-white"
+          >
+            {formatCount(FREE_PLAN.hours)} free hours a month
+          </Link>
           .
         </p>
         <InstallBlock position={MARKETING_CTA_POSITIONS.FOOTER} />

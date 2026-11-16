@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Route, Routes, useLocation } from "react-router-dom";
 import { AnimatePresence } from "framer-motion";
 import { HomePage } from "./pages/HomePage";
 import { OpenPage } from "./pages/OpenPage";
@@ -10,7 +10,6 @@ import { PrivacyPage } from "./pages/PrivacyPage";
 import { TermsPage } from "./pages/TermsPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { OgImage } from "../components/OgImage";
-import { pricingPageVisible } from "../lib/siteFlags";
 
 function useScrollRestoration() {
   const location = useLocation();
@@ -46,7 +45,7 @@ export function SiteRoutes() {
         <Route path="/_og" element={<OgImage />} />
         <Route path="/open" element={<OpenPage />} />
         <Route path="/pair" element={<PairPage />} />
-        <Route path="/pricing" element={pricingPageVisible ? <PricingPage /> : <Navigate to="/" replace />} />
+        <Route path="/pricing" element={<PricingPage />} />
         {/* ADE Cloud invites, opened from the link an account shares. */}
         <Route path="/invite/:code" element={<InvitePage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
