@@ -60,9 +60,14 @@ export const CLOUD_LAUNCH_IN_PROGRESS: ReadonlySet<string> = new Set([
   "waiting_for_sign_in",
 ]);
 
-/** A new id for a launch or a queued message: 1 to 64 of `A-Za-z0-9_-`. */
-export function newCloudLaunchId(prefix: "launch" | "msg"): string {
+/** A new launch id: the server takes only a UUID. */
+export function newCloudLaunchId(): string {
+  return globalThis.crypto.randomUUID();
+}
+
+/** A new id for a queued message: 1 to 64 of `A-Za-z0-9_-`. */
+export function newCloudMessageId(): string {
   const bytes = new Uint8Array(12);
   globalThis.crypto.getRandomValues(bytes);
-  return `${prefix}_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  return `msg_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }

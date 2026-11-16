@@ -122,8 +122,9 @@ export function CloudChatComposer({
   const [sendError, setSendError] = useState<string | null>(null);
   const provider = catalog?.providers.find((entry) => entry.provider === current?.provider) ?? null;
   const desktopOnly = provider ? catalogSignInKind(provider) === "desktop" : false;
-  const blocked = access.state === "no_github" || access.state === "no_access";
-  const canSend = text.trim().length > 0 && current != null && !sending && !blocked && !desktopOnly;
+  // The server decides: a public repo clones without GitHub, a private one answers "Give ADE access".
+  const needsAccess = access.state === "no_github" || access.state === "no_access";
+  const canSend = text.trim().length > 0 && current != null && !sending && !desktopOnly;
 
   const send = () => {
     if (!canSend || !current) return;
@@ -181,13 +182,15 @@ export function CloudChatComposer({
             {sending ? "Sending…" : "Send"}
           </button>
         </div>
-        {blocked ? (
-          <p className="m-0 text-[11.5px]" style={{ color: "var(--kit-text-2)" }}>
-            {access.state === "no_github" ? "Connect GitHub first, so ADE can clone the repo." : `Give ADE access to ${owner ?? "the owner"} first, so ADE can clone the repo.`}
-          </p>
-        ) : desktopOnly ? (
+        {desktopOnly ? (
           <p className="m-0 text-[11.5px]" style={{ color: "var(--kit-text-2)" }}>
             {provider?.label ?? "This provider"} signs in from ADE desktop. Sign in there, or pick another model.
+          </p>
+        ) : needsAccess ? (
+          <p className="m-0 text-[11.5px]" style={{ color: "var(--kit-text-3)" }}>
+            {access.state === "no_github"
+              ? "A private repo needs GitHub connected first."
+              : `A private repo needs ADE to have access to ${owner ?? "its owner"} first.`}
           </p>
         ) : null}
         {catalogError ? (

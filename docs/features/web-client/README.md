@@ -54,6 +54,46 @@ direct deployment-check fallback. The app is built from `apps/desktop` with
 - `apps/desktop/src/renderer/webclient/adapter/infra/proxy.ts` and `apps/desktop/src/renderer/lib/adeAvailability.ts` — the stand-in for every `window.ade` member the adapter lacks (see Gotchas) and the `isAdeAvailable` check renderer code uses instead of a truthiness or `typeof` test.
 - `apps/desktop/src/renderer/scene/scenePreferences.ts` — platform defaults and explicit scene choices.
 
+ADE with no computer (a person whose account has no computer of their own):
+
+- `apps/desktop/src/renderer/state/ownComputers.ts` - `useHasOwnComputer`:
+  true on the desktop; on the web only when the account has a machine that is
+  not an ADE Cloud computer. Chat without a project hides without one. No
+  screen says a computer is needed.
+- `apps/desktop/src/renderer/components/projects/GetStartedCard.tsx` - the
+  "Get started with ADE" steps on Home (Connect GitHub, Add a project with
+  recent repo chips, Send your first chat), the install chip, and the
+  desktop's first sign-in tab (`useDesktopFirstAccountTab`: opens the newest
+  account project once; it never clones). `SetupSteps.tsx` and
+  `getStarted.css` draw the steps and the one-time check animation.
+- `apps/desktop/src/renderer/components/projects/ProjectWelcomeNoMachine.tsx`
+  with `AccountProjectSections.tsx` - the account project page: a steps strip
+  (GitHub access, first chat, lanes), the ADE Cloud composer, the setup cards,
+  Computers (copies, "No copy yet" rows with Clone here, and Copy here on the
+  desktop), Lanes, and Pull requests / Issues / Branches / Files read from
+  GitHub with the account's sign-in (`listBranches` and `listContents` in
+  `shared/github/directClient.ts`).
+- `apps/desktop/src/renderer/state/accountCloudLaunches.ts` and
+  `adapter/cloud.ts` (`createWebCloudLaunchesNamespace`) - chats on ADE Cloud
+  started from the account server (`POST /cloud/launches`), with the message
+  stored there, so the tab may close. One backoff poll (3 s to 10 s) runs only
+  while a launch is in progress and a page shows it. `CloudSetupCard.tsx`
+  shows the four steps: computer, clone, provider sign-in (code, pasted code,
+  API key, or "Sign in from ADE desktop"), send.
+- `apps/desktop/src/renderer/state/cloudModelCatalog.ts` - `GET /cloud/models`
+  once per page, and the last model used (`ade.cloudChat.lastModel.v1`).
+- `apps/desktop/src/renderer/components/settings/providers/cloud/AccountCloudProvidersPanel.tsx` -
+  Settings › Providers with no computer: each provider's ADE Cloud sign-in and
+  the account's saved keys (`GET`/`PUT`/`DELETE /cloud/sign-ins`).
+- `apps/desktop/src/renderer/components/projects/CloneToMachineDialog.tsx` -
+  clones a project on a machine with no copy (the composer's "No copy yet"
+  rows and the project page's Clone here). The clone goes over that machine's
+  own session (`remoteRuntime.cloneProject`, the sync `project_clone_request`
+  envelope); a failure keeps the message unsent and offers Retry and Change
+  folder. Windows paths keep their drive and backslashes.
+- `adapter/cloud.ts` lists the account's cloud computers from the server
+  (`GET /cloud/instances`) when no computer is connected.
+
 Build and static host:
 
 - `apps/desktop/package.json` - `dev:webclient` and `build:webclient`. The

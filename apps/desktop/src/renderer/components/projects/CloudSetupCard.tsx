@@ -246,8 +246,8 @@ export function CloudSetupCard({
             {pending.map((message) => (
               <li key={message.messageId} className="kit-panel flex items-start gap-2 px-2.5 py-1.5">
                 <span className="min-w-0 flex-1 whitespace-pre-wrap text-[12.5px]" style={{ overflowWrap: "anywhere" }}>{message.text}</span>
-                <span className="kit-tag shrink-0" data-tone={message.state === "failed" ? "crit" : undefined}>
-                  {message.state === "failed" ? "Not sent" : message.state === "sending" ? "Sending" : "Waiting"}
+                <span className="kit-tag shrink-0" data-tone={message.state === "failed" || failed || cancelled ? "crit" : undefined}>
+                  {message.state === "failed" || failed || cancelled ? "Not sent" : message.state === "sending" ? "Sending" : "Waiting"}
                 </span>
               </li>
             ))}

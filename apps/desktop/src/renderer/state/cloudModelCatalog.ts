@@ -89,6 +89,9 @@ export function defaultCloudModel(catalog: CloudModelCatalog | null): CloudModel
   // Providers that sign in on the computer come first; a key or desktop sign-in needs a step before.
   const first = catalog.providers.find((entry) => catalogSignInKind(entry) === "device" || catalogSignInKind(entry) === "url_paste")
     ?? catalog.providers[0];
-  const modelId = first?.defaultModelId ?? first?.models[0]?.id ?? null;
+  // The default only when the list has it: the picker shows and sends the same model.
+  const modelId = (first?.models.some((model) => model.id === first.defaultModelId) ? first.defaultModelId : null)
+    ?? first?.models[0]?.id
+    ?? null;
   return first && modelId ? { provider: first.provider, modelId } : null;
 }

@@ -56,8 +56,6 @@ import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineSco
 import { useSettingsProjectPin, withProjectSettingsBound } from "./ProjectCopyScope";
 import { PROJECT_AI_CONFIG_ACTION, isMachineScopePin, machineScopeActionAllowed } from "../../../shared/machineScope";
 import { AdeCloudProvidersView } from "./providers/cloud/AdeCloudProvidersView";
-import { AccountCloudProvidersPanel } from "./providers/cloud/AccountCloudProvidersPanel";
-import { useHasOwnComputer } from "../../state/ownComputers";
 import { acpLoginCommand } from "./providers/acpProviders";
 import { isAgentCliLoginProvider, type AgentCliLoginProvider } from "../../../shared/types";
 
@@ -358,9 +356,6 @@ function toastActionError(title: string, err: unknown): void {
  */
 export function ProvidersSection(props: ProvidersSectionProps = {}) {
   const place = useProvidersPlace();
-  // ADE Web with no computer of the person's own: the providers are ADE Cloud's, read from the account.
-  const hasOwnComputer = useHasOwnComputer();
-  if (!hasOwnComputer && typeof window !== "undefined" && window.ade?.cloudLaunches) return <AccountCloudProvidersPanel />;
   if (place.kind === "ade-cloud") return <AdeCloudProvidersView providerParam={props.providerParam ?? null} onProviderChange={props.onProviderChange} />;
   return <MachineProvidersSection {...props} />;
 }

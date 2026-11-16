@@ -43,6 +43,8 @@ import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
 import { ResetAdeSection } from "./ResetAdeSection";
 import { DatabaseCopiesSection } from "./DatabaseCopiesSection";
 import { ProvidersSection } from "./ProvidersSection";
+import { AccountCloudProvidersPanel } from "./providers/cloud/AccountCloudProvidersPanel";
+import { useHasOwnComputer } from "../../state/ownComputers";
 import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPanel";
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
 import { SettingsSection } from "./primitives/SettingsRows";
@@ -129,7 +131,24 @@ function providerIdFromHash(hash: string): string | null {
  * list is not part of the provider you drilled into. Dictation lives
  * on the chat tab; scheduled work lives on notifications.
  */
+/**
+ * Settings › ADE Cloud. In ADE Web with no computer of the person's own, the
+ * providers' ADE Cloud sign-ins and saved keys show here too: that person has
+ * no machine whose Providers page could hold them.
+ */
+function AdeCloudSettingsPage() {
+  const hasOwnComputer = useHasOwnComputer();
+  const accountProviders = !hasOwnComputer && Boolean(window.ade?.cloudLaunches);
+  return (
+    <SettingsColumn wide>
+      <CloudSection />
+      {accountProviders ? <div className="mt-8"><AccountCloudProvidersPanel /></div> : null}
+    </SettingsColumn>
+  );
+}
+
 function AgentsTabContent() {
+  const hasOwnComputer = useHasOwnComputer();
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -153,6 +172,10 @@ function AgentsTabContent() {
       { replace: true },
     );
   }, [location.pathname, navigate, searchParams]);
+
+  if (isWebClientMode() && !hasOwnComputer && window.ade?.cloudLaunches) {
+    return <AccountCloudProvidersPanel />;
+  }
 
   if (isWebClientMode()) {
     return (
@@ -575,7 +598,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   ],
   // Account-wide: the plan, hours and computers are the account's, so the page
   // asks this desktop's own main process with no pin and carries no machine kind.
-  "ade-cloud": [{ entryIds: "tab", render: () => <SettingsColumn wide><CloudSection /></SettingsColumn>, title: ADE_CLOUD_NAME }],
+  "ade-cloud": [{ entryIds: "tab", render: () => <AdeCloudSettingsPage />, title: ADE_CLOUD_NAME }],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   // Account-wide: the on/off switch, the computers and the connections live in
   // the account (settings store and vault), so the page asks this desktop's own

@@ -477,6 +477,13 @@ export function AddProjectForm({
     <div style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}>
       <RepoField value={urlInput} onChange={setUrlInput} valid={urlValid} />
 
+      {machines.length === 0 ? (
+        // No machine at all (a person with no computer): the project goes on
+        // the account, and ADE Cloud makes its copy at the first chat.
+        <p style={{ margin: 0, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+          ADE Cloud makes a copy when you send the first chat.
+        </p>
+      ) : (
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <span style={sectionLabelStyle}>Put a copy on</span>
         <div
@@ -538,6 +545,7 @@ export function AddProjectForm({
           </span>
         ) : null}
       </div>
+      )}
 
       {openOnOptions.length > 0 ? (
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
@@ -602,7 +610,7 @@ export function AddProjectForm({
           disabled={(!canAdd && !openOnlyCopy && !accountOnly) || addingToAccount}
           onClick={handleAdd}
         >
-          {openOnlyCopy ? "Open" : accountOnly ? (addingToAccount ? "Adding…" : "Add to account") : "Add project"}
+          {openOnlyCopy ? "Open" : accountOnly ? (addingToAccount ? "Adding…" : machines.length === 0 ? "Add project" : "Add to account") : "Add project"}
         </button>
       </div>
       {moreActions}

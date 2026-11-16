@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import {
   CLOUD_LAUNCH_IN_PROGRESS,
   newCloudLaunchId,
+  newCloudMessageId,
   type CloudLaunchMessage,
   type CloudLaunchRecord,
   type CloudLaunchStartRequest,
@@ -202,8 +203,8 @@ export type StartAccountCloudChat = {
 export async function startAccountCloudChat(input: StartAccountCloudChat): Promise<string> {
   const api = bridge();
   if (!api) throw new Error("ADE Cloud chats start from the web app here.");
-  const launchId = newCloudLaunchId("launch");
-  const messageId = newCloudLaunchId("msg");
+  const launchId = newCloudLaunchId();
+  const messageId = newCloudMessageId();
   const request: CloudLaunchStartRequest = {
     launchId,
     kind: "chat",
@@ -263,7 +264,7 @@ export async function queueAccountCloudMessage(launchId: string, text: string): 
   const api = bridge();
   const entry = snapshot.entries.find((candidate) => candidate.launchId === launchId);
   if (!api || !entry) return;
-  const messageId = newCloudLaunchId("msg");
+  const messageId = newCloudMessageId();
   const now = Date.now();
   const optimistic: CloudLaunchMessage = {
     messageId,
