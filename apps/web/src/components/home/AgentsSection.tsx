@@ -5,7 +5,7 @@ import { cn } from "../../lib/cn";
 import { AGENTS, MODEL_SOURCES, OPENCODE_PROVIDERS, ProviderMark, ProviderTile, providerById } from "./providers";
 
 /*
- * Every agent and model ADE runs, as one wide wall of logos. Under it, one
+ * Every agent and model provider ADE runs, as one wall of logos in one card. Under it, one
  * plain example of what that means: any model inside any agent, such as
  * DeepSeek V4.1 Flash inside Claude Code, turning over every few seconds.
  */
@@ -38,33 +38,23 @@ export function AgentsSection() {
         </p>
       </div>
 
-      <div className="mt-[clamp(32px,4vw,48px)] grid gap-3 lg:grid-cols-[1.15fr_1fr]">
-        <div className="rounded-[20px] border border-white/[0.08] bg-[#0f0e16] p-5 sm:p-7">
-          <h3 className="text-[16px] font-semibold text-white">Agents</h3>
-          <p className="mt-1 text-[14px] text-white/55">Each runs as itself, signed in with your own plan.</p>
-          <ul aria-label="Agents ADE runs" className="mt-6 grid grid-cols-3 gap-x-3 gap-y-5 sm:grid-cols-4 lg:grid-cols-6">
-            {AGENTS.map((agent) => (
-              <li key={agent.id} className="flex min-w-0 flex-col items-center gap-2 text-center">
-                <ProviderTile provider={agent} size={56} />
-                <span className="w-full truncate text-[12.5px] text-white/70">{agent.name}</span>
-              </li>
-            ))}
-          </ul>
+      <div className="mt-[clamp(32px,4vw,48px)] rounded-[20px] border border-white/[0.08] bg-[#0f0e16] p-5 sm:p-8">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+          <h3 className="text-[16px] font-semibold text-white">Agents and model providers</h3>
+          <p className="text-[14px] text-white/55">Each agent runs as itself on your own plan. Plans, API keys and local models work through any of them.</p>
         </div>
-        <div className="rounded-[20px] border border-white/[0.08] bg-[#0f0e16] p-5 sm:p-7">
-          <h3 className="text-[16px] font-semibold text-white">Model providers</h3>
-          <p className="mt-1 text-[14px] text-white/55">Plans, API keys and local models, through any agent.</p>
-          <ul aria-label="Model providers ADE connects to" className="mt-6 grid grid-cols-6 gap-2 sm:grid-cols-8">
-            {SOURCES.map((provider) => (
-              <li key={provider.id} className="aspect-square" title={provider.name}>
-                <ProviderTile provider={provider} size="fill" />
-              </li>
-            ))}
-            <li className="grid aspect-square place-items-center rounded-[28%] border border-dashed border-white/15 text-[11.5px] font-medium text-white/55">
-              200+
+        <ul aria-label="Agents and model providers ADE runs" className="mt-7 grid grid-cols-4 gap-x-3 gap-y-5 sm:grid-cols-6 lg:grid-cols-9">
+          {[...AGENTS, ...SOURCES].map((provider) => (
+            <li key={provider.id} className="flex min-w-0 flex-col items-center gap-2 text-center">
+              <ProviderTile provider={provider} size={52} />
+              <span className="w-full truncate text-[12px] text-white/65">{provider.name}</span>
             </li>
-          </ul>
-        </div>
+          ))}
+          <li className="flex min-w-0 flex-col items-center gap-2 text-center">
+            <span className="grid h-[52px] w-[52px] place-items-center rounded-[28%] border border-dashed border-white/15 text-[12px] font-medium text-white/60">200+</span>
+            <span className="w-full truncate text-[12px] text-white/45">and more</span>
+          </li>
+        </ul>
       </div>
 
       <MixCard />

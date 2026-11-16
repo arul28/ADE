@@ -10,38 +10,16 @@ import { AppleMark, WindowsMark } from "./marks";
  * feature rows: one recording beside its words, alternating sides. Every
  * visual is ADE with a real agent at work: testing the Crumb app on a folding
  * iPhone simulator, opening TextEdit on its private Mac screen, a Windows
- * Desktop session, and one chat splitting a job across three agents. Each
- * row has its own grainy colour field behind the recording and an accent
- * colour for its label, points and link. The fields are our own CSS: the
- * desktop app's scene pictures carry no recorded licence, so they stay off
- * the public site. Clips play only while on screen; with reduced motion they
+ * Desktop session, and one chat splitting a job across three agents. The
+ * recordings sit straight on the page; each row has an accent colour for its
+ * label, points and link. Clips play only while on screen; with reduced motion they
  * show their poster.
  */
 
 type Tone = "amber" | "sky" | "teal";
 
-/** Each row's colour field and the accent its words use. */
-const TONES: Record<Tone, { field: string; accent: string }> = {
-  amber: {
-    field:
-      "radial-gradient(70% 80% at 15% 10%, rgba(251,146,60,0.55), transparent 60%), radial-gradient(60% 70% at 95% 95%, rgba(244,63,94,0.4), transparent 60%), linear-gradient(160deg, #2a1a12, #140d0c)",
-    accent: "#fdba74",
-  },
-  sky: {
-    field:
-      "radial-gradient(70% 80% at 85% 5%, rgba(56,189,248,0.5), transparent 60%), radial-gradient(60% 70% at 5% 95%, rgba(99,102,241,0.45), transparent 60%), linear-gradient(160deg, #0f1a2c, #0b0e18)",
-    accent: "#7dd3fc",
-  },
-  teal: {
-    field:
-      "radial-gradient(70% 80% at 10% 5%, rgba(45,212,191,0.42), transparent 60%), radial-gradient(60% 70% at 95% 95%, rgba(168,85,247,0.42), transparent 60%), linear-gradient(160deg, #0d1c1d, #0c0c14)",
-    accent: "#5eead4",
-  },
-};
-
-/** Film grain, so the colour fields read as texture rather than flat gradients. */
-const GRAIN =
-  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E\")";
+/** The accent each row's label, points and link use. */
+const ACCENTS: Record<Tone, string> = { amber: "#fdba74", sky: "#7dd3fc", teal: "#5eead4" };
 
 type Point = { icon: ReactNode; text: string };
 
@@ -138,13 +116,10 @@ function Row({
   flip?: boolean;
   tall?: boolean;
 }) {
-  const { field, accent } = TONES[tone];
+  const accent = ACCENTS[tone];
   return (
     <div className={cn("grid items-center gap-8 lg:gap-14", flip ? "lg:grid-cols-[minmax(0,4fr)_minmax(0,7fr)]" : "lg:grid-cols-[minmax(0,7fr)_minmax(0,4fr)]")}>
-      <div className={cn("relative overflow-hidden rounded-[18px]", tall ? "aspect-[16/12]" : "p-[5%]", flip && "lg:order-2")} style={{ background: field }}>
-        <div aria-hidden className="pointer-events-none absolute inset-0 opacity-[0.35] mix-blend-overlay" style={{ backgroundImage: GRAIN }} />
-        {tall ? visual : <div className="relative">{visual}</div>}
-      </div>
+      <div className={cn("relative", tall && "aspect-[16/12]", flip && "lg:order-2")}>{visual}</div>
       <div className={cn("max-w-[30rem]", flip && "lg:order-1")}>
         <p className="inline-flex items-center gap-2 text-[13px] font-semibold uppercase tracking-[0.08em]" style={{ color: accent }}>
           {kicker.icons}
