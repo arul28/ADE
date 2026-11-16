@@ -14,6 +14,16 @@
 const path = require("node:path");
 const { notarizeAndWaitForNotaryTool } = require("@electron/notarize/lib/notarytool");
 const { stapleApp } = require("@electron/notarize/lib/staple");
+const { signBrainCopyIfPresent } = require("./mac-brain-copy.cjs");
+
+/** The temporary keychain electron-builder imported CSC_LINK into, when it did. */
+async function signingKeychain(context) {
+  try {
+    return (await context.packager.codeSigningInfo?.value)?.keychainFile ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function notaryCredentials() {
   const { APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID } = process.env;
@@ -39,6 +49,11 @@ function notaryCredentials() {
 
 exports.default = async function afterSign(context) {
   if (context.electronPlatformName !== "darwin") return;
+  // Before notarization: the brain copy (mode `brain-copy` only) takes the
+  // app's signing identifier, and the app is re-sealed around it.
+  signBrainCopyIfPresent(path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`), {
+    keychain: await signingKeychain(context),
+  });
   const credentials = notaryCredentials();
   if (!credentials) {
     console.log("[release:mac] No notarization credentials; skipping app notarization.");

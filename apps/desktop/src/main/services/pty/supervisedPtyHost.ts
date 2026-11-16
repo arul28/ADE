@@ -8,11 +8,7 @@ import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import type * as ptyNs from "node-pty";
 import type { Logger } from "../logging/logger";
 import { isEmbeddedAdeRuntime, killWindowsProcessTreeAsync } from "../shared/processExecution";
-import {
-  electronMacExecutables,
-  isBrainHelperExecutableEnabled,
-  resolveBrainNodeExecutable,
-} from "../../../../../ade-cli/src/serviceManager/brainExecutable";
+import { brainNodeExecutableOverride } from "../../../../../ade-cli/src/serviceManager/brainExecutable";
 
 type SpawnRequest = {
   type: "spawn";
@@ -130,12 +126,10 @@ function resolvePtyHostWorkerNodePath(): string | undefined {
   const configured = process.env.ADE_PTY_HOST_WORKER_NODE?.trim();
   if (configured) return configured;
   // The brain-executable switch (macOS prototype): the host runs on the app's
-  // helper, never the app's own executable, so a host the brain keeps after
-  // the app quits is not the app. Named here, not left to Electron's fork().
-  if (process.versions.electron && isBrainHelperExecutableEnabled()) {
-    const executable = resolveBrainNodeExecutable(process.execPath);
-    if (electronMacExecutables(executable)?.helper === executable) return executable;
-  }
+  // helper or brain copy, never the app's own executable, so a host the brain
+  // keeps after the app quits is not the app. Named here, not left to
+  // Electron's fork().
+  if (process.versions.electron) return brainNodeExecutableOverride() ?? undefined;
   return undefined;
 }
 

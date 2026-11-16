@@ -27762,7 +27762,7 @@ function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): 
   const args = [...serviceCommand.args];
   let buildHash: string | null = null;
   let filePath: string | null = null;
-  // The app's helper (the brain-executable switch) runs this process's Node.
+  // The app's helper or brain copy (the brain-executable switch) runs this process's Node.
   const runsThisNode = isSameElectronRuntime(serviceCommand.command, process.execPath);
   if (
     runsThisNode &&

@@ -11,7 +11,7 @@ import {
 } from "../services/projects/machineLayout";
 import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
 import {
-  BRAIN_HELPER_EXECUTABLE_ENV,
+  BRAIN_EXECUTABLE_ENV,
   isSameElectronRuntime,
   resolveBrainNodeExecutable,
 } from "./brainExecutable";
@@ -386,7 +386,7 @@ const RUNTIME_ENV_PASSTHROUGH = [
   "DO_NOT_TRACK",
   // A test override of the brain-executable switch must reach the brain, so
   // the brain computes the same service command as whoever installed it.
-  BRAIN_HELPER_EXECUTABLE_ENV,
+  BRAIN_EXECUTABLE_ENV,
 ] as const;
 
 /**
@@ -514,7 +514,7 @@ function resolveCliDistPath(entryPath: string): string | null {
 
 export function resolveAdeServiceCommandBuildHash(command: AdeServiceCommand): string | null {
   const firstArg = command.args[0] ? path.resolve(command.args[0]) : "";
-  // The app's helper runs this process's own Node, so it hashes like it.
+  // The app's helper or brain copy runs this process's own Node, so it hashes like it.
   const runsThisNode = isSameElectronRuntime(command.command, process.execPath);
   const isNodeServeFallback =
     runsThisNode
@@ -1331,7 +1331,7 @@ export function resolveAdeServeCommand(): AdeServiceCommand {
   // spawns, so the command matches the running brain's character for character.
   const mainCli = electronMainCliScript();
   // `process.execPath`, except in a Mac app bundle, where the brain-executable
-  // switch picks the app or its helper (`brainExecutable.ts`).
+  // switch picks the app, its helper or its brain copy (`brainExecutable.ts`).
   const nodeExecutable = resolveBrainNodeExecutable(process.execPath);
   if (mainCli) {
     return withRuntimeBuildHash({
