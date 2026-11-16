@@ -40,6 +40,17 @@ import {
 // verification error.
 const OAUTH_PENDING_KEY = "ade-web:account-oauth-pending";
 const OAUTH_PENDING_TTL_MS = 10 * 60_000;
+// Set by "Sign out", cleared by the next completed sign-in. Signing out drops
+// ADE's tokens but not the browser's Clerk session, so without `prompt=login`
+// the next sign-in finishes on its own as the account that just signed out.
+const SIGNED_OUT_BY_USER_KEY = "ade-web:account-signed-out-by-user";
+// A marker the landing site (ade-app.dev, apps/web) reads to send a signed-in
+// visitor from "/" straight to ADE Web. It carries no token and grants
+// nothing; the app still checks its own session. Its name and rules are a
+// contract with apps/web/index.html: change both together.
+const SIGNED_IN_MARKER_COOKIE = "ade_signed_in";
+const SIGNED_IN_MARKER_DOMAIN = "ade-app.dev";
+const SIGNED_IN_MARKER_MAX_AGE_SEC = 30 * 24 * 60 * 60;
 const REFRESH_SKEW_MS = 2 * 60_000;
 const USERINFO_REQUEST_TIMEOUT_MS = 3_000;
 const DIRECTORY_MUTATION_TIMEOUT_MS = 8_000;
@@ -348,7 +359,7 @@ export class BrowserAccountClient {
   private session: BrowserAccountSession | null = null;
   private sessionGeneration = 0;
   private refreshPromise: Promise<string> | null = null;
-  private snapshot: BrowserAccountSnapshot;
+  private currentSnapshot: BrowserAccountSnapshot;
   private readonly options: BrowserAccountClientOptions;
   private readonly sessionStore: BrowserAccountSessionPersistence;
   private readonly machinesListeners = new Set<() => void>();
@@ -357,7 +368,9 @@ export class BrowserAccountClient {
     this.options = options;
     this.sessionStore = options.sessionStore ?? new BrowserAccountSessionStore();
     const config = this.config;
-    this.snapshot = {
+    // The backing field, not the setter: the marker cookie is left alone until
+    // the stored session has actually been read.
+    this.currentSnapshot = {
       state: config ? "signed_out" : "unconfigured",
       userId: null,
       email: null,
@@ -370,6 +383,43 @@ export class BrowserAccountClient {
         ? null
         : "Account sign-in isn't configured for this web client.",
     };
+  }
+
+  private get snapshot(): BrowserAccountSnapshot {
+    return this.currentSnapshot;
+  }
+
+  /** Every account state change passes here, so the marker cookie follows it. */
+  private set snapshot(next: BrowserAccountSnapshot) {
+    const wasSignedIn = browserAccountIsSignedIn(this.currentSnapshot.state);
+    this.currentSnapshot = next;
+    const signedIn = browserAccountIsSignedIn(next.state);
+    if (signedIn !== wasSignedIn || (!signedIn && next.state !== "loading")) {
+      this.writeSignedInMarker(signedIn);
+    }
+  }
+
+  /**
+   * Sets or deletes the `ade_signed_in` marker on `.ade-app.dev`. Only pages
+   * served from ade-app.dev may write that domain, so localhost and the Pages
+   * preview URL skip it.
+   */
+  private writeSignedInMarker(signedIn: boolean): void {
+    if (typeof document === "undefined") return;
+    let hostname: string;
+    try {
+      hostname = new URL(this.location.origin).hostname;
+    } catch {
+      return;
+    }
+    if (hostname !== SIGNED_IN_MARKER_DOMAIN && !hostname.endsWith(`.${SIGNED_IN_MARKER_DOMAIN}`)) return;
+    const value = signedIn ? "1" : "";
+    const maxAge = signedIn ? SIGNED_IN_MARKER_MAX_AGE_SEC : 0;
+    try {
+      document.cookie = `${SIGNED_IN_MARKER_COOKIE}=${value}; Domain=.${SIGNED_IN_MARKER_DOMAIN}; Path=/; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+    } catch {
+      // Best effort: without the marker the landing page simply shows.
+    }
   }
 
   private get config(): BrowserAccountConfig | null {
@@ -499,6 +549,7 @@ export class BrowserAccountClient {
         redirect_uri: `${this.location.origin}/account/callback`,
       }, null);
       await this.setSession(token, config);
+      this.writeSignedOutByUser(false);
       return await this.loadMachines();
     } catch {
       await this.expireSession("ADE account sign-in expired or was rejected. Try again.");
@@ -506,7 +557,63 @@ export class BrowserAccountClient {
     }
   }
 
-  async startSignIn(): Promise<string> {
+  /** Clerk's Frontend API origin (the OAuth issuer), for ADE's own sign-in card. */
+  clerkFrontendApiBase(): string | null {
+    return this.config?.issuer ?? null;
+  }
+
+  /**
+   * The desktop or CLI sign-in this page was opened to finish, read from
+   * `?continue=`. Only this client's own authorize endpoint, with its own
+   * client id and a `127.0.0.1` redirect, is accepted: the page never forwards a
+   * browser anywhere else. `prompt=login` is taken off the URL and returned as
+   * `fresh`, because the card asks for the sign-in itself; left on, Clerk would
+   * ask again on its own page.
+   */
+  signInHandoff(search: string): { continueUrl: string; hostedUrl: string; fresh: boolean } | null {
+    const config = this.config;
+    if (!config) return null;
+    const raw = new URLSearchParams(search).get("continue");
+    if (!raw) return null;
+    let target: URL;
+    let issuer: URL;
+    try {
+      target = new URL(raw);
+      issuer = new URL(config.issuer);
+    } catch {
+      return null;
+    }
+    const expectedPath = `${issuer.pathname.replace(/\/+$/, "")}/oauth/authorize`;
+    if (target.origin !== issuer.origin || target.pathname !== expectedPath) return null;
+    if (target.searchParams.get("client_id") !== config.clientId) return null;
+    let redirect: URL;
+    try {
+      redirect = new URL(target.searchParams.get("redirect_uri") ?? "");
+    } catch {
+      return null;
+    }
+    // The computer's listener binds 127.0.0.1 only (`localhost` can resolve to ::1).
+    const loopback = redirect.protocol === "http:" && redirect.hostname === "127.0.0.1"
+      && !redirect.username && !redirect.password;
+    if (!loopback) return null;
+    // `hostedUrl` keeps `prompt`: it is the card's fallback, Clerk's own page.
+    const hostedUrl = target.toString();
+    const fresh = target.searchParams.get("prompt") === "login";
+    target.searchParams.delete("prompt");
+    return { continueUrl: target.toString(), hostedUrl, fresh };
+  }
+
+  /**
+   * `clerkSessionReady`: ADE's own card has just signed this browser in to
+   * Clerk, so the authorize step must pass straight through. `prompt=login`
+   * would send the person to Clerk's page to sign in a second time.
+   * `decorateAuthorizeUrl` adds what that session needs on the URL (a
+   * development instance's dev-browser id).
+   */
+  async startSignIn(options: {
+    clerkSessionReady?: boolean;
+    decorateAuthorizeUrl?: (url: string) => string;
+  } = {}): Promise<string> {
     const config = this.config;
     if (!config) throw new Error("Account sign-in isn't configured for this hosted client.");
     const verifier = randomBase64Url(48);
@@ -529,7 +636,8 @@ export class BrowserAccountClient {
     authorizeUrl.searchParams.set("code_challenge_method", "S256");
     authorizeUrl.searchParams.set("state", state);
     authorizeUrl.searchParams.set("scope", "openid profile email offline_access");
-    const url = authorizeUrl.toString();
+    if (!options.clerkSessionReady && this.signedOutByUser()) authorizeUrl.searchParams.set("prompt", "login");
+    const url = options.decorateAuthorizeUrl?.(authorizeUrl.toString()) ?? authorizeUrl.toString();
     this.location.assign(url);
     return url;
   }
@@ -539,6 +647,7 @@ export class BrowserAccountClient {
     this.sessionGeneration += 1;
     this.refreshPromise = null;
     this.clearAllPendingOAuth();
+    this.writeSignedOutByUser(true);
     this.snapshot = {
       state: this.config ? "signed_out" : "unconfigured",
       userId: null,
@@ -1281,6 +1390,24 @@ export class BrowserAccountClient {
   private clearPendingOAuthAttempt(state: string | null): void {
     if (!state) return;
     this.storage.removeItem(pendingOAuthKeyFor(state));
+  }
+
+  /** The person pressed "Sign out" here and has not signed in since. */
+  signedOutByUser(): boolean {
+    try {
+      return this.storage.getItem(SIGNED_OUT_BY_USER_KEY) != null;
+    } catch {
+      return false;
+    }
+  }
+
+  private writeSignedOutByUser(signedOut: boolean): void {
+    try {
+      if (signedOut) this.storage.setItem(SIGNED_OUT_BY_USER_KEY, "1");
+      else this.storage.removeItem(SIGNED_OUT_BY_USER_KEY);
+    } catch {
+      // Best effort: at worst the next sign-in reuses the browser's session.
+    }
   }
 
   /** Drop every attempt. Sign-out only — never a callback path. */

@@ -315,8 +315,15 @@ export function sceneWillShowPicture(prefs: ScenePreferences): boolean | null {
   return userScenesLoaded ? false : null;
 }
 
-export function useActiveScene(): ActiveScene {
-  const prefs = useAppearanceStore((s) => s.interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES);
+/**
+ * `untouched` replaces the shipped default for a person who never picked a
+ * scene (ADE Web's signed-out page opens on a picture, not the flat
+ * background). A scene they chose always wins.
+ */
+export function useActiveScene(options: { untouched?: ScenePreferences } = {}): ActiveScene {
+  const stored = useAppearanceStore((s) => s.interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES);
+  const untouchedDefault = !stored.choiceMade && Boolean(options.untouched);
+  const prefs = untouchedDefault && options.untouched ? options.untouched : stored;
   useSyncExternalStore(subscribe, () => snapshotVersion);
   // Moving to a display of another size re-renders, so shuffle re-checks its
   // pick against the pictures that fit there and a bundled picture loads the
@@ -353,7 +360,9 @@ export function useActiveScene(): ActiveScene {
     name: sceneName(id),
     // On a move to another screen, a user picture keeps its last file until
     // the copy for the new screen is ready, so it does not blink out.
-    url: bundled ? sceneSrcForScreen(bundled, screen) : entry?.url ?? lastUrlById.get(id) ?? null,
+    url: bundled
+      ? untouchedDefault && bundled.signIn ? bundled.signIn.src : sceneSrcForScreen(bundled, screen)
+      : entry?.url ?? lastUrlById.get(id) ?? null,
     position: bundled?.position ?? "50% 50%",
     showImage: prefs.showImage,
     texture: prefs.texture,
