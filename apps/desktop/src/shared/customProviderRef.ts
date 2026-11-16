@@ -11,6 +11,7 @@
 import type { HarnessPreset } from "./harnessPresets";
 import { harnessBodyLabel, presetLabel } from "./harnessPresets";
 import { decodeRoutePresetId, isRoutePresetId, launchModelIdFor } from "./harnessRoutes";
+import { getModelById, resolveModelAlias } from "./modelRegistry";
 import type { LaunchModelSpelling } from "./launchModelRule";
 
 const LIST_COMMAND = "`ade harness providers --text`";
@@ -62,11 +63,20 @@ export function findCustomProvider(presets: readonly HarnessPreset[] | null, ref
   return { ok: false, message: `No Custom provider "${wanted}" on this machine. ${LIST_HINT}` };
 }
 
-function sameModel(a: string, b: string): boolean {
-  const left = a.trim().toLowerCase();
-  const right = b.trim().toLowerCase();
-  if (!left || !right) return false;
-  return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`);
+/**
+ * True when `given` names the model a Custom provider runs: its saved id, the
+ * id its harness launches (`opencode/<provider>/<model>`), a shorter tail of
+ * that launch id, or the same registry model by alias. A different prefix
+ * (`other/<model>`) is a different model.
+ */
+function namesProviderModel(given: string, expected: string, launchId: string): boolean {
+  const wanted = given.trim().toLowerCase();
+  if (!wanted) return false;
+  const ids = [expected, launchId].map((id) => id.trim().toLowerCase()).filter(Boolean);
+  if (ids.some((id) => id === wanted || id.endsWith(`/${wanted}`))) return true;
+  const canonical = (id: string) => (getModelById(id) ?? resolveModelAlias(id))?.id;
+  const resolved = canonical(given.trim());
+  return Boolean(resolved && (resolved === canonical(expected) || resolved === canonical(launchId)));
 }
 
 /**
@@ -86,13 +96,13 @@ export function customProviderModelProblem(
   const given = model?.trim() ?? "";
   if (!given) return `"${name}" runs ${expected}. ${pass(expected)} with it.`;
   const launchId = launchModelIdFor(preset.harness, preset.source, expected);
-  if (sameModel(given, expected) || sameModel(given, launchId)) return null;
+  if (namesProviderModel(given, expected, launchId)) return null;
   return `"${name}" runs ${expected}, not ${given}. ${pass(expected)}, or pick another Custom provider (${LIST_COMMAND} lists them).`;
 }
 
 /** Null when the harness the caller named (if any) is this Custom provider's. */
 export function customProviderHarnessProblem(preset: CustomProviderTarget, provider: string | null | undefined): string | null {
   const given = provider?.trim();
-  if (!given || given === preset.harness) return null;
+  if (!given || given.toLowerCase() === preset.harness) return null;
   return `"${presetLabel(preset)}" runs in ${harnessBodyLabel(preset.harness)} (--provider ${preset.harness}), not ${given}. Leave out --provider or pass --provider ${preset.harness}.`;
 }

@@ -1522,13 +1522,14 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "spawnChat",
-    description: "Create a Work chat session in ADE on a lane and optionally seed it with an initial prompt.",
+    description: "Create a Work chat session in ADE on a lane and optionally seed it with an initial prompt. modelId is required: ADE never picks a model (`ade chat models --text` lists the ids).",
     inputSchema: {
       type: "object",
       additionalProperties: false,
+      required: ["modelId"],
       properties: {
         laneId: { type: "string" },
-        modelId: { type: "string" },
+        modelId: { type: "string", description: "The model the chat runs, e.g. anthropic/claude-opus-5-5." },
         reasoningEffort: { type: "string" },
         permissionMode: { type: "string", enum: [...AGENT_CHAT_PERMISSION_MODE_VALUES] },
         droidPermissionMode: { type: "string", enum: [...AGENT_CHAT_DROID_PERMISSION_MODE_VALUES] },

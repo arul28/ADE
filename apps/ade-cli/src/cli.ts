@@ -633,7 +633,7 @@ import {
   PRESET_FLAG_GONE_MESSAGE,
 } from "../../desktop/src/shared/customProviderRef";
 import { readHarnessPresetsFromMachine } from "../../desktop/src/main/services/chat/harnessPresetSettings";
-import { launchModelRequiredMessage, unknownModelHint, webhookModelRequiredMessage } from "../../desktop/src/shared/launchModelRule";
+import { launchModelMissing, launchModelRequiredMessage, unknownModelHint, webhookModelRequiredMessage } from "../../desktop/src/shared/launchModelRule";
 import type { ApiCredentialSummary } from "../../desktop/src/shared/types/apiCredentials";
 import {
   competingSyncHostSkipReason,
@@ -11896,7 +11896,6 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   });
   const { instanceId, presetId, credentialId } = selected;
   const provider = requireChatProvider(selected.provider) ?? "codex";
-  if (!modelArg?.trim()) throw new CliUsageError(launchModelRequiredMessage(provider));
   const launchId = launchIdFlag == null ? randomUUID() : requireCliUuid(launchIdFlag, "--launch-id");
   const laneId = laneIdFlag == null ? randomUUID() : requireCliUuid(laneIdFlag, "--lane-id");
   const explicitPrompt = readChatTextFile(args, ["--prompt-file", "--text-file"], ["--prompt", "--text", "--message"])
@@ -11904,7 +11903,8 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const input = collectGenericObjectArgs(args);
   const prompt = requireValue(explicitPrompt ?? (args.join(" ").trim() || null), "prompt");
 
-  const create: JsonObject = { provider, model: modelArg };
+  const create: JsonObject = { provider };
+  maybePut(create, "model", modelArg);
   maybePut(create, "modelId", modelArg);
   maybePut(create, "reasoningEffort", reasoningEffort);
   maybePut(create, "permissionMode", permissionMode);
@@ -11968,6 +11968,10 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const effectiveProvider = nestedOverride ?? topLevelOverride ?? provider;
   launchArgs.provider = effectiveProvider;
   mergedChat.create.provider = effectiveProvider;
+  // Checked on the merged plan, so `--arg chat.create.model=<id>` counts too.
+  if (launchModelMissing(effectiveProvider, mergedChat.create.model, mergedChat.create.modelId)) {
+    throw new CliUsageError(launchModelRequiredMessage(effectiveProvider));
+  }
 
   if (printConfig) {
     return {
@@ -14845,7 +14849,8 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
   if (sub === "create") {
     refuseRemovedFlags(args, REMOVED_LAUNCH_FLAGS);
     const model = readValue(args, ["--model"]);
-    const provider = readValue(args, ["--provider"]);
+    const selected = readLaunchIdentitySelectors(args, { provider: readValue(args, ["--provider"]), model });
+    const provider = selected.provider;
     const prompt = readValue(args, ["--prompt"]);
     const droidPermissionMode = readDroidPermissionMode(args);
     const copilotFlags = readCopilotLaunchFlags(args, provider ?? "");
@@ -14866,6 +14871,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
       ...(readFastTierFlag(args) ? { fastTier: "ultrafast" } : {}),
       ...(prompt ? { kickoffText: prompt } : {}),
+      ...(selected.instanceId ? { instanceId: selected.instanceId } : {}),
+      ...(selected.presetId ? { presetId: selected.presetId } : {}),
+      ...(selected.credentialId ? { credentialId: selected.credentialId } : {}),
     });
     requireValue(asString(createArgs.provider), "provider");
     requireValue(asString(createArgs.model), "model");

@@ -40,7 +40,7 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 - Follow: `ade chat launch-status <id> --machine cloud`.
 - Retry after a failure: the same command with the same `--launch-id`. It goes on from the failed step, on the same computer.
 - Cancel, which deletes its computer: `ade chat launch-cancel <id> --machine cloud`. Only the chat that started it, or the person. ADE MCP apps can't.
-- The new chat doesn't report back. Read it: `ade chat read <chat id> --machine <computer name>` (a cloud computer is one of the person's machines, so `--machine` takes its name).
+- The new chat doesn't report back. Read it: `ade chat read <chat id> --machine <computer name>` (a cloud computer is one of the person's machines, so `--machine` takes its name). Over ADE MCP, call `chat_read` with the chat id; it finds the chat's machine itself.
 
 ## 4. What a refusal means, and the one next step
 

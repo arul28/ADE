@@ -351,8 +351,8 @@ export function createRemoteMcpProtocol(deps: {
   const instructions = (scope: RemoteMcpScope): string => [
     `ADE on ${deps.machineName()}: coding lanes (git worktrees), agent chats and pull requests.`,
     "Use the typed tools; `ade` runs anything else.",
-    "`machine` (a machines_list key) defaults to this machine and `project` to the last opened, except chat_start and lanes_create, which need `project`; each result names both. A chat id finds its own.",
-    "Every launch names its model. The `ade-mcp-client` prompt (when a project is open) explains the workflow.",
+    "`machine` (a machines_list key or name) defaults to this machine, `project` to the last opened (chat_start and lanes_create need it); each result names both. A chat id finds its own.",
+    "The `ade-mcp-client` prompt explains the workflow.",
     // Only for an account with ADE Cloud: the same answer that lists the `ade-cloud` prompt.
     ...(adeWithheldAgentSkills().includes("ade-cloud") ? [] : ["Before an ADE Cloud lane, run `cloud status` and follow the `ade-cloud` prompt."]),
     ...(scope === "read" ? ["This connection is read-only."] : []),
@@ -832,8 +832,8 @@ export function createRemoteMcpProtocol(deps: {
   };
 
   const machineInput = (toolName: string) => (findTypedTool(toolName)?.fanOut
-    ? { type: "string", description: "A machine's key or name from machines_list, or \"all\"." }
-    : { type: "string", description: "A machine's key or name from machines_list." });
+    ? { type: "string", description: "Or \"all\"." }
+    : { type: "string" });
 
   const machinesToolDefinition = () => ({
     name: MACHINES_TOOL_NAME,

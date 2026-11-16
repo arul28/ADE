@@ -75182,10 +75182,14 @@ export function createAgentChatService(args: {
     discoveredLocalModels: await discoverOpenCodeLocalModels(),
   });
 
-  /** Read OpenCode's inventory so its models are known to a launch; a failed read leaves the list as it was. */
+  /**
+   * Read OpenCode's inventory so a model the registry misses is known to a
+   * launch. Forced: a cached inventory can predate a model OpenCode now offers,
+   * and this runs only after a miss. A failed read leaves the list as it was.
+   */
   const refreshOpenCodeModelsForLaunch = async (): Promise<void> => {
     try {
-      await probeOpenCodeInventory(false);
+      await probeOpenCodeInventory(true);
     } catch (error) {
       logger.warn("agent_chat.opencode_inventory_refresh_failed", { error: getErrorMessage(error) });
     }
