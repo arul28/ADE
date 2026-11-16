@@ -11,7 +11,7 @@ import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { memoWithLatestHandlers, useLatestCallback, useStateSkippingSameValue } from "../../lib/stableIdentity";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CircleNotch, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MagnifyingGlass, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CircleNotch, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MagnifyingGlass, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, UserCircle, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -68,9 +68,16 @@ import {
 import { jiraIssueToLaneIssue } from "../../../shared/laneJiraIssue";
 import type { LaneJiraIssue } from "../../../shared/types/jira";
 import {
+  isProviderInstanceProvider,
+  type ProviderInstance,
+  type ProviderInstanceProvider,
+} from "../../../shared/types/providerInstances";
+import { pinnedProviderInstances } from "../settings/providers/accounts/useProviderInstances";
+import {
   getModelById,
   modelSupportsFastMode,
   resolveOpenCodeFastEffortSelection,
+  resolveProviderGroupForModel,
   type ProviderFamily,
   type FastTier,
 } from "../../../shared/modelRegistry";
@@ -335,6 +342,13 @@ const EMPTY_THREAD_COMMENTS: readonly ChatThreadComment[] = [];
 const ISSUE_CONTEXT_MENU_WIDTH = 180;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
+const EMPTY_PROVIDER_INSTANCES: readonly ProviderInstance[] = [];
+
+/** What an account is called everywhere: its login's email, never its id. */
+function launchAccountLabel(account: ProviderInstance): string {
+  const email = account.account?.email?.trim();
+  return email || account.label?.trim() || account.id;
+}
 /**
  * Shown when cloud mode is on but the draft's model is not one Cursor Cloud runs.
  * The send is blocked, never rerouted to the local runtime.
@@ -2324,6 +2338,8 @@ function AgentChatComposerImpl({
   modelId,
   modelEmptyLabel,
   activeHarnessPresetId = null,
+  launchAccountId = null,
+  onLaunchAccountChange,
   availableModelIds,
   mentionModelIds,
   constrainModelSelection = false,
@@ -2541,6 +2557,14 @@ function AgentChatComposerImpl({
    * the permission mode at once. The model id stays in the trigger's tooltip.
    */
   activeHarnessPresetId?: string | null;
+  /**
+   * The provider account the next launch runs on (Claude and Codex only),
+   * chosen from the composer's ⋯ menu. Absent/null means the machine picks its
+   * default, exactly what every launch did before the choice existed.
+   */
+  launchAccountId?: string | null;
+  /** Sets that account. Absent on surfaces that never choose one (a running chat). */
+  onLaunchAccountChange?: (instanceId: string | null) => void;
   availableModelIds?: string[];
   /**
    * Every model a new chat could start on, for `@` model chips. Wider than
@@ -2979,6 +3003,7 @@ function AgentChatComposerImpl({
     return () => window.clearTimeout(timer);
   }, [attachNotice]);
   const [issueContextMenuOpen, setIssueContextMenuOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [addSecretOpen, setAddSecretOpen] = useState(false);
   const [linearIssuePickerOpen, setLinearIssuePickerOpen] = useState(false);
   const [githubIssuePickerOpen, setGitHubIssuePickerOpen] = useState(false);
@@ -3655,6 +3680,96 @@ function AgentChatComposerImpl({
       : null,
     [activeHarnessTarget],
   );
+  /**
+   * The account a new launch can run on. Claude and Codex keep one config home
+   * per login, so they are the only providers with a real choice; every other
+   * provider has exactly one identity and gets no menu. A Custom pick brings its
+   * own sign-in, and a running chat changes account from Chat Info.
+   */
+  const launchAccountProvider = useMemo<ProviderInstanceProvider | null>(() => {
+    if (sessionId || !onLaunchAccountChange || activeHarnessPreset) return null;
+    // The descriptor's `family` is the model vendor (anthropic, openai); the
+    // provider group is what a launch runs (claude, codex, opencode...).
+    const descriptor = resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey);
+    const provider = descriptor ? resolveProviderGroupForModel(descriptor) : null;
+    return provider && isProviderInstanceProvider(provider) ? provider : null;
+  }, [activeHarnessPreset, modelCatalogScopeKey, modelId, onLaunchAccountChange, sessionId]);
+  const [launchAccountRows, setLaunchAccountRows] = useState<readonly ProviderInstance[]>(EMPTY_PROVIDER_INSTANCES);
+  const [launchAccountsLoadedFor, setLaunchAccountsLoadedFor] = useState<ProviderInstanceProvider | null>(null);
+  const [launchAccountsError, setLaunchAccountsError] = useState(false);
+  const [launchAccountsReloadKey, setLaunchAccountsReloadKey] = useState(0);
+  const launchAccountsProviderRef = useRef<ProviderInstanceProvider | null>(null);
+  const launchAccountsPinKey = modelRuntimePin?.key ?? null;
+  // The machine that owns the model read owns the accounts: an id from this
+  // computer does not resolve on another one.
+  useEffect(() => {
+    if (!launchAccountProvider) {
+      launchAccountsProviderRef.current = null;
+      setLaunchAccountRows(EMPTY_PROVIDER_INSTANCES);
+      setLaunchAccountsLoadedFor(null);
+      setLaunchAccountsError(false);
+      return;
+    }
+    // A new provider must never show the previous provider's rows while its
+    // own read is in flight.
+    if (launchAccountsProviderRef.current !== launchAccountProvider) {
+      launchAccountsProviderRef.current = launchAccountProvider;
+      setLaunchAccountRows(EMPTY_PROVIDER_INSTANCES);
+      setLaunchAccountsLoadedFor(null);
+    }
+    setLaunchAccountsError(false);
+    const api = pinnedProviderInstances(modelRuntimePinRef.current ?? null);
+    if (!api) {
+      setLaunchAccountsError(true);
+      return;
+    }
+    let alive = true;
+    void api.list({ provider: launchAccountProvider }).then(
+      (rows) => {
+        if (!alive) return;
+        setLaunchAccountRows(rows);
+        setLaunchAccountsLoadedFor(launchAccountProvider);
+      },
+      () => {
+        if (!alive) return;
+        // A failed read is not a machine with no accounts. Keep the pick and
+        // surface the error with a retry; clearing it would silently launch on
+        // a different account.
+        setLaunchAccountsError(true);
+      },
+    );
+    return () => { alive = false; };
+  }, [launchAccountProvider, launchAccountsPinKey, launchAccountsReloadKey]);
+  const launchAccountChoices = useMemo(
+    () => launchAccountRows.filter((row) => row.signedIn && !row.loginBroken && !row.sameLoginAs),
+    [launchAccountRows],
+  );
+  const selectedLaunchAccount = launchAccountChoices.find((row) => row.id === launchAccountId) ?? null;
+  const showLaunchAccountMenu = Boolean(
+    onLaunchAccountChange
+    && launchAccountProvider
+    && (
+      launchAccountsError
+      || launchAccountChoices.length > 1
+      // One working login is still a choice when the machine default is not
+      // usable; otherwise the default would be unavoidable.
+      || (launchAccountChoices.length === 1 && launchAccountChoices.some((row) => !row.isDefault))
+    ),
+  );
+  // A pick that no longer names an account here (the provider changed, a preset
+  // took over, or the account was removed) goes back to "the machine picks",
+  // never a stale id. Waits for this provider's read so a remount keeps a pick,
+  // and leaves a pick alone when the read failed.
+  useEffect(() => {
+    if (!launchAccountId || !onLaunchAccountChange || launchAccountsError) return;
+    if (!launchAccountProvider) {
+      onLaunchAccountChange(null);
+      return;
+    }
+    if (launchAccountsLoadedFor !== launchAccountProvider) return;
+    if (launchAccountChoices.some((row) => row.id === launchAccountId)) return;
+    onLaunchAccountChange(null);
+  }, [launchAccountChoices, launchAccountId, launchAccountProvider, launchAccountsError, launchAccountsLoadedFor, onLaunchAccountChange]);
   // A Custom pick runs another source's model (DeepSeek in Claude Code), so the
   // effort ladder belongs to the source model, not to the harness's own rows.
   const reasoningModelId = activeHarnessTarget
@@ -6164,6 +6279,24 @@ function AgentChatComposerImpl({
       window.removeEventListener("keydown", handleKey);
     };
   }, [issueContextMenuOpen]);
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const handleClick = (event: MouseEvent) => {
+      if (issueContextButtonRef.current?.contains(event.target as Node)) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.("[data-launch-account-menu]")) return;
+      setAccountMenuOpen(false);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAccountMenuOpen(false);
+    };
+    window.addEventListener("mousedown", handleClick);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [accountMenuOpen]);
 
   const codexCustomSummary = useMemo(() => {
     if (sp !== "codex" || codexPreset !== "custom") return null;
@@ -7830,6 +7963,74 @@ function AgentChatComposerImpl({
     </ViewportOverlayPortal>
   ) : null;
 
+  // The account menu. It sits above the same trigger the issue menu uses, and
+  // only ever lists accounts this machine can actually launch on — never a
+  // provider's own sign-ins dressed up as a choice.
+  const accountMenu = accountMenuOpen && showLaunchAccountMenu && issueContextButtonRef.current && onLaunchAccountChange ? (
+    <ViewportOverlayPortal layer="contextMenu">
+      <div
+        className="pointer-events-auto absolute overflow-hidden rounded-xl border border-fg/10 bg-(color:--work-popover-bg) shadow-xl"
+        data-launch-account-menu="true"
+        role="menu"
+        aria-label="Account for the next launch"
+        style={fixedMenuAboveAnchorStyle(issueContextButtonRef.current.getBoundingClientRect(), {
+          width: ISSUE_CONTEXT_MENU_WIDTH,
+          gap: ISSUE_CONTEXT_MENU_GAP,
+          gutter: ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
+          align: "end",
+        })}
+      >
+        <div className="border-b border-fg/[0.04] px-3 py-2">
+          <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Account</div>
+        </div>
+        <div className="p-1">
+          <button
+            type="button"
+            className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
+            onClick={() => {
+              onLaunchAccountChange(null);
+              setAccountMenuOpen(false);
+            }}
+          >
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium">Default (machine picks)</span>
+            </span>
+            {launchAccountId == null ? <Check className="h-3 w-3 shrink-0" size={12} weight="bold" /> : null}
+          </button>
+          {launchAccountsError ? (
+            <div className="px-3 py-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/70">
+              <span className="block">Couldn't load accounts for this machine.</span>
+              <button
+                type="button"
+                className="mt-1 font-medium text-fg/80 underline-offset-2 hover:underline"
+                onClick={() => setLaunchAccountsReloadKey((key) => key + 1)}
+              >
+                Retry
+              </button>
+            </div>
+          ) : null}
+          {!launchAccountsError && launchAccountChoices.map((account) => (
+            <button
+              key={account.id}
+              type="button"
+              data-launch-account={account.id}
+              className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
+              onClick={() => {
+                onLaunchAccountChange(account.id);
+                setAccountMenuOpen(false);
+              }}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">{launchAccountLabel(account)}</span>
+              </span>
+              {launchAccountId === account.id ? <Check className="h-3 w-3 shrink-0" size={12} weight="bold" /> : null}
+            </button>
+          ))}
+        </div>
+      </div>
+    </ViewportOverlayPortal>
+  ) : null;
+
   const selectedLinearContextIssue = contextAttachments.find(
     (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
       attachment.type === "linear_issue"
@@ -8295,6 +8496,24 @@ function AgentChatComposerImpl({
       <ComposerOverflowMenu
         triggerRef={issueContextButtonRef}
         items={[
+          ...(showLaunchAccountMenu
+            ? [{
+                id: "launch-account",
+                label: launchAccountsError
+                  ? "Account: Couldn't load"
+                  : selectedLaunchAccount
+                    ? `Account: ${launchAccountLabel(selectedLaunchAccount)}`
+                    : "Account: Default",
+                icon: <UserCircle size={14} weight={launchAccountId ? "fill" : "regular"} />,
+                active: Boolean(launchAccountId),
+                onSelect: () => {
+                  if (!onLaunchAccountChange) return;
+                  setAttachmentPickerOpen(false);
+                  setIssueContextMenuOpen(false);
+                  setAccountMenuOpen((open) => !open);
+                },
+              }]
+            : []),
           {
             id: "issue-context",
             label: "Issue context",
@@ -8307,6 +8526,7 @@ function AgentChatComposerImpl({
             onSelect: () => {
               if (!canAttachIssueContext) return;
               setAttachmentPickerOpen(false);
+              setAccountMenuOpen(false);
               setIssueContextMenuOpen((open) => !open);
             },
           },
@@ -8419,7 +8639,7 @@ function AgentChatComposerImpl({
         ) : null
       ) : null}
     </>
-  ), [addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, iosSimulatorOpen, onHandoffToDevinCloud, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, chatRuntimePin, showAppControlToggle, showIosSimulatorToggle, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
+  ), [addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, iosSimulatorOpen, launchAccountId, launchAccountsError, onHandoffToDevinCloud, onLaunchAccountChange, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, chatRuntimePin, selectedLaunchAccount, showAppControlToggle, showIosSimulatorToggle, showLaunchAccountMenu, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
   const sendControls = useMemo(() => (turnActive ? (
 
         <>
@@ -8585,6 +8805,7 @@ function AgentChatComposerImpl({
   return (
     <>
       {issueContextMenu}
+      {accountMenu}
       {issuePickerModals}
       {showLaunchClipboardNotice && layoutVariant !== "grid-tile" ? (
         <div className="mx-auto mb-1.5 w-full max-w-[var(--chat-column,52rem)] px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45">

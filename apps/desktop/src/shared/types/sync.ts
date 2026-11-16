@@ -3001,6 +3001,7 @@ export type SyncRemoteCommandAction =
   | "lanes.cancelGitWrite"
   | "lanes.deleteLeftoverWorktree"
   | "lanes.attachGitHubIssueToSession"
+  | "lanes.attachLinearIssueToSession"
   | "lanes.detachGitHubIssueFromSession"
   | "lanes.listGitHubIssuesForSession"
   | "lanes.listGitHubIssuesForLaneSessions"

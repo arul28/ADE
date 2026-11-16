@@ -22,6 +22,7 @@ import {
   normalizeMachineInventoryPresetLogo,
 } from "../../../shared/types/machineInventory";
 import type { ProviderInstance } from "../../../shared/types/providerInstances";
+import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import type { ProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { getErrorMessage } from "../shared/utils";
 
@@ -158,7 +159,14 @@ function sanitizeDetail(value: unknown, machineKey: string): MachineInventoryDet
           }];
         })
         : [];
-      return [{ provider, accounts, modelCount: boundedCount(raw.modelCount) }];
+      return [{
+        provider,
+        accounts,
+        modelCount: boundedCount(raw.modelCount),
+        // A detail from an older host carries no flag; the provider name is the
+        // same truth, so derive it rather than dropping the field.
+        switchable: raw.switchable === true || isProviderInstanceProvider(provider),
+      }];
     })
     : [];
   const presets = Array.isArray(record.presets)

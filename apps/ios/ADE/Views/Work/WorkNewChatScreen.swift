@@ -696,14 +696,19 @@ struct WorkNewChatScreen: View {
   /// The Custom harness the next launch runs under, when the user picked one
   /// from the Custom section. Cleared by any manual model choice.
   @State private var selectedPreset: SyncMachineInventoryPreset?
-  /// The connected machine's provider accounts, from the same inventory read.
-  /// A CLI start can run on one of them (`instanceId`).
-  @State private var cliProviderAccounts: [SyncMachineInventoryProvider] = []
-  /// The account the next CLI start runs on; nil = the provider's default.
-  @State private var selectedCliAccountId: String?
-  /// Linear issues the next CLI start attaches, so the CLI starts with them.
-  @State private var cliLinearIssues: [NormalizedLinearIssue] = []
-  @State private var cliLinearPickerPresented = false
+  /// The selected provider's real accounts on the chosen machine, from the
+  /// account commands (Claude and Codex only). Not the machine inventory's
+  /// sign-in rows: those include a provider's own logins (OpenCode's Anthropic,
+  /// OpenAI…), which no launch can switch to.
+  @State private var launchAccounts: [ProviderAccount] = []
+  @State private var launchAccountsError = false
+  @State private var launchAccountsScopeKey: String?
+  /// The account the next launch runs on; nil = the machine picks its default.
+  @State private var selectedLaunchAccountId: String?
+  /// Issues the next launch starts with, from the menu's issue-context section.
+  @State private var launchIssues: [WorkLaunchIssue] = []
+  @State private var linearIssuePickerPresented = false
+  @State private var githubIssuePickerPresented = false
   /// The preset id the persisted composer preference last sent with. Resolved
   /// against the connected machine's list once it arrives, then dropped, so a
   /// relaunch keeps the harness the user chose instead of silently falling back
@@ -963,7 +968,7 @@ struct WorkNewChatScreen: View {
         laneSelector
           .padding(.horizontal, 10)
 
-        cliLaunchOptionsRow
+        launchSelectionRow
 
         if let autoCreateStatus, busy {
           HStack(spacing: 8) {
@@ -1074,13 +1079,12 @@ struct WorkNewChatScreen: View {
       WorkComposerPreferences.save(newValue)
     }
     .task { await applyHostLaunchDefaults() }
-    .sheet(isPresented: $cliLinearPickerPresented) {
-      WorkCliLinearIssuePickerSheet(syncService: syncService) { issue in
-        if !cliLinearIssues.contains(where: { $0.id == issue.id }) {
-          cliLinearIssues.append(issue)
-        }
-        cliLinearPickerPresented = false
-      }
+    .task(id: launchAccountsTaskKey) { await loadLaunchAccounts() }
+    .sheet(isPresented: $linearIssuePickerPresented) {
+      WorkLinearIssuePickerSheet(syncService: syncService, onPick: addLinearLaunchIssue)
+    }
+    .sheet(isPresented: $githubIssuePickerPresented) {
+      WorkGitHubIssuePickerSheet(syncService: syncService, onPick: addGitHubLaunchIssue)
     }
     .sheet(isPresented: $modelPickerPresented) {
       WorkModelPickerSheet(
@@ -1191,6 +1195,13 @@ struct WorkNewChatScreen: View {
     errorMessage = nil
     guard option.machineKey != selectedMachineKey else { return }
     selectedMachineKey = option.machineKey
+    // The account id and issue links name things on the previous machine;
+    // neither may ride along to the next launch.
+    selectedLaunchAccountId = nil
+    launchIssues.removeAll()
+    launchAccounts = []
+    launchAccountsError = false
+    launchAccountsScopeKey = nil
     let keepsAutoCreate = isAutoCreateLane
     if option.machineKey == nil {
       remoteLanes = []
@@ -1253,91 +1264,163 @@ struct WorkNewChatScreen: View {
     do {
       let detail = try await syncService.fetchMachineInventory(machineKey: machineKey)
       harnessPresets = detail.presets
-      cliProviderAccounts = detail.providers ?? []
       resolveRestoredPreset()
       if let selectedPreset, !detail.presets.contains(where: { $0.id == selectedPreset.id }) {
         self.selectedPreset = nil
       }
     } catch {
       harnessPresets = []
-      cliProviderAccounts = []
     }
   }
 
-  /// The accounts the CLI start can pick between: the selected CLI provider's,
-  /// on the connected machine only (another machine's ids would not resolve
-  /// there, the same reason its presets are hidden), and only when there is a
-  /// real choice. A preset names its own sign-in, so it hides the menu too.
-  private var cliAccountChoices: [SyncMachineInventoryAccount] {
-    guard sessionMode == .cli, selectedMachineKey == nil, selectedPreset == nil else { return [] }
-    let cliProvider = workResolveCliProvider(for: modelId, provider: provider).lowercased()
-    let accounts = cliProviderAccounts.first { $0.provider.lowercased() == cliProvider }?.accounts ?? []
-    return accounts.count > 1 ? accounts : []
+  /// The account provider the chosen model runs on, when that provider keeps
+  /// real accounts. A Custom harness names its own sign-in, so it has no account
+  /// to pick.
+  private var launchAccountProvider: ProviderAccountProvider? {
+    guard selectedPreset == nil else { return nil }
+    return ProviderAccountProvider(rawValue: workResolveCliProvider(for: modelId, provider: provider).lowercased())
   }
 
-  private var selectedCliAccount: SyncMachineInventoryAccount? {
-    guard let selectedCliAccountId else { return nil }
-    return cliAccountChoices.first { $0.instanceId == selectedCliAccountId }
+  /// The signed-in accounts the chosen machine can run this model on. The
+  /// choice appears when there is a real one: more than one, or one that is
+  /// not the machine's default.
+  private var launchAccountChoices: [ProviderAccount] {
+    let accounts = launchAccounts.filter(\.canTakeChats)
+    // One working login is a choice only when it is not the machine default:
+    // a signed-out default would otherwise be unavoidable.
+    return accounts.count > 1 || (accounts.count == 1 && !accounts[0].isDefault) ? accounts : []
   }
 
-  private func cliAccountLabel(_ account: SyncMachineInventoryAccount) -> String {
-    let label = account.label.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !label.isEmpty { return label }
-    return account.email ?? account.instanceId
+  private var selectedLaunchAccount: ProviderAccount? {
+    guard let selectedLaunchAccountId else { return nil }
+    return launchAccountChoices.first { $0.id == selectedLaunchAccountId }
   }
 
-  /// CLI-only launch options: which account the CLI runs on, and the Linear
-  /// issues it starts with.
+  private var launchAccountsScope: String {
+    "\(selectedMachineKey ?? "local")|\(launchAccountProvider?.rawValue ?? "none")|\(selectedPreset?.id ?? "")"
+  }
+
+  private var launchAccountsTaskKey: String {
+    let hostPhase = selectedMachineKey
+      .flatMap { machineFleet.connection(for: $0) }
+      .map { String(describing: $0.phase) } ?? "none"
+    return "\(launchAccountsScope)|\(hostPhase)"
+  }
+
+  private func launchAccountLabel(_ account: ProviderAccount) -> String {
+    let label = account.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    return label.isEmpty ? account.id : label
+  }
+
+  /// Adds a picked issue to the launch, once per issue. Split out of the
+  /// sheet closures so the screen's modifier chain stays checkable.
+  private func addLinearLaunchIssue(_ issue: NormalizedLinearIssue) {
+    if !launchIssues.contains(where: { $0.id == issue.id }) {
+      launchIssues.append(.linear(issue))
+    }
+    linearIssuePickerPresented = false
+  }
+
+  private func addGitHubLaunchIssue(_ issue: GitHubIssueRow, repo: GitHubRepoRefDTO) {
+    let picked = WorkLaunchIssue.github(issue, owner: repo.owner, repo: repo.name)
+    if !launchIssues.contains(where: { $0.id == picked.id }) {
+      launchIssues.append(picked)
+    }
+    githubIssuePickerPresented = false
+  }
+
+  /// The chosen machine's real accounts for the model's provider. Read from the
+  /// account commands, not the machine inventory: the inventory also lists a
+  /// provider's own CLI logins (OpenCode's Anthropic, OpenAI…), which are not
+  /// accounts any launch can switch to.
+  @MainActor
+  private func loadLaunchAccounts() async {
+    let scope = launchAccountsScope
+    if launchAccountsScopeKey != scope {
+      // A provider or machine change must never show the previous scope's
+      // accounts while its own read is in flight.
+      launchAccountsScopeKey = scope
+      launchAccounts = []
+      launchAccountsError = false
+    }
+    guard let provider = launchAccountProvider else {
+      launchAccounts = []
+      launchAccountsError = false
+      selectedLaunchAccountId = nil
+      return
+    }
+    let machineKey = selectedMachineKey
+    // Never let a remote machine without a live roster fall back to the
+    // focused host's accounts: that id would name a different machine's login.
+    let host: ProviderAccountsHost?
+    if let machineKey {
+      host = machineFleet.connection(for: machineKey)
+    } else {
+      host = syncService
+    }
+    guard let host else {
+      launchAccountsError = true
+      return
+    }
+    guard host.supportsProviderAccounts else {
+      // An older host, or a machine still connecting, cannot answer. Keep the
+      // current pick and say so instead of pretending there are no accounts.
+      launchAccountsError = true
+      return
+    }
+    do {
+      let accounts = try await ProviderAccountsClient(host: host).list(provider)
+      guard provider == launchAccountProvider, selectedMachineKey == machineKey, !Task.isCancelled else { return }
+      launchAccounts = accounts
+      launchAccountsError = false
+      if let selectedLaunchAccountId,
+         !accounts.contains(where: { $0.id == selectedLaunchAccountId && $0.canTakeChats }) {
+        self.selectedLaunchAccountId = nil
+      }
+    } catch {
+      // A cancelled read belongs to a provider or machine this screen moved off.
+      guard provider == launchAccountProvider, selectedMachineKey == machineKey, !Task.isCancelled else { return }
+      launchAccountsError = true
+    }
+  }
+
+  private var githubIssuesAvailable: Bool {
+    // The issue pickers read the focused machine's project. A chat on another
+    // machine would show that machine's repo, so the phone offers no issue
+    // context there until its pickers are machine-scoped.
+    guard selectedMachineKey == nil,
+          syncService.supportsGitHubIssuesPane,
+          let projectId = activeProjectId
+    else { return false }
+    return syncService.githubIssuesMenuProjectIds.contains(projectId)
+  }
+
+  /// What the next launch carries beyond the lane and the prompt: the account
+  /// it runs on and the issues it starts with. Only the picks that are set draw
+  /// a pill; the controls themselves live in the composer's ⋯ menu.
   @ViewBuilder
-  private var cliLaunchOptionsRow: some View {
-    let accounts = cliAccountChoices
-    let linearAvailable = syncService.linearConnected
-    if sessionMode == .cli && (!accounts.isEmpty || linearAvailable || !cliLinearIssues.isEmpty) {
+  private var launchSelectionRow: some View {
+    if selectedLaunchAccount != nil || !launchIssues.isEmpty {
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 8) {
-          if !accounts.isEmpty {
-            Menu {
-              Button {
-                selectedCliAccountId = nil
-              } label: {
-                cliMenuRow("Default account", checked: selectedCliAccount == nil)
-              }
-              ForEach(accounts) { account in
-                Button {
-                  selectedCliAccountId = account.instanceId
-                } label: {
-                  cliMenuRow(
-                    cliAccountLabel(account) + (account.isDefault ? " (default)" : ""),
-                    checked: selectedCliAccount?.instanceId == account.instanceId
-                  )
-                }
-              }
-            } label: {
-              cliOptionPill(
-                systemImage: "person.crop.circle",
-                title: selectedCliAccount.map(cliAccountLabel) ?? "Default account"
-              )
-            }
-            .accessibilityLabel("Account")
-            .accessibilityIdentifier("Work.NewChat.CliAccount")
-          }
-          ForEach(cliLinearIssues) { issue in
+          if let account = selectedLaunchAccount {
             Button {
-              cliLinearIssues.removeAll { $0.id == issue.id }
+              selectedLaunchAccountId = nil
             } label: {
-              cliOptionPill(systemImage: "xmark.circle.fill", title: issue.identifier)
+              launchOptionPill(systemImage: "person.crop.circle", title: launchAccountLabel(account))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Remove \(issue.identifier)")
+            .accessibilityLabel("Account: \(launchAccountLabel(account)). Use the machine's default.")
+            .accessibilityIdentifier("Work.NewChat.Account")
           }
-          if linearAvailable {
+          ForEach(launchIssues) { issue in
             Button {
-              cliLinearPickerPresented = true
+              launchIssues.removeAll { $0.id == issue.id }
             } label: {
-              cliOptionPill(systemImage: "circle.dashed", title: cliLinearIssues.isEmpty ? "Linear issue" : "Add issue")
+              launchOptionPill(systemImage: issue.symbolName, title: issue.identifier)
             }
             .buttonStyle(.plain)
-            .accessibilityIdentifier("Work.NewChat.CliLinearIssue")
+            .accessibilityLabel("Remove \(issue.providerLabel) issue \(issue.identifier)")
           }
         }
         .padding(.horizontal, 10)
@@ -1345,8 +1428,71 @@ struct WorkNewChatScreen: View {
     }
   }
 
+  /// The launch options, drawn by the composer's ⋯ menu: which account the run
+  /// starts on, and the issues it starts with.
   @ViewBuilder
-  private func cliMenuRow(_ title: String, checked: Bool) -> some View {
+  private var launchOptionsMenu: some View {
+    let accounts = launchAccountChoices
+    if launchAccountsError || !accounts.isEmpty {
+      Section("Account") {
+        Button {
+          selectedLaunchAccountId = nil
+        } label: {
+          launchMenuRow("Default (machine picks)", checked: selectedLaunchAccount == nil)
+        }
+        if launchAccountsError {
+          Button {
+            Task { await loadLaunchAccounts() }
+          } label: {
+            Label("Couldn't load accounts. Retry", systemImage: "arrow.clockwise")
+          }
+          .accessibilityIdentifier("Work.NewChat.AccountRetry")
+        } else {
+          ForEach(accounts) { account in
+            Button {
+              selectedLaunchAccountId = account.id
+            } label: {
+              launchMenuRow(
+                launchAccountLabel(account) + (account.isDefault ? " (default)" : ""),
+                checked: selectedLaunchAccount?.id == account.id
+              )
+            }
+          }
+        }
+      }
+    }
+    if (selectedMachineKey == nil && (syncService.linearConnected || githubIssuesAvailable))
+        || !launchIssues.isEmpty {
+      Section("Issue context") {
+        if selectedMachineKey == nil && syncService.linearConnected {
+          Button {
+            linearIssuePickerPresented = true
+          } label: {
+            Label("Linear issue…", systemImage: "circle.dashed")
+          }
+          .accessibilityIdentifier("Work.NewChat.LinearIssue")
+        }
+        if githubIssuesAvailable {
+          Button {
+            githubIssuePickerPresented = true
+          } label: {
+            Label("GitHub issue…", systemImage: "smallcircle.filled.circle")
+          }
+          .accessibilityIdentifier("Work.NewChat.GitHubIssue")
+        }
+        ForEach(launchIssues) { issue in
+          Button(role: .destructive) {
+            launchIssues.removeAll { $0.id == issue.id }
+          } label: {
+            Label("Remove \(issue.identifier)", systemImage: "xmark")
+          }
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func launchMenuRow(_ title: String, checked: Bool) -> some View {
     if checked {
       Label(title, systemImage: "checkmark")
     } else {
@@ -1354,7 +1500,7 @@ struct WorkNewChatScreen: View {
     }
   }
 
-  private func cliOptionPill(systemImage: String, title: String) -> some View {
+  private func launchOptionPill(systemImage: String, title: String) -> some View {
     HStack(spacing: 5) {
       Image(systemName: systemImage)
         .font(.system(size: 11, weight: .semibold))
@@ -1559,6 +1705,7 @@ struct WorkNewChatScreen: View {
       fastModeAllowed: fastModeAllowed,
       composerFocused: $composerFocused,
       onOpenModelPicker: { modelPickerPresented = true },
+      launchMenu: AnyView(launchOptionsMenu),
       onSubmit: submit(openingMessage:attachments:)
     )
   }
@@ -1657,6 +1804,10 @@ struct WorkNewChatScreen: View {
     let readyAttachments = workChatInputReadyAttachments(inputAttachments)
     let rawText = openingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
     let opener = workChatOutgoingText(openingMessage, attachmentCount: readyAttachments.count)
+    // A chat's first message carries the issue references the menu attached,
+    // the same way desktop's does; the transcript still names the launch with
+    // the person's own words.
+    let chatOpener = workLaunchChatOpener(opener, issues: launchIssues)
     guard !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) else { return false }
     guard !opener.isEmpty && !modelId.isEmpty else { return false }
     let availabilityMode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
@@ -1715,7 +1866,10 @@ struct WorkNewChatScreen: View {
       isAutoCreateLane: isAutoCreateLane,
       isChatSession: sessionMode == .chat,
       cursorCloudMode: false,
-      hostCanStartLaunch: remoteRepo == nil && syncService.canStartChatLaunch
+      // Issue links need the chained flow's post-create attach; the host-owned
+      // launch has no issue-link field. Account selection travels on both.
+      hostCanStartLaunch: remoteRepo == nil && syncService.canStartChatLaunch && launchIssues.isEmpty,
+      instanceId: selectedLaunchAccount?.id
     ) {
       let syncService = syncService
       let attachmentsToStage = readyAttachments
@@ -1812,13 +1966,13 @@ struct WorkNewChatScreen: View {
           provider: cliProvider,
           permissionMode: workCliPermissionMode(provider: cliProvider, runtimeMode: runtimeMode),
           title: workCliInitialSessionTitle(provider: cliProvider, opener: opener),
-          initialInput: workCliInitialInput(text: rawText, attachments: attachmentRefs),
+          initialInput: workLaunchCliInitialInput(text: rawText, attachments: attachmentRefs, issues: launchIssues),
           modelId: modelId,
           reasoningEffort: cliReasoningEffort,
           fastMode: fastModeSupported ? codexFastMode : nil,
           presetId: selectedPreset?.id,
-          instanceId: selectedCliAccount?.instanceId,
-          linearIssues: cliLinearIssues,
+          instanceId: selectedLaunchAccount?.id,
+          linearIssues: launchIssues.compactMap(\.linearIssue),
           cols: 48,
           rows: 24,
           // Same scope as a chat: another machine's checkout routes the start
@@ -1889,7 +2043,8 @@ struct WorkNewChatScreen: View {
         targetProjectId: targetScope.projectId,
         targetProjectRootPath: targetScope.projectRootPath,
         pendingDisplayName: opener,
-        presetId: selectedPreset?.id
+        presetId: selectedPreset?.id,
+        instanceId: selectedLaunchAccount?.id
       )
       createdChatSummary = summary
       createdChatAttachments = attachmentRefs
@@ -1902,12 +2057,27 @@ struct WorkNewChatScreen: View {
           projectRootPath: remoteRepo.rootPath
         )
       }
+      // Record the picked issues on the chat (and its lane) the way desktop's
+      // attach does, so the lane's linked-issue list and a PR's "Closes"
+      // references are right. Runs after the remote scope is set, so a chat on
+      // another machine takes its links there. The first message already names
+      // them; a failed link must not cost the person their chat.
+      for issue in launchIssues {
+        switch issue {
+        case .linear(let linear):
+          try? await syncService.attachLinearIssueToChat(chatSessionId: summary.sessionId, issue: linear)
+        case .github:
+          if let payload = issue.githubIssuePayload {
+            try? await syncService.attachGitHubIssueToChat(chatSessionId: summary.sessionId, issues: [payload])
+          }
+        }
+      }
       if attachmentRefs.isEmpty {
-        await onStarted(summary, opener, false, nil, [])
+        await onStarted(summary, chatOpener, false, nil, [])
       } else {
         let delivery = try await syncService.sendChatMessage(
           sessionId: summary.sessionId,
-          text: opener,
+          text: chatOpener,
           attachments: attachmentRefs,
           targetProjectId: targetScope.projectId,
           targetProjectRootPath: targetScope.projectRootPath
@@ -1922,7 +2092,7 @@ struct WorkNewChatScreen: View {
           // delivered path to keep the switch exhaustive.
           deliveryState = nil
         }
-        await onStarted(summary, opener, true, deliveryState, attachmentRefs)
+        await onStarted(summary, chatOpener, true, deliveryState, attachmentRefs)
       }
       if let createdLaneId, let autoCreatedFallbackName {
         startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName, temporaryBranch: autoCreatedTemporaryBranch, attachments: namingAttachmentRefs)
@@ -2114,6 +2284,9 @@ private struct WorkNewChatComposerBar: View {
   /// Owned by the screen so the lane sheet can park and restore keyboard focus.
   @Binding var composerFocused: Bool
   let onOpenModelPicker: () -> Void
+  /// Launch options the ⋯ menu draws (account, issue context), owned by the
+  /// screen so the picks survive the composer's own state.
+  var launchMenu: AnyView? = nil
   let onSubmit: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
 
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
@@ -2190,7 +2363,8 @@ private struct WorkNewChatComposerBar: View {
           ),
           provider: provider,
           modelId: modelId,
-          runtimeMode: runtimeMode
+          runtimeMode: runtimeMode,
+          extraMenuContent: launchMenu
         )
       },
       controls: {
@@ -2530,35 +2704,4 @@ func workNewChatPrimaryLane(_ lanes: [LaneSummary]) -> LaneSummary? {
   lanes.first { $0.laneType == "primary" }
     ?? lanes.first { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "primary" }
     ?? lanes.first
-}
-
-
-/// The Linear issue list in pick mode, for a CLI start: tapping an issue adds
-/// it to the launch instead of attaching it to an existing chat.
-private struct WorkCliLinearIssuePickerSheet: View {
-  @StateObject private var store: LinearPaneStore
-  @State private var started = false
-  @Environment(\.dismiss) private var dismiss
-  let onPick: (NormalizedLinearIssue) -> Void
-
-  init(syncService: SyncService, onPick: @escaping (NormalizedLinearIssue) -> Void) {
-    _store = StateObject(wrappedValue: LinearPaneStore(sync: syncService))
-    self.onPick = onPick
-  }
-
-  var body: some View {
-    NavigationStack {
-      LinearIssueListScreen(
-        store: store,
-        onClose: { dismiss() },
-        showsClose: true,
-        onAttachIssue: { issue in onPick(issue) }
-      )
-    }
-    .task {
-      guard !started else { return }
-      started = true
-      await store.start()
-    }
-  }
 }

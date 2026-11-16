@@ -71,6 +71,7 @@ describe("machine inventory builders", () => {
         {
           provider: "claude",
           modelCount: 4,
+          switchable: true,
           accounts: [
             {
               instanceId: "claude-work",
@@ -85,6 +86,7 @@ describe("machine inventory builders", () => {
         {
           provider: "codex",
           modelCount: 2,
+          switchable: true,
           accounts: [
             { instanceId: "codex-default", label: "Default", plan: "Plus", isDefault: true },
           ],
@@ -104,6 +106,31 @@ describe("machine inventory builders", () => {
       ],
     });
     expect(JSON.stringify(detail)).not.toMatch(/configHome|apiKey|secret|token/i);
+  });
+
+  it("marks a provider's own CLI logins as not switchable", () => {
+    const detail = buildMachineInventoryDetail({
+      machineKey: "machine-1",
+      providerInstances: [],
+      modelCounts: { opencode: 6 },
+      presets: [],
+      signedIn: [
+        { provider: "opencode", label: "Anthropic" },
+        { provider: "opencode", label: "OpenAI" },
+        { provider: "opencode", label: "OpenCode Zen" },
+      ],
+    });
+
+    expect(detail.providers).toEqual([{
+      provider: "opencode",
+      modelCount: 6,
+      switchable: false,
+      accounts: [
+        { instanceId: "opencode:anthropic", label: "Anthropic", isDefault: false },
+        { instanceId: "opencode:openai", label: "OpenAI", isDefault: false },
+        { instanceId: "opencode:opencode zen", label: "OpenCode Zen", isDefault: false },
+      ],
+    }]);
   });
 
   it("carries a preset mark as an identity, never artwork, and drops a bad accent", () => {

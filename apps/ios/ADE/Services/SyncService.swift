@@ -12274,14 +12274,39 @@ final class SyncService: ObservableObject {
   }
 
   func attachLinearIssueToChat(chatSessionId: String, issue: NormalizedLinearIssue) async throws {
-    try requireInvokableRemoteAction("lane.attachLinearIssueToSession")
+    let action = "lanes.attachLinearIssueToSession"
+    try requireInvokableChatAction(action, sessionId: chatSessionId)
+    let scope = chatCommandScope(for: chatSessionId)
     _ = try await sendChatCommand(
-      action: "lane.attachLinearIssueToSession",
+      action: action,
       payload: AttachLinearIssueToSessionPayload(
         chatSessionId: chatSessionId,
         issues: [LinearIssueAttachPayload(issue: issue)]
-      )
+      ),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
     )
+  }
+
+  /// Records GitHub issues on a chat session (and its lane) through the same
+  /// link the desktop composer's attach writes. The payload is the lane-link
+  /// shape, not GitHub's REST shape.
+  func attachGitHubIssueToChat(chatSessionId: String, issues: [WorkGitHubIssueLinkPayload]) async throws {
+    guard !issues.isEmpty else { return }
+    let action = "lanes.attachGitHubIssueToSession"
+    try requireInvokableChatAction(action, sessionId: chatSessionId)
+    let scope = chatCommandScope(for: chatSessionId)
+    _ = try await sendChatCommand(
+      action: action,
+      payload: AttachGitHubIssueToSessionPayload(chatSessionId: chatSessionId, issues: issues),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  private struct AttachGitHubIssueToSessionPayload: Encodable {
+    var chatSessionId: String
+    var issues: [WorkGitHubIssueLinkPayload]
   }
 
   // MARK: - Linear credential mutations (mobile connect / manage)
@@ -16125,7 +16150,8 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
     pendingDisplayName: String? = nil,
-    presetId: String? = nil
+    presetId: String? = nil,
+    instanceId: String? = nil
   ) async throws -> AgentChatSessionSummary {
     let (args, trimmedModel) = chatSessionCreateArgs(
       laneId: laneId,
@@ -16153,7 +16179,8 @@ final class SyncService: ObservableObject {
       cursorConfigValues: cursorConfigValues,
       computerUse: computerUse,
       requestedCwd: requestedCwd,
-      presetId: presetId
+      presetId: presetId,
+      instanceId: instanceId
     )
     // Offline: queue the create with a stable command id and record a snapshot
     // so the Work list shows a "Pending sync" row until the queued command
@@ -16321,7 +16348,8 @@ final class SyncService: ObservableObject {
     cursorConfigValues: [String: RemoteJSONValue]?,
     computerUse: RemoteJSONValue?,
     requestedCwd: String?,
-    presetId: String?
+    presetId: String?,
+    instanceId: String? = nil
   ) -> ([String: Any], String) {
     let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
     var args: [String: Any] = [
@@ -16334,6 +16362,11 @@ final class SyncService: ObservableObject {
     }
     if let presetId, !presetId.isEmpty {
       args["presetId"] = presetId
+    }
+    // The account resolves on the machine that owns the lane; only its id
+    // crosses. Claude and Codex are the only providers with more than one.
+    if let instanceId, !instanceId.isEmpty {
+      args["instanceId"] = instanceId
     }
     if let reasoningEffort, !reasoningEffort.isEmpty {
       args["reasoningEffort"] = reasoningEffort

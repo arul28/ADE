@@ -5428,6 +5428,20 @@ represented by a synthetic single entry.
   to one provider). A native fork or handoff runs as the source chat's account
   (`forkInstanceId`), because it resumes the source's provider thread, which
   lives in that account's config home.
+- **A new launch can name its account.** The composer's `⋯` menu offers
+  **Account** when the chosen model runs on Claude or Codex and there is a real
+  choice: more than one working login, or one working login that is not the
+  machine's default. It lists `Default (machine picks)` (which is also where
+  Smart balance picks) and each signed-in account by email. The pick travels as
+  `instanceId` on `chat.create` or the CLI launch, reaches
+  `createSession`/`materializeRuntimeCliLaunch` unchanged, and a saved preset or
+  stored key carries its own sign-in so it wins. A failed account read keeps the
+  current pick and says so with a retry in the menu; it never clears the pick.
+  Desktop and the phone draw the same menu; a machine whose only working login
+  is its default has nothing to switch and shows no row. The machine inventory's `switchable` flag says
+  which providers' inventory rows are real accounts, so no client can offer a
+  provider's own sign-ins (OpenCode's Anthropic / OpenAI rows) as a choice — no
+  launch can resolve one.
 - **The user can switch a chat's account.** The account row at the bottom of
   the chat actions drawer opens a menu of the provider's other signed-in
   accounts (copies of one login are hidden), each with its tighter of

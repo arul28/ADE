@@ -129,6 +129,9 @@ export function parseAgentChatCreateFields(value: Record<string, unknown>): Omit
   // Fast's tier: "ultrafast" or plain Fast. Anything else is not a tier.
   if (value.fastTier === "ultrafast") parsed.fastTier = "ultrafast";
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatCreateArgs["opencodePermissionMode"];
+  // The provider account a launch runs on (Claude and Codex only). The id
+  // travels; the machine that owns the lane resolves it against its own store.
+  if (asTrimmedString(value.instanceId)) parsed.instanceId = asTrimmedString(value.instanceId)!;
   if ("piProfileId" in value) parsed.piProfileId = value.piProfileId == null ? null : asTrimmedString(value.piProfileId) ?? null;
   if ("piProviderId" in value) parsed.piProviderId = value.piProviderId == null ? null : asTrimmedString(value.piProviderId) ?? null;
   if ("piModelId" in value) parsed.piModelId = value.piModelId == null ? null : asTrimmedString(value.piModelId) ?? null;

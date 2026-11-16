@@ -461,6 +461,9 @@ struct ChatLaunchChatConfig: Equatable {
   var copilotContextTier: String? = nil
   var copilotAutoTier: String? = nil
   var cursorModeId: String? = nil
+  /// The provider account the host should launch on (Claude/Codex). The id is
+  /// resolved against the host's own account store, like `chat.create`.
+  var instanceId: String? = nil
 }
 
 /// Everything a client needs to start a chat launch. `ChatLaunchArgs` on the
@@ -518,7 +521,8 @@ extension ChatLaunchRequest {
     isAutoCreateLane: Bool,
     isChatSession: Bool,
     cursorCloudMode: Bool,
-    hostCanStartLaunch: Bool
+    hostCanStartLaunch: Bool,
+    instanceId: String? = nil
   ) {
     guard chatLaunchComposerShouldUseLaunch(
       isAutoCreateLane: isAutoCreateLane,
@@ -555,7 +559,8 @@ extension ChatLaunchRequest {
         copilotPermissionMode: wire.copilotPermissionMode,
         copilotContextTier: wire.copilotContextTier,
         copilotAutoTier: wire.copilotAutoTier,
-        cursorModeId: wire.cursorModeId
+        cursorModeId: wire.cursorModeId,
+        instanceId: instanceId
       ),
       projectId: projectId,
       projectRootPath: projectRootPath,
