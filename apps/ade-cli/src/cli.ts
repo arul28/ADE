@@ -11902,6 +11902,8 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 1_000) ?? 1_000;
   if (timeoutMs <= 0) throw new CliUsageError("chat launch --timeout-ms must be greater than zero.");
   if (pollIntervalMs <= 0) throw new CliUsageError("chat launch --poll-interval-ms must be greater than zero.");
+  // Text after `--` is the prompt, never flags: split it off before reading selectors.
+  const promptTail = takeArgsAfterTerminator(args);
   const providerRaw = readValue(args, ["--provider"]);
   const selected = readLaunchIdentitySelectors(args, {
     provider: providerRaw,
@@ -11914,7 +11916,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const explicitPrompt = readChatTextFile(args, ["--prompt-file", "--text-file"], ["--prompt", "--text", "--message"])
     ?? readValue(args, ["--prompt", "--text", "--message"]);
   const input = collectGenericObjectArgs(args);
-  const prompt = requireValue(explicitPrompt ?? (args.join(" ").trim() || null), "prompt");
+  const prompt = requireValue(explicitPrompt ?? (promptTail?.join(" ").trim() || args.join(" ").trim() || null), "prompt");
 
   const create: JsonObject = { provider };
   maybePut(create, "model", modelArg);

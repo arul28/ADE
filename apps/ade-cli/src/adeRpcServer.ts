@@ -186,7 +186,7 @@ import {
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
 import { readHarnessPresetsFromMachine } from "../../desktop/src/main/services/chat/harnessPresetSettings";
 import { resolveMachineAdeDir } from "./services/projects/machineLayout";
-import { assertActionModelNames, assertCliLaunchModelNamed, assertFullModelName, assertLaunchModels, automationDraftMissingModel, savedRuleModelNames } from "./modelNameGuard";
+import { assertActionModelNames, assertCliLaunchModelNamed, assertFullModelName, assertLaunchModels, automationDraftMissingModels, savedRuleModelNames } from "./modelNameGuard";
 import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
@@ -1843,24 +1843,27 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * What the rule an `automations.saveRule` edit replaces already holds: its
- * model names (an unchanged old shorthand passes) and whether it already ran
- * without a model (an edit, such as a rename, may keep it that way; only a
- * model removed now is refused).
+ * model names (an unchanged old shorthand passes) and the places it already
+ * left without a model (an edit, such as a rename, may keep those; a model
+ * removed now is refused).
  */
 function savedRuleKeptBy(
   domain: string,
   action: string,
   input: unknown,
   service: Record<string, unknown>,
-): { modelNames: Set<string>; lacksModel: boolean } {
-  const none = { modelNames: new Set<string>(), lacksModel: false };
+): { modelNames: Set<string>; missingModels: Set<string> } {
+  const none = { modelNames: new Set<string>(), missingModels: new Set<string>() };
   if (domain !== "automations" || action !== "saveRule" || !isRecord(input) || !isRecord(input.draft)) return none;
   const id = typeof input.draft.id === "string" ? input.draft.id.trim() : "";
   if (!id || typeof service.get !== "function") return none;
   try {
     const saved = (service.get as (args: { id: string }) => unknown)({ id });
     if (!isRecord(saved)) return none;
-    return { modelNames: savedRuleModelNames(saved), lacksModel: automationDraftMissingModel(saved) !== null };
+    return {
+      modelNames: savedRuleModelNames(saved),
+      missingModels: new Set(automationDraftMissingModels(saved).map((place) => place.key)),
+    };
   } catch (error) {
     // The save itself reports a missing or unreadable rule; without the saved
     // rule an unchanged old name or missing model is refused, which the
@@ -6832,7 +6835,7 @@ async function runTool(args: {
       assertActionModelNames(domain, action, actionInput, savedRule.modelNames);
       assertLaunchModels(domain, action, actionInput, {
         readPresets: () => readHarnessPresetsFromMachine(resolveMachineAdeDir()),
-        editKeepsMissingModel: savedRule.lacksModel,
+        keptMissingModels: savedRule.missingModels,
       });
     }
     if (

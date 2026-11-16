@@ -11,7 +11,8 @@ import {
   unknownModelHint,
   webhookModelRequiredMessage,
 } from "../../desktop/src/shared/launchModelRule";
-import { customProviderModelProblem } from "../../desktop/src/shared/customProviderRef";
+import { customProviderModelProblem, findCustomProvider } from "../../desktop/src/shared/customProviderRef";
+import { isRoutePresetId } from "../../desktop/src/shared/harnessRoutes";
 import type { HarnessPreset } from "../../desktop/src/shared/harnessPresets";
 import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
 
@@ -36,7 +37,15 @@ function chatModelRef(fields: Fields | null): unknown {
 }
 
 /** A launch's provider, the fields that may name its model, and its Custom provider id. */
-type LaunchModels = { provider: unknown; models: unknown[]; presetId?: unknown; message?: string };
+type LaunchModels = {
+  provider: unknown;
+  /** Every field that may name the model; one must be filled. */
+  models: unknown[];
+  /** The one the launch runs, checked against a Custom provider or route. */
+  runs?: unknown;
+  presetId?: unknown;
+  message?: string;
+};
 
 /** What one action's input says about models. */
 type ActionModelRule = {
@@ -48,12 +57,15 @@ type ActionModelRule = {
    * must fill one of them.
    */
   launch?: (fields: Fields) => LaunchModels | null;
+  /** For an action that saves agents to start later: each place that names no model. */
+  missing?: (fields: Fields) => MissingRuleModel[];
 };
 
 const chatRefs = (fields: Fields): PickedModel[] => [{ ref: chatModelRef(fields), provider: fields.provider }];
 const chatLaunch = (fields: Fields): LaunchModels => ({
   provider: fields.provider,
   models: [fields.model, fields.modelId],
+  runs: chatModelRef(fields),
   presetId: fields.presetId,
 });
 const targetModelRefs = (fields: Fields): PickedModel[] => [{ ref: fields.targetModelId }];
@@ -70,7 +82,7 @@ const ACTION_MODEL_RULES: ReadonlyMap<string, ActionModelRule> = new Map<string,
   // The CLI launcher runs `model` and reads no `modelId`.
   ["chat.launchCli", {
     refs: providerModelRefs,
-    launch: (fields) => ({ provider: fields.provider, models: [fields.model], presetId: fields.presetId }),
+    launch: (fields) => ({ provider: fields.provider, models: [fields.model], runs: fields.model, presetId: fields.presetId }),
   }],
   ["chat.createSession", { refs: chatRefs, launch: chatLaunch }],
   ["chat.launchHeadless", { refs: chatRefs, launch: chatLaunch }],
@@ -93,6 +105,7 @@ const ACTION_MODEL_RULES: ReadonlyMap<string, ActionModelRule> = new Map<string,
         provider: create?.provider ?? fields.provider,
         // The top-level `modelId` only names the lane; the chat runs `chat.create`'s.
         models: [create?.model, create?.modelId],
+        runs: chatModelRef(create),
         presetId: create?.presetId,
       };
     },
@@ -109,10 +122,7 @@ const ACTION_MODEL_RULES: ReadonlyMap<string, ActionModelRule> = new Map<string,
   }],
   ["automations.saveRule", {
     refs: (fields) => automationDraftModelRefs(record(fields.draft)),
-    launch: (fields) => {
-      const missing = automationDraftMissingModel(record(fields.draft));
-      return missing ? { provider: null, models: [], message: missing } : null;
-    },
+    missing: (fields) => automationDraftMissingModels(record(fields.draft)),
   }],
   ["external-sessions.import", { refs: providerModelRefs }],
   ["usage.previewModelRoute", { refs: providerModelRefs }],
@@ -156,31 +166,42 @@ function automationDraftKind(draft: Fields): string {
   return steps.length > 0 ? "built-in" : "agent-session";
 }
 
+/** One place in a rule that would start an agent on a model nobody named. */
+export type MissingRuleModel = { key: string; message: string };
+
 /**
- * Which agent a rule would start on a model nobody named, or null. The rule's
+ * Every place a rule would start an agent on a model nobody named. The rule's
  * own `modelConfig.modelId` runs an agent-session rule and any agent step that
  * names none; a handoff names its target. Without them the run falls back to
  * ADE's default, which an agent may not choose by leaving the field out. A
  * rule bound to an existing chat (`execution.session.chatSessionId`) starts no
- * agent. Exported so the RPC guard can tell a rule that already ran without a
- * model (an edit keeps it as it was) from one losing its model now.
+ * agent, and only a built-in rule runs steps (the planner drops the others').
+ * Each place has a stable key (a step by its id, else its position), so the
+ * RPC guard can let an edit keep an omission the saved rule already had while
+ * refusing one it adds.
  */
-export function automationDraftMissingModel(draft: Fields | null): string | null {
-  if (!draft) return null;
-  if (named(record(record(draft.execution)?.session)?.chatSessionId)) return null;
+export function automationDraftMissingModels(draft: Fields | null): MissingRuleModel[] {
+  if (!draft) return [];
+  if (named(record(record(draft.execution)?.session)?.chatSessionId)) return [];
   const ruleModel = record(draft.modelConfig)?.modelId;
-  if (automationDraftKind(draft) === "agent-session" && !named(ruleModel)) {
-    return `Set modelConfig.modelId on the rule: it starts an agent, and ADE never picks its model. ${unknownModelHint()}`;
+  const kind = automationDraftKind(draft);
+  if (kind === "agent-session") {
+    return named(ruleModel)
+      ? []
+      : [{ key: "rule", message: `Set modelConfig.modelId on the rule: it starts an agent, and ADE never picks its model. ${unknownModelHint()}` }];
   }
-  for (const step of automationDraftSteps(draft)) {
+  if (kind !== "built-in") return [];
+  const missing: MissingRuleModel[] = [];
+  automationDraftSteps(draft).forEach((step, index) => {
+    const at = typeof step.id === "string" && step.id.trim() ? step.id.trim() : String(index);
     if (step.type === "agent-session" && !named(record(step.modelConfig)?.modelId) && !named(ruleModel)) {
-      return `Set modelConfig.modelId on the agent step (or on the rule): ADE never picks its model. ${unknownModelHint()}`;
+      missing.push({ key: `step:${at}`, message: `Set modelConfig.modelId on the agent step (or on the rule): ADE never picks its model. ${unknownModelHint()}` });
     }
     if (step.type === "handoff" && !named(step.targetModelId)) {
-      return `Set targetModelId on the handoff step: ADE never picks the model it hands to. ${unknownModelHint()}`;
+      missing.push({ key: `step:${at}`, message: `Set targetModelId on the handoff step: ADE never picks the model it hands to. ${unknownModelHint()}` });
     }
-  }
-  return null;
+  });
+  return missing;
 }
 
 /**
@@ -253,34 +274,34 @@ function refuseMissingModel(provider: unknown, message?: string): never {
 export type LaunchModelGuardContext = {
   /** This machine's saved Custom providers (the list the service resolves `presetId` against); read only when a launch names one. */
   readPresets: () => readonly HarnessPreset[] | null;
-  /** The record this request edits already ran without a model; the edit may keep it that way. */
-  editKeepsMissingModel?: boolean;
+  /** The places the record this request edits already left without a model; the edit may keep those. */
+  keptMissingModels?: ReadonlySet<string>;
 };
 
 /**
  * An agent that starts another agent names its model: ADE never picks one for
  * it. The desktop app (left out by the caller) always sends one. A launch on a
- * saved Custom provider names that provider's own model: it runs one model, so
- * a different one is a mistake, and the service would otherwise run the Custom
- * provider's model without saying so. A `--via` route id or an id not saved
- * here is left to the service.
+ * Custom provider or a `--via` route names that setup's own model: it runs one
+ * model, so a different one is a mistake, and the service would otherwise run
+ * the setup's model without saying so. An id not saved here is left to the
+ * service.
  */
 export function assertLaunchModels(domain: string, action: string, input: unknown, context: LaunchModelGuardContext): void {
   const fields = record(input);
-  const launch = fields ? ACTION_MODEL_RULES.get(`${domain}.${action}`)?.launch?.(fields) : null;
+  const rule = fields ? ACTION_MODEL_RULES.get(`${domain}.${action}`) : undefined;
+  if (!fields || !rule) return;
+  const added = rule.missing?.(fields).find((place) => !context.keptMissingModels?.has(place.key));
+  if (added) refuseMissingModel(null, added.message);
+  const launch = rule.launch?.(fields);
   if (!launch) return;
-  if (launchModelMissing(launch.provider, ...launch.models)) {
-    if (context.editKeepsMissingModel) return;
-    refuseMissingModel(launch.provider, launch.message);
-  }
+  if (launchModelMissing(launch.provider, ...launch.models)) refuseMissingModel(launch.provider, launch.message);
   const presetId = typeof launch.presetId === "string" ? launch.presetId.trim() : "";
-  const given = launch.models.filter((model): model is string => named(model));
-  if (!presetId || !given.length) return;
-  const preset = context.readPresets()?.find((candidate) => candidate.id === presetId);
-  if (!preset) return;
-  const problems = given.map((model) => customProviderModelProblem(preset, model, "model"));
-  if (problems.some((problem) => problem === null)) return;
-  throwIfRefused(problems[0] ?? null);
+  const runs = launch.runs ?? launch.models.find(named);
+  if (!presetId || typeof runs !== "string" || !runs.trim()) return;
+  // A route id is decoded; a saved id is looked up, reading the list only now.
+  const found = findCustomProvider(isRoutePresetId(presetId) ? null : context.readPresets(), presetId);
+  if (!found.ok) return;
+  throwIfRefused(customProviderModelProblem(found.preset, runs, "model"));
 }
 
 /** The same rule for a tool that starts a CLI agent (`start_cli_session`, `spawn_agent`). */
