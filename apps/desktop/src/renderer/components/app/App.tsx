@@ -151,6 +151,7 @@ const preloadCtoPage = ctoRoute.preload;
 import {
   AppStoreProvider,
   createProjectAppStore,
+  hasKnownProjectInfo,
   hydrateProjectAppStore,
   releaseProjectAppStore,
   retainProjectAppStoreState,
@@ -1828,6 +1829,14 @@ export function App() {
   React.useEffect(() => {
     void getAiStatusCached({ projectRoot: projectRoot ?? null }).catch(() => undefined);
   }, [projectRoot]);
+
+  // A launch that can reopen a folder's Work view (saved project info) loads
+  // the Work page while the launch gate and the window session are read,
+  // rather than after them.
+  React.useEffect(() => {
+    if (isWebClientMode() || !hasKnownProjectInfo()) return;
+    void preloadTerminalsPage().catch(() => undefined);
+  }, []);
 
   return (
     // Interface, theme, reduce-motion and the OS colour scheme come from

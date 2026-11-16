@@ -1381,7 +1381,9 @@ export function TopBar({
           if (!active.copy) {
             store.showNoMachineTab({ id: active.id, displayName: active.displayName, iconDataUrl: null });
           } else if (active.copy.kind === "local") {
-            void store.switchProjectToPath(active.copy.rootPath, { skipWorktreeGate: true }).catch(reportStripRestoreFailure);
+            // The folder's Work view shows at once from saved state while the
+            // brain opens it, so the composer takes input before the open ends.
+            void store.switchProjectToPath(active.copy.rootPath, { skipWorktreeGate: true, showCachedView: true }).catch(reportStripRestoreFailure);
           } else {
             void store.switchRemoteProject(active.copy.binding.targetId, active.copy.binding.projectId).catch(reportStripRestoreFailure);
           }

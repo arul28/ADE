@@ -1165,6 +1165,72 @@ function persistLaneCache(projectRoot: string | null | undefined, lanes: LaneSum
   }
 }
 
+/*
+ * The last project info this computer saw for each local folder: what a
+ * launch needs to show the Work view of the tab that was in front before the
+ * brain has opened its project (`switchProjectToPath` with `showCachedView`).
+ * The project the open reports reads the same, so the hand-over renders
+ * nothing new. Written only when a folder's info changes.
+ */
+const KNOWN_PROJECT_INFO_STORAGE_KEY = "ade.knownProjectInfo.v1";
+const KNOWN_PROJECT_INFO_LIMIT = 32;
+type KnownProjectInfoEntry = { displayName: string; baseRef: string };
+let knownProjectInfoMemo: Map<string, KnownProjectInfoEntry> | null = null;
+
+function knownProjectInfoMap(): Map<string, KnownProjectInfoEntry> {
+  if (knownProjectInfoMemo) return knownProjectInfoMemo;
+  const map = new Map<string, KnownProjectInfoEntry>();
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(KNOWN_PROJECT_INFO_STORAGE_KEY) ?? "null");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const [rootPath, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (!rootPath.trim() || !value || typeof value !== "object") continue;
+        const entry = value as Partial<KnownProjectInfoEntry>;
+        if (typeof entry.displayName !== "string" || !entry.displayName.trim()) continue;
+        if (typeof entry.baseRef !== "string" || !entry.baseRef.trim()) continue;
+        map.set(rootPath, { displayName: entry.displayName, baseRef: entry.baseRef });
+      }
+    }
+  } catch {
+    // Unreadable or missing storage: no folder is known, and launches take the normal path.
+  }
+  knownProjectInfoMemo = map;
+  return map;
+}
+
+/** The saved project info for a local folder, or null when this computer has none. */
+export function readKnownProjectInfo(rootPath: string | null | undefined): ProjectInfo | null {
+  const key = typeof rootPath === "string" ? rootPath.trim() : "";
+  if (!key) return null;
+  const entry = knownProjectInfoMap().get(key);
+  return entry ? { rootPath: key, displayName: entry.displayName, baseRef: entry.baseRef } : null;
+}
+
+/** Whether any local folder's project info is saved: a launch may open on a Work view. */
+export function hasKnownProjectInfo(): boolean {
+  return knownProjectInfoMap().size > 0;
+}
+
+function rememberKnownProjectInfo(project: ProjectInfo): void {
+  const key = project.rootPath.trim();
+  if (!key || !project.displayName?.trim() || !project.baseRef?.trim()) return;
+  const map = knownProjectInfoMap();
+  const known = map.get(key);
+  if (known && known.displayName === project.displayName && known.baseRef === project.baseRef) return;
+  map.delete(key);
+  map.set(key, { displayName: project.displayName, baseRef: project.baseRef });
+  while (map.size > KNOWN_PROJECT_INFO_LIMIT) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+  try {
+    window.localStorage.setItem(KNOWN_PROJECT_INFO_STORAGE_KEY, JSON.stringify(Object.fromEntries(map)));
+  } catch {
+    // Storage full or unavailable: the next launch opens the normal way.
+  }
+}
+
 function removePersistedLaneCache(projectRoot: string | null | undefined): void {
   const projectKey = normalizeProjectKey(projectRoot);
   if (!projectKey) return;
@@ -1677,6 +1743,12 @@ export type AppState = {
   project: ProjectInfo | null;
   projectBinding: OpenProjectBinding | null;
   projectHydrated: boolean;
+  /**
+   * The local folder whose Work view shows from saved state while its launch
+   * open is still on its way (`switchProjectToPath` with `showCachedView`).
+   * Null once the open settles.
+   */
+  cachedProjectViewRoot: string | null;
   openRemoteProjectTabs: Extract<OpenProjectBinding, { kind: "remote" }>[];
   openProjectTabRoots: string[];
   /**
@@ -2052,7 +2124,17 @@ export type AppState = {
   openRepo: () => Promise<ProjectInfo | null>;
   switchProjectToPath: (
     rootPath: string,
-    opts?: { skipWorktreeGate?: boolean },
+    opts?: {
+      skipWorktreeGate?: boolean;
+      /**
+       * A launch restoring the tab that was in front: with no project shown
+       * yet and saved project info for the folder, the Work view shows at
+       * once from that info and the lane cache while the brain opens the
+       * project. Calls the view makes carry the folder's pin and wait in main
+       * for the open.
+       */
+      showCachedView?: boolean;
+    },
   ) => Promise<void>;
   dismissWorktreeOpenPrompt: () => void;
   /** The user said Trust: add this folder to git's safe.directory and open it. */
@@ -2434,6 +2516,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   project: null,
   projectBinding: null,
   projectHydrated: false,
+  cachedProjectViewRoot: null,
   openProjectTabRoots: [],
   noMachineTabs: readNoMachineTabs(),
   activeNoMachineTabId: null,
@@ -2531,6 +2614,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         prev.projectBinding.rootPath === project.rootPath
           ? prev.projectBinding
           : null;
+      // A local folder's info, for the next launch's Work view (desktop only:
+      // the hosted client has no folders of its own to reopen).
+      if (project && !matchingRemoteBinding && !isWebClientMode()) rememberKnownProjectInfo(project);
       const projectChanged = previousProjectRoot !== nextProjectRoot;
       // Lane caches and lane selection are keyed by the *binding* key
       // (`remote:<targetId>:<projectId>` for remote projects), which is what
@@ -2590,6 +2676,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           : null,
         projectRevision:
           projectChanged ? prev.projectRevision + 1 : prev.projectRevision,
+        // The window left a saved Work view whose open is still on its way.
+        ...(prev.cachedProjectViewRoot != null && nextProjectRoot !== prev.cachedProjectViewRoot
+          ? { cachedProjectViewRoot: null }
+          : {}),
         laneDeleteProgressByLaneId:
           projectChanged ? {} : prev.laneDeleteProgressByLaneId,
         // Per-lane UI context only resets when the project itself changes.
@@ -3730,7 +3820,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   switchProjectToPath: async (
     rootPath: string,
-    opts?: { skipWorktreeGate?: boolean },
+    opts?: { skipWorktreeGate?: boolean; showCachedView?: boolean },
   ) => {
     // Worktree gate: when opening a path that is NOT already a warm tab, inspect
     // it first. If it's an external linked worktree whose owning repo resolves,
@@ -3768,6 +3858,22 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     if (isWarmTabSwitch && cachedProject) {
       get().setProject(cachedProject, { replaceBinding: true });
     }
+    // A launch restoring its front tab, with nothing on screen yet: the
+    // folder's Work view shows now, from its saved info and lane cache, and
+    // the open below replaces it with what the brain reports. The open is
+    // started in this same task, before any effect of the view can run, so
+    // main has the folder authorized for this window (as an open in flight)
+    // before the view's first pinned call reaches it; those calls wait in the
+    // runtime pool for the brain. With no saved info this is a normal cold
+    // switch.
+    const cachedViewProject =
+      opts?.showCachedView && !isWarmTabSwitch && !get().project && !get().projectTransition
+        ? readKnownProjectInfo(rootPath)
+        : null;
+    const showsCachedView = cachedViewProject != null;
+    if (cachedViewProject) {
+      get().setProject(cachedViewProject, { replaceBinding: true });
+    }
     const cachedWarmLanes =
       cachedProject != null ? get().laneCacheByProject[cachedProject.rootPath] : undefined;
     const restoredWarmSelection =
@@ -3775,7 +3881,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ? get().laneSelectionByProject[cachedProject.rootPath] ?? { laneId: null, sessionId: null }
         : { laneId: null, sessionId: null };
     set({
-      projectTransition: isWarmTabSwitch
+      projectTransition: isWarmTabSwitch || showsCachedView
         ? null
         : {
             kind: "switching",
@@ -3783,6 +3889,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             startedAtMs: Date.now(),
           },
       projectTransitionError: null,
+      // `setProject` above already restored the lanes and their selection.
+      ...(cachedViewProject
+        ? {
+            cachedProjectViewRoot: cachedViewProject.rootPath,
+            projectHydrated: true,
+            showWelcome: false,
+            isNewTabOpen: false,
+            standaloneSettingsOpen: false,
+            keybindings: readKeybindingsSnapshot(),
+          }
+        : {}),
       // A cold switch keeps the open project's binding until the new project
       // replaces both together: nulling it here left the old project (perhaps
       // one on another machine) reading as local, and a failure kept it so.
@@ -3820,6 +3937,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     });
     try {
       const project = await window.ade.project.switchToPath(rootPath);
+      if (showsCachedView && get().project?.rootPath !== rootPath) {
+        // The user moved to another project (or a remote copy) while the saved
+        // view's open ran. That move owns the window now; the open only
+        // refreshes what this computer knows about the folder.
+        get().rememberProjectInfo(project);
+        return;
+      }
       get().setProject(project, { replaceBinding: true });
       const restoredSelection =
         get().laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
@@ -3831,7 +3955,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const cachedLanes = get().laneCacheByProject[project.rootPath];
       // Banner-dismiss pruning happens in the second `set` call below, after recents are fetched,
       // so we can retain dismissals for the active project + all recent projects in one pass.
-      set(isWarmTabSwitch
+      // The cached view hands over in place: its lanes, selection and draft
+      // stay, the lane read below replaces the lanes, and a Home or another
+      // switch the user started during the open keeps its own state.
+      set(showsCachedView
+        ? {
+            projectHydrated: true,
+            ...(get().cachedProjectViewRoot === rootPath ? { cachedProjectViewRoot: null } : {}),
+          }
+        : isWarmTabSwitch
         ? {
             projectTransition: null,
             projectTransitionError: null,
@@ -3948,8 +4080,19 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     } catch (error) {
       const failure = transitionFailureState("switching", error, rootPath);
       const projectTransitionError = failure.projectTransitionError;
+      if (showsCachedView) {
+        // The folder did not open, so its saved view goes: the window is where
+        // a cold switch that failed leaves it, on Home with the error. A
+        // project the user moved to during the open stays.
+        if (get().cachedProjectViewRoot === rootPath) set({ cachedProjectViewRoot: null });
+        if (get().project?.rootPath === rootPath) {
+          get().setProject(null);
+          set({ showWelcome: true });
+        }
+      }
       set({
-        projectTransition: null,
+        // A cached view started no transition; one in flight now is a later switch's.
+        ...(showsCachedView ? {} : { projectTransition: null }),
         lanesLoading: false,
         ...failure,
         projectTransitionError: !projectTransitionError

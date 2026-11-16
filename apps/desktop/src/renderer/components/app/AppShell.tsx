@@ -672,7 +672,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       try {
         const session = await window.ade.app.getWindowSession();
         if (cancelled) return;
-        applyProjectState(session.project, session.binding);
+        // The launch restore can already show the front tab's saved Work view
+        // while its open runs. A session from before that open names no
+        // project, and applying it would replace the view with Home; the open
+        // settles the view itself.
+        const state = useAppStore.getState();
+        const showsCachedView = !session.project
+          && !session.binding
+          && state.cachedProjectViewRoot != null
+          && state.project?.rootPath === state.cachedProjectViewRoot;
+        if (!showsCachedView) applyProjectState(session.project, session.binding);
       } catch {
         if (cancelled) return;
         setProject(null);

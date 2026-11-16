@@ -12050,6 +12050,10 @@ export function AgentChatPane({
       draftsPerSessionRef.current.set(prevDraftKeyRef.current, composerDraftTextRef.current);
     }
     prevDraftKeyRef.current = companionStateKey;
+    // Text typed under the 350 ms write debounce is saved before the read, so
+    // a re-run for this same scope (the view's data arriving while the user
+    // types) restores what was typed, not an older snapshot.
+    flushPendingComposerDraftWrite();
     const saved = readLatestComposerDraftSnapshot(composerDraftStorageKeyValues, initialNativeControls);
     composerDraftHydratingRef.current = true;
     composerDraftHydratingTextRef.current = saved?.text ?? null;
@@ -12108,6 +12112,7 @@ export function AgentChatPane({
     composerDraftStorageKeyValue,
     composerDraftStorageKeyValues,
     draftLaunchConfigScopeKey,
+    flushPendingComposerDraftWrite,
     initialNativeControls,
     selectedSessionId,
     setAttachmentsWithIds,
@@ -15113,7 +15118,35 @@ export function AgentChatPane({
     return true;
   }, [isBoundScopePane, selectedSession, selectedSessionId, sessionProvider, updateComposerDraft, workSidebar]);
 
+  // A launch can show this view from saved state while its project is still
+  // opening (`cachedProjectViewRoot`, see `switchProjectToPath`). A send made
+  // then waits, with the text kept in the composer, and goes out once the
+  // open settles: to the same chat, lane and machine it was typed for, or not
+  // at all.
+  const cachedProjectViewRoot = useRootAppStore((s) => s.cachedProjectViewRoot);
+  const projectOpeningForView = cachedProjectViewRoot != null && cachedProjectViewRoot === projectRoot;
+  const sendTargetKey = JSON.stringify([
+    selectedSessionId ?? null,
+    laneId ?? null,
+    draftExecutionBindingRef.current?.key ?? chatRuntimePinRef.current?.key ?? null,
+  ]);
+  const sendTargetKeyRef = useRef(sendTargetKey);
+  sendTargetKeyRef.current = sendTargetKey;
+  const queuedSendUntilOpenRef = useRef<{
+    mode: AgentChatDispatchSteerMode | undefined;
+    projectRoot: string;
+    targetKey: string;
+  } | null>(null);
+  const queueSendUntilProjectOpens = useCallback((mode?: AgentChatDispatchSteerMode): boolean => {
+    const openingRoot = rootAppStoreApi.getState().cachedProjectViewRoot;
+    if (openingRoot == null || openingRoot !== projectRoot) return false;
+    queuedSendUntilOpenRef.current = { mode, projectRoot: openingRoot, targetKey: sendTargetKeyRef.current };
+    setError({ message: "Opening the project. Your message sends when it is ready.", kind: "status" });
+    return true;
+  }, [projectRoot]);
+
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
+    if (queueSendUntilProjectOpens(activeTurnDispatchMode)) return;
     const draft = draftStore.get();
     // A turn is about to run against this worktree — surface the branch-drift
     // strip if HEAD has wandered off the lane's branch. No-op when it hasn't.
@@ -16195,7 +16228,31 @@ export function AgentChatPane({
     subagentView,
     selectedSubagentCapability,
     updateComposerDraft,
+    queueSendUntilProjectOpens,
   ]);
+
+  const submitRef = useRef(submit);
+  submitRef.current = submit;
+  // The open settled: a waiting send goes out now, through the normal send
+  // path and its checks. If the open failed, the window moved to another
+  // project, or the chat, lane or machine changed under it, nothing is sent
+  // and the text stays in the composer.
+  useEffect(() => {
+    if (projectOpeningForView) return;
+    const queued = queuedSendUntilOpenRef.current;
+    if (!queued) return;
+    queuedSendUntilOpenRef.current = null;
+    const root = rootAppStoreApi.getState();
+    const opened = root.project?.rootPath === queued.projectRoot
+      && root.projectTransition == null
+      && root.projectTransitionError == null;
+    if (!opened || queued.targetKey !== sendTargetKeyRef.current) {
+      setError({ message: "Your message was not sent. Check the chat, then send it again.", kind: "status" });
+      return;
+    }
+    setError(null);
+    void submitRef.current(queued.mode);
+  }, [projectOpeningForView]);
 
   const compactContext = useCallback(async () => {
     const sessionId = composerSessionId ?? selectedSessionId;
@@ -19892,7 +19949,11 @@ export function AgentChatPane({
             onSubmit={() => {
               void submit();
             }}
-            onSubmitBlocked={(message) => setError({ message: message, kind: "hint" })}
+            onSubmitBlocked={(message) => {
+              // Models load once the project is open: a send before that waits.
+              if (queueSendUntilProjectOpens()) return;
+              setError({ message: message, kind: "hint" });
+            }}
             onSubmitInBackground={showDraftLaunchControls ? () => {
               if (workDraftKind === "cli") {
                 void launchDraftCliSession("background");
