@@ -110,7 +110,8 @@ export type { CloudLaneLaunchDeps, CloudLaneLaunchStartInput } from "./cloudLane
  */
 function withChatModel<T extends { chat?: ChatLaunchChatArgs }>(launch: T): T {
   const create = launch.chat?.create;
-  if (!launch.chat || !create || create.modelId?.trim() || create.model?.trim()) return launch;
+  // A preset names its own model; a chat here skips the default pick for one too.
+  if (!launch.chat || !create || create.presetId || create.modelId?.trim() || create.model?.trim()) return launch;
   const model = isModelProviderGroup(create.provider) ? getDefaultModelDescriptor(create.provider)?.id : undefined;
   return model ? { ...launch, chat: { ...launch.chat, create: { ...create, model, modelId: model } } } : launch;
 }
