@@ -1798,6 +1798,23 @@ export function registerRuntimeBridge({
     },
   );
 
+  // Whether a chat's machine makes a new chat and sends its first message in
+  // one call (`chat.createSessionAndSend`). A main-process read of the brain's
+  // initialize answer; it reaches no brain.
+  handle(
+    IPC.agentChatCreateAndSendSupported,
+    (_event, arg: { targetId?: string | null }): boolean => {
+      const targetId = typeof arg?.targetId === "string" ? arg.targetId.trim() : "";
+      if (targetId) {
+        // A machine with no connection here (an asleep cloud computer the
+        // account must wake) takes the two calls, which wake it.
+        const target = savedOrGoneTarget(targetId);
+        return target ? remoteConnectionService.supportsChatCreateAndSend(target.id) : false;
+      }
+      return localRuntimeConnectionPool?.supportsChatCreateAndSend() ?? false;
+    },
+  );
+
   handle(
     IPC.remoteRuntimeAttachmentUploadCapability,
     async (

@@ -787,6 +787,13 @@ type LocalRuntimeConnectionStats = {
   projectReregistrations: number;
 };
 
+function readsChatCreateAndSendCapability(initializeResult: unknown): boolean {
+  if (!initializeResult || typeof initializeResult !== "object") return false;
+  const capabilities = (initializeResult as { capabilities?: unknown }).capabilities;
+  return Boolean(capabilities && typeof capabilities === "object"
+    && (capabilities as { chatCreateAndSend?: unknown }).chatCreateAndSend === true);
+}
+
 export function readLocalRuntimeInfo(value: unknown): {
   version: string | null;
   buildHash: string | null;
@@ -1282,6 +1289,8 @@ export class LocalRuntimeConnectionPool {
   /** Folders the brain answered `project_folder_too_slow` for (see `isKnownRefused`). */
   private readonly refusedRoots = new Set<string>();
   private activeClient: RuntimeRpcClient | null = null;
+  /** Connections whose brain advertised `chatCreateAndSend` in its initialize answer. */
+  private readonly chatCreateAndSendClients = new WeakSet<RuntimeRpcClient>();
   private activeRuntimePid: number | null = null;
   private activeRuntimeSyncPort: number | null = null;
   private activeRuntimePublishHealth: LocalRuntimeStatus["publishHealth"] = null;
@@ -1600,6 +1609,15 @@ export class LocalRuntimeConnectionPool {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Whether the connected brain runs `chat.createSessionAndSend`. False with
+   * no connection or an older brain: the caller then makes two calls.
+   */
+  supportsChatCreateAndSend(): boolean {
+    const client = this.activeClient;
+    return client != null && !client.isClosed() && this.chatCreateAndSendClients.has(client);
   }
 
   getRuntimeProcessIds(): number[] {
@@ -4334,6 +4352,7 @@ export class LocalRuntimeConnectionPool {
       throw error;
     }
     const runtimeInfo = readLocalRuntimeInfo(initializeResult);
+    if (readsChatCreateAndSendCapability(initializeResult)) this.chatCreateAndSendClients.add(client);
     if (options.expectedPid != null && runtimeInfo.pid !== options.expectedPid) {
       closeRuntimeClient(client);
       throw new Error(

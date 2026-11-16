@@ -3078,6 +3078,9 @@ export function createMultiProjectRpcRequestHandler(
           // `chat.sendMessage` drops a repeat of a `clientSendId` it has seen.
           // A client retries a send of unknown outcome only against this.
           clientSendDedupe: true,
+          // `chat.createSessionAndSend` makes a new chat and sends its first
+          // message in one call. A client without it makes two calls.
+          chatCreateAndSend: true,
           // The chat launch kinds this brain runs. An ADE Cloud hand-off of a
           // CLI or lane launch is refused by a brain that doesn't list it.
           chatLaunchKinds: [...CHAT_LAUNCH_KINDS],

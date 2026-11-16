@@ -503,6 +503,7 @@ export const IPC = {
   agentChatSetScheduledWorkPaused: "ade.agentChat.scheduledWork.pause",
   agentChatWarmupModel: "ade.agentChat.warmupModel",
   agentChatPrewarmDraft: "ade.agentChat.prewarmDraft",
+  agentChatCreateAndSendSupported: "ade.agentChat.createAndSendSupported",
   agentChatSlashCommands: "ade.agentChat.slashCommands",
   agentChatListClaudePlugins: "ade.agentChat.claudePlugins.list",
   agentChatListCodexPlugins: "ade.agentChat.codexPlugins.list",

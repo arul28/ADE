@@ -225,7 +225,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "startCrossMachineBatchMove", "retryCrossMachineBatchMove", "importCrossMachineHandoffLane",
       "resolveCrossMachineBatchMoveApproval",
       "dismissPendingInput", "reloadClaudePlugins", "rewindFiles", "saveTempAttachment",
-      "copyTempAttachment", "createAttachmentUpload", "sendMessage", "setClaudeOutputStyle",
+      "copyTempAttachment", "createAttachmentUpload", "sendMessage", "createSessionAndSend", "setClaudeOutputStyle",
       "setParallelLaunchState", "cancelScheduledWork", "resumeUsageLimitNow",
       "continueUsageLimitOnAlternate", "switchAccount", "setScheduledWorkPaused", "steer",
       "unarchiveSession", "updateSession", "regenerateSessionMetadata", "setSpawnKind", "setParent",

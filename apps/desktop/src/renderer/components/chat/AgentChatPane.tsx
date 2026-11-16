@@ -148,7 +148,7 @@ import {
   deriveDeterministicLaneTitleFromPrompt,
   legacyAutoLaneTemporaryBranch,
 } from "../../../shared/laneNameFallback";
-import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
+import { isRemoteOutcomeUnknownError, isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import {
   machineIdForBinding,
   machineNameForBinding,
@@ -243,7 +243,8 @@ import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspa
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { ChatActionsToggleBadge } from "./ChatActionsToggleBadge";
 import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
-import { beginChatSendTiming, noteChatSendTimingEvent } from "./chatSendTiming";
+import { beginChatSendTiming, noteChatSendTimingEvent, type ChatSendTimingHandle } from "./chatSendTiming";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ChatMachineWakeBanner, ChatMachineWakeProvider } from "./useChatMachineWake";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
@@ -571,6 +572,8 @@ import {
 import { useChatLaunchPaneLifecycle, useChatLaunchPaneState } from "./launch/useChatLaunchPaneState";
 import { consumeChatLaunchDraftRestore, useChatLaunchDraftRestore } from "./launch/chatLaunchDraftRestore";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { logRendererDebugEvent } from "../../lib/debugLog";
+import { sessionFromSummary } from "./boundAgentChatApi";
 import {
   isDraftLaunchJobStale,
   isDraftLaunchJobTerminal,
@@ -668,6 +671,12 @@ const CHAT_ACTIONS_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const CHAT_ACTIONS_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const workCliStartupDelayMs = 180;
 const REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS = 15_000;
+/**
+ * When a combined create-and-send call lost its answer, the checks of the
+ * chat's machine: at once, then 3 s, 10 s and 20 s after the first (20 s in all). The
+ * call can still be running there.
+ */
+const DRAFT_CHAT_RECONCILE_DELAYS_MS = [0, 3_000, 7_000, 10_000] as const;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = DEFAULT_ATTACHMENT_ONLY_PROMPT;
 
 const chatToolbarActionBase =
@@ -1610,6 +1619,26 @@ function draftDepartingScope(shell: HTMLElement | null): Element | null {
 }
 
 /**
+ * The opening message of a drafted chat before its provider is known: the
+ * draft's own `interactionMode` and no `runtime`. The brain's one-call create
+ * and send (`chat.createSessionAndSend`) applies the provider rule of
+ * `buildDraftChatMessageArgs` to it from the created chat.
+ */
+function buildDraftChatOpeningMessage(prepared: PreparedDraftLaunch): Omit<AgentChatSendArgs, "sessionId"> {
+  return {
+    text: prepared.finalText,
+    displayText: prepared.finalDisplayText
+      || (hasPastedTextPromptAttachment(prepared.selectedAttachments) ? "" : "Selected visual app context"),
+    attachments: prepared.selectedAttachments,
+    contextAttachments: prepared.selectedContextAttachments,
+    reasoningEffort: prepared.reasoningEffort,
+    executionMode: prepared.executionMode,
+    interactionMode: prepared.interactionMode ?? null,
+    ...(prepared.submittedAtMs != null ? { clientSubmittedAtMs: prepared.submittedAtMs } : {}),
+  };
+}
+
+/**
  * The opening `agentChat.send` for a drafted chat, minus the session id. Used
  * by the direct create-then-send path and by the brain-owned new-lane launch,
  * so both send the same message. `interactionMode` is only sent to Claude.
@@ -1620,16 +1649,9 @@ function buildDraftChatMessageArgs(
   interactionMode: AgentChatInteractionMode | null | undefined,
 ): Omit<AgentChatSendArgs, "sessionId"> {
   return {
-    text: prepared.finalText,
-    displayText: prepared.finalDisplayText
-      || (hasPastedTextPromptAttachment(prepared.selectedAttachments) ? "" : "Selected visual app context"),
-    attachments: prepared.selectedAttachments,
-    contextAttachments: prepared.selectedContextAttachments,
-    reasoningEffort: prepared.reasoningEffort,
-    executionMode: prepared.executionMode,
+    ...buildDraftChatOpeningMessage(prepared),
     interactionMode: provider === "claude" ? interactionMode ?? null : null,
     ...(provider === "cursor" ? { runtime: "local" as const } : {}),
-    ...(prepared.submittedAtMs != null ? { clientSubmittedAtMs: prepared.submittedAtMs } : {}),
   };
 }
 
@@ -12553,6 +12575,66 @@ export function AgentChatPane({
     };
   }, [codexDaybreak, currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId]);
 
+  /**
+   * The `agentChat.create` args for a chat on `targetLaneId`, with the id a
+   * draft warmup reserved when it is for the same lane on the same machine.
+   * Takes the reservation, so a failed create never reuses it. Settings that
+   * changed since the warmup are the brain's to detect: it then starts the
+   * chat cold under the same id.
+   */
+  const takeLaneCreateRequest = useCallback((
+    targetLaneId: string,
+    launchState: DraftLaunchSnapshot | undefined,
+    pin: OpenProjectBinding | null | undefined,
+  ) => {
+    if (constrainedModelSelectionError) {
+      throw new Error(constrainedModelSelectionError);
+    }
+    const built = buildChatCreateArgs(launchState);
+    const draftWarm = draftWarmRef.current;
+    draftWarmRef.current = null;
+    const createPinKey = (pin ?? chatRuntimePinRef.current)?.key ?? null;
+    const reservedSessionId = draftWarm && draftWarm.laneId === targetLaneId && draftWarm.pinKey === createPinKey
+      ? draftWarm.sessionId
+      : null;
+    const createArgs = {
+      laneId: targetLaneId,
+      ...built.createArgs,
+      ...(reservedSessionId ? { sessionId: reservedSessionId } : {}),
+    };
+    return { built, createArgs, reservedSessionId };
+  }, [buildChatCreateArgs, constrainedModelSelectionError]);
+
+  /**
+   * The window's half of a create the brain answered: the list cache, the
+   * remembered launch settings, and the ids the chat's live events need.
+   */
+  const adoptCreatedLaneSession = useCallback((
+    created: AgentChatSession | null | undefined,
+    built: ReturnType<typeof buildChatCreateArgs>,
+    targetLaneId: string,
+  ): AgentChatSession => {
+    // Name the failure here rather than letting it travel. A runtime that
+    // answers with a session carrying no id (a contract drift, an
+    // unreachable host resolving to a fallback) used to surface three calls
+    // later as the host rejecting `chat.send` for a missing sessionId.
+    if (!created?.id) {
+      throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
+    }
+    invalidateAgentChatSessionListCache({ laneId: targetLaneId });
+    if (draftKeepsMachineDefaultsRef.current) {
+      // ADE's pick launched once; the next draft here remembers again.
+      draftKeepsMachineDefaultsRef.current = false;
+    } else {
+      rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
+    }
+    loadedHistoryRef.current.delete(created.id);
+    optimisticSessionIdsRef.current.add(created.id);
+    knownSessionIdsRef.current.add(created.id);
+    touchSession(created.id);
+    return created;
+  }, [initialNativeControls, lastLaunchConfigStorageKey, touchSession]);
+
   const createSessionForLane = useCallback(async (
     targetLaneId: string,
     options: {
@@ -12574,52 +12656,23 @@ export function AgentChatPane({
       sendFollows?: boolean;
       /** Marked when the create call goes out (send timing). */
       onCreateCalled?: () => void;
+      /** Args already taken by `takeLaneCreateRequest` (a one-call attempt the machine declined). */
+      createRequest?: ReturnType<typeof takeLaneCreateRequest>;
     } = {},
   ): Promise<AgentChatSession> => {
-      if (constrainedModelSelectionError) {
-        throw new Error(constrainedModelSelectionError);
-      }
-      const built = buildChatCreateArgs(options.launchState);
-      const { createArgs: laneFreeCreateArgs, desc, launchModelId } = built;
-      // The id a draft warmup reserved, when this create is for the same lane
-      // on the same machine. Taken before the call, so a failed create never
-      // reuses it. Settings that changed since the warmup are the brain's to
-      // detect: it then starts the chat cold under the same id.
-      const draftWarm = draftWarmRef.current;
-      draftWarmRef.current = null;
-      const createPinKey = (options.pin ?? chatRuntimePinRef.current)?.key ?? null;
-      const reservedSessionId = draftWarm && draftWarm.laneId === targetLaneId && draftWarm.pinKey === createPinKey
-        ? draftWarm.sessionId
-        : null;
-      const createArgs = {
-        laneId: targetLaneId,
-        ...laneFreeCreateArgs,
-        ...(reservedSessionId ? { sessionId: reservedSessionId } : {}),
-      };
+      const { built, createArgs } = options.createRequest
+        ?? takeLaneCreateRequest(targetLaneId, options.launchState, options.pin);
+      const { desc, launchModelId } = built;
       // No pin given: the pane's own lane, on the chat's machine.
       options.onCreateCalled?.();
-      const created = await agentChatApiRef.current.create(
-        createArgs,
-        requireChatPin(chatApiPin(options.pin ?? chatRuntimePinRef.current, isBoundScopePaneRef.current)),
+      const created = adoptCreatedLaneSession(
+        await agentChatApiRef.current.create(
+          createArgs,
+          requireChatPin(chatApiPin(options.pin ?? chatRuntimePinRef.current, isBoundScopePaneRef.current)),
+        ),
+        built,
+        targetLaneId,
       );
-      // Name the failure here rather than letting it travel. A runtime that
-      // answers with a session carrying no id (a contract drift, an
-      // unreachable host resolving to a fallback) used to surface three calls
-      // later as the host rejecting `chat.send` for a missing sessionId.
-      if (!created?.id) {
-        throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
-      }
-      invalidateAgentChatSessionListCache({ laneId: targetLaneId });
-      if (draftKeepsMachineDefaultsRef.current) {
-        // ADE's pick launched once; the next draft here remembers again.
-        draftKeepsMachineDefaultsRef.current = false;
-      } else {
-        rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
-      }
-      loadedHistoryRef.current.delete(created.id);
-      optimisticSessionIdsRef.current.add(created.id);
-      knownSessionIdsRef.current.add(created.id);
-      touchSession(created.id);
       if (options.select) {
         pendingSelectedSessionIdRef.current = created.id;
         draftSelectionLockedRef.current = false;
@@ -12638,7 +12691,7 @@ export function AgentChatPane({
         void refreshSessions({ force: true }).catch(() => {});
       }
       return created;
-  }, [buildChatCreateArgs, canRefreshPinnedProject, constrainedModelSelectionError, initialNativeControls, laneId, lastLaunchConfigStorageKey, notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
+  }, [adoptCreatedLaneSession, canRefreshPinnedProject, laneId, notifySessionCreated, refreshSessions, setSelectedSessionId, takeLaneCreateRequest]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -13354,15 +13407,20 @@ export function AgentChatPane({
   ]);
 
   const cleanupDraftChatSession = useCallback(async (
-    session: AgentChatSession,
+    session: Pick<AgentChatSession, "id">,
     targetLane: DraftLaunchLaneTarget,
     pin?: OpenProjectBinding | null,
+    options?: { deleteOnMachine?: boolean },
   ) => {
     // Pin the rollback to the project that owns the session so a concurrent
     // project switch can't route the delete at the now-active project.
-    await withChatPin(chatApiPin(pin, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.delete({ sessionId: session.id }, chatPin)).catch((cleanupError: unknown) => {
-      console.warn("draft chat launch session cleanup failed", cleanupError);
-    });
+    // `deleteOnMachine: false` forgets a chat its machine says it does not
+    // have: a delete then could only reach a create that is still running there.
+    if (options?.deleteOnMachine !== false) {
+      await withChatPin(chatApiPin(pin, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.delete({ sessionId: session.id }, chatPin)).catch((cleanupError: unknown) => {
+        console.warn("draft chat launch session cleanup failed", cleanupError);
+      });
+    }
     loadedHistoryRef.current.delete(session.id);
     localTouchBySessionRef.current.delete(session.id);
     optimisticSessionIdsRef.current.delete(session.id);
@@ -13376,13 +13434,141 @@ export function AgentChatPane({
     }
   }, [canRefreshPinnedProject, laneId, refreshSessions]);
 
+  /**
+   * What the chat's machine holds for a chat whose combined create-and-send
+   * call lost its answer: "sent" (the chat, with the person's message: a new
+   * chat has no other sender), "missing" (no such chat), or "waiting" (the
+   * chat, no message yet). The same machine answers (`pin`). Checks again
+   * while the answer is "missing", "waiting" or no answer, as the call may
+   * still be running there. Null when the machine never answered.
+   */
+  const reconcileLaunchedDraftChat = useCallback(async (
+    sessionId: string,
+    pin: OpenProjectBinding,
+  ): Promise<{ outcome: "sent"; session: AgentChatSession } | { outcome: "missing" | "waiting" } | null> => {
+    let last: { outcome: "missing" | "waiting" } | null = null;
+    for (const delayMs of DRAFT_CHAT_RECONCILE_DELAYS_MS) {
+      if (delayMs > 0) await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+      try {
+        const summary = await agentChatApiRef.current.getSummary({ sessionId }, pin);
+        if (!summary) {
+          last = { outcome: "missing" };
+          continue;
+        }
+        const history = await agentChatApiRef.current.getEventHistory({ sessionId, maxEvents: 40 }, pin);
+        if (history.events.some((entry) => entry.event.type === "user_message")) {
+          return { outcome: "sent", session: sessionFromSummary(summary) };
+        }
+        last = { outcome: "waiting" };
+      } catch (readError) {
+        console.warn("draft chat launch reconcile read failed", readError);
+      }
+    }
+    return last;
+  }, []);
+
+  /**
+   * A drafted chat's create and first send as one call to its machine
+   * (`agentChat.createAndSend`). `session` is null when the machine predates
+   * the call: nothing was created, and `request` (the warmup's reserved id
+   * included) goes to the two-call path. Null when the chat API has no such
+   * call (a personal or guest adapter, ADE Web).
+   *
+   * A brain error rolls the chat back (the brain did too) and throws it
+   * unchanged. A call that lost its answer (a transport timeout, a dropped
+   * connection) may have delivered the message, so the same machine decides:
+   * a chat with the message is the launched chat; a chat it does not have is
+   * forgotten here, with no delete; any other answer keeps the chat and
+   * throws. `onOpeningMessageOut` tells the launch that its clock no longer
+   * decides (see `runRendererOwnedLaunch`).
+   */
+  const createAndSendDraftChat = useCallback(async (
+    prepared: PreparedDraftLaunch,
+    targetLane: DraftLaunchLaneTarget,
+    pin: OpenProjectBinding,
+    sendTiming: ChatSendTimingHandle | null,
+    onOpeningMessageOut?: (out: boolean) => void,
+  ): Promise<{ session: AgentChatSession | null; request: ReturnType<typeof takeLaneCreateRequest> } | null> => {
+    const createAndSend = agentChatApiRef.current.createAndSend;
+    const newSessionId = globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
+    if (isBoundScopePaneRef.current || !isAdeAvailable(createAndSend) || !newSessionId) return null;
+    const request = takeLaneCreateRequest(targetLane.laneId, prepared, pin);
+    // The window picks the id when no warmup reserved one, so the chat's live
+    // events (its user message, its running state) are taken in from the
+    // first one, as they are when the send follows a create.
+    const sessionId = request.reservedSessionId ?? newSessionId();
+    loadedHistoryRef.current.delete(sessionId);
+    optimisticSessionIdsRef.current.add(sessionId);
+    knownSessionIdsRef.current.add(sessionId);
+    sendTiming?.attach(sessionId);
+    sendTiming?.mark("createCalled");
+    sendTiming?.mark("sendCalled");
+    let session: AgentChatSession | null;
+    onOpeningMessageOut?.(true);
+    try {
+      session = await createAndSend(
+        { create: { ...request.createArgs, sessionId }, message: buildDraftChatOpeningMessage(prepared) },
+        pin,
+      );
+    } catch (launchError) {
+      if (!isRemoteOutcomeUnknownError(launchError)) {
+        // A brain error: the brain deleted the chat after a failed send. The
+        // window's own rollback runs too; a second delete is a no-op.
+        onOpeningMessageOut?.(false);
+        await cleanupDraftChatSession({ id: sessionId }, targetLane, pin);
+        throw launchError;
+      }
+      const reconciled = await reconcileLaunchedDraftChat(sessionId, pin);
+      logRendererDebugEvent("agent_chat.create_and_send_reconciled", {
+        sessionId,
+        outcome: reconciled?.outcome ?? "no-answer",
+      });
+      if (reconciled?.outcome === "sent") {
+        session = reconciled.session;
+      } else if (reconciled?.outcome === "missing") {
+        onOpeningMessageOut?.(false);
+        await cleanupDraftChatSession({ id: sessionId }, targetLane, pin, { deleteOnMachine: false });
+        throw launchError;
+      } else {
+        // The chat may exist, or its message may still arrive: keep it, so no
+        // message the agent may have is deleted. The launch fails, and the
+        // prompt stays in the composer.
+        optimisticSessionIdsRef.current.delete(sessionId);
+        invalidateSessionListCache();
+        invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });
+        throw new Error(
+          reconciled?.outcome === "waiting"
+            ? "The chat started, but ADE could not confirm that your message reached it. Open the chat to check before you send it again."
+            : "ADE could not confirm whether the chat started. Check the chat list before you send it again.",
+        );
+      }
+    }
+    if (!session) {
+      onOpeningMessageOut?.(false);
+      optimisticSessionIdsRef.current.delete(sessionId);
+      knownSessionIdsRef.current.delete(sessionId);
+      return { session: null, request };
+    }
+    if (session.id !== sessionId) {
+      optimisticSessionIdsRef.current.delete(sessionId);
+      knownSessionIdsRef.current.delete(sessionId);
+    }
+    sendTiming?.mark("sessionCreated");
+    sendTiming?.mark("sendResolved");
+    return { session: adoptCreatedLaneSession(session, request.built, targetLane.laneId), request };
+  }, [adoptCreatedLaneSession, cleanupDraftChatSession, reconcileLaunchedDraftChat, takeLaneCreateRequest]);
+
   const startDraftChatLaunch = useCallback(async (
     prepared: PreparedDraftLaunch,
     targetLane: DraftLaunchLaneTarget,
     pin?: OpenProjectBinding | null,
     assertActive?: () => void,
+    onOpeningMessageOut?: (out: boolean) => void,
   ): Promise<StartedDraftLaunch> => {
     let createdSession: AgentChatSession | null = null;
+    // Set once the one call answered with the chat: its message is with the
+    // agent, so nothing after this deletes the chat.
+    let sentInOneCall = false;
     // Send timing from the Enter press that started this launch (`chatSendTiming.ts`).
     const sendTiming = prepared.submittedAtMs != null ? beginChatSendTiming(prepared.submittedAtMs) : null;
     try {
@@ -13390,36 +13576,46 @@ export function AgentChatPane({
       // stack): a timed-out launch can keep its IPC work alive, so each step
       // checks that the renderer-side launch is still valid before continuing.
       assertActive?.();
-      createdSession = await createSessionForLane(targetLane.laneId, {
-        select: false,
-        launchState: prepared,
-        assertActive,
-        pin,
-        // `runRendererOwnedDraftLaunch` refreshes the list after the send.
-        sendFollows: true,
-        onCreateCalled: () => sendTiming?.mark("createCalled"),
-      });
-      sendTiming?.mark("sessionCreated");
-      // Re-assert after creation: if the launch timed out while the session was
-      // being created, abort now so the catch tears the session down rather
-      // than sending into a stale launch.
-      assertActive?.();
-      touchSession(createdSession.id);
-      const sendArgs = {
-        sessionId: createdSession.id,
-        ...buildDraftChatMessageArgs(
-          prepared,
-          createdSession.provider,
-          createdSession.interactionMode ?? prepared.interactionMode,
-        ),
-      };
-      sendTiming?.attach(createdSession.id);
-      sendTiming?.mark("sendCalled");
-      await agentChatApiRef.current.send(sendArgs, requireChatPin(pin));
-      sendTiming?.mark("sendResolved");
+      // One call to the chat's machine when it takes it; else create, then send.
+      const oneCall = pin ? await createAndSendDraftChat(prepared, targetLane, pin, sendTiming, onOpeningMessageOut) : null;
+      if (oneCall?.session) {
+        createdSession = oneCall.session;
+        sentInOneCall = true;
+      } else {
+        createdSession = await createSessionForLane(targetLane.laneId, {
+          select: false,
+          launchState: prepared,
+          assertActive,
+          pin,
+          // `runRendererOwnedDraftLaunch` refreshes the list after the send.
+          sendFollows: true,
+          onCreateCalled: () => sendTiming?.mark("createCalled"),
+          ...(oneCall ? { createRequest: oneCall.request } : {}),
+        });
+        sendTiming?.mark("sessionCreated");
+        // Re-assert after creation: if the launch timed out while the session was
+        // being created, abort now so the catch tears the session down rather
+        // than sending into a stale launch.
+        assertActive?.();
+        touchSession(createdSession.id);
+        const sendArgs = {
+          sessionId: createdSession.id,
+          ...buildDraftChatMessageArgs(
+            prepared,
+            createdSession.provider,
+            createdSession.interactionMode ?? prepared.interactionMode,
+          ),
+        };
+        sendTiming?.attach(createdSession.id);
+        sendTiming?.mark("sendCalled");
+        await agentChatApiRef.current.send(sendArgs, requireChatPin(pin));
+        sendTiming?.mark("sendResolved");
+      }
       // If the launch timed out while the prompt was in flight, tear the
-      // session down rather than leaving a started-but-orphaned chat.
-      assertActive?.();
+      // session down rather than leaving a started-but-orphaned chat. A chat
+      // sent in one call stays: the launch clock stopped deciding when that
+      // call went out.
+      if (!sentInOneCall) assertActive?.();
       if (canRefreshPinnedProject(pin)) {
         // The brain accepted the first turn. The create response still says idle,
         // so report the chat in flight: the new row reads "Working", not "Done",
@@ -13440,7 +13636,7 @@ export function AgentChatPane({
         draftKind: "chat",
       };
     } catch (launchError) {
-      if (createdSession) {
+      if (createdSession && !sentInOneCall) {
         await cleanupDraftChatSession(createdSession, targetLane, pin);
       }
       throw launchError;
@@ -13448,6 +13644,7 @@ export function AgentChatPane({
   }, [
     cleanupDraftChatSession,
     canRefreshPinnedProject,
+    createAndSendDraftChat,
     createSessionForLane,
     notifySessionCreated,
     touchSession,

@@ -375,6 +375,10 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // up to 30s) and then dispatches its first message.
   ["chat.startSideChat", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
+  // A new chat and its first message in one call: the two 30s budgets of the
+  // create and the send it replaces. Past it the window asks the machine
+  // whether the chat has the message (it may still be running there).
+  ["chat.createSessionAndSend", 60_000],
   // Cursor Cloud open-chat hydrates conversation + boots a worker + attaches
   // the live stream. The 30s default fired while Cursor's VM was still
   // installing, so the renderer reported failure on the draft pane while the

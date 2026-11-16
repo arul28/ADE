@@ -5856,6 +5856,19 @@ export type AgentChatSendArgs = {
   clientSubmittedAtMs?: number;
 };
 
+/**
+ * A new chat and its first message in one call (`agentChat.createAndSend`;
+ * the brain's `chat.createSessionAndSend`). `message` is the opening send
+ * without the session id. The brain sets its provider-specific fields from the
+ * created chat, as the create-then-send path does: `interactionMode` only for
+ * a Claude chat (the chat's own mode first, then the message's), and
+ * `runtime: "local"` for a Cursor chat. A failed send deletes the new chat.
+ */
+export type AgentChatCreateAndSendArgs = {
+  create: AgentChatCreateArgs;
+  message: Omit<AgentChatSendArgs, "sessionId">;
+};
+
 export type AgentChatDispatchSteerMode = "inline" | "interrupt";
 
 /**

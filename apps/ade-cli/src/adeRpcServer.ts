@@ -4289,6 +4289,8 @@ const RUNTIME_ACTOR_CHAT_ACTIONS = new Set([
   "startSideChat",
   "launchHeadless",
   "startLaunch",
+  // Carries its create fields under `create`.
+  "createSessionAndSend",
   "launchCli",
   // The Codex goal RPCs record whether a person or the harness mutated the
   // goal, and `ade chat goal` reaches the same method the chat's goal controls
@@ -4313,6 +4315,9 @@ function stampChatRuntimeActor(
     const { runtimeActor: _callerValue, ...rest } = target;
     return actor ? { ...rest, runtimeActor: actor } : rest;
   };
+  if (action === "createSessionAndSend") {
+    return isRecord(args.create) ? { ...args, create: stamp(args.create) } : args;
+  }
   if (action !== "startLaunch") return stamp(args);
   const chat = isRecord(args.chat) ? args.chat : null;
   const create = chat && isRecord(chat.create) ? chat.create : null;
@@ -4449,6 +4454,8 @@ function scopeChatAdeActionArgs(
 /** Chat actions whose caller-supplied metadata is persisted on a `user_message`,
  * where this provenance decides whether a completion may wake another agent. */
 const HOST_STAMPED_CHAT_ACTIONS = new Set(["messageSession", "sendMessage", "steer"]);
+/** The same, for an action whose message rides under `message` (a new chat's first send). */
+const HOST_STAMPED_OPENING_MESSAGE_CHAT_ACTIONS = new Set(["createSessionAndSend"]);
 
 /** Does a `cto_state.updateIdentity` patch set the cross-machine switch? */
 function ctoIdentityPatchTouchesCrossMachineAccess(patch: unknown): boolean {
@@ -4500,6 +4507,16 @@ function withTrustedAgentProvenance(
     return withoutMetadata;
   }
   return { ...chatArgs, metadata: existingMetadata };
+}
+
+/** `withTrustedAgentProvenance` for the `message` of a new chat's first send. */
+function withTrustedOpeningMessageProvenance(
+  runtime: AdeRuntime,
+  session: SessionState,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isRecord(args.message)) return args;
+  return { ...args, message: withTrustedAgentProvenance(runtime, session, args.message) };
 }
 
 /** Search is a machine-readable discovery surface. Drop the old internal-only
@@ -6858,7 +6875,8 @@ async function runTool(args: {
     // completion may wake another agent — and now decides it for the whole
     // mission, not one turn — so no caller, elevated or not, gets to supply it.
     const stampedChatAction = domain === "chat" && HOST_STAMPED_CHAT_ACTIONS.has(action);
-    if (stampedChatAction && (argsList || hasScalarArg)) {
+    const stampedOpeningMessageAction = domain === "chat" && HOST_STAMPED_OPENING_MESSAGE_CHAT_ACTIONS.has(action);
+    if ((stampedChatAction || stampedOpeningMessageAction) && (argsList || hasScalarArg)) {
       // Positional invocation would carry caller metadata straight past the
       // re-derivation below. These actions take object arguments anyway.
       throw new JsonRpcError(
@@ -6874,6 +6892,8 @@ async function runTool(args: {
     // its arguments from these raw ones.
     const providedObjectArgs = stampedChatAction
       ? withTrustedAgentProvenance(runtime, session, safeObject(toolArgs.args))
+      : stampedOpeningMessageAction
+        ? withTrustedOpeningMessageProvenance(runtime, session, safeObject(toolArgs.args))
       : domain === "chat" && action === "armWait"
         // A send wait's provenance is derived by the host (bound agents, in
         // the chat scoping below), not accepted from the caller; only the ADE

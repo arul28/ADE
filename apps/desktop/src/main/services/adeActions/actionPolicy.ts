@@ -424,6 +424,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
     "revokeMcpAppGrant",
     // Taking a chat off Recently deleted means it can no longer be reopened.
     "removeDeletedChats",
+    // A person's composer only. An agent makes a chat with `createSession`,
+    // whose actor cap and message provenance the runtime applies per action.
+    "createSessionAndSend",
   ],
   // Granting an outside AI app this computer is the person's call. `ade mcp`
   // in their own terminal reaches the same service through `remoteMcp.call`.
@@ -1032,6 +1035,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // failing on every machine.
     "createAttachmentUpload",
     "sendMessage",
+    // The Work prompt box's new chat and its first message in one call (person only).
+    "createSessionAndSend",
     "readTranscript",
     "readTranscriptPage",
     "setClaudeOutputStyle",

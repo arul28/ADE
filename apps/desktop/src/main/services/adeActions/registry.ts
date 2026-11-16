@@ -1301,6 +1301,47 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         note: "Message accepted by the ADE chat service; provider dispatch continues asynchronously.",
       };
     },
+    // The Work prompt box's new chat: `createSession`, then `sendMessage`, in
+    // one call (`AgentChatCreateAndSendArgs`). The send's provider fields
+    // follow the created chat, and a failed send deletes it, as the window's
+    // own rollback after two calls does. Either error is thrown unchanged.
+    createSessionAndSend: async (args?: unknown) => {
+      const { create, message, inputOrigin } = readObjectActionArg(args, "chat.createSessionAndSend");
+      if (!isRecord(create)) throw new Error("chat.createSessionAndSend requires a 'create' object.");
+      if (!isRecord(message)) throw new Error("chat.createSessionAndSend requires a 'message' object.");
+      const {
+        sessionId: _assignedByCreate,
+        interactionMode: requestedInteractionMode,
+        runtime: _followsProvider,
+        ...messageFields
+      } = message;
+      const session = await agentChatService.createSession(create as never);
+      const sessionId = session.id;
+      try {
+        const record: Record<string, unknown> = {
+          ...messageFields,
+          interactionMode: session.provider === "claude"
+            ? session.interactionMode ?? requestedInteractionMode ?? null
+            : null,
+          ...(session.provider === "cursor" ? { runtime: "local" } : {}),
+        };
+        noteSessionInputOrigin(sessionId, inputOrigin);
+        await agentChatService.sendMessage({
+          ...withoutHostOnlyChatMetadata(record),
+          sessionId,
+          text: readSendText(record),
+        } as never);
+      } catch (sendError) {
+        await agentChatService.deleteSession({ sessionId }).catch((cleanupError: unknown) => {
+          runtime.logger.warn("agent_chat.create_and_send_cleanup_failed", {
+            sessionId,
+            error: getErrorMessage(cleanupError),
+          });
+        });
+        throw sendError;
+      }
+      return session;
+    },
     messageSession: async (args?: unknown) => {
       const record = readObjectActionArg(args, "chat.messageSession");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");

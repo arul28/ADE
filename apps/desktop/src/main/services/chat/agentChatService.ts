@@ -52509,7 +52509,13 @@ export function createAgentChatService(args: {
     rememberLaunchDefaults: rememberAsLaunchDefaults,
     launchedBySessionId: requestedLaunchedBySessionId,
     draftWarmSink,
-  }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
+  }: AgentChatCreateInternalArgs,
+  /** Wall-clock ms at each step, for `agent_chat.create_timing`. */
+  steps?: Record<string, number>,
+  ): Promise<AgentChatSession> => {
+    const markStep = (name: string) => {
+      if (steps) steps[name] = Date.now();
+    };
     // A client that still sends Cursor's Fast toggle as a model option gets it
     // as the chat's Fast tier, the one control that now carries it.
     const foldedRequestedCursorFast = foldLegacyCursorFastConfigValue(
@@ -52735,6 +52741,7 @@ export function createAgentChatService(args: {
     if (trimmedPresetId) {
       normalizedModel = await resolvePresetLaunchModel(effectiveProvider, trimmedPresetId, normalizedModel);
     }
+    markStep("modelResolved");
 
     if (normalizedIdempotencyKey && sessionService.get(sessionId)) {
       const existing = ensureManagedSession(sessionId);
@@ -53078,6 +53085,7 @@ export function createAgentChatService(args: {
       // Before the row exists, so no reader can find a half-made chat while
       // this waits.
       if (requestedSessionIdTrimmed) await settleDraftWarmupStart(requestedSessionIdTrimmed);
+      markStep("warmupSettled");
       sessionService.create({
         sessionId,
         laneId,
@@ -53296,6 +53304,7 @@ export function createAgentChatService(args: {
     } catch {
       // Non-fatal — chat transcript init failure should not block session creation
     }
+    markStep("headerWritten");
 
     lastPersistedPointerFingerprints.set(
       sessionId,
@@ -53370,7 +53379,9 @@ export function createAgentChatService(args: {
       });
     }
 
+    markStep("runtimeStarted");
     persistChatState(managed);
+    markStep("statePersisted");
     // Importing a PR creates the lane before its first chat exists. Claim
     // that durable origin only for a person's new Work chat, never a helper,
     // identity, automation, handoff, or idempotently returned existing chat.
@@ -53423,15 +53434,25 @@ export function createAgentChatService(args: {
       ? actor.chatSessionId?.trim() || null
       : null;
     const receivedAtMs = Date.now();
-    const created = await createSessionInternal({ ...publicArgs, launchedBySessionId });
+    const requestedId = publicArgs.sessionId?.trim() ?? "";
+    // Read before the create adopts it. The Work prompt box now names the id
+    // of every new chat, so a named id alone no longer means a warm draft.
+    const warmDraft = Boolean(requestedId && draftWarmups.has(requestedId));
+    const steps: Record<string, number> = {};
+    const created = await createSessionInternal({ ...publicArgs, launchedBySessionId }, steps);
     // Send timing for a new chat (Enter to first word): when the create came
-    // in and how long it took, next to `agent_chat.send_timing`.
+    // in and how long it took, next to `agent_chat.send_timing`. Each step is
+    // ms after `receivedAtMs`.
+    const stepMs: Record<string, number> = {};
+    for (const [name, at] of Object.entries(steps)) stepMs[`${name}Ms`] = at - receivedAtMs;
     logger.info("agent_chat.create_timing", {
       sessionId: created.id,
       provider: created.provider,
       receivedAtMs,
       durationMs: Date.now() - receivedAtMs,
-      reservedSessionId: Boolean(publicArgs.sessionId),
+      reservedSessionId: Boolean(requestedId),
+      warmDraft,
+      ...stepMs,
     });
     return created;
   };

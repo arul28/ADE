@@ -718,6 +718,7 @@ import type {
   AgentChatCodexTerminateBackgroundTerminalArgs,
   AgentChatCodexGetGoalArgs,
   AgentChatCreateArgs,
+  AgentChatCreateAndSendArgs,
   AgentChatLaunchArgs,
   AgentChatLaunchCliArgs,
   AgentChatLaunchCliResult,
@@ -8870,6 +8871,29 @@ const adeBridge = {
           })();
       agentChatSummaryCache.clear();
       return session as AgentChatSession;
+    },
+    // The Work prompt box's new chat: the create and the first send in one
+    // call to the chat's machine, with the same stamps as `create` and `send`.
+    // Null, with nothing sent, when that brain predates the call.
+    createAndSend: async (
+      rawArgs: AgentChatCreateAndSendArgs,
+      pin: OpenProjectBinding,
+    ): Promise<AgentChatSession | null> => {
+      const supported = (await ipcRenderer.invoke(IPC.agentChatCreateAndSendSupported, {
+        targetId: pin.kind === "remote" ? pin.targetId : null,
+      })) === true;
+      if (!supported) return null;
+      agentChatSummaryCache.clear();
+      const [create, inputOrigin] = await Promise.all([
+        withPresetSnapshot(rawArgs.create),
+        sessionInputOriginFor(pin),
+      ]);
+      const message = { ...rawArgs.message, clientSendId: rawArgs.message.clientSendId ?? randomClientId() };
+      const session = await callPinnedRuntimeAction<AgentChatSession>(pin, "chat", "createSessionAndSend", {
+        args: { create, message, inputOrigin },
+      });
+      agentChatSummaryCache.clear();
+      return session;
     },
     launch: async (
       rawArgs: AgentChatLaunchArgs,
