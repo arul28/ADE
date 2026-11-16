@@ -1585,7 +1585,7 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
     // A retry (--launch-id with no message: the id-only shape) keeps the size
     // its launch was given, picked or default. A new launch carries a fresh id too.
     const resumed = launch.kind === "chat" && !isRecord(launch.chat) && !asString(launch.prompt);
-    const sizeText = sizeId ?? (resumed ? "the size it started with" : "your default size");
+    const sizeText = resumed ? "the size it started with" : (sizeId ?? "your default size");
     process.stderr.write(`ade: ${resumed ? "going on with" : "starting"} a lane on ADE Cloud (${sizeText}). Launch id ${launchId}.\n`);
     return await withCloudActions(options, roots.projectRoot, async (call) => {
       // A chat launch with no message only goes on with one ADE already holds.
