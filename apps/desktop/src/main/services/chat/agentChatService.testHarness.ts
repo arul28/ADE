@@ -646,6 +646,20 @@ vi.mock("node:readline", () => {
   return { default: { createInterface }, createInterface };
 });
 
+// The SDK's loader reaches the package through `require` as its packaged
+// fallback, which a module mock cannot intercept. Mocking the loader keeps the
+// whole file on the mocked SDK: without this, the first synchronous access (a
+// usage-limit check on a result frame) loads the real SDK and later turns run
+// real queries against the harness's fake process.
+vi.mock("../ai/claudeSdkLoader", async () => {
+  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  return {
+    loadClaudeSdk: async () => sdk,
+    claudeSdkIfLoaded: () => sdk,
+    loadedClaudeSdk: () => sdk,
+  };
+});
+
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   // Mirrors the real export. Structured usage-limit detection reads it, so the
   // mock has to provide it; these are the prefixes the tests below exercise.
