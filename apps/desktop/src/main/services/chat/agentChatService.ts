@@ -57949,7 +57949,9 @@ export function createAgentChatService(args: {
       laneId: args.laneId,
       purpose: "import",
       importedAt,
-      ...(reopen ? { includeAdeOwned: true } : {}),
+      // An OpenCode copy may name a session in ADE's managed store, which only
+      // the managed store's reader (not the user's own store) can replay.
+      ...(reopen || args.provider === "opencode" ? { includeAdeOwned: true } : {}),
       ...(reopen?.env ? { env: reopen.env } : {}),
     });
     return page.events;

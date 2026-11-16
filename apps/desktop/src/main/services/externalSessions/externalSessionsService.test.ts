@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -18,6 +20,10 @@ import { resetSharedProviderInstanceStoresForTests } from "../../../../../ade-cl
 import { claudeProjectSlugForCwd } from "./discoveryUtils";
 import { qwenProjectSlugForCwd } from "./discoverQwen";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../../shared/types/externalSessions";
+
+type DatabaseSyncConstructor = new (dbPath: string) => DatabaseSyncType;
+const require = createRequire(import.meta.url);
+const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
 
 const computerUseMocks = vi.hoisted(() => ({
   resolveCodexComputerUseMcpConfig: vi.fn(async () => null),
@@ -1461,6 +1467,66 @@ describe("externalSessionsService imported-session marking", () => {
     await expect(service.list({ ...listArgs })).resolves.toMatchObject([
       { alreadyImported: false, importedBefore: true, importedSessionRef: null },
     ]);
+  });
+
+  it("lists an OpenCode session already imported into ADE and offers the safe copy", async () => {
+    const { homeDir, projectRoot, laneCwd } = laneSetup();
+    const id = "ses_e1c18818fffeybvDuFvNg1ijLd";
+    const storePath = path.join(homeDir, ".local", "share", "opencode", "opencode.db");
+    fs.mkdirSync(path.dirname(storePath), { recursive: true });
+    const db = new DatabaseSync(storePath);
+    try {
+      db.exec(`
+        CREATE TABLE session_v2 (
+          id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT,
+          time_created INTEGER, time_updated INTEGER, time_archived INTEGER
+        );
+        CREATE TABLE session_message (
+          id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+          time_created INTEGER, data TEXT
+        );
+      `);
+      db.prepare(`
+        INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_archived)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(id, null, laneCwd, "Imported OpenCode", 100, 200, null);
+      db.prepare("INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?, ?, ?, ?, ?, ?)")
+        .run("message-1", id, "user", 1, 150, "{}");
+    } finally {
+      db.close();
+    }
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      env: { HOME: homeDir, ADE_HOME: path.join(root, "ade-home"), PATH: "" },
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: {
+        list: () => [{
+          id: "terminal-1",
+          toolType: "opencode",
+          resumeMetadata: { provider: "opencode", targetId: id },
+        } as TerminalSessionSummary],
+        listClaudeSessionPointers: () => [],
+      },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+    });
+
+    const rows = await service.list({ providers: ["opencode"], laneId: "lane-1", scope: "project", limit: 5 });
+
+    expect(rows.map((row) => row.id)).toEqual([id]);
+    expect(rows[0]).toMatchObject({
+      alreadyImported: true,
+      importedSessionRef: { kind: "cli", sessionId: "terminal-1" },
+      capabilities: {
+        fork: false,
+        forkIntoDifferentCwd: false,
+        resumeInPlace: false,
+        resumeInDifferentCwd: false,
+        importToChat: false,
+      },
+    });
   });
 
   it("hides a Codex chat fork's new thread and keeps listing its untouched original", async () => {

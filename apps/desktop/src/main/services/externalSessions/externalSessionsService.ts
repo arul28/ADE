@@ -628,7 +628,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   void startDroidForkProbe();
   const capabilitiesFor = (
     provider: ExternalSessionProvider,
-    session?: Pick<ExternalSessionDiscoveryRecord, "cwd" | "configHome"> | null,
+    session?: Pick<ExternalSessionDiscoveryRecord, "cwd" | "configHome" | "adeOwned"> | null,
     cwdExistenceCache?: Map<string, boolean>,
   ): ExternalSessionCapabilities => {
     const providerBase = provider !== "droid"
@@ -644,6 +644,19 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const base = isAdeHarnessHomeProvider(provider) && isAdeLaunchConfigHome(session?.configHome)
       ? { ...providerBase, importToChat: false }
       : providerBase;
+    if (provider === "opencode" && session && session.adeOwned !== true) {
+      // The user's own OpenCode store is not the store ADE's managed server
+      // reads. Continuing or forking a CLI there would start a fresh session;
+      // the ADE-chat copy still reads the transcript and stays available.
+      return {
+        ...base,
+        resumeInPlace: false,
+        resumeInDifferentCwd: false,
+        fork: false,
+        forkIntoDifferentCwd: false,
+        importToChat: false,
+      };
+    }
     if (session === undefined || provider === "codex") return base;
     const cwd = session?.cwd?.trim() ?? "";
     const cwdAvailable = cwd.length > 0 && safeDirectoryExists(cwd, cwdExistenceCache);
@@ -810,7 +823,12 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
 
     const settled = await Promise.all(providers.map(async (provider) => {
       try {
-        return await EXTERNAL_SESSION_DISCOVERERS[provider](discoveryArgs);
+        // OpenCode is the one provider with two stores: the user's own and
+        // ADE's managed server. Both hold sessions the person expects to see.
+        return await EXTERNAL_SESSION_DISCOVERERS[provider]({
+          ...discoveryArgs,
+          ...(provider === "opencode" ? { includeAdeOwned: true } : {}),
+        });
       } catch (error) {
         args.logger.warn("external_sessions.discovery_failed", {
           provider,
@@ -863,7 +881,10 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const scoped = requestedSessionId
       ? inScope
       : inScope.filter((session) => (
-        !isLiveAdeTracked(session)
+        // OpenCode rows stay visible even when ADE already tracks them: the
+        // import dialog marks them "Already in ADE" and opens the existing
+        // chat/terminal. The other providers keep the duplicate guard.
+        (!isLiveAdeTracked(session) || session.provider === "opencode")
         && !isEmptyOfUserPrompts(session)
         && !isAdeContinuitySession(session)
         && !isAdeProbeSession(session)
@@ -961,7 +982,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const [session] = await EXTERNAL_SESSION_DISCOVERERS[provider]({
       homeDir: args.homeDir,
       env: args.env,
-      ...(provider === "opencode" ? { cwd: destinationCwd } : {}),
+      ...(provider === "opencode" ? { cwd: destinationCwd, includeAdeOwned: true } : {}),
       projectRoot: args.projectRoot,
       sessionId,
       limit: 1,
