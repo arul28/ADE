@@ -301,9 +301,10 @@ export function createFederatedWebAdapter({
    * the remount unnecessary.
    *
    * INVARIANT: a subscription pinned to a binding (one carrying a binding in
-   * its arguments) is never recorded and never re-attached — it belongs to that
-   * binding's machine for its whole life. See the `pinned` branch in
-   * `dynamicMember`.
+   * its arguments) is never re-attached to another binding — it belongs to
+   * that binding's machine for its whole life. It is kept in
+   * `pinnedSubscriptions` instead, and follows only that machine's client. See
+   * the `pinned` branch in `dynamicMember`.
    */
   type DurableSubscription = {
     path: PropertyKey[];
@@ -317,7 +318,7 @@ export function createFederatedWebAdapter({
   /** Attach one recorded subscription to `adapter`, or leave it detached. */
   const attachDurableSubscription = (
     adapter: AdeWebAdapter,
-    entry: DurableSubscription,
+    entry: Pick<DurableSubscription, "path" | "args">,
   ): (() => void) | null => {
     try {
       const { parent, value } = readPath(adapter, entry.path);
@@ -361,6 +362,57 @@ export function createFederatedWebAdapter({
     return () => {
       if (!durableSubscriptions.delete(entry)) return;
       detachDurableSubscription(entry);
+    };
+  };
+
+  /**
+   * A subscription pinned to one binding: a chat pane's feed from the chat's
+   * own computer. A computer's client is replaced on each reconnect (an ADE
+   * Cloud computer starts a new brain on each wake), which disposes the
+   * binding's adapter and the listeners on it. The subscription attaches
+   * again to the same binding on the new client, and waits detached while the
+   * computer is not connected, so the caller's one subscribe lasts.
+   */
+  type PinnedSubscription = {
+    binding: RemoteBinding;
+    path: PropertyKey[];
+    args: unknown[];
+    detach: (() => void) | null;
+    /** The client it is attached through now. */
+    client: unknown;
+  };
+  const pinnedSubscriptions = new Set<PinnedSubscription>();
+
+  const detachPinnedSubscription = (entry: PinnedSubscription): void => {
+    try {
+      entry.detach?.();
+    } catch {
+      // A disposed adapter can throw on detach; the attachment dies with it.
+    }
+    entry.detach = null;
+    entry.client = null;
+  };
+
+  const followPinnedSubscription = (entry: PinnedSubscription): void => {
+    const client = manager.getClient(entry.binding.targetId) ?? null;
+    if (entry.detach && entry.client === client) return;
+    detachPinnedSubscription(entry);
+    if (!client) return;
+    let adapter: AdeWebAdapter;
+    try {
+      adapter = adapterForBinding(entry.binding);
+    } catch {
+      return;
+    }
+    entry.detach = attachDurableSubscription(adapter, entry);
+    entry.client = entry.detach ? client : null;
+  };
+
+  const registerPinnedSubscription = (entry: PinnedSubscription): (() => void) => {
+    pinnedSubscriptions.add(entry);
+    followPinnedSubscription(entry);
+    return () => {
+      if (pinnedSubscriptions.delete(entry)) detachPinnedSubscription(entry);
     };
   };
 
@@ -1013,14 +1065,17 @@ export function createFederatedWebAdapter({
             const notConnected = () => markExpected(new Error("The machine is not connected."), "network");
             const connectPinned = () => manager.connectEnvironment(pinned.targetId, { activate: false, background: true });
             if (isSubscriptionMember(path)) {
+              // It attaches when the machine's client arrives (see `pinnedSubscriptions`).
               void connectPinned().catch(() => undefined);
-              console.warn("[ade-web] subscription skipped: its machine is connecting", path.join("."));
-              return () => {};
+              return registerPinnedSubscription({ binding: pinned, path, args, detach: null, client: null });
             }
             return connectPinned().then(
               (): unknown => (manager.getClient(pinned.targetId) ? callDynamic(...args) : Promise.reject(notConnected())),
               (error: unknown) => Promise.reject(error instanceof WebMachineConnectSkipped ? notConnected() : error),
             );
+          }
+          if (isSubscriptionMember(path)) {
+            return registerPinnedSubscription({ binding: pinned, path, args, detach: null, client: null });
           }
           try {
             pinnedAdapter = adapterForBinding(pinned);
@@ -1138,6 +1193,9 @@ export function createFederatedWebAdapter({
     // Covers both the reconnect that just replaced a client above and a later
     // snapshot in which a machine we were parked off of comes back.
     if (currentAdapter === fallbackAdapter) restoreCurrentAdapterForDisplayedSurface();
+    // A pinned feed follows its own machine's client: off while it is gone,
+    // on again through the new client after a reconnect.
+    for (const entry of pinnedSubscriptions) followPinnedSubscription(entry);
     // An account-wide subscription follows the computer that answers its
     // reads: the first one to connect, or a new client after a reconnect.
     for (const entry of durableSubscriptions) {
@@ -1261,6 +1319,8 @@ export function createFederatedWebAdapter({
       manager.setProtectedTargetId(null);
       for (const entry of durableSubscriptions) detachDurableSubscription(entry);
       durableSubscriptions.clear();
+      for (const entry of pinnedSubscriptions) detachPinnedSubscription(entry);
+      pinnedSubscriptions.clear();
       for (const adapter of adapters) adapter.dispose();
       projectListeners.clear();
       bindingListeners.clear();

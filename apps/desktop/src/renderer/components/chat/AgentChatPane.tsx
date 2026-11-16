@@ -256,6 +256,7 @@ import {
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { useRemoteConnectionMark } from "../../state/projectMachines";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { isWebRuntimePinUnroutableError } from "../../webclient/adapter/runtimePinGuard";
 import {
@@ -10376,6 +10377,22 @@ export function AgentChatPane({
       if (refreshHandle != null) window.clearTimeout(refreshHandle);
     };
   }, [applyCachedSessionView, isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, readableSessionId]);
+
+  // A new connection to the chat's computer (an ADE Cloud computer's new brain
+  // after a wake, or a reconnect) starts with no feed for this chat: the brain
+  // sends a chat's events to a client that has read that chat. One forced
+  // read starts the feed and brings in what ran meanwhile, such as a turn that
+  // another window or the CLI started. The first connection needs none: the
+  // read above covers it.
+  const chatConnectionMark = useRemoteConnectionMark(chatRuntimePin?.kind === "remote" ? chatRuntimePin.targetId : null);
+  const lastChatConnectionMarkRef = useRef(chatConnectionMark);
+  useEffect(() => {
+    const previous = lastChatConnectionMarkRef.current;
+    lastChatConnectionMarkRef.current = chatConnectionMark;
+    if (!chatConnectionMark || previous === chatConnectionMark) return;
+    if (!isTileVisible || !readableSessionId) return;
+    void loadHistory(readableSessionId, { force: true });
+  }, [chatConnectionMark, isTileVisible, loadHistory, readableSessionId]);
 
   // A launch this window started shows the whole pick it launched with
   // (model, effort, Fast, permission mode), not the composer's defaults.
