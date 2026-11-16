@@ -3,6 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // One address to remember: a signed-in visitor to ade-app.dev/ goes straight to the web app.
+      // ADE Web sets `ade_signed_in=1` on .ade-app.dev at sign-in and clears it at sign-out or when
+      // its session is gone (webclient/account/client.ts, writeSignedInMarker). It carries no token,
+      // so it only picks the page. Only a bare "/" redirects: never a section (#...) or `?home` (the app's "ADE website" link).
+      (function () {
+        try {
+          var host = location.hostname;
+          if (host !== "ade-app.dev" && host !== "www.ade-app.dev") return;
+          // A section link (/#features) or `?home` asks for the website itself.
+          if (location.pathname !== "/" || location.hash || /(^|[?&])home(=|&|$)/.test(location.search.slice(1))) return;
+          if (/(?:^|;\s*)ade_signed_in=1(?:;|$)/.test(document.cookie)) location.replace("https://app.ade-app.dev/");
+        } catch (e) {}
+      })();
+    </script>
 
     <title>ADE — Agentic Development Environment</title>
     <meta
