@@ -649,7 +649,7 @@ import {
   type AdeServiceCommand,
 } from "./serviceManager/common";
 import { awaitRuntimeServiceEndpoint } from "./services/runtime/awaitRuntimeServiceEndpoint";
-import { activeCompileCacheDir, scheduleStaleCompileCachePrune } from "./services/runtime/compileCachePrune";
+import { activeCompileCacheDir, flushActiveCompileCache, scheduleStaleCompileCachePrune } from "./services/runtime/compileCachePrune";
 import { readBrainStartupState } from "./services/runtime/brainStartupState";
 import {
   readEmbeddedParentPid,
@@ -32977,6 +32977,9 @@ async function runServe(
     socketPath,
     tcpUrl: tcpUrl ?? null,
   });
+  // The start-up code is compiled now: write its cache, so a brain that is
+  // killed later (and never exits normally) still starts warm next time.
+  flushActiveCompileCache();
   // Once per brain start, to Sentry Logs: the beta gate counts the machines
   // whose brain ran a build (`shared/sentry/logBridge.ts`).
   headlessProjectLogger.info("brain.started", {
