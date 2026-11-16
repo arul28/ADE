@@ -1991,7 +1991,9 @@ struct WorkRootListScreen: View, Equatable {
           syncService.clearOpenWorkSessionRoute()
         }
       }
-      .sheet(item: $bulkExportShare) { share in
+      // The export file holds chat titles and summaries: it goes once the
+      // share sheet has handed it on.
+      .sheet(item: $bulkExportShare, onDismiss: { SyncService.removeSessionExports() }) { share in
         WorkActivityViewController(items: share.items)
       }
       .sheet(item: $manageLaneTarget) { snapshot in
