@@ -4063,8 +4063,8 @@ describe("adeRpcServer", () => {
 
     expect(response?.isError).toBeUndefined();
     expect(response.structuredContent.permissionMode).toBe("plan");
-    expect(response.structuredContent.startupCommand).toContain("default_permissions=\"ade_read_only\"");
-    expect(response.structuredContent.startupCommand).toContain("permissions.ade_read_only.network.enabled=true");
+    expect(response.structuredContent.startupCommand).toContain("default_permissions=\"ade_internal_plan_read_only\"");
+    expect(response.structuredContent.startupCommand).toContain("permissions.ade_internal_plan_read_only.network.enabled=true");
     expect(response.structuredContent.startupCommand).toContain("CLI controls ADE state");
     const contextPath = response.structuredContent.contextRef?.path as string | null;
     expect(contextPath).toBeTruthy();

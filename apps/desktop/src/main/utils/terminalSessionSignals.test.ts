@@ -259,7 +259,7 @@ describe("terminalSessionSignals", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit" },
     }, { model: "gpt-5.4", reasoningEffort: "high", permissionMode: "plan", prompt: "fix tests" })).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" -c \"default_permissions=\\\"ade_read_only\\\"\" -c \"permissions.ade_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_read_only.network.enabled=true --ask-for-approval on-request resume thread-99 \"fix tests\"",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" -c \"default_permissions=\\\"ade_internal_plan_read_only\\\"\" -c \"permissions.ade_internal_plan_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_internal_plan_read_only.network.enabled=true --ask-for-approval on-request resume thread-99 \"fix tests\"",
     );
 
     const droidModelOnly = buildTrackedCliResumeCommand({

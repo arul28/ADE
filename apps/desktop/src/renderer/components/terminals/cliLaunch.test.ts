@@ -1129,7 +1129,7 @@ describe("buildTrackedCliStartupCommand", () => {
 
     it("adds on-request approval and read-only sandbox for plan", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "plan" });
-      expect(command).toContain("codex --no-alt-screen -c \"default_permissions=\\\"ade_read_only\\\"\" -c \"permissions.ade_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_read_only.network.enabled=true --ask-for-approval on-request");
+      expect(command).toContain("codex --no-alt-screen -c \"default_permissions=\\\"ade_internal_plan_read_only\\\"\" -c \"permissions.ade_internal_plan_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_internal_plan_read_only.network.enabled=true --ask-for-approval on-request");
       expect(command).not.toContain("control plane for ADE state");
     });
 
@@ -1777,7 +1777,7 @@ describe("tracked CLI resume helpers", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit" },
     }, { model: "gpt-5.4", reasoningEffort: "high", permissionMode: "plan" })).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" -c \"default_permissions=\\\"ade_read_only\\\"\" -c \"permissions.ade_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_read_only.network.enabled=true --ask-for-approval on-request resume thread-99",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" -c \"default_permissions=\\\"ade_internal_plan_read_only\\\"\" -c \"permissions.ade_internal_plan_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_internal_plan_read_only.network.enabled=true --ask-for-approval on-request resume thread-99",
     );
 
     const droidResume = buildTrackedCliResumeCommand({
@@ -1799,7 +1799,7 @@ describe("tracked CLI resume helpers", () => {
       targetId: "thread-99",
       launch: { permissionMode: "plan" },
     }, { prompt: "fix failing tests" })).toBe(
-      "codex --no-alt-screen -c \"default_permissions=\\\"ade_read_only\\\"\" -c \"permissions.ade_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_read_only.network.enabled=true --ask-for-approval on-request resume thread-99 \"fix failing tests\"",
+      "codex --no-alt-screen -c \"default_permissions=\\\"ade_internal_plan_read_only\\\"\" -c \"permissions.ade_internal_plan_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_internal_plan_read_only.network.enabled=true --ask-for-approval on-request resume thread-99 \"fix failing tests\"",
     );
 
     expect(buildTrackedCliResumeCommand({

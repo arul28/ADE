@@ -64,8 +64,13 @@ export const PINNED_PROVIDER_TOOLS: Readonly<Record<string, PinnedProviderToolSp
   antigravity: { tool: "antigravity", label: "Antigravity", terminal: { label: "Antigravity", binaries: ["agy"], tools: [{ tool: "antigravity", label: "Antigravity" }], selfUpdateTool: "antigravity" } },
 };
 
-/** The profile name ADE gives Codex's read-only sandbox with the network on. */
-const CODEX_READ_ONLY_PROFILE = "ade_read_only";
+/**
+ * The profile name ADE gives Codex's read-only sandbox with the network on.
+ * Codex merges `-c` tables into a same-named profile from config, so the name
+ * is one no person's config would carry: a hand-written profile of this name
+ * could add a writable path to Plan.
+ */
+const CODEX_READ_ONLY_PROFILE = "ade_internal_plan_read_only";
 
 /**
  * Codex CLI flags for the sandbox ADE picks, with commands reaching the
