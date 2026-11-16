@@ -1,4 +1,5 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { adeCloudInstanceIdForMachine } from "../../state/adeCloudLaneIndex";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
 import { originUrlForBinding } from "../lanes/laneMachines";
@@ -169,7 +170,11 @@ export function useCtoHome(active: boolean): CtoHomeState {
     if (machine.isThisMachine && !machine.deviceId) throw new Error(STILL_IDENTIFYING_THIS_COMPUTER);
     if (!machine.pin) throw new Error(`${machine.machineName} can't be reached right now.`);
     const base = ctoHomeRecordFor(machine, thisMachineDeviceName);
-    const cloudInstanceId = options?.cloudInstanceId?.trim() || null;
+    // An ADE Cloud computer picked from the list is one too: the record says
+    // so, and every surface can wake it or make a new one later.
+    const cloudInstanceId = options?.cloudInstanceId?.trim()
+      || adeCloudInstanceIdForMachine({ hostname: machine.hostname, machineKey: machine.machineId })
+      || null;
     const record: CtoHomeMachineRecord = cloudInstanceId ? { ...base, cloudInstanceId } : base;
     readGeneration.current += 1;
     const { synced } = await persistCtoHome({ accountScope: keys.accountScope, localKey: keys.localKey, record });
@@ -249,29 +254,4 @@ export function useCtoHome(active: boolean): CtoHomeState {
   }, [scopeKey, state.homeName, state.pin, state.status]);
 
   return useMemo(() => ({ ...state, choose }), [choose, state]);
-}
-
-// ── Context for the CTO subtree ────────────────────────────────────────────
-
-export type CtoHomeScope = {
-  /** Pass to every CTO preload call. Null until the home is reachable: call nothing then. */
-  pin: OpenProjectBinding | null;
-  machineName: string | null;
-  /** False until the home is resolved and reachable; calls must wait. */
-  ready: boolean;
-};
-
-const FALLBACK_SCOPE: CtoHomeScope = { pin: null, machineName: null, ready: false };
-const CtoHomeContext = createContext<CtoHomeScope | null>(null);
-
-export function CtoHomeProvider({ scope, children }: { scope: CtoHomeScope; children: React.ReactNode }) {
-  return <CtoHomeContext.Provider value={scope}>{children}</CtoHomeContext.Provider>;
-}
-
-/**
- * The CTO's machine for a component inside the CTO page. Outside the page
- * (tests, previews) there is no home: `pin` is null and nothing is called.
- */
-export function useCtoHomeScope(): CtoHomeScope {
-  return useContext(CtoHomeContext) ?? FALLBACK_SCOPE;
 }

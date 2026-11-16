@@ -1452,9 +1452,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      properties: {
-        recentLimit: { type: "number", minimum: 0, maximum: 50 }
-      }
+      properties: {}
     }
   },
   {

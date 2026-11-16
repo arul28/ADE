@@ -1994,6 +1994,10 @@ struct CtoOnboardingState: Codable, Hashable {
   var completedSteps: [String]
 }
 
+/// Backup models the CTO may have, as the host caps them (desktop
+/// `CTO_MAX_FALLBACK_MODELS`).
+let ctoMaxFallbackModels = 3
+
 /// Mirrors desktop `CtoIdentity`. The server has no top-level `id`; we
 /// derive one from `name` for SwiftUI Identifiable semantics.
 struct CtoIdentity: Codable, Hashable, Identifiable {

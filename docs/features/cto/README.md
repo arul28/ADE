@@ -7,7 +7,7 @@ The CTO is ADE's persistent project operator: one chat session per project that 
 ### Main services (`apps/desktop/src/main/services/cto/`)
 
 - `ctoStateService.ts` — identity (name, persona, model preferences, standing instructions) in `.ade/cto/identity.yaml` mirrored to the `cto_identity_state` row, with the fallback models, avatar look and personality in the `.ade/cto/preferences.json` sidecar (see [Where the identity is stored](#where-the-identity-is-stored)); the prompt layers (`IMMUTABLE_CTO_DOCTRINE`, `CTO_CONTINUITY_OPERATING_MODEL`, `CTO_MEMORY_SYSTEM_GUIDANCE`, the ADE environment document, the capability manifest); `previewSystemPrompt()` and `buildStaticContextSection()`; the per-turn volatile block `buildReconstructionContext()`; and the live project state block (`captureLiveState()`, `getLiveStateSnapshot()`, the pure `renderCtoLiveStateBlock()`, `CTO_LIVE_STATE_MAX_CHARS`). Its `getLiveStateSources` argument is a thunk because the service is built at boot, before the chat, PR and automation services exist.
-- `ctoMemoryService.ts` — the whole memory store. Project notes (`.ade/cto/MEMORY.md`), notes about the person (`<ADE home>/cto/USER.md`), open work (`.ade/cto/open-work.json`), the one-time v1 migration, the worker-discovery queue (`discoveries.md`, `discoveries-archive.md`, `discoveries.cursor`) and `buildMemoryContextSections()`, the three sections injected every turn.
+- `ctoMemoryService.ts` — the whole memory store. Project notes (`.ade/cto/MEMORY.md`), notes about the person (`<ADE home>/cto/USER.md`), open work (`.ade/cto/open-work.json`), the one-time v1 reset, the worker-discovery queue (`discoveries.md`, `discoveries-archive.md`, `discoveries.cursor`) and `buildMemoryContextSections()`, the three sections injected every turn.
 - `ctoPromptContent.ts` — `buildCtoCapabilityManifest()`, the operator-tool operating rules and the tool-pack list injected into the prompt, plus the opening turn (`CTO_INTRO_PROMPT`, `CTO_INTRO_ONBOARDING_STEP`).
 - `linearClient.ts`, `linearIssueTracker.ts`, `issueTracker.ts`, `linearGraphQLInput.ts`, `linearCredentialService.ts`, `linearOAuthService.ts`, `linearOAuthRefreshLock.ts`, `linearTokenRefresh.ts`, `linearLaneCardService.ts`, `linearLiveStatusService.ts` — Linear plumbing the CTO tools call. The canonical description is [Linear integration](../linear-integration/README.md); this doc covers only what the CTO itself uses.
 
@@ -58,7 +58,8 @@ The CTO is ADE's persistent project operator: one chat session per project that 
 
 - `apps/ios/ADE/Views/Cto/CtoRootScreen.swift` — the CTO tab: the thread inline, a gear for settings, and the model pick before the thread.
 - `apps/ios/ADE/Views/Cto/CtoSessionDestinationView.swift` — resolves the CTO session and reuses the Work chat pipeline with a compact composer.
-- `apps/ios/ADE/Views/Cto/CtoSettingsScreen.swift`, `apps/ios/ADE/Views/Cto/CtoIdentityEditor.swift`, `apps/ios/ADE/Views/Cto/CtoReloadHelpers.swift` — settings, the name/instructions editor and reload plumbing.
+- `apps/ios/ADE/Views/Cto/CtoSettingsScreen.swift`, `apps/ios/ADE/Views/Cto/CtoReloadHelpers.swift` — settings (name, look, model, memory, routines, instructions) and reload plumbing.
+- `apps/ios/ADE/Views/Cto/CtoProfileSheet.swift` — the profile sheet: avatar, status, Activity and Library.
 - `apps/ios/ADE/Views/Work/WorkModels.swift` — `ctoLiveRedirectProviders`, the hand mirror of the desktop list.
 - `apps/ios/ADE/Views/Work/WorkModelPickerSheet.swift` — the model picker with an optional eligibility filter.
 
@@ -107,7 +108,7 @@ Open work is a small list of `CtoOpenWorkItem`s. `trackWork({ text })` adds one 
 
 A notes editor sends `baseHash`, the sha256 of the text it started from (`CtoMemorySnapshot.memoryHash` / `userNotesHash`). When the file changed since (the CTO wrote a note, another device saved), `writeNotes` refuses with `CTO_NOTES_CHANGED_ERROR` ("Notes changed since you opened them."); match it with `isCtoNotesChangedError()`, since the class does not survive IPC or sync. A write without `baseHash` still replaces the file. `cto.updateNotes` over sync is not queueable: a whole-file write replayed later would overwrite what changed meanwhile.
 
-The one-time v1 migration runs on first load, guarded by `.ade/cto/.v2-migrated`. It builds `MEMORY.md` from the old file's bullet lines and the old context store's live items, deduplicated and trimmed to the cap, then moves the v1 files (`context-store.json`, `thread-state.md`, `daily/`, `memory-archive.md`, `CURRENT.md`, `sessions.jsonl`) into `.ade/cto/legacy-v1/`. Nothing is deleted.
+CTO v2 starts with empty notes. A one-time reset runs on first load, guarded by `.ade/cto/.v2-migrated`. When v1 files are present, it moves them (`context-store.json`, `thread-state.md`, `daily/`, `memory-archive.md`, `CURRENT.md`, `sessions.jsonl`) and the v1 `MEMORY.md` into `.ade/cto/legacy-v1/`. Nothing is imported and nothing is deleted.
 
 ### What the CTO is given each turn
 
@@ -135,9 +136,9 @@ The conversation tail (`Recent Conversation Tail`, the last 40 entries for the C
 
 The identity record is `.ade/cto/identity.yaml` plus the `cto_identity_state` row (a synced table); every read reconciles the two, newer `updatedAt` wins, ties go to the file. It holds the name, persona, standing instructions (`systemPromptExtension`), `modelPreferences`, onboarding state and the cross-machine switch.
 
-`avatar`, `personality` and `fallbackModels` live in a sidecar, `.ade/cto/preferences.json` (`{ version: 1, avatar?, personality?, fallbackModels?, updatedAt }`, written atomically). `getIdentity()` lays the sidecar over the record, so IPC, sync `cto.getState`, iOS and the renderer still read `identity.avatar`, `identity.personality` and `identity.fallbackModels`. `updateIdentity(patch)` writes those three to the sidecar and everything else to the record; no record write ever carries them. A project whose sidecar is missing gets a one-time move: the keys are copied from the record (canonical half first, then the other half) before the record is rewritten without them.
+`avatar`, `personality` and `fallbackModels` live in a sidecar, `.ade/cto/preferences.json` (`{ version: 1, avatar?, personality?, fallbackModels?, updatedAt }`, written atomically). `getIdentity()` lays the sidecar over the record, so IPC, sync `cto.getState`, iOS and the renderer still read `identity.avatar`, `identity.personality` and `identity.fallbackModels`. `updateIdentity(patch)` writes those three to the sidecar and everything else to the record; no record write ever carries them.
 
-`normalizeIdentity` keeps keys it does not know untouched, so a field a newer build adds survives this build rewriting the record. The exception is the retired v1 fields while they are being folded into the extension. `updateIdentity` accepts only known keys from a patch, so a caller cannot plant a key this way. The sidecar is per machine: it does not ride the synced row.
+`normalizeIdentity` keeps keys it does not know untouched, so a field a newer build adds survives this build rewriting the record. `updateIdentity` accepts only known keys from a patch, so a caller cannot plant a key this way. The sidecar is per machine: it does not ride the synced row.
 
 ### Personality
 
@@ -257,13 +258,13 @@ A project with no model picked shows `CtoWelcome` instead of the thread: the big
 Registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`, named in `apps/desktop/src/shared/ipc.ts`, reached as `window.ade.cto.*`. Every call that acts on the CTO takes a `pin` and routes to the CTO's home machine.
 
 - Thread and identity: `ctoGetState`, `ctoGetAttention`, `ctoEnsureSession`, `ctoUpdateIdentity`, `ctoPreviewSystemPrompt`, `ctoRefreshContext`, `ctoRunProjectScan`.
-- Memory: `ctoGetMemory`, `ctoUpdateNotes`, `ctoUpdateOpenWork`, and `ctoUpdateMemory` (the older name for writing the project notes, kept because iOS still calls it).
+- Memory: `ctoGetMemory`, `ctoUpdateNotes`, `ctoUpdateOpenWork`.
 - Onboarding markers: `ctoGetOnboardingState`, `ctoCompleteOnboardingStep`.
 - Linear reads, credentials and OAuth: `ctoGetLinearConnectionStatus`, `ctoGetLinearProjects`, `ctoGetLinearQuickView`, `ctoGetLinearIssuePickerData`, `ctoSearchLinearIssues`, `ctoGetLinearIssueComments`, `ctoGetLinearIssue`, `ctoCreateLinearIssue`, `ctoCreateLinearIssueComment`, `ctoCountLinearIssues`, `ctoGetLinearCustomViews`, `ctoGetLinearIssueCreateOptions`, `ctoListLinearProjectMilestones`, `ctoUploadLinearFile`, `ctoSetLinearToken`, `ctoClearLinearToken`, `ctoStartLinearOAuth`, `ctoGetLinearOAuthSession`, `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`.
 
 Scheduled work has its own generic channels: `ade.agentChat.scheduledWork.pauseItem` (`agentChat.setScheduledWorkItemPaused`) and `ade.agentChat.scheduledWork.runNow` (`agentChat.runScheduledWorkNow`).
 
-The action surface follows the same contract. `cto_state` exposes `refreshContext` and `cto_memory` exposes `getSnapshot`, `updateMemory`, `updateNotes`, `updateOpenWork` and `recordDiscovery`; both carry input contracts and the `cto_memory` domain is `allExcept`, so a method added there later is CTO-only by default. `recordDiscovery` and `getSnapshot` are the two deliberate exceptions. The hosted web client implements the CTO namespace method by method in `apps/desktop/src/renderer/webclient/adapter/misc.ts` (`getMemory`, `updateNotes`, `updateOpenWork`, `updateIdentity`, `refreshContext`, `previewSystemPrompt`).
+The action surface follows the same contract. `cto_state` exposes `refreshContext` and `cto_memory` exposes `getSnapshot`, `updateNotes`, `updateOpenWork` and `recordDiscovery`; both carry input contracts and the `cto_memory` domain is `allExcept`, so a method added there later is CTO-only by default. `recordDiscovery` and `getSnapshot` are the two deliberate exceptions. The hosted web client implements the CTO namespace method by method in `apps/desktop/src/renderer/webclient/adapter/misc.ts` (`getMemory`, `updateNotes`, `updateOpenWork`, `updateIdentity`, `refreshContext`, `previewSystemPrompt`).
 
 ## Sync command surface
 
@@ -272,7 +273,7 @@ Registered by `registerCtoRemoteCommands` in `apps/ade-cli/src/services/sync/syn
 - `cto.ensureSession`, `cto.getState`, `cto.updateIdentity`.
 - `cto.getHomeMachine`, `cto.setHomeMachine` — which machine owns this project's CTO.
 - `cto.getAttention` — the mobile attention probe. Read-only: it delegates to `getCtoAttention()` and never materializes a session.
-- `cto.getMemory` — the `CtoMemorySnapshot`. The v1-only fields (`threadState`, `dailyLog`, `dailyLogDate`, `projectBrief`, `projectThreads`, `projectItems`) are sent empty or null so older phones keep decoding.
+- `cto.getMemory` — the `CtoMemorySnapshot`.
 - `cto.updateNotes` — the notes write, with optional `baseHash`; not queueable. `cto.updateOpenWork` — the queueable open-work write. Both are used by the hosted web client.
 - `cto.refreshContext` — the hosted web client's "Refresh context".
 - `cto.previewSystemPrompt` — the prompt preview in the hosted web client's CTO settings.

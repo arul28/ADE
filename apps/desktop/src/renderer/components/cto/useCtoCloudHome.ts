@@ -3,6 +3,7 @@ import { cloudPlanIdOf, isPaidPlanId } from "../../../shared/adeCloud";
 import { githubRepoOf } from "../../../shared/cloudLaneLaunch";
 import type { CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 import { CTO_CLOUD_HOME_NEEDS_GITHUB, type CtoCloudHomeSnapshot } from "../../../shared/ctoCloudHome";
+import { ipcErrorMessage } from "../../lib/format";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import type { ProjectMachine } from "../../state/projectMachines";
@@ -43,17 +44,6 @@ export type CtoCloudHomeOption = {
 
 /** How long a ready computer may take to show up here before the page says so. */
 const LINK_STALL_MS = 45_000;
-
-function errorText(error: unknown, fallback: string): string {
-  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  // Electron prefixes errors thrown in main; the person reads only the sentence.
-  const clean = raw.replace(/^Error invoking remote method '[^']+':\s*(?:\w*Error:\s*)?/i, "").trim();
-  return clean || fallback;
-}
-
-function isSnapshot(value: unknown): value is CtoCloudHomeSnapshot {
-  return Boolean(value) && typeof value === "object" && typeof (value as CtoCloudHomeSnapshot).jobId === "string";
-}
 
 /** The computer's checkout in this app's machine list, once it is reachable. */
 function machineForJob(job: CtoCloudHomeSnapshot, machines: readonly ProjectMachine[]): ProjectMachine | null {
@@ -101,7 +91,7 @@ export function useCtoCloudHome(args: {
       }
     });
     void bridge({ method: "get", args: { originUrl: origin } })
-      .then((value) => { if (!cancelled) setJob(isSnapshot(value) ? value : null); })
+      .then((value) => { if (!cancelled) setJob(value ?? null); })
       .catch(() => { if (!cancelled) setJob(null); });
     return () => {
       cancelled = true;
@@ -135,7 +125,7 @@ export function useCtoCloudHome(args: {
         onChosen({ machine: linkMachine, adopted });
       } catch (err) {
         linkingRef.current = null;
-        setError(errorText(err, "ADE couldn't make the new computer the CTO's home."));
+        setError(ipcErrorMessage(err) || "ADE couldn't make the new computer the CTO's home.");
       }
     })();
   }, [active, bridge, choose, job, linkMachine, onChosen]);
@@ -148,14 +138,15 @@ export function useCtoCloudHome(args: {
       ? CTO_CLOUD_HOME_NEEDS_GITHUB
       : null;
 
-  const run = useCallback(async (call: () => Promise<unknown>, fallback: string) => {
+  /** Runs a call; a job it answers becomes the shown job. */
+  const run = useCallback(async (call: () => Promise<CtoCloudHomeSnapshot | null>, fallback: string) => {
     setBusy(true);
     setError(null);
     try {
       const value = await call();
-      if (isSnapshot(value)) setJob(value);
+      if (value) setJob(value);
     } catch (err) {
-      setError(errorText(err, fallback));
+      setError(ipcErrorMessage(err) || fallback);
     } finally {
       setBusy(false);
     }
@@ -178,15 +169,18 @@ export function useCtoCloudHome(args: {
     await run(async () => {
       const value = await bridge({ method: "cancel", args: { jobId } });
       // A cancel that deleted everything removes the job.
-      if (isSnapshot(value) && value.phase === "cancelled" && !value.error) setJob(null);
-      return isSnapshot(value) && value.error ? value : null;
+      if (value?.phase === "cancelled" && !value.error) setJob(null);
+      return value?.error ? value : null;
     }, "ADE couldn't cancel. Delete the computer in Settings › ADE Cloud.");
   }, [bridge, job, run]);
 
   const upgrade = useCallback(async () => {
     const open = api?.openCheckout;
     if (!open) return;
-    await run(() => open("plus"), "ADE couldn't open the upgrade page.");
+    await run(async () => {
+      await open("plus");
+      return null;
+    }, "ADE couldn't open the upgrade page.");
     // The plan changes when the checkout finishes; the account store reads it again.
   }, [api, run]);
 

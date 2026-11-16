@@ -287,8 +287,6 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     live: "all",
     read: [
       "getAccountCopyStatus", "getAttention", "getIdentity", "getOnboardingState", "getSnapshot", "previewSystemPrompt",
-      // v1 compatibility shims (adeActions/registry.ts).
-      "getSessionLogs", "getThreadHealth",
     ],
     write: [
       "adoptAccountCopy", "completeOnboardingStep", "refreshContext", "runProjectScan", "updateIdentity",
@@ -296,10 +294,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   cto_memory: {
     read: [
-      "getSnapshot", "searchMemory",
+      "getSnapshot",
     ],
     write: [
-      "updateMemory", "updateNotes", "updateOpenWork", "recordDiscovery",
+      "updateNotes", "updateOpenWork", "recordDiscovery",
     ],
   },
   session: {

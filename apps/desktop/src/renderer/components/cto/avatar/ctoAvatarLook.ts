@@ -1,13 +1,8 @@
-import {
-  CTO_AVATAR_ENERGIES,
-  CTO_AVATAR_EYES,
-  CTO_AVATAR_SHAPES,
-  DEFAULT_CTO_AVATAR_LOOK,
-  type CtoAvatarLook,
-} from "../../../../shared/types/cto";
+import { DEFAULT_CTO_AVATAR_LOOK, type CtoAvatarLook } from "../../../../shared/types/cto";
+import { normalizeCtoAvatarLook, normalizeHexColor } from "../../../../shared/ctoAvatarLook";
 
 /**
- * The ten body colours offered in Settings › Look.
+ * The ten body colours offered in Settings › Look, lower case like every stored colour.
  *
  * Mid-tone and fairly saturated on purpose: each one has to read as a filled
  * body on a near-black page and on a white one, and each one also becomes the
@@ -15,44 +10,26 @@ import {
  * eyes); every other colour gets ink eyes.
  */
 export const CTO_AVATAR_SWATCHES: ReadonlyArray<{ name: string; color: string }> = [
-  { name: "Periwinkle", color: "#7C9CFF" },
-  { name: "Glacier", color: "#46BDF0" },
-  { name: "Mint", color: "#3ECF9C" },
-  { name: "Pear", color: "#A8D35A" },
-  { name: "Marigold", color: "#F4BF4F" },
-  { name: "Tangerine", color: "#FF9150" },
-  { name: "Watermelon", color: "#FF6B7E" },
-  { name: "Bubblegum", color: "#F28AC9" },
-  { name: "Grape", color: "#9A72FF" },
+  { name: "Periwinkle", color: "#7c9cff" },
+  { name: "Glacier", color: "#46bdf0" },
+  { name: "Mint", color: "#3ecf9c" },
+  { name: "Pear", color: "#a8d35a" },
+  { name: "Marigold", color: "#f4bf4f" },
+  { name: "Tangerine", color: "#ff9150" },
+  { name: "Watermelon", color: "#ff6b7e" },
+  { name: "Bubblegum", color: "#f28ac9" },
+  { name: "Grape", color: "#9a72ff" },
   { name: "Graphite", color: "#556079" },
 ];
 
 /** Dark eyes on a light body. */
 export const CTO_AVATAR_INK = "#161A2B";
 
-const HEX_COLOR = /^#?([0-9a-f]{6})$/i;
-
-/** `#rrggbb` (lower case) for a six-digit hex with or without `#`, else null. */
-export function normalizeHexColor(value: string | null | undefined): string | null {
-  const match = HEX_COLOR.exec((value ?? "").trim());
-  return match ? `#${match[1]!.toLowerCase()}` : null;
-}
+export { normalizeHexColor };
 
 /** A stored look, with anything unknown or malformed replaced by the default. */
 export function resolveCtoAvatarLook(look: Partial<CtoAvatarLook> | null | undefined): CtoAvatarLook {
-  if (!look) return DEFAULT_CTO_AVATAR_LOOK;
-  return {
-    shape: (CTO_AVATAR_SHAPES as readonly string[]).includes(look.shape ?? "")
-      ? look.shape!
-      : DEFAULT_CTO_AVATAR_LOOK.shape,
-    color: normalizeHexColor(look.color) ?? DEFAULT_CTO_AVATAR_LOOK.color,
-    eyes: (CTO_AVATAR_EYES as readonly string[]).includes(look.eyes ?? "")
-      ? look.eyes!
-      : DEFAULT_CTO_AVATAR_LOOK.eyes,
-    energy: (CTO_AVATAR_ENERGIES as readonly string[]).includes(look.energy ?? "")
-      ? look.energy!
-      : DEFAULT_CTO_AVATAR_LOOK.energy,
-  };
+  return normalizeCtoAvatarLook(look) ?? DEFAULT_CTO_AVATAR_LOOK;
 }
 
 function relativeLuminance(hex: string): number {

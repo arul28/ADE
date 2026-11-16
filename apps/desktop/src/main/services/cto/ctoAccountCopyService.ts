@@ -32,7 +32,9 @@ import {
 } from "../../../shared/ctoAccountCopy";
 import { CTO_HOME_SETTING_KEY, isCtoHomeMachineRecord, type CtoHomeMachineRecord } from "../../../shared/ctoHomeMachine";
 import { CTO_USER_NOTES_MAX_BYTES, type CtoIdentity } from "../../../shared/types/cto";
+import { ACCOUNT_VAULT_NO_REVISION } from "../../../shared/types/accountVault";
 import { writeTextAtomic } from "../shared/utils";
+import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import type { CtoMemoryService } from "./ctoMemoryService";
 
 const ENCODED_PREFIX = "gz1:";
@@ -90,7 +92,7 @@ export type CtoAccountCopyServiceArgs = {
     getIdentity: () => CtoIdentity;
     updateIdentity: (patch: Partial<Omit<CtoIdentity, "version" | "updatedAt">>) => unknown;
   };
-  ctoMemory: Pick<CtoMemoryService, "readNotes" | "writeNotes">;
+  ctoMemory: Pick<CtoMemoryService, "readNotes" | "writeNotes" | "readOpenWorkText" | "replaceOpenWorkText">;
   /** The CTO thread's tail and routines, read when a copy is written. */
   readSources: () => Promise<CtoAccountCopySources>;
   /** Re-creates routines on this machine's CTO thread, replacing the ones it had. Null: the thread doesn't exist yet. */
@@ -191,9 +193,10 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
   const { logger } = args;
   const now = () => args.now?.() ?? Date.now();
   const ctoDir = path.join(args.adeDir, "cto");
-  const openWorkPath = path.join(ctoDir, "open-work.json");
   const carriedTailPath = path.join(ctoDir, "carried-conversation.json");
   const carriedRoutinesPath = path.join(ctoDir, "carried-routines.json");
+  /** The last copy from another machine this one took: its owner and when it was saved. */
+  const takenCopyPath = path.join(ctoDir, "account-copy-taken.json");
   let lastWrittenHash: string | null = null;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let saving: Promise<void> | null = null;
@@ -235,14 +238,6 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     }
   };
 
-  const readOpenWorkText = (): string | null => {
-    try {
-      return fs.readFileSync(openWorkPath, "utf8");
-    } catch {
-      return null;
-    }
-  };
-
   const build = async (): Promise<CtoAccountCopy | null> => {
     const self = me();
     if (!self) return null;
@@ -258,8 +253,9 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       identity: portableIdentity(args.ctoState.getIdentity()),
       projectNotes: args.ctoMemory.readNotes("project"),
       userNotes: args.ctoMemory.readNotes("user"),
-      openWork: readOpenWorkText(),
-      routines: sources.routines,
+      openWork: args.ctoMemory.readOpenWorkText(),
+      // Routines a move brought that have no CTO thread to land on yet.
+      routines: readJson<{ routines?: CtoAccountCopyRoutine[] }>(carriedRoutinesPath)?.routines ?? sources.routines,
       tail,
     };
   };
@@ -271,9 +267,22 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     const home = readHome();
     if (!homeIsHere(home)) return;
     const existing = readCopyRow();
-    // With no home chosen yet, two machines could each think they are it:
-    // write only over our own copy, never over another machine's.
-    if (!home?.deviceId && existing.copy && !sameDevice(existing.copy.ownerDeviceId, self)) return;
+    if (existing.copy && !sameDevice(existing.copy.ownerDeviceId, self)) {
+      // With no home chosen yet, two machines could each think they are it:
+      // write only over our own copy, never over another machine's.
+      if (!home?.deviceId) return;
+      // The home writes over another machine's copy only once it has taken
+      // it, or when that machine wrote it after this one became the home (an
+      // old home that had not heard of the move). Otherwise the copy is the
+      // CTO the old home handed over, and this machine missed it when it
+      // moved in (its account could not be reached then): take it now.
+      const writtenAfterMove = Date.parse(existing.copy.savedAt) > Date.parse(home.chosenAt);
+      if (!writtenAfterMove && !isTaken(existing.copy)) {
+        logger.info?.("cto.account_copy_late_restore", { reason, savedAt: existing.copy.savedAt });
+        await restore(existing.copy);
+        lastWrittenHash = null;
+      }
+    }
     const copy = await build();
     if (!copy) return;
     const { savedAt: _savedAt, ...stable } = copy;
@@ -289,7 +298,9 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       CTO_ACCOUNT_COPY_VAULT_KIND,
       CTO_ACCOUNT_COPY_VAULT_KEY,
       encoded,
-      existing.revision ? { expectedRevision: existing.revision } : undefined,
+      // No row here is a claim too: the account may have one this machine has
+      // not pulled yet, and a blind write would replace it.
+      { expectedRevision: existing.revision ?? ACCOUNT_VAULT_NO_REVISION },
     );
     if (answer === "queued") {
       lastWrittenHash = hash;
@@ -350,6 +361,16 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     return { ok: false, homeName: name, message: `${ctoName} lives on ${name} now. Open the CTO there, or move it back here.` };
   };
 
+  /**
+   * A home record naming this machine, marked as the ADE Cloud computer it is
+   * when the client that chose it (a phone, a list pick) could not tell, so
+   * every surface can wake it later or make a new one.
+   */
+  const withOwnCloudId = (record: CtoHomeMachineRecord): CtoHomeMachineRecord => {
+    if (record.cloudInstanceId || !record.deviceId || !homeIsHere(record) || !isAdeCloudComputer()) return record;
+    return { ...record, cloudInstanceId: process.env.ADE_CLOUD_INSTANCE_ID!.trim() };
+  };
+
   /** The same answer from this machine's copy of the account, without asking it again. */
   const homeIsHereNow = (): boolean => homeIsHere(readHome());
 
@@ -377,7 +398,13 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     if (applied) fs.rmSync(carriedRoutinesPath, { force: true });
   };
 
+  const isTaken = (copy: CtoAccountCopy): boolean => {
+    const taken = readJson<{ ownerDeviceId?: string; savedAt?: string }>(takenCopyPath);
+    return Boolean(taken && taken.savedAt === copy.savedAt && sameDevice(taken.ownerDeviceId ?? null, copy.ownerDeviceId));
+  };
+
   const restore = async (copy: CtoAccountCopy): Promise<void> => {
+    writeJson(takenCopyPath, { ownerDeviceId: copy.ownerDeviceId, savedAt: copy.savedAt });
     const identity = { ...copy.identity } as Partial<Omit<CtoIdentity, "version" | "updatedAt">>;
     // Account ids are this machine's own: keep the account it already picked
     // for the same provider, instead of falling back to the default one.
@@ -403,10 +430,8 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     } catch (error) {
       logger.warn("cto.account_copy_notes_failed", { scope: "user", error: error instanceof Error ? error.message : String(error) });
     }
-    if (copy.openWork != null) {
-      fs.mkdirSync(ctoDir, { recursive: true });
-      writeTextAtomic(openWorkPath, copy.openWork);
-    }
+    // No open work in the copy: this machine's list is from an earlier stay, and goes.
+    args.ctoMemory.replaceOpenWorkText(copy.openWork);
     writeJson(carriedTailPath, {
       fromName: copy.ownerName,
       savedAt: copy.savedAt,
@@ -429,7 +454,7 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     const scope = args.repoScope();
     if (scope && args.settings && isCtoHomeMachineRecord(input.home)) {
       try {
-        args.settings.set(scope, CTO_HOME_SETTING_KEY, input.home);
+        args.settings.set(scope, CTO_HOME_SETTING_KEY, withOwnCloudId(input.home));
       } catch (error) {
         logger.warn("cto.account_copy_home_write_failed", { error: error instanceof Error ? error.message : String(error) });
       }
@@ -438,7 +463,14 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     if (!scope || !args.vault || !self) return { restored: false, fromName: null, savedAt: null };
     if (!homeIsHere(readHome())) return { restored: false, fromName: null, savedAt: null };
     // The copy the old home wrote last, not this machine's cached one.
-    await withTimeout(args.vault.sync(), SYNC_TIMEOUT_MS);
+    const synced = await withTimeout(args.vault.sync(), SYNC_TIMEOUT_MS);
+    if (synced !== "ready") {
+      // Writing now could replace the CTO the old home left in the account
+      // with this machine's older one. The first save after the account
+      // answers takes that copy instead (`saveNow`).
+      logger.warn("cto.account_copy_adopt_unsynced", { status: synced ?? "timeout" });
+      return { restored: false, fromName: null, savedAt: null };
+    }
     const { copy } = readCopyRow();
     if (!copy || sameDevice(copy.ownerDeviceId, self)) {
       await save("adopt");

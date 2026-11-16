@@ -231,7 +231,10 @@ export function CtoHomeChooser({
               <button
                 type="button"
                 data-testid="cto-cloud-cancel"
-                disabled={cloud.busy}
+                // While the ready computer is being made the home, a cancel
+                // would delete the machine the home record now names. A move
+                // in that stalls gets its way out back.
+                disabled={cloud.busy || (cloud.linking && !cloud.linkStalled)}
                 onClick={() => void cloud.cancel()}
                 className="kit-btn kit-btn-ghost"
                 title={job.reused ? "Stops here. The computer stays." : "Stops and deletes the computer ADE made."}

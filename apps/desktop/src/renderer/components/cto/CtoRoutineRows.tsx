@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alarm, ArrowsClockwise, CalendarBlank, CloudSlash, DotsThree, Lightning, PauseCircle, Trash } from "@phosphor-icons/react";
 import type { AgentChatScheduledWorkItem, OpenProjectBinding } from "../../../shared/types";
+import { useMinuteClock } from "../../hooks/useMinuteClock";
+import { ipcErrorMessage } from "../../lib/format";
 import { SettingsToggle } from "../settings/primitives";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { MENU_SURFACE_CLASS, MENU_WIDTH_CLASS } from "../ui/paneMenuTokens";
@@ -144,19 +146,6 @@ function routineTitle(item: AgentChatScheduledWorkItem): string {
 /** The row's own switch. Absent on an older host: read it off the status. */
 function isRowPaused(item: AgentChatScheduledWorkItem): boolean {
   return item.paused ?? item.status === "paused";
-}
-
-function errorText(err: unknown, fallback: string): string {
-  return err instanceof Error && err.message ? err.message : fallback;
-}
-
-function useMinuteClock(): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 60_000);
-    return () => window.clearInterval(id);
-  }, []);
-  return now;
 }
 
 const MENU_ITEM = "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-fg/85 hover:bg-[var(--kit-hover)] disabled:opacity-50";
@@ -306,7 +295,8 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
   // scheduled is seen arriving. Null until that first read.
   const seenIdsRef = useRef<Set<string> | null>(null);
   const [freshIds, setFreshIds] = useState<ReadonlySet<string>>(() => new Set());
-  const nowMs = useMinuteClock();
+  // Only rows show a relative time; with none, nothing ticks.
+  const nowMs = useMinuteClock(items.length > 0);
   const pinRef = useRef(pin);
   pinRef.current = pin;
   const generationRef = useRef(0);
@@ -334,7 +324,7 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
       setError(null);
     } catch (err) {
       if (generation !== generationRef.current) return;
-      setError(errorText(err, "Couldn't read the routines."));
+      setError(ipcErrorMessage(err) || "Couldn't read the routines.");
     } finally {
       if (generation === generationRef.current) setLoaded(true);
     }
@@ -383,7 +373,7 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
       await run(target, sessionId);
       await load();
     } catch (err) {
-      setError(errorText(err, fallback));
+      setError(ipcErrorMessage(err) || fallback);
     } finally {
       setBusyId(null);
     }
@@ -436,7 +426,7 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
       await window.ade.agentChat.setScheduledWorkPaused({ sessionId, paused: false }, target);
       await load();
     } catch (err) {
-      setError(errorText(err, "Couldn't resume the routines."));
+      setError(ipcErrorMessage(err) || "Couldn't resume the routines.");
     }
   };
   const finished = settings

@@ -1713,17 +1713,6 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
     getAccountCopyStatus: async (): Promise<CtoAccountCopyStatus> =>
       runtime.ctoAccountCopyService?.status()
       ?? { available: false, savedAt: null, ownerName: null, ownerIsThisMachine: false },
-    // Compatibility shim: v1's thread health. A refresh is automatic now, so the thread always reads as healthy.
-    getThreadHealth: async () => ({
-      sessionId: null,
-      canTakeTurn: true,
-      blockedReason: null,
-      lastTurnFailure: null,
-      context: null,
-      rotationAdvised: false,
-    }),
-    // Compatibility shim: v1's session log is gone; the conversation is `readHistory`.
-    getSessionLogs: (_limit?: unknown) => [],
   };
 }
 
@@ -1732,16 +1721,6 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
   if (!ctoMemoryService) return null;
   return {
     getSnapshot: () => ctoMemoryService.getSnapshot(),
-    /** The older name for writing the project notes; iOS still calls it. */
-    updateMemory: (args?: { memory?: string }) => {
-      // A missing field must not silently blank the notes; only an explicit
-      // string (including a deliberate "") is a valid rewrite.
-      if (typeof args?.memory !== "string") {
-        throw new Error("updateMemory requires a string `memory` field.");
-      }
-      ctoMemoryService.writeNotes("project", args.memory);
-      return ctoMemoryService.getSnapshot();
-    },
     updateNotes: (args?: Partial<CtoUpdateNotesArgs>) => {
       if (args?.scope !== "project" && args?.scope !== "user") {
         throw new Error("updateNotes requires `scope`: \"project\" or \"user\".");
@@ -1764,33 +1743,6 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
         throw new Error("updateOpenWork requires `op`: add, complete, reopen or remove.");
       }
       return ctoMemoryService.getSnapshot();
-    },
-    // Compatibility shim: v1's search, in its old `{ query, rows }` shape, over the notes, open work and the conversation.
-    searchMemory: async (args?: { query?: string; limit?: number; tags?: CtoMemoryTags }) => {
-      const query = typeof args?.query === "string" ? args.query : "";
-      const limit = Math.max(1, Math.min(50, Math.floor(typeof args?.limit === "number" && Number.isFinite(args.limit) ? args.limit : 20)));
-      const words = query.toLowerCase().split(/\s+/).filter((word) => word.length > 0);
-      const matches = (text: string) => words.length > 0 && words.every((word) => text.toLowerCase().includes(word));
-      const snapshot = ctoMemoryService.getSnapshot();
-      type Row = { file: "MEMORY.md" | "daily" | "context"; date: string | null; line: number; snippet: string; id?: string };
-      const rows: Row[] = [];
-      const lineRows = (file: Row["file"], content: string | undefined) => {
-        (content ?? "").split(/\r?\n/).forEach((line, index) => {
-          if (matches(line)) rows.push({ file, date: null, line: index + 1, snippet: line.trim() });
-        });
-      };
-      lineRows("MEMORY.md", snapshot.memory);
-      lineRows("context", snapshot.userNotes);
-      (snapshot.openWork ?? []).forEach((item, index) => {
-        if (matches(item.text)) rows.push({ file: "context", date: item.doneAt ?? null, line: index + 1, snippet: item.text, id: item.id });
-      });
-      if (rows.length < limit && words.length && runtime.agentChatService?.readCtoHistory) {
-        const page = await runtime.agentChatService.readCtoHistory({ query, limit }).catch(() => null);
-        for (const entry of page?.entries ?? []) {
-          if (entry.match) rows.push({ file: "daily", date: entry.at.slice(0, 10) || null, line: 0, snippet: entry.text });
-        }
-      }
-      return { query, rows: rows.slice(0, limit) };
     },
     /**
      * One of the two non-CTO methods on this domain — see the `cto_memory`

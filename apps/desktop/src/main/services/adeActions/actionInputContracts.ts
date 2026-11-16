@@ -45,11 +45,6 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "none",
       example: "ade --role cto actions run cto_state.refreshContext --json",
     },
-    getThreadHealth: {
-      description: "Compatibility shim for older clients: always reports a healthy thread (the CTO refreshes its own context now).",
-      input: "none",
-      example: "ade actions run cto_state.getThreadHealth --json",
-    },
   },
   cto_memory: {
     updateNotes: {

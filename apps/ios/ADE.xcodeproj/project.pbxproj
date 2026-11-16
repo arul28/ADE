@@ -283,6 +283,8 @@
 		H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000011 /* CtoSessionDestinationView.swift */; };
 		H10000000000000000000005 /* CtoAvatarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000014 /* CtoAvatarView.swift */; };
 		H10000000000000000000006 /* CtoSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000015 /* CtoSettingsScreen.swift */; };
+		H10000000000000000000040 /* CtoBrainPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000030 /* CtoBrainPage.swift */; };
+		H10000000000000000000041 /* CtoHomeChooser.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000031 /* CtoHomeChooser.swift */; };
 		C7A000000000000000000B01 /* CtoChatChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A000000000000000000F01 /* CtoChatChrome.swift */; };
 		C7A000000000000000000B02 /* CtoProfileSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A000000000000000000F02 /* CtoProfileSheet.swift */; };
 		C7A000000000000000000B03 /* CtoStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A000000000000000000F03 /* CtoStore.swift */; };
@@ -812,6 +814,8 @@
 		H10000000000000000000011 /* CtoSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSessionDestinationView.swift; path = ADE/Views/Cto/CtoSessionDestinationView.swift; sourceTree = "<group>"; };
 		H10000000000000000000014 /* CtoAvatarView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoAvatarView.swift; path = ADE/Views/Cto/CtoAvatarView.swift; sourceTree = "<group>"; };
 		H10000000000000000000015 /* CtoSettingsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSettingsScreen.swift; path = ADE/Views/Cto/CtoSettingsScreen.swift; sourceTree = "<group>"; };
+		H10000000000000000000030 /* CtoBrainPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoBrainPage.swift; path = ADE/Views/Cto/CtoBrainPage.swift; sourceTree = "<group>"; };
+		H10000000000000000000031 /* CtoHomeChooser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoHomeChooser.swift; path = ADE/Views/Cto/CtoHomeChooser.swift; sourceTree = "<group>"; };
 		C7A000000000000000000F01 /* CtoChatChrome.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoChatChrome.swift; path = ADE/Views/Cto/CtoChatChrome.swift; sourceTree = "<group>"; };
 		C7A000000000000000000F02 /* CtoProfileSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoProfileSheet.swift; path = ADE/Views/Cto/CtoProfileSheet.swift; sourceTree = "<group>"; };
 		C7A000000000000000000F03 /* CtoStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoStore.swift; path = ADE/Views/Cto/CtoStore.swift; sourceTree = "<group>"; };
@@ -1390,6 +1394,8 @@
 				H10000000000000000000010 /* CtoRootScreen.swift */,
 				H10000000000000000000011 /* CtoSessionDestinationView.swift */,
 				H10000000000000000000015 /* CtoSettingsScreen.swift */,
+				H10000000000000000000030 /* CtoBrainPage.swift */,
+				H10000000000000000000031 /* CtoHomeChooser.swift */,
 				C7A000000000000000000F01 /* CtoChatChrome.swift */,
 				C7A000000000000000000F02 /* CtoProfileSheet.swift */,
 				C7A000000000000000000F03 /* CtoStore.swift */,
@@ -2588,6 +2594,8 @@
 				H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */,
 				H10000000000000000000005 /* CtoAvatarView.swift in Sources */,
 				H10000000000000000000006 /* CtoSettingsScreen.swift in Sources */,
+				H10000000000000000000040 /* CtoBrainPage.swift in Sources */,
+				H10000000000000000000041 /* CtoHomeChooser.swift in Sources */,
 				C7A000000000000000000B01 /* CtoChatChrome.swift in Sources */,
 				C7A000000000000000000B02 /* CtoProfileSheet.swift in Sources */,
 				C7A000000000000000000B03 /* CtoStore.swift in Sources */,

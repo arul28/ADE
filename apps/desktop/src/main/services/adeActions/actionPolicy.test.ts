@@ -518,10 +518,8 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     // can already open with a file read, so closing the action gate protects
     // nothing — it only breaks existing automation `ade-action` steps, silently.
     expect(isCtoOnlyAdeAction("cto_memory", "getSnapshot")).toBe(false);
-    expect(isCtoOnlyAdeAction("cto_memory", "searchMemory")).toBe(false);
 
     // The write paths are the ones that are actually operator state.
-    expect(isCtoOnlyAdeAction("cto_memory", "updateMemory")).toBe(true);
     expect(isCtoOnlyAdeAction("cto_memory", "updateNotes")).toBe(true);
     expect(isCtoOnlyAdeAction("cto_memory", "updateOpenWork")).toBe(true);
 
@@ -539,8 +537,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(isCtoOnlyAdeAction("cto_state", "refreshContext")).toBe(true);
 
     // Everything else on this domain is a read the whole fleet depends on and
-    // stays open, the v1 compatibility shims included.
-    expect(isCtoOnlyAdeAction("cto_state", "getThreadHealth")).toBe(false);
+    // stays open.
     expect(isCtoOnlyAdeAction("cto_state", "getSnapshot")).toBe(false);
     expect(isCtoOnlyAdeAction("cto_state", "getAttention")).toBe(false);
     expect(isCtoOnlyAdeAction("cto_state", "updateIdentity")).toBe(false);
@@ -663,12 +660,12 @@ describe("CTO domain coverage over the ADE action bus", () => {
   });
 
   it("does not widen or re-tighten the cto_memory inversion", () => {
-    // The inversion is fail-closed: everything CTO-only EXCEPT these three,
+    // The inversion is fail-closed: everything CTO-only EXCEPT these two,
     // and the polarity is carried by the rule itself rather than by which of
     // two tables the domain happened to be listed in.
     expect(ADE_ACTION_CTO_ONLY.cto_memory)
-      .toEqual({ allExcept: ["recordDiscovery", "getSnapshot", "searchMemory"] });
-    expect(isCtoOnlyAdeAction("cto_memory", "updateMemory")).toBe(true);
+      .toEqual({ allExcept: ["recordDiscovery", "getSnapshot"] });
+    expect(isCtoOnlyAdeAction("cto_memory", "updateNotes")).toBe(true);
     expect(isCtoOnlyAdeAction("cto_memory", "recordDiscovery")).toBe(false);
   });
 

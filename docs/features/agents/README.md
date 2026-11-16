@@ -440,13 +440,12 @@ Representative channels:
 | `ade.cto.ensureSession` | Create or fetch the CTO's persistent chat session. |
 | `ade.cto.refreshContext` | Give the CTO a fresh provider thread. |
 | `ade.cto.previewSystemPrompt` | Generate a system-prompt preview for the UI. |
-| `ade.cto.getMemory` / `updateNotes` / `updateOpenWork` | Read the memory snapshot, rewrite one notes file, change the open-work list. `updateMemory` remains as the older project-notes name. |
+| `ade.cto.getMemory` / `updateNotes` / `updateOpenWork` | Read the memory snapshot, rewrite one notes file, change the open-work list. |
 
 ## Fragile and tricky wiring
 
 - **A fresh context never runs mid-turn.** `refreshCtoProviderThread` refuses while the thread is busy and records the reason for the next settled turn; the static prompt, notes, open work and 40-message tail then carry over.
 - **A forgotten provider pointer is what makes the thread fresh.** Clearing the pointer fields is the only thing that stops Claude, Codex or Cursor resuming the old thread.
-- **Legacy identity keys are folded, not dropped.** `normalizeIdentity` appends `personality`, `customPersonality`, `communicationStyle` and `constraints` from an older `identity.yaml` to `systemPromptExtension`.
 - **The notes caps are load-bearing.** A `remember` past a notes cap is refused so the CTO merges or forgets; a silently truncated note would make the CTO look forgetful.
 - **Standalone-chat tool filtering at ADE CLI boundary.** Filtering is applied in `apps/ade-cli/src/adeRpcServer.ts` from the initialize payload's identity.
 - **A bound session never inherits CTO authority.** Keep role resolution on

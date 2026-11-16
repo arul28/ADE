@@ -1415,7 +1415,6 @@ export const IPC = {
   ctoRefreshContext: "ade.cto.refreshContext",
   ctoUpdateIdentity: "ade.cto.updateIdentity",
   ctoGetMemory: "ade.cto.getMemory",
-  ctoUpdateMemory: "ade.cto.updateMemory",
   ctoUpdateNotes: "ade.cto.updateNotes",
   ctoUpdateOpenWork: "ade.cto.updateOpenWork",
   ctoGetLinearConnectionStatus: "ade.cto.getLinearConnectionStatus",

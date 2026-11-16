@@ -645,9 +645,6 @@ function createRuntime() {
     ctoMemoryService: {
       getSnapshot: vi.fn(() => ({
         memory: "- a fact\n",
-        threadState: "",
-        dailyLog: "",
-        dailyLogDate: "",
         updatedAt: "2026-07-04T09:00:00.000Z",
       })),
     } as any,

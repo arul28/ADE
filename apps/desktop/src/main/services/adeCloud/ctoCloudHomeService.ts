@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { CLOUD_JOIN_WATCH_MS, cloudPlanIdOf, isPaidPlanId, type CloudCreateProgress, type CloudShapeId } from "../../../shared/adeCloud";
+import { cloudPlanIdOf, isPaidPlanId, type CloudCreateProgress, type CloudShapeId } from "../../../shared/adeCloud";
 import {
   CTO_CLOUD_HOME_METADATA,
   CTO_CLOUD_HOME_NEEDS_GITHUB,
@@ -21,9 +21,9 @@ import type {
 } from "../../../shared/types";
 import type { CloneProjectInput } from "../../../shared/types";
 import { AdeExpectedError } from "../../../shared/expectedError";
-import { getErrorMessage } from "../shared/utils";
+import { getErrorMessage, writeTextAtomic } from "../shared/utils";
 import { CloudCreateCancelled, bringCloudBoxIntoAde, createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
-import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
+import { deleteComputersForRequest, pairAndConnectWithRetry } from "./cloudComputerSteps";
 import { CloudProviderError, type CloudInstance, type CloudProvider } from "./cloudProvider";
 import { clip, cloudLaneLaunchFailureSentence, githubClone, LaunchCancelled, LaunchStepError, type Logger } from "./cloudLaneLaunchSteps";
 
@@ -44,7 +44,7 @@ import { clip, cloudLaneLaunchFailureSentence, githubClone, LaunchCancelled, Lau
 type RemoteBinding = OpenProjectBinding & { kind: "remote" };
 
 type JobRecord = {
-  v: 2;
+  v: 1;
   jobId: string;
   identity: string;
   cloneUrl: string;
@@ -85,7 +85,6 @@ type Deps = {
 const STAGE_IDS: ChatLaunchCloudStageId[] = ["computer", "join", "clone"];
 /** The smallest computer: the CTO coordinates; the real work goes to lanes. */
 const CTO_HOME_SHAPE: CloudShapeId = "2x4";
-const CONNECT_RETRY_MS = 3_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function fileKey(identity: string): string {
@@ -113,14 +112,10 @@ export function createCtoCloudHomeService(deps: Deps) {
   const recordPath = (identity: string) => path.join(deps.recordsDir, `${fileKey(identity)}.json`);
 
   const persist = (job: JobRecord): void => {
-    const target = recordPath(job.identity);
-    const tmp = `${target}.${process.pid}.tmp`;
     try {
       fs.mkdirSync(deps.recordsDir, { recursive: true });
-      fs.writeFileSync(tmp, JSON.stringify(job));
-      fs.renameSync(tmp, target);
+      writeTextAtomic(recordPath(job.identity), JSON.stringify(job));
     } catch (error) {
-      try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
       logger.warn("cto_cloud_home.persist_failed", { error: getErrorMessage(error) });
     }
   };
@@ -134,9 +129,9 @@ export function createCtoCloudHomeService(deps: Deps) {
     if (cached) return cached;
     try {
       const raw = JSON.parse(fs.readFileSync(recordPath(identity), "utf8")) as JobRecord;
-      // An older record (a lane-launch shape) is dropped: its computer, if any,
-      // is found again by its tag.
-      if (raw?.v !== 2 || raw.identity !== identity) {
+      // A record this build can't read is dropped: its computer, if any, is
+      // found again by its tag.
+      if (raw?.v !== 1 || raw.identity !== identity) {
         unpersist(identity);
         return null;
       }
@@ -152,7 +147,12 @@ export function createCtoCloudHomeService(deps: Deps) {
       }
       jobs.set(identity, raw);
       return raw;
-    } catch {
+    } catch (error) {
+      // No record is the usual answer; anything else is a record that broke.
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        logger.warn("cto_cloud_home.record_unreadable", { error: getErrorMessage(error) });
+        unpersist(identity);
+      }
       return null;
     }
   };
@@ -289,29 +289,20 @@ export function createCtoCloudHomeService(deps: Deps) {
   };
 
   /** Pairs and connects, retrying while the computer's account row and relay route come up. */
-  const pairAndConnect = async (job: JobRecord, signal: AbortSignal): Promise<string> => {
+  const pairAndConnect = (job: JobRecord, signal: AbortSignal): Promise<string> => {
     const machineKey = job.machineKey;
     if (!machineKey) throw new LaunchStepError("ADE lost track of the new computer. Cancel and try again.");
-    const startedAt = Date.now();
-    let lastError: unknown = null;
-    for (;;) {
-      assertActive(job, signal);
-      try {
-        const targetId = job.targetId ?? (await deps.pairMachine(machineKey)).targetId;
-        job.targetId = targetId;
-        persist(job);
-        await deps.connect(targetId);
-        return targetId;
-      } catch (error) {
-        lastError = error;
-        // A saved target that is gone is paired again on the next try.
-        if (/target was not found/i.test(getErrorMessage(error))) job.targetId = null;
-      }
-      if (Date.now() - startedAt >= CLOUD_JOIN_WATCH_MS) break;
-      await sleep(CONNECT_RETRY_MS);
-    }
-    logger.warn("cto_cloud_home.connect_timed_out", { error: lastError ? getErrorMessage(lastError) : null });
-    throw new LaunchStepError("ADE couldn't connect to the new computer in time.");
+    return pairAndConnectWithRetry({
+      machineKey,
+      holder: job,
+      pairMachine: deps.pairMachine,
+      connect: deps.connect,
+      assertActive: () => assertActive(job, signal),
+      onPaired: () => persist(job),
+      sleep,
+      logger,
+      timedOutEvent: "cto_cloud_home.connect_timed_out",
+    });
   };
 
   /** The repository on the computer, cloned once: the `clone` row. */
@@ -379,8 +370,23 @@ export function createCtoCloudHomeService(deps: Deps) {
     return clone;
   };
 
+  /** A start still reading the plan and looking for an earlier home, by project identity. */
+  const starting = new Map<string, Promise<CtoCloudHomeSnapshot>>();
+
+  /** Two quick starts (two windows) share one: the second would replace the first's job. */
   const start = async (args: { originUrl: string | null }): Promise<CtoCloudHomeSnapshot> => {
     const clone = identityOf(args.originUrl);
+    const inFlight = starting.get(clone.identity);
+    if (inFlight) return inFlight;
+    const started = startOnce(args.originUrl, clone).finally(() => starting.delete(clone.identity));
+    starting.set(clone.identity, started);
+    return started;
+  };
+
+  const startOnce = async (
+    originUrl: string | null,
+    clone: ReturnType<typeof identityOf>,
+  ): Promise<CtoCloudHomeSnapshot> => {
     const existing = load(clone.identity);
     if (existing && existing.phase !== "cancelled") {
       if (existing.phase === "failed") return await retryJob(existing);
@@ -389,8 +395,8 @@ export function createCtoCloudHomeService(deps: Deps) {
     const client = await deps.creator.client();
     await assertPaidPlan(client);
     let warning: string | null = null;
-    if (deps.gitPreflight && args.originUrl) {
-      const git = await deps.gitPreflight(args.originUrl);
+    if (deps.gitPreflight && originUrl) {
+      const git = await deps.gitPreflight(originUrl);
       if (!git.ok) throw new AdeExpectedError(git.message, "user");
       if (git.via === "unknown") warning = git.warning;
     }
@@ -398,7 +404,7 @@ export function createCtoCloudHomeService(deps: Deps) {
     if (raced && raced.phase !== "cancelled") return snapshotOf(raced);
     const earlier = await findEarlierHome(client, clone.identity);
     const job: JobRecord = {
-      v: 2,
+      v: 1,
       jobId: earlier?.metadata?.ade_request_id ?? crypto.randomUUID(),
       identity: clone.identity,
       cloneUrl: clone.cloneUrl,
@@ -460,33 +466,20 @@ export function createCtoCloudHomeService(deps: Deps) {
 
   /** Deletes only computers this job made (its request id), then takes a joined one off the account. */
   const deleteOwnComputers = async (job: JobRecord): Promise<{ found: number; deleted: number }> => {
-    const client = await deps.creator.client();
-    const own = new Map<string, CloudInstance>();
-    const known = await currentInstance(client, job).catch(() => null);
-    if (known?.metadata.ade_request_id === job.jobId) own.set(known.id, known);
-    for (const instance of await client.listInstances()) {
-      if (instance.metadata.ade_request_id === job.jobId && instance.status !== "deleted") own.set(instance.id, instance);
-    }
-    let deleted = 0;
-    for (const instance of own.values()) {
-      if (await deleteCloudInstanceConfirmed(client, instance.id, { logger, sleep, reason: "cto_home_cancelled" })) deleted += 1;
-    }
-    if (deleted === own.size) {
-      if (job.machineKey) {
-        await deps.removeAccountMachine(job.machineKey).catch((error: unknown) => {
-          logger.warn("cto_cloud_home.account_row_left", { error: getErrorMessage(error) });
-        });
-      }
-      for (const instanceId of new Set([...own.keys(), ...(job.instanceId ? [job.instanceId] : [])])) {
-        try {
-          deps.forgetMachineConnections?.({ machineKey: job.machineKey, instanceId });
-        } catch (error) {
-          logger.warn("cto_cloud_home.connection_left", { error: getErrorMessage(error) });
-        }
-      }
-      job.targetId = null;
-    }
-    return { found: own.size, deleted };
+    const result = await deleteComputersForRequest({
+      client: await deps.creator.client(),
+      requestId: job.jobId,
+      knownInstanceId: job.instanceId,
+      machineKey: job.machineKey,
+      reason: "cto_home_cancelled",
+      logger,
+      sleep,
+      removeAccountMachine: deps.removeAccountMachine,
+      forgetMachineConnections: deps.forgetMachineConnections,
+      logPrefix: "cto_cloud_home",
+    });
+    if (result.deleted === result.found) job.targetId = null;
+    return { found: result.found, deleted: result.deleted };
   };
 
   const cancel = async (args: { jobId: string }): Promise<CtoCloudHomeSnapshot | null> => {

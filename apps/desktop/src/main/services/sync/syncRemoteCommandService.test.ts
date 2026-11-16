@@ -318,13 +318,7 @@ function makePayload(action: string, args: Record<string, unknown> = {}): SyncCo
 
 const CTO_MEMORY_SNAPSHOT = {
   memory: "# CTO Durable Memory\n\n## Facts\n\n- A durable fact.",
-  threadState: "# CTO Thread State\n\nCurrent goal: ship memory.",
-  dailyLog: "# 2026-07-04\n\n09:00 — do a thing → done",
-  dailyLogDate: "2026-07-04",
   updatedAt: "2026-07-04T09:00:00.000Z",
-  projectBrief: null,
-  projectThreads: null,
-  projectItems: null,
 };
 
 describe("createSyncRemoteCommandService", () => {

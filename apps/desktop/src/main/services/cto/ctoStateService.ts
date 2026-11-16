@@ -3,10 +3,8 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import YAML from "yaml";
 import {
-  CTO_AVATAR_ENERGIES,
-  CTO_AVATAR_EYES,
-  CTO_AVATAR_SHAPES,
   CTO_IDENTITY_SCHEMA_VERSION,
+  CTO_MAX_FALLBACK_MODELS,
   CTO_PERSONALITIES,
   DEFAULT_CTO_AVATAR_LOOK,
   type CtoAvatarLook,
@@ -22,6 +20,7 @@ import type {
   CtoSystemPromptPreview,
 } from "../../../shared/types";
 import { ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
+import { normalizeCtoAvatarLook } from "../../../shared/ctoAvatarLook";
 import {
   getDefaultModelDescriptor,
   getModelById,
@@ -482,31 +481,11 @@ function resolvePatchModelId(provider: string | undefined, model: string | undef
 }
 
 
-/** The CTO's look, field by field; anything off the closed lists falls back to the default's value. */
-function normalizeAvatarLook(value: unknown): CtoAvatarLook | null {
-  if (!value || typeof value !== "object") return null;
-  const source = value as Record<string, unknown>;
-  const pick = <T extends string>(list: readonly T[], raw: unknown, fallback: T): T =>
-    typeof raw === "string" && (list as readonly string[]).includes(raw) ? raw as T : fallback;
-  const color = typeof source.color === "string" && /^#[0-9a-f]{6}$/i.test(source.color.trim())
-    ? source.color.trim().toUpperCase()
-    : DEFAULT_CTO_AVATAR_LOOK.color;
-  return {
-    shape: pick(CTO_AVATAR_SHAPES, source.shape, DEFAULT_CTO_AVATAR_LOOK.shape),
-    color,
-    eyes: pick(CTO_AVATAR_EYES, source.eyes, DEFAULT_CTO_AVATAR_LOOK.eyes),
-    energy: pick(CTO_AVATAR_ENERGIES, source.energy, DEFAULT_CTO_AVATAR_LOOK.energy),
-  };
-}
-
 function normalizePersonality(value: unknown): CtoPersonality | null {
   return typeof value === "string" && (CTO_PERSONALITIES as readonly string[]).includes(value)
     ? value as CtoPersonality
     : null;
 }
-
-/** Most backup models the CTO keeps. */
-export const CTO_FALLBACK_MODELS_MAX = 3;
 
 /**
  * Backup models, in order. Each passes the same live-redirect check as the
@@ -529,7 +508,7 @@ function normalizeFallbackModels(value: unknown, main: CtoModelPreferences | nul
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(normalized);
-    if (out.length >= CTO_FALLBACK_MODELS_MAX) break;
+    if (out.length >= CTO_MAX_FALLBACK_MODELS) break;
   }
   return out;
 }
@@ -551,18 +530,14 @@ const CTO_IDENTITY_KNOWN_KEYS = new Set<string>([
   "updatedAt",
 ]);
 
-/** v1 identity keys, dropped from records written before CTO v2. */
-const CTO_IDENTITY_RETIRED_KEYS = new Set<string>(["customPersonality", "communicationStyle", "constraints"]);
-
 /**
  * The identity keys kept in `.ade/cto/preferences.json` instead of the
- * identity record. Builds from before these fields existed rebuild
- * identity.yaml and the synced `cto_identity_state` row from the keys they
- * know, with the same version and updatedAt, which silently deleted them; a
- * sidecar those builds never read or write cannot be stripped that way.
+ * identity record: `avatar`, `personality`, `fallbackModels`. Builds from
+ * before these fields existed rebuild identity.yaml and the synced
+ * `cto_identity_state` row from the keys they know, with the same version and
+ * updatedAt, which silently deleted them; a sidecar those builds never read or
+ * write cannot be stripped that way.
  */
-const CTO_PREFERENCE_KEYS = ["avatar", "personality", "fallbackModels"] as const;
-
 type CtoPreferencesDoc = {
   version: 1;
   avatar?: CtoAvatarLook;
@@ -579,7 +554,7 @@ function stripPreferenceKeys(identity: CtoIdentity): CtoIdentity {
 
 /** The sidecar keys an identity carries, normalized; empty values are left out. */
 function pickPreferences(identity: Partial<CtoIdentity>, main: CtoModelPreferences | null): Omit<CtoPreferencesDoc, "version" | "updatedAt"> {
-  const avatar = normalizeAvatarLook(identity.avatar);
+  const avatar = normalizeCtoAvatarLook(identity.avatar);
   const personality = normalizePersonality(identity.personality);
   const fallbackModels = normalizeFallbackModels(identity.fallbackModels, main);
   return {
@@ -617,20 +592,16 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     : undefined;
   const modelPreferences = normalizeModelPreferences(modelPreferencesRaw);
   const fallbackModels = normalizeFallbackModels(source.fallbackModels, modelPreferences);
-  const avatar = normalizeAvatarLook(source.avatar);
-  // A record from before CTO v2 carries a retired preset in this field, not a voice.
-  const personality = schemaVersion < CTO_IDENTITY_SCHEMA_VERSION ? null : normalizePersonality(source.personality);
+  const avatar = normalizeCtoAvatarLook(source.avatar);
+  const personality = normalizePersonality(source.personality);
   const timeZone = isKnownTimeZone(source.timeZone) ? source.timeZone : null;
 
   // Keys this build does not know ride along untouched, so a field a newer
   // build added is not stripped when this one rewrites the record (the bug an
-  // older build caused for `avatar`, `personality` and `fallbackModels`). The
-  // v1 fields are dropped: CTO v2 starts those over.
-  const folding = schemaVersion < CTO_IDENTITY_SCHEMA_VERSION;
+  // older build caused for `avatar`, `personality` and `fallbackModels`).
   const passthrough: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(source)) {
     if (value === undefined || CTO_IDENTITY_KNOWN_KEYS.has(key)) continue;
-    if (folding && CTO_IDENTITY_RETIRED_KEYS.has(key)) continue;
     passthrough[key] = value;
   }
 
@@ -638,7 +609,7 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     ...passthrough,
     name,
     version,
-    // A newer build's higher schema is kept, so it does not migrate twice.
+    // A newer build's higher schema is kept.
     schemaVersion: Math.max(schemaVersion, CTO_IDENTITY_SCHEMA_VERSION),
     persona,
     ...(systemPromptExtension ? { systemPromptExtension } : {}),
@@ -951,7 +922,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   // Every read reconciles both halves, so an unchanged half is left alone: a
   // rewrite renamed a temp file over identity.yaml, and an upsert made a synced
   // database version, on every identity read (each CTO operator action).
-  // The record never carries the sidecar keys (see `CTO_PREFERENCE_KEYS`), so
+  // The record never carries the sidecar keys (see `CtoPreferencesDoc`), so
   // every writer can hand over the full overlaid identity.
   const writeIdentityToFile = (identity: CtoIdentity): void => {
     const payload = stripPreferenceKeys(identity);
@@ -1043,36 +1014,11 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return prefs ? { ...stripped, ...pickPreferences(prefs, stripped.modelPreferences) } : stripped;
   };
 
-  /**
-   * One-time move: a record written before the sidecar existed still carries
-   * the keys. Each comes from the canonical half, else the other half, and the
-   * sidecar is written before the record is rewritten without them.
-   */
-  const migratePreferencesIfMissing = (
-    canonical: CtoIdentity,
-    halves: Array<CtoIdentity | null | undefined>,
-  ): CtoPreferencesDoc | null => {
-    const existing = readPreferences();
-    if (existing) return existing;
-    const found: Partial<CtoIdentity> = {};
-    for (const key of CTO_PREFERENCE_KEYS) {
-      const holder = [canonical, ...halves].find((half) => half?.[key] != null);
-      if (holder) (found as Record<string, unknown>)[key] = holder[key];
-    }
-    const prefs = pickPreferences(found, canonical.modelPreferences);
-    if (!Object.keys(prefs).length) return null;
-    writePreferences(prefs);
-    return readPreferences();
-  };
-
   const reconcileIdentity = (): CtoIdentity => {
-    const fromFile = readIdentityFromFile();
-    const fromDb = readIdentityFromDb();
-    const record = chooseCanonical(fromFile, fromDb, makeDefaultIdentity);
-    const prefs = migratePreferencesIfMissing(record, [fromFile?.payload, fromDb?.payload]);
+    const record = chooseCanonical(readIdentityFromFile(), readIdentityFromDb(), makeDefaultIdentity);
     writeIdentityToFile(record);
     writeIdentityToDb(record);
-    return overlayPreferences(record, prefs);
+    return overlayPreferences(record, readPreferences());
   };
 
   const getIdentity = (): CtoIdentity => reconcileIdentity();

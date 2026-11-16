@@ -14,11 +14,11 @@ export type CtoCapabilityMode = "full_tooling" | "fallback";
  *
  * Distinct from `CtoIdentity.version`, which is a revision counter bumped on
  * every edit and therefore says nothing about the fields present. This one only
- * moves when the record's shape changes, so a one-time migration can tell "not
+ * moves when the record's shape changes, so a later migration can tell "not
  * converted yet" from "converted, and edited thirty times since".
  *
- * 2 = CTO v2. A record below it is from v1: its retired fields (`constraints`,
- * `customPersonality`, `communicationStyle`, the old `personality` preset) are dropped.
+ * 2 = CTO v2. Every record this build writes carries it; nothing reads it yet.
+ * CTO v2 starts every CTO over, so there is no v1 record to convert.
  */
 export const CTO_IDENTITY_SCHEMA_VERSION = 2;
 
@@ -96,7 +96,7 @@ export type CtoAvatarEnergy = (typeof CTO_AVATAR_ENERGIES)[number];
 
 export type CtoAvatarLook = {
   shape: CtoAvatarShape;
-  /** `#rrggbb`. The body colour, also the CTO page's accent. */
+  /** `#rrggbb`, lower case. The body colour, also the CTO page's accent. */
   color: string;
   eyes: CtoAvatarEyes;
   energy: CtoAvatarEnergy;
@@ -104,10 +104,13 @@ export type CtoAvatarLook = {
 
 export const DEFAULT_CTO_AVATAR_LOOK: CtoAvatarLook = {
   shape: "pebble",
-  color: "#7C9CFF",
+  color: "#7c9cff",
   eyes: "caret",
   energy: "lively",
 };
+
+/** Most backup models the CTO keeps. */
+export const CTO_MAX_FALLBACK_MODELS = 3;
 
 export const CTO_PERSONALITIES = ["focused", "friendly", "playful"] as const;
 export type CtoPersonality = (typeof CTO_PERSONALITIES)[number];
@@ -239,9 +242,7 @@ export type CtoSnapshot = {
   capabilities?: CtoRuntimeCapabilities;
 };
 
-export type CtoGetStateArgs = {
-  recentLimit?: number;
-};
+export type CtoGetStateArgs = Record<string, never>;
 
 export type CtoEnsureSessionArgs = {
   modelId?: ModelId | null;
@@ -656,27 +657,10 @@ export type CtoMemorySnapshot = {
   userNotesHash?: string;
   /** Open and recently finished work items, open first. */
   openWork?: CtoOpenWorkItem[];
-  /*
-   * The fields below are kept only so older iOS builds keep decoding; the
-   * v2 host sends empty strings and nulls for them.
-   */
-  threadState: string;
-  dailyLog: string;
-  dailyLogDate: string;
   updatedAt: string | null;
-  /** The one project brief. Null until the CTO writes one. */
-  projectBrief: string | null;
-  /** Threads the CTO has directed. Null when none have been recorded. */
-  projectThreads: string | null;
-  /** Ranked project facts. Null when the context store has nothing to show. */
-  projectItems: string | null;
 };
 
 export type CtoGetMemoryArgs = Record<string, never>;
-
-export type CtoUpdateMemoryArgs = {
-  memory: string;
-};
 
 /* ── Attention ── */
 

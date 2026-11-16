@@ -18,9 +18,6 @@ import { settingsRouteFor } from "../settings/settingsManifest";
  */
 export const CTO_ELIGIBLE_PROVIDERS_COPY = "Claude, Codex, Cursor, OpenCode or Copilot";
 
-/** Most backup models the CTO keeps. */
-export const CTO_MAX_FALLBACK_MODELS = 3;
-
 /**
  * The CTO only runs on a model whose chat can take a new message mid-turn
  * (Claude, Codex, Cursor, OpenCode or Copilot): child reports,

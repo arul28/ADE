@@ -41,13 +41,30 @@ export type CtoCloudHomeSnapshot = {
   updatedAt: string;
 };
 
-export type CtoCloudHomeCallRequest =
-  | { method: "start"; args: { originUrl: string | null; ctoName?: string | null } }
-  | { method: "get"; args: { originUrl: string | null } }
-  | { method: "retry"; args: { jobId: string } }
-  | { method: "cancel"; args: { jobId: string } }
+/** What each `IPC.ctoCloudHomeCall` method takes. */
+export type CtoCloudHomeCallArgs = {
+  start: { originUrl: string | null };
+  get: { originUrl: string | null };
+  retry: { jobId: string };
+  cancel: { jobId: string };
   /** The CTO page recorded the computer as the home: the job is done with. */
-  | { method: "finish"; args: { jobId: string } };
+  finish: { jobId: string };
+};
+
+export type CtoCloudHomeMethod = keyof CtoCloudHomeCallArgs;
+
+/** What each `IPC.ctoCloudHomeCall` method answers (`ctoCloudHomeService.ts`). */
+export type CtoCloudHomeCallResult = {
+  start: CtoCloudHomeSnapshot;
+  get: CtoCloudHomeSnapshot | null;
+  retry: CtoCloudHomeSnapshot | null;
+  cancel: CtoCloudHomeSnapshot | null;
+  finish: boolean;
+};
+
+export type CtoCloudHomeCallRequest = {
+  [K in CtoCloudHomeMethod]: { method: K; args: CtoCloudHomeCallArgs[K] };
+}[CtoCloudHomeMethod];
 
 export type CtoCloudHomeEvent =
   | { type: "updated"; snapshot: CtoCloudHomeSnapshot }

@@ -607,7 +607,6 @@ import type {
   CtoSnapshot,
   CtoUpdateIdentityArgs,
   CtoMemorySnapshot,
-  CtoUpdateMemoryArgs,
   CtoUpdateNotesArgs,
   CtoUpdateOpenWorkArgs,
   CtoRefreshContextResult,
@@ -5129,11 +5128,12 @@ declare global {
         onLaneJob?: (cb: (job: import("../shared/cloudLaneLife").CloudLaneJobSnapshot) => void) => () => void;
         /**
          * The CTO's home on ADE Cloud (paid plans): start, get, retry, cancel
-         * or finish its one job per repository. `start`, `get`, `retry` and
-         * `cancel` answer a `CtoCloudHomeSnapshot` (or null); `finish` a boolean.
-         * Desktop only: the web client and the phone have none.
+         * or finish its one job per repository (`CtoCloudHomeCallResult` says
+         * what each answers). Desktop only: the web client and the phone have none.
          */
-        ctoHome?: (request: import("../shared/ctoCloudHome").CtoCloudHomeCallRequest) => Promise<unknown>;
+        ctoHome?: <M extends import("../shared/ctoCloudHome").CtoCloudHomeMethod>(
+          request: { method: M; args: import("../shared/ctoCloudHome").CtoCloudHomeCallArgs[M] },
+        ) => Promise<import("../shared/ctoCloudHome").CtoCloudHomeCallResult[M]>;
         onCtoHomeEvent?: (cb: (event: import("../shared/ctoCloudHome").CtoCloudHomeEvent) => void) => () => void;
         /** Contract C3 (shared/laneComputer.ts): the computer a lane is on now, by lane id. Account level. */
         laneComputer?: (laneId: string) => Promise<import("../shared/laneComputer").LaneComputer | null>;
@@ -5520,7 +5520,6 @@ declare global {
         getAccountCopyStatus?: (pin: OpenProjectBinding | null) => Promise<CtoAccountCopyStatus>;
         updateIdentity: (args: CtoUpdateIdentityArgs, pin: OpenProjectBinding) => Promise<CtoSnapshot>;
         getMemory: (pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
-        updateMemory: (args: CtoUpdateMemoryArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         updateNotes: (args: CtoUpdateNotesArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         updateOpenWork: (args: CtoUpdateOpenWorkArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         getLinearConnectionStatus: (pin: OpenProjectBinding) => Promise<LinearConnectionStatus>;

@@ -46,6 +46,7 @@ import {
 import {
   CTO_AVATAR_EYES,
   CTO_AVATAR_SHAPES,
+  CTO_MAX_FALLBACK_MODELS,
   CTO_PERSONALITIES,
   type CtoAvatarEyes,
   type CtoAvatarLook,
@@ -72,6 +73,7 @@ import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPick
 import { CtoAccountPicker, ctoAccountProviderFor } from "./CtoAccountPicker";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
 import { useFastModeEnabled } from "../../lib/fastModePolicy";
+import { ipcErrorMessage } from "../../lib/format";
 import { cn } from "../ui/cn";
 import { CtoAvatar, CTO_AVATAR_BLIP_MS } from "./avatar/CtoAvatar";
 import { CTO_AVATAR_SWATCHES, normalizeHexColor, resolveCtoAvatarLook } from "./avatar/ctoAvatarLook";
@@ -81,7 +83,6 @@ import { CtoRoutineRows } from "./CtoRoutineRows";
 import { AutosaveTextArea, CTO_SETTINGS_GROUP } from "./ctoSettingsUi";
 import {
   CTO_ELIGIBLE_PROVIDERS_COPY,
-  CTO_MAX_FALLBACK_MODELS,
   ctoModelSupportsLiveRedirect,
   toCtoModelPreferences,
 } from "./useCtoModelOptions";
@@ -148,10 +149,6 @@ const PREVIEW_STATES: ReadonlyArray<{ state: CtoAvatarState; label: string }> = 
 ];
 const LOOK_SAVE_DELAY_MS = 450;
 
-function errorText(err: unknown, fallback: string): string {
-  return err instanceof Error && err.message ? err.message : fallback;
-}
-
 /* ── Look ── */
 
 /**
@@ -179,7 +176,7 @@ function useQueuedIdentitySave(onIdentityChange: CtoSettingsPageProps["onIdentit
       await onIdentityChange(patch);
       flash();
     } catch (err) {
-      fail(errorText(err, "Couldn't save."));
+      fail(ipcErrorMessage(err) || "Couldn't save.");
     } finally {
       inFlightRef.current = false;
     }
@@ -246,7 +243,7 @@ function LookPane({
   const [look, setLook] = useState<CtoAvatarLook>(() => resolveCtoAvatarLook(identity?.avatar));
   const [name, setName] = useState(identity?.name ?? "");
   const [personality, setPersonality] = useState<CtoPersonality>(identity?.personality ?? "focused");
-  const isSwatch = CTO_AVATAR_SWATCHES.some((swatch) => swatch.color.toLowerCase() === look.color.toLowerCase());
+  const isSwatch = CTO_AVATAR_SWATCHES.some((swatch) => swatch.color === look.color);
   const [hexDraft, setHexDraft] = useState(isSwatch ? "" : look.color);
   const [preview, setPreview] = useState<{ state: CtoAvatarState; key: number }>({ state: "idle", key: 0 });
 
@@ -346,7 +343,7 @@ function LookPane({
           <ModernRow title="Colour">
             <div className="mt-2.5 flex flex-wrap items-center gap-2.5" role="group" aria-label="Colour">
               {CTO_AVATAR_SWATCHES.map((swatch) => {
-                const selected = swatch.color.toLowerCase() === look.color.toLowerCase();
+                const selected = swatch.color === look.color;
                 return (
                   <button
                     key={swatch.color}
@@ -492,7 +489,7 @@ function BrainPane(props: CtoSettingsPageProps & { name: string }) {
       fallbackSave.flash();
     } catch (err) {
       setFallbacks(previous);
-      fallbackSave.fail(errorText(err, "Couldn't save the backup models."));
+      fallbackSave.fail(ipcErrorMessage(err) || "Couldn't save the backup models.");
     }
   };
 
@@ -566,7 +563,7 @@ function BrainPane(props: CtoSettingsPageProps & { name: string }) {
       }
       setRefresh({ kind: "done" });
     } catch (err) {
-      setRefresh({ kind: "error", message: errorText(err, "Couldn't refresh") });
+      setRefresh({ kind: "error", message: ipcErrorMessage(err) || "Couldn't refresh" });
     }
   };
 

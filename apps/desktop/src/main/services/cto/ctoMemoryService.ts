@@ -401,6 +401,25 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     writeTextAtomic(openWorkPath, `${JSON.stringify({ version: 1, items: [...open, ...done] }, null, 2)}\n`);
   };
 
+  /** The open-work file as it is on disk, for the account copy; null when there is none. */
+  const readOpenWorkText = (): string | null => {
+    try {
+      return fs.readFileSync(openWorkPath, "utf8");
+    } catch {
+      return null;
+    }
+  };
+
+  /** Puts a copy's open-work file in place; null removes this machine's list. */
+  const replaceOpenWorkText = (text: string | null): void => {
+    if (text == null) {
+      fs.rmSync(openWorkPath, { force: true });
+      return;
+    }
+    fs.mkdirSync(path.dirname(openWorkPath), { recursive: true });
+    writeTextAtomic(openWorkPath, text);
+  };
+
   const trackWork = (text: string, addedBy: CtoOpenWorkItem["addedBy"] = "cto"): CtoOpenWorkResult => {
     const normalized = clipText(redactSecrets(text.replace(/\s+/g, " ").trim()), OPEN_WORK_TEXT_MAX_CHARS);
     if (!normalized.length) return { ok: false, error: "Say what the work is." };
@@ -654,13 +673,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       memoryHash: notesHash(memory),
       userNotesHash: notesHash(userNotes),
       openWork: readOpenWork(),
-      threadState: "",
-      dailyLog: "",
-      dailyLogDate: "",
       updatedAt: updatedCandidates.length ? updatedCandidates[updatedCandidates.length - 1] : null,
-      projectBrief: null,
-      projectThreads: null,
-      projectItems: null,
     };
   };
 
@@ -735,6 +748,8 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     remember,
     forget,
     readOpenWork,
+    readOpenWorkText,
+    replaceOpenWorkText,
     trackWork,
     finishWork,
     updateOpenWork,

@@ -5,6 +5,7 @@ import {
   type CtoOpenWorkItem,
   type CtoUpdateOpenWorkArgs,
 } from "../../../shared/types";
+import { ipcErrorMessage } from "../../lib/format";
 import { cn } from "../ui/cn";
 import { CtoEmptyLine } from "./ctoSettingsUi";
 
@@ -28,10 +29,6 @@ export type CtoOpenWorkListProps = {
 
 const COMPACT_DONE_LIMIT = 3;
 
-function errorText(err: unknown): string {
-  return err instanceof Error && err.message ? err.message : "Couldn't update open work.";
-}
-
 export function CtoOpenWorkList({ items, onChange, compact = false }: CtoOpenWorkListProps) {
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
@@ -51,7 +48,7 @@ export function CtoOpenWorkList({ items, onChange, compact = false }: CtoOpenWor
       await onChange(args);
       return true;
     } catch (err) {
-      setError(errorText(err));
+      setError(ipcErrorMessage(err) || "Couldn't update open work.");
       return false;
     } finally {
       setBusyId(null);

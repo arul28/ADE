@@ -11948,13 +11948,11 @@ final class SyncService: ObservableObject {
 
   // MARK: - CTO state + memory
 
-  func fetchCtoState(recentLimit: Int? = nil) async throws -> CtoSnapshot {
-    var args: [String: Any] = [:]
-    if let recentLimit { args["recentLimit"] = recentLimit }
+  func fetchCtoState() async throws -> CtoSnapshot {
     let target = try ctoCommandTarget()
     return try await sendDecodableCommand(
       action: "cto.getState",
-      args: args,
+      args: [:],
       targetProjectId: target.projectId,
       targetProjectRootPath: target.rootPath,
       as: CtoSnapshot.self

@@ -30,7 +30,7 @@ Storage:
 
 Startup reconciliation compares timestamps and writes the newer copy back to the stale side. Users should edit through ADE's UI so version ordering stays clear.
 
-The record's shape has its own `schemaVersion`. On the first load of a record written before the legacy fold, `normalizeIdentity` carries the retired `personality` preset, `customPersonality`, `communicationStyle` and `constraints` into `systemPromptExtension` instead of dropping them.
+The record's shape has its own `schemaVersion`. CTO v2 starts every CTO over, so nothing converts v1 records. Keys `normalizeIdentity` does not know, the v1 ones included, ride along untouched.
 
 ## Immutable doctrine and prompt layers
 
@@ -59,7 +59,7 @@ The CTO reads and writes memory through operator tools: `remember({ note, scope?
 
 A note is one line, clipped at 400 characters. A new note that duplicates an existing one is not saved and the CTO is told which line already says it. `replaces` and `forget` must match exactly one line, or the call comes back with the candidate lines. A write past the cap is refused with the byte counts, not truncated, so the CTO has to merge or forget notes to make room.
 
-The one-time v1 migration, guarded by `.ade/cto/.v2-migrated`, builds the notes from the old bullet lines and the old context store's live items, then moves the v1 files into `.ade/cto/legacy-v1/`. Nothing is deleted.
+A one-time reset, guarded by `.ade/cto/.v2-migrated`, moves the v1 files and the v1 `MEMORY.md` into `.ade/cto/legacy-v1/`. Nothing is imported, so the notes start empty. Nothing is deleted.
 
 ### Discoveries, and who else can reach memory
 
@@ -104,19 +104,18 @@ A fresh provider context (`refreshCtoProviderThread()`) carries the static block
 | `ade.cto.ensureSession` | Get or create the single CTO chat session. |
 | `ade.cto.getAttention` | Read-only: is the CTO blocked on the person? |
 | `ade.cto.refreshContext` | Give the CTO a fresh provider thread. |
-| `ade.cto.getMemory` / `ade.cto.updateNotes` / `ade.cto.updateOpenWork` | Read the memory snapshot, rewrite one notes file, change the open-work list. `ade.cto.updateMemory` remains as the older name for writing the project notes. |
+| `ade.cto.getMemory` / `ade.cto.updateNotes` / `ade.cto.updateOpenWork` | Read the memory snapshot, rewrite one notes file, change the open-work list. |
 | `ade.cto.getOnboardingState` / `completeOnboardingStep` | Internal step marker (`intro`). No user-facing wizard. |
 
 ## Fragile and tricky wiring
 
-- **Old identity.yaml keys are folded, not dropped.** A record below the current `schemaVersion` has `personality`, `customPersonality`, `communicationStyle` and `constraints` appended to `systemPromptExtension`. Dropping them would delete text a person or the CTO wrote.
 - **A fresh context never runs mid-turn.** `refreshCtoProviderThread` refuses while the thread is busy and records the reason for the next settled turn.
 - **A forgotten provider pointer is what makes the thread fresh.** Clearing the pointer fields is the only thing that stops Claude, Codex or Cursor resuming the old thread; a teardown reason alone does not.
 - **Injected memory is authoritative.** The prompt tells the CTO not to claim memory it does not have injected; injection caps and order in `ctoMemoryService`/`ctoStateService` directly change what the CTO "knows."
 - **Capability knowledge is generated and runtime-aware.** `buildCtoCapabilityManifest()` derives its curated operator-tool inventory from `createCtoOperatorTools()`. Service actions outside that set must be discovered from the installed runtime's `ade actions list --text` catalog and bundled `ade-*` skills rather than copied into a second static list.
 - **`readHistory` must keep reading ended sessions.** Old CTO sessions are how the conversation survives a fresh context; scoping it to the current session would make a fresh context look like amnesia.
 - **The notes caps are load-bearing.** A write past a cap is refused so the per-turn prefix stays small. Raising a cap grows every turn; lowering one makes the CTO look forgetful.
-- **Legacy files move, never disappear.** The v1 migration writes `.ade/cto/legacy-v1/`; do not turn that into a delete.
+- **Legacy files move, never disappear.** The v1 reset writes `.ade/cto/legacy-v1/`; do not turn that into a delete.
 - **`cto_session_logs` is dormant.** The table stays in the schema (tables are never dropped), but nothing reads or writes it.
 
 ## Related docs

@@ -228,10 +228,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
    * inverted, and automation `ade-action` steps call it. Closing it would
    * protect nothing — the notes are plain markdown under `<adeDir>/cto/`, and
    * every coding agent already has file read access to them. The writes
-   * (`updateMemory`, `updateNotes`, `updateOpenWork`) stay CTO-only.
+   * (`updateNotes`, `updateOpenWork`) stay CTO-only.
    */
-  // `searchMemory` is a compatibility shim (registry.ts), open as it always was.
-  cto_memory: { allExcept: ["recordDiscovery", "getSnapshot", "searchMemory"] },
+  cto_memory: { allExcept: ["recordDiscovery", "getSnapshot"] },
   /*
    * `refreshContext` replaces the CTO's provider thread. Nothing it touches is
    * lost — the conversation, notes and open work all carry over — but when the
@@ -1162,16 +1161,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getAttention",
     "getIdentity",
     "getOnboardingState",
-    // Compatibility shims (registry.ts): v1 names older clients and saved automations call.
-    "getSessionLogs",
     "getSnapshot",
-    "getThreadHealth",
     "previewSystemPrompt",
     "refreshContext",
     "runProjectScan",
     "updateIdentity",
   ],
-  cto_memory: ["getSnapshot", "searchMemory", "updateMemory", "updateNotes", "updateOpenWork", "recordDiscovery"],
+  cto_memory: ["getSnapshot", "updateNotes", "updateOpenWork", "recordDiscovery"],
   session: [
     "backfillDeltas",
     "clearWokeMarker",

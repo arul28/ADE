@@ -736,7 +736,6 @@ import type {
   CtoUpdateIdentityArgs,
   CtoSnapshot,
   CtoGetMemoryArgs,
-  CtoUpdateMemoryArgs,
   CtoUpdateNotesArgs,
   CtoUpdateOpenWorkArgs,
   CtoRefreshContextResult,
@@ -14228,18 +14227,6 @@ export function registerIpc({
   handle(IPC.ctoGetMemory, async (_event, _arg: CtoGetMemoryArgs = {}): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
-    return ctx.ctoMemoryService.getSnapshot();
-  });
-
-  handle(IPC.ctoUpdateMemory, async (_event, arg: CtoUpdateMemoryArgs): Promise<CtoMemorySnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
-    // Only an explicit string may rewrite the notes — a missing field must not
-    // silently blank them.
-    if (typeof arg?.memory !== "string") {
-      throw new Error("updateMemory requires a string `memory` field.");
-    }
-    ctx.ctoMemoryService.writeNotes("project", arg.memory);
     return ctx.ctoMemoryService.getSnapshot();
   });
 

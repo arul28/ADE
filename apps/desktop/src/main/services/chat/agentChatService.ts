@@ -207,6 +207,13 @@ import {
   type ChatScheduledWorkUpsert,
 } from "./chatScheduledWorkScheduler";
 import {
+  createCtoThreadFallback,
+  ctoModelKey,
+  type CtoPendingSettledAction,
+  type CtoProviderThreadRefreshReason,
+} from "./ctoThreadFallback";
+import { createCtoHistoryReader } from "../cto/ctoHistoryReader";
+import {
   drainRunningClaudeWorkflowAgents,
   finalizeClaudeWorkflowProgress,
   parseClaudeWorkflowProgress,
@@ -851,9 +858,6 @@ import type {
   LaneSummary,
   CtoAttentionState,
   CtoCapabilityMode,
-  CtoHistoryEntry,
-  CtoHistoryPage,
-  CtoReadHistoryArgs,
   CtoRefreshContextResult,
   LaneLinearIssue,
   SessionLinearIssueLink,
@@ -921,7 +925,6 @@ import {
   CTO_CONTEXT_REFRESHED_STATUS,
   CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS,
   CTO_INTERIM_REPLY_ID_PREFIX,
-  isContextOverflowFailureText,
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
   unsupportedActiveTurnDispatchModeMessage,
@@ -1006,7 +1009,6 @@ import {
   findInstanceHoldingThread,
   moveProviderThread,
 } from "./providerThreadMove";
-import type { CtoModelPreferences } from "../../../shared/types/cto";
 import type {
   AdeMessageAuthor,
   AgentChatContinueUsageLimitOnAlternateResult,
@@ -5518,8 +5520,6 @@ type EpochDirective =
   | "laneGuidance";
 type EpochDirectiveKeys = Partial<Record<EpochDirective, string>>;
 
-/** Why the CTO gets a fresh provider thread. */
-type CtoProviderThreadRefreshReason = "occupancy" | "compaction" | "overflow" | "model_fallback" | "manual";
 const CTO_REFRESH_REASONS: ReadonlySet<string> = new Set<CtoProviderThreadRefreshReason>([
   "occupancy", "compaction", "overflow", "model_fallback", "manual",
 ]);
@@ -5527,19 +5527,9 @@ const CTO_NO_HANDOFF_MESSAGE =
   "The CTO keeps its one thread, so ADE does not start a new chat on the other account. It tries the CTO's backup models instead.";
 /** How long a CTO send waits for a fresh live-state snapshot before using the last one. */
 const CTO_LIVE_STATE_SEND_WAIT_MS = 350;
-/** Without a published reset, a CTO on a backup model tries its main model again after this. */
-const CTO_FALLBACK_RETRY_MAIN_MS = 30 * 60_000;
 /** Quick replies one CTO turn may post, however many mid-task messages arrive. */
 const CTO_MID_TASK_REPLY_MAX = 3;
 const CTO_INTERIM_REPLY_MAX_CHARS = 600;
-
-/**
- * Occupancy, in percent of the model's window, at which the CTO's provider
- * thread is replaced after a settled turn. Low on purpose: the CTO's turns are
- * short and its memory is injected, so a small thread is fast and cheap, and a
- * fresh one loses nothing the notes and the conversation tail do not carry.
- */
-const CTO_REFRESH_OCCUPANCY_PCT = 55;
 
 type ManagedChatSession = {
   /**
@@ -6207,19 +6197,6 @@ type SessionTurnCollector = {
     timer: NodeJS.Timeout | null;
     inFlight: Set<string>;
   } | null;
-};
-
-/** A failed CTO message ADE sends once more, as the person wrote it. */
-type CtoResendMessage = Pick<AgentChatSendArgs, "text" | "displayText" | "attachments" | "contextAttachments" | "metadata">;
-
-/** See ManagedChatSession.ctoPendingSettledAction. */
-type CtoPendingSettledAction = {
-  kind: "overflow" | "fallback";
-  message: CtoResendMessage | null;
-  /** Short reason for the "all models unavailable" notice. */
-  reasonText: string | null;
-  /** `lastUserMessageSequence` when stored: a newer user message supersedes the resend. */
-  userMessageSequence: number;
 };
 
 type PreparedSendMessage = {
@@ -18273,7 +18250,7 @@ export function createAgentChatService(args: {
     if (managed.session.identityKey !== "cto" || !ctoStateService) return;
     // A move to a backup model is not the person's pick: the main model stays
     // the preference, and the settings page still shows it as the main one.
-    if (ctoFallbackSwitches.has(managed.session.id)) return;
+    if (isCtoSwitchingToFallback(managed.session.id)) return;
     // While the thread runs on a backup, nothing it does (a reasoning change,
     // a composer pick) becomes the main model. Landing back on the main pick
     // (the settings page writes it first) ends the fallback.
@@ -71692,12 +71669,24 @@ export function createAgentChatService(args: {
     return managedSessions.get(trimmed)?.session.identityKey || readPersistedState(trimmed)?.identityKey || null;
   };
 
-  /** What the CTO's account copy carries from this thread: its tail and its routines. */
+  /**
+   * What the CTO's account copy carries from this thread: its tail and its
+   * routines. Right after a move the tail is the one the CTO brought plus this
+   * thread's turns since, the same tail its prompt gets, so moving on again
+   * before it has 40 turns here keeps the conversation.
+   */
   const readCtoAccountCopySources = async (): Promise<{ tail: string; routines: CtoAccountCopyRoutine[] }> => {
+    const carried = ctoAccountCopyHooks?.carriedTail() ?? null;
+    const carriedText = (text: string) => carried
+      ? [`Earlier, on ${carried.fromName}:`, carried.tail, text].filter((part) => part.length > 0).join("\n")
+      : text;
     const cto = (await listIdentitySessions("cto"))[0];
-    if (!cto) return { tail: "", routines: [] };
+    if (!cto) return { tail: carriedText(""), routines: [] };
     const managed = managedSessions.get(cto.sessionId) ?? ensureManagedSession(cto.sessionId);
-    const tail = buildRecentConversationContext(managed, 40);
+    const sinceMove = carried ? collectConversationEntries(managed, { sinceIso: carried.restoredAt }) : null;
+    const tail = sinceMove && sinceMove.length < 40
+      ? carriedText(formatConversationTranscript(sinceMove))
+      : buildRecentConversationContext(managed, 40);
     const items = await listScheduledWork({ sessionId: cto.sessionId }).catch(() => [] as AgentChatScheduledWorkItem[]);
     const routines = items
       .filter((item) => item.kind === "cron" && item.cron && !item.source && (item.status === "scheduled" || item.status === "paused"))
@@ -73904,12 +73893,6 @@ export function createAgentChatService(args: {
     }
   };
 
-  const clearCtoFallbackState = (managed: ManagedChatSession): void => {
-    managed.ctoFallbackIndex = null;
-    managed.ctoFallbackSince = null;
-    managed.ctoFallbackRetryAt = null;
-  };
-
   /**
    * Give the CTO a new provider-side thread and keep the ADE session.
    *
@@ -74006,518 +73989,32 @@ export function createAgentChatService(args: {
     }, 0);
   };
 
-  /**
-   * Settled-turn work waits for the turn to be fully over: `done` is committed
-   * a moment before the session reads idle, and a refresh must never tear
-   * down a runtime still finishing a turn. Bounded; past it the work is kept
-   * whole on `ctoPendingSettledAction` (see `deferCtoSettledAction`).
-   */
-  const whenCtoThreadIdle = async (managed: ManagedChatSession): Promise<boolean> => {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      if (managed.closed || managed.deleted) return false;
-      if (!ctoThreadIsBusy(managed)) return true;
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    return !ctoThreadIsBusy(managed);
-  };
-
-  /**
-   * The message of the turn that just failed, when the person wrote it. A
-   * scheduled wake, a child report or ADE's own prompt is never re-sent: its
-   * delivery metadata belongs to the turn that failed. A mid-task message is
-   * re-sent as the person typed it, never as the quick-reply wrapper.
-   */
-  const readCtoFailedPersonMessage = (
-    managed: ManagedChatSession,
-    failedTurnId: string | null,
-  ): CtoResendMessage | null => {
-    const userMessages = readRecentTranscriptEnvelopes(managed)
-      .map((envelope) => envelope.event)
-      .filter((event): event is Extract<AgentChatEvent, { type: "user_message" }> => event.type === "user_message");
-    const last = userMessages.at(-1);
-    if (!last || !last.text.trim()) return null;
-    if (failedTurnId && last.turnId && last.turnId !== failedTurnId) return null;
-    if (!isPersonAuthoredUserMessage(last.metadata)) return null;
-    const shown = last.displayText?.trim() || null;
-    const text = last.metadata?.ctoMidTask === true && shown ? shown : last.text.trim();
-    const { ctoMidTask: _midTask, ctoResend: _resend, ...metadata } = last.metadata ?? {};
-    return {
-      text,
-      ...(shown && shown !== text ? { displayText: shown } : {}),
-      ...(last.attachments?.length ? { attachments: last.attachments } : {}),
-      ...(last.contextAttachments?.length ? { contextAttachments: last.contextAttachments } : {}),
-      ...(Object.keys(metadata).length ? { metadata } : {}),
-    };
-  };
-
-  /**
-   * Send the person's failed message once more, marked as ADE's resend
-   * (`metadata.ctoResend`), with its words, display text, attachments and
-   * metadata as they were.
-   */
-  const resendCtoMessage = async (
-    managed: ManagedChatSession,
-    message: CtoResendMessage,
-    reason: "overflow" | "model_fallback",
-  ): Promise<void> => {
-    await sendMessage({
-      sessionId: managed.session.id,
-      ...message,
-      metadata: { ...(message.metadata ?? {}), ctoResend: { reason } },
-    });
-  };
-
-  /** Failure kinds a different model would not hit. Context overflow and a busy thread are not among them. */
-  const CTO_FALLBACK_FAILURE_KINDS: ReadonlySet<string> = new Set([
-    "rate_limit",
-    "budget",
-    "permission",
-    "plan",
-    "model_unavailable",
-    "server_overloaded",
-    "cli_missing",
-  ]);
-
-  const CTO_FALLBACK_REASON_WORDS: Record<string, string> = {
-    rate_limit: "rate limited",
-    budget: "budget reached",
-    permission: "not allowed on this account",
-    plan: "not on this plan",
-    model_unavailable: "model unavailable",
-    server_overloaded: "provider overloaded",
-    cli_missing: "CLI not installed",
-  };
-
-  const isCtoFallbackFailure = (
-    managed: ManagedChatSession,
-    done: Extract<AgentChatEvent, { type: "done" }>,
-    errorText: string | null,
-  ): boolean => {
-    if (done.status !== "failed") return false;
-    if (isContextOverflowFailureText(errorText)) return false;
-    if (isUsageLimitTurn(done, managed.usageLimitResume?.turnId) || isUsageLimitFailureText(errorText)) return true;
-    const kind = managed.turnErrorKind ?? turnFailureKind(managed.turnErrorCategory ?? null, errorText);
-    return CTO_FALLBACK_FAILURE_KINDS.has(kind);
-  };
-
-  /** A few words for why the model failed, for the "all unavailable" notice. */
-  const ctoFallbackReasonText = (
-    managed: ManagedChatSession,
-    done: Extract<AgentChatEvent, { type: "done" }>,
-    errorText: string | null,
-  ): string => {
-    if (isUsageLimitTurn(done, managed.usageLimitResume?.turnId) || isUsageLimitFailureText(errorText)) {
-      return "usage limit reached";
-    }
-    const kind = managed.turnErrorKind ?? turnFailureKind(managed.turnErrorCategory ?? null, errorText);
-    return CTO_FALLBACK_REASON_WORDS[kind] ?? "provider error";
-  };
-
-  const ctoModelKey = (prefs: { modelId?: string | null; provider?: string; model?: string }): string =>
-    (prefs.modelId?.trim() || `${prefs.provider ?? ""}/${prefs.model ?? ""}`).toLowerCase();
-
-  /** A model choice and its account, as one key: the same model on two accounts is two choices. */
-  const ctoChoiceKey = (prefs: CtoModelPreferences): string => `${ctoModelKey(prefs)}@${prefs.instanceId?.trim() ?? ""}`;
-
-  /** Whether the thread runs this choice now. No account named means any account of that model. */
-  const ctoChoiceMatchesSession = (prefs: CtoModelPreferences, managed: ManagedChatSession): boolean => {
-    const sameModel = ctoModelKey(prefs) === ctoModelKey({
-      modelId: managed.session.modelId,
-      provider: managed.session.provider,
-      model: managed.session.model,
-    });
-    if (!sameModel) return false;
-    const provider = managed.session.provider;
-    if (!isProviderInstanceProvider(provider)) return true;
-    return resolveSessionInstance(managed)?.id === ctoWantedAccountId(provider, prefs.instanceId);
-  };
-
-  /** The account a CTO choice names; none named is the machine's default account for that provider. */
-  const ctoWantedAccountId = (provider: ProviderInstanceProvider, instanceId: string | null | undefined): string => {
-    const named = instanceId?.trim();
-    if (named) return named;
-    try {
-      return getMachineProviderInstanceStore().resolve(provider, undefined).instance.id;
-    } catch {
-      return defaultProviderInstanceId(provider);
-    }
-  };
-
-  /**
-   * Move the CTO thread to the account picked in Settings (null: the
-   * provider's default), keeping the thread. Applied once per change of the
-   * pick (ctoAccountApplied), so a usage-limit move to another account is
-   * not undone by the next ensure.
-   */
-  const applyCtoAccountChoice = async (managed: ManagedChatSession, instanceId: string | null | undefined): Promise<void> => {
-    const wanted = instanceId?.trim() ?? "";
-    if (wanted === (managed.ctoAccountApplied ?? "")) return;
-    const provider = managed.session.provider;
-    if (!isProviderInstanceProvider(provider)) {
-      managed.ctoAccountApplied = wanted;
-      persistChatState(managed);
-      return;
-    }
-    const result = await switchAccount({
-      sessionId: managed.session.id,
-      instanceId: ctoWantedAccountId(provider, wanted),
-    }).catch((error): AgentChatSwitchAccountResult => ({
-      ok: false,
-      reason: "failed",
-      message: error instanceof Error ? error.message : String(error),
-    }));
-    if (!result.ok) {
-      logger.warn("agent_chat.cto_account_apply_failed", { sessionId: managed.session.id, instanceId: wanted, reason: result.reason });
-      return;
-    }
-    managed.ctoAccountApplied = wanted;
-    persistChatState(managed);
-  };
-
-  const ctoModelLabel = (prefs: { modelId?: string | null; model?: string }): string =>
-    (prefs.modelId ? getModelById(prefs.modelId)?.displayName : null) ?? prefs.model ?? prefs.modelId ?? "the model";
-
-  /** "Claude Opus 5", or "Claude Opus 5 · me@work.com" when the choice names an account. */
-  const ctoChoiceLabel = (prefs: CtoModelPreferences): string => {
-    const model = ctoModelLabel(prefs);
-    const descriptor = prefs.modelId ? getModelById(prefs.modelId) : undefined;
-    const provider = descriptor ? resolveChatProviderForDescriptor(descriptor).provider : prefs.provider;
-    const account = prefs.instanceId?.trim() ? providerAccountEmail(provider, prefs.instanceId) : null;
-    return account ? `${model} · ${account}` : model;
-  };
-
-  /** Session ids whose model is being moved to a backup; their identity preference stays the main model. */
-  const ctoFallbackSwitches = new Set<string>();
-
-  /**
-   * Move the CTO to its next backup model and send the failed message again.
-   * Each message tries each model once: the models already tried for it are
-   * remembered until a turn completes. When none is left, one quiet notice
-   * says so instead of nothing.
-   */
-  const switchCtoToFallbackModel = async (
-    managed: ManagedChatSession,
-    message: CtoResendMessage | null,
-    reasonText: string,
-  ): Promise<boolean> => {
-    if (!ctoStateService) return false;
-    const identity = ctoStateService.getIdentity();
-    const main = identity.modelPreferences;
-    const fallbacks = identity.fallbackModels ?? [];
-    if (!main || !fallbacks.length) return false;
-    const tried = managed.ctoResentMessageKeys ?? new Set<string>();
-    managed.ctoResentMessageKeys = tried;
-    const messageKey = message?.text ?? "(no message)";
-    const ordered = [main, ...fallbacks];
-    const position = ordered.findIndex((prefs) => ctoChoiceMatchesSession(prefs, managed));
-    if (position >= 0) tried.add(`fallback:${messageKey}:${ctoChoiceKey(ordered[position]!)}`);
-    const next = ordered
-      .slice(position + 1)
-      .find((prefs) => prefs.modelId && !tried.has(`fallback:${messageKey}:${ctoChoiceKey(prefs)}`));
-    if (!next?.modelId) {
-      const exhaustedKey = `exhausted:${messageKey}`;
-      if (!tried.has(exhaustedKey)) {
-        tried.add(exhaustedKey);
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "info",
-          message: `${ctoModelLabel(main)} and backups are unavailable — ${reasonText}.`,
-        });
-      }
-      return false;
-    }
-    tried.add(`fallback:${messageKey}:${ctoChoiceKey(next)}`);
-    const fromLabel = ctoModelLabel({ modelId: managed.session.modelId, model: managed.session.model });
-    // Read on the main model's runtime, before the switch replaces it.
-    const leavingMain = managed.ctoFallbackIndex == null;
-    const mainResetAtMs = leavingMain ? usageLimitResetAtMs(managed) : null;
-    ctoFallbackSwitches.add(managed.session.id);
-    try {
-      await updateSession({
-        sessionId: managed.session.id,
-        modelId: next.modelId,
-        ...(next.reasoningEffort !== undefined ? { reasoningEffort: next.reasoningEffort } : {}),
-      });
-    } catch (error) {
-      logger.warn("agent_chat.cto_model_fallback_failed", {
-        sessionId: managed.session.id,
-        modelId: next.modelId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return false;
-    } finally {
-      ctoFallbackSwitches.delete(managed.session.id);
-    }
-    // The backup's account (none named: the default one) runs it; same thread.
-    if (isProviderInstanceProvider(managed.session.provider)) {
-      const moved = await switchAccount({ sessionId: managed.session.id, instanceId: ctoWantedAccountId(managed.session.provider, next.instanceId) })
-        .catch((error): AgentChatSwitchAccountResult => ({ ok: false, reason: "failed", message: getErrorMessage(error) }));
-      if (!moved.ok) {
-        logger.warn("agent_chat.cto_fallback_account_failed", { sessionId: managed.session.id, instanceId: next.instanceId, reason: moved.reason });
-      }
-    }
-    const fallbackIndex = fallbacks.findIndex((prefs) => ctoChoiceKey(prefs) === ctoChoiceKey(next));
-    if (fallbackIndex < 0) {
-      clearCtoFallbackState(managed);
-    } else {
-      managed.ctoFallbackIndex = fallbackIndex;
-      if (leavingMain || managed.ctoFallbackRetryAt == null) {
-        const nowMs = Date.now();
-        managed.ctoFallbackSince = nowMs;
-        managed.ctoFallbackRetryAt = mainResetAtMs != null && mainResetAtMs > nowMs
-          ? mainResetAtMs
-          : nowMs + CTO_FALLBACK_RETRY_MAIN_MS;
-      }
-    }
-    persistChatState(managed);
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "info",
-      message: `${fromLabel} hit its limit — switched to ${ctoChoiceLabel(next)}.`,
-    });
-    refreshCtoProviderThread(managed, "model_fallback");
-    logger.info("agent_chat.cto_model_fallback", {
-      sessionId: managed.session.id,
-      modelId: next.modelId,
-      resent: Boolean(message),
-      retryMainAt: managed.ctoFallbackRetryAt ?? null,
-    });
-    if (message) await resendCtoMessage(managed, message, "model_fallback");
-    return true;
-  };
-
-  /**
-   * On a backup model past the main model's reset (or 30 minutes without
-   * one), the next CTO turn starts on the main model again. A main model that
-   * still fails falls back again on its own.
-   */
-  const maybeReturnCtoToMainModel = async (managed: ManagedChatSession): Promise<void> => {
-    if (managed.session.identityKey !== "cto" || managed.ctoFallbackIndex == null || !ctoStateService) return;
-    const retryAt = managed.ctoFallbackRetryAt
-      ?? (managed.ctoFallbackSince != null ? managed.ctoFallbackSince + CTO_FALLBACK_RETRY_MAIN_MS : 0);
-    if (Date.now() < retryAt || ctoThreadIsBusy(managed)) return;
-    const main = ctoStateService.getIdentity().modelPreferences;
-    if (!main?.modelId || ctoChoiceMatchesSession(main, managed)) {
-      clearCtoFallbackState(managed);
-      persistChatState(managed);
-      return;
-    }
-    try {
-      await updateSession({
-        sessionId: managed.session.id,
-        modelId: main.modelId,
-        ...(main.reasoningEffort !== undefined ? { reasoningEffort: main.reasoningEffort } : {}),
-      });
-    } catch (error) {
-      logger.warn("agent_chat.cto_model_return_failed", {
-        sessionId: managed.session.id,
-        modelId: main.modelId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      managed.ctoFallbackRetryAt = Date.now() + CTO_FALLBACK_RETRY_MAIN_MS;
-      persistChatState(managed);
-      return;
-    }
-    // The main choice's account; none named is the default one, so a backup on
-    // the same model but another account comes home too.
-    if (isProviderInstanceProvider(managed.session.provider)) {
-      await switchAccount({
-        sessionId: managed.session.id,
-        instanceId: ctoWantedAccountId(managed.session.provider, main.instanceId),
-      }).catch(() => null);
-    }
-    clearCtoFallbackState(managed);
-    refreshCtoProviderThread(managed, "model_fallback", { notice: false });
-    persistChatState(managed);
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "info",
-      message: `Back on ${ctoChoiceLabel(main)}.`,
-    });
-    logger.info("agent_chat.cto_model_returned", { sessionId: managed.session.id, modelId: main.modelId });
-  };
-
-  /**
-   * Run an action the thread was too busy for. A newer user message means the
-   * conversation moved on: an overflow still gets its fresh thread, but no
-   * old message is sent again. Returns whether it did something.
-   */
-  const runCtoPendingSettledAction = async (managed: ManagedChatSession): Promise<boolean> => {
-    const pending = managed.ctoPendingSettledAction;
-    if (!pending) return false;
-    managed.ctoPendingSettledAction = null;
-    const stillCurrent = (managed.lastUserMessageSequence ?? 0) === pending.userMessageSequence;
-    if (pending.kind === "overflow") {
-      const result = refreshCtoProviderThread(managed, "overflow");
-      const key = `overflow:${pending.message?.text ?? ""}`;
-      const keys = managed.ctoResentMessageKeys ?? new Set<string>();
-      managed.ctoResentMessageKeys = keys;
-      if (result.refreshed && stillCurrent && pending.message && !keys.has(key)) {
-        keys.add(key);
-        await resendCtoMessage(managed, pending.message, "overflow");
-      }
-      return result.refreshed;
-    }
-    if (!stillCurrent) return false;
-    return await switchCtoToFallbackModel(managed, pending.message, pending.reasonText ?? "provider error");
-  };
-
-  /**
-   * The thread stayed busy past the settle wait: keep the whole action (the
-   * resend and the switch, not only the refresh) and try again every few
-   * seconds for two minutes; the next settled turn runs it too, whichever
-   * comes first.
-   */
-  const deferCtoSettledAction = (managed: ManagedChatSession, action: CtoPendingSettledAction): void => {
-    managed.ctoPendingSettledAction = action;
-    let attempts = 0;
-    const retry = (): void => {
-      attempts += 1;
-      void (async () => {
-        if (managed.ctoPendingSettledAction !== action || managed.closed || managed.deleted) return;
-        if (ctoThreadIsBusy(managed)) {
-          if (attempts < 24) setTimeout(retry, 5_000).unref?.();
-          return;
-        }
-        await runCtoPendingSettledAction(managed);
-      })().catch((error) => {
-        logger.warn("agent_chat.cto_turn_settled_action_failed", {
-          sessionId: managed.session.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    };
-    setTimeout(retry, 5_000).unref?.();
-  };
-
-  /**
-   * An account move for the CTO did not land. The CTO keeps its one thread, so
-   * instead of a new chat on the other account it moves to its backup models
-   * once the move has let go of the thread. `onNoBackup` runs when none is
-   * left (the usage-limit resume arms then).
-   */
-  const scheduleCtoFallbackAfterFailedMove = (
-    managed: ManagedChatSession,
-    failedTurnId: string | null,
-    onNoBackup?: () => void,
-  ): void => {
-    setTimeout(() => {
-      void (async () => {
-        const message = readCtoFailedPersonMessage(managed, failedTurnId);
-        const reasonText = "usage limit reached";
-        if (!(await whenCtoThreadIdle(managed))) {
-          deferCtoSettledAction(managed, {
-            kind: "fallback",
-            message,
-            reasonText,
-            userMessageSequence: managed.lastUserMessageSequence ?? 0,
-          });
-          return;
-        }
-        const switched = await switchCtoToFallbackModel(managed, message, reasonText);
-        if (!switched) onNoBackup?.();
-      })().catch((error) => {
-        logger.warn("agent_chat.cto_model_fallback_failed", {
-          sessionId: managed.session.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }, 0);
-  };
-
-  /**
-   * What the CTO does when one of its turns settles, called from the `done`
-   * commit (the one place every provider agrees a turn is over):
-   * - overflow: a fresh thread, then the failed message once more;
-   * - a limit, sign-in or provider failure: the next backup model, then the
-   *   failed message once more;
-   * - an action an earlier turn could not run because the thread stayed busy;
-   * - otherwise a refresh that is owed (a compaction, a manual request) or
-   *   due (the thread is past `CTO_REFRESH_OCCUPANCY_PCT`).
-   * A person's Stop is not a failure and triggers nothing but an owed refresh.
-   */
-  const onCtoTurnSettled = (
-    managed: ManagedChatSession,
-    done: Extract<AgentChatEvent, { type: "done" }>,
-    input: { occupancyPct: number | null; errorText: string | null },
-  ): void => {
-    // Quick replies belong to the turn that got the mid-task message.
-    managed.ctoMidTaskReplies = null;
-    if (done.status === "completed") managed.ctoResentMessageKeys?.clear();
-    const thisTurnOverflowed = done.status === "failed"
-      && managed.lastTurnFailure?.kind === "context_overflow"
-      && (!done.turnId || managed.lastTurnFailure.turnId === done.turnId);
-    const sessionId = managed.session.id;
-    // Another account is already taking this chat over (Smart Balance). If
-    // that fails, `scheduleCtoFallbackAfterFailedMove` takes the backups.
-    const accountMoveOwnsIt = pendingUsageLimitMoves.has(sessionId)
+  const {
+    clearCtoFallbackState,
+    isSwitchingToFallback: isCtoSwitchingToFallback,
+    applyCtoAccountChoice,
+    maybeReturnCtoToMainModel,
+    scheduleCtoFallbackAfterFailedMove,
+    onCtoTurnSettled,
+  } = createCtoThreadFallback({
+    logger,
+    ctoStateService,
+    ctoThreadIsBusy,
+    accountMoveOwnsSession: (sessionId) => pendingUsageLimitMoves.has(sessionId)
       || usageLimitMoveInFlight.has(sessionId)
-      || usageLimitHandoffInFlight.has(sessionId);
-    const wantsFallback = !thisTurnOverflowed && !accountMoveOwnsIt && isCtoFallbackFailure(managed, done, input.errorText);
-    // A Stop is not a reason to refresh; only a turn that ran its course is.
-    const dueForOccupancy = done.status === "completed"
-      && input.occupancyPct != null
-      && input.occupancyPct >= CTO_REFRESH_OCCUPANCY_PCT;
-    if (
-      !thisTurnOverflowed
-      && !wantsFallback
-      && !managed.ctoRefreshPending
-      && !dueForOccupancy
-      && !managed.ctoPendingSettledAction
-    ) {
-      return;
-    }
-    const failedTurnId = done.turnId ?? null;
-    const reasonText = wantsFallback ? ctoFallbackReasonText(managed, done, input.errorText) : null;
-    void (async () => {
-      if (!(await whenCtoThreadIdle(managed))) {
-        if (thisTurnOverflowed) managed.ctoRefreshPending ??= "overflow";
-        else if (dueForOccupancy) managed.ctoRefreshPending ??= "occupancy";
-        if (thisTurnOverflowed || wantsFallback) {
-          deferCtoSettledAction(managed, {
-            kind: thisTurnOverflowed ? "overflow" : "fallback",
-            message: readCtoFailedPersonMessage(managed, failedTurnId),
-            reasonText,
-            userMessageSequence: managed.lastUserMessageSequence ?? 0,
-          });
-        }
-        persistChatState(managed);
-        return;
-      }
-      try {
-        // This turn's own failure supersedes one an earlier turn left behind.
-        if (thisTurnOverflowed || wantsFallback) managed.ctoPendingSettledAction = null;
-        else if (await runCtoPendingSettledAction(managed)) return;
-        if (thisTurnOverflowed) {
-          const message = readCtoFailedPersonMessage(managed, failedTurnId);
-          const result = refreshCtoProviderThread(managed, "overflow");
-          const key = `overflow:${message?.text ?? ""}`;
-          const keys = managed.ctoResentMessageKeys ?? new Set<string>();
-          managed.ctoResentMessageKeys = keys;
-          if (result.refreshed && message && !keys.has(key)) {
-            keys.add(key);
-            await resendCtoMessage(managed, message, "overflow");
-          }
-          return;
-        }
-        if (wantsFallback) {
-          const switched = await switchCtoToFallbackModel(
-            managed,
-            readCtoFailedPersonMessage(managed, failedTurnId),
-            reasonText ?? "provider error",
-          );
-          if (switched) return;
-        }
-        const reason = managed.ctoRefreshPending ?? (dueForOccupancy ? "occupancy" : null);
-        if (reason) refreshCtoProviderThread(managed, reason);
-      } catch (error) {
-        logger.warn("agent_chat.cto_turn_settled_action_failed", {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    })();
-  };
+      || usageLimitHandoffInFlight.has(sessionId),
+    refreshCtoProviderThread,
+    persistChatState,
+    emitChatEvent,
+    readRecentTranscriptEnvelopes,
+    resolveSessionInstance,
+    usageLimitResetAtMs,
+    providerAccountEmail,
+    // Declared further down; called only once a turn is running.
+    updateSession: (updateArgs) => updateSession(updateArgs),
+    switchAccount,
+    sendMessage: (sendArgs) => sendMessage(sendArgs),
+  });
 
   /** The settings "Refresh context" button and `cto_state.refreshContext`. */
   const refreshCtoContext = async (): Promise<CtoRefreshContextResult> => {
@@ -74526,270 +74023,10 @@ export function createAgentChatService(args: {
     return refreshCtoProviderThread(ensureManagedSession(cto.sessionId), "manual");
   };
 
-  /* ── readHistory: the CTO's whole conversation, across every CTO session ── */
-
-  const CTO_HISTORY_TEXT_MAX_CHARS = 600;
-  const CTO_HISTORY_CACHE_MAX_SESSIONS = 12;
-  /**
-   * Transcript bytes one readHistory call may parse going back. A page or a
-   * search that runs out hands back a cursor to continue from, so a long
-   * history never stalls one call.
-   */
-  const CTO_HISTORY_CALL_BYTE_BUDGET = 8 * 1024 * 1024;
-  type CtoHistoryRow = CtoHistoryEntry & { offset: number };
-  /**
-   * One CTO session's messages parsed so far: transcript bytes [start, end),
-   * oldest first, each keyed by the byte offset of its first row. `start` is
-   * 0 or a person's message, where the transcript parser starts fresh, so an
-   * older chunk joins on without splitting a message. An ended session's
-   * file never changes, so its rows are kept as they are; the live one only
-   * parses again from its newest person message (`tailFrom`) when it grows.
-   */
-  type CtoHistoryState = { path: string; start: number; end: number; tailFrom: number; rows: CtoHistoryRow[] };
-  const ctoHistoryCache = new Map<string, CtoHistoryState>();
-  let ctoHistoryQueue: Promise<unknown> = Promise.resolve();
-
-  const isFreshTranscriptStart = (envelope: AgentChatEventEnvelope): boolean =>
-    envelope.event.type === "user_message" && !envelope.event.steerId?.trim();
-
-  /** Rows of one transcript read back from `before` through the byte pager until `stop` says enough. */
-  const readCtoTranscriptBack = async (
-    sessionId: string,
-    transcriptPath: string,
-    before: number,
-    stop: (rows: Array<{ envelope: AgentChatEventEnvelope; offset: number }>, startOffset: number) => boolean,
-  ): Promise<{ rows: Array<{ envelope: AgentChatEventEnvelope; offset: number }>; startOffset: number }> => {
-    const rows: Array<{ envelope: AgentChatEventEnvelope; offset: number }> = [];
-    let cursor = before;
-    while (cursor > 0) {
-      const page = await readTranscriptHistoryPage({
-        transcriptPath,
-        sessionId,
-        beforeOffset: cursor,
-        maxBytes: CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
-      });
-      rows.unshift(...page.envelopes.map((envelope, index) => ({
-        envelope,
-        offset: page.envelopeStartOffsets[index] ?? page.startOffset,
-      })));
-      cursor = page.startOffset;
-      if (stop(rows, cursor)) break;
-    }
-    return { rows, startOffset: cursor };
-  };
-
-  const ctoHistoryRowsFrom = (
-    sessionId: string,
-    rows: Array<{ envelope: AgentChatEventEnvelope; offset: number }>,
-  ): CtoHistoryRow[] => {
-    const offsetByEnvelope = new WeakMap<AgentChatEventEnvelope, number>();
-    for (const row of rows) offsetByEnvelope.set(row.envelope, row.offset);
-    const offsets: Array<number | null> = [];
-    const entries = transcriptEntriesFromEnvelopes(sessionId, rows.map((row) => row.envelope), {
-      sourceOffsetForEnvelope: (envelope) => offsetByEnvelope.get(envelope) ?? null,
-      onEntrySourceOffset: (offset) => offsets.push(offset),
-    });
-    const fallbackOffset = rows[0]?.offset ?? 0;
-    return entries
-      .map((entry, index): CtoHistoryRow => {
-        const text = (entry.role === "user" ? entry.displayText?.trim() || entry.text : entry.text).replace(/\s+/g, " ").trim();
-        return {
-          role: entry.role,
-          text: text.length > CTO_HISTORY_TEXT_MAX_CHARS ? `${text.slice(0, CTO_HISTORY_TEXT_MAX_CHARS - 1)}…` : text,
-          at: entry.timestamp,
-          sessionId,
-          offset: offsets[index] ?? fallbackOffset,
-        };
-      })
-      .filter((entry) => entry.text.length > 0)
-      .sort((a, b) => a.offset - b.offset);
-  };
-
-  /** A session's parsed state, its live tail brought up to date. Null when it has no transcript. */
-  const loadCtoHistoryState = async (sessionId: string, live: boolean): Promise<CtoHistoryState | null> => {
-    let state = ctoHistoryCache.get(sessionId) ?? null;
-    if (!state || live) {
-      const transcriptPath = await resolveBestTranscriptPathForSessionIdAsync(sessionId, managedSessions.get(sessionId));
-      if (!transcriptPath) return null;
-      let size: number;
-      try {
-        size = await readHistoryFileSize(transcriptPath);
-      } catch {
-        return null;
-      }
-      if (!state || state.path !== transcriptPath || size < state.end) {
-        state = { path: transcriptPath, start: size, end: size, tailFrom: size, rows: [] };
-      } else if (size > state.end) {
-        if (state.start === state.end) {
-          state.start = state.end = state.tailFrom = size;
-        } else {
-          // Parse again from the newest person message: the turn it opened may
-          // have streamed more of a message the last read already holds.
-          const tailFrom = state.tailFrom;
-          const tail = await readCtoTranscriptBack(sessionId, transcriptPath, size, (_rows, startOffset) => startOffset <= tailFrom);
-          const tailRows = tail.rows.filter((row) => row.offset >= tailFrom);
-          const lastFresh = [...tailRows].reverse().find((row) => isFreshTranscriptStart(row.envelope));
-          state.rows = [...state.rows.filter((row) => row.offset < tailFrom), ...ctoHistoryRowsFrom(sessionId, tailRows)];
-          state.tailFrom = lastFresh?.offset ?? tailFrom;
-          state.end = size;
-        }
-      }
-    }
-    ctoHistoryCache.delete(sessionId);
-    ctoHistoryCache.set(sessionId, state);
-    while (ctoHistoryCache.size > CTO_HISTORY_CACHE_MAX_SESSIONS) {
-      const oldest = ctoHistoryCache.keys().next().value;
-      if (oldest === undefined) break;
-      ctoHistoryCache.delete(oldest);
-    }
-    return state;
-  };
-
-  /**
-   * Parses the chunk before `state.start`, back to the nearest person message
-   * (or the file's head, or the budget), and puts its rows in front. Returns
-   * how many rows it added.
-   */
-  const extendCtoHistoryBack = async (
-    sessionId: string,
-    state: CtoHistoryState,
-    budget: { bytes: number },
-  ): Promise<number> => {
-    if (state.start <= 0 || budget.bytes <= 0) return 0;
-    const before = state.start;
-    const read = await readCtoTranscriptBack(sessionId, state.path, before, (rows, startOffset) =>
-      startOffset === 0
-      || before - startOffset >= budget.bytes
-      || rows.some((row) => isFreshTranscriptStart(row.envelope)));
-    budget.bytes -= before - read.startOffset;
-    // Past the budget with no person message in reach, the chunk is taken as
-    // it is; a message that started before it reads as two.
-    const boundary = read.startOffset === 0
-      ? 0
-      : read.rows.find((row) => isFreshTranscriptStart(row.envelope))?.offset ?? read.startOffset;
-    const chunk = read.rows.filter((row) => row.offset >= boundary);
-    const added = ctoHistoryRowsFrom(sessionId, chunk);
-    if (state.start === state.end) {
-      const lastFresh = [...chunk].reverse().find((row) => isFreshTranscriptStart(row.envelope));
-      state.tailFrom = lastFresh?.offset ?? boundary;
-    }
-    state.rows = [...added, ...state.rows];
-    state.start = boundary;
-    return added.length;
-  };
-
-  const ctoHistoryCursor = (sessionId: string, offset: number): string => `${sessionId}@${offset}`;
-
-  /**
-   * Page or search the CTO's conversation: the current CTO session and every
-   * older one of this project, newest first. The cursor names a session and
-   * a byte offset in its transcript, so entries written between two calls do
-   * not shift the next page. A call parses at most
-   * `CTO_HISTORY_CALL_BYTE_BUDGET` of older transcript; past it, the page
-   * ends early with a cursor to go on from.
-   */
-  const readCtoHistoryNow = async (args: CtoReadHistoryArgs): Promise<CtoHistoryPage> => {
-    const limit = Math.max(1, Math.min(50, Math.floor(args.limit ?? 20)));
-    const sessions = await listIdentitySessions("cto");
-    const before = args.before?.trim() || null;
-    let startIndex = 0;
-    let bound = Number.POSITIVE_INFINITY;
-    if (before) {
-      const at = before.lastIndexOf("@");
-      const cursorSessionId = at > 0 ? before.slice(0, at) : "";
-      const offset = at > 0 ? Number(before.slice(at + 1)) : Number.NaN;
-      startIndex = sessions.findIndex((session) => session.sessionId === cursorSessionId);
-      if (startIndex < 0 || !Number.isFinite(offset)) return { entries: [], nextBefore: null };
-      bound = offset;
-    }
-    const budget = { bytes: CTO_HISTORY_CALL_BYTE_BUDGET };
-    const strip = ({ offset: _offset, ...entry }: CtoHistoryRow): CtoHistoryEntry => entry;
-    const countBefore = (rows: CtoHistoryRow[], limitOffset: number): number => {
-      let count = 0;
-      while (count < rows.length && rows[count]!.offset < limitOffset) count += 1;
-      return count;
-    };
-    const words = (args.query ?? "").toLowerCase().split(/\s+/).filter((word) => word.length > 0);
-
-    if (!words.length) {
-      const out: CtoHistoryRow[] = [];
-      for (let index = startIndex; index < sessions.length; index += 1) {
-        const session = sessions[index]!;
-        const state = await loadCtoHistoryState(session.sessionId, session.status !== "ended");
-        if (!state) continue;
-        const sessionBound = index === startIndex ? bound : Number.POSITIVE_INFINITY;
-        while (countBefore(state.rows, sessionBound) < limit - out.length && state.start > 0 && budget.bytes > 0) {
-          await extendCtoHistoryBack(session.sessionId, state, budget);
-        }
-        const available = countBefore(state.rows, sessionBound);
-        const take = Math.min(limit - out.length, available);
-        out.push(...state.rows.slice(available - take, available).reverse());
-        if (out.length >= limit) {
-          const more = available > take || state.start > 0 || index < sessions.length - 1;
-          return { entries: out.map(strip), nextBefore: more ? ctoHistoryCursor(session.sessionId, out[out.length - 1]!.offset) : null };
-        }
-        if (state.start > 0) {
-          // Out of budget before this session's head: go on from here next call.
-          const oldest = out[out.length - 1];
-          return {
-            entries: out.map(strip),
-            nextBefore: oldest && oldest.sessionId === session.sessionId
-              ? ctoHistoryCursor(session.sessionId, oldest.offset)
-              : ctoHistoryCursor(session.sessionId, state.start),
-          };
-        }
-      }
-      return { entries: out.map(strip), nextBefore: null };
-    }
-
-    const out: CtoHistoryEntry[] = [];
-    const shown = new Set<string>();
-    let hits = 0;
-    let lastHit: string | null = null;
-    for (let index = startIndex; index < sessions.length; index += 1) {
-      const session = sessions[index]!;
-      const state = await loadCtoHistoryState(session.sessionId, session.status !== "ended");
-      if (!state) continue;
-      const sessionBound = index === startIndex ? bound : Number.POSITIVE_INFINITY;
-      let at = countBefore(state.rows, sessionBound) - 1;
-      while (true) {
-        // Keep the entry before a hit in reach for its neighbour line.
-        if (at <= 0 && state.start > 0 && budget.bytes > 0) {
-          at += await extendCtoHistoryBack(session.sessionId, state, budget);
-          if (at <= 0 && state.start > 0 && budget.bytes > 0) continue;
-        }
-        if (at < 0) break;
-        const entry = state.rows[at]!;
-        const haystack = entry.text.toLowerCase();
-        if (words.every((word) => haystack.includes(word))) {
-          if (hits >= limit) return { entries: out, nextBefore: lastHit };
-          hits += 1;
-          lastHit = ctoHistoryCursor(session.sessionId, entry.offset);
-          for (const near of [at + 1, at, at - 1]) {
-            const neighbour = state.rows[near];
-            if (!neighbour || neighbour.offset >= sessionBound) continue;
-            const key = ctoHistoryCursor(session.sessionId, neighbour.offset);
-            if (shown.has(key)) continue;
-            shown.add(key);
-            out.push({ ...strip(neighbour), match: near === at });
-          }
-        }
-        at -= 1;
-      }
-      if (state.start > 0) {
-        // Out of budget: everything from `start` on in this session was searched.
-        return { entries: out, nextBefore: ctoHistoryCursor(session.sessionId, state.start) };
-      }
-    }
-    return { entries: out, nextBefore: null };
-  };
-
-  /** One readHistory at a time: calls share the parsed states they extend. */
-  const readCtoHistory = (args: CtoReadHistoryArgs = {}): Promise<CtoHistoryPage> => {
-    const run = ctoHistoryQueue.then(() => readCtoHistoryNow(args));
-    ctoHistoryQueue = run.catch(() => undefined);
-    return run;
-  };
+  const { readCtoHistory } = createCtoHistoryReader({
+    listCtoSessions: () => listIdentitySessions("cto"),
+    resolveTranscriptPath: (sessionId) => resolveBestTranscriptPathForSessionIdAsync(sessionId, managedSessions.get(sessionId)),
+  });
 
   /* ── Scheduled work: one row at a time ── */
 
@@ -82134,7 +81371,9 @@ export function createAgentChatService(args: {
       if (getCrossMachineMoveLock(schedule.sessionId, "scheduled_work")) return true;
       // An old CTO home keeps its routines armed but quiet: the CTO runs on
       // its new home, which took them from the account copy.
-      if (ctoAccountCopyHooks && !ctoAccountCopyHooks.homeIsHereNow() && sessionIdentityKeyNow(schedule.sessionId) === "cto") return true;
+      if (ctoAccountCopyHooks && !ctoAccountCopyHooks.homeIsHereNow() && sessionIdentityKeyNow(schedule.sessionId) === "cto") {
+        return { reason: "The CTO lives on another computer now, and its routines run there." };
+      }
       const row = sessionService.get(schedule.sessionId);
       if (row?.tracked && isTrackedAgentCliToolType(row.toolType)) {
         // A quiet-output heuristic is not a turn boundary: a CLI can think for

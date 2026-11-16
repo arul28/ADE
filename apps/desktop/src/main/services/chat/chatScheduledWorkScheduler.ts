@@ -111,7 +111,11 @@ export type ChatScheduledWorkSchedulerOptions = {
   timers?: ChatScheduledWorkTimerApi;
   isGlobalPaused(): boolean;
   sessionState(sessionId: string): "active" | "ended" | "archived" | "missing";
-  shouldDefer?(schedule: ChatScheduledWorkRecord): boolean;
+  /**
+   * True holds a fire until the chat's next safe turn boundary. A reason holds
+   * it the same way and is what Run now answers instead of "busy".
+   */
+  shouldDefer?(schedule: ChatScheduledWorkRecord): boolean | { reason: string };
   /**
    * Claims one occurrence (`id` + `fireAt`) across processes. Every brain that
    * opens the project loads the same rows and arms its own timer, and
@@ -299,6 +303,10 @@ function cloneSchedule(schedule: ChatScheduledWorkRecord): ChatScheduledWorkReco
   return { ...schedule };
 }
 
+function isDeferred(answer: boolean | { reason: string } | undefined): boolean {
+  return answer === true || (typeof answer === "object" && answer !== null);
+}
+
 export function createChatScheduledWorkScheduler(
   options: ChatScheduledWorkSchedulerOptions,
 ): ChatScheduledWorkScheduler {
@@ -437,7 +445,7 @@ export function createChatScheduledWorkScheduler(
     // check must happen before the durable row transitions to `fired`: Claude's
     // native turn can otherwise arrive in the small persistence window and
     // miss claimNativeFire, leaving both native and ADE delivery active.
-    if (options.shouldDefer?.(cloneSchedule(schedule)) === true) {
+    if (isDeferred(options.shouldDefer?.(cloneSchedule(schedule)))) {
       armBusyDeferRetry(schedule);
       return;
     }
@@ -866,8 +874,9 @@ export function createChatScheduledWorkScheduler(
       if (options.sessionState(schedule.sessionId) !== "active") {
         return { fired: false, reason: "Its chat has ended." };
       }
-      if (options.shouldDefer?.(cloneSchedule(schedule)) === true) {
-        return { fired: false, reason: "The chat is busy. Try again when its turn finishes." };
+      const deferred = options.shouldDefer?.(cloneSchedule(schedule));
+      if (isDeferred(deferred)) {
+        return { fired: false, reason: typeof deferred === "object" ? deferred.reason : "The chat is busy. Try again when its turn finishes." };
       }
       // The same shared claim a timer fire takes, on the occurrence this run
       // stands in for: another brain's timer (or its own Run now) for it then

@@ -131,7 +131,12 @@ import type {
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
 import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults } from "../shared/cloudLaneLife";
-import type { CtoCloudHomeCallRequest, CtoCloudHomeEvent } from "../shared/ctoCloudHome";
+import type {
+  CtoCloudHomeCallArgs,
+  CtoCloudHomeCallResult,
+  CtoCloudHomeEvent,
+  CtoCloudHomeMethod,
+} from "../shared/ctoCloudHome";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
@@ -450,7 +455,6 @@ import type {
   CtoUpdateIdentityArgs,
   CtoSnapshot,
   CtoMemorySnapshot,
-  CtoUpdateMemoryArgs,
   CtoUpdateNotesArgs,
   CtoUpdateOpenWorkArgs,
   CtoRefreshContextResult,
@@ -14087,7 +14091,8 @@ const adeBridge = {
     },
     // The CTO's home on ADE Cloud. Account level and made by this app, like a
     // new computer; the computer it makes is then addressed by its own pin.
-    ctoHome: (request: CtoCloudHomeCallRequest): Promise<unknown> => ipcRenderer.invoke(IPC.ctoCloudHomeCall, request),
+    ctoHome: <M extends CtoCloudHomeMethod>(request: { method: M; args: CtoCloudHomeCallArgs[M] }): Promise<CtoCloudHomeCallResult[M]> =>
+      ipcRenderer.invoke(IPC.ctoCloudHomeCall, request),
     onCtoHomeEvent: (cb: (event: CtoCloudHomeEvent) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, event: CtoCloudHomeEvent) => cb(event);
       ipcRenderer.on(IPC.ctoCloudHomeEvent, listener);
@@ -15172,7 +15177,7 @@ const adeBridge = {
         pin,
         "cto_state",
         "getSnapshot",
-        { arg: args.recentLimit ?? 20 },
+        {},
         () => ipcRenderer.invoke(IPC.ctoGetState, args),
       ),
     ensureSession: async (
@@ -15219,13 +15224,6 @@ const adeBridge = {
     getMemory: async (pin?: OpenProjectBinding | null): Promise<CtoMemorySnapshot> =>
       callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "getSnapshot", {}, () =>
         ipcRenderer.invoke(IPC.ctoGetMemory, {}),
-      ),
-    updateMemory: async (
-      args: CtoUpdateMemoryArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<CtoMemorySnapshot> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "updateMemory", { args }, () =>
-        ipcRenderer.invoke(IPC.ctoUpdateMemory, args),
       ),
     updateNotes: async (
       args: CtoUpdateNotesArgs,

@@ -1080,7 +1080,7 @@ the turn ends. `cto_memory.updateNotes` replaces one notes file (`project`:
 `.ade/cto/MEMORY.md`, 4096 bytes; `user`: notes about the person for every
 project on this machine, 2048 bytes) and refuses text over the cap;
 `cto_memory.updateOpenWork` adds, completes, reopens or removes one open-work
-item. `cto_memory.updateMemory` still writes the project notes. `getSnapshot`
+item. `getSnapshot`
 and `recordDiscovery` stay open to every role; the writes are CTO-only.
 `cto_state.dismissOnboarding` and `cto_state.resetOnboarding` were removed
 with the surface they drove, so a script that still calls either now fails with

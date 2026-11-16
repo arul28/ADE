@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useSyncExternalStore } from "react";
 import { DEFAULT_CTO_AVATAR_LOOK, type CtoAvatarLook } from "../../../shared/types/cto";
+import { normalizeCtoAvatarLook } from "../../../shared/ctoAvatarLook";
 
 /**
  * The CTO's look, where the page is not.
@@ -21,12 +22,6 @@ export function CtoLookProvider({ look, children }: { look: CtoAvatarLook; child
 /** Inside the CTO page: the CTO's look. Anywhere else: the default look. */
 export function useCtoLook(): CtoAvatarLook {
   return useContext(CtoLookContext) ?? DEFAULT_CTO_AVATAR_LOOK;
-}
-
-/** The page accent: the avatar's colour. */
-export function ctoAccentColor(look: CtoAvatarLook | null | undefined): string {
-  const color = look?.color?.trim();
-  return color && /^#[0-9a-f]{6}$/i.test(color) ? color : DEFAULT_CTO_AVATAR_LOOK.color;
 }
 
 const STORAGE_KEY = "ade.cto.lookByProject.v1";
@@ -52,7 +47,8 @@ function sameLook(a: CtoAvatarLook | undefined, b: CtoAvatarLook): boolean {
 /** Called by the CTO page whenever its identity loads or changes. */
 export function rememberCtoLook(scopeKey: string | null | undefined, look: CtoAvatarLook | null | undefined): void {
   if (!scopeKey) return;
-  const next = look ?? DEFAULT_CTO_AVATAR_LOOK;
+  // Canonical (lower-case colour), so the field-by-field compare below is exact.
+  const next = normalizeCtoAvatarLook(look) ?? DEFAULT_CTO_AVATAR_LOOK;
   const all = readAll();
   if (sameLook(all[scopeKey], next)) return;
   cache = { ...all, [scopeKey]: next };

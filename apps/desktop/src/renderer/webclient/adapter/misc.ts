@@ -1250,7 +1250,6 @@ const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
   refreshContext: 0,
   updateIdentity: 1,
   getMemory: 0,
-  updateMemory: 1,
   updateNotes: 1,
   updateOpenWork: 1,
   getLinearConnectionStatus: 0,
@@ -1280,9 +1279,9 @@ function createCtoNamespace(
   scope: RuntimePinScope,
 ): NonNullable<Window["ade"]["cto"]> {
   return guardPinnedMembers<NonNullable<Window["ade"]["cto"]>>({
-    getState: (args?: unknown) => call<CtoSnapshot>(
+    getState: () => call<CtoSnapshot>(
       "cto.getState",
-      { recentLimit: asRecord(args).recentLimit ?? 20 },
+      {},
       unavailableOnHost("The CTO isn't available on the connected ADE host."),
     ),
     // Materializes the primary lane's CTO chat session, so it is a write: never
