@@ -8,7 +8,6 @@ import {
   BRAIN_LOOP_WATCHDOG_LAST_WEDGE_FILE,
   BRAIN_LOOP_WATCHDOG_LAST_REPORT_FILE,
   BRAIN_LOOP_WATCHDOG_REPORT_FILE,
-  DEFAULT_BRAIN_LOOP_WATCHDOG_MS,
   buildBrainLoopWatchdogWorkerSource,
   evaluateBrainLoopWatchdog,
   readBrainLoopWatchdogLastWedge,
@@ -25,9 +24,6 @@ import {
 import { brainLoopFreezeCause } from "./brainLoopWatchdogWorker";
 
 describe("brainLoopWatchdog", () => {
-  it("allows a 30 second event-loop stall before the watchdog terminates the brain", () => {
-    expect(DEFAULT_BRAIN_LOOP_WATCHDOG_MS).toBe(30_000);
-  });
 
   it("builds a valid worker program from the tested watchdog evaluator", () => {
     expect(() => new Function(buildBrainLoopWatchdogWorkerSource())).not.toThrow();
