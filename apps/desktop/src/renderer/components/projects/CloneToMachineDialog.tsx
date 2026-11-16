@@ -80,6 +80,7 @@ export function CloneToMachineDialog({
   repoName,
   otherProjectPaths,
   confirmLabel = "Clone & send",
+  sendsMessage = true,
   onCancel,
   onReady,
 }: {
@@ -91,6 +92,8 @@ export function CloneToMachineDialog({
   /** Folders of other projects on that machine: their parents are suggested. */
   otherProjectPaths: readonly string[];
   confirmLabel?: string;
+  /** A message waits on the clone (the composer), or the project just opens after it (the project page). */
+  sendsMessage?: boolean;
   onCancel: () => void;
   /** The copy is there: send the message to it. */
   onReady: (target: CopyOpenTarget) => void;
@@ -166,7 +169,7 @@ export function CloneToMachineDialog({
         if (!next && !cloning) onCancel();
       }}
       title={`Clone ${repoName} on ${machine.name}`}
-      description="It has no copy yet. ADE clones it there, then sends your message."
+      description={sendsMessage ? "It has no copy yet. ADE clones it there, then sends your message." : "It has no copy yet. ADE clones it there, then opens it."}
       size="sm"
       actions={[
         { label: cloning ? "Cloning…" : failed ? "Retry" : confirmLabel, onClick: start, busy: cloning, disabled: cloning || !folder },
@@ -236,7 +239,7 @@ export function CloneToMachineDialog({
               id: `clone-to-machine-${failed.key}`,
               tone: "error",
               title: `Couldn't clone on ${machine.name}`,
-              detail: `${failed.failure?.reason ?? "The machine didn't say why."} Your message is not sent. Retry, or pick another folder.`,
+              detail: `${failed.failure?.reason ?? "The machine didn't say why."}${sendsMessage ? " Your message is not sent." : ""} Retry, or pick another folder.`,
               actions: [{ label: "Change folder", onClick: () => setOtherOpen(true) }],
             }}
           />

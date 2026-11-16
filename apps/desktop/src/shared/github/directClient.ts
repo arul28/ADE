@@ -1,6 +1,8 @@
 import type {
   GitHubRateLimitState,
+  GithubDirectBranch,
   GithubDirectCheckRun,
+  GithubDirectContentEntry,
   GithubDirectChecks,
   GithubDirectClientState,
   GithubDirectComment,
@@ -76,6 +78,8 @@ const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 /** GitHub's rule for a repository name ("." and ".." are not names). */
 const NAME_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
 const SHA_PATTERN = /^[0-9a-fA-F]{7,40}$/;
+/** A branch, tag or SHA as GitHub accepts it in `?ref=`. */
+const REF_PATTERN = /^[A-Za-z0-9._\/-]{1,200}$/;
 const LIST_STATES: ReadonlySet<string> = new Set(["open", "closed", "all"]);
 
 export type GithubDirectHttpStep = {
@@ -94,6 +98,15 @@ const invalid = (message: string): { ok: false; error: GithubDirectError } => ({
   ok: false,
   error: { kind: "invalid_request", message },
 });
+
+/** A folder path for `/contents`: "" (the root) or `/seg/seg`, each segment encoded; null when not valid. */
+function checkContentPath(value: unknown): string | null {
+  if (value == null || value === "") return "";
+  if (typeof value !== "string" || value.length > 400) return null;
+  const segments = value.split("/").filter(Boolean);
+  if (segments.some((segment) => segment === "." || segment === ".." || segment.includes("\\"))) return null;
+  return segments.map((segment) => `/${encodeURIComponent(segment)}`).join("");
+}
 
 function checkRepo(params: unknown): GithubDirectRepoRef | string {
   const record = isRecord(params) ? params : {};
@@ -214,6 +227,27 @@ export function buildGithubDirectRequest(request: unknown): GithubDirectBuiltReq
           { path: `${base}/check-runs`, query: { per_page: "100" }, maxPages: SUBLIST_MAX_PAGES },
           { path: `${base}/status`, query: { per_page: "100" }, maxPages: 1 },
         ],
+      };
+    }
+    case "listBranches": {
+      const repo = checkRepo(params);
+      if (typeof repo === "string") return invalid(repo);
+      const maxPages = checkMaxPages((params as Record<string, unknown>).maxPages, SUBLIST_MAX_PAGES);
+      return { ok: true, op: "listBranches", repo, steps: [{ path: `${repoPath(repo)}/branches`, query: { per_page: "100" }, maxPages }] };
+    }
+    case "listContents": {
+      const repo = checkRepo(params);
+      if (typeof repo === "string") return invalid(repo);
+      const record = params as Record<string, unknown>;
+      const path = checkContentPath(record.path);
+      if (path == null) return invalid("path is a folder path in the repository");
+      const ref = record.ref;
+      if (ref != null && (typeof ref !== "string" || !REF_PATTERN.test(ref) || ref.includes(".."))) return invalid("ref is a branch, tag or commit");
+      return {
+        ok: true,
+        op: "listContents",
+        repo,
+        steps: [{ path: `${repoPath(repo)}/contents${path}`, query: typeof ref === "string" ? { ref } : {}, maxPages: 1 }],
       };
     }
     case "diagnoseRepository": {
@@ -400,6 +434,22 @@ function mapRepository(value: unknown): GithubDirectRepository | null {
     htmlUrl: str(value.html_url),
     permissions,
   };
+}
+
+function mapBranch(value: unknown): GithubDirectBranch | null {
+  if (!isRecord(value)) return null;
+  const name = str(value.name);
+  if (!name) return null;
+  return { name, sha: (isRecord(value.commit) ? str(value.commit.sha) : null) ?? "", protected: bool(value.protected) };
+}
+
+function mapContentEntry(value: unknown): GithubDirectContentEntry | null {
+  if (!isRecord(value)) return null;
+  const name = str(value.name);
+  const path = str(value.path);
+  const type = str(value.type);
+  if (!name || !path || (type !== "file" && type !== "dir" && type !== "symlink" && type !== "submodule")) return null;
+  return { name, path, kind: type, size: num(value.size) ?? 0, htmlUrl: str(value.html_url) };
 }
 
 function mapPull(value: unknown): GithubDirectPull | null {
@@ -817,6 +867,12 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
       case "listComments":
         return [...listOf(mapComment("issue"))(first!.items), ...listOf(mapComment("review"))(second!.items)]
           .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
+      case "listBranches":
+        return listOf(mapBranch)(first!.items);
+      case "listContents":
+        // A file path answers one object, not a folder: no entries.
+        return listOf(mapContentEntry)(first!.items).sort((a, b) =>
+          a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "dir" ? -1 : b.kind === "dir" ? 1 : a.name.localeCompare(b.name));
       case "listChecks": {
         const status = isRecord(second!.single) ? second!.single : {};
         const statuses = Array.isArray(status.statuses) ? status.statuses : [];

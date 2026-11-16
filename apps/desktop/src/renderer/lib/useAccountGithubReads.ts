@@ -116,3 +116,33 @@ export function useAccountGithubRepositories(enabled: boolean) {
   );
   return { ...read, repositories };
 }
+
+/** The branches of one repository (up to three pages). */
+export function useAccountGithubBranches(repo: GithubDirectRepoRef | null) {
+  const owner = repo?.owner ?? null;
+  const name = repo?.name ?? null;
+  const request = useMemo(() => (owner && name ? { op: "listBranches" as const, params: { owner, name } } : null), [owner, name]);
+  const read = useAccountGithubRead<"listBranches">(request);
+  return { ...read, branches: read.data ?? [] };
+}
+
+/** One folder of a repository on GitHub ("" = the root), folders first. */
+export function useAccountGithubContents(repo: GithubDirectRepoRef | null, path: string) {
+  const owner = repo?.owner ?? null;
+  const name = repo?.name ?? null;
+  const request = useMemo(
+    () => (owner && name ? { op: "listContents" as const, params: { owner, name, path } } : null),
+    [owner, name, path],
+  );
+  const read = useAccountGithubRead<"listContents">(request);
+  return { ...read, entries: read.data ?? [] };
+}
+
+/** Can the account's GitHub sign-in reach this repository (installed, approved, visible)? */
+export function useAccountGithubDiagnosis(repo: GithubDirectRepoRef | null) {
+  const owner = repo?.owner ?? null;
+  const name = repo?.name ?? null;
+  const request = useMemo(() => (owner && name ? { op: "diagnoseRepository" as const, params: { owner, name } } : null), [owner, name]);
+  const read = useAccountGithubRead<"diagnoseRepository">(request);
+  return { ...read, diagnosis: read.data };
+}

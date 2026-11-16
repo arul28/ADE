@@ -17755,8 +17755,8 @@ export function AgentChatPane({
     [draftCloneDialog, draftConnections],
   );
   const takeDraftSendAfter = draftMachineSetup.takeSendAfter;
-  const submitRef = useRef(submit);
-  submitRef.current = submit;
+  // Read when the dialog opens (the open re-renders the pane); no subscription per keystroke.
+  const draftCloneSends = draftCloneDialog != null && draftStore.get().trim().length > 0;
   useEffect(() => {
     if (!selectedDraftMachineId || !takeDraftSendAfter(selectedDraftMachineId)) return;
     if (draftStore.get().trim().length === 0) return;
@@ -21852,9 +21852,10 @@ export function AgentChatPane({
           url={draftCloneDialog.url}
           repoName={draftCloneDialog.repoName}
           otherProjectPaths={draftCloneOtherPaths}
-          confirmLabel={draftHasText ? "Clone & send" : "Clone"}
+          confirmLabel={draftCloneSends ? "Clone & send" : "Clone"}
+          sendsMessage={draftCloneSends}
           onCancel={draftMachineSetup.closeCloneDialog}
-          onReady={() => draftMachineSetup.cloneDialogReady(draftCloneDialog.targetId, draftCloneDialog.name, { send: draftHasText })}
+          onReady={() => draftMachineSetup.cloneDialogReady(draftCloneDialog.targetId, draftCloneDialog.name, { send: draftCloneSends })}
         />
       ) : null}
       {/* The lane picker's "+": configure a new lane now; it is created when
