@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 func syncTransportProbeTimeoutNanoseconds(isExpensive: Bool, isConstrained: Bool) -> UInt64 {
   if isConstrained {
@@ -568,10 +569,21 @@ func syncRunRelayReauthorizationLoop<Attempt>(
 /// Sentry event carries the breadcrumbs left just before it (saved port
 /// changes, network path changes). Names and counts only: no address, machine
 /// name or content. At most one report per kind per ten minutes.
+///
+/// A drop on a connection that lived through a trip to the background is not
+/// unexplained: iOS suspends the app and kills its sockets without a close
+/// frame, and the failed receive surfaces on the next wake. Those leave a
+/// breadcrumb instead of an issue (ADE-IOS-2P was almost all of them).
 @MainActor
 enum SyncLiveDropReport {
   private static var lastReportedAt: [String: Date] = [:]
   static let minimumInterval: TimeInterval = 600
+  /// Uptime of the app's last move to the background.
+  private static var lastBackgroundedUptime: TimeInterval?
+
+  static func noteAppBackgrounded(uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    lastBackgroundedUptime = uptime
+  }
 
   /// Close codes that mean nobody closed the connection on purpose.
   static func isUnexplainedDrop(closeCode: Int?) -> Bool {
@@ -579,15 +591,55 @@ enum SyncLiveDropReport {
     return closeCode == 0 || closeCode == 1006
   }
 
+  /// Whether the app was in the background at some point while the connection
+  /// was open (or is now), so iOS may have killed the socket.
+  static func wasSuspendedDuringConnection(
+    connectionAgeSeconds: TimeInterval?,
+    lastBackgroundedUptime: TimeInterval?,
+    appIsInBackground: Bool,
+    nowUptime: TimeInterval
+  ) -> Bool {
+    if appIsInBackground { return true }
+    guard let lastBackgroundedUptime else { return false }
+    // Unknown age: any background since launch may have been during it.
+    guard let connectionAgeSeconds else { return true }
+    return lastBackgroundedUptime >= nowUptime - connectionAgeSeconds
+  }
+
   static func report(
     connection: String,
     routeKind: SyncConnectionRouteKind?,
     closeCode: Int?,
     connectionAgeSeconds: TimeInterval?,
+    error: Error? = nil,
     now: Date = Date()
   ) {
     guard isUnexplainedDrop(closeCode: closeCode) else { return }
-    let kind = "\(connection):\(routeKind.map { String(describing: $0) } ?? "unknown")"
+    let route = routeKind.map { String(describing: $0) } ?? "unknown"
+    var errorContext: [String: String] = [:]
+    if let error {
+      let nsError = error as NSError
+      errorContext["error_domain"] = nsError.domain
+      errorContext["error_code"] = String(nsError.code)
+      if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+        errorContext["underlying_domain"] = underlying.domain
+        errorContext["underlying_code"] = String(underlying.code)
+      }
+    }
+    if wasSuspendedDuringConnection(
+      connectionAgeSeconds: connectionAgeSeconds,
+      lastBackgroundedUptime: lastBackgroundedUptime,
+      appIsInBackground: UIApplication.shared.applicationState == .background,
+      nowUptime: ProcessInfo.processInfo.systemUptime
+    ) {
+      CrashReporting.breadcrumb(
+        "sync.live_drop",
+        message: "live connection dropped after the app was suspended",
+        data: ["connection": connection, "route": route].merging(errorContext) { current, _ in current }
+      )
+      return
+    }
+    let kind = "\(connection):\(route)"
     if let last = lastReportedAt[kind], now.timeIntervalSince(last) < minimumInterval { return }
     lastReportedAt[kind] = now
     let ageBucket: String
@@ -605,10 +657,10 @@ enum SyncLiveDropReport {
       context: [
         "area": "sync_live_drop",
         "connection": connection,
-        "route": routeKind.map { String(describing: $0) } ?? "unknown",
+        "route": route,
         "close_code": String(closeCode ?? 0),
         "age": ageBucket,
-      ]
+      ].merging(errorContext) { current, _ in current }
     )
   }
 }

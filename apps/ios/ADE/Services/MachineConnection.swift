@@ -444,7 +444,8 @@ final class MachineConnection {
             connection: "fleet",
             routeKind: liveRouteKind,
             closeCode: syncWebSocketCloseCode(task),
-            connectionAgeSeconds: liveSinceUptime.map { ProcessInfo.processInfo.systemUptime - $0 }
+            connectionAgeSeconds: liveSinceUptime.map { ProcessInfo.processInfo.systemUptime - $0 },
+            error: error
           ) }
         }
         return

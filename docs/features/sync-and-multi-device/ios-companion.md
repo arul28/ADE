@@ -2940,7 +2940,12 @@ ports, and ranks routes only by history from that same machine.
 A live connection (focused or fleet) that drops without a close frame (1006,
 or no code) sends one Sentry report (`SyncLiveDropReport`, area
 `sync_live_drop`): connection kind, route kind, close code and an age bucket,
-at most once per kind per ten minutes. A saved port change leaves a
+at most once per kind per ten minutes, plus the receive error's domain and
+code (and its underlying one). A drop on a connection that lived through a
+trip to the background, or that ends while the app is in the background,
+leaves a `sync.live_drop` breadcrumb instead: iOS suspends the app and kills
+its sockets with no close frame, and the failed receive surfaces on the next
+wake (Sentry ADE-IOS-2P was almost all of these). A saved port change leaves a
 `sync.route` breadcrumb, so the report shows whether the port moved just
 before. Such a drop was seen on a real iPhone right after the computer's sync
 port moved and never reproduced in the simulator (focused or fleet, signed in
