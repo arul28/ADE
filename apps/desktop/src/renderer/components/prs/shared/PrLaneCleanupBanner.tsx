@@ -106,7 +106,7 @@ export function PrLaneCleanupBanner({
           tone: "warning",
           icon: <Warning size={14} weight="fill" />,
           title: "PR is linked to Primary, but its branch is separate",
-          detail: "ADE will not delete the Primary lane. You can clean up the PR branch instead.",
+          detail: "ADE will not delete the main checkout. You can clean up the PR branch instead.",
           busy,
           error: error ?? undefined,
           extra: (

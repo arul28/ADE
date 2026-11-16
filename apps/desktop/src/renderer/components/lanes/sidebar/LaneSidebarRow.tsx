@@ -1,3 +1,4 @@
+import { laneDisplayName } from "../../../../shared/laneDisplayName";
 import React from "react";
 import { CircleDashed, CircleNotch, DesktopTower, UsersThree } from "@phosphor-icons/react";
 import type { LaneListSnapshot, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
@@ -326,7 +327,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
             className="shrink-0 text-[11px] leading-none"
             fallback={<LaneIcon size={12} />}
           />
-          <span className="min-w-0 truncate">{lane.name}</span>
+          <span className="min-w-0 truncate">{laneDisplayName(lane)}</span>
           {/* Read out with the row's name, so a screen reader tells lanes of
               the same name apart; on screen the hover card names it. */}
           {machine ? <span className="sr-only">, on {machine.machineName}</span> : null}

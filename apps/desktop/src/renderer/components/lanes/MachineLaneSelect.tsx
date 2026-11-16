@@ -1,3 +1,4 @@
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 import { CaretUpDown } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 
@@ -26,9 +27,9 @@ export type MachineLaneSelectGroup = {
 };
 
 /** "name · branch", the one label format both lane pickers use. */
-export function laneOptionLabel(lane: { name: string; branchRef?: string | null; kind?: string | null }): string {
+export function laneOptionLabel(lane: { name: string; branchRef?: string | null; kind?: string | null; laneType?: string | null }): string {
   const branch = (lane.branchRef ?? "").replace(/^refs\/heads\//, "") || lane.kind || "worktree";
-  return `${lane.name} · ${branch}`;
+  return `${laneDisplayName(lane)} · ${branch}`;
 }
 
 export function MachineLaneSelect({

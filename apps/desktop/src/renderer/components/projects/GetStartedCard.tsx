@@ -220,3 +220,27 @@ export function InstallAdeChip() {
     </div>
   );
 }
+
+const DESKTOP_FIRST_TAB_KEY = "ade.desktopFirstAccountTab.v1";
+
+/**
+ * The desktop's first sign-in on an account that already has projects (made
+ * on the web or the phone) and nothing on this computer: open the newest
+ * account project's tab once. It lists its cloud lanes and offers Copy here;
+ * nothing is cloned on its own.
+ */
+export function useDesktopFirstAccountTab({ enabled, hasLocalProjects }: { enabled: boolean; hasLocalProjects: boolean }): void {
+  const list = useAccountProjectList();
+  const projects = list.state === "ready" ? list.projects : null;
+  useEffect(() => {
+    if (!enabled || hasLocalProjects || !projects || projects.length === 0) return;
+    try {
+      if (window.localStorage.getItem(DESKTOP_FIRST_TAB_KEY)) return;
+      window.localStorage.setItem(DESKTOP_FIRST_TAB_KEY, String(Date.now()));
+    } catch {
+      return;
+    }
+    const newest = projects.slice().sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0))[0];
+    if (newest) useAppStore.getState().showNoMachineTab({ id: newest.id, displayName: newest.name, iconDataUrl: null });
+  }, [enabled, hasLocalProjects, projects]);
+}

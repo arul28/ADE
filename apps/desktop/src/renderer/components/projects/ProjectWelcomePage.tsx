@@ -61,7 +61,7 @@ import type {
 import "./ProjectWelcomePage.css";
 import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
 import { useHomeAccountProjects } from "./useHomeAccountProjects";
-import { GetStartedCard, InstallAdeChip, useGetStartedState } from "./GetStartedCard";
+import { GetStartedCard, InstallAdeChip, useDesktopFirstAccountTab, useGetStartedState } from "./GetStartedCard";
 import { useHasOwnComputer } from "../../state/ownComputers";
 import type { HomeWebComputer } from "./homeProjectRows";
 import { useHomeRowRemoval } from "./useHomeRowRemoval";
@@ -600,6 +600,7 @@ export function ProjectWelcomePage() {
     priorWork: webMode ? hasOwnComputer && webRecents.length > 0 : !recentsLoaded || recentProjects.length > 0,
   });
   const showChatWithoutProject = !webMode || (hasOwnComputer && activeWebMachine != null);
+  useDesktopFirstAccountTab({ enabled: !webMode && recentsLoaded, hasLocalProjects: recentProjects.length > 0 });
 
 
 

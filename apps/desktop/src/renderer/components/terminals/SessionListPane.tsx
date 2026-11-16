@@ -1,3 +1,4 @@
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
@@ -3453,7 +3454,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         key={lane.id}
         sectionId={lane.id}
         icon={laneIcon}
-        label={lane.name}
+        label={laneDisplayName(lane)}
         namingLaneId={lane.id}
         subLabel={branchNameFromRef(lane.branchRef)}
         variant="lane"
@@ -3626,7 +3627,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             <LaneIcon size={12} weight="regular" />
           </span>
         }
-        label={row.lane.name}
+        label={laneDisplayName(row.lane)}
         subLabel={branchNameFromRef(row.lane.branchRef)}
         variant="lane"
         count={row.sessions.length}

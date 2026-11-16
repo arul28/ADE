@@ -1,3 +1,4 @@
+import { laneDisplayName, PRIMARY_LANE_DISPLAY_NAME } from "../../../../shared/laneDisplayName";
 import React from "react";
 import { Archive, ArrowClockwise, ArrowSquareOut, CaretDown, CheckCircle, PushPin } from "@phosphor-icons/react";
 import type { ProjectLaneHealth } from "../../../../shared/types/projectHealth";
@@ -292,7 +293,7 @@ function LaneRow({
       <div className="ade-lanes-row-main">
         <span className="ade-lanes-check">
           {primary ? (
-            <PushPin size={13} weight="fill" aria-label="Primary lane" />
+            <PushPin size={13} weight="fill" aria-label={PRIMARY_LANE_DISPLAY_NAME} />
           ) : (
             <input
               type="checkbox"
@@ -311,7 +312,7 @@ function LaneRow({
           aria-controls={detailsId}
           onClick={onToggleOpen}
         >
-          <span className="ade-lanes-name" title={lane.name}>{lane.name}</span>
+          <span className="ade-lanes-name" title={laneDisplayName(lane)}>{laneDisplayName(lane)}</span>
           <span className="kit-tag" data-tone={pill.tone}>{pill.label}</span>
           {lane.runningSessions > 0 ? (
             <span className="kit-tag ade-lanes-running"><span className="kit-dot" data-state="accent" aria-hidden />Running</span>

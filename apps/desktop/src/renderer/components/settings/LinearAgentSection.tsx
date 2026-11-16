@@ -1,3 +1,4 @@
+import { PRIMARY_LANE_DISPLAY_NAME } from "../../../shared/laneDisplayName";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowSquareOut, Check, CircleNotch, Robot } from "@phosphor-icons/react";
@@ -33,7 +34,7 @@ function ctoApi() {
 function laneModeLabel(mode: string | null): string {
   if (mode === "create") return "New lane per issue";
   if (mode === "require-on-trigger") return "Lane from the trigger";
-  return "Primary lane";
+  return PRIMARY_LANE_DISPLAY_NAME;
 }
 
 function Field({ label, children, wide = false }: { label: string; children: React.ReactNode; wide?: boolean }) {

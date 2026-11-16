@@ -281,6 +281,12 @@ corner card instead of `showToast`, a custom scrim and panel instead of
 `durationMs` or banner tone that contradicts `docs/design/notices.md`.
 Cite the doc section in the finding.
 
+**Main checkout name.** A screen that shows a lane's name with `lane.name`
+alone, or new copy that says "Primary lane", is a finding: the UI calls the
+primary lane "Main checkout" through `laneDisplayName` (see **Main checkout**
+in `AGENTS.md`). The stored name "Primary" and the name match in
+`useDraftMachineRouting.ts` stay as they are.
+
 ### Synthesis (lead step, after both tracks finish)
 
 1. **Collect** all findings from Tracks A and B.
