@@ -134,7 +134,8 @@ async function launchRateRefusal(env: CloudEnv, userId: string, now: number, wai
 /** Saved once per account, kind and hour: a client retrying in a loop must not write a row per try. */
 async function rateLimited(env: CloudEnv, userId: string, what: "creates" | "launches", count: number, now: number, waitUntil: CloudWaitUntil): Promise<void> {
   captureCloudSafety(env, waitUntil, userId, "rate_limited", what, now);
-  const claimed = await claimAlertKey(env, `rate_limited:${what}:${userId}:${Math.floor(now / HOUR_MS)}`, "rate_limited", userId, now);
+  // A record, not an email: it never gets `sent_at`, so it is never taken over.
+  const claimed = await claimAlertKey(env, `rate_limited:${what}:${userId}:${Math.floor(now / HOUR_MS)}`, "rate_limited", userId, now, false);
   if (claimed) await reportCloudAbuse(env, "rate_limited", userId, { what, count }, now);
 }
 
@@ -199,14 +200,15 @@ const ABANDONED_ALERT_CLAIM_MS = 30 * 60_000;
  * Takes `key` for one alert. False when it was taken already: the event was
  * alerted, or another try is sending it now. A claim left unsent for
  * {@link ABANDONED_ALERT_CLAIM_MS} (its give-back failed too) is taken over,
- * so a database hiccup can't silence the alert for good.
+ * so a database hiccup can't silence the alert for good. `takeOver` false
+ * (a once-only record with no email) never takes a key over.
  */
-async function claimAlertKey(env: CloudDb, key: string, kind: string, userId: string | null, now: number): Promise<boolean> {
+async function claimAlertKey(env: CloudDb, key: string, kind: string, userId: string | null, now: number, takeOver = true): Promise<boolean> {
   const result = await env.DB.prepare(`
     insert into cloud_owner_alerts (alert_key, kind, user_id, created_at) values (?, ?, ?, ?)
     on conflict (alert_key) do update set created_at = excluded.created_at
-    where cloud_owner_alerts.sent_at is null and cloud_owner_alerts.created_at < ?
-  `).bind(key, kind, userId, now, now - ABANDONED_ALERT_CLAIM_MS).run();
+    where ? = 1 and cloud_owner_alerts.sent_at is null and cloud_owner_alerts.created_at < ?
+  `).bind(key, kind, userId, now, takeOver ? 1 : 0, now - ABANDONED_ALERT_CLAIM_MS).run();
   return (result.meta.changes ?? 0) === 1;
 }
 
