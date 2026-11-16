@@ -76,11 +76,18 @@ const STRIPPED_ATTRIBUTES = new Set([
   "data-testid",
   "data-onboarding-anchor",
   "data-chat-composer-text",
+  "data-draft-depart",
+  "data-work-live-card-avoid",
   "autofocus",
 ]);
+/** Markers that code looks up (no stylesheet reads them), so the copy does not carry them. */
 const STRIPPED_SCOPE_ATTRIBUTES = new Set([
   "data-testid",
   "data-onboarding-anchor",
+  "data-work-draft-surface",
+  "data-draft-depart",
+  "data-ade-find-scope",
+  "data-work-live-card-avoid",
   WORK_ROUTE_ATTRIBUTE,
 ]);
 const TEXT_ATTRIBUTES_NOT_COPIED = new Set([

@@ -235,6 +235,7 @@ import {
   ChatInfoHostContext,
 } from "./AgentChatMessageList";
 import { classifyLiveEventBatch, createChatLiveEventsStore, createComposerDraftStore, type ChatLiveEventsStore, type ComposerDraftStore } from "./chatLiveEvents";
+import { useEarlyComposerHandoff } from "./useEarlyComposerHandoff";
 import { SceneReplyContext } from "./SceneFrame";
 import { ChatTerminalRevealContext } from "./ChatCodeBlockRun";
 import { UsageLimitChip } from "./UsageLimitChip";
@@ -12351,6 +12352,16 @@ export function AgentChatPane({
     save();
     return draftStore.subscribe(save);
   }, [companionStateKey, composerDraftStorageKeyValue, draftStore, snapshotWithDraftText]);
+
+  // After the draft is read and its saver subscribed: take what the early
+  // prompt box (the Work fallback) holds, and record this screen for it.
+  useEarlyComposerHandoff({
+    enabled: isWorkDraftComposer,
+    projectRoot,
+    dockRef: composerDockRef,
+    readDraft: draftStore.get,
+    applyDraft: updateComposerDraft,
+  });
 
   useEffect(() => {
     if (!parallelChatMode) return;

@@ -21,7 +21,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { query as claudeQuery, type SDKUserMessage, type SpawnOptions, type SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
+// Types only: the SDK loads on the first verify, not with this module.
+import type { Query as ClaudeQuery, query as claudeQuery, SDKUserMessage, SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { ensurePrivateDirectory } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
@@ -239,9 +240,9 @@ export async function verifyClaudePass(
     return created as unknown as SpawnedProcess;
   };
 
-  let stream: ReturnType<typeof claudeQuery> | null = null;
+  let stream: ClaudeQuery | null = null;
   try {
-    stream = (options.query ?? claudeQuery)({
+    stream = (options.query ?? (await import("@anthropic-ai/claude-agent-sdk")).query)({
       prompt: noPrompt(),
       options: {
         cwd: dir,

@@ -173,7 +173,10 @@ function pathOf(value: unknown): string | null {
   return null;
 }
 
-/** "fnName (cli.cjs:123)", without this module's frames. */
+/**
+ * "fnName (cli.cjs:1:4567)", without this module's frames. The bundle is
+ * minified onto few lines, so the column tells two call sites apart.
+ */
 function callerOf(frames: NodeJS.CallSite[]): string {
   const parts: string[] = [];
   for (const frame of frames) {
@@ -181,7 +184,7 @@ function callerOf(frames: NodeJS.CallSite[]): string {
     const name = frame.getFunctionName() ?? frame.getMethodName() ?? "<anonymous>";
     const file = frame.getFileName() ?? "";
     const base = file.slice(Math.max(file.lastIndexOf("/"), file.lastIndexOf("\\")) + 1);
-    parts.push(`${name} (${base}:${frame.getLineNumber() ?? 0})`);
+    parts.push(`${name} (${base}:${frame.getLineNumber() ?? 0}:${frame.getColumnNumber() ?? 0})`);
   }
   return parts.join(" < ");
 }

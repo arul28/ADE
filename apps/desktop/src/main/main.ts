@@ -246,7 +246,6 @@ import {
   setPathEnvValue,
   SHELL_PATH_CACHE_FILE,
 } from "./services/ai/cliExecutableResolver";
-import { createAgentChatService, listMachineProviderAccountChatLoad, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
 import { disposeAllCursorSdkConnections } from "./services/chat/cursorSdkPool";
 import { recoverCursorSdkWorkerOrphans } from "./services/chat/cursorSdkWorkerOrphans";
 import { createChatRuntimeBudget } from "./services/chat/chatRuntimeBudget";
@@ -359,11 +358,10 @@ import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
 import { createAdeRpcRequestHandler } from "../../../ade-cli/src/adeRpcServer";
-import {
-  createEventBuffer,
-  type AdeRuntime,
-  type AdeRuntimePaths,
-} from "../../../ade-cli/src/bootstrap";
+// The buffer's own module: the brain's bootstrap brings its whole service
+// graph (the chat service and the Claude Agent SDK with it).
+import { createEventBuffer } from "../../../ade-cli/src/eventBuffer";
+import type { AdeRuntime, AdeRuntimePaths } from "../../../ade-cli/src/bootstrap";
 import {
   startJsonRpcServer,
   type JsonRpcServerErrorContext,
@@ -4227,6 +4225,14 @@ app.whenReady().then(async () => {
     preserveRecentOrder?: boolean;
     userSelectedProject?: boolean;
   }): Promise<AppContext> => {
+    // Loaded here, not at the top: only an in-process project runtime (tests,
+    // the opt-in desktop sync host) reaches this, and the chat service brings
+    // the Claude Agent SDK with it, which main otherwise never loads.
+    const {
+      createAgentChatService,
+      listMachineProviderAccountChatLoad,
+      writeSessionLinearIssueContextFile,
+    } = await import("./services/chat/agentChatService");
     // The .ade directory may exist from git (shared scaffold files like ade.yaml),
     // but the db is gitignored and machine-local. A missing db, or a scaffold
     // first-open marker, means this machine has not finished a real bind yet.

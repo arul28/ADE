@@ -131,7 +131,7 @@ const MONACO_CANCELED = /^Canceled: Canceled$/;
 type FingerprintSource = {
   fingerprint?: string[];
   message?: string;
-  exception?: { values?: Array<{ type?: string; value?: string; stacktrace?: { frames?: Array<{ filename?: string; function?: string; lineno?: number }> } }> };
+  exception?: { values?: Array<{ type?: string; value?: string; stacktrace?: { frames?: Array<{ filename?: string; function?: string; lineno?: number; colno?: number }> } }> };
   tags?: Record<string, unknown>;
 };
 
@@ -147,7 +147,8 @@ export function eventBudgetKey(event: FingerprintSource): string {
   if (exception) {
     const frames = exception.stacktrace?.frames ?? [];
     const top = frames[frames.length - 1];
-    const where = top ? `${top.filename ?? ""}:${top.function ?? ""}:${top.lineno ?? ""}` : (exception.value ?? "").slice(0, 120);
+    // The column too: a minified bundle puts nearly every frame on line 1.
+    const where = top ? `${top.filename ?? ""}:${top.function ?? ""}:${top.lineno ?? ""}:${top.colno ?? ""}` : (exception.value ?? "").slice(0, 120);
     return `${exception.type ?? "Error"}|${where}`;
   }
   return `message|${(event.message ?? "").slice(0, 160)}`;

@@ -89,10 +89,10 @@ import {
   tool as createClaudeSdkTool,
   USAGE_LIMIT_ERROR_PREFIXES,
 } from "@anthropic-ai/claude-agent-sdk";
-import {
-  createSdkMcpServer as createDroidSdkMcpServer,
-  type DroidTool as DroidSdkTool,
-} from "@factory/droid-sdk/node";
+// Types only: the SDK (and the libsodium WebAssembly heap it starts) loads on
+// the first HTTP MCP lease through `loadDroidSdk`, not with this module.
+import type { DroidTool as DroidSdkTool } from "@factory/droid-sdk/node";
+import { loadDroidSdk } from "../ai/droidSdkLoader";
 import type {
   SDKSessionInfo,
   SessionMessage as ClaudeSdkSessionMessage,
@@ -29433,6 +29433,7 @@ export function createAgentChatService(args: {
     if (existing) return existing;
     const tools = HTTP_MCP_TOOL_SETS[toolSet].buildTools(managed);
     if (!tools) return null;
+    const { createSdkMcpServer: createDroidSdkMcpServer } = await loadDroidSdk();
     const server = createDroidSdkMcpServer({
       name: HTTP_MCP_TOOL_SETS[toolSet].serverName,
       version: appVersion,

@@ -14,7 +14,7 @@ import {
   reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
 } from "../ai/providerRuntimeHealth";
-import { isCursorSdkResolutionError, loadCursorSdk } from "../ai/cursorSdkLoader";
+import { cursorSdkResolvesWithoutLoading, isCursorSdkResolutionError, loadCursorSdk } from "../ai/cursorSdkLoader";
 import { resolvePinnedCursorAgentCli } from "../ai/pinnedProviderTools";
 import { stripVTControlCharacters } from "node:util";
 import { withTimeout as withSettleTimeout } from "../shared/withTimeout";
@@ -67,7 +67,9 @@ const TTL_MS = 120_000;
 // minutes after the last active probe.
 const POSITIVE_TTL_MS = 6 * 60 * 60_000;
 const SDK_MODEL_LIST_TIMEOUT_MS = 5_000;
-const CURSOR_MODELS_API_URL = "https://api.cursor.com/v1/models";
+// The SDK's cloud client reads the same override (`CURSOR_BACKEND_URL`).
+const cursorModelsApiUrl = (): string =>
+  `${process.env.CURSOR_BACKEND_URL?.trim() || "https://api.cursor.com"}/v1/models`;
 const CURSOR_AGENT_AUTH_BLOCKER =
   "Cursor rejected the configured API key for agent/model access. Re-enter a Cursor API key from the Cursor dashboard API page.";
 
@@ -855,14 +857,37 @@ async function fetchCursorModelsFromSdk(
   generation: number,
   timeoutMs: number,
 ): Promise<CursorCliModelRow[]> {
-  let sdkSucceeded = false;
+  let listed = false;
   const rows = await withTimeout((async () => {
+    // REST first. `Cursor.models.list` is a GET of this same endpoint that
+    // returns its `items` as they came, so mapping them with the SDK path's
+    // own mapper gives the same rows, and the SDK (and its heap) loads only
+    // when this fails or a chat needs it. When the package does not resolve,
+    // the SDK goes first as before, so an unusable SDK still hides the models.
+    let apiItems: unknown[] | null = null;
+    let apiError: unknown = null;
+    if (apiKey && cursorSdkResolvesWithoutLoading()) {
+      try {
+        apiItems = await fetchCursorModelItemsFromOfficialApi(apiKey);
+        const apiRows = normalizeSdkModelRows(apiItems as SDKModel[]);
+        if (apiRows.length) {
+          listed = true;
+          return apiRows;
+        }
+      } catch (error) {
+        apiError = error;
+        // A rejected key fails the SDK's GET of this endpoint the same way, and
+        // the SDK path below would end on this same error.
+        if (toCursorModelDiscoveryError(error).kind === "auth") throw toCursorModelDiscoveryError(error);
+      }
+    }
+
     let sdkError: unknown = null;
     try {
       const { Cursor } = await loadCursorSdk();
       const sdkRows = normalizeSdkModelRows(await Cursor.models.list({ apiKey }));
       if (sdkRows.length) {
-        sdkSucceeded = true;
+        listed = true;
         return sdkRows;
       }
     } catch (error) {
@@ -877,10 +902,12 @@ async function fetchCursorModelsFromSdk(
     }
 
     try {
-      const apiRows = await fetchCursorModelsFromOfficialApi(apiKey);
+      // The REST answer from above when there was one, else a first fetch.
+      if (apiError) throw apiError;
+      const apiRows = apiItems ? normalizeCursorModelRows(apiItems) : await fetchCursorModelsFromOfficialApi(apiKey);
       if (apiRows.length) return apiRows;
-    } catch (apiError) {
-      const apiFailure = toCursorModelDiscoveryError(apiError);
+    } catch (fallbackError) {
+      const apiFailure = toCursorModelDiscoveryError(fallbackError);
       if (apiFailure.kind === "auth") throw apiFailure;
       if (sdkError && classifyCursorModelDiscoveryError(sdkError) === "auth") {
         throw toCursorModelDiscoveryError(sdkError);
@@ -901,19 +928,24 @@ async function fetchCursorModelsFromSdk(
     // resurrect models the provider just reported as gone.
     sdkCached = null;
   }
-  if (sdkSucceeded && rows.length && sdkLastFailure?.keyHash === keyHash) {
+  if (listed && rows.length && sdkLastFailure?.keyHash === keyHash) {
     sdkLastFailure = null;
   }
-  if (sdkSucceeded) {
+  if (listed) {
     recordCursorModelDiscoverySuccess(rows);
   }
   return rows;
 }
 
 async function fetchCursorModelsFromOfficialApi(apiKey: string | undefined): Promise<CursorCliModelRow[]> {
+  return normalizeCursorModelRows(await fetchCursorModelItemsFromOfficialApi(apiKey));
+}
+
+/** The raw model items of `GET /v1/models`, or none without a key. */
+async function fetchCursorModelItemsFromOfficialApi(apiKey: string | undefined): Promise<unknown[]> {
   const token = apiKey?.trim();
   if (!token) return [];
-  const response = await fetch(CURSOR_MODELS_API_URL, {
+  const response = await fetch(cursorModelsApiUrl(), {
     method: "GET",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -930,7 +962,7 @@ async function fetchCursorModelsFromOfficialApi(apiKey: string | undefined): Pro
   // The SDK's v1 endpoint returns `{ items }`; retain the older `{ models }`
   // shape as a compatibility fallback for hosted proxies that still expose it.
   const rows = Array.isArray(payload.items) ? payload.items : payload.models;
-  return Array.isArray(rows) ? normalizeCursorModelRows(rows) : [];
+  return Array.isArray(rows) ? rows : [];
 }
 
 function warmCursorModelsFromSdk(apiKey?: string | null): void {

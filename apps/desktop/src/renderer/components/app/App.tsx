@@ -69,6 +69,8 @@ import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurfa
 import { AppearanceRoot } from "./AppearanceRoot";
 import { AppearanceScheduleHost } from "./AppearanceScheduleHost";
 import { fgTint } from "../lanes/laneDesignTokens";
+import { WorkLoadingFallback } from "./EarlyWorkComposer";
+import { whenEarlyComposerSettled } from "../../lib/earlyComposer";
 import {
   originUrlForBinding,
   rememberedLocalOrigin,
@@ -152,7 +154,10 @@ const filesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
 const FilesTab = filesRoute.Component;
 const preloadFilesTab = filesRoute.preload;
 const workRoute = createPreloadableRoute<{ active?: boolean }>(() =>
-  import("../terminals/TerminalsPage").then((m) => ({ default: m.TerminalsPage }))
+  import("../terminals/TerminalsPage")
+    // A word the early prompt box is composing (IME) finishes there before the
+    // Work page replaces it (`whenEarlyComposerSettled`).
+    .then((m) => whenEarlyComposerSettled().then(() => ({ default: m.TerminalsPage })))
 );
 const TerminalsPage = workRoute.Component;
 const preloadTerminalsPage = workRoute.preload;
@@ -329,35 +334,10 @@ const GuardLoadingFallback = isWebClientMode() ? RouteLoadingFallback : StartupS
 const LazyFallback = RouteLoadingFallback;
 
 /**
- * The Work tab's own placeholder while its chunk loads: shaped like the chat it
- * is about to show (a title bar, a few messages, the prompt box at the bottom)
- * rather than the generic list-and-panels grid, so the page does not change
- * shape when it arrives.
+ * The Work tab's own placeholder while its chunk loads (`WorkLoadingFallback`):
+ * shaped like the chat it is about to show, or, for an empty new chat, the
+ * new-chat screen with a prompt box that already takes typing.
  */
-const WorkLoadingFallback = (
-  <div className="flex h-full min-h-0 w-full flex-col" style={{ background: "var(--color-bg)" }} aria-label="Loading chats" aria-busy="true">
-    <div className="flex h-12 shrink-0 items-center gap-3 px-5" style={{ borderBottom: "1px solid var(--color-border)" }}>
-      <div className="h-3.5 w-56 animate-pulse rounded" style={{ background: fgTint(7) }} />
-      <span className="ml-auto text-[11px] text-muted-fg/60">Loading chats…</span>
-    </div>
-    <div className="mx-auto flex min-h-0 w-full max-w-[52rem] flex-1 flex-col gap-5 px-6 pt-8">
-      <div className="ml-auto h-14 w-2/3 animate-pulse rounded-2xl" style={{ background: fgTint(6) }} />
-      <div className="space-y-2.5">
-        {["w-11/12", "w-4/5", "w-3/5"].map((width) => (
-          <div key={width} className={`h-3 ${width} animate-pulse rounded`} style={{ background: fgTint(5) }} />
-        ))}
-      </div>
-      <div className="space-y-2.5">
-        {["w-5/6", "w-2/3"].map((width) => (
-          <div key={width} className={`h-3 ${width} animate-pulse rounded`} style={{ background: fgTint(5) }} />
-        ))}
-      </div>
-    </div>
-    <div className="mx-auto w-full max-w-[52rem] shrink-0 px-6 pb-5">
-      <div className="h-[88px] animate-pulse rounded-2xl border border-border" style={{ background: fgTint(4) }} />
-    </div>
-  </div>
-);
 
 function isWorkRoutePath(pathname: string): boolean {
   return pathname === "/work" || pathname.startsWith("/work/");
@@ -627,10 +607,11 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           <div
             ref={workSurfaceRef}
             className="h-full min-h-0 w-full"
+            data-ade-work-route=""
             {...parkedSurfaceProps(!isWorkRoute)}
           >
             <PageErrorBoundary>
-              <React.Suspense fallback={WorkLoadingFallback}>
+              <React.Suspense fallback={<WorkLoadingFallback shown={workShown} />}>
                 <ProjectSidebarHold held={heldWork}>
                   <CloudViewsShownContext.Provider value={workShown}>
                     <TerminalsPage active={workShown} />

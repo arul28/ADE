@@ -930,21 +930,35 @@ function isLocalPortUnavailableError(error: unknown): boolean {
  * module starts a 16 MB WebAssembly heap (poly1305) the moment it loads, and
  * main imports this file at boot, so a static import kept that heap in every
  * session, including the ones that never open an SSH machine.
+ *
+ * A dynamic import, so the brain's bundle still inlines its copy. Main keeps
+ * `ssh2` external; if the import cannot resolve there, `require` resolves it
+ * the way the static import did (the SDK loaders do the same).
  */
+type Ssh2Module = typeof import("ssh2");
 const requireFromRuntime = createRequire(
   typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url),
 );
-let ssh2Module: typeof import("ssh2") | null = null;
-function loadSsh2(): typeof import("ssh2") {
-  // `require`, as the static import compiled to, so the package resolves
-  // exactly as before in the packaged app (inside app.asar).
-  ssh2Module ??= requireFromRuntime("ssh2") as typeof import("ssh2");
+let ssh2Module: Promise<Ssh2Module> | null = null;
+function loadSsh2(): Promise<Ssh2Module> {
+  ssh2Module ??= import("ssh2")
+    .then((loaded) => {
+      // A CommonJS package imported natively may expose its exports only as
+      // `default`.
+      const namespace = loaded as Ssh2Module & { default?: Ssh2Module };
+      return namespace.Client ? namespace : (namespace.default ?? namespace);
+    })
+    .catch(() => requireFromRuntime("ssh2") as Ssh2Module)
+    .catch((error: unknown) => {
+      ssh2Module = null;
+      throw error;
+    });
   return ssh2Module;
 }
 
-function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
+async function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
+  const { Client: SshClient } = await loadSsh2();
   return new Promise((resolve, reject) => {
-    const { Client: SshClient } = loadSsh2();
     const client = new SshClient();
     let settled = false;
     let connectTimer: NodeJS.Timeout | null = null;

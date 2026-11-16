@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { isPageHidden, observePageVisibility } from "./pageVisibility";
 
 /**
  * One timer per period for the whole renderer.
@@ -25,6 +26,56 @@ type TickerChannel = {
 
 const channels = new Map<number, TickerChannel>();
 
+/**
+ * A hidden page (minimized, on another Space, or fully covered by another
+ * window on macOS) shows no clock, so no channel ticks while it is hidden.
+ * Chromium would still wake a hidden page once a second for a 1 s channel, and
+ * each wake re-renders every subscriber for a frame nobody sees. When the page
+ * shows again, every listener gets one tick at once, so no label is drawn with
+ * a reading from before the page was hidden, and the timers start again.
+ */
+let stopObservingVisibility: (() => void) | null = null;
+
+function startTimer(periodMs: number, channel: TickerChannel): void {
+  if (channel.timer != null || channel.listeners.size === 0 || isPageHidden()) return;
+  channel.timer = window.setInterval(() => notifyChannel(channel), periodMs);
+}
+
+function stopTimer(channel: TickerChannel): void {
+  if (channel.timer == null) return;
+  window.clearInterval(channel.timer);
+  channel.timer = null;
+}
+
+function notifyChannel(channel: TickerChannel): void {
+  // Copy: a listener may unsubscribe itself while we are notifying. There is
+  // deliberately no per-listener isolation — every listener is a bare
+  // setState, which cannot throw. Keep it that way: one throw here would
+  // abort the loop and freeze every later subscriber's clock, silently.
+  for (const notify of [...channel.listeners]) notify();
+}
+
+function anyChannelListening(): boolean {
+  for (const channel of channels.values()) if (channel.listeners.size > 0) return true;
+  return false;
+}
+
+function ensureVisibilityObserver(): void {
+  if (stopObservingVisibility) return;
+  stopObservingVisibility = observePageVisibility({
+    onHidden: () => {
+      for (const channel of channels.values()) stopTimer(channel);
+    },
+    onVisible: () => {
+      for (const [periodMs, channel] of channels) {
+        if (channel.listeners.size === 0) continue;
+        notifyChannel(channel);
+        startTimer(periodMs, channel);
+      }
+    },
+  });
+}
+
 function channelFor(periodMs: number): TickerChannel {
   let channel = channels.get(periodMs);
   if (!channel) {
@@ -43,22 +94,17 @@ function channelFor(periodMs: number): TickerChannel {
 export function subscribeToTicker(periodMs: number, listener: () => void): () => void {
   const channel = channelFor(periodMs);
   channel.listeners.add(listener);
-  // A timer exists exactly while the channel has listeners, so a period nobody
-  // is reading costs nothing.
-  if (channel.timer == null) {
-    channel.timer = window.setInterval(() => {
-      // Copy: a listener may unsubscribe itself while we are notifying. There is
-      // deliberately no per-listener isolation — every listener is a bare
-      // setState, which cannot throw. Keep it that way: one throw here would
-      // abort the loop and freeze every later subscriber's clock, silently.
-      for (const notify of [...channel.listeners]) notify();
-    }, periodMs);
-  }
+  ensureVisibilityObserver();
+  // A timer exists exactly while the channel has listeners and the page is
+  // shown, so a period nobody is reading costs nothing.
+  startTimer(periodMs, channel);
   return () => {
     channel.listeners.delete(listener);
-    if (channel.listeners.size === 0 && channel.timer != null) {
-      window.clearInterval(channel.timer);
-      channel.timer = null;
+    if (channel.listeners.size > 0) return;
+    stopTimer(channel);
+    if (!anyChannelListening()) {
+      stopObservingVisibility?.();
+      stopObservingVisibility = null;
     }
   };
 }

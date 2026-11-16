@@ -12,6 +12,13 @@ const devMainReadyMarker = process.env.ADE_DEV_MAIN_READY_MARKER?.trim() ?? "";
 const releaseBuild = process.env.ADE_RELEASE_BUILD === "1"
   || process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase() === "alpha";
 assertPublicPostHogToken(posthogProjectToken, "ADE_POSTHOG_PROJECT_TOKEN");
+// V8 keeps every loaded script's source in the heap for the life of the
+// process, so a minified bundle is about half the memory of a readable one.
+// `keepNames` keeps function and class names in stack traces and in `.name`;
+// release source maps still map each frame back to the source. The dev watch
+// build stays readable (it has no source maps), and `ADE_BUILD_MINIFY=0` turns
+// minify off for any build.
+const minifyBundle = !devMainReadyMarker && process.env.ADE_BUILD_MINIFY !== "0";
 
 export default defineConfig({
   entry: {
@@ -49,6 +56,8 @@ export default defineConfig({
   noExternal: [/^@opencode\/client(?:\/.*)?$/, /^@muse-code\/sdk(?:\/.*)?$/, /^@sentry\//],
   outDir: "dist",
   sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1",
+  minify: minifyBundle,
+  keepNames: minifyBundle,
   // Preserve Vite's dist/renderer output during main/preload watch rebuilds in dev.
   clean: ["dist/main", "dist/preload"],
   // The dev launcher must not infer build completion from main.cjs appearing:
