@@ -5556,6 +5556,22 @@ export function AgentChatPane({
   const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; pinKey: string | null; promise: Promise<void> } | null>(null);
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; pinKey: string | null; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
+  /**
+   * Chats this pane launched while it was on screen. They stay in its known
+   * set after their list row arrives (which clears the optimistic id) and
+   * until the pane hides, which is when the chat view takes the chat over.
+   * The Work new-chat box counts no list chats as known, so without this it
+   * would drop the launched chat's events once the row came.
+   */
+  const launchedSessionIdsRef = useRef<Set<string>>(new Set());
+  /**
+   * Every chat id the last known-set pass counted, list rows included, also
+   * where the known set leaves them out. The departed sweep compares these,
+   * so only a chat that left the list (or was never kept) counts as gone.
+   */
+  const knownRosterIdsRef = useRef<Set<string>>(new Set());
+  const isTileVisibleRef = useRef(isTileVisible);
+  isTileVisibleRef.current = isTileVisible;
   const seededInitialSummaryRef = useRef(false);
   /** Pending re-read of the locked chat's summary; `missingSince` is when "not found" began. */
   const lockedSummaryRetryRef = useRef<{ attempt: number; missingSince: number | null; timer: number | null }>({
@@ -10254,22 +10270,31 @@ export function AgentChatPane({
     );
   }, [shownChatId]);
 
+  // A launched chat belongs to the chat view once this pane hides.
+  useEffect(() => {
+    if (!isTileVisible) launchedSessionIdsRef.current.clear();
+  }, [isTileVisible]);
+
   useEffect(() => {
     const next = new Set<string>();
-    // The Work new-chat box shows no chat: the lane's other chats stream into
-    // their own panes. Taking their events here queued, merged and derived
-    // every streamed word of every chat in the lane, and rendered this pane,
-    // composer included, while the person typed. It keeps the chats it is
-    // launching (optimistic, pending) and any chat it shows.
-    if (!isWorkDraftComposer) {
-      for (const session of sessions) next.add(session.sessionId);
-    }
     if (selectedSessionId) next.add(selectedSessionId);
     if (lockSessionId) next.add(lockSessionId);
     if (initialSessionId) next.add(initialSessionId);
     for (const sessionId of optimisticSessionIdsRef.current) next.add(sessionId);
-    const previous = knownSessionIdsRef.current;
+    for (const sessionId of launchedSessionIdsRef.current) next.add(sessionId);
+    const roster = new Set<string>(next);
+    for (const session of sessions) roster.add(session.sessionId);
+    // The Work new-chat box shows no chat: the lane's other chats stream into
+    // their own panes. Taking their events here queued, merged and derived
+    // every streamed word of every chat in the lane, and rendered this pane,
+    // composer included, while the person typed. It keeps the chats it is
+    // launching (optimistic, launched, pending) and any chat it shows.
+    if (!isWorkDraftComposer) {
+      for (const session of sessions) next.add(session.sessionId);
+    }
+    const previous = new Set<string>([...knownRosterIdsRef.current, ...knownSessionIdsRef.current]);
     knownSessionIdsRef.current = next;
+    knownRosterIdsRef.current = roster;
     if (lockedSingleSessionMode) {
       // A locked pane has no roster read to prune against, so it let go of
       // nothing: every chat it showed stayed resident. It keeps the chats it
@@ -10300,7 +10325,7 @@ export function AgentChatPane({
     // pushed it out. Release its retention subscription too.
     const departed = selectDepartedChatSessionViewCacheSessions(
       previous,
-      next,
+      roster,
       [selectedSessionId, lockSessionId, initialSessionId],
     );
     if (!departed.length) return;
@@ -12638,6 +12663,7 @@ export function AgentChatPane({
     loadedHistoryRef.current.delete(created.id);
     optimisticSessionIdsRef.current.add(created.id);
     knownSessionIdsRef.current.add(created.id);
+    if (isTileVisibleRef.current) launchedSessionIdsRef.current.add(created.id);
     touchSession(created.id);
     return created;
   }, [initialNativeControls, lastLaunchConfigStorageKey, touchSession]);
@@ -13432,6 +13458,7 @@ export function AgentChatPane({
     localTouchBySessionRef.current.delete(session.id);
     optimisticSessionIdsRef.current.delete(session.id);
     knownSessionIdsRef.current.delete(session.id);
+    launchedSessionIdsRef.current.delete(session.id);
     releaseRetainedChatSession(session.id);
     clearAgentChatSessionViewCacheForSessions([session.id]);
     invalidateSessionListCache();
@@ -13507,6 +13534,7 @@ export function AgentChatPane({
     loadedHistoryRef.current.delete(sessionId);
     optimisticSessionIdsRef.current.add(sessionId);
     knownSessionIdsRef.current.add(sessionId);
+    launchedSessionIdsRef.current.add(sessionId);
     sendTiming?.attach(sessionId);
     sendTiming?.mark("createCalled");
     sendTiming?.mark("sendCalled");
@@ -13554,11 +13582,13 @@ export function AgentChatPane({
       onOpeningMessageOut?.(false);
       optimisticSessionIdsRef.current.delete(sessionId);
       knownSessionIdsRef.current.delete(sessionId);
+      launchedSessionIdsRef.current.delete(sessionId);
       return { session: null, request };
     }
     if (session.id !== sessionId) {
       optimisticSessionIdsRef.current.delete(sessionId);
       knownSessionIdsRef.current.delete(sessionId);
+      launchedSessionIdsRef.current.delete(sessionId);
     }
     sendTiming?.mark("sessionCreated");
     sendTiming?.mark("sendResolved");
