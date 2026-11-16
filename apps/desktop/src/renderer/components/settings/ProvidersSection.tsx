@@ -652,28 +652,49 @@ function MachineProvidersSection({
     });
   }, [detectedAuth, status?.availableModelIds, status?.runtimeConnections]);
 
-  const apiKeyStoreWarning = useMemo(() => {
+  const apiKeyStoreNotice = useMemo((): { tone: "warning" | "info"; message: string } | null => {
+    const warning = (message: string) => ({ tone: "warning" as const, message });
     if (status?.apiKeyStore?.legacyPlaintextDetected) {
-      return "Legacy plaintext API keys were detected in .ade/secrets/api-keys.json. ADE now uses encrypted safeStorage, and plaintext keys are no longer loaded. Re-enter any keys you still need.";
+      return warning("Legacy plaintext API keys were detected in .ade/secrets/api-keys.json. ADE now uses encrypted safeStorage, and plaintext keys are no longer loaded. Re-enter any keys you still need.");
     }
     if (status?.apiKeyStore?.macosKeychainError) {
-      return status.apiKeyStore.macosKeychainError;
+      return warning(status.apiKeyStore.macosKeychainError);
+    }
+    // Until the OS credential store answers, ADE has not tried to read the
+    // keys yet, so neither failure message below would be true.
+    if (status?.apiKeyStore?.secureStorageChecking) {
+      return {
+        tone: "info",
+        message: "ADE is waiting for the system keychain. Your saved API keys show here after you answer its prompt.",
+      };
     }
     if (status?.apiKeyStore?.decryptionFailed) {
       if (status.apiKeyStore.macosKeychainAvailable) {
-        return "An older encrypted API key file could not be decrypted from this app identity. New keys are stored in macOS Keychain; re-enter any missing keys.";
+        return warning("An older encrypted API key file could not be decrypted from this app identity. New keys are stored in macOS Keychain; re-enter any missing keys.");
       }
-      return "Encrypted API keys exist but could not be decrypted on this machine. Re-enter the affected keys to continue using them.";
+      return warning("Encrypted API keys exist but could not be decrypted on this machine. Re-enter the affected keys to continue using them.");
     }
     if (status?.apiKeyStore?.secureStorageAvailable === false) {
-      return "OS secure storage is unavailable, so ADE cannot persist API keys locally right now.";
+      return warning("OS secure storage is unavailable, so ADE cannot persist API keys locally right now.");
     }
     return null;
   }, [status?.apiKeyStore]);
-  const visibleApiKeyStoreWarning =
-    apiKeyStoreWarning && dismissedApiKeyStoreWarning !== apiKeyStoreWarning
-      ? apiKeyStoreWarning
+  const visibleApiKeyStoreNotice =
+    apiKeyStoreNotice && dismissedApiKeyStoreWarning !== apiKeyStoreNotice.message
+      ? apiKeyStoreNotice
       : null;
+  // The keychain prompt takes focus from this window, and answering it gives
+  // focus back. Read the status again then, so the keys show without a manual
+  // refresh. The listener exists only while the check waits.
+  const secureStorageChecking = status?.apiKeyStore?.secureStorageChecking === true;
+  useEffect(() => {
+    if (!secureStorageChecking) return undefined;
+    const onFocus = () => {
+      void refreshStatusRef.current({ force: true, silent: true });
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [secureStorageChecking]);
 
   // Unified OpenCode provider catalog: inventory + auth methods + known API key rows.
   const openCodeCatalog = useMemo((): OpenCodeProviderDetail[] => {
@@ -1258,11 +1279,11 @@ function MachineProvidersSection({
         <AlertBanner tone="error" message={error} onDismiss={() => setError(null)} />
       )}
 
-      {visibleApiKeyStoreWarning && (
+      {visibleApiKeyStoreNotice && (
         <AlertBanner
-          tone="warning"
-          message={visibleApiKeyStoreWarning}
-          onDismiss={() => setDismissedApiKeyStoreWarning(visibleApiKeyStoreWarning)}
+          tone={visibleApiKeyStoreNotice.tone}
+          message={visibleApiKeyStoreNotice.message}
+          onDismiss={() => setDismissedApiKeyStoreWarning(visibleApiKeyStoreNotice.message)}
         />
       )}
 

@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import type { SafeStorage } from "electron";
-import { isSecureStorageAvailable as hasSecureStorage, onSecureStorageAnswered } from "../shared/secureStorage";
+import { isSecureStorageAvailable as hasSecureStorage, isSecureStorageCheckPending, onSecureStorageAnswered } from "../shared/secureStorage";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { isSafeIdentifier } from "../../../shared/safeIdentifier";
@@ -93,6 +93,8 @@ export type ApiKeyStoreStatus = {
   legacyPlaintextDetected: boolean;
   legacyPlaintextPath: string | null;
   decryptionFailed: boolean;
+  /** The OS credential store has not answered yet (macOS can show a keychain prompt). */
+  secureStorageChecking: boolean;
 };
 
 const ENV_KEY_PROVIDERS: Record<string, string> = {
@@ -1202,6 +1204,10 @@ export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOpt
 }
 
 function getApiKeyStoreStatusIn(scope: ApiKeyScopeState): ApiKeyStoreStatus {
+  // A read made before the OS credential store answers fails by design. It is
+  // not a decryption failure: the keys are read again once the answer is in.
+  const secureStorageChecking = isSecureStorageCheckPending();
+  const decryptionFailed = scope.decryptionFailed && !secureStorageChecking;
   if (!scope.storePath || !scope.legacyStorePath) {
     return {
       secureStorageAvailable: isPersistentSecureStorageAvailable(scope),
@@ -1211,7 +1217,8 @@ function getApiKeyStoreStatusIn(scope: ApiKeyScopeState): ApiKeyStoreStatus {
       encryptedStorePath: null,
       legacyPlaintextDetected: false,
       legacyPlaintextPath: null,
-      decryptionFailed: scope.decryptionFailed,
+      decryptionFailed,
+      secureStorageChecking,
     };
   }
   return {
@@ -1222,7 +1229,8 @@ function getApiKeyStoreStatusIn(scope: ApiKeyScopeState): ApiKeyStoreStatus {
     encryptedStorePath: scope.credentialStore ? null : scope.storePath,
     legacyPlaintextDetected: Boolean(scope.legacyStorePath && fs.existsSync(scope.legacyStorePath)),
     legacyPlaintextPath: scope.legacyStorePath && fs.existsSync(scope.legacyStorePath) ? scope.legacyStorePath : null,
-    decryptionFailed: scope.decryptionFailed,
+    decryptionFailed,
+    secureStorageChecking,
   };
 }
 

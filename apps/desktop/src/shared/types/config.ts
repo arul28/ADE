@@ -2099,6 +2099,8 @@ export type AiSettingsStatus = {
     macosKeychainError?: string | null;
     legacyPlaintextDetected: boolean;
     decryptionFailed: boolean;
+    /** True until the OS credential store answers its first check (macOS can show a keychain prompt). */
+    secureStorageChecking?: boolean;
     encryptedStorePath?: string | null;
     legacyPlaintextPath?: string | null;
   };
