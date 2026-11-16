@@ -13,7 +13,11 @@ import { CLOUD_LANE_BRANCH_METADATA, cloudLaneLaunchStartRefusal } from "../../.
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { deriveDeterministicLaneNameFromPrompt, deriveDeterministicLaneTitleFromPrompt } from "../../../shared/laneNameFallback";
 import { requireNormalizedUuid } from "../../../shared/uuid";
+import { getDefaultModelDescriptor, isModelProviderGroup } from "../../../shared/modelRegistry";
+import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { readPresetLaunchTarget } from "../chat/chatLaunchRoute";
 import type {
+  ChatLaunchChatArgs,
   ChatLaunchCloudStageId,
   ChatLaunchCloudState,
   ChatLaunchCompleteClientArgs,
@@ -99,6 +103,25 @@ export type { CloudLaneLaunchDeps, CloudLaneLaunchStartInput } from "./cloudLane
  * computer failed begins again on a new computer), and pairing and
  * connecting repeat. Nothing runs while no cloud launch is live.
  */
+
+/**
+ * A chat launch that names no model (`ade chat create --machine cloud` without
+ * `--model`) takes the model a chat on this computer would run: its preset's
+ * (presets follow the account, so the computer reads the same one), else its
+ * provider's default. ADE Cloud refuses a chat launch with no model, so
+ * without this it failed at "Make computer".
+ */
+function withChatModel<T extends { chat?: ChatLaunchChatArgs }>(launch: T): T {
+  const create = launch.chat?.create;
+  if (!launch.chat || !create || create.modelId?.trim() || create.model?.trim()) return launch;
+  const presetId = create.presetId?.trim();
+  const preset = presetId ? readPresetLaunchTarget(presetId, resolveMachineAdeDir()) : null;
+  // A preset this computer doesn't know: say so, never run another model under its name.
+  if (presetId && !preset) throw new AdeExpectedError(`ADE can't find the preset ${presetId} on this computer, so it can't tell which model the lane should run. Pick the model, or the preset again.`, "user");
+  const provider = preset?.harness ?? create.provider;
+  const model = preset?.model || (isModelProviderGroup(provider) ? getDefaultModelDescriptor(provider)?.id : undefined);
+  return model ? { ...launch, chat: { ...launch.chat, create: { ...create, model, modelId: model } } } : launch;
+}
 
 export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const { logger } = deps;
@@ -808,7 +831,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const laneName = args.laneName?.trim()
       || deriveDeterministicLaneTitleFromPrompt(prompt)
       || deriveDeterministicLaneNameFromPrompt(prompt, { genericSuffix: launchId.slice(0, 8) });
-    const { cloud: _cloud, priorStages: _priorStages, ...launch } = args;
+    const { cloud: _cloud, priorStages: _priorStages, ...asked } = args;
+    const launch = withChatModel(asked);
     const snapshot = createChatLaunchSnapshot({
       launch: { ...launch, launchId, kind },
       laneId,
