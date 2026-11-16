@@ -16,7 +16,10 @@ import type {
 export type AccountLoginPhase = "idle" | "starting" | "awaiting" | "signed_in" | "error";
 
 const POLL_INTERVAL_MS = 1_500;
-const MAX_POLLS = 200; // ~5 minutes at 1.5s, matching the login session TTL.
+/** Used only when the brain's `expiresAt` cannot be read: its 15-minute wait. */
+const FALLBACK_LOGIN_WAIT_MS = 15 * 60_000;
+/** Polls a little past `expiresAt`, so the brain's own "timed out" answer is what shows. */
+const LOGIN_DEADLINE_MARGIN_MS = 5_000;
 
 function accountApi() {
   return (window.ade as typeof window.ade & {
@@ -75,9 +78,15 @@ export function useAccountLogin(options?: {
       return;
     }
     const attemptId = ++attemptRef.current;
+    // A new attempt replaces the one still open: its browser tab is no longer
+    // the one the person is using.
+    const previousSessionId = sessionIdRef.current;
+    sessionIdRef.current = null;
+    if (previousSessionId) void accountApi()?.cancelLogin({ sessionId: previousSessionId }).catch(() => {});
     setError(null);
     setPhase("starting");
     let sessionId: string;
+    let deadlineMs: number;
     try {
       const start = await api.startLogin();
       if (attemptRef.current !== attemptId) {
@@ -86,6 +95,9 @@ export function useAccountLogin(options?: {
       }
       sessionId = start.sessionId;
       sessionIdRef.current = sessionId;
+      const expiresAtMs = Date.parse(start.expiresAt);
+      deadlineMs = (Number.isFinite(expiresAtMs) ? expiresAtMs : Date.now() + FALLBACK_LOGIN_WAIT_MS)
+        + LOGIN_DEADLINE_MARGIN_MS;
       openExternalUrl(start.authorizeUrl);
     } catch (err) {
       if (attemptRef.current !== attemptId) return;
@@ -97,7 +109,7 @@ export function useAccountLogin(options?: {
     }
 
     setPhase("awaiting");
-    for (let attempt = 0; attempt < MAX_POLLS; attempt += 1) {
+    while (Date.now() < deadlineMs) {
       if (attemptRef.current !== attemptId) return;
       await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
       if (attemptRef.current !== attemptId) return;
