@@ -2393,10 +2393,13 @@ export function TopBar({
   // A copy removed outside this window (on its computer, or from another
   // window or the phone): its computer stays connected and its project list
   // no longer has it. The tab moves as it does after a removal made here.
-  // An empty list proves nothing (it has not arrived after a reconnect), and
-  // the list must say so for a few seconds first.
+  // An empty list right after a connect proves nothing (the list has not
+  // arrived), so an empty list counts only after this connection listed
+  // projects once. The list must say so for a few seconds first.
   const missingCopySinceRef = useRef(new Map<string, number>());
   const followedCopyRemovalsRef = useRef(new Set<string>());
+  /** Each connection that listed a project: target id, with the time it connected. */
+  const listedProjectsConnectionRef = useRef(new Map<string, number | string | null>());
   const [missingCopyTick, setMissingCopyTick] = useState(0);
   useEffect(() => {
     const nowMs = Date.now();
@@ -2405,7 +2408,11 @@ export function TopBar({
     for (const tab of openRemoteProjectTabsRef.current) {
       const connection = remoteSnapshot?.connections.find((entry) => entry.target.id === tab.targetId) ?? null;
       const projects = connection?.projects ?? [];
-      if (connection?.state !== "connected" || typeof connection.reconnectingSinceMs === "number" || projects.length === 0) continue;
+      if (connection?.state !== "connected" || typeof connection.reconnectingSinceMs === "number") continue;
+      const connectedAt = connection.connectedAt ?? null;
+      const listed = listedProjectsConnectionRef.current;
+      if (projects.length > 0) listed.set(tab.targetId, connectedAt);
+      else if (!listed.has(tab.targetId) || listed.get(tab.targetId) !== connectedAt) continue;
       const present = projects.filter((entry) => entry.exists !== false);
       if (findMachineProject(present, { projectId: tab.projectId, rootPath: tab.rootPath })) continue;
       stillMissing.add(tab.key);
