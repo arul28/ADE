@@ -33,7 +33,8 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   // A quoted value goes whole, spaces and all.
   /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret|password|passwd|authorization|cookie|session[_-]?token|private[_-]?key)["']?\s*[:=]\s*)(?:"[^"\n]*"?|'[^'\n]*'?|[^\s"',;&]+)/gi,
   // Credentials embedded in URLs: https://user:pass@host
-  /(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi,
+  // The scheme starts at the beginning of its run, so `a.a.a.…` isn't retried at every dot.
+  /((?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi,
 ];
 
 /** Query parameters whose value is a credential. */
@@ -86,7 +87,10 @@ export function scrubString(input: string, options?: { maxLength?: number }): st
   return output;
 }
 
-const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+// Each match starts at the beginning of a run (the lookbehind): without it a
+// long run with no spaces (base64, a minified line) retried at every
+// character, and one 64k-char string took seconds to scrub.
+const EMAIL = /(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 // A home path (`~/x`), or an absolute path with at least one folder, also
 // after a colon (`path:/Users/a/b`). The lookbehind keeps relative paths
 // (`src/a.ts`) whole, and a URL's `//` never starts a folder, so its path stays.
