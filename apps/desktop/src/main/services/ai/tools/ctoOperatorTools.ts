@@ -1006,7 +1006,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       try {
         // Resolve model: supports full IDs (anthropic/claude-sonnet-5), short IDs (sonnet), and aliases (opus)
         const rawModelId = modelId?.trim() || null;
-        if (!rawModelId) throw new Error(launchModelRequiredMessage(null, "field"));
+        if (!rawModelId) throw new Error(launchModelRequiredMessage(null, "modelId"));
         const descriptor = resolveModelDescriptor(rawModelId);
         const selectedModelId = descriptor?.id ?? rawModelId;
         const resolved = deriveChatProvider({ modelId: selectedModelId });

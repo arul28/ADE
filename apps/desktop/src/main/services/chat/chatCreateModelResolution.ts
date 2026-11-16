@@ -37,7 +37,7 @@ export async function resolveChatCreateModel<T extends Pick<AgentChatCreateArgs,
   });
   const chosen = available[0];
   if (!chosen) {
-    throw new Error(`No ${payload.provider} model is available on this machine. Sign ${payload.provider} in, then pass one with --model. ${unknownModelHint(payload.provider)}`);
+    throw new Error(`No ${payload.provider} model is available on this machine. Sign ${payload.provider} in, or pick a model. ${unknownModelHint(payload.provider)}`);
   }
   return {
     ...payload,

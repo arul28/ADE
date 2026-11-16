@@ -8,26 +8,40 @@
  * Stored as `HarnessPreset` rows in the account settings cache, which is why
  * the launch fields still say `presetId`. No agent-facing text does.
  */
-import type { HarnessPreset } from "../../../shared/harnessPresets";
-import { harnessBodyLabel, presetLabel } from "../../../shared/harnessPresets";
-import { launchModelIdFor } from "../../../shared/harnessRoutes";
-import type { LaunchModelSpelling } from "../../../shared/launchModelRule";
+import type { HarnessPreset } from "./harnessPresets";
+import { harnessBodyLabel, presetLabel } from "./harnessPresets";
+import { decodeRoutePresetId, isRoutePresetId, launchModelIdFor } from "./harnessRoutes";
+import type { LaunchModelSpelling } from "./launchModelRule";
 
-const LIST_HINT = "`ade harness providers --text` lists them.";
+const LIST_COMMAND = "`ade harness providers --text`";
+const LIST_HINT = `${LIST_COMMAND} lists them.`;
 
 /** Old scripts and skills passed `--preset <id>`; the word and the flag are gone. */
 export const PRESET_FLAG_GONE_MESSAGE =
   "--preset is gone. Name a Custom provider with --custom-provider \"<name>\" and pass its model with --model <id>; "
   + LIST_HINT;
 
+/** What a launch needs from a Custom provider (or a `--via` route id). */
+export type CustomProviderTarget = Pick<HarnessPreset, "id" | "name" | "harness" | "source" | "model">;
+
 export type CustomProviderLookup =
-  | { ok: true; preset: HarnessPreset }
+  | { ok: true; preset: CustomProviderTarget }
   | { ok: false; message: string };
 
-/** Find a Custom provider by id, or by its name (ignoring case). */
+/**
+ * Find a Custom provider by id, or by its name (ignoring case). A route id
+ * (`ade harness route-id` prints one) names its setup in itself and is
+ * decoded, not looked up.
+ */
 export function findCustomProvider(presets: readonly HarnessPreset[] | null, ref: string): CustomProviderLookup {
   const wanted = ref.trim();
   if (!wanted) return { ok: false, message: `--custom-provider needs a name. ${LIST_HINT}` };
+  if (isRoutePresetId(wanted)) {
+    const route = decodeRoutePresetId(wanted);
+    return route
+      ? { ok: true, preset: { id: wanted, name: "This route", harness: route.harness, source: route.source, model: route.model } }
+      : { ok: false, message: `"${wanted}" is not a route id ADE can read. Build one again with \`ade harness route-id\`.` };
+  }
   if (!presets?.length) {
     return {
       ok: false,
@@ -61,24 +75,24 @@ function sameModel(a: string, b: string): boolean {
  * model, so a different one is a mistake, not a choice.
  */
 export function customProviderModelProblem(
-  preset: HarnessPreset,
+  preset: CustomProviderTarget,
   model: string | null | undefined,
-  spelling: LaunchModelSpelling = "flag",
+  spelling: LaunchModelSpelling = "--model",
 ): string | null {
   const name = presetLabel(preset);
   const expected = preset.model.trim();
-  const pass = (value: string) => (spelling === "flag" ? `Pass --model ${value}` : `Send model: "${value}"`);
+  const pass = (value: string) => (spelling === "--model" ? `Pass --model ${value}` : `Send ${spelling}: "${value}"`);
   if (!expected) return null;
   const given = model?.trim() ?? "";
   if (!given) return `"${name}" runs ${expected}. ${pass(expected)} with it.`;
   const launchId = launchModelIdFor(preset.harness, preset.source, expected);
   if (sameModel(given, expected) || sameModel(given, launchId)) return null;
-  return `"${name}" runs ${expected}, not ${given}. ${pass(expected)}, or pick another Custom provider (${LIST_HINT.replace(/\.$/, "")}).`;
+  return `"${name}" runs ${expected}, not ${given}. ${pass(expected)}, or pick another Custom provider (${LIST_COMMAND} lists them).`;
 }
 
 /** Null when the harness the caller named (if any) is this Custom provider's. */
-export function customProviderHarnessProblem(preset: HarnessPreset, provider: string | null | undefined): string | null {
+export function customProviderHarnessProblem(preset: CustomProviderTarget, provider: string | null | undefined): string | null {
   const given = provider?.trim();
   if (!given || given === preset.harness) return null;
-  return `"${presetLabel(preset)}" runs in ${harnessBodyLabel(preset.harness)} (--provider ${preset.harness}), not ${given}. Drop --provider or pass --provider ${preset.harness}.`;
+  return `"${presetLabel(preset)}" runs in ${harnessBodyLabel(preset.harness)} (--provider ${preset.harness}), not ${given}. Leave out --provider or pass --provider ${preset.harness}.`;
 }

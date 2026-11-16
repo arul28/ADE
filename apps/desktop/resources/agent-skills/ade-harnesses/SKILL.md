@@ -24,7 +24,7 @@ a launch without one is refused with the command that lists the ids.
 ade chat models --text                        # every model, grouped by provider
 ade chat models --provider claude --text
 ade harness routes --text                     # every model each harness can reach, and how
-ade harness routes --harness claude --text    # one harness
+ade harness routes --provider claude --text   # one harness
 ade harness providers --text                  # saved Custom providers, with the flags to launch each
 ade providers accounts list --text            # Claude/Codex accounts on this machine
 ```
@@ -34,13 +34,13 @@ Check one pairing with a one-token request before relying on it. The verdict
 is remembered, so later launches route around a protocol the model refused:
 
 ```bash
-ade harness test --harness claude --via opencode-go --model deepseek-v4.1-flash --text
+ade harness test --provider claude --via opencode-go --model deepseek-v4.1-flash --text
 ```
 
 ## Launch on a specific setup
 
-Pick one of `--via`, `--custom-provider` and `--credential`: each says where
-the model runs, so ADE refuses two of them together.
+Use at most one of `--via`, `--custom-provider` and `--credential`: each says
+where the model runs, so ADE refuses two of them together.
 
 | you want | flags |
 |---|---|

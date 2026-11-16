@@ -184,7 +184,9 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
-import { assertActionModelNames, assertCliLaunchModelNamed, assertFullModelName, assertLaunchModelNamed, savedRuleModelNames } from "./modelNameGuard";
+import { readHarnessPresetsFromMachine } from "../../desktop/src/main/services/chat/harnessPresetSettings";
+import { resolveMachineAdeDir } from "./services/projects/machineLayout";
+import { assertActionModelNames, assertCliLaunchModelNamed, assertCustomProviderModel, assertFullModelName, assertLaunchModelNamed, savedRuleModelNames } from "./modelNameGuard";
 import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
@@ -6813,6 +6815,7 @@ async function runTool(args: {
       const actionInput = argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args;
       assertActionModelNames(domain, action, actionInput, savedModelNamesKeptBy(domain, action, actionInput, service));
       assertLaunchModelNamed(domain, action, actionInput);
+      assertCustomProviderModel(domain, action, actionInput, () => readHarnessPresetsFromMachine(resolveMachineAdeDir()));
     }
     if (
       domain === "cto_state"

@@ -1073,7 +1073,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     build: (input) => {
       const prompt = text(input, "prompt");
       if (!prompt) return { error: "Pass `prompt`." };
-      if (!text(input, "model")) return { error: launchModelRequiredMessage(text(input, "provider") || null, "field") };
+      if (!text(input, "model")) return { error: launchModelRequiredMessage(text(input, "provider") || null, "model") };
       const lane = optionalWord(input, "lane");
       if ("error" in lane) return lane;
       if (lane.value && (text(input, "lane_name") || text(input, "base"))) {

@@ -52234,12 +52234,14 @@ export function createAgentChatService(args: {
     const presetSpec = trimmedPresetId ? readPresetLaunchTarget(trimmedPresetId, resolveMachineAdeDir()) : null;
     const callerModel = typeof model === "string" ? model : "";
     // A Custom provider or a `--via` route runs its own model, spelled the way
-    // its harness launches it (OpenCode's `opencode/<provider>/<model>`); the
-    // caller passed the same model (the CLI and MCP check that), maybe short.
+    // its harness launches it (OpenCode's `opencode/<provider>/<model>`). An
+    // agent or script that named a different one was refused by the CLI, the
+    // MCP tool or the RPC agent guard; this spelling only replaces a short one.
     const presetModel = presetSpec?.model?.trim() ?? "";
     const rawModelId = presetModel || (typeof modelId === "string" ? modelId.trim() : "");
     const rawModel = presetModel || callerModel;
-    let requestedModelDescriptor = rawModelId ? getModelById(rawModelId) ?? resolveModelAlias(rawModelId) : undefined;
+    const lookUpRequestedModel = () => (rawModelId ? getModelById(rawModelId) ?? resolveModelAlias(rawModelId) : undefined);
+    let requestedModelDescriptor = lookUpRequestedModel();
     const modelFromModelId = requestedModelDescriptor
       ? requestedModelDescriptor.isCliWrapped
         ? requestedModelDescriptor.providerModelId
@@ -52262,8 +52264,11 @@ export function createAgentChatService(args: {
                 : "");
     let resolvedModelId = requestedModelDescriptor?.id
       ?? resolveModelIdFromStoredValue(normalizedInputModel, provider);
+    // The providers above have a default for internal callers (automations,
+    // side chats); agents, scripts and ADE MCP were refused a missing model
+    // before reaching here. This catches a provider with no default at all.
     if (!normalizedInputModel.trim()) {
-      throw new AdeExpectedError(launchModelRequiredMessage(presetSpec?.harness ?? provider, "field"), "user");
+      throw new AdeExpectedError(launchModelRequiredMessage(presetSpec?.harness ?? provider, "model"), "user");
     }
 
     // Refusing beats delivering a chat that quietly lacks the tools it was
@@ -52316,11 +52321,11 @@ export function createAgentChatService(args: {
       // brain that just started (or just saw a key change) has not done yet:
       // read it once before calling a listed model unknown.
       await refreshOpenCodeModelsForLaunch();
-      requestedModelDescriptor = rawModelId ? getModelById(rawModelId) ?? resolveModelAlias(rawModelId) : undefined;
+      requestedModelDescriptor = lookUpRequestedModel();
       resolvedModelId = requestedModelDescriptor?.id ?? resolveModelIdFromStoredValue(normalizedInputModel, provider);
-    }
-    if (launchingProvider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
-      throw new AdeExpectedError(`OpenCode has no model '${normalizedInputModel}'. ${unknownModelHint("opencode")}`, "user");
+      if (!resolvedModelId) {
+        throw new AdeExpectedError(`OpenCode has no model '${normalizedInputModel}'. ${unknownModelHint("opencode")}`, "user");
+      }
     }
 
     if (launchingProvider === "cursor" && !resolvedModelId) {
@@ -75168,16 +75173,19 @@ export function createAgentChatService(args: {
     return modelCatalogContainsRefreshProvider(catalog, refreshProvider, cursorSource);
   };
 
+  /** Read OpenCode's provider inventory (cached unless `force`), local models included. */
+  const probeOpenCodeInventory = async (force: boolean) => probeOpenCodeProviderInventory({
+    projectRoot,
+    projectConfig: projectConfigService.get().effective,
+    logger,
+    force,
+    discoveredLocalModels: await discoverOpenCodeLocalModels(),
+  });
+
   /** Read OpenCode's inventory so its models are known to a launch; a failed read leaves the list as it was. */
   const refreshOpenCodeModelsForLaunch = async (): Promise<void> => {
     try {
-      await probeOpenCodeProviderInventory({
-        projectRoot,
-        projectConfig: projectConfigService.get().effective,
-        logger,
-        force: false,
-        discoveredLocalModels: await discoverOpenCodeLocalModels(),
-      });
+      await probeOpenCodeInventory(false);
     } catch (error) {
       logger.warn("agent_chat.opencode_inventory_refresh_failed", { error: getErrorMessage(error) });
     }
@@ -75469,14 +75477,7 @@ export function createAgentChatService(args: {
         let modelIds: string[];
         let error: string | null;
         if (args.activateRuntime) {
-          const discoveredLocalModels = await discoverOpenCodeLocalModels();
-          const inventory = await probeOpenCodeProviderInventory({
-            projectRoot,
-            projectConfig: effectiveConfig,
-            logger,
-            force: false,
-            discoveredLocalModels,
-          });
+          const inventory = await probeOpenCodeInventory(false);
           modelIds = inventory.modelIds;
           error = inventory.error;
         } else {
@@ -75702,15 +75703,7 @@ export function createAgentChatService(args: {
 
     const effectiveConfig = projectConfigService.get().effective;
     const opencodeInventory = await (async () => {
-      if (shouldRefreshOpenCode) {
-        return await probeOpenCodeProviderInventory({
-          projectRoot,
-          projectConfig: effectiveConfig,
-          logger,
-          force: mode === "force",
-          discoveredLocalModels: await discoverOpenCodeLocalModels(),
-        });
-      }
+      if (shouldRefreshOpenCode) return await probeOpenCodeInventory(mode === "force");
       const peeked = peekOpenCodeInventoryCache({
         projectRoot,
         projectConfig: effectiveConfig,
@@ -77404,10 +77397,10 @@ export function createAgentChatService(args: {
     const requestedPresetId = typeof requestedPresetIdArg === "string" ? requestedPresetIdArg.trim() : "";
     const requestedPreset = requestedPresetId ? readPresetLaunchTarget(requestedPresetId, resolveMachineAdeDir()) : null;
     if (requestedPresetId && !requestedPreset?.model) {
-      throw new Error(`Preset '${requestedPresetId}' is not on this machine.`);
+      throw new Error(`Custom provider '${requestedPresetId}' is not on this machine. \`ade harness providers --text\` lists them.`);
     }
     if (requestedPresetIdArg === null && modelId === undefined) {
-      throw new Error("Pick a model to leave the preset for.");
+      throw new Error("Pick a model to switch to from the Custom provider.");
     }
     // An agent can only lower permissions, never raise them past its own
     // chat's level or the target's parent. Checked only when the update can

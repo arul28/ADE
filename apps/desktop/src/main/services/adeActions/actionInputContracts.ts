@@ -246,7 +246,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade cloud limits --text",
     },
     set_limits: {
-      description: "Change what unattended agents may do: a level (ask, balanced, hands-off), or single limits. Loosening any limit asks the person; an unattended agent is refused.",
+      description: "Change what unattended agents may do: a level in `preset` (ask, balanced, hands_off), or single limits. Loosening any limit asks the person; an unattended agent is refused.",
       input: "object { preset?: \"ask\" | \"balanced\" | \"hands_off\", unattendedSpend?: boolean, machinesPerDay?: number (0-100), maxShape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
       example: "ade cloud limits balanced",
     },
@@ -384,7 +384,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   usage: {
     getAdeUsageStats: {
       description:
-        "Read token, cost, and activity stats. `scope` picks the reach: \"account\" merges every machine on the ADE account, \"machine\" is this computer only, \"project\" is the open project's share of it.",
+        "Read token, cost, and activity stats. `scope` picks the reach: \"account\" merges every machine on the ADE account, \"machine\" is this machine only, \"project\" is the open project's share of it.",
       input:
         "object { preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, scope?: \"account\" | \"machine\" | \"project\", force?: boolean }",
       example: "ade usage stats --range 30d --scope account --text",

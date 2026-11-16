@@ -504,7 +504,7 @@ as unavailable with the reason, so the choice cannot be made and then ignored.
 
 ### Running one outside ADE
 
-`ade harness env <preset-id|route-id> --text` prints the launch's exports
+`ade harness env "<Custom provider name>"|<id>|<route-id> --text` prints the launch's exports
 (zsh/bash, or `--shell pwsh`) for `eval`, and the Copy launcher button builds
 the matching `claude --model …` / `codex -m …` command. The output contains the
 provider token and is never written anywhere by ADE.

@@ -44,7 +44,7 @@ import {
   type JsonObject,
 } from "./cli";
 import { DEFAULT_PARENT_FLAGS, NO_REPORT_FLAGS, SPAWN_TYPE_FLAGS } from "./launchFlagNames";
-import { launchModelRequiredMessage, launchTakesNoModel } from "../../desktop/src/shared/launchModelRule";
+import { launchModelMissing, launchModelRequiredMessage } from "../../desktop/src/shared/launchModelRule";
 import type { AgentChatPermissionMode } from "../../desktop/src/shared/types";
 import {
   isAgentChatDroidPermissionMode,
@@ -442,7 +442,7 @@ export function collectLaunchArgs(
   }
   const normalized = normalizeLaunchArgs(merged, options);
   // Checked on the merged bag, so `--arg model=…` counts and a blank one does not.
-  if (!launchTakesNoModel(normalized.provider) && isBlankLaunchArgValue(normalized.model ?? null) && isBlankLaunchArgValue(normalized.modelId ?? null)) {
+  if (launchModelMissing(normalized.provider, normalized.model, normalized.modelId)) {
     throw new CliUsageError(launchModelRequiredMessage(typeof normalized.provider === "string" ? normalized.provider : null));
   }
   return normalized;

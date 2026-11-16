@@ -110,7 +110,7 @@ export type { CloudLaneLaunchDeps, CloudLaneLaunchStartInput } from "./cloudLane
 function requireChatModel(launch: { chat?: ChatLaunchChatArgs }): void {
   const create = launch.chat?.create;
   if (!create || create.modelId?.trim() || create.model?.trim()) return;
-  throw new AdeExpectedError(launchModelRequiredMessage(create.provider ?? null), "user");
+  throw new AdeExpectedError(launchModelRequiredMessage(create.provider ?? null, "model"), "user");
 }
 
 export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
