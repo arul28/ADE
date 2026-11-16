@@ -10,6 +10,9 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeDoctorResult,
   RemoteRuntimeProjectRecord,
+  CloneProjectInput,
+  SyncProjectActionResultPayload,
+  SyncProjectDefaultParentDirPayload,
 } from "../../../shared/types";
 import { markExpected } from "../../../shared/expectedError";
 import {
@@ -801,6 +804,31 @@ export function createFederatedWebAdapter({
         checks: [],
         diagnosis: { tone: "warning", title: `${name} isn't connected to this tab.`, fix: "Connect it, then test again." },
       };
+    },
+    // A clone on one of the account's machines, over that machine's own
+    // connection (the phone's `project_clone_request`). The target names the
+    // machine; nothing goes to the tab's machine by default.
+    async cloneProject(targetId: string, input: CloneProjectInput): Promise<RemoteRuntimeProjectRecord> {
+      const client = manager.getClient(targetId);
+      if (!client) throw new Error("The machine is not connected.");
+      const answer = await client.requestProjectAction<SyncProjectActionResultPayload>("project_clone_request", "project_clone_result", { ...input });
+      const project = answer?.project ?? null;
+      if (!answer?.ok || !project) throw new Error(answer?.message?.trim() || "The machine couldn't clone the repository.");
+      const now = Date.now();
+      return {
+        projectId: project.id,
+        rootPath: project.rootPath ?? "",
+        displayName: project.displayName,
+        addedAt: now,
+        lastOpenedAt: now,
+        gitOriginUrl: input.url,
+      };
+    },
+    async getDefaultParentDir(targetId: string): Promise<string> {
+      const client = manager.getClient(targetId);
+      if (!client) return "";
+      const answer = await client.requestProjectAction<SyncProjectDefaultParentDirPayload>("project_default_parent_dir_request", "project_default_parent_dir", {});
+      return answer?.ok ? answer.parentDir ?? "" : "";
     },
     // A web tab reaches a machine through the relay, never over SSH, so there
     // is no host key to confirm before Connect.

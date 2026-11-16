@@ -1,6 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react";
 import type { CloneProjectInput } from "../../../shared/types";
-import { isWebClientMode } from "../../lib/webClientMode";
 import { showToast } from "../app/toast/toastStore";
 import {
   describeCopyFailure,
@@ -107,9 +106,8 @@ async function cloneOnMachine(job: CopyJob): Promise<CopyOpenTarget> {
   };
   const targetId = job.machine.targetId;
   if (targetId) {
-    // The hosted web client reaches each machine through its own session and
-    // has no clone call for another machine.
-    if (isWebClientMode()) throw new Error("copy_web_unsupported: cloning to a machine needs the desktop app.");
+    // The hosted web client clones over that machine's own session
+    // (`project_clone_request`); the desktop through its remote runtime.
     const clone = window.ade?.remoteRuntime?.cloneProject;
     if (typeof clone !== "function") throw new Error("copy_unsupported: this ADE cannot clone on another machine.");
     const record = await clone(targetId, input);

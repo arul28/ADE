@@ -1090,6 +1090,50 @@ export class AdeSyncClient {
     return await promise;
   }
 
+  private readonly pendingProjectActions = new Map<string, { resultType: string; resolve: (payload: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+
+  /**
+   * One project action on this machine (`projectActions` over sync, as the
+   * phone sends them): a request envelope and the result with its request id.
+   * The clone of a repository waits up to 10 minutes.
+   */
+  async requestProjectAction<T>(
+    requestType: "project_clone_request" | "project_default_parent_dir_request",
+    resultType: "project_clone_result" | "project_default_parent_dir",
+    payload: Record<string, unknown>,
+    timeoutMs = requestType === "project_clone_request" ? 10 * 60_000 : DEFAULT_REQUEST_TIMEOUT_MS,
+  ): Promise<T> {
+    this.requireReadyGeneration();
+    const requestId = uuid();
+    const promise = new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingProjectActions.delete(requestId);
+        reject(new AdeSyncError("The machine did not answer in time.", "timeout"));
+      }, timeoutMs);
+      this.pendingProjectActions.set(requestId, { resultType, resolve: resolve as (payload: unknown) => void, reject, timer });
+    });
+    try {
+      this.connection.send({ type: requestType, requestId, payload } as Parameters<typeof this.connection.send>[0]);
+    } catch (error) {
+      const pending = this.pendingProjectActions.get(requestId);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.pendingProjectActions.delete(requestId);
+      }
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+    return await promise;
+  }
+
+  private handleProjectActionResult(type: string, requestId: string | null, payload: unknown): void {
+    if (!requestId) return;
+    const pending = this.pendingProjectActions.get(requestId);
+    if (!pending || pending.resultType !== type) return;
+    clearTimeout(pending.timer);
+    this.pendingProjectActions.delete(requestId);
+    pending.resolve(payload);
+  }
+
   /**
    * `rootPath` is optional and additive: the host resolver already accepts
    * either identity, and an Activity item carries the owning machine's local
@@ -1450,6 +1494,10 @@ export class AdeSyncClient {
         break;
       case "project_switch_result":
         this.handleProjectSwitchResult(envelope.requestId ?? null, envelope.payload as SyncProjectSwitchResultPayload);
+        break;
+      case "project_clone_result":
+      case "project_default_parent_dir":
+        this.handleProjectActionResult(envelope.type, envelope.requestId ?? null, envelope.payload);
         break;
       case "chat_launch_event": {
         // Typed, but still wire data from a host of any version: validate before fanning out.
@@ -2042,6 +2090,11 @@ export class AdeSyncClient {
     for (const [requestId, pending] of this.pendingProjectSwitches) {
       clearTimeout(pending.timer);
       this.pendingProjectSwitches.delete(requestId);
+      pending.reject(error);
+    }
+    for (const [requestId, pending] of this.pendingProjectActions) {
+      clearTimeout(pending.timer);
+      this.pendingProjectActions.delete(requestId);
       pending.reject(error);
     }
     this.rejectPendingProjectCatalog(error);

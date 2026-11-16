@@ -125,7 +125,6 @@ type RowState =
   | { kind: "job"; job: CopyJob }
   | { kind: "existing"; copy: ExistingCopy }
   | { kind: "unconnected" }
-  | { kind: "web" }
   | { kind: "available" };
 
 /**
@@ -209,7 +208,6 @@ export function AddProjectForm({
       const copy = existing.get(machine.machineId);
       if (copy) return { kind: "existing", copy };
       if (!machine.online) return { kind: "unconnected" };
-      if (webMode && !machine.isLocal) return { kind: "web" };
       return { kind: "available" };
     },
     [existing, jobByMachine, webMode],
@@ -297,7 +295,7 @@ export function AddProjectForm({
     const wanted = machines.filter((machine) =>
       machine.online
       && !fetchedDefaultsRef.current.has(machine.machineId)
-      && (machine.isLocal || !webMode));
+      && (machine.isLocal || machine.targetId != null));
     for (const machine of wanted) {
       fetchedDefaultsRef.current.add(machine.machineId);
       const read = machine.targetId
@@ -640,7 +638,7 @@ function MachineRow({
   onFolderChange: (value: string) => void;
   onRetry: (job: CopyJob) => void;
 }) {
-  const muted = state.kind === "unconnected" || state.kind === "web";
+  const muted = state.kind === "unconnected";
   const rowStyle: CSSProperties = {
     display: "flex",
     alignItems: "center",
@@ -733,10 +731,6 @@ function MachineRow({
       lead = glyph(<CircleDashed size={14} />);
       // Not connected here; the account may still show it online.
       detail = <span style={detailStyle}>not connected</span>;
-      break;
-    case "web":
-      lead = glyph(<CircleDashed size={14} />);
-      detail = <span style={detailStyle}>Needs the desktop app</span>;
       break;
     case "available":
       lead = (
