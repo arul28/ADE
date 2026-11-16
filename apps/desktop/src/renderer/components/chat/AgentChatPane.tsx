@@ -1929,6 +1929,34 @@ export function resolveUnchangedHistoryTurnActive(
   );
 }
 
+/**
+ * Runs `run` in the task after the next frame is drawn (a frame callback, then
+ * a task), or after `fallbackMs` when no frame comes: a hidden window gets no
+ * frame callbacks. Returns a flush that runs it now if it has not run yet;
+ * later calls do nothing.
+ */
+function runAfterNextPaint(run: () => void, fallbackMs = 50): () => void {
+  let done = false;
+  let frame: number | null = null;
+  let afterFrame: number | null = null;
+  const fallback = window.setTimeout(() => fire(), fallbackMs);
+  function fire(): void {
+    if (done) return;
+    done = true;
+    if (frame != null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
+    if (afterFrame != null) window.clearTimeout(afterFrame);
+    window.clearTimeout(fallback);
+    run();
+  }
+  if (typeof requestAnimationFrame === "function") {
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      afterFrame = window.setTimeout(fire, 0);
+    });
+  }
+  return fire;
+}
+
 export function activeTurnSessionSummaryPatch(
   timestamp: string,
   startsNewTurn: boolean,
@@ -5587,6 +5615,12 @@ export function AgentChatPane({
   const paneMountedRef = useRef(true);
   /** Pending checks for sends whose call timed out (see the submit path); cleared on unmount. */
   const sendRecoveryTimersRef = useRef<Set<number>>(new Set());
+  /**
+   * A send's list update (the chat's recency and running state), held until
+   * the frame with the bubble and the cleared composer is drawn. Anything that
+   * touches that chat's list row first runs it, so updates keep their order.
+   */
+  const pendingSendListPatchRef = useRef<{ sessionId: string; flush: () => void } | null>(null);
   /**
    * User messages in a chat with one of these texts, from five minutes before
    * `sentAt` (slack for the chat machine's clock) on. A long chat paged out of
@@ -11292,6 +11326,9 @@ export function AgentChatPane({
       }
 
       pendingEventQueueRef.current.push(envelope);
+      if (pendingSendListPatchRef.current?.sessionId === envelope.sessionId) {
+        pendingSendListPatchRef.current.flush();
+      }
       const touchTimestamp = getChatSessionLocalTouchTimestampForEvent(envelope);
       if (touchTimestamp) {
         touchSession(envelope.sessionId, touchTimestamp);
@@ -16399,11 +16436,24 @@ export function AgentChatPane({
       const sentTexts = [finalText, finalDisplayText].map((value) => value.trim()).filter(Boolean);
       // Identical messages already in the chat, so only a new one counts as arrived.
       handedOff = { sessionId, submittedAt, texts: sentTexts, alreadyThere: countSentMessages(sessionId, sentTexts, submittedAt) };
-      touchSession(sessionId, submittedAt);
-      patchSessionSummary(
-        sessionId,
-        activeTurnSessionSummaryPatch(submittedAt, !turnActive),
-      );
+      // The bubble and the cleared composer draw first. Re-sorting the list
+      // and marking the chat as running re-render every surface that reads
+      // the list, so that waits for the task after the frame: one frame later.
+      const listPatchSessionId = sessionId;
+      const listPatchStartsNewTurn = !turnActive;
+      pendingSendListPatchRef.current?.flush();
+      const listPatch = {
+        sessionId: listPatchSessionId,
+        flush: runAfterNextPaint(() => {
+          if (pendingSendListPatchRef.current === listPatch) pendingSendListPatchRef.current = null;
+          touchSession(listPatchSessionId, submittedAt);
+          patchSessionSummary(
+            listPatchSessionId,
+            activeTurnSessionSummaryPatch(submittedAt, listPatchStartsNewTurn),
+          );
+        }),
+      };
+      pendingSendListPatchRef.current = listPatch;
 
       const steerMessage = async (): Promise<AgentChatSteerResult> => {
         return await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.steer({
@@ -16489,6 +16539,7 @@ export function AgentChatPane({
       } else {
         await sendMessageOrSteerIfBusy();
       }
+      listPatch.flush();
       if (steerResult?.reason === "queue_full") {
         // The steer queue is full — the backend dropped the message (and emitted
         // its own notice). Restore the composer rather than clearing it as if the
@@ -16512,6 +16563,8 @@ export function AgentChatPane({
       setAppControlContextItems(keepEmptyArray);
       setBuiltInBrowserContextItems(keepEmptyArray);
     } catch (submitError) {
+      // The list update goes before the error path's own updates, as before.
+      pendingSendListPatchRef.current?.flush();
       // A call that gave up after the message left keeps the mark: the wake usually still delivers it.
       cloudWake?.settle(submitError, handedOff != null);
       // One plain sentence: a pinned call's failure arrives inside Electron's
