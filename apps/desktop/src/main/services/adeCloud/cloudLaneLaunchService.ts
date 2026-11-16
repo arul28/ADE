@@ -14,6 +14,8 @@ import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff"
 import { deriveDeterministicLaneNameFromPrompt, deriveDeterministicLaneTitleFromPrompt } from "../../../shared/laneNameFallback";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import { getDefaultModelDescriptor, isModelProviderGroup } from "../../../shared/modelRegistry";
+import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { readPresetLaunchTarget } from "../chat/chatLaunchRoute";
 import type {
   ChatLaunchChatArgs,
   ChatLaunchCloudStageId,
@@ -104,15 +106,20 @@ export type { CloudLaneLaunchDeps, CloudLaneLaunchStartInput } from "./cloudLane
 
 /**
  * A chat launch that names no model (`ade chat create --machine cloud` without
- * `--model`) takes its provider's default, the one a chat on this computer
- * picks. ADE Cloud refuses a chat launch with no model, so without this it
- * failed at "Make computer".
+ * `--model`) takes the model a chat on this computer would run: its preset's
+ * (presets follow the account, so the computer reads the same one), else its
+ * provider's default. ADE Cloud refuses a chat launch with no model, so
+ * without this it failed at "Make computer".
  */
 function withChatModel<T extends { chat?: ChatLaunchChatArgs }>(launch: T): T {
   const create = launch.chat?.create;
-  // A preset names its own model; a chat here skips the default pick for one too.
-  if (!launch.chat || !create || create.presetId || create.modelId?.trim() || create.model?.trim()) return launch;
-  const model = isModelProviderGroup(create.provider) ? getDefaultModelDescriptor(create.provider)?.id : undefined;
+  if (!launch.chat || !create || create.modelId?.trim() || create.model?.trim()) return launch;
+  const presetId = create.presetId?.trim();
+  const preset = presetId ? readPresetLaunchTarget(presetId, resolveMachineAdeDir()) : null;
+  // A preset this computer doesn't know: say so, never run another model under its name.
+  if (presetId && !preset) throw new AdeExpectedError(`ADE can't find the preset ${presetId} on this computer, so it can't tell which model the lane should run. Pick the model, or the preset again.`, "user");
+  const provider = preset?.harness ?? create.provider;
+  const model = preset?.model || (isModelProviderGroup(provider) ? getDefaultModelDescriptor(provider)?.id : undefined);
   return model ? { ...launch, chat: { ...launch.chat, create: { ...create, model, modelId: model } } } : launch;
 }
 

@@ -6,6 +6,7 @@ import { createCloudLaneLaunchService, type CloudLaneLaunchDeps, type CloudLaneL
 import { COMPUTER_DELETED_SENTENCE } from "./cloudLaneLaunchSteps";
 import HANDED_OFF_RECORD from "./__fixtures__/handedOffCloudLaunch.json";
 import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
+import { encodeRoutePresetId } from "../../../shared/harnessRoutes";
 
 const LAUNCH_ID = HANDED_OFF_RECORD.snapshot.launchId;
 const INSTANCE_ID = HANDED_OFF_RECORD.snapshot.cloud.instanceId;
@@ -127,10 +128,24 @@ describe("a cloud chat launch's model", () => {
     ["a blank model", { model: "  ", modelId: " " }, { model: CODEX_DEFAULT, modelId: CODEX_DEFAULT }],
     ["a model", { model: "gpt-6-luna" }, { model: "gpt-6-luna", modelId: null }],
     ["a model id", { model: "", modelId: "openai/gpt-6-luna" }, { model: "", modelId: "openai/gpt-6-luna" }],
-    // A preset names its own model.
-    ["a preset", { model: "", presetId: "preset-1" }, { model: "", modelId: null }],
   ])("%s", async (_label, create, expected) => {
     expect(CODEX_DEFAULT).toBeTruthy();
     expect(await savedModel(create)).toEqual(expected);
+  });
+
+  it("a preset with no model runs the preset's model, and one this computer doesn't know is refused", async () => {
+    const presetId = encodeRoutePresetId({ harness: "codex", source: { kind: "subscription", provider: "codex" }, model: "openai/gpt-6-luna" });
+    const { model } = await savedModel({ model: "", presetId });
+    expect(model).toBeTruthy();
+    expect(model).not.toBe(CODEX_DEFAULT);
+    expect(model).toContain("gpt-6-luna");
+
+    const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-home-"));
+    vi.stubEnv("ADE_HOME", emptyHome);
+    try {
+      await expect(savedModel({ model: "", presetId: "no-such-preset" })).rejects.toThrow("can't find the preset");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
