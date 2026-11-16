@@ -22,7 +22,16 @@
 #
 # Why before the save: deleting first keeps the space from going over the
 # limit at all. A failed request warns and stops; it never fails the job.
+#
+# It also writes `save=true|false` to $GITHUB_OUTPUT (when set): the caller
+# saves only on true. On main only the newest commit's run saves, so an older,
+# slower run can neither delete a newer lockfile's entry nor write its own old
+# one back next to it.
 set -uo pipefail
+
+decide_save() {
+  [ -z "${GITHUB_OUTPUT:-}" ] || echo "save=$1" >> "$GITHUB_OUTPUT"
+}
 
 [ "$#" -eq 2 ] && [ -n "$1" ] && [ -n "$2" ] && [ -n "${GITHUB_REF:-}" ] || {
   echo "usage: GITHUB_REF=<ref> scripts/ci/prune-cache-entries.sh <prefix> <new-key>" >&2
@@ -32,23 +41,27 @@ prefix="$1"
 keep="$2"
 case "$keep" in
   "$prefix"*) ;;
-  *) echo "::warning::$keep does not start with $prefix; nothing deleted."; exit 0 ;;
+  *) echo "::warning::$keep does not start with $prefix; nothing deleted."; decide_save true; exit 0 ;;
 esac
 
 # Runs on main overlap (a push does not cancel the run before it), so an older
-# commit's slower run could delete the entry a newer lockfile just saved. Only
-# the run of main's newest commit prunes; an older one leaves the cleanup to
-# it. A pull request needs no check: its newer push cancels the older run.
+# commit's slower run could delete the entry a newer lockfile just saved, or
+# save its old entry back after the newer run pruned it. Only the run of
+# main's newest commit prunes and saves. A pull request needs no check: its
+# newer push cancels the older run.
 if [ "$GITHUB_REF" = "refs/heads/main" ]; then
   if ! tip="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"; then
     echo "::warning::Could not read main's newest commit; nothing deleted."
+    decide_save true
     exit 0
   fi
   if [ "$tip" != "${GITHUB_SHA:-}" ]; then
-    echo "main has moved on to ${tip:0:9}; its run prunes. Nothing deleted."
+    echo "main has moved on to ${tip:0:9}; its run prunes and saves. Nothing deleted, nothing saved."
+    decide_save false
     exit 0
   fi
 fi
+decide_save true
 
 # The list endpoint's `key` filter is a prefix match.
 if ! stale="$(PREFIX="$prefix" KEEP="$keep" REF="$GITHUB_REF" gh api --paginate \
