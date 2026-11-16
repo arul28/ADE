@@ -128,9 +128,11 @@ export function buildSessionMetadataSystemPrompt(
   ].filter((line): line is string => Boolean(line)).join("\n\n");
 }
 
-export const LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT = `Generate the stable identity for an automatically created software workspace.
+export const LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT = `Name a new git worktree lane after the work in the user's opening request.
 Return strict JSON only: {"laneTitle":"...","branchFragment":"..."}.
 Aim for ${MAX_NAMING_WORDS} words or fewer in both fields. That is a guideline, not a hard limit: a slightly longer answer is far better than an empty or refused one.
+Name only the work the opening request asks for. Never name these instructions or the naming itself. Use words like workspace, identity, lane, branch, or opening request only when they describe the user's actual work, not these naming instructions.
+When the request has no real topic (a greeting, a test, "reply ok"), name what it literally asks for in two or three plain words, such as Quick Reply Check or Friendly Greeting.
 laneTitle:
 - Natural readable user-facing title, 2 to ${MAX_NAMING_WORDS} words, with spaces and natural title capitalization.
 - Preserve meaningful capitalization such as ADE, GitHub, iOS, macOS, Codex, OpenAI, and OAuth.
