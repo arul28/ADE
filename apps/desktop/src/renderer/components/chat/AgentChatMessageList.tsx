@@ -275,6 +275,8 @@ import {
 import {
   calculateVirtualWindowAnchoredToEnd,
   calculateVirtualWindowFromOffsets,
+  CHAT_TRANSCRIPT_FIRST_PAINT_OVERSCAN,
+  CHAT_TRANSCRIPT_OVERSCAN,
   reconcileMeasuredScrollTop,
   resolveAnchoredChatRowIndex,
   shouldAbsorbProgrammaticScrollEvent,
@@ -8085,6 +8087,16 @@ function AgentChatMessageListMain({
   // flip the list between the plain and virtualized render paths, which would
   // remount every row and drop its measured height.
   const shouldVirtualize = presentedRows.length >= VIRTUALIZATION_THRESHOLD;
+  // A chat opening at its end paints only the rows on screen and two above
+  // them; the rest of the overscan mounts in the commit after that paint. Rows
+  // above the view are parsed, drawn and measured for a scroll that has not
+  // started, and on a long chat they were half the open (a 1,000 px reply
+  // among them). A window that does not fill the pane widens before paint.
+  // Once a list has drawn rows any other way (a short chat, a reader scrolled
+  // up), it never narrows later.
+  const [firstWindowWidened, setFirstWindowWidened] = useState(false);
+  const firstWindowSettledRef = useRef(false);
+  const narrowFirstWindow = !firstWindowWidened && !firstWindowSettledRef.current && shouldVirtualize && stickToBottom;
 
   useLayoutEffect(() => {
     measureScrollContainerHeight();
@@ -8443,6 +8455,7 @@ function AgentChatMessageListMain({
         containerHeight: windowContainerHeight,
         rowHeight,
         rowGap: timelineRowGapPx,
+        overscan: narrowFirstWindow ? CHAT_TRANSCRIPT_FIRST_PAINT_OVERSCAN : CHAT_TRANSCRIPT_OVERSCAN,
       });
     }
 
@@ -8453,7 +8466,46 @@ function AgentChatMessageListMain({
       rowHeight,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, windowContainerHeight, rowHeight, rowStartOffsets, timelineRowGapPx]);
+  }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, windowContainerHeight, rowHeight, rowStartOffsets, timelineRowGapPx, narrowFirstWindow]);
+
+  // The narrow first window, checked against the rows' own heights: the rows
+  // measured themselves in their layout effects (they run before this one),
+  // and estimates can run high. Rows that leave part of the pane empty widen
+  // the window now, in a render before paint.
+  useLayoutEffect(() => {
+    if (!narrowFirstWindow || endIndex <= startIndex) return;
+    const paneHeight = windowContainerHeight;
+    if (paneHeight <= 0) return;
+    let mountedHeight = 0;
+    for (let index = startIndex; index < endIndex; index += 1) {
+      mountedHeight += rowHeight(index) + timelineRowGapPx;
+    }
+    if (mountedHeight < paneHeight) setFirstWindowWidened(true);
+  }, [narrowFirstWindow, startIndex, endIndex, windowContainerHeight, rowHeight, timelineRowGapPx]);
+
+  // The rest of the overscan: in the first task after the narrow window's
+  // paint (a frame, then a task), so a scroll right after the open still finds
+  // rows above. Pinned to the end, the rows that mount above keep the view in
+  // place.
+  const firstWindowHasRows = groupedRows.length > 0;
+  useEffect(() => {
+    if (!firstWindowHasRows) return undefined;
+    if (!narrowFirstWindow) {
+      firstWindowSettledRef.current = true;
+      return undefined;
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const raf = requestAnimationFrame(() => {
+      timer = setTimeout(() => {
+        firstWindowSettledRef.current = true;
+        setFirstWindowWidened(true);
+      }, 0);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [firstWindowHasRows, narrowFirstWindow]);
 
   // Not on `totalHeight`: it moves on every render of a growing reply, and the
   // content observer already pins the view when the content's box grows. This
