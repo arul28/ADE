@@ -12,7 +12,6 @@ import {
   type RemoteWorkChatEnded,
   type RemoteWorkTurnRelease,
 } from "../../../shared/chatRemoteWork";
-import { adeHostWithheldAgentSkills } from "../../../shared/agentSkillRoots";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
 import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
@@ -10153,13 +10152,6 @@ export function buildComputerUseDirective(
     windowsDesktopAvailable?: boolean;
     /** This host can give the lane a Linux screen (Linux Desktop). */
     linuxDesktopAvailable?: boolean;
-    /**
-     * This host can run `ade apple` (a Mac). Off on Windows and Linux, where
-     * the ade-apple skill is withheld too (`adeHostWithheldAgentSkills`). The
-     * directive no longer lists surfaces, so this does not change its text;
-     * ade-computer-use picks the surface.
-     */
-    appleAvailable?: boolean;
   } = {},
 ): string | null {
   const hasExternalBackends = backendStatus
@@ -58866,9 +58858,6 @@ export function createAgentChatService(args: {
       macDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "darwin",
       windowsDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "win32",
       linuxDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "linux",
-      // The chat runs in this brain, on the lane's machine, so the skill rule
-      // for this host also decides whether `ade apple` can run.
-      appleAvailable: !adeHostWithheldAgentSkills().includes("ade-apple"),
     });
   };
 
@@ -77402,9 +77391,10 @@ export function createAgentChatService(args: {
    * finished chat does not need its provider process for the full idle window:
    * every runtime quiet for `idleMs` goes now, by the same `idle_ttl` teardown
    * as the timed sweep, and its next send resumes the same conversation. The
-   * sweep's guards hold, and are stricter here: a running turn, a pending
-   * question or approval, and any claimed background work (stale or not) keep
-   * their process. Draft warmups go too: no window is left to send them.
+   * sweep's guards hold, and are stricter here: a running turn, a send whose
+   * turn has not started yet, a pending question or approval, and any claimed
+   * background work (stale or not) keep their process. Draft warmups go too:
+   * no window is left to send them.
    * Returns how many went, and how many live runtimes stayed (the caller asks
    * again while that is more than zero).
    */
@@ -77416,6 +77406,11 @@ export function createAgentChatService(args: {
       if (!managed.runtime || managed.closed) continue;
       if (
         managed.session.status !== "idle"
+        // A send accepted here has not started its turn yet, so the chat can
+        // still read idle: releasing now would end the turn that send is
+        // starting (a scheduled or automated send can arrive with no window
+        // open). `releaseChatRuntime` refuses on the same marker.
+        || Boolean(managed.turnAcceptedAt)
         || hasLivePendingInput(managed)
         || hasRuntimeActiveWorkload(managed.runtime)
         || now - managed.lastActivityTimestamp < idleMs

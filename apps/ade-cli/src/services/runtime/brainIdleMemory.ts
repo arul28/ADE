@@ -117,10 +117,16 @@ export function noteUserClientClosed(kind: UserClientKind, sources: IdleMemorySo
 }
 
 /**
- * Release the provider processes of finished chats while nobody is connected,
- * and look again while some chat still holds one that may finish later. A
- * device on a project's sync host counts as connected (it reads chats through
- * the sync host, not through a channel). Any client that connects stops it.
+ * Release the provider processes of finished chats while nobody is connected.
+ * A device on a project's sync host counts as connected (it reads chats
+ * through the sync host, not through a channel). Any client that connects
+ * stops it.
+ *
+ * The pass keeps looking while a project is open, because nothing else tells
+ * this file that a chat started: a scheduled wake, an automation or a webhook
+ * can run a chat with no window and no client, and that chat must get the same
+ * release as one that was already open. With no project open nothing can start
+ * a chat, so the timer stops there.
  */
 function scheduleUnattendedAgentRelease(delayMs: number): void {
   agentTimer = setTimeout(() => {
@@ -144,9 +150,11 @@ function scheduleUnattendedAgentRelease(delayMs: number): void {
       }
     }
     if (released > 0) machineLogger()?.info("brain.unattended_agents_released", { released, kept });
-    // One more pass after a release: a shared provider process (an OpenCode
-    // server, an ACP agent) that the released chats held is unused only now.
-    if (kept > 0 || released > 0) scheduleUnattendedAgentRelease(UNATTENDED_AGENT_RECHECK_MS);
+    // Look again while a project can still run a chat: the pass above also
+    // frees a shared provider process (an OpenCode server, an ACP agent) that
+    // the released chats held, and one released at the end of its hold goes at
+    // the next pass.
+    if (runtimes.length > 0) scheduleUnattendedAgentRelease(UNATTENDED_AGENT_RECHECK_MS);
   }, delayMs);
   agentTimer.unref?.();
 }

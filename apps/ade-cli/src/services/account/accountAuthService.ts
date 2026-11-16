@@ -1185,10 +1185,18 @@ export function createAccountAuthService(args: {
   );
   const resolveRefreshBroker = (): AccountRefreshBroker | null => args.getRefreshBroker?.() ?? null;
   const pendingSessions = new Map<string, PendingLoginSession>();
-  /** Expired browser sign-ins whose port still shows the expired page (`EXPIRED_CALLBACK_PAGE_MS`). */
-  const expiredCallbackServers = new Set<Server>();
+  /**
+   * Expired browser sign-ins whose port still shows the expired page
+   * (`EXPIRED_CALLBACK_PAGE_MS`), with the timer that closes them. Closing one
+   * early clears its timer too: the timer holds the `Server` and the sign-in's
+   * closure, and an expired session leaves the map people poll.
+   */
+  const expiredCallbackServers = new Map<Server, ReturnType<typeof setTimeout>>();
   const closeExpiredCallbackServers = (): void => {
-    for (const server of expiredCallbackServers) closeServer(server);
+    for (const [server, timer] of expiredCallbackServers) {
+      clearTimeout(timer);
+      closeServer(server);
+    }
     expiredCallbackServers.clear();
   };
   const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
@@ -1767,6 +1775,8 @@ export function createAccountAuthService(args: {
     session.phase = phase;
     session.message = message;
     clearTimeout(session.expiryTimer);
+    // An expired session is in the map with a wait; ending it early drops both.
+    expiredCallbackServers.delete(session.server);
     closeServer(session.server);
   };
 
@@ -1802,12 +1812,12 @@ export function createAccountAuthService(args: {
     // port must not keep the process alive for that.
     const { server } = session;
     server.unref();
-    expiredCallbackServers.add(server);
     session.expiryTimer = setTimeout(() => {
       expiredCallbackServers.delete(server);
       closeServer(server);
     }, EXPIRED_CALLBACK_PAGE_MS);
     session.expiryTimer.unref?.();
+    expiredCallbackServers.set(server, session.expiryTimer);
   };
 
   const pruneFinishedSessions = (): void => {
