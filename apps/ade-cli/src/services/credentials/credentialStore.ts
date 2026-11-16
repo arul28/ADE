@@ -858,6 +858,12 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     key: string,
   ): Promise<{ value: string | null; state: CredentialStoreReadState }> {
     const normalized = normalizeCredentialKey(key);
+    // A settled read answers as it does for `getSync` (see `readSettledCache`):
+    // one `stat` proves it current. The full read decrypts the store and, on
+    // macOS, starts a `security` process for the key material each time.
+    // Settled means nothing is owed: no re-seal, no key material to heal.
+    const settled = this.readSettledCache();
+    if (settled) return { value: settled[normalized] ?? null, state: this.lastReadState };
     const { values, state } = await this.readAllAsync();
     return { value: values[normalized] ?? null, state };
   }

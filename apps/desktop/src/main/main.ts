@@ -575,6 +575,19 @@ import type { Logger } from "./services/logging/logger";
 import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./desktopUserDataPath";
 import { createWebhookRemoteSource } from "./services/automations/webhookAutomationFactory";
 
+/**
+ * Milliseconds since the process started, at each step to the first window:
+ * all of main's modules evaluated, Electron ready, the window created, its
+ * page loaded. Logged once as `startup.main_boot`, so a slow launch shows
+ * which step took the time. Reading the clock costs nothing.
+ */
+const mainBootMarks: Record<string, number> = {
+  modulesEvaluatedMs: Math.round(process.uptime() * 1000),
+};
+const markMainBoot = (name: string): void => {
+  mainBootMarks[name] ??= Math.round(process.uptime() * 1000);
+};
+
 /** One warm-runtime budget for every project context in this process. */
 const chatRuntimeBudget = createChatRuntimeBudget();
 
@@ -1573,6 +1586,7 @@ async function createWindow(args: {
     url: rendererUrl,
   });
 
+  markMainBoot("firstLoadUrlMs");
   try {
     await win.loadURL(rendererUrl);
   } catch (error) {
@@ -1817,6 +1831,7 @@ if (process.platform !== "darwin") {
 const museQuota = createMuseQuotaStore();
 
 app.whenReady().then(async () => {
+  markMainBoot("appReadyMs");
   // Perf run init — must come first so subsequent IPC + sampler hooks can see the active run.
   const perfRun = initPerfRunFromEnv();
   if (perfRun) {
@@ -11213,6 +11228,7 @@ app.whenReady().then(async () => {
   // opens no local project; `bindLaunchWindow` corrects it afterwards.
   const initialRemoteProjectBinding =
     shouldOpenStartupProject || restoresUpdateWorkspace ? null : savedRemoteProjectBinding;
+  markMainBoot("firstWindowCreateMs");
   const initialWindow = await createWindow({
     logger: getActiveContext().logger,
     restoreState: readSavedMainWindowState(),
@@ -11228,6 +11244,8 @@ app.whenReady().then(async () => {
     onCloseRequested: handleMainWindowCloseRequested,
     hidden: quitInstallLaunch,
   });
+  markMainBoot("firstPageLoadedMs");
+  getMachineMainLogger().info("startup.main_boot", { ...mainBootMarks });
   if (quitInstallLaunch) {
     // Shown by anything (the person reopening ADE, a deep link, a notification),
     // a hidden quit-install launch stays open as an ordinary one.

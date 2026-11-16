@@ -349,6 +349,12 @@ export type SyncGetStatusArgs = {
    * the computation.
    */
   awaitTransferReadiness?: boolean;
+  /**
+   * False leaves out the pairing token and PIN (`bootstrapToken`,
+   * `pairingPin`). Set by a caller that never shows them, such as the
+   * account publisher's 2-second relay check: it then reads no secret file.
+   */
+  includePairingSecrets?: boolean;
 };
 
 export type SyncDeviceRuntimeState = SyncDeviceRecord & {

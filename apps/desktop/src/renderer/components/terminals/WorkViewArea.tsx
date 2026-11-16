@@ -30,7 +30,8 @@ import { WorkGridView, SingleSessionGridDropZone } from "./WorkGridView";
 import { fgTint } from "../lanes/laneDesignTokens";
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
-import { TerminalView } from "./TerminalView";
+// xterm loads with the first terminal, not with the Work page (LazyTerminalView).
+import { scheduleTerminalViewPreload, TerminalView } from "./LazyTerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
@@ -1492,6 +1493,9 @@ export function WorkViewArea({
   // focuses its own active tile (`shouldAutofocus`).
   const workAreaBodyRef = useRef<HTMLDivElement>(null);
   useWorkInputFocusOnChatSwitch(workAreaBodyRef, activeItemId ?? null, pageActive && workAreaMode !== "grid");
+  // The terminal code loads once the person stops for a moment, so the first
+  // terminal they open does not wait for it (LazyTerminalView).
+  useEffect(() => scheduleTerminalViewPreload(), []);
   const tabBody = (
     <div ref={workAreaBodyRef} className="relative min-h-0 flex-1" style={{ background: workAreaMode === "empty" ? "transparent" : "var(--chat-canvas-bg)" }}>
       <AnimatePresence initial={false} custom={composerDockTransition}>

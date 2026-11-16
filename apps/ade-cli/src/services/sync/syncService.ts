@@ -2129,8 +2129,8 @@ export function createSyncService(args: SyncServiceArgs) {
         currentRuntime,
         clusterState: cluster,
         bootstrapToken:
-          canHostPhonePairing ? readToken() : null,
-        pairingPin: canHostPhonePairing ? pinStore.getPin() : null,
+          canHostPhonePairing && options?.includePairingSecrets !== false ? readToken() : null,
+        pairingPin: canHostPhonePairing && options?.includePairingSecrets !== false ? pinStore.getPin() : null,
         pairingPinConfigured: canHostPhonePairing ? pinStore.hasPin() : false,
         runtimeName: runtimeNameStore.getRuntimeName(),
         pairingConnectInfo:

@@ -670,6 +670,9 @@ import {
 } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
 import { readMachineInventorySummary } from "./services/account/accountMachinePublisherService";
+import { providerLoginGeneration } from "../../desktop/src/main/services/ai/providerLoginChanged";
+import { getProviderRuntimeHealthVersion } from "../../desktop/src/main/services/ai/providerRuntimeHealth";
+import { pinnedToolInstallGeneration } from "./services/tools/onDemand";
 import {
   getMachineProviderInstanceStore,
   resolveProviderInstanceForLaunch,
@@ -32729,6 +32732,30 @@ async function runServe(
       const published = sync.runCount() !== before && !sync.publishPending();
       return { ...result, published };
     });
+    // The heartbeat (every 60 s) counts models and signed-in providers from
+    // the AI status, whose own cache lives 30 s, so every heartbeat rebuilt
+    // it: saved-login reads, two macOS keychain probes (`security`), the Pi
+    // and OpenCode inventories and four project config reads. The counts are
+    // decoration on the heartbeat. A status up to 5 minutes old is reused,
+    // unless a sign-in, a tool install or a provider runtime change on this
+    // computer happened since; `account.getMachineInventory` still reads
+    // afresh.
+    const HEARTBEAT_AI_STATUS_MAX_AGE_MS = 5 * 60_000;
+    let heartbeatAiStatus: { service: object; key: string; atMs: number; status: unknown } | null = null;
+    const heartbeatAiStatusReader = (
+      service: { getStatus(): Promise<unknown> } | null,
+    ): { getStatus(): Promise<unknown> } | null => service && {
+      getStatus: async () => {
+        const key = `${providerLoginGeneration()}|${pinnedToolInstallGeneration()}|${getProviderRuntimeHealthVersion()}`;
+        const kept = heartbeatAiStatus;
+        if (kept && kept.service === service && kept.key === key && Date.now() - kept.atMs < HEARTBEAT_AI_STATUS_MAX_AGE_MS) {
+          return kept.status;
+        }
+        const status = await service.getStatus();
+        heartbeatAiStatus = { service, key, atMs: Date.now(), status };
+        return status;
+      },
+    };
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
       accountMachinePublisher = createBrainAccountMachinePublisherService({
@@ -32752,6 +32779,8 @@ async function runServe(
           const activeScope = await activeSyncHostScopeWithoutBooting();
           const scoped = await activeScope?.runtime.syncService?.getStatus({
             includeTransferReadiness: false,
+            // The registration never carries the pairing token or PIN.
+            includePairingSecrets: false,
           }) ?? null;
           if (scoped) return scoped;
           // Hosting sync without a project is a supported state, not the
@@ -32769,7 +32798,7 @@ async function runServe(
           return await readMachineInventorySummary({
             providerInstanceStore: getMachineProviderInstanceStore(),
             accountSettingsStore: activeScope?.runtime.accountSettingsStore ?? null,
-            aiIntegrationService: activeScope?.runtime.aiIntegrationService ?? null,
+            aiIntegrationService: heartbeatAiStatusReader(activeScope?.runtime.aiIntegrationService ?? null),
           });
         },
         // Only consulted on the `no_active_sync_scope` branch, but declared here

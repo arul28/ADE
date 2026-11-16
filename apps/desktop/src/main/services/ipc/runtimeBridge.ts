@@ -1053,6 +1053,29 @@ export function registerRuntimeBridge({
     }
   };
 
+  /**
+   * Tell the window that a stream ended by itself (the runtime's connection
+   * closed), so its pump re-subscribes now. A local pump polls only as a
+   * keep-alive (its events come by push), so without this it would wait up to
+   * its slow keep-alive interval. A stream that ends less than 2 s after it
+   * started is not told: a runtime that keeps closing streams must not turn
+   * this into a subscribe loop, and the pump's own schedule re-subscribes.
+   */
+  const RUNTIME_EVENT_STREAM_ENDED_MIN_AGE_MS = 2_000;
+  const noticeRuntimeEventStreamEnded = (
+    sender: WebContents,
+    bindingKey: string,
+    subscribedAtMs: number,
+  ): void => {
+    if (Date.now() - subscribedAtMs < RUNTIME_EVENT_STREAM_ENDED_MIN_AGE_MS) return;
+    if (sender.isDestroyed()) return;
+    try {
+      sender.send(IPC.runtimeEventStreamEnded, { bindingKey });
+    } catch {
+      // The renderer went away between the check and the send.
+    }
+  };
+
   const ensureRuntimeEventSubscription = async (
     sender: WebContents,
     bindingKey: string,
@@ -1075,9 +1098,13 @@ export function registerRuntimeBridge({
       requestKey,
       cleanup: null,
     });
+    const subscribedAtMs = Date.now();
     const onEnded = () => {
-      removeRuntimeEventSubscription(sender.id, requestKey, subscription);
+      // False when the window already released it or it was replaced: then
+      // no pump waits on this stream.
+      const endedByItself = removeRuntimeEventSubscription(sender.id, requestKey, subscription);
       notePageRuntimeDisconnected(sender.id, fileWatchRuntimeKey);
+      if (endedByItself) noticeRuntimeEventStreamEnded(sender, bindingKey, subscribedAtMs);
     };
     let subscriptionInit: Partial<RuntimeEventSubscriptionInit> | null = null;
     try {

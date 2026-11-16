@@ -32,7 +32,7 @@ function subscribe(listener: () => void): () => void {
 }
 
 /** Read one stored draft snapshot's presence without holding onto the object. */
-function storedDraftHasContent(raw: string | null): boolean {
+export function storedDraftHasContent(raw: string | null): boolean {
   if (!raw) return false;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown> | null;

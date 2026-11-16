@@ -17,7 +17,7 @@ import {
 } from "../../lib/terminalAttention";
 import { SESSION_TONE_TEXT_CLASS } from "../../../shared/sessionStatusPresentation";
 import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
-import { getTerminalRuntimeSnapshot } from "./TerminalView";
+import { readTerminalRuntimeSnapshot } from "./terminalRuntimeSnapshots";
 import { SessionDeltaCard } from "./SessionDeltaCard";
 import { Button } from "../ui/Button";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -187,7 +187,7 @@ export function SessionInfoPopover({
   const statusLabel = statusPresentation?.label
     ?? (canonicalPhase === "settled" ? "Settled" : canonicalPhase);
   const statusToneClass = SESSION_TONE_TEXT_CLASS[statusPresentation?.tone ?? "neutral"];
-  const runtime = getTerminalRuntimeSnapshot(session.id);
+  const runtime = readTerminalRuntimeSnapshot(session.id);
   const health = !isChat && runtime ? runtime.health ?? null : null;
 
   const summaryRaw = (session.summary ?? "").trim();

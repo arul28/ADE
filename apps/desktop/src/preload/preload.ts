@@ -188,6 +188,7 @@ import {
   rememberPinnedRuntimeEventId,
   REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS,
   REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS,
+  LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS,
   REMOTE_RUNTIME_EVENT_IDLE_POLL_MS,
 } from "./pinnedRuntimeEvents";
 import type {
@@ -3712,7 +3713,8 @@ let remoteRuntimeEventReplaySuppressed = false;
 let remoteRuntimeEmptyPollCount = 0;
 let remoteRuntimeSeenEventBindingKey: string | null = null;
 const remoteRuntimeSeenEventIds = new Set<number>();
-const LOCAL_RUNTIME_EVENT_IDLE_POLL_MS = 750;
+/** A stream-ended notice came while a poll was in flight: poll again when it is done. */
+let remoteRuntimeEventRepollWhenDone = false;
 const REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS = 2_500;
 
 // Every pump that reads a binding the window is not bound to lives in this
@@ -4011,7 +4013,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       nextDelayMs =
         binding.kind === "remote"
           ? REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS
-          : LOCAL_RUNTIME_EVENT_IDLE_POLL_MS;
+          : LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS;
     } else if (binding.kind === "remote") {
       remoteRuntimeEmptyPollCount += 1;
       nextDelayMs =
@@ -4019,7 +4021,8 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
           ? REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS
           : REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
     } else {
-      nextDelayMs = LOCAL_RUNTIME_EVENT_IDLE_POLL_MS;
+      // Local events come by push; this poll only keeps main's subscription.
+      nextDelayMs = LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS;
     }
   } catch (error) {
     const stalePoll =
@@ -4035,6 +4038,10 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     }
   } finally {
     remoteRuntimeEventInFlight = false;
+    if (remoteRuntimeEventRepollWhenDone) {
+      remoteRuntimeEventRepollWhenDone = false;
+      if (nextDelayMs != null) nextDelayMs = 0;
+    }
     if (
       nextDelayMs != null &&
       hasRemoteRuntimeEventSubscribers() &&
@@ -4120,6 +4127,24 @@ function toRemoteRuntimeBufferedEvent(
 
 ipcRenderer.on(IPC.runtimeEvent, (_event, payload: unknown) => {
   handleRemoteRuntimeEventNotification(payload);
+});
+
+/**
+ * Main says a runtime event stream of `bindingKey` ended by itself (its
+ * runtime connection closed). The pumps on that copy poll now, which
+ * subscribes again; a local pump would otherwise wait for its keep-alive.
+ */
+ipcRenderer.on(IPC.runtimeEventStreamEnded, (_event, payload: unknown) => {
+  const bindingKey = isRecord(payload) && typeof payload.bindingKey === "string" ? payload.bindingKey : "";
+  if (!bindingKey) return;
+  pinnedRuntimeEvents.handlePinnedRuntimeStreamEnded(bindingKey);
+  if (currentProjectBinding?.key !== bindingKey || remoteRuntimeEventPollParked) return;
+  if (remoteRuntimeEventInFlight) {
+    remoteRuntimeEventRepollWhenDone = true;
+    return;
+  }
+  clearPendingRemoteRuntimeEventPoll();
+  scheduleRemoteRuntimeEventPoll(0);
 });
 
 function dispatchRemoteRuntimeEventPayload(

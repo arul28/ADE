@@ -215,7 +215,7 @@ import {
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
-import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
+import { ChatLifecyclePill } from "./ChatLifecyclePill";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
@@ -254,7 +254,7 @@ import {
   sendWithCloudWakeMark,
 } from "../../state/cloudSavedChatsSync";
 import { ThreadEntityProvider } from "./threadEntities";
-import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
+import { useSessionLifecyclePillVisible } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { useRemoteConnectionMark } from "../../state/projectMachines";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
@@ -1394,6 +1394,30 @@ function residentHeadHasOlderEvents(events: readonly AgentChatEventEnvelope[] | 
   return typeof first === "number" && first > 1;
 }
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
+/**
+ * The chats a pane showed last, before the one on screen. Each keeps its
+ * resident window at the selected-chat caps, so a switch back to it paints
+ * what was there: no tail re-read, no older-history backfill from the start.
+ * Two covers flipping between a pair of chats with one more in reach. It also
+ * bounds a locked Work pane, which used to keep the window of every chat it
+ * had ever shown (the tabbed pane prunes against its roster instead).
+ */
+const MAX_RECENTLY_VIEWED_CHATS = 2;
+
+/** `recent` with `left` in front, without `shown`, at most MAX_RECENTLY_VIEWED_CHATS long. */
+function rememberRecentlyViewedChat(
+  recent: readonly string[],
+  left: string | null,
+  shown: string | null,
+): string[] {
+  const next: string[] = [];
+  for (const sessionId of left ? [left, ...recent] : recent) {
+    if (sessionId === shown || next.includes(sessionId)) continue;
+    next.push(sessionId);
+    if (next.length >= MAX_RECENTLY_VIEWED_CHATS) break;
+  }
+  return next;
+}
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
 // The view cache holds a reference to the SAME event array the pane already
 // keeps resident, so admitting anything the pane can hold costs no extra
@@ -5392,6 +5416,9 @@ export function AgentChatPane({
   // Set by the active recovery loop: an arriving event drops its backed-off
   // wait back to the base interval, so a stall after it is still caught soon.
   const recoveryLoopWakeRef = useRef<(() => void) | null>(null);
+  /** See MAX_RECENTLY_VIEWED_CHATS; newest first. */
+  const recentlyViewedChatIdsRef = useRef<string[]>([]);
+  const lastShownChatIdRef = useRef<string | null>(null);
   const draftSelectionLockedRef = useRef(false);
   const optimisticSessionIdsRef = useRef<Set<string>>(new Set());
   const pendingSelectedSessionIdRef = useRef<string | null>(null);
@@ -5817,8 +5844,9 @@ export function AgentChatPane({
   // Lifecycle actions must follow the session currently rendered in the pane.
   // Resolve this after the machine pin so foreign chats never send a wake or
   // unsettle request to the tab-bound runtime.
-  const composerLifecycleSession = useSessionLifecycleSnapshot(composerSessionId);
-  const hasComposerLifecyclePill = shouldRenderChatLifecyclePill(composerLifecycleSession);
+  // A boolean, not the row: a running chat's row changes on every Work list
+  // refresh, and the pane draws nothing else of it.
+  const hasComposerLifecyclePill = useSessionLifecyclePillVisible(composerSessionId);
 
   turnActiveBySessionRef.current = turnActiveBySession;
   const promptSuggestion = selectedSessionId ? promptSuggestionsBySession[selectedSessionId] ?? null : null;
@@ -9071,6 +9099,19 @@ export function AgentChatPane({
     ));
   }, []);
 
+  /**
+   * Whether a chat's resident window takes the selected-chat caps: the chat on
+   * screen, and the ones it showed just before (MAX_RECENTLY_VIEWED_CHATS). A
+   * history read that lands after a switch away no longer cuts the chat the
+   * user left to the background cap, which made the switch back re-read its
+   * tail and page its older history in again.
+   */
+  const keepsSelectedResidentWindow = useCallback((sessionId: string): boolean => (
+    sessionId === selectedSessionIdRef.current
+    || sessionId === lockSessionId
+    || recentlyViewedChatIdsRef.current.includes(sessionId)
+  ), [lockSessionId]);
+
   const clearSessionView = useCallback((sessionId: string) => {
     // Drop the retention subscription first: it exists only to keep this
     // session's cached view current, and the very next line throws that view
@@ -9275,7 +9316,7 @@ export function AgentChatPane({
       let merged = mergeChatHistorySnapshot(parsed, existing, {
         arrivalWatermark: historyArrivalWatermark,
       });
-      const selectedHistory = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId;
+      const selectedHistory = keepsSelectedResidentWindow(sessionId);
       const maxHistoryEvents = selectedHistory
         ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
         : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
@@ -9370,7 +9411,7 @@ export function AgentChatPane({
       // permanently blocked re-entry until the chat received a new event.
       loadedHistoryRef.current.delete(sessionId);
     }
-  }, [isBoundScopePane, applyOlderHistoryCursor, clearSessionView, initialSessionSummary, lockSessionId]);
+  }, [isBoundScopePane, applyOlderHistoryCursor, clearSessionView, initialSessionSummary, keepsSelectedResidentWindow, lockSessionId]);
 
   /**
    * Resolves `true` once the backoff elapses, or `false` if the wait was
@@ -9448,10 +9489,11 @@ export function AgentChatPane({
     if (typeof agentChatApiRef.current.getEventHistoryPage !== "function") return;
     const requestId = ++olderHistoryRequestSequenceRef.current;
     const requestRouteKey = pin?.key ?? activeProjectBindingKeyRef.current;
-    const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+    const keepsSelectedWindow = keepsSelectedResidentWindow(sessionId);
+    const maxEvents = keepsSelectedWindow
       ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
       : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
-    const maxResidentBytes = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+    const maxResidentBytes = keepsSelectedWindow
       ? MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES
       : MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES;
     const isCurrentRequest = () => (
@@ -9577,7 +9619,7 @@ export function AgentChatPane({
         setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: false }));
       }
     }
-  }, [applyOlderHistoryCursor, loadHistory, lockSessionId, waitBeforeOlderHistoryRetry]);
+  }, [applyOlderHistoryCursor, keepsSelectedResidentWindow, loadHistory, lockSessionId, waitBeforeOlderHistoryRetry]);
 
   // Cancel pending paging retries when the selection moves or the pane
   // unmounts, so no timer outlives the view that scheduled it.
@@ -10156,6 +10198,21 @@ export function AgentChatPane({
     };
   }, [hideLaneToolDrawers, iosSimulatorAddressesThisPane, laneId, selectedSessionId]);
 
+  // The chat on screen and the ones shown just before it. A layout effect, so
+  // the sweep below and any history read that lands after a switch already
+  // count the chat the user just left as recent.
+  const shownChatId = lockSessionId ?? selectedSessionId ?? null;
+  useLayoutEffect(() => {
+    const left = lastShownChatIdRef.current;
+    lastShownChatIdRef.current = shownChatId;
+    if (left === shownChatId) return;
+    recentlyViewedChatIdsRef.current = rememberRecentlyViewedChat(
+      recentlyViewedChatIdsRef.current,
+      left,
+      shownChatId,
+    );
+  }, [shownChatId]);
+
   useEffect(() => {
     const next = new Set<string>();
     for (const session of sessions) next.add(session.sessionId);
@@ -10165,6 +10222,30 @@ export function AgentChatPane({
     for (const sessionId of optimisticSessionIdsRef.current) next.add(sessionId);
     const previous = knownSessionIdsRef.current;
     knownSessionIdsRef.current = next;
+    if (lockedSingleSessionMode) {
+      // A locked pane has no roster read to prune against, so it let go of
+      // nothing: every chat it showed stayed resident. It keeps the chats it
+      // shows and the recently viewed ones; another chat it shows again is
+      // read like a first open (its view cache was already released below
+      // when it left).
+      const keep = new Set<string>(next);
+      for (const sessionId of recentlyViewedChatIdsRef.current) keep.add(sessionId);
+      if (pendingSelectedSessionIdRef.current) keep.add(pendingSelectedSessionIdRef.current);
+      const released = Object.keys(eventsBySessionRef.current).filter((sessionId) => !keep.has(sessionId));
+      if (released.length) {
+        eventsBySessionRef.current = pruneSessionRecord(eventsBySessionRef.current, keep);
+        detachedLiveEventsBySessionRef.current = pruneSessionRecord(detachedLiveEventsBySessionRef.current, keep);
+        for (const sessionId of released) {
+          loadedHistoryRef.current.delete(sessionId);
+          historyResumeBySessionRef.current.delete(sessionId);
+          backfillCappedSessionsRef.current.delete(sessionId);
+          if (detachedHistorySessionsRef.current.delete(sessionId)) {
+            setDetachedHistorySessionIds(new Set(detachedHistorySessionsRef.current));
+          }
+        }
+        setEventsBySession((prev) => pruneSessionRecord(prev, keep));
+      }
+    }
     // The view cache is module-level and outlives every pane, so a chat that
     // leaves this pane's roster (deleted, archived, or its project/lane closed)
     // would otherwise keep a whole transcript resident until eight newer chats
@@ -10177,7 +10258,7 @@ export function AgentChatPane({
     if (!departed.length) return;
     for (const sessionId of departed) releaseRetainedChatSession(sessionId);
     clearAgentChatSessionViewCacheForSessions(departed);
-  }, [initialSessionId, lockSessionId, selectedSessionId, sessions]);
+  }, [initialSessionId, lockSessionId, lockedSingleSessionMode, selectedSessionId, sessions]);
 
   // Stay true until this open has seeded the source chat's model. The catalog
   // can arrive without it; treating that fallback as a user choice would keep
@@ -10777,14 +10858,11 @@ export function AgentChatPane({
       }
       const combined = mergeAgentChatLiveEvents(sessionEvents, sessionQueue);
       if (combined === sessionEvents) continue;
+      const keepsSelectedWindow = keepsSelectedResidentWindow(sessionId);
       const updated = trimChatEventHistory(
         combined,
-        sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
-          ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
-          : MAX_BACKGROUND_CHAT_SESSION_EVENTS,
-        sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
-          ? MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES
-          : MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
+        keepsSelectedWindow ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS : MAX_BACKGROUND_CHAT_SESSION_EVENTS,
+        keepsSelectedWindow ? MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES : MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
       );
       if (next === eventsBySessionRef.current) next = { ...eventsBySessionRef.current };
       next[sessionId] = updated;
@@ -10806,7 +10884,7 @@ export function AgentChatPane({
       const derived = deriveRuntimeState(derivationEvents);
       const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
         ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
-      const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+      const maxEvents = keepsSelectedResidentWindow(sessionId)
         ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
         : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
       if (!detachedHistorySessionsRef.current.has(sessionId)) {
@@ -10849,7 +10927,7 @@ export function AgentChatPane({
     setTurnActiveBySession((activePrev) => patchRecord(activePrev, activePatch));
     setPendingInputsBySession((pendingPrev) => patchRecord(pendingPrev, pendingInputPatch));
     setPendingSteersBySession((steerPrev) => patchRecord(steerPrev, pendingSteerPatch));
-  }, [initialSessionSummary, liveEventsStore, lockSessionId]);
+  }, [initialSessionSummary, keepsSelectedResidentWindow, liveEventsStore, lockSessionId]);
 
   const returnHistoryToLatest = useCallback((sessionId: string, pin: OpenProjectBinding | null) => {
     if (!sessionId || !detachedHistorySessionsRef.current.has(sessionId)) return;

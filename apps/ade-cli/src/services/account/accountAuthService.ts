@@ -412,7 +412,30 @@ function readIdentityProvider(value: unknown): AccountIdentityProvider | null {
   return null;
 }
 
+/**
+ * The last few decoded payloads, by token. Every status read decodes the
+ * session's access token two or three times (expiry, issuer, claims), and the
+ * account stores read the status on each cache read, so the brain decoded the
+ * same token hundreds of times a minute at idle. A token's text fixes its
+ * payload, so the answer for one text never changes. Callers only read the
+ * payload; none of them edits it.
+ */
+const DECODED_JWT_CACHE_LIMIT = 4;
+const decodedJwtPayloads = new Map<string, Record<string, unknown> | null>();
+
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  if (decodedJwtPayloads.has(token)) return decodedJwtPayloads.get(token) ?? null;
+  const payload = decodeJwtPayloadUncached(token);
+  decodedJwtPayloads.set(token, payload);
+  while (decodedJwtPayloads.size > DECODED_JWT_CACHE_LIMIT) {
+    const oldest = decodedJwtPayloads.keys().next().value;
+    if (oldest === undefined) break;
+    decodedJwtPayloads.delete(oldest);
+  }
+  return payload;
+}
+
+function decodeJwtPayloadUncached(token: string): Record<string, unknown> | null {
   try {
     const parts = token.split(".");
     if (parts.length !== 3 || !parts[1]) return null;

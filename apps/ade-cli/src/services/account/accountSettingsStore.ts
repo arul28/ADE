@@ -363,6 +363,11 @@ export function createAccountSettingsStore(args: {
       return cache.health();
     },
 
+    /** Changes whenever the cached settings may have changed; see `AccountCacheStore.revision`. */
+    revision(): number {
+      return cache.revision();
+    },
+
     /** False on a brain with no account service to sync with (`--no-sync`): no other computer shares its settings. */
     hasRelay(): boolean {
       return args.relay !== null;

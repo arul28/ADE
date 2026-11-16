@@ -41,6 +41,8 @@ export type AutomationRuleAccountBackend = {
   health?(): { state: string; pendingChanges: number; lastSyncedAt: string | null };
   /** False when no account service is configured, so no other computer can share these rows. */
   hasRelay?(): boolean;
+  /** Changes whenever the rows may have changed; absent means the backend cannot say. */
+  revision?(): number;
 };
 
 export const AUTOMATION_RULE_KEY_PREFIX = "automations.rule.";
@@ -209,7 +211,10 @@ export function createAutomationRuleAccountStore(args: {
     return memoryState;
   };
 
+  /** Counts state writes, for `revision()`. */
+  let stateWrites = 0;
   const writeState = (next: LocalState): void => {
+    stateWrites += 1;
     memoryState = next;
     if (!args.statePath) return;
     try {
@@ -376,6 +381,18 @@ export function createAutomationRuleAccountStore(args: {
     /** This computer's sync device id, or null while it is not known. */
     thisDeviceId(): string | null {
       return thisDevice().deviceId;
+    },
+
+    /**
+     * Changes whenever `read()` or the per-computer state may answer
+     * differently: the account's rows, the signed-in account, the repository
+     * scope, this computer's id, or a state write here. Null when the backend
+     * cannot say, so a caller must not keep anything derived.
+     */
+    revision(): string | null {
+      const rows = args.backend.revision?.();
+      if (typeof rows !== "number") return null;
+      return `${rows}|${accountUserId() ?? ""}|${scope() ?? ""}|${thisDevice().deviceId ?? ""}|${stateWrites}`;
     },
 
     accountUserId,

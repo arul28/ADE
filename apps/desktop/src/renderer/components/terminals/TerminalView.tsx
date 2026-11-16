@@ -38,6 +38,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import type { TerminalToolType } from "../../../shared/types";
 import { resolveTheme, resolveThemeById } from "../../../shared/theme";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "./pendingSessionAnchors";
+import { registerTerminalRuntimeSnapshotReader } from "./terminalRuntimeSnapshots";
 import {
   readDismissedScrollHints,
   terminalScrollHintFor,
@@ -73,6 +74,8 @@ export type TerminalHealthCounters = {
   droppedChunks: number;
   fitRecoveries: number;
 };
+
+export type TerminalRuntimeSnapshot = RuntimeSnapshot;
 
 type RuntimeSnapshot = {
   exitCode: number | null;
@@ -3484,6 +3487,9 @@ export function getTerminalRuntimeSnapshot(sessionId: string): RuntimeSnapshot |
   if (!runtime || runtime.disposed) return null;
   return runtimeSnapshot(runtime);
 }
+
+// Code that must not load xterm (the session info popover) reads through this.
+registerTerminalRuntimeSnapshotReader(getTerminalRuntimeSnapshot);
 
 export function getTerminalRuntimeHealth(sessionId: string): TerminalHealthCounters | null {
   return getTerminalRuntimeSnapshot(sessionId)?.health ?? null;

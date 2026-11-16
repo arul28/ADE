@@ -221,6 +221,14 @@ export function createAutomationRuleAccountSync(args: {
     },
 
     /**
+     * Changes whenever `merge` may answer differently for the same file rules;
+     * null when the store cannot say. Cheap: no rows are read.
+     */
+    revision(): string | null {
+      return store.revision();
+    },
+
+    /**
      * What ADE Cloud's server copy of this repository's rules must follow,
      * or null when the account can't be read with confidence (no remote,
      * signed out, unreadable, not synced since ADE started): then nothing is

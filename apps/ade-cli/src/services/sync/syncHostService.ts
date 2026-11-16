@@ -9710,6 +9710,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     getPeerStates(): SyncPeerConnectionState[] {
+      // Every sync status read asks (the account publisher's relay check runs
+      // one every 2 s); with no peer there is no lag to compute, and the
+      // version read is a database query.
+      if (peers.size === 0) return [];
       const dbVersion = args.db.sync.getDbVersion();
       const latestByDevice = new Map<string, SyncPeerConnectionState>();
       for (const peer of [...peers]
