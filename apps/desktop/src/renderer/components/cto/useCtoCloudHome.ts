@@ -168,9 +168,13 @@ export function useCtoCloudHome(args: {
     const jobId = job.jobId;
     await run(async () => {
       const value = await bridge({ method: "cancel", args: { jobId } });
-      // A cancel that deleted everything removes the job.
-      if (value?.phase === "cancelled" && !value.error) setJob(null);
-      return value?.error ? value : null;
+      // A cancel removes the job; one whose cleanup failed says what is left.
+      if (value?.phase === "cancelled") {
+        setJob(null);
+        if (value.error) setError(value.error);
+        return null;
+      }
+      return value;
     }, "ADE couldn't cancel. Delete the computer in Settings › ADE Cloud.");
   }, [bridge, job, run]);
 

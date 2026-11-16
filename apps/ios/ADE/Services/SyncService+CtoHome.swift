@@ -90,6 +90,18 @@ extension SyncService {
   /// the home is another machine, else the primary machine (nil target).
   /// Throws when no home has been chosen yet, or when the home is another
   /// machine the phone cannot reach now.
+  /// Where the CTO's provider accounts live: the home machine's own
+  /// connection when it is another machine, so a picked account is one the
+  /// home can run. Nil while that machine isn't connected.
+  func ctoProviderAccountsHost() -> ProviderAccountsHost? {
+    guard ctoHomeProjectId == activeProjectId,
+          let key = ctoHomeMachineKey,
+          key != focusedMachineKey
+    else { return self }
+    guard let connection = machineFleet?.connection(for: key), connection.phase == .live else { return nil }
+    return connection
+  }
+
   func ctoCommandTarget() throws -> (projectId: String?, rootPath: String?, repo: WorkRemoteMachineRepo?) {
     guard !ctoHomeNeedsChoice else {
       throw NSError(domain: "ADE", code: 14, userInfo: [

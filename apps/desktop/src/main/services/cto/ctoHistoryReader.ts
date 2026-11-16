@@ -17,7 +17,10 @@ const CTO_HISTORY_CACHE_MAX_SESSIONS = 12;
  * history never stalls one call.
  */
 const CTO_HISTORY_CALL_BYTE_BUDGET = 8 * 1024 * 1024;
-type CtoHistoryRow = CtoHistoryEntry & { offset: number };
+/** `searchText`: the whole message, lower case, so a search finds words past the excerpt. */
+type CtoHistoryRow = CtoHistoryEntry & { offset: number; searchText: string };
+/** How much of one message a search reads; a pasted log past this is not searched. */
+const CTO_HISTORY_SEARCH_MAX_CHARS = 20_000;
 /**
  * One CTO session's messages parsed so far: transcript bytes [start, end),
  * oldest first, each keyed by the byte offset of its first row. `start` is
@@ -85,6 +88,7 @@ const ctoHistoryRowsFrom = (
         at: entry.timestamp,
         sessionId,
         offset: offsets[index] ?? fallbackOffset,
+        searchText: text.slice(0, CTO_HISTORY_SEARCH_MAX_CHARS).toLowerCase(),
       };
     })
     .filter((entry) => entry.text.length > 0)
@@ -197,7 +201,7 @@ export function createCtoHistoryReader({ listCtoSessions, resolveTranscriptPath 
       bound = offset;
     }
     const budget = { bytes: CTO_HISTORY_CALL_BYTE_BUDGET };
-    const strip = ({ offset: _offset, ...entry }: CtoHistoryRow): CtoHistoryEntry => entry;
+    const strip = ({ offset: _offset, searchText: _searchText, ...entry }: CtoHistoryRow): CtoHistoryEntry => entry;
     const countBefore = (rows: CtoHistoryRow[], limitOffset: number): number => {
       let count = 0;
       while (count < rows.length && rows[count]!.offset < limitOffset) count += 1;
@@ -254,7 +258,7 @@ export function createCtoHistoryReader({ listCtoSessions, resolveTranscriptPath 
         }
         if (at < 0) break;
         const entry = state.rows[at]!;
-        const haystack = entry.text.toLowerCase();
+        const haystack = entry.searchText;
         if (words.every((word) => haystack.includes(word))) {
           if (hits >= limit) return { entries: out, nextBefore: lastHit };
           hits += 1;

@@ -65980,15 +65980,7 @@ export function createAgentChatService(args: {
         throw new Error(reason);
       }
     };
-    // The CTO runs only on its home machine. A send that reached an old home
-    // (a phone that hasn't heard of the move yet) is refused with where it lives.
-    if (ctoAccountCopyHooks && sessionIdentityKeyNow(args.sessionId) === "cto") {
-      const gate = await ctoAccountCopyHooks.homeGate(ctoStateService?.getIdentity().name?.trim() || "The CTO");
-      if (!gate.ok) {
-        throwForScheduledWakeRefusal(gate.message, true);
-        throw new AdeExpectedError(gate.message, "user");
-      }
-    }
+    await assertCtoHomeHere(args.sessionId, { onRefused: (message) => throwForScheduledWakeRefusal(message, true) });
     const dispatchStartedAt = Date.now();
     const managed = ensureManagedSession(args.sessionId);
     // A send during an account switch runs on the account the chat lands on.
@@ -66453,6 +66445,19 @@ export function createAgentChatService(args: {
     return { posted: true };
   };
 
+  /**
+   * The CTO runs only on its home machine, and on a new home only once the old
+   * home's copy has landed. A send or steer that reached an old home (a phone
+   * that hasn't heard of the move yet) is refused with where it lives.
+   */
+  const assertCtoHomeHere = async (sessionId: string, options?: { onRefused?: (message: string) => void }): Promise<void> => {
+    if (!ctoAccountCopyHooks || sessionIdentityKeyNow(sessionId) !== "cto") return;
+    const gate = await ctoAccountCopyHooks.homeGate(ctoStateService?.getIdentity().name?.trim() || "The CTO");
+    if (gate.ok) return;
+    options?.onRefused?.(gate.message);
+    throw new AdeExpectedError(gate.message, "user");
+  };
+
   const steerWithOptionsWithoutReview = async (
     steerArgs: AgentChatSteerArgs,
     options?: {
@@ -66470,6 +66475,7 @@ export function createAgentChatService(args: {
     assertChatNotMovedAway(steerArgs.sessionId, "steer");
     assertNoRerunInFlight(managedSessions.get(steerArgs.sessionId));
     assertPlainPromptText(steerArgs);
+    await assertCtoHomeHere(steerArgs.sessionId);
     const expandedArgs = await materializePastedTextPrompt(await applyChatMentionExpansion(steerArgs));
     const {
       sessionId,

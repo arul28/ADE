@@ -263,6 +263,12 @@ export function createCtoCloudHomeService(deps: Deps) {
     };
     const existing = await currentInstance(client, job);
     assertActive(job, signal);
+    if (!existing && job.reused) {
+      // The earlier computer is gone: the one made now is this job's own, and
+      // a Cancel deletes it.
+      job.reused = false;
+      persist(job);
+    }
     let result;
     try {
       result = existing

@@ -280,8 +280,34 @@ final class CtoStore: ObservableObject {
   func loadChildren() async {
     guard let sync else { return }
     let projection = await sync.fetchWorkListProjection()
+    var sessions = projection.sessions
+    var lanes = projection.lanes
+    var pullRequests = projection.pullRequests
+    // A home on another machine: its own roster, not this machine's copy, and
+    // only the PRs it says are on its lanes. Not connected: keep what shows.
+    let home: (projectId: String?, rootPath: String?, repo: WorkRemoteMachineRepo?)
+    do { home = try sync.ctoCommandTarget() } catch { return }
+    if let repo = home.repo {
+      let merge = workMergeRemoteMachineRows(sessions: [], lanes: [], remote: [repo])
+      sessions = merge.sessions
+      lanes = merge.lanes
+      let remoteRows = (try? await sync.fetchRemotePullRequestRows(repo: repo, timeoutNanoseconds: 8_000_000_000)) ?? []
+      let onHomeLanes = Dictionary(
+        remoteRows.compactMap { row -> (String, String)? in
+          guard let laneId = row.laneId else { return nil }
+          return ("\(row.repoOwner.lowercased())/\(row.repoName.lowercased())#\(row.githubPrNumber)", workRemoteLaneId(machineKey: repo.machineKey, laneId: laneId))
+        },
+        uniquingKeysWith: { first, _ in first }
+      )
+      pullRequests = projection.pullRequests.compactMap { pr in
+        guard let laneId = onHomeLanes["\(pr.repoOwner.lowercased())/\(pr.repoName.lowercased())#\(pr.githubPrNumber)"] else { return nil }
+        var onHome = pr
+        onHome.laneId = laneId
+        return onHome
+      }
+    }
     let ctoSessionId = sessionId
-    let mine = projection.sessions
+    let mine = sessions
       .filter { session in
         guard session.archivedAt == nil, session.id != ctoSessionId else { return false }
         return session.isCtoChild || (ctoSessionId != nil && session.orchestrationParentSessionId == ctoSessionId)
@@ -304,10 +330,10 @@ final class CtoStore: ObservableObject {
         startedAt: session.startedAt
       )
     }
-    let lanesById = Dictionary(projection.lanes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    let lanesById = Dictionary(lanes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     let childLaneIds = Set(mine.map(\.laneId))
     var items: [CtoLibraryItem] = []
-    for pr in projection.pullRequests where childLaneIds.contains(pr.laneId) {
+    for pr in pullRequests where childLaneIds.contains(pr.laneId) {
       let laneName = pr.laneName ?? lanesById[pr.laneId]?.name
       items.append(CtoLibraryItem(
         id: "pr:\(pr.id)",

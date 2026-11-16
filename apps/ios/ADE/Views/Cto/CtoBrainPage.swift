@@ -232,8 +232,9 @@ struct CtoBrainPage: View {
       return
     }
     #endif
-    guard let sync = SyncService.shared, sync.supportsProviderAccounts else { accounts = []; return }
-    accounts = (try? await ProviderAccountsClient(host: sync).list(provider)) ?? []
+    // The home's accounts, not the focused machine's: the pick is stored on the home.
+    guard let host = SyncService.shared?.ctoProviderAccountsHost(), host.supportsProviderAccounts else { accounts = []; return }
+    accounts = (try? await ProviderAccountsClient(host: host).list(provider)) ?? []
   }
 
   @MainActor

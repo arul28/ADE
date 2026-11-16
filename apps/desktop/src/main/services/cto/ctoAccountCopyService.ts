@@ -295,7 +295,7 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
           return;
         }
         logger.info?.("cto.account_copy_late_restore", { reason, savedAt: existing.copy.savedAt });
-        await restore(existing.copy, home);
+        if (!(await restore(existing.copy, home))) return;
         lastWrittenHash = null;
       }
     }
@@ -426,14 +426,12 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     return Boolean(taken && taken.forChosenAt === home.chosenAt);
   };
 
-  const restore = async (copy: CtoAccountCopy, home: CtoHomeMachineRecord | null): Promise<void> => {
-    // Written first, so a restore that fails part-way is never run twice.
-    writeJson(takenCopyPath, {
-      ownerDeviceId: copy.ownerDeviceId,
-      savedAt: copy.savedAt,
-      forChosenAt: home?.chosenAt ?? null,
-      takenAt: new Date(now()).toISOString(),
-    });
+  /**
+   * Takes a copy onto this machine. False when the notes or open work couldn't
+   * be written: the move is not taken then, nothing is saved over the copy, and
+   * the next try restores it again.
+   */
+  const restore = async (copy: CtoAccountCopy, home: CtoHomeMachineRecord | null): Promise<boolean> => {
     const identity = { ...copy.identity } as Partial<Omit<CtoIdentity, "version" | "updatedAt">>;
     // Account ids are this machine's own: keep the account it already picked
     // for the same provider, instead of falling back to the default one.
@@ -448,23 +446,29 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
         logger.warn("cto.account_copy_identity_failed", { error: error instanceof Error ? error.message : String(error) });
       }
     }
-    try {
-      args.ctoMemory.writeNotes("project", copy.projectNotes);
-    } catch (error) {
-      logger.warn("cto.account_copy_notes_failed", { scope: "project", error: error instanceof Error ? error.message : String(error) });
-    }
-    try {
+    const steps: Array<[string, () => void]> = [
+      ["project_notes", () => args.ctoMemory.writeNotes("project", copy.projectNotes)],
       // About the person, for every project on this machine: kept, and joined.
-      args.ctoMemory.writeNotes("user", mergeUserNotes(args.ctoMemory.readNotes("user"), copy.userNotes));
-    } catch (error) {
-      logger.warn("cto.account_copy_notes_failed", { scope: "user", error: error instanceof Error ? error.message : String(error) });
-    }
-    try {
+      ["user_notes", () => args.ctoMemory.writeNotes("user", mergeUserNotes(args.ctoMemory.readNotes("user"), copy.userNotes))],
       // No open work in the copy: this machine's list is from an earlier stay, and goes.
-      args.ctoMemory.replaceOpenWorkText(copy.openWork);
-    } catch (error) {
-      logger.warn("cto.account_copy_open_work_failed", { error: error instanceof Error ? error.message : String(error) });
+      ["open_work", () => args.ctoMemory.replaceOpenWorkText(copy.openWork)],
+    ];
+    let complete = true;
+    for (const [step, run] of steps) {
+      try {
+        run();
+      } catch (error) {
+        complete = false;
+        logger.warn("cto.account_copy_restore_step_failed", { step, error: error instanceof Error ? error.message : String(error) });
+      }
     }
+    if (!complete) return false;
+    writeJson(takenCopyPath, {
+      ownerDeviceId: copy.ownerDeviceId,
+      savedAt: copy.savedAt,
+      forChosenAt: home?.chosenAt ?? null,
+      takenAt: new Date(now()).toISOString(),
+    });
     writeJson(carriedTailPath, {
       fromName: copy.ownerName,
       savedAt: copy.savedAt,
@@ -476,6 +480,7 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     await args.startFreshThread?.().catch((error: unknown) => {
       logger.warn("cto.account_copy_fresh_thread_failed", { error: error instanceof Error ? error.message : String(error) });
     });
+    return true;
   };
 
   /**
@@ -539,7 +544,14 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       args.onMoveLanded?.("kept");
       return { restored: false, fromName: null, savedAt: copy?.savedAt ?? null };
     }
-    await restore(copy, readHome());
+    if (!(await restore(copy, readHome()))) {
+      // Held like a move-in that couldn't read the account: turns wait, and
+      // the restore is tried again.
+      moveInPendingFor = readHome()?.chosenAt ?? null;
+      retryAdoptLater();
+      args.onMoveLanded?.("failed");
+      return { restored: false, fromName: null, savedAt: null };
+    }
     lastWrittenHash = null;
     logger.info?.("cto.account_copy_restored", { savedAt: copy.savedAt, routines: copy.routines.length, tailChars: copy.tail.length });
     await save("adopt");

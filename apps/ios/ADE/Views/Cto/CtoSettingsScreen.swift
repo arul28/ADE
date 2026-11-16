@@ -584,6 +584,14 @@ struct CtoNotesEditor: View {
     .onChange(of: draft) { _, next in
       if next != text { dirty = true }
     }
+    .onDisappear {
+      // Leaving inside the save delay cancels it: save what is left now. The
+      // store outlives this page.
+      guard dirty, !over, store.canEditNotes else { return }
+      if case .saving = state { return }
+      let store = store, scope = scope, text = draft, base = baseHash
+      Task { _ = await store.saveNotes(scope, text: text, baseHash: base) }
+    }
     .task(id: draft) {
       guard dirty, !over, store.canEditNotes else { return }
       try? await Task.sleep(nanoseconds: 1_200_000_000)
@@ -723,6 +731,14 @@ struct CtoInstructionsPage: View {
     }
     .onChange(of: draft) { _, next in
       if next != (store.identity?.systemPromptExtension ?? "") { dirty = true }
+    }
+    .onDisappear {
+      // Leaving inside the save delay cancels it: save what is left now.
+      guard dirty else { return }
+      var patch = CtoIdentityPatch()
+      patch.systemPromptExtension = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+      let store = store
+      Task { await store.updateIdentity(patch) }
     }
     .task(id: draft) {
       guard dirty else { return }
