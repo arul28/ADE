@@ -548,6 +548,7 @@ import { runUpdateTransaction } from "./services/updates/updateTransaction";
 import { createInstallOnQuitController, type InstallOnQuitDecision } from "./services/updates/installOnQuit";
 import { recordInstalledDesktopApp } from "./services/native/nativeHelperPaths";
 import { isSecureStorageAvailable } from "./services/shared/secureStorage";
+import { resolveSafeStorageKeyName } from "./safeStorageKeyName";
 import {
   checkRuntimeIdentity,
   runVerifiedRuntimeRestart,
@@ -729,6 +730,20 @@ function configureDesktopUserDataPath(): void {
 }
 
 configureDesktopUserDataPath();
+// Before ready: Electron names the safeStorage key from the app name when it
+// sets the key up. A channel install with nothing sealed yet gets its own key
+// (`safeStorageKeyName.ts`); Stable and installs with sealed files keep theirs.
+{
+  const safeStorageKeyName = app.isPackaged
+    ? resolveSafeStorageKeyName({
+      channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+      platform: process.platform,
+      userDataPath: app.getPath("userData"),
+      adeHome: process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade"),
+    })
+    : null;
+  if (safeStorageKeyName && safeStorageKeyName !== app.getName()) app.setName(safeStorageKeyName);
+}
 // Error tracking starts here: the earliest point where its crash dumps and
 // offline queue have a userData directory to live in.
 initMainSentry({
