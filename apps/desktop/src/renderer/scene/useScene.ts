@@ -109,7 +109,13 @@ function load(id: string, screen: ScreenPixels): void {
   if (entries.has(key)) return;
   entries.set(key, { url: null, palette: null, done: false });
   const bundled = findBundledScene(id);
-  const urlPromise = bundled ? Promise.resolve(bundled.src) : isUserSceneId(id) ? userSceneUrl(id, screen) : Promise.resolve(null);
+  // A user picture shows its stored copy, or the picture itself at once; a
+  // copy that has to be made first replaces it when ready (`upgradeToCopy`).
+  const urlPromise = bundled
+    ? Promise.resolve(bundled.src)
+    : isUserSceneId(id)
+      ? userSceneUrl(id, screen, { makeCopy: false })
+      : Promise.resolve(null);
   // A user picture deleted while this load was in flight must not come back.
   const stillWanted = () => entries.has(key);
   void urlPromise.then(async (url) => {
@@ -125,6 +131,23 @@ function load(id: string, screen: ScreenPixels): void {
     if (!stillWanted()) return;
     if (palette) lastPaletteById.set(id, palette);
     entries.set(key, { url, palette, done: true });
+    emit();
+    if (isUserSceneId(id)) upgradeToCopy(key, id, screen, url);
+  });
+}
+
+/**
+ * Makes a user picture's copy for this screen when it was not stored yet, and
+ * swaps it in. The layer keeps the picture on screen until the copy is
+ * decoded (`SceneImageLayer`), so the swap shows nothing; it only frees the
+ * larger decode.
+ */
+function upgradeToCopy(key: string, id: string, screen: ScreenPixels, shownUrl: string): void {
+  void userSceneUrl(id, screen).then((url) => {
+    const entry = entries.get(key);
+    if (!url || url === shownUrl || !entry || entry.url !== shownUrl) return;
+    entries.set(key, { ...entry, url });
+    lastUrlById.set(id, url);
     emit();
   });
 }

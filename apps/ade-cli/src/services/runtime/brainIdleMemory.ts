@@ -1,6 +1,9 @@
 import v8 from "node:v8";
 import vm from "node:vm";
 import type { AdeRuntime } from "../../bootstrap";
+import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import { brainLogPath } from "../projects/machineLayout";
+import { createBrainLogger } from "./brainLogger";
 import { summarizeRuntimeActivity } from "./runtimeWorkSummary";
 
 /**
@@ -171,8 +174,7 @@ function releaseIdleMemory(runtimes: AdeRuntime[]): void {
   const collection = collectGarbage();
   const after = process.memoryUsage();
   const mb = (bytes: number) => Math.round(bytes / 1048576);
-  // Into the first project's log: the brain has no machine log here.
-  runtimes[0]?.logger?.info?.("brain.idle_memory_released", {
+  machineLogger()?.info("brain.idle_memory_released", {
     projects: runtimes.length,
     gc: collection.kind,
     gcMs: collection.ms,
@@ -180,6 +182,22 @@ function releaseIdleMemory(runtimes: AdeRuntime[]): void {
     heapTotalMb: [mb(before.heapTotal), mb(after.heapTotal)],
     rssMb: [mb(before.rss), mb(after.rss)],
   });
+}
+
+let brainLogger: Logger | null | undefined;
+
+/**
+ * `brain.jsonl`: the release is a fact about the brain, not one project. Opened
+ * lazily and once, like the other machine records (GitHub request accounting).
+ */
+function machineLogger(): Logger | null {
+  if (brainLogger !== undefined) return brainLogger;
+  try {
+    brainLogger = createBrainLogger(brainLogPath());
+  } catch {
+    brainLogger = null;
+  }
+  return brainLogger;
 }
 
 type GcFunction = (options?: { type?: "major" | "minor"; execution?: "sync" | "async"; flavor?: "regular" | "last-resort" }) => void;

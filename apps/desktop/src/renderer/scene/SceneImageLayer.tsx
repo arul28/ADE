@@ -30,7 +30,11 @@ export function SceneImageLayer({ scene }: { scene: ImageScene }) {
   const [frame, setFrame] = useState({ left: 0, top: 0, width: 0, height: 0 });
   // Read once, at mount: the picture this layer opens on is already on screen.
   const [shownOnMount] = useState(() => (scene.url !== null && shownAt.has(scene.url) ? scene.url : null));
-  const [loadedUrl, setLoadedUrl] = useState<string | null>(shownOnMount);
+  // The file on screen, and the picture it belongs to.
+  const [loaded, setLoaded] = useState<{ id: string; url: string } | null>(() =>
+    shownOnMount ? { id: scene.id, url: shownOnMount } : null,
+  );
+  const loadedUrl = loaded?.url ?? null;
 
   useLayoutEffect(() => {
     const host = hostRef.current;
@@ -73,7 +77,13 @@ export function SceneImageLayer({ scene }: { scene: ImageScene }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const visible = scene.url !== null && loadedUrl === scene.url;
+  // Another file of the same picture (a size for another screen, or a user
+  // picture's screen-sized copy) replaces the one on screen without a gap:
+  // the old file stays drawn under the new one until the new one is decoded,
+  // then goes. They show the same picture at the same crop, so nothing moves.
+  // A different picture fades in from nothing, as before.
+  const swapping = scene.url !== null && loaded !== null && loaded.id === scene.id && loaded.url !== scene.url;
+  const visible = scene.url !== null && (loadedUrl === scene.url || swapping);
 
   return (
     <div ref={hostRef} aria-hidden className="ade-scene-layer">
@@ -90,6 +100,16 @@ export function SceneImageLayer({ scene }: { scene: ImageScene }) {
           ["--scene-dim" as string]: String(scene.dim / 100),
         }}
       >
+        {swapping && loadedUrl ? (
+          <img
+            key={loadedUrl}
+            src={loadedUrl}
+            alt=""
+            draggable={false}
+            className="ade-scene-image"
+            style={{ objectPosition: scene.position }}
+          />
+        ) : null}
         {scene.url ? (
           <img
             key={scene.url}
@@ -97,12 +117,23 @@ export function SceneImageLayer({ scene }: { scene: ImageScene }) {
             alt=""
             draggable={false}
             decoding="async"
-            onLoad={() => {
-              if (scene.url && !shownAt.has(scene.url)) shownAt.set(scene.url, performance.now());
-              setLoadedUrl(scene.url);
+            onLoad={(event) => {
+              const url = scene.url;
+              const id = scene.id;
+              if (!url) return;
+              const show = () => {
+                // A file that replaces another of the same picture keeps its
+                // first-shown time, so a layer that mounts later does not fade.
+                if (!shownAt.has(url)) shownAt.set(url, (loadedUrl && shownAt.get(loadedUrl)) || performance.now());
+                setLoaded((prev) => (prev?.url === url ? prev : { id, url }));
+              };
+              // While another file of this picture is on screen, wait until
+              // this one is decoded, so the swap never paints an empty frame.
+              if (swapping) void event.currentTarget.decode().catch(() => undefined).then(show);
+              else show();
             }}
             className="ade-scene-image"
-            style={{ objectPosition: scene.position }}
+            style={{ objectPosition: scene.position, ...(swapping ? { opacity: 0 } : null) }}
           />
         ) : null}
         <div className="ade-scene-veil" />

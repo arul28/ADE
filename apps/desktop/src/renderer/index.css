@@ -3053,10 +3053,14 @@ button, [role="button"] {
    Per-Tab Ambient Background System
    ═══════════════════════════════════════════════════════════ */
 
+/* No `will-change`: a window-sized layer under every page cost its own tiles,
+   and every box painted over it then became a layer of its own too (overlap),
+   about 28 MB of tile memory in the renderer and as much again in the GPU
+   process. The tab-switch fade still runs on the compositor: an opacity
+   animation gets its own layer while it runs. */
 .ade-tab-bg {
   opacity: 1;
   contain: strict;
-  will-change: opacity;
 }
 
 [data-theme="dark"] .ade-tab-bg,

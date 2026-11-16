@@ -131,9 +131,14 @@ export async function listUserScenes(): Promise<UserSceneSummary[]> {
  * (device pixels), the URL of the copy sized for that screen
  * (`screenCopySize`), made the first time; the picture itself when it is not
  * much larger than the screen or the copy cannot be made. Cached per id and
- * size.
+ * size. With `makeCopy: false`, a copy that is not stored yet is not made:
+ * the picture itself comes back at once.
  */
-export async function userSceneUrl(id: string, screen?: ScreenPixels | null): Promise<string | null> {
+export async function userSceneUrl(
+  id: string,
+  screen?: ScreenPixels | null,
+  { makeCopy = true }: { makeCopy?: boolean } = {},
+): Promise<string | null> {
   const knownSize = sizeById.get(id);
   if (!screen || knownSize) {
     const size = screen && knownSize ? screenCopySize(knownSize, screen) : null;
@@ -146,7 +151,7 @@ export async function userSceneUrl(id: string, screen?: ScreenPixels | null): Pr
     sizeById.set(id, { width: row.width, height: row.height });
     const copySize = screen ? screenCopySize(row, screen) : null;
     const key = copySize ? copyKey(id, copySize) : id;
-    const copy = copySize ? await sceneCopy(row, copySize) : null;
+    const copy = !copySize ? null : makeCopy ? await sceneCopy(row, copySize) : await storedCopy(key);
     // Cached by what it shows, so a failed copy is tried again the next time
     // the picture loads.
     const cacheKey = copy ? key : id;
@@ -164,15 +169,20 @@ function copyKey(id: string, size: ScreenPixels): string {
   return `${id}@${size.width}x${size.height}`;
 }
 
+async function storedCopy(key: string): Promise<Blob | null> {
+  const row = await runCopies<SceneCopyRow | undefined>("readonly", (store) => store.get(key) as IDBRequest<SceneCopyRow | undefined>)
+    .catch(() => undefined);
+  return row?.blob ?? null;
+}
+
 /** The stored copy at this size, made now when there is none. Null when it cannot be made. */
 function sceneCopy(row: UserScene, size: ScreenPixels): Promise<Blob | null> {
   const key = copyKey(row.id, size);
   const inFlight = copiesInFlight.get(key);
   if (inFlight) return inFlight;
   const job = (async () => {
-    const stored = await runCopies<SceneCopyRow | undefined>("readonly", (store) => store.get(key) as IDBRequest<SceneCopyRow | undefined>)
-      .catch(() => undefined);
-    if (stored) return stored.blob;
+    const stored = await storedCopy(key);
+    if (stored) return stored;
     const blob = await makeCopyInWorker({ blob: row.blob, width: size.width, height: size.height, quality: COPY_QUALITY });
     if (!blob) return null;
     const copy: SceneCopyRow = { key, sceneId: row.id, blob, width: size.width, height: size.height, madeAt: Date.now() };
