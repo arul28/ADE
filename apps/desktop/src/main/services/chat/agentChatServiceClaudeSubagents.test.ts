@@ -5070,8 +5070,9 @@ describe("createAgentChatService", () => {
         info: { summary: prompt, firstPrompt: prompt },
         firstPrompt: prompt,
       });
-      // Echoed SDK summaries are skipped; ADE names the chat after the wait.
-      await waitForSessionTitle(sessionService, session.id, "Fix Update Modal Flow");
+      // Echoed SDK summaries are skipped; ADE names the chat after the wait,
+      // from the person's own short prompt (sentence case, not re-cased).
+      await waitForSessionTitle(sessionService, session.id, "Fix update modal flow");
     });
 
     it("does not adopt when the session is manually named", async () => {

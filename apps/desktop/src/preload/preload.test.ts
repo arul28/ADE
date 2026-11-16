@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../shared/ipc";
+import { LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS } from "./pinnedRuntimeEvents";
 import { BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT } from "../shared/types/builtInBrowserRemote";
 
 describe("preload Activity bridge", () => {
@@ -8179,7 +8180,12 @@ describe("per-chat runtime routing", () => {
         expect(streamAttempt).toBe(expectedAttempts);
       }
 
-      await vi.advanceTimersByTimeAsync(5_000);
+      // A healthy poll on this computer's runtime is a keep-alive now: the
+      // events arrive by push, and the poll only renews main's subscription
+      // (whose idle expiry is 180 s). A failure still backs off from the base.
+      await vi.advanceTimersByTimeAsync(LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS - 1);
+      expect(streamAttempt).toBe(7);
+      await vi.advanceTimersByTimeAsync(1);
       expect(streamAttempt).toBe(8);
       await vi.advanceTimersByTimeAsync(1_999);
       expect(streamAttempt).toBe(8);

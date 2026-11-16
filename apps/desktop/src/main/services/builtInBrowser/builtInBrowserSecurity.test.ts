@@ -121,13 +121,20 @@ describe("built-in browser WebAuthn", () => {
   });
 
   it("configures the browser session once", async () => {
-    const { configureBuiltInBrowserWebAuthn } = await loadWebAuthnModule();
+    const { configureBuiltInBrowserWebAuthn, openBuiltInBrowserSession } = await loadWebAuthnModule();
 
+    // The shared profile opens on first use (a tab, the cloud approval window,
+    // a login import); its passkey picker is installed on the session it opens.
     configureBuiltInBrowserWebAuthn();
     configureBuiltInBrowserWebAuthn();
+    openBuiltInBrowserSession();
 
-    expect(fakes.session.fromPartition).toHaveBeenCalledTimes(1);
     expect(fakes.session.fromPartition).toHaveBeenCalledWith("persist:ade-browser");
+    expect(fakes.handlers["select-webauthn-account"]).toHaveLength(1);
+    // A second open finds the session configured and adds no second handler.
+    const partitionCalls = fakes.session.fromPartition.mock.calls.length;
+    openBuiltInBrowserSession();
+    expect(fakes.session.fromPartition.mock.calls.length).toBe(partitionCalls + 1);
     expect(fakes.handlers["select-webauthn-account"]).toHaveLength(1);
     expect(fakes.app.configureWebAuthn).not.toHaveBeenCalled();
   });
@@ -187,8 +194,9 @@ describe("built-in browser WebAuthn", () => {
   });
 
   it("selects the only returned passkey without prompting", async () => {
-    const { configureBuiltInBrowserWebAuthn } = await loadWebAuthnModule();
+    const { configureBuiltInBrowserWebAuthn, openBuiltInBrowserSession } = await loadWebAuthnModule();
     configureBuiltInBrowserWebAuthn();
+    openBuiltInBrowserSession();
     const callback = vi.fn();
 
     fakes.handlers["select-webauthn-account"][0]({}, {
@@ -202,8 +210,9 @@ describe("built-in browser WebAuthn", () => {
   });
 
   it("prompts when a site returns multiple discoverable passkeys", async () => {
-    const { configureBuiltInBrowserWebAuthn } = await loadWebAuthnModule();
+    const { configureBuiltInBrowserWebAuthn, openBuiltInBrowserSession } = await loadWebAuthnModule();
     configureBuiltInBrowserWebAuthn();
+    openBuiltInBrowserSession();
     fakes.dialog.showMessageBox.mockResolvedValue({ response: 1 });
     const callback = vi.fn();
 
@@ -227,8 +236,9 @@ describe("built-in browser WebAuthn", () => {
   });
 
   it("cancels the WebAuthn request when the chooser is cancelled", async () => {
-    const { configureBuiltInBrowserWebAuthn } = await loadWebAuthnModule();
+    const { configureBuiltInBrowserWebAuthn, openBuiltInBrowserSession } = await loadWebAuthnModule();
     configureBuiltInBrowserWebAuthn();
+    openBuiltInBrowserSession();
     fakes.dialog.showMessageBox.mockResolvedValue({ response: 2 });
     const callback = vi.fn();
 

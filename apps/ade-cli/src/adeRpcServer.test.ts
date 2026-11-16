@@ -2956,10 +2956,10 @@ describe("adeRpcServer", () => {
     const launchText = createCall.args?.at(-1) ?? createCall.startupCommand ?? "";
     expect(launchText).toContain("CLI controls ADE state");
     expect(launchText).toContain("PRs, proof, apps");
-    expect(launchText).toContain("clean up started processes");
+    expect(launchText).toContain("Stop processes you start");
     expect(launchText).toContain("ade chat note");
     expect(launchText).toContain("ade chat ask");
-    expect(launchText).toContain("You cannot settle or unsettle a session");
+    expect(launchText).toContain("You cannot settle a session");
     expect(launchText).toContain("Implement API wiring");
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
@@ -2996,7 +2996,7 @@ describe("adeRpcServer", () => {
     expect(launchText).toContain("--sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request");
     expect(launchText).toContain("ade chat note");
     expect(launchText).toContain("ade chat ask");
-    expect(launchText).toContain("You cannot settle or unsettle a session");
+    expect(launchText).toContain("You cannot settle a session");
     expect(launchText).not.toContain("--full-auto");
     expect(createCall.startupCommand).toContain(`--sandbox workspace-write -c ${NETWORK_FLAG_PREVIEW} --ask-for-approval on-request`);
     expect(createCall.startupCommand).not.toContain("--full-auto");

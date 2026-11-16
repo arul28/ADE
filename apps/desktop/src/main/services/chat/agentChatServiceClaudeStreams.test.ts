@@ -2038,7 +2038,11 @@ describe("createAgentChatService", () => {
       const textEvents = events
         .map((event) => event.event)
         .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "text" }> => event.type === "text");
-      expect(textEvents.map((event) => event.text)).toEqual(["Got it. Let me check the desktop app structure."]);
+      // The first words of a message go out as soon as they arrive and the
+      // rest coalesce (`showFirstBufferedText`), so the message can arrive in
+      // more than one event. What must hold is that it arrives once, whole,
+      // in order: the repeated assistant snapshot re-emits nothing.
+      expect(textEvents.map((event) => event.text).join("")).toBe("Got it. Let me check the desktop app structure.");
     });
 
     it("does not duplicate Claude text when the final assistant snapshot extends streamed deltas", async () => {

@@ -204,11 +204,21 @@ describe("window auto-start", () => {
     await vi.runAllTimersAsync();
 
     // The cheapest request that opens a window: low effort, no tools or MCP
-    // servers, nothing saved to the session list.
+    // servers, no project or local settings, hooks, skills or commands, and
+    // nothing saved to the session list. Only the user settings layer stays,
+    // for its auth (`claudeBackgroundUtilityFlags`).
     expectLaunched(spawn, "/bin/claude", [
       "-p", "Reply with OK.", "--model", "claude-haiku-5-5", "--effort", "low", "--output-format", "text",
-      "--tools=", "--strict-mcp-config", "--no-session-persistence",
+      "--tools=", "--strict-mcp-config",
+      "--setting-sources", "user",
+      "--settings", JSON.stringify({ disableAllHooks: true }),
+      "--disable-slash-commands",
+      "--no-session-persistence",
     ]);
+    // The prompt holds every word the call needs; no CLAUDE.md joins it.
+    expect(resolveClaudeExecutable).toHaveBeenCalledWith(expect.objectContaining({
+      env: expect.objectContaining({ CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" }),
+    }));
     expect(spawn).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(Array),
