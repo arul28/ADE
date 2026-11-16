@@ -1,6 +1,8 @@
 import { peekLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
+import { CloneToMachineDialog } from "../projects/CloneToMachineDialog";
+import { repoKeyForUrl } from "../projects/projectCopies";
 import { Suspense, lazy, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { compactFirstOffer } from "../../../shared/compactFirst";
 import { latestCompactionKeyOf, useCompactFirst } from "./useCompactFirst";
@@ -17743,6 +17745,24 @@ export function AgentChatPane({
     abandon: abandonDraftMachineSetup,
     busyRowId: draftSetupBusyRowId,
   } = draftMachineSetup;
+  // A machine with no copy yet: its clone dialog, and "Clone & send" sends
+  // the draft once the clone lands and the machine is the pick.
+  const draftCloneDialog = draftMachineSetup.cloneDialog;
+  const draftCloneOtherPaths = useMemo(
+    () => (draftCloneDialog
+      ? draftConnections.find((connection) => connection.target.id === draftCloneDialog.targetId)?.projects.map((project) => project.rootPath) ?? []
+      : []),
+    [draftCloneDialog, draftConnections],
+  );
+  const takeDraftSendAfter = draftMachineSetup.takeSendAfter;
+  const submitRef = useRef(submit);
+  submitRef.current = submit;
+  useEffect(() => {
+    if (!selectedDraftMachineId || !takeDraftSendAfter(selectedDraftMachineId)) return;
+    if (draftStore.get().trim().length === 0) return;
+    // One frame later, so the send reads the machine just picked.
+    window.requestAnimationFrame(() => void submitRef.current());
+  }, [selectedDraftMachineId, takeDraftSendAfter]);
   /**
    * Why the ADE Cloud entry can't be picked now, or null. Parallel models
    * start several lanes on this computer. A chat and a CLI session both run there.
@@ -21823,6 +21843,19 @@ export function AgentChatPane({
             onConfirm={confirmRewindDialog}
           />
         </Suspense>
+      ) : null}
+      {draftCloneDialog && repoKeyForUrl(draftCloneDialog.url) ? (
+        <CloneToMachineDialog
+          open
+          machine={{ machineId: draftCloneDialog.targetId, name: draftCloneDialog.name, targetId: draftCloneDialog.targetId }}
+          repoKey={repoKeyForUrl(draftCloneDialog.url)!}
+          url={draftCloneDialog.url}
+          repoName={draftCloneDialog.repoName}
+          otherProjectPaths={draftCloneOtherPaths}
+          confirmLabel={draftHasText ? "Clone & send" : "Clone"}
+          onCancel={draftMachineSetup.closeCloneDialog}
+          onReady={() => draftMachineSetup.cloneDialogReady(draftCloneDialog.targetId, draftCloneDialog.name, { send: draftHasText })}
+        />
       ) : null}
       {/* The lane picker's "+": configure a new lane now; it is created when
           the chat is sent, exactly like "Auto-create lane". */}
