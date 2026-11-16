@@ -10,6 +10,7 @@ import { createWebCloudBilling, type CloudBillingAccountClient } from "./cloudBi
 import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { AdapterInfra } from "./types";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import { UnsupportedRemoteCommandError } from "./infra/commandCaller";
 
 /**
  * `window.ade.cloud` for the web app: enough for Settings › ADE Cloud (the
@@ -137,11 +138,18 @@ export function createWebCloudNamespace(
   const listMachines = async (): Promise<CloudMachinesResult | null> => {
     if (!(await access())) return null;
     if (!computerOnline()) return await accountOnly();
-    const answer = await commands.call<unknown>(
-      "cloud.read",
-      { action: "list", args: { detail: "full" } },
-      { idempotent: false, authoritative: true },
-    );
+    let answer: unknown;
+    try {
+      answer = await commands.call<unknown>(
+        "cloud.read",
+        { action: "list", args: { detail: "full" } },
+        { idempotent: false, authoritative: true },
+      );
+    } catch (error) {
+      // A brain too old to have the command leaves the plan and hours to the server.
+      if (error instanceof UnsupportedRemoteCommandError) return await accountOnly();
+      throw error;
+    }
     // A brain too old to answer still leaves the plan and hours to the server.
     return machinesResultOf(answer) ?? await accountOnly();
   };

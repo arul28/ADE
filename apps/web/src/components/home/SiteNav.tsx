@@ -75,19 +75,28 @@ export function SiteNav() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setMenuOpen(false);
     };
+    // Widening past `md` hides the menu and its toggle: close it, so the page doesn't stay locked.
+    const desktop = window.matchMedia("(min-width: 768px)");
+    const onDesktop = () => {
+      if (desktop.matches) setMenuOpen(false);
+    };
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     window.addEventListener("keydown", onKeyDown);
+    desktop.addEventListener("change", onDesktop);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", onKeyDown);
+      desktop.removeEventListener("change", onDesktop);
     };
   }, [menuOpen]);
 
   const onPricing = location.pathname === "/pricing";
 
   return (
-    <header className="sticky top-0 z-50 border-b border-white/[0.07] bg-[#0a0a0f]/75 backdrop-blur-xl">
+    <header className="sticky top-0 z-50 border-b border-white/[0.07]">
+      {/* The blur is its own layer: a filter on the header itself would pin the fixed menu below to the header's box. */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-[#0a0a0f]/75 backdrop-blur-xl" />
       <div className="mx-auto flex h-[60px] max-w-[1320px] items-center gap-7 px-5 sm:px-8">
         <Link to="/" aria-label="ADE home" className="focus-ring flex shrink-0 items-center rounded-md">
           <img src="/logo.png" alt="ADE" className="h-[22px] w-auto" />

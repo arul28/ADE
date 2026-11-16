@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useReducedMotion } from "framer-motion";
 import {
   ArrowRight,
+  Pause,
+  Play,
   Camera,
   Cloud,
   Film,
@@ -261,11 +263,16 @@ function Window({ children, className }: { children: ReactNode; className?: stri
   );
 }
 
-/** A silent loop that plays only while on screen; the poster alone for reduced motion. */
+/**
+ * A silent loop that plays only while on screen; the poster alone for reduced
+ * motion. A pause button stops it for good (WCAG 2.2.2), even back on screen.
+ */
 function Clip({ src, poster, label }: { src: string; poster: string; label: string }) {
   const reduceMotion = useReducedMotion();
   const ref = useRef<HTMLVideoElement>(null);
   const [near, setNear] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
 
   useEffect(() => {
     const node = ref.current;
@@ -275,7 +282,7 @@ function Clip({ src, poster, label }: { src: string; poster: string; label: stri
         if (!entry) return;
         if (entry.isIntersecting) {
           setNear(true);
-          void node.play().catch(() => undefined);
+          if (!pausedRef.current) void node.play().catch(() => undefined);
         } else node.pause();
       },
       { rootMargin: "200px 0px" },
@@ -285,7 +292,26 @@ function Clip({ src, poster, label }: { src: string; poster: string; label: stri
   }, [reduceMotion]);
 
   if (reduceMotion) return <img src={poster} alt={label} width={1440} height={904} loading="lazy" className="block h-auto w-full" />;
+  const toggle = () => {
+    const node = ref.current;
+    if (!node) return;
+    const next = !pausedRef.current;
+    pausedRef.current = next;
+    setPaused(next);
+    if (next) node.pause();
+    else void node.play().catch(() => undefined);
+  };
   return (
-    <video ref={ref} src={near ? src : undefined} poster={poster} muted loop playsInline autoPlay preload="none" aria-label={label} width={1440} height={904} className="block h-auto w-full" />
+    <div className="relative">
+      <video ref={ref} src={near ? src : undefined} poster={poster} muted loop playsInline autoPlay={!paused} preload="none" aria-label={label} width={1440} height={904} className="block h-auto w-full" />
+      <button
+        type="button"
+        onClick={toggle}
+        aria-label={paused ? "Play the video" : "Pause the video"}
+        className="focus-ring absolute bottom-3 right-3 grid h-8 w-8 place-items-center rounded-full bg-black/55 text-white/85 backdrop-blur-sm transition-colors hover:bg-black/75 hover:text-white"
+      >
+        {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+      </button>
+    </div>
   );
 }

@@ -25,6 +25,8 @@ export type Rival = {
   freeHours: number;
   /** The plan you must be on to get a cloud computer at all, and what it includes. */
   plan: string;
+  /** The plan behind the monthly bill for `hours`, when it isn't always `plan`. */
+  planFor?: (hours: number) => string;
   /** What the hourly price is: an average over a plan's included hours, a metered usage rate, or the rate past a plan's hours. */
   rateKind: "plan average" | "usage rate" | "overage";
   /** True when the numbers are our arithmetic from the vendor's page, not a price it prints. */
@@ -40,10 +42,13 @@ export function adeMonthlyUsd(hours: number): number {
 }
 
 /** Replicas' cheapest plan for `hours` of Small: Developer ($50) or a Team step ($200, $300, ...), each billing 1.5x past its usage. */
-function replicasMonthlyUsd(hours: number): number {
+function replicasBest(hours: number): { price: number; usd: number } {
   const usage = hours * 0.24;
-  let best = 50 + Math.max(0, usage - 50) * 1.5;
-  for (let plan = 200; plan < usage + 100; plan += 100) best = Math.min(best, plan + Math.max(0, usage - plan) * 1.5);
+  let best = { price: 50, usd: 50 + Math.max(0, usage - 50) * 1.5 };
+  for (let price = 200; price < usage + 100; price += 100) {
+    const usd = price + Math.max(0, usage - price) * 1.5;
+    if (usd < best.usd) best = { price, usd };
+  }
   return best;
 }
 
@@ -98,7 +103,11 @@ export const RIVALS: Rival[] = [
     rateKind: "usage rate",
     // Small is $0.004 a minute ($0.24 an hour) inside a plan, 1.5x past it. Developer is $50 with $50 of usage;
     // Team is $200 and up in $100 steps, usage equal to the price. Its $100 free credit comes once, not monthly.
-    monthlyUsd: replicasMonthlyUsd,
+    monthlyUsd: (hours) => replicasBest(hours).usd,
+    planFor: (hours) => {
+      const { price } = replicasBest(hours);
+      return price === 50 ? "$50 Developer plan" : `$${price} Team plan`;
+    },
     perHourCents: 24,
     freeHours: 0,
     source: "https://replicas.dev/pricing",

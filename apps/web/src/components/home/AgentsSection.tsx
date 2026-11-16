@@ -68,11 +68,13 @@ export function AgentsSection() {
 function MixCard() {
   const reduceMotion = useReducedMotion() ?? false;
   const [index, setIndex] = useState(0);
+  // A pick stops the rotation, so the example the visitor chose stays put.
+  const [auto, setAuto] = useState(true);
   useEffect(() => {
-    if (reduceMotion) return;
+    if (reduceMotion || !auto) return;
     const timer = window.setInterval(() => setIndex((value) => (value + 1) % PAIRINGS.length), TURN_MS);
     return () => window.clearInterval(timer);
-  }, [reduceMotion]);
+  }, [reduceMotion, auto]);
   const pairing = PAIRINGS[index]!;
 
   return (
@@ -81,7 +83,7 @@ function MixCard() {
       <div className="relative flex flex-col items-center gap-6 md:flex-row md:justify-between">
         <div className="min-w-0 text-center md:text-left">
           <p className="text-[12px] font-medium uppercase tracking-[0.14em] text-white/45">Mix your own</p>
-          <p key={index} className="ade-pop-in mt-2 text-[clamp(18px,1.8vw,26px)] md:whitespace-nowrap font-semibold tracking-[-0.01em] text-white">
+          <p key={index} className="ade-pop-in mt-2 text-[clamp(18px,1.8vw,26px)] font-semibold tracking-[-0.01em] text-white">
             Run {pairing.model.name} inside {pairing.harness.name}.
           </p>
           <p className="mt-1 text-[14px] text-white/50">Any model, in any agent, through {pairing.via}.</p>
@@ -90,15 +92,17 @@ function MixCard() {
           <LogoTile part={pairing.model} turn={index} />
           <ArrowRight className="h-6 w-6 text-white/35" aria-hidden />
           <LogoTile part={pairing.harness} turn={index} />
-          <div className="ml-3 flex gap-1.5" role="tablist" aria-label="Examples">
+          <div className="ml-3 flex gap-1.5" role="group" aria-label="Examples">
             {PAIRINGS.map((entry, i) => (
               <button
                 key={entry.model.name}
                 type="button"
-                role="tab"
-                aria-selected={i === index}
+                aria-pressed={i === index}
                 aria-label={`${entry.model.name} inside ${entry.harness.name}`}
-                onClick={() => setIndex(i)}
+                onClick={() => {
+                  setAuto(false);
+                  setIndex(i);
+                }}
                 className={cn("focus-ring h-2 rounded-full transition-all", i === index ? "w-5 bg-white" : "w-2 bg-white/25 hover:bg-white/45")}
               />
             ))}

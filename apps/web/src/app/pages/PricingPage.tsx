@@ -119,7 +119,7 @@ function PricingHero() {
           </p>
         </div>
 
-        <div className="mt-[136px] grid gap-x-4 gap-y-[150px] sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-[136px] grid gap-x-4 gap-y-[150px] sm:grid-cols-2 xl:grid-cols-4">
           {PRICING_PLANS.map((plan) => (
             <PlanCard key={plan.id} plan={plan} />
           ))}

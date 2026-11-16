@@ -77,7 +77,10 @@ function CompactBarRow({ bar, max }: { bar: Bar; max: number }) {
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2.5">
         <Mark src={bar.logo} name={bar.name} size={22} />
-        <span className={cn("min-w-0 flex-1 truncate text-[14px]", bar.ade ? "font-semibold text-white" : "text-white/85")}>{bar.name}</span>
+        <span className="min-w-0 flex-1">
+          <span className={cn("block truncate text-[14px]", bar.ade ? "font-semibold text-white" : "text-white/85")}>{bar.name}</span>
+          {bar.sub ? <span className="block truncate text-[12px] text-white/45">{bar.sub}</span> : null}
+        </span>
         <span className={cn("font-mono text-[14px] tabular-nums", bar.ade ? "font-semibold text-[#ffc861]" : "text-white/75")}>{bar.label}</span>
       </div>
       <div className="h-2.5 overflow-hidden rounded-full bg-white/[0.05]">
@@ -146,7 +149,7 @@ function BillChart({ className }: { className?: string }) {
         {
           id: rival.id,
           name: rival.name,
-          sub: [rival.machine, rival.plan].filter(Boolean).join(" · "),
+          sub: [rival.machine, rival.planFor?.(hours) ?? rival.plan].filter(Boolean).join(" · "),
           logo: rival.logo,
           source: rival.source,
           value,
@@ -164,13 +167,27 @@ function BillChart({ className }: { className?: string }) {
       title="Monthly bill"
       metric={`${formatCount(hours)} hours in a month, on each app's cheapest plan for them. Lower is better.`}
       control={
-        <div role="radiogroup" aria-label="Hours a month" className="inline-flex rounded-full border border-white/10 p-0.5">
+        <div
+          role="radiogroup"
+          aria-label="Hours a month"
+          className="inline-flex rounded-full border border-white/10 p-0.5"
+          onKeyDown={(event) => {
+            const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+            if (!step) return;
+            event.preventDefault();
+            const next = WORKLOADS[(WORKLOADS.indexOf(hours) + step + WORKLOADS.length) % WORKLOADS.length]!;
+            setHours(next);
+            (event.currentTarget.querySelector(`[data-hours="${next}"]`) as HTMLButtonElement | null)?.focus();
+          }}
+        >
           {WORKLOADS.map((value) => (
             <button
               key={value}
               type="button"
               role="radio"
               aria-checked={hours === value}
+              tabIndex={hours === value ? 0 : -1}
+              data-hours={value}
               onClick={() => setHours(value)}
               className={cn(
                 "focus-ring rounded-full px-3.5 py-1.5 font-mono text-[13px] tabular-nums transition-colors",

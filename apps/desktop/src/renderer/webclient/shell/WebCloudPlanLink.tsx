@@ -33,12 +33,12 @@ export function WebCloudPlanLink({ accountClient }: { accountClient: BrowserAcco
     if (ran.current) return;
     ran.current = true;
     const link = takeCloudLink();
-    if (link) void finishCloudLink(link, createWebCloudBilling(accountClient));
+    if (link) void finishCloudLink(link, createWebCloudBilling(accountClient), accountClient);
   }, [accountClient]);
   return null;
 }
 
-async function finishCloudLink(link: WebCloudLink, billing: WebCloudBilling): Promise<void> {
+async function finishCloudLink(link: WebCloudLink, billing: WebCloudBilling, accountClient: BrowserAccountClient): Promise<void> {
   if (link.kind === "return") {
     showToast(RETURN_TOASTS[link.outcome]);
     return;
@@ -47,6 +47,8 @@ async function finishCloudLink(link: WebCloudLink, billing: WebCloudBilling): Pr
   if (link.kind === "page" || !isPaidPlanId(link.plan)) return;
   const plan = link.plan;
   const label = CLOUD_PLAN_LABELS[plan];
+  // The checkout is for the account that arrived with the link: a sign-out or switch meanwhile stops it.
+  const lease = accountClient.captureSessionLease();
   try {
     if (!(await billing.accessEnabled())) {
       showToast({ title: "ADE Cloud isn't open to your account yet", message: `ADE didn't start checkout for ${label}.`, durationMs: READABLE_TOAST_DURATION_MS });
@@ -57,6 +59,7 @@ async function finishCloudLink(link: WebCloudLink, billing: WebCloudBilling): Pr
       showToast({ title: `You're on ${cloudPlanLabelOf(account, cloudCatalogOf(account))} already`, message: "Change your plan under Plans on this page." });
       return;
     }
+    if (!lease || !accountClient.isSessionLeaseCurrent(lease)) return;
     showToast({ title: `Opening checkout for ${label}…` });
     await billing.openCheckout(plan, undefined, { afterSignIn: false });
   } catch (error) {
