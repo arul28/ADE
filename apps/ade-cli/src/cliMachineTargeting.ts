@@ -1582,8 +1582,9 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
   process.once("SIGINT", onInterrupt);
   try {
     // Always, --json too (stderr), before anything waits: the id is what follows or resumes this launch.
-    // A retry (--launch-id) keeps the size its launch was given, picked or default.
-    const resumed = asString(launchArgs.launchId) != null;
+    // A retry (--launch-id with no message: the id-only shape) keeps the size
+    // its launch was given, picked or default. A new launch carries a fresh id too.
+    const resumed = launch.kind === "chat" && !isRecord(launch.chat) && !asString(launch.prompt);
     const sizeText = sizeId ?? (resumed ? "the size it started with" : "your default size");
     process.stderr.write(`ade: ${resumed ? "going on with" : "starting"} a lane on ADE Cloud (${sizeText}). Launch id ${launchId}.\n`);
     return await withCloudActions(options, roots.projectRoot, async (call) => {
