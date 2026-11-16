@@ -264,6 +264,12 @@ type BrainPeerState = SyncRosterPeerState & {
   authenticated: boolean;
   /** Its `hello_ok` went out, so a close now is a reconnect and not a failed connect. */
   helloAnswered: boolean;
+  /**
+   * A project switch this ingress has not answered yet. The socket is not
+   * handed to the project host until it is answered: the close would fail the
+   * switch, and the client reconnects by itself after a successful one.
+   */
+  projectSwitchInFlight: boolean;
   authKind: "bootstrap" | "paired" | null;
   authTimeout: ReturnType<typeof setTimeout> | null;
   metadata: SyncPeerMetadata | null;
@@ -846,6 +852,9 @@ export function createBrainProjectActionsSyncHandler(
       // Before its hello is answered a close would fail the connection (and
       // an account pairing) outright; the answer checks for the host instead.
       if (!peer.helloAnswered || !waitsForProjectHost(peer.metadata) || peer.ws.readyState !== WS_OPEN) continue;
+      // The switch answer decides: the client reconnects after a successful
+      // one, and a failed one hands the socket over then.
+      if (peer.projectSwitchInFlight) continue;
       args.logger.info("sync_brain.project_socket_handed_to_host", {
         peerDeviceId: peer.metadata?.deviceId ?? null,
       });
@@ -928,6 +937,7 @@ export function createBrainProjectActionsSyncHandler(
         let result = null as Awaited<ReturnType<SyncProjectCatalogProvider["prepareProjectConnection"]>> | null;
         let completionAttempted = false;
         let resultSent = false;
+        peer.projectSwitchInFlight = true;
         try {
           result = await args.projectCatalogProvider.prepareProjectConnection(
             (envelope.payload ?? {}) as SyncProjectSwitchRequestPayload,
@@ -962,6 +972,22 @@ export function createBrainProjectActionsSyncHandler(
               ok: false,
               message: error instanceof Error ? error.message : String(error),
             }, envelope.requestId);
+          }
+        } finally {
+          peer.projectSwitchInFlight = false;
+          // A host that attached during a switch that did not succeed still
+          // gets this socket; after a successful switch the client reconnects.
+          if (
+            result?.ok !== true
+            && peer.helloAnswered
+            && waitsForProjectHost(peer.metadata)
+            && peer.ws.readyState === WS_OPEN
+            && args.projectHostAttached?.()
+          ) {
+            args.logger.info("sync_brain.project_socket_handed_to_host", {
+              peerDeviceId: peer.metadata?.deviceId ?? null,
+            });
+            handOverToProjectHost(peer);
           }
         }
         break;
@@ -1428,6 +1454,7 @@ export function createBrainProjectActionsSyncHandler(
       lifecycleGeneration: 0,
       authenticated: false,
       helloAnswered: false,
+      projectSwitchInFlight: false,
       authKind: null,
       authTimeout: null,
       metadata: null,

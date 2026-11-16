@@ -32,8 +32,8 @@ import {
   copyMachines,
   existingCopiesForRepo,
   expandRepoInput,
-  offlineMachinesLabel,
-  splitOfflineMachines,
+  splitUnconnectedMachines,
+  unconnectedMachinesLabel,
   isGitHubRepoUrl,
   repoKeyForUrl,
   repoNameForUrl,
@@ -124,7 +124,7 @@ function startOnOrder(
 type RowState =
   | { kind: "job"; job: CopyJob }
   | { kind: "existing"; copy: ExistingCopy }
-  | { kind: "offline" }
+  | { kind: "unconnected" }
   | { kind: "web" }
   | { kind: "available" };
 
@@ -208,19 +208,19 @@ export function AddProjectForm({
       if (job) return { kind: "job", job };
       const copy = existing.get(machine.machineId);
       if (copy) return { kind: "existing", copy };
-      if (!machine.online) return { kind: "offline" };
+      if (!machine.online) return { kind: "unconnected" };
       if (webMode && !machine.isLocal) return { kind: "web" };
       return { kind: "available" };
     },
     [existing, jobByMachine, webMode],
   );
 
-  // A long list of offline machines collapses into one row, so the folder
+  // A long list of machines not connected here collapses into one row, so the folder
   // row and the Add button stay in view. A machine with a copy or a clone job
   // of this repository stays out of the collapsed group.
-  const [offlineExpanded, setOfflineExpanded] = useState(false);
-  const { visible: visibleMachines, offline: offlineMachines } = useMemo(
-    () => splitOfflineMachines(machines, (machine) => machine, (machine) => {
+  const [unconnectedExpanded, setUnconnectedExpanded] = useState(false);
+  const { visible: visibleMachines, unconnected: unconnectedMachines } = useMemo(
+    () => splitUnconnectedMachines(machines, (machine) => machine, (machine) => {
       const kind = rowState(machine).kind;
       return kind === "job" || kind === "existing";
     }),
@@ -500,11 +500,11 @@ export function AddProjectForm({
           ) : (
             <>
               {visibleMachines.map((machine, index) => renderMachineRow(machine, index))}
-              {offlineMachines.length > 0 ? (
+              {unconnectedMachines.length > 0 ? (
                 <button
                   type="button"
-                  aria-expanded={offlineExpanded}
-                  onClick={() => setOfflineExpanded((current) => !current)}
+                  aria-expanded={unconnectedExpanded}
+                  onClick={() => setUnconnectedExpanded((current) => !current)}
                   className="kit-row"
                   style={{
                     minHeight: 36,
@@ -517,13 +517,13 @@ export function AddProjectForm({
                   }}
                 >
                   <span aria-hidden style={{ width: 16, display: "inline-flex", justifyContent: "center", flexShrink: 0 }}>
-                    {offlineExpanded ? <CaretUp size={11} weight="bold" /> : <CaretDown size={11} weight="bold" />}
+                    {unconnectedExpanded ? <CaretUp size={11} weight="bold" /> : <CaretDown size={11} weight="bold" />}
                   </span>
-                  {offlineMachinesLabel(offlineMachines.length)}
+                  {unconnectedMachinesLabel(unconnectedMachines.length)}
                 </button>
               ) : null}
-              {offlineExpanded
-                ? offlineMachines.map((machine, index) => renderMachineRow(machine, visibleMachines.length + 1 + index))
+              {unconnectedExpanded
+                ? unconnectedMachines.map((machine, index) => renderMachineRow(machine, visibleMachines.length + 1 + index))
                 : null}
             </>
           )}
@@ -640,7 +640,7 @@ function MachineRow({
   onFolderChange: (value: string) => void;
   onRetry: (job: CopyJob) => void;
 }) {
-  const muted = state.kind === "offline" || state.kind === "web";
+  const muted = state.kind === "unconnected" || state.kind === "web";
   const rowStyle: CSSProperties = {
     display: "flex",
     alignItems: "center",
@@ -729,9 +729,10 @@ function MachineRow({
         </span>
       );
       break;
-    case "offline":
+    case "unconnected":
       lead = glyph(<CircleDashed size={14} />);
-      detail = <span style={detailStyle}>offline</span>;
+      // Not connected here; the account may still show it online.
+      detail = <span style={detailStyle}>not connected</span>;
       break;
     case "web":
       lead = glyph(<CircleDashed size={14} />);

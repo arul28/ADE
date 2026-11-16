@@ -262,38 +262,6 @@ describe("Cursor Cloud row badge visibility", () => {
 
 describe("SessionCard identity", () => {
 
-  it("moves the spawn kind and Claude tag into the hover detail card", () => {
-    vi.useFakeTimers();
-    const { container } = render(
-      <SessionCard
-        session={makeSession({
-          toolType: "claude-chat",
-          claudeTag: "customer-ready",
-          spawnKind: "subagent",
-          orchestrationParentSessionId: "parent-1",
-        })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-        liveChildrenCount={3}
-      />,
-    );
-
-    // None of these have a permanent seat on the row any more.
-    expect(screen.queryByText("SUBAGENT")).toBeNull();
-    expect(screen.queryByText("customer-ready")).toBeNull();
-
-    // Icon-led rows: the icon is the label, so no "Label:" prefix survives.
-    const card = openRowTooltip(container);
-    expect(card.textContent).not.toContain("Spawn:");
-    expect(hoverRow("spawn").textContent).toContain("Subagent");
-    expect(hoverRow("tag").textContent).toContain("customer-ready");
-    expect(hoverRow("live-children").textContent).toContain("3 spawned chats still running");
-    expect(hoverRow("lane").textContent).toContain("Lane 1");
-    expect(hoverRow("provider").textContent).toContain("Claude chat");
-  });
-
   it("keeps Working with a question pip for Codex steering", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
@@ -338,64 +306,25 @@ describe("SessionCard identity", () => {
 });
 
 describe("SessionCard lineage", () => {
-  it("shows the lane's native stack position on a chat row", () => {
+
+  it.each([
+    { name: "a subagent", parent: "parent-1", spawnKind: "subagent" as const, chip: "Subagent" },
+    { name: "a chat that does not report back", parent: "parent-1", spawnKind: "peer" as const, chip: null },
+    { name: "a child with no spawn kind", parent: "parent-1", spawnKind: undefined, chip: null },
+    { name: "a top-level chat", parent: undefined, spawnKind: undefined, chip: null },
+  ])("marks only a subagent with the lineage chip: $name", ({ parent, spawnKind, chip }) => {
     render(
       <SessionCard
-        session={makeSession()}
+        session={makeSession({ orchestrationParentSessionId: parent, spawnKind })}
         lane={lane}
-        githubStack={{
-          id: "stack-18",
-          number: 18,
-          size: 3,
-          position: 2,
-          baseBranch: "main",
-        }}
         isSelected={false}
         onSelect={vi.fn()}
         onContextMenu={vi.fn()}
       />,
     );
-
-    expect(screen.getByLabelText("GitHub Stack 2 of 3")).toBeTruthy();
-  });
-
-  it("labels the badge with the spawn kind, then the role, then a plain fallback", () => {
-    const props = {
-      lane,
-      isSelected: false,
-      onSelect: vi.fn(),
-      onContextMenu: vi.fn(),
-    };
-    const { rerender } = render(
-      <SessionCard
-        {...props}
-        session={makeSession({
-          orchestrationParentSessionId: "parent-1",
-          spawnKind: "subagent",
-        })}
-      />,
-    );
-    expect(screen.getByTestId("session-spawn-lineage").textContent).toContain("Subagent");
-
-    rerender(
-      <SessionCard
-        {...props}
-        session={makeSession({
-          orchestrationParentSessionId: "parent-1",
-          spawnKind: "peer",
-        })}
-      />,
-    );
-    expect(screen.getByTestId("session-spawn-lineage").textContent).toContain("Peer");
-
-    // No spawn kind recorded: "Spawned" is the honest floor.
-    rerender(
-      <SessionCard
-        {...props}
-        session={makeSession({ orchestrationParentSessionId: "parent-1" })}
-      />,
-    );
-    expect(screen.getByTestId("session-spawn-lineage").textContent).toContain("Spawned");
+    const lineage = screen.queryByTestId("session-spawn-lineage");
+    if (chip) expect(lineage?.textContent).toContain(chip);
+    else expect(lineage).toBeNull();
   });
 
   it("keeps a failure's word on the card face even when the row suppresses status labels", async () => {
@@ -538,7 +467,7 @@ describe("SessionCard lineage", () => {
     try {
       const { container } = render(
         <SessionCard
-          session={makeSession({ orchestrationParentSessionId: "parent-9" })}
+          session={makeSession({ orchestrationParentSessionId: "parent-9", spawnKind: "subagent" })}
           lane={lane}
           isSelected={false}
           onSelect={onSelect}
@@ -1097,28 +1026,6 @@ describe("SessionCard status vocabulary", () => {
     expect(status.textContent).toContain("4h");
     // The old amber WarningCircle is gone — amber is reserved for "your move".
     expect(screen.queryByLabelText("Idle session")).toBeNull();
-  });
-
-  it("keeps the stale memory-hygiene advice in the detail card", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
-    const { container } = render(
-      <SessionCard
-        session={makeSession({
-          toolType: "codex",
-          status: "running",
-          runtimeState: "running",
-          // Past the 24h memory-hygiene threshold, not just the stale threshold.
-          lastActivityAt: "2026-07-06T12:00:00.000Z",
-        })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    expect(openRowTooltip(container).textContent).toContain("consider closing it to free memory");
   });
 
   it("ticks the working duration every second", () => {
@@ -1738,32 +1645,11 @@ describe("SessionCard where line", () => {
     expect(container.querySelector("[data-session-branch]")).toBeNull();
   });
 
-  it("keeps the cross-machine marker as identity, outside the status slot", () => {
+  it("names another machine only in the hover card, never on the row", () => {
+    // The row carries no machine mark; the hover card says which machine,
+    // from the union resolver's marker.
+    vi.useFakeTimers();
     const { container } = render(
-      <SessionCard
-        session={makeSession()}
-        lane={branchLane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-        runtimePin={{
-          kind: "remote",
-          key: "remote:studio",
-          targetId: "studio",
-          runtimeName: "Mac Studio",
-          projectId: "p1",
-          rootPath: "/repo",
-          displayName: "ADE",
-        }}
-      />,
-    );
-
-    // A runtime pin alone says WHICH machine, never that the machine is
-    // elsewhere — so on its own it paints no badge. The badge is the union
-    // resolver's verdict, handed down as `machineMarker`.
-    expect(container.querySelector("[data-session-machine]")).toBeNull();
-
-    const { container: badged } = render(
       <SessionCard
         session={makeSession()}
         lane={branchLane}
@@ -1780,11 +1666,10 @@ describe("SessionCard where line", () => {
         }}
       />,
     );
-    const marker = badged.querySelector("[data-session-machine]") as HTMLElement;
-    expect(marker.getAttribute("data-session-machine")).toBe("Mac Studio");
-    expect(marker.getAttribute("aria-label")).toBe("On Mac Studio, offline");
-    // Identity, not status: it sits beside the status slot, never inside it.
-    expect(badged.querySelector("[data-session-status-slot]")?.contains(marker)).toBe(false);
+
+    expect(container.textContent).not.toContain("Mac Studio");
+    openRowTooltip(container);
+    expect(hoverRow("machine").textContent).toContain("Mac Studio");
   });
 
   it("never badges a lane that is on this computer, but still names it in the detail card", () => {
@@ -1813,64 +1698,6 @@ describe("SessionCard where line", () => {
     openRowTooltip(container);
     expect(hoverRow("machine").textContent).toContain(THIS_MACHINE_NAME);
     expect(hoverRow("machine").textContent).not.toContain("studio-6754bb34");
-  });
-
-  it("dims the badge for a lane whose machine has gone unreachable", () => {
-    const { container } = render(
-      <SessionCard
-        session={makeSession()}
-        lane={branchLane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-        machineMarker={{
-          machineId: "studio",
-          machineName: "Mac Studio",
-          online: false,
-          mode: "glyph",
-          title: "Mac Studio",
-          sameBranchElsewhere: false,
-        }}
-      />,
-    );
-
-    const marker = container.querySelector("[data-session-machine]") as HTMLElement;
-    // Offline changes the COLOUR, never the shape: a badge that grew a name when
-    // a machine dropped would reflow the row for an invisible reason.
-    expect(marker.getAttribute("data-machine-online")).toBe("false");
-    expect(marker.getAttribute("data-machine-marker-mode")).toBe("glyph");
-    expect(marker.getAttribute("aria-label")).toBe("On Mac Studio, offline");
-    expect(marker.textContent).toBe("");
-  });
-
-  it("drops the machine chip when the lane header already names the machine — but keeps the fact", () => {
-    // Every row under that header is on that machine, so the chip is pure
-    // repetition. Suppression is about the ROW, not about losing the fact: the
-    // detail card still answers "which machine is this on?".
-    vi.useFakeTimers();
-    const { container } = render(
-      <SessionCard
-        session={makeSession()}
-        lane={branchLane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-        runtimePin={{
-          kind: "remote",
-          key: "remote:studio",
-          targetId: "studio",
-          runtimeName: "Mac Studio",
-          projectId: "p1",
-          rootPath: "/repo",
-          displayName: "ADE",
-        }}
-        suppressMachineChip
-      />,
-    );
-
-    expect(container.querySelector("[data-session-machine]")).toBeNull();
-    openRowTooltip(container);
-    expect(hoverRow("machine").textContent).toContain("Mac Studio");
   });
 });
 
@@ -1915,26 +1742,6 @@ describe("SessionCard snooze and woke overlays", () => {
     const status = container.querySelector("[data-session-status]")!;
     expect(status.getAttribute("data-session-status")).toBe("Woke");
     expect(status.getAttribute("data-session-tone")).toBe("amber");
-  });
-
-  it("moves the next-wake countdown into the detail card", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
-    const { container } = render(
-      <SessionCard
-        session={makeSession({ nextWakeAt: "2026-07-09T12:05:00.000Z" })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    expect(screen.queryByText("⏰ 5m")).toBeNull();
-    openRowTooltip(container);
-    // The countdown is recomputed on render, so it reflects the fake clock at
-    // the moment the card opened, not at mount.
-    expect(hoverRow("next-wake").textContent).toContain("Wakes in 5m");
   });
 });
 

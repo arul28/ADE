@@ -690,11 +690,22 @@ export function collectRestartCancelledWork(
   // was asked to do.
   const restartClosedIds = new Set<string>();
   const spawnNameById = new Map<string, string>();
+  // A spawned ADE chat starts as `chat:<child id>`, but its row is keyed by the
+  // child's id (`agentId`), and the sweep closes it under that bare id. Both
+  // name a chat of its own that outlives the restart, never lost work.
+  const spawnedChatRowIds = new Set<string>();
   for (const envelope of events) {
     const event = envelope.event;
     if (event.type === "subagent_started") {
       const name = event.description?.trim();
       if (name && !spawnNameById.has(event.taskId)) spawnNameById.set(event.taskId, name);
+      const taskId = event.taskId?.trim() ?? "";
+      if (taskId.startsWith("chat:")) {
+        spawnedChatRowIds.add(taskId);
+        spawnedChatRowIds.add(taskId.slice("chat:".length));
+        const agentId = typeof event.agentId === "string" ? event.agentId.trim() : "";
+        if (agentId) spawnedChatRowIds.add(agentId);
+      }
       continue;
     }
     if (event.type === "subagent_result" || event.type === "scheduled_work_update") {
@@ -724,7 +735,7 @@ export function collectRestartCancelledWork(
   for (const snapshot of subagentSnapshotsFromEvents(events)) {
     const live = snapshot.status === "running";
     if (!live && !closedByRestart(snapshot.summary, snapshot.endedAt, snapshot.id)) continue;
-    if (snapshot.id.startsWith("chat:")) continue;
+    if (snapshot.id.startsWith("chat:") || spawnedChatRowIds.has(snapshot.id)) continue;
     const key = `subagent:${snapshot.id}`;
     if (seen.has(key)) continue;
     seen.add(key);

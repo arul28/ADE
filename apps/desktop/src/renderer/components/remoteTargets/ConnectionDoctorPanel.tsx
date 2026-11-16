@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { CircleNotch } from "@phosphor-icons/react";
 import { SANS_FONT } from "../lanes/laneDesignTokens";
 import { extractError } from "../../lib/format";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import type {
   RemoteRuntimeDoctorCheck,
   RemoteRuntimeDoctorFailure,
@@ -87,7 +88,10 @@ type ConnectionDoctorPanelProps = {
  * "On <machine>" section that asks the machine itself.
  */
 export function ConnectionDoctorPanel({ machineId, machineName = null, connected = false }: ConnectionDoctorPanelProps) {
-  const remoteCheck = window.ade?.remoteRuntime?.checkReachability;
+  // ADE Web has no way to ask a machine this over its connection yet, so the
+  // section only shows where the call really exists.
+  const remoteCheckCandidate = window.ade?.remoteRuntime?.checkReachability;
+  const remoteCheck = isAdeAvailable(remoteCheckCandidate) ? remoteCheckCandidate : undefined;
   const checkRemote = useCallback(
     () => remoteCheck!(machineId),
     [remoteCheck, machineId],
@@ -143,7 +147,8 @@ export function ConnectionDoctorPanel({ machineId, machineName = null, connected
 
       <HostStallNote stall={result?.hostStall} machineName={machineName} />
 
-      {!loading && !error && checks ? (
+      {/* An empty route list under a verdict that already says why adds nothing. */}
+      {!loading && !error && checks && (checks.length > 0 || !result?.diagnosis) ? (
         <div style={{ display: "grid", gap: 8 }}>
           <DiagnosisSectionHead label="Ways to reach it from here" />
           {sortedChecks.length === 0 ? (

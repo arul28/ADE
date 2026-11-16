@@ -1,3 +1,4 @@
+import { isWebClientMode } from "../../lib/webClientMode";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   ArrowClockwise,
@@ -138,6 +139,16 @@ type SavedMachineRowProps = {
    * (Wake). A sleeping box can't take a connection, so the row never offers one.
    */
   parked?: { label: string; action: ReactNode } | null;
+  /**
+   * ADE Web holds a fixed number of computer connections per tab: the limit
+   * while the tab holds that many, else null. A computer that waits for a
+   * slot says so instead of looking broken.
+   */
+  sessionLimit?: number | null;
+  /** The account directory sees this computer online (true) or offline (false); null when it does not list it. */
+  accountOnline?: boolean | null;
+  /** When the account directory last saw this computer online; null when it does not list it. */
+  accountLastSeenAt?: number | null;
 };
 
 export function SavedMachineRow({
@@ -178,6 +189,9 @@ export function SavedMachineRow({
   hideLocalRemove = false,
   footer = null,
   parked = null,
+  sessionLimit = null,
+  accountOnline = null,
+  accountLastSeenAt = null,
 }: SavedMachineRowProps) {
   const { target, status } = row;
   const { computers: cloudComputers } = useAdeCloudLaneComputers();
@@ -200,8 +214,27 @@ export function SavedMachineRow({
         status ?? null,
         connected?.target.id === target.id,
       );
+  const notConnected = statusLabel === "Not connected" && !row.connected && !targetConnecting;
+  // Not connected only because this tab already holds its limit of
+  // connections: the same words as the account row in that state.
+  const slotReason = sessionLimit != null && status?.waitingForSlot === true && notConnected
+    ? `This tab already has ${sessionLimit} computers connected`
+    : null;
   // Says why a machine that is not connected will not come back on its own.
   const autoConnectOff = statusLabel === "Not connected" ? autoConnectOffReason(target) : null;
+  // The account directory sees it online: it is up, only this app is not
+  // connected to it. Say so and why, never "Last seen".
+  const onlineLine = accountOnline === true && notConnected
+    ? ["Online", slotReason ?? autoConnectOff].filter(Boolean).join(" · ")
+    : null;
+  // A computer the account sees offline keeps its "Last seen" line.
+  const slotLine = slotReason && accountOnline !== false ? slotReason : null;
+  // When the computer was last online: the account directory's time when it
+  // lists the computer, else the end of this app's last connection to it, else
+  // the start of that connection.
+  const lastSeenAt = (accountOnline != null ? accountLastSeenAt : null)
+    ?? status?.disconnectedAt
+    ?? target.lastConnectedAt;
   const compatibilityWarnings = selected
     ? (status?.compatibilityWarnings ??
       (connected?.target.id === target.id
@@ -256,14 +289,18 @@ export function SavedMachineRow({
             ? [routeLabel ?? "Online", latency].filter(Boolean).join(" · ")
             : targetConnecting && !connectingStale
               ? "Connecting…"
-              : target.lastConnectedAt || statusLabel !== "Not connected"
+              : onlineLine
+                ? onlineLine
+              : slotLine
+                ? slotLine
+              : lastSeenAt || statusLabel !== "Not connected"
                 ? [
                     // The hollow dot and the section already say "not connected".
                     statusLabel === "Not connected" ? null : statusLabel,
                     autoConnectOff,
                     statusLabel === "Not connected"
-                      ? formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "Last seen ")
-                      : formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "last seen "),
+                      ? formatLastSeen(lastSeenAt).replace(/^Last connected /, "Last seen ")
+                      : formatLastSeen(lastSeenAt).replace(/^Last connected /, "last seen "),
                   ].filter(Boolean).join(" · ")
                 : formatLastSeen(null);
   // A machine restarting for an update drops its connection on purpose. That
@@ -360,14 +397,18 @@ export function SavedMachineRow({
                       icon: <Pulse size={14} />,
                       disabled: busy,
                       onSelect: () => onToggleTest(target.id),
-                    }, {
+                    },
+                    // The settings are this computer's SSH route to the
+                    // machine. ADE Web reaches it through the relay only, so
+                    // it has none to edit.
+                    ...(isWebClientMode() ? [] : [{
                       key: "edit",
                       label: formOpen ? "Close settings" : "Rename and settings",
                       ariaLabel: "Edit",
                       icon: <PencilSimple size={14} />,
                       disabled: locked,
                       onSelect: () => onToggleEdit(target),
-                    }]
+                    }])]
                   : []),
                 ...(row.connected
                   ? [{

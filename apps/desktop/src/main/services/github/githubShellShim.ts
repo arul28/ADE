@@ -140,7 +140,11 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 ade_owner=\${${GH_SHIM_OWNER_ENV}:-}
 case $ade_owner in *[!A-Za-z0-9-]*) ade_owner= ;; esac
-ade_tok=$(curl -q -sf --noproxy '*' --max-time ${SHIM_CLIENT_TIMEOUT_SEC} --unix-socket "$${GH_TOKEN_ENDPOINT_ENV}" "http://localhost/v1/token?owner=$ade_owner" </dev/null 2>/dev/null) || ade_tok=
+ade_unreached=
+ade_tok=$(curl -q -sf --noproxy '*' --max-time ${SHIM_CLIENT_TIMEOUT_SEC} --unix-socket "$${GH_TOKEN_ENDPOINT_ENV}" "http://localhost/v1/token?owner=$ade_owner" </dev/null 2>/dev/null) || { ade_tok=; ade_unreached=1; }
+# A sandbox that blocks the endpoint (Codex plan mode, for one) would leave
+# only gh's own "run gh auth login" message, which is the wrong fix.
+[ -n "$ade_unreached" ] && printf '%s\\n' "gh: ADE could not reach its GitHub token from here (this command's sandbox may block it); running gh without it. Do not run gh auth login." >&2
 case $ade_tok in ''|*[!A-Za-z0-9_.-]*) ade_step_aside "$@" ;; esac
 GH_TOKEN=$ade_tok
 ADE_GH_TOKEN_SOURCE=account_app
@@ -309,6 +313,8 @@ function hasOwnGhLogin() {
   }
 }
 
+const UNREACHED = { unreached: true };
+
 function askToken() {
   const endpoint = (envValue(ENDPOINT_ENV) || "").trim();
   if (!endpoint) return Promise.resolve(null);
@@ -323,7 +329,8 @@ function askToken() {
       response.on("error", () => resolve(null));
     });
     request.on("timeout", () => request.destroy());
-    request.on("error", () => resolve(null));
+    // Unreached, not "no token": a sandbox may block the endpoint.
+    request.on("error", () => resolve(UNREACHED));
     request.end();
   });
 }
@@ -374,7 +381,12 @@ async function ghMode(args) {
   if (!real) return notFound();
   if (hasOwnToken() || hasOwnGhLogin()) return runGh(real, args, env);
   const token = await askToken();
-  if (!token) return runGh(real, args, env);
+  if (token === UNREACHED) {
+    // A sandbox that blocks the endpoint (Codex plan mode, for one) would
+    // leave only gh's own "run gh auth login" message, which is the wrong fix.
+    process.stderr.write("gh: ADE could not reach its GitHub token from here (this command's sandbox may block it); running gh without it. Do not run gh auth login.\\n");
+  }
+  if (typeof token !== "string") return runGh(real, args, env);
   runGh(real, args, Object.assign({}, env, { GH_TOKEN: token, ADE_GH_TOKEN_SOURCE: "account_app" }));
 }
 
@@ -391,7 +403,7 @@ function readStdin() {
 async function answerGit() {
   if (hasOwnToken() || hasOwnGhLogin()) return;
   const token = await askToken();
-  if (token) process.stdout.write("username=x-access-token\\npassword=" + token + "\\n");
+  if (typeof token === "string") process.stdout.write("username=x-access-token\\npassword=" + token + "\\n");
 }
 
 async function gitCredentialMode(action) {

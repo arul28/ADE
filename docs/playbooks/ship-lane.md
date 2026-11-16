@@ -515,6 +515,10 @@ Harvest fixes stay local until every signal on the remote head is terminal.
 - **Treat each remaining comment as a quality finding.** Verify it against the
   real code (quality synthesis step 4), then fix it or reject it. Never trust a
   bot finding as fact. Record every handled id.
+- **A request for a test is not a reason for a test.** When a bot or a
+  reviewer asks for "tests for this", ask the critical-path question in
+  **Writing tests** (`AGENTS.md`). If it fails, reply in one line ("No test:
+  <reason>; validated by <how>.") and resolve the thread.
 - **Rerun each CI failure locally** with only the failing file (Fix
   discipline §2). The phase's own edits often fixed it already. Fix the real
   failures that remain. At the `/quality` harvest, route a failure whose cause
@@ -878,7 +882,8 @@ is fix work, even when the code it points at moved ("outdated" is not
 "answered"). It goes to Phase 3b: fix it, or reply with the reason it is
 rejected, then resolve the thread. A thread whose id is already in
 `addressedCommentIds` but is still open was fixed and never answered: reply
-with the fix commit and the test that pins it, then resolve it.
+with the fix commit (and the test that pins it, if one exists), then resolve
+it.
 
 **Then read the bots' review bodies.** A finding on a line outside the diff
 cannot be an inline comment, so CodeRabbit lists it in the review body under
@@ -1097,7 +1102,7 @@ If both CI fixes and review-comment fixes are needed, spawn them **in parallel**
 
 **review-fix-agent** input:
 - List of new comments: `{id, author, body, path, line}`
-- Comment filter: address **every** comment that touches code — bot bugs, bot nits, human change-requests, human style nits. Skip only:
+- Comment filter: address **every** comment that touches code — bot bugs, bot nits, human change-requests, human style nits. A comment that asks only for a test gets a test only when it guards a critical path (**Writing tests** in `AGENTS.md`); otherwise reply "No test: <reason>; validated by <how>." and resolve it. Skip only:
   - Pure questions with no change requested
   - Praise
   - Comments whose referenced line no longer exists in the current diff

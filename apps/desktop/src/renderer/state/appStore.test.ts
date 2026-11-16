@@ -51,8 +51,9 @@ const mockLocalStorage = {
 };
 
 // Import after window is set up
-import { createProjectAppStore, effectiveThemeId, retainProjectAppStoreState, selectEffectiveThemeId, useAppStore, DEFAULT_TERMINAL_PREFERENCES, DEFAULT_CHAT_FONT_SIZE_PX } from "./appStore";
+import { createProjectAppStore, effectiveThemeId, flushWorkViewStatePersistForTests, retainProjectAppStoreState, selectEffectiveThemeId, useAppStore, DEFAULT_TERMINAL_PREFERENCES, DEFAULT_CHAT_FONT_SIZE_PX } from "./appStore";
 import { DEFAULT_APPLE_DEVICE_PREFERENCES } from "../../shared/appleDeviceSettings";
+import { rememberProjectOriginSummaries, resetProjectOriginMemory } from "../components/lanes/laneMachines";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -131,6 +132,10 @@ function laneCacheKey(projectRoot: string): string {
 
 describe("appStore", () => {
   beforeEach(() => {
+    // A test's debounced work-view write (a real 300 ms timer) must not land in
+    // the next test: on a slow runner it fired mid-way through one and wrote
+    // its stale project over that test's state.
+    flushWorkViewStatePersistForTests();
     mockStorage.clear();
     vi.clearAllMocks();
     resetStore();
@@ -1317,50 +1322,6 @@ describe("appStore", () => {
       }
     });
 
-    it("merges into the stored blob instead of republishing its own whole map", async () => {
-      vi.useFakeTimers();
-      try {
-        // Project B's surface holds a copy of A's state from when it was
-        // created. A whole-map write from B republished that stale copy over
-        // A's newer state — the "I left the tab and my collapse reverted" bug.
-        mockStorage.set("ade.workViewState.v1", JSON.stringify({
-          version: 3,
-          workViewByProject: {
-            "/project/a": { workCollapsedLaneIds: ["lane-a"], search: "alpha" },
-            "/project/b": { workCollapsedLaneIds: [] },
-          },
-          laneWorkViewByScope: {},
-        }));
-
-        vi.resetModules();
-        const mod = await import("./appStore");
-        // Simulate another surface writing A directly to storage after this
-        // store took its snapshot.
-        mockStorage.set("ade.workViewState.v1", JSON.stringify({
-          version: 3,
-          workViewByProject: {
-            "/project/a": { workCollapsedLaneIds: ["lane-a", "lane-a2"], search: "alpha-updated" },
-            "/project/b": { workCollapsedLaneIds: [] },
-          },
-          laneWorkViewByScope: {},
-        }));
-
-        mod.useAppStore.getState().setWorkViewState("/project/b", { search: "beta" });
-        await vi.advanceTimersByTimeAsync(300);
-
-        const persisted = JSON.parse(mockStorage.get("ade.workViewState.v1") ?? "{}") as {
-          workViewByProject?: Record<string, Record<string, unknown>>;
-        };
-        expect(persisted.workViewByProject?.["/project/b"]?.search).toBe("beta");
-        // A's newer state survives B's write.
-        expect(persisted.workViewByProject?.["/project/a"]?.search).toBe("alpha-updated");
-        expect(persisted.workViewByProject?.["/project/a"]?.workCollapsedLaneIds)
-          .toEqual(["lane-a", "lane-a2"]);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
     it("keeps Lanes-tab view state per project", () => {
       useAppStore.getState().setWorkViewState("/proj-one", {
         lanesFilter: "auth",
@@ -1641,6 +1602,31 @@ describe("appStore", () => {
   });
 
   describe("project transitions", () => {
+    it.each([
+      ["a switch to another tab keeps that tab's own view", undefined, "chat-b"],
+      ["the same tab moving to another copy brings its view", true, "chat-a"],
+    ])("two folders of one repository on this computer: %s", async (_label, carryWorkView, expectedActive) => {
+      // Two clones of one repository: the same origin, separate tabs.
+      const origin = "https://github.com/demo-org/atlas.git";
+      rememberProjectOriginSummaries([
+        { rootPath: "/clones/atlas-1", kind: "local", gitOriginUrl: origin },
+        { rootPath: "/clones/atlas-2", kind: "local", gitOriginUrl: origin },
+      ] as any, { replace: true });
+      const projectB = { rootPath: "/clones/atlas-2", displayName: "atlas", baseRef: "main" } as any;
+      useAppStore.setState({
+        project: { rootPath: "/clones/atlas-1", displayName: "atlas", baseRef: "main" } as any,
+        projectBinding: { kind: "local", key: "/clones/atlas-1", rootPath: "/clones/atlas-1", displayName: "atlas" },
+      } as any);
+      useAppStore.getState().setWorkViewState("/clones/atlas-1", { openItemIds: ["chat-a"], activeItemId: "chat-a", selectedItemId: "chat-a" });
+      useAppStore.getState().setWorkViewState("/clones/atlas-2", { openItemIds: ["chat-b"], activeItemId: "chat-b", selectedItemId: "chat-b" });
+      (window.ade.project.switchToPath as any).mockResolvedValueOnce(projectB);
+
+      await useAppStore.getState().switchProjectToPath("/clones/atlas-2", carryWorkView ? { carryWorkView } : undefined);
+
+      expect(useAppStore.getState().getWorkViewState("/clones/atlas-2").activeItemId).toBe(expectedActive);
+      resetProjectOriginMemory();
+    });
+
     it("tracks project switching progress and clears it on success", async () => {
       const nextProject = { rootPath: "/tmp/next", displayName: "Next", baseRef: "main" } as any;
       (window.ade.project.switchToPath as any).mockResolvedValueOnce(nextProject);

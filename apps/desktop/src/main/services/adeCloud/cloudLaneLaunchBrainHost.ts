@@ -288,7 +288,10 @@ export function createCloudLaneLaunchBrainHost(deps: {
       try {
         let launch = await service.start({ args: input.args, originUrl: input.originUrl, madeByChat: input.madeByChat, madeByAgent: input.madeByAgent ?? null });
         // The same command again retries a launch that failed.
-        if (known && launch.phase === "failed") launch = (await service.retry({ launchId: launch.launchId })) ?? launch;
+        // An unattended agent's retry whose limits now hold it at Small says so ("capped").
+        if (known && launch.phase === "failed") {
+          launch = (await service.retry({ launchId: launch.launchId }, { sizeChoice: input.args.cloud?.sizeChoice })) ?? launch;
+        }
         return { status: statusOf(launch), created: !known };
       } catch (error) {
         if (!known) callers.delete(launchId);

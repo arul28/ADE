@@ -1700,7 +1700,7 @@ struct WorkSubagentSnapshot: Identifiable, Hashable {
   let label: String?
   let model: String?
   let reasoningEffort: String?
-  let status: Status
+  var status: Status
   let lastToolName: String?
   let latestSummary: String?
   let turnId: String?
@@ -1846,6 +1846,36 @@ func workCanPromoteChatToSubagent(
   guard hostSupportsSpawnKindUpdate, isChat, spawnKind == .peer else { return false }
   let parent = parentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   return !parent.isEmpty
+}
+
+/// The menu labels for the reporting switch, named after the parent chat:
+/// "Stop reports to <parent>" and "Report back to <parent>". A long title is
+/// cut in the middle; with no title the label says "parent".
+enum WorkReportingMenuAction {
+  case stopReports
+  case reportBack
+
+  var prefix: String {
+    switch self {
+    case .stopReports: return "Stop reports to"
+    case .reportBack: return "Report back to"
+    }
+  }
+}
+
+func workReportingMenuLabel(_ action: WorkReportingMenuAction, parentTitle: String?, maxTitleLength: Int = 28) -> String {
+  let title = parentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !title.isEmpty else { return "\(action.prefix) parent" }
+  return "\(action.prefix) \(workMiddleTruncated(title, maxLength: maxTitleLength))"
+}
+
+/// Cuts a string in the middle with an ellipsis so both ends stay readable.
+func workMiddleTruncated(_ value: String, maxLength: Int) -> String {
+  guard maxLength > 1, value.count > maxLength else { return value }
+  let kept = maxLength - 1
+  let head = (kept + 1) / 2
+  let tail = kept - head
+  return String(value.prefix(head)) + "…" + String(value.suffix(tail))
 }
 
 /// Apply a successful spawn-kind or takeover-banner write onto the live

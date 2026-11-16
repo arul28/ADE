@@ -6,7 +6,9 @@ import type {
   CloudStatus,
 } from "../../../shared/adeCloud";
 import type { CloudSignInStatus } from "../../../shared/cloudSignIns";
+import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { AdapterInfra } from "./types";
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
 /**
  * `window.ade.cloud` for the web app: enough for Settings › ADE Cloud (the
@@ -99,10 +101,37 @@ export function createWebCloudNamespace(infra: Pick<AdapterInfra, "client" | "co
     );
   };
 
+  /**
+   * An asleep ADE Cloud computer's saved chats, read by the connected brain
+   * for the account (`cloud.read saved_chats_*`). Null is "couldn't ask" (no
+   * ADE Cloud, an older brain): the Work list keeps what it shows.
+   */
+  const savedChatRead = async <T>(action: "saved_chats_list" | "saved_chats_read", args: Record<string, unknown>): Promise<T | null> => {
+    if (!(await access())) return null;
+    try {
+      return await commands.call<T | null>("cloud.read", { action, args }, { fallback: null, retainLastRead: false });
+    } catch (error) {
+      // An older brain does not serve these reads ("cloud has no … here"):
+      // expected, and the list stays as it is. Anything else is worth counting.
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/^cloud has no "/.test(message)) {
+        forwardSignalToSentry("web.cloud_saved_chats_read_failed", { action }, `cloud_saved_chats_read_failed:${action}`, "info");
+      }
+      return null;
+    }
+  };
+
   return {
     getStatus,
     listMachines,
     machineAction,
+    savedChats: {
+      list: async (args) => await savedChatRead<CloudSavedChatList>("saved_chats_list", { ...args }),
+      read: async (args) => await savedChatRead<CloudSavedChatPage>("saved_chats_read", { ...args }),
+      delete: async () => {
+        throw new Error("Delete a saved chat in the ADE desktop app.");
+      },
+    },
     // The connected machine answers for the account: read again when this tab's connection changes.
     onStatusChanged: (cb) => {
       let readiness = client.getStatus().readiness;

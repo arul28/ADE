@@ -117,7 +117,13 @@ export type CloudProvider = {
   reportSustainedCpu?(id: string, report: CloudSustainedCpuReport): Promise<void>;
   /** Changes the size in place: the machine restarts, files stay, the disk only grows. */
   /** `origin: "auto"` marks the computer's own disk grower, for the server's analytics. */
-  resizeInstance(id: string, resources: { cpu: number; memory: number; disk?: number }, options?: { computerIdle?: boolean; origin?: "auto" }): Promise<string>;
+  /**
+   * `origin: "auto"`: the computer's own grow or move, not a person's. With
+   * `launchId` it is that server launch's setup moving its own computer up a
+   * size (`CLOUD_AUTO_SIZE`); the server refuses it with 409 `size_kept` when
+   * the launch's size was picked, the agent limits keep it, or it moved once.
+   */
+  resizeInstance(id: string, resources: { cpu: number; memory: number; disk?: number }, options?: { computerIdle?: boolean; origin?: "auto"; launchId?: string }): Promise<string>;
   createBackup(id: string): Promise<{ id: string | null; created: number | null; sizeBytes: number | null }>;
   setAutoSleep(id: string, policy: { autoSleep: boolean; idleTimeoutSeconds?: number }): Promise<void>;
   addPublicPort(id: string, input: { port: number; label: string }): Promise<{ port: number; url: string }>;

@@ -5,6 +5,7 @@ import {
   acquireCursorSdkConnection,
   createAgentChatService,
   createService,
+  cursorSendsReached,
   flushCursorSdkSilenceRecycle,
   fs,
   mockState,
@@ -323,9 +324,7 @@ describe("createAgentChatService", () => {
         sessionId: session.id,
         text: "Send that dies on the wire.",
       }, { awaitDispatch: true }).catch(() => undefined);
-      await vi.waitFor(() => {
-        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
-      });
+      await cursorSendsReached(2);
       await vi.waitFor(() => {
         expect(events.some((event) => event.event.type === "error")).toBe(true);
       });
@@ -375,9 +374,7 @@ describe("createAgentChatService", () => {
         sessionId: session.id,
         text: "Continue after the recycle.",
       }, { awaitDispatch: true });
-      await vi.waitFor(() => {
-        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
-      });
+      await cursorSendsReached(2);
 
       const continuityHeader = "System context (ADE continuity, do not echo verbatim):";
       const retryPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
@@ -425,9 +422,7 @@ describe("createAgentChatService", () => {
         sessionId: session.id,
         text: "Run that returns a transport error.",
       }, { awaitDispatch: true }).catch(() => undefined);
-      await vi.waitFor(() => {
-        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
-      });
+      await cursorSendsReached(2);
 
       expect(mockState.cursorSdkSendCalls).toHaveLength(2);
       expect(mockState.cursorSdkPoisonCalls).toHaveLength(1);

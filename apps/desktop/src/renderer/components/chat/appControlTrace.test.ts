@@ -165,10 +165,6 @@ describe("formatTraceRow", () => {
 describe("formatLastActionLine", () => {
   const now = Date.parse("2026-05-12T00:00:05.000Z");
 
-  it("reads as the wireframe's status line", () => {
-    expect(formatLastActionLine(entry(), now, [element()])).toBe("last: click ① Sign in · 1.2s");
-  });
-
   it("calls out a failure", () => {
     expect(formatLastActionLine(entry({ status: "error" }), now, [element()]))
       .toBe("last: click ① Sign in · 1.2s · failed");

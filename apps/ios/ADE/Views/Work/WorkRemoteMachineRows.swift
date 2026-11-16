@@ -99,6 +99,14 @@ func workRemoteLaneMachineName(_ laneId: String, options: [WorkMachineFilterOpti
   return options.first { $0.id == machineKey }?.name
 }
 
+/// The computer a Work row's session runs on, for the row's long-press menu.
+/// Rows never name it; the menu, the chat header and the prompt box do.
+func workSessionMachineName(laneId: String, options: [WorkMachineFilterOption]) -> String? {
+  if let remote = workRemoteLaneMachineName(laneId, options: options) { return remote }
+  guard workParseRemoteLaneId(laneId) == nil else { return nil }
+  return options.first { $0.id == workPrimaryMachineFilterId }?.name
+}
+
 /// The other machines' checkouts of the repository `identity`, one per machine.
 ///
 /// A machine can register the same repository more than once (a second clone,
@@ -187,19 +195,51 @@ struct WorkRemoteMachineMerge {
 
 /// Add the other machines' sessions and lanes to the focused project's rows:
 /// chats, CLI sessions and shells. The Work filters then decide which rows
-/// show, by the same rules as focused-machine rows. A session id the focused
-/// machine already shows wins (the desktop union deduplicates the same way).
+/// show, by the same rules as focused-machine rows.
+///
+/// Who owns a session decides which row shows. A session the focused
+/// machine's live roster lists (by id, or by one of its lanes) is the focused
+/// machine's: its row wins, as in the desktop union. Any other row in
+/// `sessions` is a copy the phone keeps from another computer, for example
+/// from an earlier primary. While that computer is live, its own roster row
+/// replaces the copy, and a copy its roster no longer lists is dropped. While
+/// it is not live (its reconnect window), the copy stays as the fallback.
+/// `focused` is nil while the focused roster has not loaded: then no copy is
+/// dropped, and only an id that a live remote roster lists is replaced.
 func workMergeRemoteMachineRows(
   sessions: [TerminalSessionSummary],
   lanes: [LaneSummary],
-  remote: [WorkRemoteMachineRepo]
+  remote: [WorkRemoteMachineRepo],
+  focused: RemoteRosterProject? = nil
 ) -> WorkRemoteMachineMerge {
   guard !remote.isEmpty else {
     return WorkRemoteMachineMerge(sessions: sessions, lanes: lanes, remoteChats: [:])
   }
-  var seenSessionIds = Set(sessions.map(\.id))
-  var mergedSessions = sessions
-  var mergedLanes = lanes
+  let focusedSessionIds = Set(focused?.chats.map(\.id) ?? [])
+  let focusedLaneIds = Set(focused?.lanes.map(\.id) ?? [])
+  func ownedByFocused(_ session: TerminalSessionSummary) -> Bool {
+    focusedSessionIds.contains(session.id) || focusedLaneIds.contains(session.laneId)
+  }
+  // Raw lane id -> the live computer whose roster lists that lane.
+  var remoteLaneOwner: [String: Int] = [:]
+  for (index, repo) in remote.enumerated() {
+    for lane in repo.lanes where remoteLaneOwner[lane.id] == nil { remoteLaneOwner[lane.id] = index }
+  }
+  let remoteSessionIds = Set(remote.flatMap { $0.chats.map(\.id) })
+  var mergedSessions = sessions.filter { session in
+    if ownedByFocused(session) { return true }
+    // Replaced below by its owner's live roster row.
+    if remoteSessionIds.contains(session.id) { return false }
+    // A copy from a live computer whose roster no longer lists it.
+    if focused != nil, remoteLaneOwner[session.laneId] != nil { return false }
+    return true
+  }
+  var seenSessionIds = Set(mergedSessions.map(\.id))
+  // A lane copy of a live computer: that computer's roster lanes list it
+  // (namespaced below) when one of its rows uses it.
+  var mergedLanes = focused == nil ? lanes : lanes.filter { lane in
+    focusedLaneIds.contains(lane.id) || remoteLaneOwner[lane.id] == nil
+  }
   var seenLaneIds = Set(lanes.map(\.id))
   var remoteChats: [String: SyncRemoteMachineChat] = [:]
   for repo in remote {

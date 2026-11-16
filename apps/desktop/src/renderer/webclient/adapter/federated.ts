@@ -1,4 +1,5 @@
 import type {
+  AdeAccountMachine,
   AdeAccountMachinePairResult,
   OpenProjectBinding,
   PersonalChatCallArgs,
@@ -7,15 +8,28 @@ import type {
   ProjectInfo,
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
+  RemoteRuntimeDoctorResult,
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
 import { markExpected } from "../../../shared/expectedError";
+import {
+  sameMachineKey,
+  type MachineAddress,
+  type MachineConnectOptions,
+  type MachineConnectResult,
+} from "../../../shared/machineAddress";
 import { isWebRuntimePinUnroutableError } from "./runtimePinGuard";
 import type { BrowserAccountClient } from "../account/client";
 import type { AdeSyncClient } from "../sync";
-import type { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
+import { WebMachineConnectSkipped, type WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
 import { createAdeWebAdapter, type AdeWebAdapter } from "./index";
 import { createReconnectHold } from "./reconnectHold";
+import { resolveMachinePresence } from "../../../shared/types/power";
+import { wakeWebCloudMachine } from "../workspace/webCloudMachines";
+
+/** How long a person's connect keeps dialing a cloud computer it just woke. */
+const WOKEN_CONNECT_WAIT_MS = 120_000;
+const WOKEN_CONNECT_RETRY_MS = 5_000;
 
 type RemoteBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
@@ -239,8 +253,37 @@ export function createFederatedWebAdapter({
       for (const listener of connectionListeners) listener(connectionSnapshot);
     },
   );
+  // A pairing names its computer by host device id; the account names the
+  // same computer by machine key. Each target carries that key, as on the
+  // desktop, so every reader of `pairedMachine.machineKey` (the cloud
+  // computer behind a chat, its wake, the copies lists) finds the computer.
+  const readMachineKeyByDevice = (): ReadonlyMap<string, string> => new Map(
+    accountClient.getSnapshot().machines.flatMap((machine) => (
+      machine.deviceId?.trim() && machine.machineKey ? [[machine.deviceId.trim(), machine.machineKey] as const] : []
+    )),
+  );
+  let machineKeyByDevice = readMachineKeyByDevice();
+  const withAccountMachineKeys = (snapshot: RemoteRuntimeConnectionSnapshot): RemoteRuntimeConnectionSnapshot => {
+    if (machineKeyByDevice.size === 0) return snapshot;
+    let changed = false;
+    const connections = snapshot.connections.map((connection) => {
+      const paired = connection.target.pairedMachine;
+      const machineKey = paired && !paired.machineKey ? machineKeyByDevice.get(paired.hostIdentity.trim()) : undefined;
+      if (!paired || !machineKey) return connection;
+      changed = true;
+      return { ...connection, target: { ...connection.target, pairedMachine: { ...paired, machineKey } } };
+    });
+    return changed ? { ...snapshot, connections } : snapshot;
+  };
   const getConnectionSnapshot = () =>
-    reconnectHold.apply(manager.getConnectionSnapshot(extraProjectsByTarget()));
+    withAccountMachineKeys(reconnectHold.apply(manager.getConnectionSnapshot(extraProjectsByTarget())));
+  const accountMachinesDispose = accountClient.onMachinesChanged(() => {
+    const next = readMachineKeyByDevice();
+    if (next.size === machineKeyByDevice.size && [...next].every(([device, key]) => machineKeyByDevice.get(device) === key)) return;
+    machineKeyByDevice = next;
+    const connectionSnapshot = getConnectionSnapshot();
+    for (const listener of connectionListeners) listener(connectionSnapshot);
+  });
 
   let managerDispose = () => {};
 
@@ -258,9 +301,10 @@ export function createFederatedWebAdapter({
    * the remount unnecessary.
    *
    * INVARIANT: a subscription pinned to a binding (one carrying a binding in
-   * its arguments) is never recorded and never re-attached — it belongs to that
-   * binding's machine for its whole life. See the `pinned` branch in
-   * `dynamicMember`.
+   * its arguments) is never re-attached to another binding — it belongs to
+   * that binding's machine for its whole life. It is kept in
+   * `pinnedSubscriptions` instead, and follows only that machine's client. See
+   * the `pinned` branch in `dynamicMember`.
    */
   type DurableSubscription = {
     path: PropertyKey[];
@@ -274,7 +318,7 @@ export function createFederatedWebAdapter({
   /** Attach one recorded subscription to `adapter`, or leave it detached. */
   const attachDurableSubscription = (
     adapter: AdeWebAdapter,
-    entry: DurableSubscription,
+    entry: Pick<DurableSubscription, "path" | "args">,
   ): (() => void) | null => {
     try {
       const { parent, value } = readPath(adapter, entry.path);
@@ -321,11 +365,71 @@ export function createFederatedWebAdapter({
     };
   };
 
+  /**
+   * A subscription pinned to one binding: a chat pane's feed from the chat's
+   * own computer. A computer's client is replaced on each reconnect (an ADE
+   * Cloud computer starts a new brain on each wake), which disposes the
+   * binding's adapter and the listeners on it. The subscription attaches
+   * again to the same binding on the new client, and waits detached while the
+   * computer is not connected, so the caller's one subscribe lasts.
+   */
+  type PinnedSubscription = {
+    binding: RemoteBinding;
+    path: PropertyKey[];
+    args: unknown[];
+    detach: (() => void) | null;
+    /** The client it is attached through now. */
+    client: unknown;
+  };
+  const pinnedSubscriptions = new Set<PinnedSubscription>();
+
+  const detachPinnedSubscription = (entry: PinnedSubscription): void => {
+    try {
+      entry.detach?.();
+    } catch {
+      // A disposed adapter can throw on detach; the attachment dies with it.
+    }
+    entry.detach = null;
+    entry.client = null;
+  };
+
+  const followPinnedSubscription = (entry: PinnedSubscription): void => {
+    const client = manager.getClient(entry.binding.targetId) ?? null;
+    if (entry.detach && entry.client === client) return;
+    detachPinnedSubscription(entry);
+    if (!client) return;
+    let adapter: AdeWebAdapter;
+    try {
+      adapter = adapterForBinding(entry.binding);
+    } catch {
+      return;
+    }
+    entry.detach = attachDurableSubscription(adapter, entry);
+    entry.client = entry.detach ? client : null;
+  };
+
+  const registerPinnedSubscription = (entry: PinnedSubscription): (() => void) => {
+    pinnedSubscriptions.add(entry);
+    followPinnedSubscription(entry);
+    return () => {
+      if (pinnedSubscriptions.delete(entry)) detachPinnedSubscription(entry);
+    };
+  };
+
   // A member that hands back an unsubscribe. `lanes.rebaseSubscribe` ends in
   // the word; a Promise from it would become an effect's cleanup and crash.
   const isSubscriptionMember = (path: PropertyKey[]): boolean => {
     const member = String(path[path.length - 1] ?? "");
     return /^on[A-Z]/.test(member) || /^subscribe/.test(member) || /Subscribe$/.test(member);
+  };
+
+  // A listener API (`onEvent`, `subscribe…`): calling it again on a new client
+  // only attaches a listener. A command that ends in `Subscribe`
+  // (`macDesktop.streamSubscribe`) starts work on the computer and returns a
+  // Promise; it is never kept and called again.
+  const isListenerMember = (path: PropertyKey[]): boolean => {
+    const member = String(path[path.length - 1] ?? "");
+    return /^on[A-Z]/.test(member) || /^subscribe/.test(member);
   };
 
   const setCurrentAdapter = (adapter: AdeWebAdapter) => {
@@ -594,6 +698,10 @@ export function createFederatedWebAdapter({
     async accountList() {
       return await accountClient.readAccountProjects();
     },
+    // A connected machine read a changed list from the account: read it too.
+    onAccountListChanged(cb: () => void) {
+      return manager.subscribeAccountProjectsChanged(cb);
+    },
     async setRecentPinned() {
       return await listRecent();
     },
@@ -668,8 +776,33 @@ export function createFederatedWebAdapter({
       connectionListeners.add(listener);
       return () => connectionListeners.delete(listener);
     },
+    // A tab reaches a computer only through its own live connection, so
+    // "Test connection" reports that connection instead of routes it cannot dial.
+    async runDoctor(targetId: string): Promise<RemoteRuntimeDoctorResult> {
+      const connection = getConnectionSnapshot().connections.find((entry) => entry.target.id === targetId);
+      const name = connection?.target.name?.trim() || connection?.target.hostname || "This computer";
+      const route = connection?.state === "connected" ? connection.route : undefined;
+      if (route) {
+        return {
+          checks: [{ route: route.kind, endpoint: route.endpoint, ok: true }],
+          diagnosis: {
+            tone: "success",
+            title: `${name} is connected through ${route.kind === "relay" ? "ADE's relay" : "your local network"}.`,
+          },
+        };
+      }
+      return {
+        checks: [],
+        diagnosis: { tone: "warning", title: `${name} isn't connected to this tab.`, fix: "Connect it, then test again." },
+      };
+    },
+    // A web tab reaches a machine through the relay, never over SSH, so there
+    // is no host key to confirm before Connect.
+    async getSshHostKeyTrust(_targetId: string) {
+      return { state: "trusted" as const };
+    },
     async connect(targetId: string) {
-      const session = await manager.connectEnvironment(targetId);
+      await manager.connectEnvironment(targetId);
       const connection = getConnectionSnapshot().connections.find((entry) => entry.target.id === targetId);
       if (!connection) throw new Error("The machine connection disappeared.");
       return {
@@ -687,7 +820,8 @@ export function createFederatedWebAdapter({
     },
     openProject,
     async disconnect(targetId: string) {
-      await manager.park(targetId);
+      // The person's Disconnect: a repository tab that opens later leaves it off.
+      await manager.disconnectByUser(targetId);
       return { disconnected: true };
     },
     async removeTarget(targetId: string) {
@@ -741,8 +875,144 @@ export function createFederatedWebAdapter({
     },
   };
 
+  // Contract C2 (`shared/machineAddress.ts`) for this tab: any machine of the
+  // account by its key. A machine this tab never paired with is paired
+  // through the account, the same path Connect takes. It never moves the
+  // machine on screen; `background` (a repository tab opening) also skips a
+  // machine the person disconnected and never parks another one for room.
+  const accountMachineFor = (machineKey: string): AdeAccountMachine | null =>
+    accountClient.getSnapshot().machines.find((entry) => sameMachineKey(entry.machineKey, machineKey)) ?? null;
+  const machineDisplayName = (machine: AdeAccountMachine, fallback?: string | null): string =>
+    machine.customName?.trim() || machine.name?.trim() || fallback?.trim() || "your computer";
+  const machinesOverrides = {
+    async connect(machineKey: string, options?: MachineConnectOptions): Promise<MachineConnectResult> {
+      const key = typeof machineKey === "string" ? machineKey.trim() : "";
+      if (!key) return { ok: false, reason: "invalid", machineKey: "", message: "ADE needs to know which computer to reach." };
+      const listed = accountMachineFor(key);
+      if (!listed) {
+        return { ok: false, reason: "not_in_account", machineKey: key, message: "That computer is no longer on your ADE account." };
+      }
+      const saved = manager.findAccountMachineEnvironment(listed);
+      // A person's connect (a click, a send) while the saved connection is
+      // down or coming back: the account list may not say yet that the
+      // computer went to sleep, and then it would only be dialed. Read it once.
+      if (options?.background !== true && options?.connect !== false && saved
+        && manager.getClient(saved.envId)?.getStatus().state !== "connected") {
+        await accountClient.loadMachines().catch(() => undefined);
+      }
+      const machine = accountMachineFor(key) ?? listed;
+      if (options?.connect === false) {
+        // This tab saves a pairing only by connecting; a save-only call
+        // answers with what it has.
+        return saved
+          ? { ok: true, address: { kind: "remote", machineKey: key, targetId: saved.envId, name: machineDisplayName(machine, saved.machineName) } }
+          : { ok: false, reason: "unreachable", machineKey: key, message: `${machineDisplayName(machine)} is not connected to this browser yet.` };
+      }
+      const background = options?.background === true;
+      // A person's connect to a resting ADE Cloud computer wakes it first,
+      // through a connected computer (this browser has no cloud credential),
+      // then dials until it answers. A background connect never wakes one.
+      const presence = resolveMachinePresence({
+        connected: false,
+        online: machine.online,
+        sleepState: machine.sleepState,
+        sleepStateAt: machine.sleepStateAt,
+        lastSeenAt: machine.lastSeenAt,
+      });
+      // A sleep announcement older than the window reads "offline", but an
+      // ADE Cloud computer can sleep for days with no heartbeat: its last word
+      // was that it went to sleep, so a person's connect still wakes it.
+      const asleep = !background && (
+        presence === "asleep" || (presence === "offline" && machine.sleepState === "asleep")
+      );
+      // "Asleep" is also how an ordinary computer with a recent heartbeat
+      // reads, and this browser cannot tell the two apart here: a wake that
+      // fails still tries the saved connection once, and says why only when
+      // that fails too.
+      let woke = false;
+      let wakeFailure: string | null = null;
+      if (asleep) {
+        // The click clears the person's earlier Disconnect now, not at the
+        // first dial: a Disconnect pressed during the wake is then newer.
+        if (saved) manager.acceptUserConnect(saved.envId);
+        try {
+          await wakeWebCloudMachine({
+            snapshot: manager.getSnapshot(),
+            getClient: (targetId) => manager.getClient(targetId),
+            machineKey: key,
+          });
+          woke = true;
+        } catch (error) {
+          wakeFailure = error instanceof Error ? error.message : String(error);
+        }
+      }
+      const connectOnce = () => manager.connectAccountMachine(machine, { activate: false, background });
+      try {
+        // A Disconnect pressed during the wake or the wait ends it: the next
+        // dial would be a foreground connect, which clears that Disconnect.
+        const disconnectedSince = () => {
+          const environment = manager.findAccountMachineEnvironment(machine);
+          return Boolean(environment && manager.getConnectionSnapshot().connections.some(
+            (entry) => entry.target.id === environment.envId && entry.reconnectBlocked === "disconnected",
+          ));
+        };
+        // A failed wake still tries the saved connection once.
+        const session = asleep
+          ? await dialWhileWaking(connectOnce, disconnectedSince, woke ? WOKEN_CONNECT_WAIT_MS : 0)
+          : await connectOnce();
+        return {
+          ok: true,
+          address: {
+            kind: "remote",
+            machineKey: key,
+            targetId: session.targetId,
+            name: machineDisplayName(machine, session.environment.machineName),
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // Skipped on purpose (the person's Disconnect, or no room left in
+        // this browser): nothing is wrong with the machine.
+        if (error instanceof WebMachineConnectSkipped) {
+          return { ok: false, reason: error.reason === "no_room" ? "no_room" : "declined", machineKey: key, message };
+        }
+        if (wakeFailure) {
+          return { ok: false, reason: "unreachable", machineKey: key, message: `ADE couldn't wake ${machineDisplayName(machine)}: ${wakeFailure}` };
+        }
+        return { ok: false, reason: "unreachable", machineKey: key, message: `ADE couldn't reach ${machineDisplayName(machine)}: ${message}` };
+      }
+    },
+    async addressFor(machineKey: string): Promise<MachineAddress | null> {
+      const key = typeof machineKey === "string" ? machineKey.trim() : "";
+      const machine = key ? accountMachineFor(key) : null;
+      const saved = machine ? manager.findAccountMachineEnvironment(machine) : null;
+      return machine && saved
+        ? { kind: "remote", machineKey: key, targetId: saved.envId, name: machineDisplayName(machine, saved.machineName) }
+        : null;
+    },
+  };
+
+  /**
+   * A woken cloud computer answers within a minute or two: dial again for
+   * `waitMs`, unless the person disconnected it (`cancelled`), which is
+   * checked before every dial, the first one too.
+   */
+  const dialWhileWaking = async <T,>(attempt: () => Promise<T>, cancelled: () => boolean, waitMs: number): Promise<T> => {
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      if (cancelled()) throw new WebMachineConnectSkipped("user_disconnected");
+      try {
+        return await attempt();
+      } catch (error) {
+        if (error instanceof WebMachineConnectSkipped || Date.now() >= deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, WOKEN_CONNECT_RETRY_MS));
+      }
+    }
+  };
+
   const OVERRIDES: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
     account: accountOverrides,
+    machines: machinesOverrides,
     app: appOverrides,
     personalChats: personalChatsOverrides,
     project: projectOverrides,
@@ -795,18 +1065,30 @@ export function createFederatedWebAdapter({
             // dialed in this tab) is connected first, then the call runs on
             // it. A subscription cannot wait, so it starts the connect and
             // stays off until the caller subscribes again.
-            // The pinned machine may not be the one on screen: connect it
-            // without making it the active machine.
+            // The connect is a background one. Every tab reads every
+            // computer's lanes through pinned calls, so a read in flight
+            // when a computer drops would otherwise dial it again at once:
+            // undoing the person's Disconnect and parking another computer
+            // for room, which the next read dials back. Neither happens
+            // here; the call fails as "not connected" instead.
+            const notConnected = () => markExpected(new Error("The machine is not connected."), "network");
+            const connectPinned = () => manager.connectEnvironment(pinned.targetId, { activate: false, background: true });
+            if (isListenerMember(path)) {
+              // It attaches when the machine's client arrives (see `pinnedSubscriptions`).
+              void connectPinned().catch(() => undefined);
+              return registerPinnedSubscription({ binding: pinned, path, args, detach: null, client: null });
+            }
             if (isSubscriptionMember(path)) {
-              void manager.connectEnvironment(pinned.targetId, { activate: false }).catch(() => undefined);
               console.warn("[ade-web] subscription skipped: its machine is connecting", path.join("."));
               return () => {};
             }
-            return manager.connectEnvironment(pinned.targetId, { activate: false }).then((): unknown => (
-              manager.getClient(pinned.targetId)
-                ? callDynamic(...args)
-                : Promise.reject(markExpected(new Error("The machine is not connected."), "network"))
-            ));
+            return connectPinned().then(
+              (): unknown => (manager.getClient(pinned.targetId) ? callDynamic(...args) : Promise.reject(notConnected())),
+              (error: unknown) => Promise.reject(error instanceof WebMachineConnectSkipped ? notConnected() : error),
+            );
+          }
+          if (isListenerMember(path)) {
+            return registerPinnedSubscription({ binding: pinned, path, args, detach: null, client: null });
           }
           try {
             pinnedAdapter = adapterForBinding(pinned);
@@ -924,6 +1206,9 @@ export function createFederatedWebAdapter({
     // Covers both the reconnect that just replaced a client above and a later
     // snapshot in which a machine we were parked off of comes back.
     if (currentAdapter === fallbackAdapter) restoreCurrentAdapterForDisplayedSurface();
+    // A pinned feed follows its own machine's client: off while it is gone,
+    // on again through the new client after a reconnect.
+    for (const entry of pinnedSubscriptions) followPinnedSubscription(entry);
     // An account-wide subscription follows the computer that answers its
     // reads: the first one to connect, or a new client after a reconnect.
     for (const entry of durableSubscriptions) {
@@ -1042,10 +1327,13 @@ export function createFederatedWebAdapter({
     dispose() {
       invalidationDispose();
       managerDispose();
+      accountMachinesDispose();
       reconnectHold.dispose();
       manager.setProtectedTargetId(null);
       for (const entry of durableSubscriptions) detachDurableSubscription(entry);
       durableSubscriptions.clear();
+      for (const entry of pinnedSubscriptions) detachPinnedSubscription(entry);
+      pinnedSubscriptions.clear();
       for (const adapter of adapters) adapter.dispose();
       projectListeners.clear();
       bindingListeners.clear();

@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import { cloudMachineSettling, type CloudMachinesResult } from "../../../shared/adeCloud";
 import { captureError } from "../../../shared/sentry/capture";
 import { extractError } from "../../lib/format";
-import { noteCloudLaneMachines } from "../../state/adeCloudLaneIndex";
+import { cloudLaneIndexFresh, noteCloudLaneMachines } from "../../state/adeCloudLaneIndex";
 import { noteCloudAccountRead, setCloudAccountFed } from "../../state/cloudAccountStore";
 
 /** While a box is waking, sleeping or resizing, how often its state is read again. */
@@ -149,6 +149,24 @@ export function refreshCloudMachines(): void {
     },
     (error: unknown) => captureError(error, { fingerprint: ["cloud", "machines_refresh"], handled: true }),
   );
+}
+
+/** The least time between two reads that `refreshCloudMachinesIfStale` starts. */
+const STALE_REFRESH_GAP_MS = 60_000;
+let staleRefreshAt = 0;
+
+/**
+ * Reads the list once when no read in this window is fresh, at most once a
+ * minute: a page that names a copy's computer (the no-machine page, the
+ * copies menu) must know an ADE Cloud computer from its first render, not only
+ * after Connections opened.
+ */
+export function refreshCloudMachinesIfStale(): void {
+  if (cloudLaneIndexFresh()) return;
+  const now = Date.now();
+  if (now - staleRefreshAt < STALE_REFRESH_GAP_MS) return;
+  staleRefreshAt = now;
+  refreshCloudMachines();
 }
 
 const subscribe = (listener: () => void) => subscribeWith(listener, true);

@@ -94,6 +94,32 @@ async function waitForFakeTimers(
   throw lastError;
 }
 
+/**
+ * Runs `work` with fake timeouts, stepping them a quarter second at a time
+ * until it settles, then puts real timers back. For a Claude turn whose fake
+ * stream stays open after its result (as a live SDK query does): the turn
+ * then waits out the one-second post-result drain for a tail message, and
+ * stepping turns that second of sleep into a few microtask flushes. Stepping
+ * stops the moment `work` settles, so no later timer fires early.
+ */
+async function settleSteppingTimeouts<T>(work: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    let settled = false;
+    const pending = work().finally(() => { settled = true; });
+    pending.catch(() => {});
+    // At most 60 s of fake time (past any turn timeout these tests pass), so
+    // a turn that never settles fails here instead of spinning to the test timeout.
+    for (let elapsedMs = 0; !settled && elapsedMs < 60_000; elapsedMs += 250) {
+      await vi.advanceTimersByTimeAsync(250);
+    }
+    if (!settled) throw new Error("settleSteppingTimeouts: the work did not settle within 60 s of fake time");
+    return await pending;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 const streamText = vi.fn();
 const claudeSdkCreateSessionCompat = vi.hoisted(() => vi.fn());
 const claudeSdkResumeSessionCompat = vi.hoisted(() => vi.fn());
@@ -205,6 +231,8 @@ const mockState = vi.hoisted(() => ({
   codexLineHandler: null as ((line: string) => void) | null,
   cursorSdkAcquireCalls: [] as Array<Record<string, unknown>>,
   cursorSdkSendCalls: [] as Array<Record<string, unknown>>,
+  /** Waiting on `cursorSendsReached`; settled as each send is recorded. */
+  cursorSendWaiters: [] as Array<{ count: number; resolve: () => void }>,
   cursorSdkPolicyUpdates: [] as Array<Record<string, unknown>>,
   cursorSdkPooled: null as any,
   /** Text pushed through `Run.steer()`, in call order. */
@@ -949,6 +977,12 @@ vi.mock("./cursorSdkPool", () => ({
         // test's ledger; see `mockState.generation`.
         if (acquiredGeneration === mockState.generation) {
           mockState.cursorSdkSendCalls.push(payload);
+          const sent = mockState.cursorSdkSendCalls.length;
+          mockState.cursorSendWaiters = mockState.cursorSendWaiters.filter((waiter) => {
+            if (sent < waiter.count) return true;
+            waiter.resolve();
+            return false;
+          });
         }
         mockState.onCursorSendPrompt?.(pooled);
         if (mockState.cursorSendPromptGate) await mockState.cursorSendPromptGate;
@@ -2006,6 +2040,19 @@ function createService(overrides: Record<string, unknown> = {}) {
   return { service, logger, laneService, sessionService, projectConfigService, aiIntegrationService };
 }
 
+/**
+ * Resolves once this test has recorded `count` Cursor sends. It waits on the
+ * send itself, not a poll against the wall clock: a recycle re-send can take
+ * longer than a poll's budget on a loaded CI runner. Real timers only; a test
+ * that must advance fake timers to reach the send keeps `vi.waitFor`.
+ */
+function cursorSendsReached(count: number): Promise<void> {
+  if (mockState.cursorSdkSendCalls.length >= count) return Promise.resolve();
+  return new Promise((resolve) => {
+    mockState.cursorSendWaiters.push({ count, resolve });
+  });
+}
+
 async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
@@ -2303,6 +2350,7 @@ beforeEach(() => {
   mockState.codexLineHandler = null;
   mockState.cursorSdkAcquireCalls = [];
   mockState.cursorSdkSendCalls = [];
+  mockState.cursorSendWaiters = [];
   mockState.cursorSdkPolicyUpdates = [];
   mockState.cursorSdkPooled = null;
   mockState.cursorSdkSteerCalls = [];
@@ -2443,6 +2491,7 @@ const flushCursorSdkSilenceRecycle = async (): Promise<void> => {
 
 
 export {
+  settleSteppingTimeouts,
   CLAUDE_MUTATING_BUILTIN_TOOLS,
   CLAUDE_READ_ONLY_TOOLS,
   CODEX_REPLAY_MAX_CHARS,
@@ -2554,6 +2603,7 @@ export {
   tmpHomeRoot,
   tmpRoot,
   turnDiffMockState,
+  cursorSendsReached,
   waitFor,
   waitForCondition,
   waitForEvent,

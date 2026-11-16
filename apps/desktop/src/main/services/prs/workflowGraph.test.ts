@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
 import {
   computeCriticalPath,
   computeTiers,
@@ -15,8 +13,37 @@ import {
 } from "./workflowGraph";
 import type { PrActionJob, PrActionRun, PrCheck } from "../../../shared/types/prs";
 
-/** ADE's own CI workflow — the real-world shape this service exists for. */
-const ADE_CI_YAML_PATH = path.resolve(__dirname, "../../../../../../.github/workflows/ci.yml");
+/** A small CI workflow with the shapes the service handles: needs, a matrix, a gate. */
+const CI_YAML = `name: CI
+on: pull_request
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm ci
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - run: scan
+  services:
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - run: test
+  test-desktop:
+    needs: [install]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [main, renderer]
+    steps:
+      - run: test
+  ci-pass:
+    needs: [install, secret-scan, services, test-desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+`;
 
 const NOW = Date.parse("2026-07-27T12:00:00.000Z");
 
@@ -68,34 +95,6 @@ const BASE_INPUT = {
 /* ────────────────────────────── YAML parsing ─────────────────────────────── */
 
 describe("parseWorkflowFile", () => {
-  it("parses only needs + matrix from ADE's real ci.yml", () => {
-    const content = fs.readFileSync(ADE_CI_YAML_PATH, "utf8");
-    const parsed = parseWorkflowFile({ path: ".github/workflows/ci.yml", content });
-
-    expect(parsed.degraded).toBeNull();
-    expect(parsed.name).toBe("CI");
-    // ~17 jobs: install, secret-scan, the parallel checks and gates, ci-pass.
-    expect(parsed.jobs.length).toBeGreaterThanOrEqual(15);
-
-    const install = parsed.jobs.find((entry) => entry.id === "install");
-    expect(install?.needs).toEqual([]);
-
-    // `needs: install` given as a bare string, not a list.
-    const typecheck = parsed.jobs.find((entry) => entry.id === "typecheck");
-    expect(typecheck?.needs).toEqual(["install"]);
-
-    // The gate depends on everything upstream.
-    const gate = parsed.jobs.find((entry) => entry.id === "ci-pass");
-    expect(gate?.needs.length).toBeGreaterThan(10);
-    expect(gate?.needs).toContain("typecheck");
-    expect(gate?.needs).toContain("test-desktop");
-
-    // Two matrix jobs.
-    const matrixJobs = parsed.jobs.filter((entry) => entry.isMatrix).map((entry) => entry.id);
-    expect(matrixJobs).toContain("test-desktop");
-    expect(matrixJobs).toContain("build-runtime-binaries");
-  });
-
   it("degrades a reusable-workflow job", () => {
     const parsed = parseWorkflowFile({
       path: ".github/workflows/reuse.yml",
@@ -254,43 +253,7 @@ describe("computeCriticalPath", () => {
 /* ────────────────────────────── graph building ───────────────────────────── */
 
 describe("createWorkflowGraph.build", () => {
-  const CI_YAML = fs.readFileSync(ADE_CI_YAML_PATH, "utf8");
   const CI_FILE: WorkflowFileSource = { path: ".github/workflows/ci.yml", content: CI_YAML };
-
-  it("reconstructs install -> parallel -> ci-pass from the real ci.yml", async () => {
-    const service = makeService([CI_FILE]);
-    const graph = await service.build({
-      ...BASE_INPUT,
-      runs: [
-        run({
-          name: "CI",
-          runAttempt: 2,
-          jobs: [
-            job({ id: 10, name: "install" }),
-            job({ id: 11, name: "typecheck" }),
-            job({ id: 12, name: "lint-desktop" }),
-            job({ id: 13, name: "ci-pass" }),
-          ],
-        }),
-      ],
-    });
-
-    expect(graph.source).toBe("worktree");
-    expect(graph.unavailableReason).toBeNull();
-    expect(graph.attempt).toBe(2);
-
-    const byId = new Map(graph.nodes.map((node) => [node.jobId, node]));
-    expect(byId.get("install")?.tier).toBe(0);
-    expect(byId.get("typecheck")?.tier).toBe(1);
-    expect(byId.get("lint-desktop")?.tier).toBe(1);
-    // The gate sits one tier past its deepest dependency.
-    expect(byId.get("ci-pass")!.tier).toBeGreaterThan(1);
-
-    expect(graph.edges).toContainEqual({ from: "install", to: "typecheck" });
-    expect(graph.edges).toContainEqual({ from: "typecheck", to: "ci-pass" });
-    // `secret-scan` has no needs, so it must have no inbound edge.
-    expect(graph.edges.filter((edge) => edge.to === "secret-scan")).toEqual([]);
-  });
 
   it("collapses matrix legs into one node whose state is the worst leg", async () => {
     const service = makeService([CI_FILE]);

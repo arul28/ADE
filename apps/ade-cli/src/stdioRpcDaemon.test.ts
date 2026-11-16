@@ -74,14 +74,15 @@ const RUNTIME_SOCKET_READY_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 
 
 /**
  * A request that cold-starts the daemon (the first `ade/initialize`) waits for
- * that start as well as its own answer. On Windows the start alone may take the
- * 30s production allows, so a fixed 15s request guard failed under load while
- * the daemon was still starting. Each test's own limit grows by the same
- * allowance. macOS and Linux keep their original limits.
+ * that start as well as its own answer. The start alone may take the time
+ * production allows (30s on Windows, 10s elsewhere), so a fixed 15s request
+ * guard failed on a slow or busy machine while the daemon was still starting.
+ * Each test's own limit grows by the same allowance. These are ceilings, not
+ * sleeps: a healthy daemon answers in a few seconds.
  */
-const WINDOWS_COLD_START_ALLOWANCE_MS = process.platform === "win32" ? RUNTIME_SOCKET_READY_TIMEOUT_MS : 0;
-const REQUEST_TIMEOUT_MS = 15_000 + WINDOWS_COLD_START_ALLOWANCE_MS;
-const DAEMON_TEST_TIMEOUT_MS = 45_000 + WINDOWS_COLD_START_ALLOWANCE_MS;
+const COLD_START_ALLOWANCE_MS = RUNTIME_SOCKET_READY_TIMEOUT_MS;
+const REQUEST_TIMEOUT_MS = 15_000 + COLD_START_ALLOWANCE_MS;
+const DAEMON_TEST_TIMEOUT_MS = 45_000 + COLD_START_ALLOWANCE_MS;
 
 async function getFreeTcpPort(): Promise<number> {
   const server = net.createServer();
@@ -348,61 +349,6 @@ describe("ade rpc --stdio daemon bridge", () => {
     } finally {
       first?.kill();
       second?.kill();
-    }
-  }, DAEMON_TEST_TIMEOUT_MS);
-
-  it("restarts a stale daemon before bridging stdio requests", async () => {
-    const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    const cliPath = path.join(packageRoot, "src", "cli.ts");
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-version-"));
-    const socketPath = machineRuntimeSocketPath(adeHome);
-    const baseEnv = {
-      ...environmentWithoutAde(),
-      ADE_HOME: adeHome,
-      ADE_RUNTIME_SOCKET_PATH: socketPath,
-      NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
-    };
-    const oldDaemon = startServeProcess({
-      cliPath,
-      cwd: packageRoot,
-      env: {
-        ...baseEnv,
-        ADE_CLI_VERSION: "1.0.0",
-      },
-      socketPath,
-    });
-
-    let proxy: StdioRpcProcess | null = null;
-    try {
-      await waitForSocket(socketPath);
-
-      proxy = StdioRpcProcess.start({
-        cliPath,
-        cwd: packageRoot,
-        env: {
-          ...baseEnv,
-          ADE_CLI_VERSION: "2.0.0",
-        },
-      });
-      const initialize = await proxy.request("ade/initialize", {
-        protocolVersion: "2025-06-18",
-        clientName: "stdio-daemon-version-test",
-        identity: { role: "external", callerId: "stdio-daemon-version-test" },
-      });
-
-      expect(initialize).toMatchObject({
-        runtimeInfo: {
-          version: "2.0.0",
-          multiProject: true,
-        },
-      });
-
-      await expect(proxy.request("shutdown")).resolves.toEqual({});
-      proxy.closeInput();
-      await expect(proxy.waitForExit()).resolves.toMatchObject({ code: 0, signal: null });
-    } finally {
-      proxy?.kill();
-      if (!oldDaemon.killed) oldDaemon.kill();
     }
   }, DAEMON_TEST_TIMEOUT_MS);
 

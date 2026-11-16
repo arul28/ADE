@@ -44,7 +44,6 @@ extension LanesTabView {
   var lanesListContent: some View {
     List {
       Section {
-        laneCopyChipRow
         laneNoticeRows
         if showsLaneLoadingSkeletons {
           ForEach(0..<5, id: \.self) { _ in
@@ -144,10 +143,10 @@ extension LanesTabView {
       }
     }
     .pickerStyle(.inline)
-    if !remoteLanes.machines.isEmpty {
-      Section("Machines") {
-        duoLaneMachineButtons
-      }
+    // Always shown: "All machines" must stay reachable when no other
+    // machine is listed.
+    Section("Machines") {
+      duoLaneMachineButtons
     }
   }
 
@@ -158,9 +157,9 @@ extension LanesTabView {
         machineFilter = .all
       } label: {
         if machineFilter == .all {
-          Label("All machines", systemImage: "checkmark")
+          Label("All computers", systemImage: "checkmark")
         } else {
-          Text("All machines")
+          Text("All computers")
         }
       }
       Button {
@@ -179,7 +178,7 @@ extension LanesTabView {
           if machineFilter == .machine(machine.machineKey) {
             Label(machine.name, systemImage: "checkmark")
           } else {
-            Text(machine.isLive ? machine.name : "\(machine.name) (offline)")
+            Text(machine.name)
           }
         }
       }

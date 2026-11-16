@@ -43,7 +43,7 @@ import {
   readValue,
   type JsonObject,
 } from "./cli";
-import { DEFAULT_PARENT_FLAGS, SPAWN_TYPE_FLAGS } from "./launchFlagNames";
+import { DEFAULT_PARENT_FLAGS, NO_REPORT_FLAGS, SPAWN_TYPE_FLAGS } from "./launchFlagNames";
 import type { AgentChatPermissionMode } from "../../desktop/src/shared/types";
 import {
   isAgentChatDroidPermissionMode,
@@ -110,7 +110,11 @@ const SPAWN_TYPE_SHELL_MESSAGE =
 const SPAWN_PARENT_SHELL_MESSAGE =
   "--parent applies only to agent providers; plain shell terminals do not record spawn lineage.";
 const SPAWN_TYPE_ENUM_MESSAGE =
-  "--type must be subagent or peer; silent spawn type 'none' is no longer supported.";
+  "--type must be subagent. Use --no-report for a chat that does not report back.";
+const NO_REPORT_SHELL_MESSAGE =
+  "--no-report applies only to agent providers; plain shell terminals do not report back.";
+const NO_REPORT_TYPE_CONFLICT_MESSAGE =
+  "--no-report cannot be combined with --type subagent.";
 /**
  * A spawn kind with no parent, hoisted for the same reason: the flag reader
  * and `assertMergedLaunchArgs` refuse it with the same words. (A parent with
@@ -191,8 +195,16 @@ export function readAgentSpawnLineage(
     readParentSessionId(args, parentFlags);
   const spawnTypeArg = readValue(args, SPAWN_TYPE_FLAGS);
   const normalizedSpawnKind = spawnTypeArg?.trim().toLowerCase();
+  // `peer` is the stored value behind `--no-report`; old scripts still pass it.
   if (normalizedSpawnKind && normalizedSpawnKind !== "subagent" && normalizedSpawnKind !== "peer") {
     throw new CliUsageError(SPAWN_TYPE_ENUM_MESSAGE);
+  }
+  const noReport = readFlag(args, NO_REPORT_FLAGS);
+  if (noReport && normalizedSpawnKind === "subagent") {
+    throw new CliUsageError(NO_REPORT_TYPE_CONFLICT_MESSAGE);
+  }
+  if (options.allowSpawnType === false && noReport) {
+    throw new CliUsageError(NO_REPORT_SHELL_MESSAGE);
   }
   const requestedSpawnKind = normalizedSpawnKind as CliAgentSpawnKind | undefined;
   if (options.allowSpawnType === false && requestedSpawnKind) {
@@ -211,7 +223,13 @@ export function readAgentSpawnLineage(
   }
   // A parented launch with no `--type` is a subagent: it reports back to the
   // chat that started it, which is what "have this model do the work" means.
-  const spawnKind = requestedSpawnKind ?? (orchestrationParentSessionId ? "subagent" : undefined);
+  // `--no-report` keeps the parent link but stops the reports; with no parent
+  // there is nobody to report to, so it changes nothing.
+  const spawnKind = !orchestrationParentSessionId
+    ? undefined
+    : noReport
+      ? "peer"
+      : requestedSpawnKind ?? "subagent";
   return { kind: "lineage", orchestrationParentSessionId, spawnKind };
 }
 

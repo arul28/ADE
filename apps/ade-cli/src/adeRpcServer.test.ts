@@ -3428,7 +3428,7 @@ describe("adeRpcServer", () => {
     expect(notifyParentOfCliChildSpawn).toHaveBeenLastCalledWith("session-1", { resumed: true });
   });
 
-  it("lane-filters CLI children for an agent and denies a transcript from another lane", async () => {
+  it("lane-filters CLI children for an agent and reads a transcript from any lane", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
       if (sessionId === "chat-agent") return { id: sessionId, laneId: "lane-1" };
@@ -3466,13 +3466,14 @@ describe("adeRpcServer", () => {
     });
     expect(deniedList.isError).toBe(true);
 
-    const deniedRead = await callTool(handler, "run_ade_action", {
+    // Reading is open: any caller reads any session, another lane's CLI too.
+    const foreignRead = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "readTranscript",
       args: { sessionId: "cli-foreign" },
     });
-    expect(deniedRead.isError).toBe(true);
-    expect(getChatTranscript).not.toHaveBeenCalled();
+    expect(foreignRead.isError).toBeUndefined();
+    expect(getChatTranscript).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "cli-foreign" }));
 
     const allowedRead = await callTool(handler, "run_ade_action", {
       domain: "chat",
@@ -5418,7 +5419,7 @@ describe("adeRpcServer", () => {
     }
   });
 
-  it("scopes PTY and terminal ADE actions to the caller's lane or chat", async () => {
+  it("scopes PTY and terminal writes to the caller's lane or chat, and lets it read any terminal", async () => {
     const fixture = createRuntime();
     const clearAsk = vi.fn((sessionId: string) => ({ cleared: sessionId === "chat-2" }));
     (fixture.runtime.agentChatService as any).clearAsk = clearAsk;
@@ -5541,20 +5542,80 @@ describe("adeRpcServer", () => {
       chatSessionId: "chat-1",
     });
 
-    // A watch wakes the chat that armed it: an agent may arm one only for its
-    // own chat, on a terminal it may read, and always as the agent.
+    // Reading is open: any terminal, another lane's included.
+    const foreignTerminalRead = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "read",
+      args: { terminalId: "terminal-2" },
+    });
+    expect(foreignTerminalRead?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.readTerminal).toHaveBeenCalledWith(expect.objectContaining({ terminalId: "terminal-2" }));
+    // An agent's preview carries the screen as text, not the desktop's styled cell grid.
+    const cell = { text: "x", fg: null, bg: null, fgMode: "default", bgMode: "default" };
+    const gridPreview = () => ({
+      terminalId: "terminal-2",
+      source: "snapshot",
+      snapshot: {
+        cols: 3, rows: 3, serialized: "$ ok", screenSerialized: "$ ok",
+        visibleRows: [{ text: "$ ok  ", cells: [cell, cell, cell] }, { text: "", cells: [cell] }, { text: "   ", cells: [cell] }],
+      },
+    });
+    (fixture.runtime.ptyService.previewTerminal as ReturnType<typeof vi.fn>).mockResolvedValueOnce(gridPreview());
+    const foreignPreview = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "preview",
+      args: { terminalId: "terminal-2" },
+    });
+    expect(foreignPreview?.isError).toBeUndefined();
+    const previewSnapshot = (foreignPreview.structuredContent.result as { snapshot: Record<string, unknown> }).snapshot;
+    expect(previewSnapshot.screenText).toBe("$ ok");
+    expect(previewSnapshot).not.toHaveProperty("visibleRows");
+    // Whatever its role: a CTO agent reads text too, while a person's desktop keeps the grid.
+    for (const [clientName, identity, asText] of [
+      ["ade-cto-remote", { callerId: "cto-1", role: "cto" }, true],
+      ["ade-desktop-local", { role: "cto" }, false],
+    ] as const) {
+      const other = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(other, identity, { clientName });
+      (fixture.runtime.ptyService.previewTerminal as ReturnType<typeof vi.fn>).mockResolvedValueOnce(gridPreview());
+      const preview = await callTool(other, "run_ade_action", { domain: "terminal", action: "preview", args: { terminalId: "terminal-2" } });
+      const snapshot = (preview.structuredContent.result as { snapshot: Record<string, unknown> }).snapshot;
+      expect(snapshot.screenText).toBe(asText ? "$ ok" : undefined);
+      expect("visibleRows" in snapshot).toBe(!asText);
+    }
+
+    // A list that names a chat shows that chat's shells, one a chat on another
+    // machine owns here included; the caller's default list still leaves those out.
+    const remoteShell = { id: "terminal-remote", laneId: "lane-2", chatSessionId: "remote:mac-mini:chat-9" };
+    (fixture.runtime.ptyService.listTerminals as ReturnType<typeof vi.fn>).mockImplementation(() => [ownTerminal, remoteShell]);
+    const namedList = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "list",
+      args: { chatSessionId: "remote:mac-mini:chat-9", includeArchived: true },
+    });
+    expect(namedList?.isError).toBeUndefined();
+    expect(namedList.result).toEqual(expect.arrayContaining([expect.objectContaining({ id: "terminal-remote" })]));
+    const defaultList = await callTool(handler, "run_ade_action", { domain: "terminal", action: "list", args: {} });
+    expect(defaultList.result).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: "terminal-remote" })]));
+
+    // A watch wakes the chat that armed it: an agent arms one only for its own
+    // chat, always as the agent, on any terminal (watching is reading).
     const watch = vi.fn(async (args: unknown) => ({ watchId: "watch-1", ...(args as object) }));
     (fixture.runtime as any).terminalWatchService = { watch, unwatch: vi.fn(), listWatches: vi.fn(() => []) };
-    for (const args of [
-      { terminalId: "terminal-2", match: "error" },
-      { chatSessionId: "chat-2", terminalId: "terminal-1", match: "error" },
-      // An allowed pty id does not carry another chat's terminal id.
-      { ptyId: "pty-1", terminalId: "terminal-2", match: "error" },
-    ]) {
-      const deniedWatch = await callTool(handler, "run_ade_action", { domain: "terminal", action: "watch", args });
-      expect(deniedWatch.isError).toBe(true);
-    }
+    const deniedWatch = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "watch",
+      args: { chatSessionId: "chat-2", terminalId: "terminal-1", match: "error" },
+    });
+    expect(deniedWatch.isError).toBe(true);
     expect(watch).not.toHaveBeenCalled();
+    const foreignWatch = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "watch",
+      args: { terminalId: "terminal-2", match: "error" },
+    });
+    expect(foreignWatch?.isError).toBeUndefined();
+    expect(watch).toHaveBeenLastCalledWith(expect.objectContaining({ chatSessionId: "chat-1", terminalId: "terminal-2", armedBy: "agent" }));
     const ownWatch = await callTool(handler, "run_ade_action", {
       domain: "terminal",
       action: "watch",

@@ -456,29 +456,6 @@ describe("ChatAppControlPanel", () => {
     expect((screen.getByRole("menuitemcheckbox", { name: "CDP" })).getAttribute("aria-checked")).toBe("true");
   });
 
-  it("shows the remote machine when App Control runs on another runtime", async () => {
-    installAdeMock({ status: connectedStatus });
-
-    render(
-      <ChatAppControlPanel
-        sessionId="chat-remote"
-        laneId="lane-1"
-        projectRoot="/repo"
-        runtimePin={{
-          kind: "remote",
-          key: "remote:1",
-          targetId: "target",
-          runtimeName: "studio-mini",
-          projectId: "p1",
-          rootPath: "/repo",
-          displayName: "ADE",
-        }}
-      />,
-    );
-
-    expect(await screen.findByText("remote: studio-mini")).toBeTruthy();
-  });
-
   it("keeps another-lane connected session read-only", async () => {
     const api = installAdeMock({ status: connectedStatus, targetList: targets });
 

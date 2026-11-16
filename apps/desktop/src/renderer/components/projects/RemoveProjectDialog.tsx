@@ -108,6 +108,32 @@ async function removeCopy(copy: RemovalCopy, request: ProjectRemovalRequest): Pr
   return await remove(copy.machine.targetId, copy.projectId, request);
 }
 
+/** How long a removal whose answer was lost waits for its machine to list its projects again. */
+const UNKNOWN_RECHECK_MS = 12_000;
+const UNKNOWN_RECHECK_GAP_MS = 1_500;
+
+/**
+ * The answer to a removal never came back (the machine's connection dropped,
+ * often because the copy it served just went away): asks the machine for its
+ * projects again, for a few seconds. True when it answers without the copy,
+ * false when it still lists it, null when it never answered.
+ */
+async function copyGoneAfterLostAnswer(copy: RemovalCopy): Promise<boolean | null> {
+  const listProjects = window.ade?.remoteRuntime?.listProjects;
+  const targetId = copy.machine.targetId;
+  if (copy.machine.isLocal || !targetId || typeof listProjects !== "function") return null;
+  const deadline = Date.now() + UNKNOWN_RECHECK_MS;
+  for (;;) {
+    try {
+      const projects = await listProjects(targetId);
+      return !projects.some((project) => project.projectId === copy.projectId || project.rootPath === copy.rootPath);
+    } catch {
+      if (Date.now() + UNKNOWN_RECHECK_GAP_MS >= deadline) return null;
+      await new Promise((resolve) => window.setTimeout(resolve, UNKNOWN_RECHECK_GAP_MS));
+    }
+  }
+}
+
 /** What a row allows for a delete, from its report. */
 function deleteAllowance(report: ReportState): { canTick: boolean; tickedByDefault: boolean } {
   if (report.kind !== "ready") return { canTick: false, tickedByDefault: false };
@@ -241,6 +267,15 @@ export function RemoveProjectDialog({
         // A dropped connection or a timeout after the request went out: the
         // machine may have finished. It is never reported as kept.
         if (isRemoteOutcomeUnknownError(error)) {
+          // The machine's own list says what happened, once it answers again.
+          const gone = await copyGoneAfterLostAnswer(copy);
+          if (gone === true) {
+            // The entry is gone, so the tab leaves the copy. What happened to
+            // a folder it was asked to delete is still not known.
+            if (willDelete) setResults((prev) => ({ ...prev, [key]: { kind: "unknown" } }));
+            else setResults((prev) => ({ ...prev, [key]: { kind: "done", outcome: { status: "removed", folder: "kept", outsideLaneFolders: [] } } }));
+            return { copy, result: "removed" as const };
+          }
           setResults((prev) => ({ ...prev, [key]: { kind: "unknown" } }));
           return { copy, result: "unknown" as const };
         }

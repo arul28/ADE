@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import AVKit
@@ -460,6 +461,9 @@ struct WorkSessionDestinationView: View {
   @State var duoColumnWidth: CGFloat = 0
   @State var chatSummary: AgentChatSessionSummary?
   @State var chatSummaryRefreshGeneration = 0
+  /// The last title another computer's roster gave this chat (see
+  /// `followRemoteRosterTitle`).
+  @State private var remoteRosterTitleSeen: String?
   // Last non-nil summary this mounted instance ever observed. The composer's
   // model-picker + permission-mode row is gated on `summary.isAvailable`, so a
   // momentary nil summary would blank those controls mid-session. This latch
@@ -632,6 +636,14 @@ struct WorkSessionDestinationView: View {
       ?? syncService.chatSummaryCache[sessionId]?.title
       ?? syncService.remoteMachineRosterChat(sessionId: sessionId)?.title
       ?? "Session"
+  }
+
+  /// The machine this chat lives on, for the ADE Cloud wake: another
+  /// machine's key, else the focused machine's.
+  var sessionCloudMachineKey: String? {
+    crossProjectContext?.machineKey
+      ?? syncService.remoteChatMachineKey(sessionId: sessionId)
+      ?? syncService.focusedMachineKey
   }
 
   /// The machine name under the header title: the host this phone is
@@ -1297,11 +1309,15 @@ struct WorkSessionDestinationView: View {
     return DuoToolTiles(tiles: tiles) { tab in openChatTool(tab) }
   }
 
-  /// The wide column's subtitle: lane · model · machine, the three facts that
-  /// tell two chats with the same title apart.
+  /// The wide column's subtitle: machine · lane · model, the three facts that
+  /// tell two chats with the same title apart. The machine goes first: a
+  /// narrow column (the book pose) cuts the end of the line, and the machine
+  /// is where a message sent here runs, while the model chip in the prompt
+  /// box names the model too.
   private var duoChatSubtitle: String? {
     let current = session ?? initialSession
     var parts: [String] = []
+    if let machine = sessionDestinationNavigationSubtitle { parts.append(machine) }
     // The CTO's lane is a stand-in named "CTO": the title already says it.
     if duoCtoSettings == nil,
        let lane = current?.laneName.trimmingCharacters(in: .whitespacesAndNewlines), !lane.isEmpty {
@@ -1309,7 +1325,6 @@ struct WorkSessionDestinationView: View {
     }
     let model = shortModelLabel(composerChatSummary?.model)
     if !model.isEmpty { parts.append(model) }
-    if let machine = sessionDestinationNavigationSubtitle { parts.append(machine) }
     return parts.isEmpty ? nil : parts.joined(separator: " · ")
   }
 
@@ -1670,6 +1685,21 @@ struct WorkSessionDestinationView: View {
   /// sits, never what it is.
   private var chatColumnPresentations: some View {
     AnyView(sessionDestinationRoot)
+      // A chat on an ADE Cloud computer that is asleep: opening it wakes the
+      // computer, and the chat says so until the computer answers.
+      .wakesCloudComputer(
+        machineKey: sessionCloudMachineKey,
+        wakingName: syncService.wakingCloudMachineName(fleetKey: sessionCloudMachineKey),
+        wakeFailure: syncService.cloudWakeFailure(fleetKey: sessionCloudMachineKey),
+        // A chat with no cached row loaded nothing while the computer slept:
+        // read it now that the computer answers.
+        onAwake: { await loadMissingSessionWhenLive() }
+      )
+      // The wake can return before this chat's link reads as live.
+      .onChange(of: isLiveAndReachable) { _, live in
+        guard live, session == nil, initialLoadCompleted else { return }
+        Task { await loadMissingSessionWhenLive() }
+      }
       .workSessionNavigationChrome(
         // The wide column's chrome is the rail around the split (`body`).
         mode: duoUsesPane || isFullScreenTerminalSession ? .embedded : navigationChrome,
@@ -1803,8 +1833,14 @@ struct WorkSessionDestinationView: View {
           openingDeliveryWarning = SyncRequestTimeout.chatSendMessage
         }
         stageInitialOpeningPromptEchoIfNeeded()
+        let wasLiveBeforeLoad = isLiveAndReachable
         await load()
         initialLoadCompleted = true
+        // The computer answered while that load ran (a cloud wake): read the
+        // chat once more instead of showing it as unavailable.
+        if !wasLiveBeforeLoad, session == nil {
+          await loadMissingSessionWhenLive()
+        }
         await sendInitialOpeningPromptIfNeeded()
         refreshChatInfoSnapshots()
         // Remote subagent probing hits the host; skip the eager pass for a
@@ -1923,6 +1959,9 @@ struct WorkSessionDestinationView: View {
       }
       .onChange(of: chatChildRoster) { _, _ in
         refreshSubagentSnapshots()
+      }
+      .onReceive(remoteRosterTitlePublisher) { title in
+        followRemoteRosterTitle(title)
       }
       .onDisappear {
         chatDestinationVisible = false
@@ -2097,6 +2136,8 @@ struct WorkSessionDestinationView: View {
       // Keyed on the engine too: a Hub activation moves the chat to another
       // scope's engine, and the transcript view's scroll state belongs to one.
       duoFixtureChatView(makeWorkChatSessionView(for: session, thread: threadModel))
+        // The prompt box names the computer the chat runs on.
+        .environment(\.workChatComposerMachineName, syncService.chatMachineName(sessionId: sessionId))
         .id("main-\(session.id)-\(threadModel.key.description)")
     } else {
       connectingFrame
@@ -2145,6 +2186,11 @@ struct WorkSessionDestinationView: View {
       let ownerKey = syncService.navigationMachineKey(rawMachineKey: nil, sessionId: sessionId)
       if syncService.connectionState == .connected,
          ownerKey == nil || syncService.accountMachineIsFocused(ownerKey) {
+        deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
+      }
+      // An ADE Cloud computer that is waking is progress too: it gets a
+      // fresh window once it answers.
+      if syncService.wakingCloudMachineName(fleetKey: sessionCloudMachineKey) != nil {
         deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
       }
       // Never time out under the Wake & open prompt; give the open a fresh
@@ -2562,6 +2608,18 @@ struct WorkSessionDestinationView: View {
   /// subscribed before this runs. The summary and artifact loads run side by
   /// side instead of in series.
   @MainActor
+  /// Reads a chat that has no session row yet once its computer is live and
+  /// reachable, after any load still running ends.
+  func loadMissingSessionWhenLive() async {
+    // A cross-project quick look reads no session row.
+    guard !isRemoteOnlyChat else { return }
+    while openingLoadInFlight, !Task.isCancelled {
+      try? await Task.sleep(for: .milliseconds(200))
+    }
+    guard !Task.isCancelled, session == nil, isLiveAndReachable else { return }
+    await load()
+  }
+
   func load() async {
     guard !openingLoadInFlight else { return }
     openingLoadInFlight = true
@@ -2654,6 +2712,38 @@ struct WorkSessionDestinationView: View {
     if current != chatSummary {
       chatSummary = current
     }
+  }
+
+  /// A chat on another computer: no event reaches this screen when that
+  /// computer names the chat after its first turn, or renames it. Its roster
+  /// does carry the new title, so a new one reads the summary again.
+  /// This chat's title in another computer's roster. A busy computer
+  /// publishes its roster each second; only a new title reaches the view.
+  private var remoteRosterTitlePublisher: AnyPublisher<String?, Never> {
+    guard let fleet = syncService.machineFleet else { return Just(nil).eraseToAnyPublisher() }
+    let sessionId = sessionId
+    let focusedKey = syncService.focusedMachineKey
+    return fleet.$machines
+      .map { machines -> String? in
+        for machine in machines where machine.machineKey != focusedKey {
+          for project in machine.projects {
+            if let chat = project.chats.first(where: { $0.id == sessionId }) {
+              return chat.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+          }
+        }
+        return nil
+      }
+      .removeDuplicates()
+      .eraseToAnyPublisher()
+  }
+
+  @MainActor
+  private func followRemoteRosterTitle(_ rosterTitle: String?) {
+    guard let rosterTitle, !rosterTitle.isEmpty, rosterTitle != remoteRosterTitleSeen else { return }
+    remoteRosterTitleSeen = rosterTitle
+    guard rosterTitle != chatSummary?.title else { return }
+    Task { await refreshChatSummaryFromHost() }
   }
 
   @MainActor

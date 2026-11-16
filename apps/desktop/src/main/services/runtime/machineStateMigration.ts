@@ -182,8 +182,11 @@ export function runMachineStateMigration(args: MachineStateMigrationArgs): Machi
     return { didRun: false, shouldShowNotice: false, markerPath: marker };
   }
 
+  // Only this computer's projects. A recent project on another computer keeps
+  // that computer's folder, which can exist here too (the same path on two
+  // Macs, a shared disk): it is not this computer's project.
   const migrationProjects = uniqueProjects([
-    ...args.recentProjects,
+    ...args.recentProjects.filter((project) => !project.remote),
     ...readMachineRegistryRecentProjects(args.layout, args.recentProjects),
   ]);
   const hadExistingUserState =

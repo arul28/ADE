@@ -135,6 +135,8 @@ export function adeCloudProjectOrigin(originUrl: string | null): string {
 export function startAdeCloudLaunch(input: {
   args: Omit<ChatLaunchArgs, "cloud" | "originClientId"> & { laneId: string; laneName: string };
   sizeId: string;
+  /** `default` when nobody picked the size for this launch (`ChatLaunchCloudTarget.sizeChoice`); left out, it stays. */
+  sizeChoice?: "default" | "picked";
   originUrl: string | null;
   binding: OpenProjectBinding;
   draftSnapshot?: ChatLaunchLocalRecord["draftSnapshot"];
@@ -146,7 +148,11 @@ export function startAdeCloudLaunch(input: {
     originClientId: getChatLaunchOriginClientId(),
     // The origin the caller checked before Send goes with the launch: main
     // clones that repository, so the two never disagree about it.
-    cloud: { sizeId: input.sizeId, ...(input.originUrl?.trim() ? { originUrl: input.originUrl.trim() } : {}) },
+    cloud: {
+      sizeId: input.sizeId,
+      ...(input.sizeChoice ? { sizeChoice: input.sizeChoice } : {}),
+      ...(input.originUrl?.trim() ? { originUrl: input.originUrl.trim() } : {}),
+    },
   };
   registerChatLaunchLocalRecord(args.launchId, {
     args,

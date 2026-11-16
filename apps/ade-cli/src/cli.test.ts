@@ -3994,7 +3994,12 @@ describe("ADE CLI", () => {
     }
   });
 
-  it("adds a valid --type to new chat createSession args and rejects invalid values", () => {
+  it.each([
+    { flags: ["--no-report"], spawnKind: "peer" },
+    { flags: ["--type", "peer"], spawnKind: "peer" },
+    { flags: ["--type", "subagent"], spawnKind: "subagent" },
+    { flags: [], spawnKind: "subagent" },
+  ])("maps $flags on a new chat with a parent to spawnKind $spawnKind", ({ flags, spawnKind }) => {
     const plan = buildCliPlan([
       "new",
       "chat",
@@ -4006,8 +4011,7 @@ describe("ADE CLI", () => {
       "codex",
       "--model",
       "openai/gpt-5.5",
-      "--type",
-      "peer",
+      ...flags,
       "--parent",
       "parent-session-1",
     ]);
@@ -4017,9 +4021,16 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "chat",
         action: "createSession",
-        args: { spawnKind: "peer" },
+        args: { spawnKind },
       },
     });
+  });
+
+  it("rejects an invalid --type and --no-report with --type subagent", () => {
+    expect(() => buildCliPlan([
+      "new", "chat", "--mode", "chat", "--lane", "lane-1",
+      "--no-report", "--type", "subagent", "--parent", "parent-session-1",
+    ])).toThrow(/--no-report cannot be combined with --type subagent/);
 
     expect(() => buildCliPlan([
       "new",
@@ -4030,7 +4041,7 @@ describe("ADE CLI", () => {
       "lane-1",
       "--type",
       "manager",
-    ])).toThrow(/--type must be subagent or peer/);
+    ])).toThrow(/--type must be subagent\. Use --no-report/);
   });
 
 
@@ -4213,7 +4224,7 @@ describe("ADE CLI", () => {
         "spawnKind=bogus",
         "--print-config",
       ]),
-    ).toThrow(/--type must be subagent or peer/);
+    ).toThrow(/--type must be subagent\. Use --no-report/);
   });
 
   // The permission mode is checked against the *merged* profile, so a mode the
@@ -16731,9 +16742,15 @@ describe("describeLastFailureForStartupLog", () => {
 });
 
 describe("monitorBrainSocketOwnership", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   const flush = async (): Promise<void> => {
     // The monitor floors its poll interval at 250ms; outlast one tick.
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await vi.advanceTimersByTimeAsync(400);
   };
   const socketPath = "/tmp/ade-ownership/ade.sock";
 

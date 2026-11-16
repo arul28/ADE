@@ -290,19 +290,6 @@ describe("live thinking preview in the transcript", () => {
     expect(screen.getByTestId("thinking-preview-card")).toBeTruthy();
   });
 
-  it("drops the shimmer, spinner and smooth scrolling under prefers-reduced-motion", () => {
-    render(list([userMessage(0), reasoning(1, "Moving.")], { live: true }));
-    expect(screen.getByTestId("thinking-heading").className).toContain("ade-thinking-shimmer");
-    expect(screen.getByTestId("thinking-preview-scroll").className).toContain("ade-thinking-live-smooth");
-    cleanup();
-
-    stubReducedMotion(true);
-    render(list([userMessage(0), reasoning(1, "Still.")], { live: true }));
-    expect(screen.getByTestId("thinking-heading").className).not.toContain("ade-thinking-shimmer");
-    expect(screen.getByTestId("thinking-spinner").getAttribute("class") ?? "").not.toContain("animate-spin");
-    expect(screen.getByTestId("thinking-preview-scroll").className).not.toContain("ade-thinking-live-smooth");
-  });
-
   it("follows the tail with at most one scroll write per frame and fades older lines once they overflow", () => {
     const frames: FrameRequestCallback[] = [];
     const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {

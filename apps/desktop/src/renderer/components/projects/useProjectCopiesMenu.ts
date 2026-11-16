@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Desktop, DownloadSimple, Stack as CopiesIcon } from "@phosphor-icons/react";
 import type { FixedAnchor } from "../../hooks/useClampedFixedPosition";
-import type { RecentProjectSummary, RemoteOpenProjectBinding, RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
+import type { RecentProjectSummary, RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
 import { projectRecordScope } from "../../../shared/projectRecord";
 import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { activeMachineForGroup, type ProjectTabGroup } from "../app/projectTabGrouping";
-import { rememberLastUsedMachine } from "../app/useRepositoryTabs";
 import type { CloneLocallyTarget } from "./CloneLocallyDialog";
 import type { CopiesMenuRow } from "./ProjectCopiesMenu";
 import type { RemovalCopy, RemoveProjectTarget } from "./RemoveProjectDialog";
@@ -15,7 +13,6 @@ import { startCopyJob } from "./projectCopyJobs";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import { buildRepositoryCopies, copyComputers, repositoryTabFromAccountProject, type RepositoryCopy } from "../../../shared/repositoryTab";
 import { useAccountProjectList, useRepositoryCopySources, useThisMachineKey } from "../../state/useRepositoryCopies";
-import type { ContextMenuEntry } from "../ui/ContextMenu";
 import { REQUEST_COPIES_MENU_EVENT, type CopiesMenuRequest } from "./removeProjectRequest";
 
 /** ADE Web has no recents of its own. */
@@ -76,19 +73,13 @@ export function rowsWithSharedCopies(
   return next;
 }
 
-/** A Copies submenu row's state, in the full copies menu's words. */
-function copyRowHint(row: CopiesMenuRow): string | undefined {
-  if (row.inUse) return "In use";
-  if (row.machine.online) return undefined;
-  // A computer known only from the account list has no connection here.
-  return row.machine.targetId == null && !row.machine.isLocal ? "Not connected" : "Offline";
-}
-
 /**
- * The copies menu of a project tab and the remove dialog it opens: one row
- * per machine with that machine's copy of the repository, the clone of a
- * new copy, and the switch to another machine's copy. The top bar owns the
- * tabs; this hook owns the menu, the dialog target and the models they show.
+ * The "Computers with a copy" list of a project and the remove dialog it
+ * opens: one row per machine with that machine's copy of the repository and
+ * its state, and the clone of a new copy. It never moves the tab: a tab shows
+ * the work of every computer with a copy, so there is nothing to switch to.
+ * The top bar owns the tabs; this hook owns the list, the dialog target and
+ * the models they show.
  */
 export function useProjectCopiesMenu(args: {
   tabGroups: readonly ProjectTabGroup[];
@@ -99,14 +90,9 @@ export function useProjectCopiesMenu(args: {
   projectRootPath: string | null;
   hasOrigin: boolean | null | undefined;
   recentProjects: RecentProjectSummary[];
-  knownRemoteProjectTabs: readonly RemoteOpenProjectBinding[];
   /** The binding key of the tab in front: the computers tag opens its copies. */
   activeTabBindingKey: string | null;
-  /** A project switch is under way: the Copies submenu does not switch again. */
-  isProjectBusy: boolean;
   handleClonedLocally: (rootPath: string, remoteKey: string) => Promise<unknown> | unknown;
-  handleSwitchProject: (rootPath: string) => unknown;
-  handleSwitchRemoteProject: (binding: RemoteOpenProjectBinding) => unknown;
 }) {
   const {
     tabGroups,
@@ -117,12 +103,8 @@ export function useProjectCopiesMenu(args: {
     projectRootPath,
     hasOrigin,
     recentProjects,
-    knownRemoteProjectTabs,
     activeTabBindingKey,
-    isProjectBusy,
     handleClonedLocally,
-    handleSwitchProject,
-    handleSwitchRemoteProject,
   } = args;
   // The copies menu of one project: under the computers tag or a Home row's
   // chip, or where the tab's context menu was opened.
@@ -303,32 +285,8 @@ export function useProjectCopiesMenu(args: {
     [],
   );
 
-  /** Moves a tab to one machine's copy: from the copies menu, or the tab's Copies submenu. */
-  const switchToCopy = useCallback(
-    (group: ProjectTabGroup | null | undefined, row: CopiesMenuRow) => {
-      const own = group?.machines.find((entry) => entry.bindingKey === row.copy?.bindingKey);
-      // The machine picked here is also the one "Start on" offers first for
-      // new work in this repository, on this client.
-      if (group && row.copy) rememberLastUsedMachine(group.id, row.machine.machineId);
-      if (row.machine.isLocal) {
-        if (row.copy) handleSwitchProject(row.copy.rootPath);
-        return;
-      }
-      const binding = own?.binding?.kind === "remote"
-        ? own.binding
-        : knownRemoteProjectTabs.find((entry) => entry.key === row.copy?.bindingKey) ?? row.copy?.binding ?? null;
-      if (!binding) return;
-      handleSwitchRemoteProject(binding);
-    },
-    [handleSwitchProject, handleSwitchRemoteProject, knownRemoteProjectTabs],
-  );
-  const handleCopiesMenuSwitch = useCallback(
-    (row: CopiesMenuRow) => switchToCopy(copiesMenuModel?.group, row),
-    [copiesMenuModel?.group, switchToCopy],
-  );
-
-  // The copies menu and the tab's Copies submenu say how many computers have
-  // a copy, by the shared rule (`copyComputers`), and list the same ones. The
+  // The list says how many computers have a copy, by the shared rule
+  // (`copyComputers`), and lists the same ones. The
   // sources are the snapshot and recents the top bar already holds (the
   // sources add this computer's catalog): no new read.
   const accountProjectList = useAccountProjectList();
@@ -386,47 +344,6 @@ export function useProjectCopiesMenu(args: {
     [adeCloudTargetIds, copiesMenuCopies, copiesMenuView?.rows],
   );
 
-  /**
-   * "Copies" in a tab's right-click menu: a submenu that opens on hover, like
-   * every other submenu there. One row per machine with a copy (picking one
-   * moves the tab there), "Add a copy" for a connected machine without one
-   * (the full copies menu opens to show the clone's progress), and the full
-   * menu itself. Each switch and clone goes to that row's machine.
-   */
-  const copiesSubmenuFor = useCallback((group: ProjectTabGroup, anchor: FixedAnchor): ContextMenuEntry => {
-    const model = copiesModelFor(group.id);
-    const openFull = () => setCopiesMenu({ x: anchor.x, y: anchor.y, groupId: group.id });
-    const entries: ContextMenuEntry[] = [];
-    for (const row of rowsWithSharedCopies(model?.rows ?? [], sharedCopiesFor(group.id), adeCloudTargetIds)) {
-      if (row.copy) {
-        entries.push({
-          kind: "item",
-          key: `copy:${row.machine.machineId}:${row.copy.bindingKey}`,
-          label: row.machine.isLocal ? "This computer" : row.machine.name,
-          icon: row.machine.isLocal ? Desktop : CopiesIcon,
-          hint: copyRowHint(row),
-          disabled: row.inUse || !row.machine.online || isProjectBusy,
-          onSelect: () => switchToCopy(group, row),
-        });
-      } else if (!webMode && row.machine.online && model?.repoKey?.startsWith("github.com/")) {
-        const repoKey = model.repoKey;
-        entries.push({
-          kind: "item",
-          key: `add:${row.machine.machineId}`,
-          label: `Add a copy on ${row.machine.isLocal ? "this computer" : row.machine.name}`,
-          icon: DownloadSimple,
-          onSelect: () => {
-            startCopyForRepo(repoKey, model.projectName, row.machine);
-            openFull();
-          },
-        });
-      }
-    }
-    if (entries.length > 0) entries.push({ kind: "separator", key: "sep-copies-all" });
-    entries.push({ kind: "item", key: "copies-all", label: "All copies…", icon: CopiesIcon, onSelect: openFull });
-    return { kind: "submenu", key: "copies", label: "Copies", icon: CopiesIcon, entries };
-  }, [adeCloudTargetIds, copiesModelFor, isProjectBusy, sharedCopiesFor, startCopyForRepo, switchToCopy, webMode]);
-
   // The computers tag on the project page opens the copies menu of the tab in
   // front; a Home row's computers chip opens it for that account project,
   // open in a tab or not. The listener stays; it reads the tab in front here.
@@ -459,10 +376,8 @@ export function useProjectCopiesMenu(args: {
     openRemoveNoMachineDialog,
     openRemoveDialogWithTarget,
     closeRemoveDialog,
-    handleCopiesMenuSwitch,
     copiesMenuView,
     copiesMenuRows,
     copiesMenuComputers,
-    copiesSubmenuFor,
   };
 }

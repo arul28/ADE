@@ -130,6 +130,12 @@ export type WindowStripMemory = {
   remoteTabs: RemoteOpenProjectBinding[];
   preferredBindingKeyByGroup: Record<string, string>;
   tabOrder: string[];
+  /**
+   * The open copies in a tab of their own (a second clone, or the copy such a
+   * tab moved to). Without them a reload joins two tabs of one repository on
+   * two computers, and the one-copy rule closes one.
+   */
+  ownTabKeys: string[];
 };
 
 function coerceRemoteTab(value: unknown): RemoteOpenProjectBinding | null {
@@ -171,7 +177,8 @@ export function readWindowStripMemory(): WindowStripMemory | null {
       }
     }
     const tabOrder = Array.isArray(row.tabOrder) ? row.tabOrder.filter((key): key is string => typeof key === "string") : [];
-    return { remoteTabs, preferredBindingKeyByGroup: preferred, tabOrder };
+    const ownTabKeys = Array.isArray(row.ownTabKeys) ? row.ownTabKeys.filter((key): key is string => typeof key === "string" && key.length > 0) : [];
+    return { remoteTabs, preferredBindingKeyByGroup: preferred, tabOrder, ownTabKeys };
   } catch {
     return null;
   }
@@ -179,7 +186,7 @@ export function readWindowStripMemory(): WindowStripMemory | null {
 
 /** Writes the strip once the window session is restored (an earlier write would replace it with the empty first paint). */
 export function useWindowStripMemory(args: WindowStripMemory & { enabled: boolean }): void {
-  const { enabled, remoteTabs, preferredBindingKeyByGroup, tabOrder } = args;
+  const { enabled, remoteTabs, preferredBindingKeyByGroup, tabOrder, ownTabKeys } = args;
   useEffect(() => {
     if (!enabled) return;
     try {
@@ -187,11 +194,12 @@ export function useWindowStripMemory(args: WindowStripMemory & { enabled: boolea
         remoteTabs: remoteTabs.map((entry) => ({ ...entry, iconDataUrl: null })),
         preferredBindingKeyByGroup,
         tabOrder,
+        ownTabKeys,
       }));
     } catch {
       // Storage full or unavailable: a reload then keeps what the main process keeps.
     }
-  }, [enabled, preferredBindingKeyByGroup, remoteTabs, tabOrder]);
+  }, [enabled, ownTabKeys, preferredBindingKeyByGroup, remoteTabs, tabOrder]);
 }
 
 /**
@@ -258,9 +266,12 @@ export function restoredStripFromSaved(saved: SavedWindowRepositoryTabs): {
   remoteBindings: RemoteOpenProjectBinding[];
   noMachineTabs: NoMachineRepositoryTab[];
   tabOrder: string[];
+  /** The copies of tabs saved apart from their repository's tab (a tab keyed by its copy). */
+  ownTabKeys: string[];
   active: SavedRepositoryTab | null;
 } {
   const localRoots: string[] = [];
+  const ownTabKeys: string[] = [];
   const remoteBindings: RemoteOpenProjectBinding[] = [];
   const noMachineTabs: NoMachineRepositoryTab[] = [];
   const tabOrder: string[] = [];
@@ -270,12 +281,14 @@ export function restoredStripFromSaved(saved: SavedWindowRepositoryTabs): {
     else if (tab.copy?.kind === "remote") remoteBindings.push(tab.copy.binding);
     else noMachineTabs.push({ id: tab.id, displayName: tab.displayName, iconDataUrl: null });
     if (key) tabOrder.push(key);
+    if (key && tab.id === key) ownTabKeys.push(key);
   }
   return {
     localRoots,
     remoteBindings,
     noMachineTabs,
     tabOrder,
+    ownTabKeys,
     active: saved.tabs.find((tab) => tab.id === saved.activeId) ?? null,
   };
 }
@@ -406,6 +419,8 @@ export function useRepositoryTabStrip(args: {
   activeNoMachineTabId: string | null;
   noTabInFront: boolean;
   recordNameFor: (group: ProjectTabGroup) => string | null | undefined;
+  /** The open copies in a tab of their own, kept across a reload. */
+  ownTabKeys: string[];
 }): void {
   const {
     windowSessionRestored,
@@ -440,6 +455,7 @@ export function useRepositoryTabStrip(args: {
     remoteTabs: openRemoteProjectTabs,
     preferredBindingKeyByGroup,
     tabOrder,
+    ownTabKeys: args.ownTabKeys,
   });
   // Main saves the strip by repository and reopens it on the next launch (S5).
   const savedRepositoryTabs = useMemo(

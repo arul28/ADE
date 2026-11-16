@@ -394,7 +394,12 @@ export function chatLaunchStatusLine(launch: ChatLaunchSnapshot): string {
   if (active.id === "environment") {
     const step = active.steps?.find((entry) => entry.status === "running");
     if (step) return `${label} · ${step.label}`;
+    // Between runs, what the host is doing about it ("…ADE is moving this computer to Medium").
+    const detail = active.detail?.trim();
+    if (detail && detail !== launch.templateName?.trim()) return `${label} · ${detail}`;
   }
+  // A computer bigger than the size asked for says why ("Medium: this repo's setup needed more than 4 GB before.").
+  if (active.id === "computer" && launch.cloud?.sizeNote?.trim()) return `${label} · ${launch.cloud.sizeNote.trim()}`;
   return label;
 }
 

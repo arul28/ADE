@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useMachineSlotHold } from "../../lib/machineSlotHolds";
 import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
 import type { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
@@ -3534,6 +3535,8 @@ export function TerminalView({
   const themeId = useAppStore(selectEffectiveThemeId);
   const customThemes = useAppStore((s) => s.customThemes);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
+  // A terminal on screen keeps its computer's ADE Web connection slot.
+  useMachineSlotHold(runtimePin, isVisible);
   // Keyboard-scroll hint: web only, and only for a session whose provider we
   // have documented keys for. See `terminalScrollHint.ts` for why the wheel is
   // slow over sync and why this is provider-specific.

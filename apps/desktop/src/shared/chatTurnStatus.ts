@@ -114,6 +114,12 @@ export type DeriveChatTurnStatusInput = {
   reasoningEffortChange?: AgentChatReasoningEffortChange | null;
   modelId?: string | null;
   ownedElsewhere?: AgentChatRuntimeOwnerRef | null;
+  /**
+   * For a chat another brain runs: whether its last turn is still open, read
+   * from the shared transcript. False reads idle; null or missing (no turn
+   * found) keeps the chat running, since this brain cannot see that turn.
+   */
+  ownerTurnOpen?: boolean | null;
   nowMs?: number;
 };
 
@@ -142,7 +148,9 @@ export function deriveChatTurnStatus(input: DeriveChatTurnStatusInput): ChatTurn
   const awaitingInput = ownedElsewhere == null && input.awaitingInput === true;
   const turnStartedMs = parseTime(input.currentTurnStartedAt);
   const lastActivityMs = parseTime(input.lastActivityAt);
-  const hasLiveTurn = input.sessionStatus === "active" || turnStartedMs != null || ownedElsewhere != null;
+  const hasLiveTurn = input.sessionStatus === "active"
+    || turnStartedMs != null
+    || (ownedElsewhere != null && input.ownerTurnOpen !== false);
   const backgroundWorkCount = Math.max(0, Math.trunc(input.backgroundWorkCount ?? 0));
   const phase: ChatTurnStatusPhase = awaitingInput
     ? "blocked"

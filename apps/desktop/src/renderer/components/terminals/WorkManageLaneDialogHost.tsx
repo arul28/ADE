@@ -24,7 +24,7 @@ import {
   type LaneDeleteSelection,
 } from "../lanes/ManageLaneDialog";
 import { extractError } from "../../lib/format";
-import { usePinTargetsTab } from "../../state/crossMachineLanes";
+import { unionSlotIdForBinding, usePinTargetsTab } from "../../state/crossMachineLanes";
 import { useTabCopyPin } from "../../state/repositoryScope";
 import { useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
@@ -175,7 +175,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
     };
     // A lane on another machine is keyed the way the Work sidebar names it, so its
     // card and open chat find the entry. A bare id would belong to this machine's lane.
-    const machineId = foreignPin ? machineIdForBinding(foreignPin) : null;
+    const machineId = foreignPin ? unionSlotIdForBinding(foreignPin) : null;
     const progressKey = machineId ? foreignLaneKey(machineId, lane.id) : lane.id;
     const pending = createPendingLaneDeleteProgress(progressKey);
     setDeleteProgressByLaneId((current) => ({ ...current, [progressKey]: pending }));

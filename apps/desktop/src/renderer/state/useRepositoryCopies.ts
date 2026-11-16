@@ -34,6 +34,7 @@ import {
 } from "../../shared/repositoryTab";
 import type { RecentProjectSummary, RemoteRuntimeConnectionSnapshot, RemoteRuntimeConnectionStatus } from "../../shared/types";
 import { foreignCopyPaths } from "../components/app/projectTabGrouping";
+import { refreshCloudMachinesIfStale } from "../components/remoteTargets/useCloudMachines";
 import { rememberProjectOriginSummaries } from "../components/lanes/laneMachines";
 import { isWebClientMode } from "../lib/webClientMode";
 import { adeCloudLaneComputerForMachine, useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
@@ -248,6 +249,12 @@ export function useRepositoryCopySources(active: boolean, given?: GivenCopySourc
   const { snapshot: ownSnapshot } = useRemoteConnectionSnapshot(active && !given);
   const ownThisComputer = useThisComputer(active && !given);
   const { computers } = useAdeCloudLaneComputers();
+  // The ADE Cloud index says which copy is on an ADE Cloud computer; only
+  // Connections keeps it current, so a page that needs it reads it once.
+  const cloudEnabled = useAdeCloudEnabled();
+  useEffect(() => {
+    if (active && cloudEnabled) refreshCloudMachinesIfStale();
+  }, [active, cloudEnabled]);
   const webKeys = useSyncExternalStore(subscribeWebAccountMachineKeys, readWebAccountMachineKeys, readWebAccountMachineKeys);
   const snapshot = given ? given.snapshot : ownSnapshot;
   const connections = useMemo(

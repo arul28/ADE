@@ -443,6 +443,7 @@ import {
 import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects/gitOwnership";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import { createAccountProjectSync, readAccountProjectState, type AccountProjectSync } from "./services/projects/accountProjectSync";
+import { noteAccountProjectListChanged } from "./services/projects/accountProjectListChanges";
 import { provideAccountProjectMainHandler } from "./services/projects/accountProjectMain";
 import {
   parseAccountProjectSelector,
@@ -601,6 +602,7 @@ import {
 import {
   CHAT_PARENT_FLAGS,
   DEFAULT_PARENT_FLAGS,
+  NO_REPORT_FLAGS,
   SPAWN_TYPE_FLAGS,
 } from "./launchFlagNames";
 import {
@@ -1771,7 +1773,9 @@ const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --p
                                                     A new lane on its own new ADE Cloud computer: ADE makes the
                                                     computer, gets the repository there (the pushed branch) and
                                                     starts the chat there. --size small, medium, large, xlarge
-                                                    (default: the size you saved for new lanes). --lane-name <name>
+                                                    (default: the size you saved for new lanes; a default Small
+                                                    whose setup needs more memory moves to Medium once, and the
+                                                    repo starts at Medium after that). --lane-name <name>
                                                     names the lane and its computer (default: from the prompt).
                                                     Asks you first. Ctrl-C stops only the waiting; the
                                                     same --launch-id <id> again follows it or goes on from a
@@ -1781,7 +1785,8 @@ const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --p
 
 const LANES_CLOUD_HELP = `  ade lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
                    (the lane alone, with no chat, on its own new ADE Cloud computer; asks you first.
-                   No --size: the size you saved for new lanes. The same --launch-id again follows it or
+                   No --size: the size you saved for new lanes (a Small whose setup needs more memory moves
+                   to Medium once, and the repo starts at Medium after that). The same --launch-id again follows it or
                    goes on from a failed step. A Linear issue needs its whole JSON. No --description
                    or --no-template yet.)
 `;
@@ -2527,8 +2532,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --from <default|primary|branch>  Start source for an auto-created lane.
     --on <remote|local|uncommitted>  Which copy of the branch to start from.
     --existing-branch <branch>  Work directly on an existing branch.
-    --type <subagent|peer>  From an agent the new session is a subagent that
-                           reports back (the default). peer: no report.
+    --no-report            From an agent the new session is a subagent that
+                           reports back (the default). --no-report: it does not.
     --provider <name>      Chat: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
                            CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity; CLI mode also accepts shell.
     --model <id>           Runtime model id.
@@ -2552,8 +2557,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Spawn lineage:
     From an agent, the new session is a subagent of that agent's chat and
-    reports back to it. --type peer: no report. --no-parent: a separate chat,
-    only when the user asks. Plain shell terminals do not record lineage.
+    reports back to it. --no-report: it does not report back. --no-parent: a
+    separate chat, only when the user asks. Plain shell terminals do not record
+    lineage.
 
   Compatibility:
     ade chat create still creates persistent Work chats.
@@ -2577,8 +2583,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
   From an agent, the new session is a subagent of that agent's chat and
-  reports back to it. --type peer: no report. --no-parent: a separate chat,
-  only when the user asks. --parent <sessionId> names a different parent.
+  reports back to it. --no-report: it does not report back. --no-parent: a
+  separate chat, only when the user asks. --parent <sessionId> names a
+  different parent.
   Without --permissions, both modes start where a chat would: a full-auto
   parent's subagent runs full-auto, otherwise the project's default (full
   access unless configured), never above the agent that started it.
@@ -2595,7 +2602,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                    [--from default|primary|<branch>] [--on remote|local|uncommitted] [--branch-name <branch>]
                    [--existing-branch <branch>]   (no new branch: the lane works directly on <branch>)
                    [--template <id>|--no-template]
-                   [--linear-issue-json '{...}' [--start-chat --type subagent|peer --provider <p> --model <m>]]
+                   [--linear-issue-json '{...}' [--start-chat [--no-report] --provider <p> --model <m>]]
                    [--linear-issues-json '[{...},{...}]'] [--text|--json]
 ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
@@ -3190,10 +3197,10 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Also a CLI session: one at its prompt stops (Resume picks it up); mid-turn it finishes first.
                                                     ade chat delete <cli-session> stops it and keeps it in Recently deleted.
                                                     --dry-run prints the call without running it
-    $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
-    $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
+    $ ade chat demote <session>                     Take over a subagent: its reports to its parent stop
+    $ ade chat promote <session>                    Make the chat report back to its parent again
     $ ade chat set-parent <session> --parent <chat> Make <chat> this chat's parent; reports go there from the next turn
-                                                    [--type subagent|peer]; a chat whose old parent is gone becomes a subagent
+                                                    [--no-report]; a chat whose old parent is gone becomes a subagent
     $ ade chat set-parent <session> --no-parent     Detach the chat from its parent
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
@@ -3225,8 +3232,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
     --no-parent             A separate top-level chat that does not report back.
                             Only when the user asks for one.
-    --type <subagent|peer>  subagent (default with a parent) reports back after
-                            every turn; peer leaves quiet notes.
+    --no-report             With a parent, the chat does not report back. By
+                            default it reports back after every turn.
 
   Transcript read flags:
     --limit <n>             Messages per bounded window (default 50, max 100).
@@ -3308,8 +3315,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                             tracked agent shell (the spawning chat).
     --no-parent             A separate top-level chat that does not report back.
                             Only when the user asks for one.
-    --type <subagent|peer>  subagent (default with a parent) reports back after
-                            every turn; peer leaves quiet notes.
+    --no-report             With a parent, the chat does not report back. By
+                            default it reports back after every turn.
 
   With --lane, chat create warns on stderr when another chat on that lane is in
   a turn or waiting on input: the two chats then share one worktree.
@@ -5516,7 +5523,7 @@ function readDroidPermissionMode(args: string[]): AgentChatDroidPermissionMode |
 /**
  * The non-consuming half of `readValue`: the NAME from `names` that the first
  * matching token in `args` spells, whether it was written bare (`--type`) or
- * joined (`--type=peer`), or `null` when no token matches.
+ * joined (`--type=subagent`), or `null` when no token matches.
  *
  * Two callers need to know a flag was WRITTEN without taking it out of argv —
  * `readAgentSpawnLineage` distinguishing an explicit parent from an ambient
@@ -5648,7 +5655,23 @@ export function readValue(args: string[], names: readonly string[]): string | nu
     const matchedName = names.find(
       (name) => token === name || token.startsWith(`${name}=`),
     );
-    if (!matchedName) continue;
+    if (!matchedName) {
+      // `"--type peer"` quoted as one argument: the flag and its value never
+      // split, so the flag would be ignored without a word. Say so instead.
+      // Not when the token is another flag's value (`--title "--type peer"`).
+      const previous = args[index - 1];
+      const isValue = previous != null && VALUE_CARRIER_FLAGS.has(previous);
+      const glued = isValue
+        ? undefined
+        : names.find((name) => token.startsWith(name) && /^\s+\S+$/.test(token.slice(name.length)));
+      if (glued) {
+        const value = token.slice(glued.length).trim();
+        throw new CliUsageError(
+          `"${token}" reached ADE as one argument. Pass ${glued} and its value as two: ${glued} ${value}, or ${glued}=${value}.`,
+        );
+      }
+      continue;
+    }
     if (token.includes("=")) {
       args.splice(index, 1);
       return token.slice(token.indexOf("=") + 1);
@@ -9118,7 +9141,7 @@ function buildChatCreateConfigPreview(
  * command the flag names the parent LANE, which is meaningful with or without
  * a chat.
  */
-const CHAT_ONLY_LINEAGE_FLAGS = [...SPAWN_TYPE_FLAGS, ...CHAT_PARENT_FLAGS];
+const CHAT_ONLY_LINEAGE_FLAGS = [...SPAWN_TYPE_FLAGS, ...NO_REPORT_FLAGS, ...CHAT_PARENT_FLAGS];
 
 function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPlan {
   const explicitName = readValue(args, ["--name"]);
@@ -11969,6 +11992,8 @@ export function formatChatLaunch(value: unknown): string {
     ["lane", `${asString(snapshot.laneName) ?? ""} (${asString(snapshot.laneId) ?? ""})`],
     // A lane on ADE Cloud: the computer made for it.
     ["machine", machine ? `ADE Cloud · ${asString(machine.name) ?? ""}${asString(machine.machineKey) ? ` (${asString(machine.machineKey)})` : ""}` : null],
+    // Why its computer is bigger than the size asked for ("Medium: this repo's setup needed more than 4 GB before.").
+    ["size", isRecord(snapshot.cloud) ? asString(snapshot.cloud.sizeNote) : null],
     ["approve", wrapper?.approvalUrl],
     ["base", snapshot.baseRef],
     ["branch", snapshot.branchRef],
@@ -13782,11 +13807,15 @@ function buildChatPlan(args: string[]): CliPlan {
     if (detach === Boolean(parent)) {
       throw new Error("Pass --parent <session> to set the parent, or --no-parent to detach the chat.");
     }
-    const spawnKind = readValue(args, [...SPAWN_TYPE_FLAGS]);
-    if (spawnKind && spawnKind !== "subagent" && spawnKind !== "peer") {
-      throw new Error("--type must be subagent or peer.");
+    const noReport = readFlag(args, [...NO_REPORT_FLAGS]);
+    const typeArg = readValue(args, [...SPAWN_TYPE_FLAGS]);
+    // `peer` is the stored value behind `--no-report`; old scripts still pass it.
+    if (typeArg && typeArg !== "subagent" && typeArg !== "peer") {
+      throw new Error("--type must be subagent. Use --no-report for a chat that does not report back.");
     }
-    if (detach && spawnKind) throw new Error("--type needs a parent; drop it with --no-parent.");
+    if (noReport && typeArg === "subagent") throw new Error("--no-report cannot be combined with --type subagent.");
+    const spawnKind = noReport ? "peer" : typeArg;
+    if (detach && spawnKind) throw new Error("--type and --no-report need a parent; drop them with --no-parent.");
     return {
       kind: "execute",
       label: "chat set-parent",
@@ -30245,20 +30274,49 @@ async function runServe(
   // itself still reads as `lane_setup` while it waits, so that one setup
   // doesn't hold the grow back; a second one running does (the restart
   // would cut it off).
-  const laneSetupDisk = cloudDiskGrower && readCloudBusy
-    ? cloudDiskGrower.setupDisk(async () => {
-        const busy = await readCloudBusy();
-        const others = busy.reasons.filter((reason) => reason !== "lane_setup");
-        if (others.length || busy.waitingOnPerson || busy.laneSetups > 1) {
-          headlessProjectLogger.info("cloud.disk_grow_for_setup_busy", {
-            reasons: others,
-            laneSetups: busy.laneSetups,
-            waitingOnPerson: Boolean(busy.waitingOnPerson),
-          });
-          return false;
-        }
-        return true;
+  const laneSetupOnlyRuns = async (): Promise<boolean> => {
+    if (!readCloudBusy) return false;
+    const busy = await readCloudBusy();
+    const others = busy.reasons.filter((reason) => reason !== "lane_setup");
+    if (others.length || busy.waitingOnPerson || busy.laneSetups > 1) {
+      headlessProjectLogger.info("cloud.disk_grow_for_setup_busy", {
+        reasons: others,
+        laneSetups: busy.laneSetups,
+        waitingOnPerson: Boolean(busy.waitingOnPerson),
+      });
+      return false;
+    }
+    return true;
+  };
+  // A setup that ran out of memory on a Small whose size was ADE's default
+  // moves the computer to Medium the same way (`cloudSetupUpsize.ts`): one
+  // step, under the same "nothing else runs" rule, and setup runs again.
+  const cloudSetupUpsizer = cloudDiskGrower
+    ? (await import("./services/power/cloudSetupUpsize")).createCloudSetupUpsizer({
+        instanceId: cloudInstanceId,
+        client: async () => (await getCloudBrainAccess()).client(),
+        adeHome: layout.adeDir,
+        logger: headlessProjectLogger,
+        // The launch's own record says whether its size was ADE's default; 404: not a server launch.
+        readLaunch: async (launchId) => {
+          const base = getSharedAccountDirectoryBaseUrl();
+          if (!base || !brainAccountAuthService.getStatus().signedIn) throw new Error("not signed in to an ADE account");
+          const { createCloudApiClient, CloudApiError } = await import("../../desktop/src/shared/cloudApiClient");
+          const api = createCloudApiClient({ baseUrl: base, accessToken: async () => await brainAccountAuthService.getAccessToken() });
+          try {
+            return await api.launchStatus(launchId);
+          } catch (error) {
+            if (error instanceof CloudApiError && error.status === 404) return null;
+            throw error;
+          }
+        },
       })
+    : null;
+  const laneSetupDisk = cloudDiskGrower && readCloudBusy
+    ? {
+        ...cloudDiskGrower.setupDisk(laneSetupOnlyRuns),
+        ...(cloudSetupUpsizer ? cloudSetupUpsizer.setupMemory(laneSetupOnlyRuns) : {}),
+      }
     : null;
   const cloudKeepAwake = cloudKeepAwakeModule && readCloudBusy
     ? cloudKeepAwakeModule.createCloudKeepAwake({
@@ -32638,6 +32696,7 @@ async function runServe(
         readFolderStates: (records) => readProjectFolderStates(records),
         isDevTestMachine: () => isDevTestMachineProcess() || isDevTestMachineHome(layout.adeDir),
         logger: headlessProjectLogger,
+        onListChanged: () => noteAccountProjectListChanged(),
       });
       return accountProjectSync;
     };
@@ -32982,11 +33041,19 @@ async function runServe(
         try { process.kill(pid, 0); return true; } catch { return false; }
       },
     });
+    // Named by its release as analytics names it (`stable`, `beta`, `alpha`),
+    // `dev` for a development brain. ADE_PACKAGE_CHANNEL alone is set only for
+    // Alpha, so it named every Stable, Beta and ADE Cloud brain "dev".
+    const releaseChannel = resolveReleaseChannel({
+      env: process.env,
+      packaged: brainReportsAsRelease(process.env),
+      version: VERSION,
+    });
     const otherBrains = brainRegistry.join({
       pid: process.pid,
       endpoint: socketPath,
       startedAtMs: readProcessStartTimeMs(process.pid),
-      label: process.env.ADE_PACKAGE_CHANNEL?.trim() || "dev",
+      label: releaseChannel === "development" ? "dev" : releaseChannel,
     });
     const sharedHomeSentence = describeOtherBrains(otherBrains);
     if (sharedHomeSentence) {

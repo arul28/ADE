@@ -164,6 +164,8 @@ export type AdeCloudDraft = ReturnType<typeof useAdeCloudDraft>;
 /** What a send to ADE Cloud needs, written each render by `useAdeCloudComposer` (the pane's send callback is defined earlier). */
 export type AdeCloudSend = {
   tierId: string;
+  /** `default` while the size follows the default (nobody picked one): a Small may move to Medium when its setup needs more memory. */
+  sizeChoice: "default" | "picked";
   originUrl: string | null;
   tabBinding: OpenProjectBinding | null;
   /** The ADE Cloud lane picked, or null for a new lane. */
@@ -340,6 +342,7 @@ export function useAdeCloudComposer(input: {
   input.sendRef.current = mode
     ? {
         tierId: draft.tierId,
+        sizeChoice: draft.pickedTier ? "picked" : "default",
         originUrl,
         tabBinding: input.tabBinding,
         lane: selectedLane,

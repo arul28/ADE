@@ -10,8 +10,7 @@ import {
 } from "../../lanes/ManageLaneDialog";
 import { extractError } from "../../../lib/format";
 import { useAppStore } from "../../../state/appStore";
-import { requestCrossMachineLanesForMachine, useLanesForPin } from "../../../state/crossMachineLanes";
-import { machineIdForBinding } from "../../../../shared/machineIdentity";
+import { requestCrossMachineLanesForMachine, unionSlotIdForBinding, useLanesForPin } from "../../../state/crossMachineLanes";
 import { useCloudLaneDelete } from "../../cloudLane/deleteCloudLane";
 import { requirePin } from "../../../state/repositoryScope";
 
@@ -35,7 +34,7 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
   const ownerLanes = useLanesForPin(runtimePin);
   const dialogLanes = ownerLanes ?? lanes;
   const refreshOwnerLanes = useCallback(() => {
-    if (runtimePin) requestCrossMachineLanesForMachine(machineIdForBinding(runtimePin));
+    if (runtimePin) requestCrossMachineLanesForMachine(unionSlotIdForBinding(runtimePin));
     else void refreshLanes({ includeStatus: false });
   }, [refreshLanes, runtimePin]);
 
@@ -58,7 +57,7 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
     try {
       await fn();
       // Another machine's lane list lives in the union, not this tab's store.
-      if (runtimePin) requestCrossMachineLanesForMachine(machineIdForBinding(runtimePin));
+      if (runtimePin) requestCrossMachineLanesForMachine(unionSlotIdForBinding(runtimePin));
       else await refreshLanes({ includeStatus: false });
       onOpenChange(false);
       return true;

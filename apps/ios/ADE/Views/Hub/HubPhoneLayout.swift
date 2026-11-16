@@ -15,11 +15,23 @@ struct HubPhoneLayout<Title: View, FilterBar: View, Roster: View, Composer: View
   /// (`hubStatusBandReading`): the band's width and height. The header
   /// moves up into it and everything under it gains the row's height.
   @State private var statusBand: CGSize?
+  /// The software keyboard is up.
+  @State private var keyboardUp = false
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+  /// A short screen (held sideways, as the Duo's tent pose holds the outer
+  /// display) leaves room above the keyboard for the composer only. The
+  /// header and the filters come back when the keyboard goes down.
+  private var composerOnly: Bool {
+    composerExpanded && keyboardUp && verticalSizeClass == .compact
+  }
 
   var body: some View {
     VStack(spacing: 0) {
-      header
-      filterBar()
+      if !composerOnly {
+        header
+        filterBar()
+      }
       roster()
         .frame(maxHeight: .infinity)
         // The list ends at the composer's top, never behind it.
@@ -43,6 +55,7 @@ struct HubPhoneLayout<Title: View, FilterBar: View, Roster: View, Composer: View
       HubComposerClearsCorner(content: composer)
     }
     .hubComposerAtScreenBottom()
+    .hubReadsSoftwareKeyboard($keyboardUp)
     .onGeometryChange(for: HubStatusBandGeometry.self) { proxy in
       let reading = hubStatusBandReading(proxy)
       return HubStatusBandGeometry(

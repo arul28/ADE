@@ -23,6 +23,7 @@ import {
   waitForEvent,
   waitForFakeTimerCondition,
   writePersistedChatState,
+  settleSteppingTimeouts,
 } from "./agentChatService.testHarness";
 import { BACKGROUND_WORK_LOST_RESUME_PROMPT, RESTART_RESUME_PROMPT } from "../../../shared/chatAutoResume";
 import { recordCliSessionsToReopen } from "../pty/cliReopenAfterRestart";
@@ -1583,10 +1584,10 @@ describe("createAgentChatService", () => {
         model: "sonnet",
       });
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Run CI and wake up when it finishes.",
-      });
+      }));
       expect(service.hasActiveWorkloads()).toBe(false);
       const wakeupId = `wakeup:${session.id}`;
 
@@ -1740,10 +1741,10 @@ describe("createAgentChatService", () => {
         model: "sonnet",
       });
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Finish the foreground turn, then report background work.",
-      });
+      }));
       releaseIdle();
 
       const idleDone = await waitForEvent(
@@ -1853,10 +1854,10 @@ describe("createAgentChatService", () => {
         model: "sonnet",
       });
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Complete the foreground turn, then stream idle work.",
-      });
+      }));
 
       startIdle();
       const idleDone = await waitForEvent(
@@ -1962,10 +1963,10 @@ describe("createAgentChatService", () => {
         model: "sonnet",
       });
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Complete a visible turn, then let idle housekeeping run.",
-      });
+      }));
 
       const visibleAmbientInfo = () => events.filter((event) =>
         event.sessionId === session.id
@@ -2120,10 +2121,10 @@ describe("createAgentChatService", () => {
         model: "sonnet",
       });
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Start a scheduled check.",
-      });
+      }));
 
       startBackground();
       await waitForEvent(
@@ -2625,10 +2626,10 @@ describe("createAgentChatService", () => {
       const postToolUseHook = opts?.hooks?.PostToolUse?.[0]?.hooks[0];
       const wakeupId = `wakeup:${session.id}`;
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Schedule a one-shot CI wakeup.",
-      });
+      }));
 
       await postToolUseHook?.({
         hook_event_name: "PostToolUse",
@@ -2969,10 +2970,10 @@ describe("createAgentChatService", () => {
       } | undefined;
       const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Schedule two recurring crons.",
-      });
+      }));
 
       await stopHook?.({
         hook_event_name: "Stop",
@@ -3437,10 +3438,10 @@ describe("createAgentChatService", () => {
       } | undefined;
       const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
 
-      await service.runSessionTurn({
+      await settleSteppingTimeouts(() => service.runSessionTurn({
         sessionId: session.id,
         text: "Resume after a persisted cron was scheduled.",
-      });
+      }));
 
       await stopHook?.({
         hook_event_name: "Stop",

@@ -16,7 +16,7 @@
  */
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { getPinnedToolStatus, resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
-import { CODEX_NO_UPDATE_CHECK_ARGS, PINNED_PROVIDER_TOOLS, pinnedToolSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import { CODEX_NO_UPDATE_CHECK_ARGS, PINNED_PROVIDER_TOOLS, codexLinuxShellArgs, pinnedToolSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import type { TerminalToolType } from "../../../shared/types";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
@@ -121,8 +121,9 @@ const PROVIDER_CLIS: Readonly<Record<PinnedCliProvider, ProviderCliSpec>> = {
     label: terminalSpec("codex").label,
     binaries: terminalSpec("codex").binaries,
     tools: terminalSpec("codex").tools,
-    // Codex's update check is a config key, not a variable; `-c` is a global flag.
-    resolve: () => nativeCli("codex", resolveCodexExecutable().path, terminalSpec("codex").selfUpdateTool, CODEX_NO_UPDATE_CHECK_ARGS),
+    // Codex's update check is a config key, not a variable; `-c` is a global
+    // flag. On Linux its commands also skip the login shell (codexLinuxShellArgs).
+    resolve: () => nativeCli("codex", resolveCodexExecutable().path, terminalSpec("codex").selfUpdateTool, [...CODEX_NO_UPDATE_CHECK_ARGS, ...codexLinuxShellArgs(process.platform)]),
   },
   opencode: {
     label: terminalSpec("opencode").label,

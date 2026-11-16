@@ -136,6 +136,12 @@ export type AccountProjectSyncOptions = {
   fetchImpl?: typeof fetch;
   now?: () => number;
   logger?: Logger;
+  /**
+   * The account's project list changed and the new list is in the state file:
+   * the clients of this brain read it again (a copy added on another computer
+   * joins an open tab without a window focus). Runs after the write.
+   */
+  onListChanged?: () => void;
 };
 
 export type AccountProjectSync = {
@@ -663,6 +669,7 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
     const switched = state !== loaded;
     if (switched) logger.info?.("account_projects.account_changed", { hadAccount: loaded.userId !== null });
     const publishBlocked = state.publishFailures !== null && state.publishFailures.nextAt > at;
+    const listBefore = JSON.stringify(state.projects);
 
     let dirty = switched;
     if (state.cursor !== event.accountProjectsCursor) {
@@ -753,6 +760,13 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
       } catch (error) {
         persisted = false;
         logger.warn?.("account_projects.state_write_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (dirty && persisted && JSON.stringify(state.projects) !== listBefore) {
+      try {
+        options.onListChanged?.();
+      } catch (error) {
+        logger.warn?.("account_projects.change_notice_failed", { error: errorReason(error) });
       }
     }
     // After the registry write, so the stamp in the key is the one it left.

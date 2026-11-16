@@ -180,7 +180,8 @@ function runJob(job: CopyJob): void {
         showToast({
           id: `project-copy:${job.key}`,
           tone: "error",
-          title: `Couldn't add a copy on ${job.machine.name}`,
+          // This computer reads "this computer" mid-sentence.
+          title: `Couldn't add a copy on ${job.machine.targetId == null ? "this computer" : job.machine.name}`,
           message: failure.reason,
           report: isUserFixableCopyFailure(failure.kind)
             ? false

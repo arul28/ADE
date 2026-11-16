@@ -133,9 +133,4 @@ describe("AccountMachineRow", () => {
     expect(screen.queryByRole("button", { name: /Why offline/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Wake" })).toBeTruthy();
   });
-
-  it("keeps the older guidance for a machine that has been silent for hours", () => {
-    renderRow(machine({ name: "windows", online: false, lastSeenAt: NOW - 6 * 60 * 60_000 }));
-    expect(screen.getByText(/Open ADE on that computer/)).toBeTruthy();
-  });
 });

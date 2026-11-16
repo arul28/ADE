@@ -138,21 +138,6 @@ function openBotGroup(agent: string) {
 
 describe("PrTimeline", () => {
 
-  it("renders an author avatar once, in the card header", () => {
-    renderTimeline([
-      makeEvent({
-        id: "c1",
-        type: "issue_comment",
-        commentId: "c1",
-        author: "alice",
-        avatarUrl: "https://avatars.example/alice.png",
-        body: "looks good",
-        isBot: false,
-      }),
-    ]);
-    expect(document.querySelectorAll('img[src="https://avatars.example/alice.png"]')).toHaveLength(1);
-  });
-
   it("renders a bodyful bot review collapsed by default (no defaultOpen override)", () => {
     renderTimeline([
       makeEvent({

@@ -23,7 +23,12 @@ import type {
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AgentChatSpawnKind } from "../../../../desktop/src/shared/types/chat";
 import type { SessionActivePrWatch } from "../../../../desktop/src/shared/prWatch";
-import { isTrackedAgentCliToolType, type TerminalToolType } from "../../../../desktop/src/shared/types/sessions";
+import {
+  isTrackedAgentCliToolType,
+  type TerminalRuntimeState,
+  type TerminalSessionStatus,
+  type TerminalToolType,
+} from "../../../../desktop/src/shared/types/sessions";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import {
   hasTable,
@@ -125,7 +130,18 @@ export type RosterPtyService = {
     /** Agents the CLI reported still running after its turn ended (Claude hooks). */
     backgroundAgentCount?: number;
   } | null;
+  /**
+   * The terminal's runtime state, the one this machine's own Work list reads.
+   * A plain shell publishes it, so it reads the same on every computer.
+   */
+  getRuntimeState?(sessionId: string, fallbackStatus: TerminalSessionStatus): TerminalRuntimeState;
 };
+
+/** A terminal with no agent in it: a shell the user types into. */
+function isRosterPlainShellToolType(toolType: string | null | undefined): boolean {
+  const raw = normalizedToolType(toolType);
+  return raw === "" || raw === "shell" || raw === "terminal";
+}
 
 export type RosterBootedScope = {
   runtime: {
@@ -878,10 +894,15 @@ async function buildRosterProject(
     const hasLivePty = livePtyService?.hasLivePty(row.id) === true;
     const cliTurn = !live && hasLivePty ? livePtyService?.getTrackedCliTurn?.(row.id) ?? null : null;
     const exactCliPhase = cliTurn && cliTurn.source !== "heuristic" ? cliTurn.phase : null;
+    // A quiet shell at its prompt reads idle here as on this machine's own
+    // Work list, not "running" because its terminal is open.
+    const plainShellIdle = !live && hasLivePty && exactCliPhase == null
+      && isRosterPlainShellToolType(row.tool_type)
+      && livePtyService?.getRuntimeState?.(row.id, "running") === "idle";
     const liveStatus = live
       ? liveChatStatus(live)
       : hasLivePty
-        ? exactCliPhase === "idle"
+        ? plainShellIdle || exactCliPhase === "idle"
           // Background agents outlive the turn, as for a chat (`liveChatStatus`).
           ? (cliTurn?.backgroundAgentCount ?? 0) > 0 ? "running" as const : "idle" as const
           : exactCliPhase === "needs-input"
@@ -897,7 +918,7 @@ async function buildRosterProject(
      */
     const liveTurnRunning = live
       ? live.status === "active" && live.awaitingInput !== true
-      : hasLivePty && (exactCliPhase == null || exactCliPhase === "working");
+      : hasLivePty && !plainShellIdle && (exactCliPhase == null || exactCliPhase === "working");
     const status: SyncRosterChatStatus = row.attention_requested_at
       ? "awaiting"
       // Settled is checked against a RUNNING row first, exactly as before:

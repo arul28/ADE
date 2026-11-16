@@ -252,6 +252,7 @@ class ScriptedSocket implements WebSocketLike {
     rawUrl: string,
     private readonly onClientEnvelope: (socket: ScriptedSocket, envelope: SyncEnvelope) => void | Promise<void>,
     openDelayMs = 0,
+    relayReady = false,
   ) {
     this.rawUrl = rawUrl;
     const normalized = new URL(rawUrl);
@@ -265,6 +266,9 @@ class ScriptedSocket implements WebSocketLike {
       if (this.readyState !== 0) return;
       this.readyState = 1;
       this.onopen?.(new Event("open"));
+      // A relay that answers `ready=2` at once, so the client never waits out
+      // the negotiation window that only a relay predating it runs into.
+      if (relayReady && normalized.searchParams.get("ready") === "2") completeRelayReadyV2(this);
     }, openDelayMs);
   }
 
@@ -293,7 +297,7 @@ class ScriptedSocket implements WebSocketLike {
 
 function createSocketFactory(
   handler: (socket: ScriptedSocket, envelope: SyncEnvelope) => void | Promise<void>,
-  options: { openDelayMs?: number | ((socketIndex: number) => number) } = {},
+  options: { openDelayMs?: number | ((socketIndex: number) => number); relayReady?: boolean } = {},
 ) {
   const sockets: ScriptedSocket[] = [];
   return {
@@ -303,7 +307,7 @@ function createSocketFactory(
       const openDelayMs = typeof options.openDelayMs === "function"
         ? options.openDelayMs(socketIndex)
         : options.openDelayMs;
-      const socket = new ScriptedSocket(url, handler, openDelayMs);
+      const socket = new ScriptedSocket(url, handler, openDelayMs, options.relayReady);
       sockets.push(socket);
       return socket;
     },
@@ -2276,7 +2280,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
       }
-    });
+    }, { relayReady: true });
     const connection = new SyncConnection({ socketFactory: script.factory, document: null });
     const closeEvents: Array<{ code: number; reason: string }> = [];
     connection.on("close", (event) => closeEvents.push(event));
@@ -2581,7 +2585,7 @@ describe("browser sync connection and client", () => {
           host: { deviceId: hostPeer.deviceId, name: hostPeer.deviceName },
         },
       });
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
 
     await expect(client.connect(environment.envId, signedInRelayAccess)).rejects.toBeInstanceOf(WebRelayAuthRequiredError);
@@ -2626,7 +2630,7 @@ describe("browser sync connection and client", () => {
             host: { deviceId: hostPeer.deviceId, name: hostPeer.deviceName },
           },
         });
-      });
+      }, { relayReady: true });
       const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
       const seen: Array<{ state: string; error: string | null }> = [];
       const unsubscribe = client.subscribe(() => {
@@ -2687,7 +2691,7 @@ describe("browser sync connection and client", () => {
             message: "A later route failed.",
           },
         });
-      });
+      }, { relayReady: true });
       const connection = new SyncConnection({ socketFactory: script.factory, document: null });
       const endpoints = [
         { url: "ws://192.168.1.10:8787", kind: "candidate" as const, dialable: true },
@@ -2716,7 +2720,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(accountEnvironment.envId, signedInRelayAccess);
     expect(client.getStatus().state).toBe("connected");
@@ -2875,7 +2879,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(localEnvironment.envId, signedInRelayAccess);
     const expectedOwnerUserId = accountLeaseOwnerForActiveConnection({
@@ -3075,7 +3079,7 @@ describe("browser sync connection and client", () => {
           },
         },
       });
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({
       storage,
       socketFactory: script.factory,
@@ -3291,7 +3295,7 @@ describe("browser sync connection and client", () => {
           },
         });
       }
-    });
+    }, { relayReady: true });
     const attributedClient = new AdeSyncClient({ storage: attributedStorage, socketFactory: attributedScript.factory, document: null });
     await expect(attributedClient.connect(attributedEnv.envId, signedInRelayAccess)).rejects.toThrow("Revoked");
     await flush();
@@ -3316,7 +3320,7 @@ describe("browser sync connection and client", () => {
           },
         });
       }
-    });
+    }, { relayReady: true });
     const ambiguousClient = new AdeSyncClient({ storage: ambiguousStorage, socketFactory: ambiguousScript.factory, document: null });
     await expect(ambiguousClient.connect(ambiguousEnv.envId, signedInRelayAccess)).rejects.toThrow("Wrong machine");
     expect(await ambiguousClient.listEnvironments()).toHaveLength(1);
@@ -3498,21 +3502,20 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
-  it("rebinds /chats foreign streams while retiring active streams on a same-socket project boundary", async () => {
+  it("keeps its project and streams when another client moves the brain, and asks for its project again", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage);
-    const commandProjectIds: Array<string | null | undefined> = [];
+    const switchRequests: unknown[] = [];
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk("project-1") });
       }
-      if (envelope.type === "command") {
-        commandProjectIds.push(envelope.projectId);
-        const { commandId } = envelope.payload as { commandId: string };
+      if (envelope.type === "project_switch_request") {
+        switchRequests.push(envelope.payload);
         socket.serverSend({
-          type: "command_result",
+          type: "project_switch_result",
           requestId: envelope.requestId,
-          payload: { commandId, ok: true, result: { projectId: envelope.projectId } },
+          payload: { ok: true, project: helloOk("project-1").projects![0] },
         });
       }
     });
@@ -3528,25 +3531,10 @@ describe("browser sync connection and client", () => {
     await completeRelayReadyV2AfterOpen(script.sockets, 0);
     await connecting;
     client.subscribeChat("project-chat", {}, {});
-    client.subscribeChat("personal-chat", { chatScope: "personal" }, {});
-    client.subscribeChat("foreign-chat", {
-      projectId: "project-foreign",
-      projectRootPath: "/repo-foreign",
-    }, {});
     client.subscribeTerminal("project-terminal", {}, {});
     await flush();
-    script.sockets[0]?.serverSend({
-      type: "chat_event",
-      payload: {
-        sessionId: "foreign-chat",
-        timestamp: new Date().toISOString(),
-        seq: 9,
-        event: { type: "foreign-event-before-handoff" },
-      },
-    } as never);
-    await flush();
-    deliveredChatSessionIds.length = 0;
 
+    // Another client (a phone, a second browser) moves the brain to project-2.
     const projectOne = { ...helloOk("project-1").projects![0], isOpen: false };
     const projectTwo = {
       ...helloOk("project-2").projects![0],
@@ -3560,102 +3548,66 @@ describe("browser sync connection and client", () => {
     });
     await flush();
 
-    expect(script.sockets).toHaveLength(1);
-    expect(client.getStatus().activeProjectId).toBe("project-2");
-    expect(changes).toEqual([{ previousProjectId: "project-1", projectId: "project-2" }]);
-    expect(script.sockets[0].sent.filter((envelope) => (
+    // This browser keeps the project it shows, drops none of its streams, and
+    // asks the brain to host that project again.
+    expect(client.getStatus().activeProjectId).toBe("project-1");
+    expect(changes).toEqual([]);
+    expect(switchRequests).toEqual([{ projectId: "project-1" }]);
+    expect(script.sockets[0].sent.some((envelope) => (
+      envelope.type === "chat_unsubscribe" || envelope.type === "terminal_unsubscribe"
+    ))).toBe(false);
+
+    // The brain hosts project-1 again: the client dials again and subscribes
+    // the same chat and terminal on the new link.
+    await completeRelayReadyV2AfterOpen(script.sockets, 1);
+    for (let attempt = 0; attempt < 20 && client.getStatus().readiness !== "ready"; attempt += 1) await flush();
+    expect(script.sockets).toHaveLength(2);
+    expect(client.getStatus().activeProjectId).toBe("project-1");
+    expect(changes).toEqual([]);
+    expect(script.sockets[1].sent.filter((envelope) => (
       envelope.type === "chat_subscribe"
       && (envelope.payload as { sessionId?: string }).sessionId === "project-chat"
     ))).toEqual([expect.objectContaining({ projectId: "project-1" })]);
-    expect(script.sockets[0].sent.filter((envelope) => (
-      envelope.type === "chat_unsubscribe"
-      && (envelope.payload as { sessionId?: string }).sessionId === "project-chat"
-    ))).toEqual([expect.objectContaining({ projectId: "project-2" })]);
-    expect(script.sockets[0].sent.filter((envelope) => (
-      envelope.type === "chat_subscribe"
-      && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
-    ))).toHaveLength(1);
-    expect(script.sockets[0].sent.some((envelope) => (
-      envelope.type === "chat_unsubscribe"
-      && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
-    ))).toBe(false);
-    expect(script.sockets[0].sent.find((envelope) => (
-      envelope.type === "chat_subscribe"
-      && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
-    ))?.projectId).toBeUndefined();
-    const foreignSubscriptions = script.sockets[0].sent.filter((envelope) => (
-      envelope.type === "chat_subscribe"
-      && (envelope.payload as { sessionId?: string }).sessionId === "foreign-chat"
-    ));
-    expect(foreignSubscriptions).toHaveLength(2);
-    expect(foreignSubscriptions).toEqual([
-      expect.objectContaining({ projectId: "project-foreign" }),
-      expect.objectContaining({ projectId: "project-foreign" }),
-    ]);
-    expect(foreignSubscriptions[1]?.payload).toMatchObject({
-      sessionId: "foreign-chat",
-      projectId: "project-foreign",
-      projectRootPath: "/repo-foreign",
-    });
-    expect(foreignSubscriptions[1]?.payload).not.toHaveProperty("sinceSeq");
-    expect(script.sockets[0].sent.some((envelope) => (
-      envelope.type === "chat_unsubscribe"
-      && (envelope.payload as { sessionId?: string }).sessionId === "foreign-chat"
-    ))).toBe(false);
-    expect(script.sockets[0].sent.filter((envelope) => envelope.type === "terminal_subscribe")).toEqual([
-      expect.objectContaining({ projectId: "project-1" }),
-    ]);
-    expect(script.sockets[0].sent.filter((envelope) => envelope.type === "terminal_unsubscribe")).toEqual([
-      expect.objectContaining({
-        projectId: "project-2",
-        payload: { sessionId: "project-terminal" },
-      }),
+    expect(script.sockets[1].sent.filter((envelope) => envelope.type === "terminal_subscribe")).toEqual([
+      expect.objectContaining({ projectId: "project-1", payload: expect.objectContaining({ sessionId: "project-terminal" }) }),
     ]);
 
-    script.sockets[0]?.serverSend({
+    script.sockets[1]?.serverSend({
       type: "chat_event",
       payload: {
         sessionId: "project-chat",
         timestamp: new Date().toISOString(),
-        event: { type: "late-old-project-event" },
-      },
-    } as never);
-    script.sockets[0]?.serverSend({
-      type: "chat_event",
-      payload: {
-        sessionId: "personal-chat",
-        timestamp: new Date().toISOString(),
-        event: { type: "personal-event" },
+        event: { type: "after-reassert-event" },
       },
     } as never);
     await flush();
-    expect(deliveredChatSessionIds).toEqual(["personal-chat"]);
-
-    client.subscribeChat("new-project-chat", {}, {});
-    client.subscribeTerminal("new-project-terminal", {}, {});
-    await flush();
-    expect(script.sockets[0].sent.find((envelope) => (
-      envelope.type === "chat_subscribe"
-      && (envelope.payload as { sessionId?: string }).sessionId === "new-project-chat"
-    ))).toMatchObject({ projectId: "project-2" });
-    expect(script.sockets[0].sent.find((envelope) => (
-      envelope.type === "terminal_subscribe"
-      && (envelope.payload as { sessionId?: string }).sessionId === "new-project-terminal"
-    ))).toMatchObject({ projectId: "project-2" });
-
-    await expect(client.sendCommand("chat.send", { text: "new project" })).resolves.toEqual({
-      projectId: "project-2",
-    });
-    expect(commandProjectIds).toEqual(["project-2"]);
-    await flush();
+    expect(deliveredChatSessionIds).toEqual(["project-chat"]);
+    expect(switchRequests).toHaveLength(1);
     await expect(new WebClientEnvStore(storage).getEnvironment(environment.envId)).resolves.toMatchObject({
-      activeProjectId: "project-2",
+      activeProjectId: "project-1",
     });
+
+    // The other client takes the brain back on the same link: two clients
+    // that want different projects must not keep moving it. This browser
+    // follows the brain instead of asking again.
+    script.sockets[1]?.serverSend({
+      type: "project_catalog",
+      payload: { projects: [{ ...projectOne, isOpen: true }, { ...projectTwo, isOpen: false }] },
+    });
+    await flush();
+    script.sockets[1]?.serverSend({
+      type: "project_catalog",
+      payload: { projects: [projectOne, projectTwo] },
+    });
+    await flush();
+    expect(client.getStatus().activeProjectId).toBe("project-2");
+    expect(changes).toEqual([{ previousProjectId: "project-1", projectId: "project-2" }]);
+    expect(switchRequests).toHaveLength(1);
 
     client.dispose();
   });
 
-  it("preserves wire order while a compressed project boundary is decoding", async () => {
+  it("preserves wire order while a compressed project catalog is decoding", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage);
     const script = createSocketFactory((socket, envelope) => {
@@ -3664,22 +3616,23 @@ describe("browser sync connection and client", () => {
       }
     });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
-    const delivered: string[] = [];
+    const order: string[] = [];
 
     const connecting = client.connect(environment.envId, signedInRelayAccess);
     await completeRelayReadyV2AfterOpen(script.sockets, 0);
     await connecting;
-    client.subscribeChat("old-project-chat", {}, {
-      event: (payload) => delivered.push(String((payload.event as { type?: unknown }).type ?? "")),
+    client.onProjectCatalog(() => order.push("catalog"));
+    client.subscribeChat("project-chat", {}, {
+      event: (payload) => order.push(String((payload.event as { type?: unknown }).type ?? "")),
     });
     await flush();
 
-    const projectOne = { ...helloOk("project-1").projects![0], isOpen: false };
+    const projectOne = helloOk("project-1").projects![0];
     const projectTwo = {
       ...helloOk("project-2").projects![0],
       displayName: `Repo Two ${"x".repeat(50_000)}`,
       rootPath: "/repo-2",
-      isOpen: true,
+      isOpen: false,
     };
     script.sockets[0]?.onmessage?.({
       data: encodeSyncEnvelope({
@@ -3691,18 +3644,20 @@ describe("browser sync connection and client", () => {
     script.sockets[0]?.serverSend({
       type: "chat_event",
       payload: {
-        sessionId: "old-project-chat",
+        sessionId: "project-chat",
         timestamp: new Date().toISOString(),
         seq: 1,
-        event: { type: "late-old-project-event" },
+        event: { type: "event-after-catalog" },
       },
     } as never);
 
-    for (let attempt = 0; attempt < 20 && client.getStatus().activeProjectId !== "project-2"; attempt += 1) {
+    for (let attempt = 0; attempt < 20 && order.length < 2; attempt += 1) {
       await flush();
     }
-    expect(client.getStatus().activeProjectId).toBe("project-2");
-    expect(delivered).toEqual([]);
+    // The plain event that came second on the wire waits for the compressed
+    // catalog in front of it.
+    expect(order).toEqual(["catalog", "event-after-catalog"]);
+    expect(client.getStatus().activeProjectId).toBe("project-1");
     client.dispose();
   });
 
@@ -3732,52 +3687,21 @@ describe("browser sync connection and client", () => {
     connection.dispose();
   });
 
-  it("persists rapid project boundaries in arrival order", async () => {
-    const storage = new DelayedPutStorage();
-    const environment = await makeEnvironment(storage);
-    const script = createSocketFactory((socket, envelope) => {
-      if (envelope.type === "hello") {
-        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk("project-1") });
-      }
-    });
-    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
-    const connecting = client.connect(environment.envId, signedInRelayAccess);
-    await completeRelayReadyV2AfterOpen(script.sockets, 0);
-    await connecting;
-    await flush();
-
-    storage.delayNextEnvironmentPut = true;
-    script.sockets[0]?.serverSend({
-      type: "project_catalog",
-      payload: { projects: [{ ...helloOk("project-2").projects![0], isOpen: true }] },
-    });
-    await storage.waitForPausedPut();
-    script.sockets[0]?.serverSend({
-      type: "project_catalog",
-      payload: { projects: [{ ...helloOk("project-3").projects![0], isOpen: true }] },
-    });
-    await flush();
-    storage.resumePausedPut();
-    for (let attempt = 0; attempt < 10; attempt += 1) await flush();
-
-    expect(client.getStatus().activeProjectId).toBe("project-3");
-    await expect(new WebClientEnvStore(storage).getEnvironment(environment.envId)).resolves.toMatchObject({
-      activeProjectId: "project-3",
-    });
-    client.dispose();
-  });
-
-  it("publishes the same project boundary when reconnect hello opens a different project", async () => {
+  it("keeps its project when a restarted brain says hello with another project open", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage);
-    let helloProjectId = "project-1";
+    let helloProjects = helloOk("project-1").projects!;
+    const switchRequests: Array<{ socket: number; payload: unknown }> = [];
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
         socket.serverSend({
           type: "hello_ok",
           requestId: envelope.requestId,
-          payload: helloOk(helloProjectId),
+          payload: { ...helloOk("project-1"), projects: helloProjects },
         });
+      }
+      if (envelope.type === "project_switch_request") {
+        switchRequests.push({ socket: script.sockets.indexOf(socket), payload: envelope.payload });
       }
     });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
@@ -3794,25 +3718,66 @@ describe("browser sync connection and client", () => {
     client.subscribeTerminal("old-project-terminal", {}, {});
     await flush();
 
+    // The brain restarted on its own default project; this browser's is still listed.
     script.sockets[0]?.close(1006, "listener handoff");
-    helloProjectId = "project-2";
+    helloProjects = [
+      { ...helloOk("project-1").projects![0], isOpen: false },
+      { ...helloOk("project-2").projects![0], rootPath: "/repo-2", isOpen: true },
+    ];
     const reconnect = client.connect(environment.envId, signedInRelayAccess);
     await completeRelayReadyV2AfterOpen(script.sockets, 1);
     await reconnect;
     await flush();
 
-    expect(client.getStatus().activeProjectId).toBe("project-2");
-    expect(changes).toContainEqual({ previousProjectId: "project-1", projectId: "project-2" });
-    expect(script.sockets[1].sent.some((envelope) => (
+    expect(client.getStatus().activeProjectId).toBe("project-1");
+    expect(changes).toEqual([]);
+    expect(script.sockets[1].sent.find((envelope) => (
       envelope.type === "chat_subscribe"
       && (envelope.payload as { sessionId?: string }).sessionId === "old-project-chat"
-    ))).toBe(false);
-    expect(script.sockets[1].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(false);
+    ))).toMatchObject({ projectId: "project-1" });
+    expect(script.sockets[1].sent.find((envelope) => envelope.type === "terminal_subscribe")).toMatchObject({
+      projectId: "project-1",
+    });
     expect(script.sockets[1].sent.find((envelope) => (
       envelope.type === "chat_subscribe"
       && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
     ))?.projectId).toBeUndefined();
+    // One request to host this browser's project again, on the new link.
+    expect(switchRequests).toEqual([{ socket: 1, payload: { projectId: "project-1" } }]);
 
+    client.dispose();
+  });
+
+  it("keeps unacknowledged terminal input when the brain hosts the same project again", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const received: string[] = [];
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOkWithTerminalInputAck() });
+      if (envelope.type === "project_switch_request") {
+        socket.serverSend({ type: "project_switch_result", requestId: envelope.requestId, payload: { ok: true, project: helloOk("project-1").projects![0] } } as never);
+      }
+      if (envelope.type !== "terminal_input") return;
+      const input = envelope.payload as { sessionId: string; data: string; inputId?: string };
+      const index = script.sockets.indexOf(socket);
+      received.push(`${index}:${input.data}`);
+      if (index < 1) return;
+      socket.serverSend({ type: "terminal_input_ack", requestId: envelope.requestId, payload: { sessionId: input.sessionId, inputId: input.inputId, ok: true, duplicate: false } } as never);
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null, terminalInputAckTimeoutMs: 60_000 });
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await completeRelayReadyV2AfterOpen(script.sockets, 0);
+    await connecting;
+    client.subscribeTerminal("term-1", {}, {});
+    let outcome = "pending";
+    void client.sendTerminalInput("term-1", "ls").then(() => { outcome = "ok"; }, (error) => { outcome = `rejected:${(error as Error).message}`; });
+    await flush();
+    const switching = client.switchProject("project-1");
+    await completeRelayReadyV2AfterOpen(script.sockets, 1);
+    await switching;
+    for (let i = 0; i < 10; i += 1) await flush();
+    // Sent once on the old link, unacknowledged, then sent again on the new one.
+    expect({ outcome, received }).toEqual({ outcome: "ok", received: ["0:ls", "1:ls"] });
     client.dispose();
   });
 
@@ -4413,7 +4378,7 @@ describe("browser sync connection and client", () => {
           payload: { commandId, ok: true, result: { value: 1 } },
         });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(environment.envId, signedInRelayAccess);
 
@@ -4448,7 +4413,7 @@ describe("browser sync connection and client", () => {
           payload: { sessionId: "term-1", data: "older", startOffset: 0, endOffset: 5, atStart: true },
         });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(environment.envId, signedInRelayAccess);
 
@@ -4479,7 +4444,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: macHello });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     const records: SyncMacDesktopStreamRecordPayload[] = [];
     const ended: SyncMacDesktopStreamEndedPayload[] = [];
@@ -4528,7 +4493,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(environment.envId, signedInRelayAccess);
 
@@ -4561,7 +4526,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: macHello });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(environment.envId, signedInRelayAccess);
 
@@ -4576,7 +4541,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(environment.envId, signedInRelayAccess);
 

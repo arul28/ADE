@@ -154,6 +154,7 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
       computer.disk_reserved_at = null;
       computer.disk_confirmed_gb = null;
     }
+    statements.push(...shapeFromProviderStatements(env, computer, instance, now));
   }
   statements.push(...await diskDayStatements(env, diskConfirmed, now));
   if (statements.length) await env.DB.batch(statements);
@@ -169,6 +170,34 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   await sleepUnseen(env, provider, live, now);
   await runOwnerChecks(env, provider, instances, live, now);
   await runDaily(env, provider, live, now, waitUntil);
+}
+
+/**
+ * The provider's CPU and memory are the truth too. A resize the computer asked
+ * for restarts it, which drops that request, and the Worker keeps its writes
+ * alive for only 30 s after a disconnect: one the provider took longer over
+ * leaves the row at the old size, shown and billed as it. The time so far is
+ * charged at the old size and the new size starts its stretch here, guarded
+ * so a resize that did finish its own writes meanwhile is not charged twice.
+ */
+function shapeFromProviderStatements(env: CloudEnv, computer: TickComputer, instance: CloudInstance, now: number): D1PreparedStatement[] {
+  const cpu = instance.resources?.cpu;
+  const memory = instance.resources?.memory;
+  if (!cpu || !memory || instance.status === "updating") return [];
+  if (cpu === computer.cpu && memory === computer.memory_gb) return [];
+  const size = cloudSizeFor(computer.type, cpu, memory);
+  if (!size) return [];
+  logCloud("cloud.shape_from_provider", { instanceId: computer.instance_id, from: { cpu: computer.cpu, memory: computer.memory_gb }, to: { cpu, memory } });
+  const statements: D1PreparedStatement[] = [];
+  if (size.multiplierMilli !== computer.multiplier_milli && computer.awake_since != null && computer.awake_since <= now) {
+    statements.push(...restartStretchStatements(env, computer, now));
+  }
+  statements.push(env.DB.prepare("update cloud_computers set cpu = ?, memory_gb = ?, multiplier_milli = ? where instance_id = ? and cpu = ? and memory_gb = ?")
+    .bind(size.cpu, size.memoryGb, size.multiplierMilli, computer.instance_id, computer.cpu, computer.memory_gb));
+  computer.cpu = size.cpu;
+  computer.memory_gb = size.memoryGb;
+  computer.multiplier_milli = size.multiplierMilli;
+  return statements;
 }
 
 /** A reservation the Worker didn't finish: adopted by its request tag, or given up on. */

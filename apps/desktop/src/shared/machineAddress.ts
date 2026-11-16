@@ -39,8 +39,13 @@ export type MachineAddress =
  *   asleep and could not be woken, no route).
  * - `signed_out`: this computer is not signed in to an ADE account.
  * - `invalid`: no key was given.
+ * - `declined`: a background connect left the machine alone on purpose: the
+ *   person disconnected it or set it not to reconnect on its own. Nothing is
+ *   wrong with it.
+ * - `no_room`: a background connect found ADE Web at its limit of connections
+ *   and did not park another computer. It can join when a connection closes.
  */
-export type MachineConnectFailureReason = "not_in_account" | "unreachable" | "signed_out" | "invalid";
+export type MachineConnectFailureReason = "not_in_account" | "unreachable" | "signed_out" | "invalid" | "declined" | "no_room";
 
 export type MachineConnectResult =
   | { ok: true; address: MachineAddress }
@@ -54,6 +59,14 @@ export type MachineConnectOptions = {
    * which wakes a sleeping cloud computer.
    */
   connect?: boolean;
+  /**
+   * True: nobody asked for this machine; a repository tab opened and every
+   * computer with a copy joins it. A machine the person disconnected or set
+   * not to reconnect is left alone (`declined`), a sleeping cloud computer is
+   * not woken before a pairing, and ADE Web never parks another computer to
+   * make room for it.
+   */
+  background?: boolean;
 };
 
 /** Machine keys compare without case or surrounding space. */

@@ -781,7 +781,9 @@ Shared types and IPC:
   provider continuation internally — and `ade.pty.resumeSession`, which
   relaunches an ended tracked CLI session without sending a prompt),
   the session-owned `ade.terminal.*` family (`list`, `read`, `preview` —
-  serialized xterm snapshot for the mobile renderer, `write`,
+  serialized xterm snapshot for the mobile renderer; an agent caller of any
+  role gets `snapshot.screenText` (the visible rows as plain text) in place
+  of the styled `visibleRows` cell grid, keeping `serialized`, `write`,
   `signal`, `activeForChat`), and the localhost-probe helper
   `ade.localhost.probePort`, plus `ade.externalSessions.list`,
   `.import`, `.getDetail`, `.watchDetail`, `.unwatchDetail`, and the
@@ -1995,7 +1997,12 @@ Renderer surfaces:
   `BASH_ENV=""`, fish `--no-config`, PowerShell `-NoLogo -NoProfile`,
   `cmd.exe /d`); `ptyService.resolveShellCandidates("clean")`
   uses the same recipe for command-backed and provider-fallback shells. Plain
-  interactive shells use their login configuration. Windows accepts configured Windows PowerShell,
+  interactive shells use their login configuration on macOS (`-l`, as
+  Terminal and iTerm do). On Linux they are interactive but not login, as
+  GNOME Terminal, Konsole and VS Code start them: a login shell runs
+  `/etc/profile`, which on Debian sets PATH from scratch and dropped ADE's
+  `ade` and `gh` shims. The login shell's PATH still reaches the terminal,
+  resolved into its environment, and `~/.bashrc` / `~/.zshrc` still run. Windows accepts configured Windows PowerShell,
   PowerShell 7, cmd, or an absolute Git for Windows `bash.exe` path and then
   falls back through PowerShell 5.1, PowerShell 7, and cmd. Bare `bash.exe` and
   `wsl.exe` are rejected so the local runtime never crosses into WSL.

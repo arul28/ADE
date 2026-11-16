@@ -30,6 +30,8 @@ export function useAdeCloudLaneTarget(open: boolean, originUrl: string | null) {
     account: draft.account,
     tiers: draft.tiers,
     tierId: draft.tierId,
+    /** `default` while the size follows the default (nobody picked one here): a Small may move to Medium when its setup needs more memory. */
+    sizeChoice: (draft.pickedTier ? "picked" : "default") as "default" | "picked",
     defaultTier: draft.defaultTier,
     chooseTier: draft.chooseTier,
     resetTier: draft.resetTier,

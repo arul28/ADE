@@ -14,6 +14,7 @@ import type { CtoAttentionState, KeybindingsSnapshot, LaneDeleteProgress, LaneLi
 import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { originUrlForBinding } from "../components/lanes/laneMachines";
+import { normalizeGitRemoteIdentity } from "../../shared/crossMachineHandoff";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import {
   normalizeHarnessPresetList,
@@ -2122,10 +2123,17 @@ export type AppState = {
    */
   requestLaneStatusRead: (options?: { maxAgeMs?: number }) => void;
   openRepo: () => Promise<ProjectInfo | null>;
+  /**
+   * Opens a folder of this computer in front. `carryWorkView`: the same tab
+   * moves here from another copy of its repository (its computer went away or
+   * its copy was removed), so the open chat, tabs and grid come along. A
+   * switch to another tab never passes it: each tab keeps its own view.
+   */
   switchProjectToPath: (
     rootPath: string,
     opts?: {
       skipWorktreeGate?: boolean;
+      carryWorkView?: boolean;
       /**
        * A launch restoring the tab that was in front: with no project shown
        * yet and saved project info for the folder, the Work view shows at
@@ -2144,12 +2152,12 @@ export type AppState = {
   /**
    * Opens a remote copy in front. `keepNoMachineTab`: a waiting tab in front
    * stays on its page until this copy is open, instead of showing the project
-   * under it while the open runs.
+   * under it while the open runs. `carryWorkView`: as for `switchProjectToPath`.
    */
   switchRemoteProject: (
     targetId: string,
     projectId: string,
-    options?: { keepNoMachineTab?: boolean },
+    options?: { keepNoMachineTab?: boolean; carryWorkView?: boolean },
   ) => Promise<OpenProjectBinding>;
   /**
    * True once for the binding of a remote open that Home superseded: the
@@ -2913,11 +2921,18 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           : Array.from(new Set(
               intendedMachineIds.map((machineId) => machineId.trim()).filter(Boolean),
             )).sort();
+      // Preserve the membership needle across the wholesale clear. A later
+      // sync pass replaces it once the new scope's machine set is known. A tab
+      // moving to another copy passes through more than one scope in a row; the
+      // second change finds the slices already cleared, and an empty needle
+      // would read as "no machine belongs here" and drop every retained slice
+      // (and with them every open chat of another machine).
+      const unionMachineIds = Object.keys(prev.crossMachineLanesByMachineId);
       const nextIntendedMachineIds = normalizedIntendedMachineIds === undefined
         ? scopeChanged
-          // Preserve the membership needle across the wholesale clear. A later
-          // sync pass replaces it once the new scope's machine set is known.
-          ? Object.keys(prev.crossMachineLanesByMachineId).sort()
+          ? unionMachineIds.length > 0
+            ? unionMachineIds.sort()
+            : prev.crossMachineLaneIntendedMachineIds
           : prev.crossMachineLaneIntendedMachineIds
         : normalizedIntendedMachineIds;
       const stableIntendedMachineIds = reuseStructurallyEqualArray(
@@ -3820,7 +3835,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   switchProjectToPath: async (
     rootPath: string,
-    opts?: { skipWorktreeGate?: boolean; showCachedView?: boolean },
+    opts?: { skipWorktreeGate?: boolean; carryWorkView?: boolean; showCachedView?: boolean },
   ) => {
     // Worktree gate: when opening a path that is NOT already a warm tab, inspect
     // it first. If it's an external linked worktree whose owning repo resolves,
@@ -3845,6 +3860,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // Invalidate in-flight lane refreshes before the async switch so stale
     // responses from the previous project are discarded immediately.
     ++laneRefreshVersion;
+    // The copy the tab leaves: a move to this computer's copy of the same
+    // repository (a Disconnect of the tab's computer) keeps the open chat,
+    // tabs and grid, as a move to a remote copy does.
+    const outgoingBinding = get().projectBinding;
     // Stash the OUTGOING project's lane/session selection so switching back
     // restores it instead of falling through to "first lane".
     const outgoingProjectKey = selectActiveProjectStateKey(get());
@@ -3857,6 +3876,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       cachedProject != null && get().openProjectTabRoots.includes(rootPath);
     if (isWarmTabSwitch && cachedProject) {
       get().setProject(cachedProject, { replaceBinding: true });
+      if (opts?.carryWorkView) carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, cachedProject));
     }
     // A launch restoring its front tab, with nothing on screen yet: the
     // folder's Work view shows now, from its saved info and lane cache, and
@@ -3945,6 +3965,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         return;
       }
       get().setProject(project, { replaceBinding: true });
+      if (opts?.carryWorkView) carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, project));
       const restoredSelection =
         get().laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
       // Stale-while-revalidate: if we have cached lanes for the destination
@@ -4107,6 +4128,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   switchRemoteProject: async (targetId: string, projectId: string, options) => {
     const switchGeneration = ++remoteProjectSwitchGeneration;
+    const outgoingBinding = get().projectBinding;
     if (!options?.keepNoMachineTab && get().activeNoMachineTabId) set({ activeNoMachineTabId: null });
     ++laneRefreshVersion;
     const outgoingProjectKey = selectActiveProjectStateKey(get());
@@ -4142,6 +4164,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       if (binding.kind !== "remote") {
         throw new Error("Remote project open returned a local project binding.");
       }
+      if (options?.carryWorkView) carryWorkViewToCopy(outgoingBinding, binding);
       set((prev) => {
         const projectKey = normalizeProjectKey(binding.key);
         const cachedLanes =
@@ -4491,6 +4514,51 @@ export function unregisterProjectSurfaceStore(projectKey: string, store: AppStor
   const key = normalizeProjectKey(projectKey);
   if (!key) return;
   if (_projectSurfaceStores.get(key) === store) _projectSurfaceStores.delete(key);
+}
+
+/** This computer's binding for a project just opened by path, for `carryWorkViewToCopy`. */
+function localBindingForCarry(current: OpenProjectBinding | null, project: ProjectInfo): OpenProjectBinding {
+  if (current?.kind === "local" && current.rootPath === project.rootPath) return current;
+  return { kind: "local", key: project.rootPath, rootPath: project.rootPath, displayName: project.displayName };
+}
+
+/**
+ * A tab that moves to another copy of the same repository keeps what it had
+ * open: the chat in front, its open tabs and grid. Only a caller that moves
+ * the same tab asks for it (`carryWorkView`); two folders of one repository
+ * on this computer are separate tabs with separate views. Each copy keeps its own
+ * view under its own key, so without this the open chat closed whenever the
+ * tab's computer went away and the tab moved to a copy on another computer.
+ */
+function carryWorkViewToCopy(
+  from: OpenProjectBinding | null,
+  to: OpenProjectBinding,
+): void {
+  if (!from) return;
+  const fromKey = projectStateKeyForBinding(from);
+  const toKey = projectStateKeyForBinding(to);
+  if (!fromKey || !toKey || fromKey === toKey) return;
+  const fromOrigin = normalizeGitRemoteIdentity(originUrlForBinding(from));
+  if (!fromOrigin || fromOrigin !== normalizeGitRemoteIdentity(originUrlForBinding(to))) return;
+  const fromView = (_projectSurfaceStores.get(fromKey) ?? rootAppStore).getState().workViewByProject[fromKey]
+    ?? readPersistedWorkViewForProject(fromKey).view;
+  if (!fromView?.activeItemId) return;
+  const toStore = _projectSurfaceStores.get(toKey) ?? null;
+  const toView = toStore?.getState().workViewByProject[toKey]
+    ?? readPersistedWorkViewForProject(toKey).view
+    ?? rootAppStore.getState().workViewByProject[toKey]
+    ?? null;
+  const carried: WorkProjectViewState = {
+    ...(toView ?? fromView),
+    openItemIds: fromView.openItemIds,
+    activeItemId: fromView.activeItemId,
+    selectedItemId: fromView.selectedItemId,
+    gridSets: fromView.gridSets,
+    activeGridSetId: fromView.activeGridSetId,
+  };
+  persistWorkViewState({ upsertProjects: { [toKey]: carried } });
+  rootAppStore.setState((prev) => ({ workViewByProject: { ...prev.workViewByProject, [toKey]: carried } }));
+  toStore?.setState((prev) => ({ workViewByProject: { ...prev.workViewByProject, [toKey]: carried } }));
 }
 
 /** The store that owns per-project view state for `projectRootOrKey`. */
