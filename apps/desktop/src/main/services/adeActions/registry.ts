@@ -335,7 +335,7 @@ import {
   hasCloudLaneLaunchRecords,
   type CloudLaneLaunchBrainHost,
 } from "../adeCloud/cloudLaneLaunchBrainHost";
-import { cloudGitPreflight } from "../adeCloud/cloudGitCredential";
+import { accountAppConnection, cloudGitPreflight } from "../adeCloud/cloudGitCredential";
 import { approveSignInLink, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
 import { createCloudMachines } from "../adeCloud/cloudMachines";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
@@ -4488,6 +4488,13 @@ function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnT
       vault: (key) => (runtime.accountVaultStore && runtime.accountAuthService?.getStatus().signedIn === true
         ? cloudVaultFromStore(runtime.accountVaultStore, key)
         : null),
+      // The account's GitHub App sign-in also lets the new computer's git clone.
+      accountApp: () => accountAppConnection({
+        baseUrl: getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }) || null,
+        accessToken: async () => (runtime.accountAuthService?.getStatus().signedIn === true
+          ? await runtime.accountAuthService.getAccessToken().catch(() => null)
+          : null),
+      }),
     }, originUrl),
   });
   return cloudLaneLaunchHost;

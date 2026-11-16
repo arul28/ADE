@@ -1,5 +1,6 @@
 import type { CloudSustainedCpuReport } from "./contract";
 import { workerKeyedHash } from "./freePlan";
+import { alertedSince, sendOwnerAlert } from "./blocks";
 import { logCloud, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 
 /**
@@ -21,7 +22,9 @@ import { logCloud, reportCloudFailure, type CloudEnv, type ComputerRow } from ".
  * under a key derived from `CLOUD_CHAT_MASTER_KEY` is stored (the way
  * `freePlan.ts` keys a computer id), one row per account, and rows go after
  * {@link SIGNUP_IP_KEEP_DAYS} days. The report counts sign-ups per hashed
- * address in any 60-minute window of its day.
+ * address in any 60-minute window of its day, and each new sign-up checks
+ * its own address's last hour so the owner hears of a burst at once
+ * ({@link alertSignupBurst}).
  */
 
 /** Sign-ups from one IP address within an hour at which the daily report raises an alarm. */
@@ -87,11 +90,15 @@ export function signupClientIp(payload: unknown): string | null {
 
 let noKeyLogged = false;
 
-/** Stores the sign-up's hashed address, once per account (never without `CLOUD_CHAT_MASTER_KEY`). Never throws: a failure is reported and the webhook goes on. */
-export async function recordSignupIp(env: Pick<CloudEnv, "DB" | "CLOUD_CHAT_MASTER_KEY">, userId: string, ip: string | null, signedUpAt: number): Promise<void> {
+/**
+ * Stores the sign-up's hashed address, once per account (never without
+ * `CLOUD_CHAT_MASTER_KEY`), and answers the hash, or null when none was
+ * stored. Never throws: a failure is reported and the webhook goes on.
+ */
+export async function recordSignupIp(env: Pick<CloudEnv, "DB" | "CLOUD_CHAT_MASTER_KEY">, userId: string, ip: string | null, signedUpAt: number): Promise<string | null> {
   if (!ip) {
     logCloud("cloud.signup_ip_missing", { userId });
-    return;
+    return null;
   }
   // Without the secret the hash would be keyed with a public constant, which anyone could reverse over IPv4.
   if (!env.CLOUD_CHAT_MASTER_KEY?.trim()) {
@@ -99,14 +106,48 @@ export async function recordSignupIp(env: Pick<CloudEnv, "DB" | "CLOUD_CHAT_MAST
       noKeyLogged = true;
       logCloud("cloud.signup_ip_not_recorded", { note: "CLOUD_CHAT_MASTER_KEY unset: sign-up addresses are not stored" });
     }
-    return;
+    return null;
   }
   try {
     const hash = await workerKeyedHash(env, SIGNUP_IP_KEY_LABEL, ip);
     await env.DB.prepare("insert into cloud_signup_ips (user_id, ip_hash, signed_up_at) values (?, ?, ?) on conflict (user_id) do nothing")
       .bind(userId, hash, signedUpAt).run();
+    return hash;
   } catch (error) {
     reportCloudFailure("cloud.signup_ip_record_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+    return null;
+  }
+}
+
+/**
+ * The owner's sign-up burst alert, at once (README, "ADE Cloud safety"): when
+ * sign-ups from this hashed address in the last 60 minutes reach
+ * {@link SIGNUP_BURST_PER_IP_HOUR}, one email. Alert only: nobody is held.
+ * One burst sends one email: none goes out while an alert for this address
+ * went out in the last hour, and the hour's key stops two webhooks at once
+ * from both sending. Never throws.
+ */
+export async function alertSignupBurst(env: CloudEnv, userId: string, ipHash: string, now: number): Promise<void> {
+  try {
+    const rows = await env.DB.prepare("select user_id from cloud_signup_ips where ip_hash = ? and signed_up_at > ? order by signed_up_at")
+      .bind(ipHash, now - SIGNUP_BURST_WINDOW_MS).all<{ user_id: string }>();
+    const accounts = (rows.results ?? []).map((row) => row.user_id);
+    if (accounts.length < SIGNUP_BURST_PER_IP_HOUR) return;
+    const prefix = `signup_burst:${ipHash}:`;
+    if (await alertedSince(env, prefix, now - SIGNUP_BURST_WINDOW_MS)) return;
+    await sendOwnerAlert(env, {
+      key: `${prefix}${Math.floor(now / SIGNUP_BURST_WINDOW_MS)}`,
+      kind: "signup_burst",
+      userId,
+      subject: `ADE: ${accounts.length} sign-ups from one address in an hour`,
+      reason: `${accounts.length} accounts signed up from one IP address in the last hour (alarm at ${SIGNUP_BURST_PER_IP_HOUR}). Nothing was held. The facts below are about the newest; block any of them with the same command and its id.`,
+      counts: { "Sign-ups in the last hour from this address": accounts.length },
+      more: accounts.slice(-20),
+      step: "signup_burst",
+      abuse: true,
+    }, now);
+  } catch (error) {
+    reportCloudFailure("cloud.signup_burst_alert_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
 }
 

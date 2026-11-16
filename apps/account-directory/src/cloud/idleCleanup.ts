@@ -10,6 +10,7 @@ import {
   type CloudIgnoredFiles,
 } from "./contract";
 import { sendCloudEmail } from "./email";
+import { blockedUsersAmong, isCloudBlocked } from "./blocks";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import { cloudSizeFor, isRestingStatus, tierOf } from "./plans";
 import { pushAllWork, putBackToRest, type WakeRecord } from "./planCleanup";
@@ -511,9 +512,12 @@ export async function runIdleCleanup(env: CloudEnv, provider: CloudProvider, now
     env.DB.prepare("select * from cloud_computers where deleted_at is null and user_id in (select value from json_each(?))").bind(userIds).all<ComputerRow>(),
   ]);
   const ownedBy = groupByUser(owned.results ?? []);
+  const blocked = await blockedUsersAmong(env, byUser.keys());
   let budget = SAVES_PER_TICK;
   const runs: Promise<void>[] = [];
   for (const account of accounts.results ?? []) {
+    // An account the owner blocked is left as it is: a save would wake its stopped computers.
+    if (blocked.has(account.user_id)) continue;
     try {
       const all = ownedBy.get(account.user_id) ?? [];
       const liveUsed = liveUsedMilli(account, all, now);
@@ -558,7 +562,7 @@ async function hasTimedWake(env: CloudEnv, computer: Pick<ComputerRow, "instance
 /** The computer and its account read again, when its save is still due: the tick's read can be a minute old. */
 async function freshDue(env: CloudEnv, instanceId: string, now: number): Promise<Fresh | null> {
   const computer = await env.DB.prepare("select * from cloud_computers where instance_id = ? and deleted_at is null").bind(instanceId).first<ComputerRow>();
-  if (!computer) return null;
+  if (!computer || await isCloudBlocked(env, computer.user_id)) return null;
   const [account, owned, scheduled] = await Promise.all([
     env.DB.prepare("select * from cloud_accounts where user_id = ? and deleted_at is null").bind(computer.user_id).first<AccountRow>(),
     env.DB.prepare("select * from cloud_computers where user_id = ? and deleted_at is null").bind(computer.user_id).all<ComputerRow>(),

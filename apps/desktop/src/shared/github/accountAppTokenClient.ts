@@ -51,8 +51,13 @@ const DEFAULT_HOLD_MARGIN_MS = 30_000;
 /** At most one "rejected" question per token per process in this window. */
 const REJECTED_GUARD_MS = 60_000;
 
-/** How long a negative answer stands before a machine asks again. */
-const RETRY_NOT_CONNECTED_MS = 60 * 60_000;
+/**
+ * How long a negative answer stands before a machine asks again. "Not
+ * connected" is short: a person who connects the App on the web or the
+ * phone expects a cloud computer's next git push to use it, and the ask is
+ * one cheap request made only when git needs a credential.
+ */
+const RETRY_NOT_CONNECTED_MS = 2 * 60_000;
 const RETRY_NEEDS_REAUTH_MS = 60 * 60_000;
 const RETRY_UNSUPPORTED_MS = 6 * 60 * 60_000;
 const RETRY_UNAVAILABLE_MIN_MS = 30_000;

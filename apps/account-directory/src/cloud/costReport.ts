@@ -1,5 +1,7 @@
 import { pruneSignupIps, signupBurstAlarms, sustainedCpuAlarms } from "./abuseSignals";
+import { captureCloudSafety, type CloudSafetyStep, type CloudWaitUntil } from "./analytics";
 import type { ExtraDiskOverLimit } from "./billing";
+import { blockCommand, sendOwnerAlert } from "./blocks";
 import { formatCloudCents, type CloudPlanId } from "./contract";
 import { sendCloudEmail } from "./email";
 import { idleCleanupReportLine } from "./idleCleanup";
@@ -12,14 +14,15 @@ import {
   utcDay,
 } from "./plans";
 import {
+  PAID_RULES_SQL,
   accountDiskSql,
+  accountRules,
   freePlanOverDisk,
   logCloud,
   planDiskGbOf,
   planIdOf,
   readSetting,
   reportCloudFailure,
-  readTimeSetting,
   writeSetting,
   type AccountRow,
   type CloudEnv,
@@ -37,19 +40,26 @@ import {
  * Stripe's fees and taxes are not in them, and a day the provider's meter has
  * not reported yet is corrected by the reconcile a day or two later.
  *
- * The owner's hard limit (`cloud_settings.owner_cost_limit_usd`) is compared
- * with this calendar month's estimated cost. At it, no new computer and no
- * disk growth; wakes of existing computers always work. Unset: nothing is
+ * The owner's cap (`cloud_settings.owner_cost_limit_usd`) limits free use
+ * only: it is compared with this calendar month's estimated cost of accounts
+ * on free-plan rules (each stretch is stamped with the plan it ran on,
+ * `cloud_computer_days.free_cost_micros` and `cloud_disk_days.free`). At it,
+ * free accounts get no new computer and no disk growth; paid accounts are
+ * never refused, and wakes of existing computers always work. The owner is
+ * emailed at 50%, 80% and 100% of it, once each a month. Unset: nothing is
  * enforced.
  *
- * Below the limit, the owner gets one email each time the estimate passes
- * another `OWNER_COST_STEP_USD` in the calendar month (`alertCostStep`).
+ * Separately, the owner gets one email each time the estimate of all use
+ * passes another `OWNER_COST_STEP_USD` in the calendar month (`alertCostStep`).
  */
 
 export const OWNER_LIMIT_KEY = "owner_cost_limit_usd";
 const COST_MTD_KEY = "cost_mtd_micros";
-const OWNER_LIMIT_ALERT_KEY = "owner_limit_alert_at";
-const OWNER_LIMIT_ALERT_REPEAT_MS = 24 * 60 * 60_000;
+/** This month's estimated cost of free use only: what the cap is compared with. */
+const FREE_COST_MTD_KEY = "free_cost_mtd_micros";
+/** Shares of the cap at which the owner is emailed, once each a month. */
+const FREE_CAP_ALERT_PERCENTS = [50, 80, 100] as const;
+const FREE_CAP_TOP_ACCOUNTS = 5;
 /** An owner email each time this month's estimate passes another step of this many dollars. */
 export const OWNER_COST_STEP_USD = 50;
 /** The last step alerted, with its month: `2026-11:150`. */
@@ -80,65 +90,108 @@ function readLimitUsd(value: string | null): number | null {
   return Number.isFinite(limit) && limit > 0 ? limit : null;
 }
 
-/** The owner's limit and this month's estimated cost; one read. */
-export async function ownerLimitState(env: CloudEnv): Promise<{ limitUsd: number | null; costMtdMicros: number; reached: boolean }> {
-  const rows = await env.DB.prepare("select key, value from cloud_settings where key in (?, ?)")
-    .bind(OWNER_LIMIT_KEY, COST_MTD_KEY).all<{ key: string; value: string }>();
+/** The owner's cap, this month's estimated cost (all, and free use only), and whether free use reached the cap; one read. */
+export async function ownerLimitState(env: CloudEnv): Promise<{ limitUsd: number | null; costMtdMicros: number; freeCostMtdMicros: number; reached: boolean }> {
+  const rows = await env.DB.prepare("select key, value from cloud_settings where key in (?, ?, ?)")
+    .bind(OWNER_LIMIT_KEY, COST_MTD_KEY, FREE_COST_MTD_KEY).all<{ key: string; value: string }>();
   const values = new Map((rows.results ?? []).map((row) => [row.key, row.value]));
   const limitUsd = readLimitUsd(values.get(OWNER_LIMIT_KEY) ?? null);
   const costMtdMicros = Number(values.get(COST_MTD_KEY) ?? 0) || 0;
-  return { limitUsd, costMtdMicros, reached: limitUsd != null && costMtdMicros >= limitUsd * 1_000_000 };
+  const freeCostMtdMicros = Number(values.get(FREE_COST_MTD_KEY) ?? 0) || 0;
+  return { limitUsd, costMtdMicros, freeCostMtdMicros, reached: limitUsd != null && freeCostMtdMicros >= limitUsd * 1_000_000 };
 }
 
 /**
- * This month's estimated cost so far, kept in `cloud_settings` for the limit
- * check: the settled computer-days, the disk-days, and the stretches running
- * now. D1 only, from the ten-minute owner check. Emails the owner once a day
- * while the limit is reached.
+ * Whether the cap refuses this account a new computer or a disk grow: only an
+ * account on free-plan rules, only once this month's free use reached the cap.
+ * A paid account is never refused (and costs no read).
+ */
+export async function freeCapRefuses(env: CloudEnv, account: Pick<AccountRow, "user_id" | "plan" | "stripe_status">, now: number, waitUntil?: CloudWaitUntil): Promise<boolean> {
+  if (accountRules(account) !== "free") return false;
+  const state = await ownerLimitState(env);
+  if (!state.reached) return false;
+  logCloud("cloud.free_cap_refused", { userId: account.user_id, limitUsd: state.limitUsd, freeCostMtdMicros: state.freeCostMtdMicros });
+  captureCloudSafety(env, waitUntil, account.user_id, "free_cap_refused", "free_cap", now);
+  return true;
+}
+
+/**
+ * This month's estimated cost so far, all and free use only, kept in
+ * `cloud_settings` for the cap check: the settled computer-days, the
+ * disk-days, and the stretches running now. D1 only, from the ten-minute
+ * owner check. Emails the owner as free use passes 50%, 80% and 100% of the cap.
  */
 export async function refreshCostEstimate(env: CloudEnv, awake: ComputerRow[], now: number): Promise<void> {
   const monthStart = monthStartDay(now);
   const monthStartMs = Date.parse(`${monthStart}T00:00:00Z`);
   const row = await env.DB.prepare(`
     select (select coalesce(sum(cost_micros), 0) from cloud_computer_days where day >= ?) as compute,
-      (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day >= ?) as gb_days
-  `).bind(monthStart, monthStart).first<{ compute: number; gb_days: number }>();
+      (select coalesce(sum(free_cost_micros), 0) from cloud_computer_days where day >= ?) as free_compute,
+      (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day >= ?) as gb_days,
+      (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day >= ? and free = 1) as free_gb_days
+  `).bind(monthStart, monthStart, monthStart, monthStart).first<{ compute: number; free_compute: number; gb_days: number; free_gb_days: number }>();
   let micros = (row?.compute ?? 0) + (row?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
-  for (const computer of awake) {
-    if (computer.awake_since == null || computer.awake_since > now) continue;
-    micros += computeCostMicrosFor(now - Math.max(computer.awake_since, monthStartMs), { type: computer.type, cpu: computer.cpu, memoryGb: computer.memory_gb });
+  let freeMicros = (row?.free_compute ?? 0) + (row?.free_gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
+  // The stretches running now count as free unless their account is on paid rules now.
+  const running = awake.filter((computer) => computer.awake_since != null && computer.awake_since <= now);
+  const paid = running.length
+    ? new Set(((await env.DB.prepare(`select user_id from cloud_accounts where user_id in (select value from json_each(?)) and ${PAID_RULES_SQL}`)
+      .bind(JSON.stringify([...new Set(running.map((computer) => computer.user_id))])).all<{ user_id: string }>()).results ?? []).map((entry) => entry.user_id))
+    : new Set<string>();
+  for (const computer of running) {
+    const cost = computeCostMicrosFor(now - Math.max(computer.awake_since!, monthStartMs), { type: computer.type, cpu: computer.cpu, memoryGb: computer.memory_gb });
+    micros += cost;
+    if (!paid.has(computer.user_id)) freeMicros += cost;
   }
   await writeSetting(env, COST_MTD_KEY, String(Math.round(micros)), now);
+  await writeSetting(env, FREE_COST_MTD_KEY, String(Math.round(freeMicros)), now);
 
   const limitUsd = readLimitUsd(await readSetting(env, OWNER_LIMIT_KEY));
   await alertCostStep(env, micros, limitUsd, now);
-  if (limitUsd == null || micros < limitUsd * 1_000_000) return;
-  const lastAlert = await readTimeSetting(env, OWNER_LIMIT_ALERT_KEY);
-  logCloud("cloud.owner_limit_reached", { limitUsd, costMtdMicros: Math.round(micros) });
-  if (now - lastAlert < OWNER_LIMIT_ALERT_REPEAT_MS) return;
-  await writeSetting(env, OWNER_LIMIT_ALERT_KEY, String(now), now);
-  const result = await sendCloudEmail(env, {
-    owner: true,
-    subject: "ADE Cloud reached your cost limit",
-    text: `This month's estimated cost is ${usd(micros)}, at your limit of $${limitUsd}. New computers and disk growth are refused until you raise it. Wakes still work.\nRaise it: update cloud_settings set value = '<dollars>' where key = '${OWNER_LIMIT_KEY}'.`,
-  });
-  // A send that failed is tried again at the next check, not a day later.
-  if (result === "failed") {
-    await env.DB.prepare("update cloud_settings set value = ? where key = ? and value = ?")
-      .bind(String(lastAlert), OWNER_LIMIT_ALERT_KEY, String(now)).run();
+  if (limitUsd == null) return;
+  const percent = (freeMicros / (limitUsd * 1_000_000)) * 100;
+  const reached = FREE_CAP_ALERT_PERCENTS.filter((step) => percent >= step);
+  if (reached.length === 0) return;
+  logCloud("cloud.free_cap_step", { limitUsd, freeCostMtdMicros: Math.round(freeMicros), percent: Math.round(percent) });
+  const month = monthStart.slice(0, 7);
+  // The free accounts that cost the most this month, each with its block command. Best effort.
+  const top = await env.DB.prepare(`
+    select user_id, sum(cost) as cost from (
+      select user_id, free_cost_micros as cost from cloud_computer_days where day >= ? and free_cost_micros > 0
+      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ? and free = 1
+    ) group by user_id order by cost desc limit ?
+  `).bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, FREE_CAP_TOP_ACCOUNTS).all<{ user_id: string; cost: number }>()
+    .catch((error: unknown) => {
+      reportCloudFailure("cloud.free_cap_top_accounts_failed", { message: error instanceof Error ? error.name : "unknown" });
+      return { results: [] as Array<{ user_id: string; cost: number }> };
+    });
+  const topLines = (top.results ?? []).flatMap((entry) => [`${entry.user_id}: ${usd(entry.cost)}`, `  Block it: ${blockCommand(env, entry.user_id, "free_cap")}`]);
+  for (const step of reached) {
+    await sendOwnerAlert(env, {
+      key: `free_cap:${month}:${step}`,
+      kind: "free_cap",
+      userId: null,
+      subject: step >= 100 ? `ADE Cloud free use reached your $${limitUsd} cap` : `ADE Cloud free use passed ${step}% of your cap`,
+      reason: step >= 100
+        ? `Free use this month is ${usd(freeMicros)}, at your cap of $${limitUsd}. Free accounts get no new computers or disk growth until next month or until you raise it. Paid accounts and wakes are not affected.`
+        : `Free use this month is ${usd(freeMicros)}, ${Math.round(percent)}% of your $${limitUsd} cap. At the cap, free accounts get no new computers or disk growth; paid accounts never are refused.`,
+      counts: { "Free use this month": usd(freeMicros), "All use this month": usd(micros), Cap: `$${limitUsd}`, "Raise it": `update cloud_settings set value = '<dollars>' where key = '${OWNER_LIMIT_KEY}'` },
+      more: topLines.length ? ["Free accounts that cost the most this month:", ...topLines] : undefined,
+      step: `free_cap_${step}` as CloudSafetyStep,
+    }, now);
   }
 }
 
 /**
  * One owner email when this month's estimate passes a step of
  * `OWNER_COST_STEP_USD` higher than the last one alerted this month (a jump
- * over several sends one, for the highest). At or over the limit, the limit's
- * own alert speaks instead. The check that moves the stored step from what it
- * read sends; an overlapping check finds it moved and sends nothing. A send
- * that fails gives the step back, so the next check (ten minutes on) tries again.
+ * over several sends one, for the highest). It counts all use: the cap counts
+ * free use only and has its own alerts, so passing the cap in all use stops
+ * nothing here. The check that moves the stored step from what it read sends;
+ * an overlapping check finds it moved and sends nothing. A send that fails
+ * gives the step back, so the next check (ten minutes on) tries again.
  */
 async function alertCostStep(env: CloudEnv, micros: number, limitUsd: number | null, now: number): Promise<void> {
-  if (limitUsd != null && micros >= limitUsd * 1_000_000) return;
   const step = Math.floor(micros / (OWNER_COST_STEP_USD * 1_000_000)) * OWNER_COST_STEP_USD;
   if (step < OWNER_COST_STEP_USD) return;
   const month = monthStartDay(now).slice(0, 7);
@@ -166,8 +219,8 @@ async function alertCostStep(env: CloudEnv, micros: number, limitUsd: number | n
       return { results: [] as Array<{ user_id: string; cost: number }> };
     });
   const limitLine = limitUsd == null
-    ? "No cost limit is set."
-    : `Your limit is $${limitUsd}, ${usd(limitUsd * 1_000_000 - micros)} away.`;
+    ? "No free-use cap is set."
+    : `Your free-use cap is $${limitUsd}; it counts free use only and has its own alerts.`;
   const topLines = (top.results ?? []).map((row) => `${row.user_id}: ${usd(row.cost)}`);
   const result = await sendCloudEmail(env, {
     owner: true,
@@ -184,6 +237,37 @@ async function alertCostStep(env: CloudEnv, micros: number, limitUsd: number | n
     ? env.DB.prepare("delete from cloud_settings where key = ? and value = ?").bind(OWNER_COST_STEP_KEY, claimed)
     : env.DB.prepare("update cloud_settings set value = ? where key = ? and value = ?").bind(stored, OWNER_COST_STEP_KEY, claimed);
   await giveBack.run();
+}
+
+/**
+ * The daily report's safety lines for `day`: new sign-ups, cloud hours used,
+ * blocks, abuse events and owner alerts sent. `active` when anything
+ * happened, so a quiet day with sign-ups still sends the report.
+ */
+async function safetyReportLines(env: CloudEnv, day: string, dayStart: number): Promise<{ lines: string[]; active: boolean }> {
+  const dayEnd = dayStart + 86_400_000;
+  const row = await env.DB.prepare(`
+    select
+      (select count(*) from cloud_signup_ips where signed_up_at >= ? and signed_up_at < ?) as signups,
+      (select coalesce(sum(metered_milli), 0) from cloud_computer_days where day = ?) as metered_milli,
+      (select count(distinct user_id) from cloud_computer_days where day = ? and metered_milli > 0) as active_accounts,
+      (select count(*) from cloud_blocks where created_at >= ? and created_at < ?) as blocks_today,
+      (select count(distinct user_id) from cloud_blocks where user_id is not null) as blocked_accounts,
+      (select count(*) from cloud_abuse_events where created_at >= ? and created_at < ?) as abuse_events,
+      (select count(*) from cloud_owner_alerts where sent_at >= ? and sent_at < ?) as alerts_sent
+  `).bind(dayStart, dayEnd, day, day, dayStart, dayEnd, dayStart, dayEnd, dayStart, dayEnd).first<{
+    signups: number; metered_milli: number; active_accounts: number; blocks_today: number; blocked_accounts: number; abuse_events: number; alerts_sent: number;
+  }>();
+  if (!row) return { lines: [], active: false };
+  const hours = Math.round(row.metered_milli / 100) / 10;
+  return {
+    lines: [
+      `Sign-ups: ${row.signups} (counted from sign-ups with a recorded address).`,
+      `Cloud hours used: ${hours} across ${row.active_accounts} account${row.active_accounts === 1 ? "" : "s"}.`,
+      `Blocks: ${row.blocks_today} new, ${row.blocked_accounts} account${row.blocked_accounts === 1 ? "" : "s"} blocked in all. Abuse events: ${row.abuse_events}. Owner alerts sent: ${row.alerts_sent}.`,
+    ],
+    active: row.signups > 0 || row.blocks_today > 0 || row.abuse_events > 0 || row.alerts_sent > 0,
+  };
 }
 
 type DayAccount = {
@@ -318,18 +402,25 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
     reportCloudFailure("cloud.idle_cleanup_report_failed", { message: error instanceof Error ? error.message : "unknown" });
     return null;
   });
+  // The safety lines (README, "ADE Cloud safety"): best effort, a failed read never costs the report.
+  const safety = await safetyReportLines(env, day, dayStart).catch((error: unknown) => {
+    reportCloudFailure("cloud.safety_report_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return { lines: [] as string[], active: false };
+  });
   logCloud("cloud.daily_cost_report", { day, accounts: rows.length, dayCostMicros: dayCost, dayIncomeMicros: dayIncome, alarms: alarms.length });
-  if (rows.length === 0 && alarms.length === 0) return;
+  if (rows.length === 0 && alarms.length === 0 && !safety.active) return;
 
   const worst = [...rows].sort((a, b) => (b.costMicros - b.incomeMicros) - (a.costMicros - a.incomeMicros)).slice(0, WORST_ACCOUNTS);
   const margin = (cost: number, income: number) => income > 0 ? `${Math.round(((income - cost) / income) * 100)}%` : "none";
   const lines = [
     `${day}: cost ${usd(dayCost)}, income ${usd(dayIncome)}, margin ${margin(dayCost, dayIncome)}, ${rows.length} accounts.`,
     `This month so far: cost ${usd(monthCost)}, income ${usd(monthIncome)}, margin ${margin(monthCost, monthIncome)}.`,
+    `Estimated cost this month: ${usd(owner.costMtdMicros)}, of which free use ${usd(owner.freeCostMtdMicros)} and paid use ${usd(Math.max(0, owner.costMtdMicros - owner.freeCostMtdMicros))}.`,
     owner.limitUsd == null
-      ? `Cost limit: not set, so nothing is refused. Estimated cost this month: ${usd(owner.costMtdMicros)}.`
-      : `Cost limit: $${owner.limitUsd}. Estimated cost this month: ${usd(owner.costMtdMicros)}${owner.reached ? " (reached: new computers and disk growth are refused)" : ""}.`,
+      ? "Free-use cap: not set, so nothing is refused."
+      : `Free-use cap: $${owner.limitUsd}, ${Math.round((owner.freeCostMtdMicros / (owner.limitUsd * 1_000_000)) * 100)}% used${owner.reached ? " (reached: free accounts get no new computers or disk growth; paid accounts are not affected)" : ""}.`,
     ...(idleLine ? [idleLine] : []),
+    ...safety.lines,
     "",
     alarms.length ? "Alarms:" : "No alarms.",
     ...alarms,

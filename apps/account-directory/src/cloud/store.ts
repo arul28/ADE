@@ -32,6 +32,10 @@ import { keepLaneStatement, laneFactsOf } from "./lanesWithoutComputer";
 export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   DB: D1Database;
   AGENT37_API_KEY?: string;
+  /** `1`: ADE Cloud makes no new computers or launches (the owner's kill switch); existing computers keep working. */
+  CLOUD_CREATES_PAUSED?: string;
+  /** Secret. The bearer of the owner's block and unblock routes (`safety.ts`). Unset: those routes answer 503. */
+  CLOUD_OWNER_TOKEN?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   STRIPE_PLAN_PRICE_ID?: string;
@@ -268,6 +272,24 @@ export function reportCloudFailure(event: string, meta: Record<string, unknown> 
   Sentry.captureMessage(event, { level: "warning", fingerprint: [event], tags: { area } });
 }
 
+/**
+ * Abuse the owner should see: logged, sent to Sentry at error level every
+ * time (no hourly throttle: each one is its own event), and saved as a
+ * `cloud_abuse_events` row for the account. `detail` holds counts and closed
+ * codes, never a secret. Never throws: a failed write is reported and the caller goes on.
+ */
+export async function reportCloudAbuse(env: CloudDb, kind: string, userId: string | null, detail: Record<string, unknown> = {}, now = Date.now()): Promise<void> {
+  logCloud(`cloud.abuse.${kind}`, { userId, ...detail });
+  // Only the kind: the account id stays in the log line and the row.
+  Sentry.captureMessage(`cloud.abuse.${kind}`, { level: "error", fingerprint: ["cloud.abuse", kind], tags: { area: "cloud-abuse" } });
+  try {
+    await env.DB.prepare("insert into cloud_abuse_events (user_id, kind, detail_json, created_at) values (?, ?, ?, ?)")
+      .bind(userId, kind, JSON.stringify(detail), now).run();
+  } catch (error) {
+    reportCloudFailure("cloud.abuse_event_write_failed", { kind, message: error instanceof Error ? error.message : "unknown" });
+  }
+}
+
 /** A reservation with no computer behind it after this long is given up on. */
 export const PENDING_TIMEOUT_MS = 15 * 60_000;
 /**
@@ -335,16 +357,18 @@ export function settleStatements(env: CloudDb, computer: ComputerRow, upTo: numb
     chargedMilli += milli;
     // What the provider charges for this stretch, for the owner's daily report.
     const costMicros = computeCostMicrosFor(ms, shape);
+    // The stretch is stamped with the account's plan as it is now: run on free-plan rules, its cost also counts as free use (the owner's cap).
     statements.push(env.DB.prepare(`
-      insert into cloud_computer_days (instance_id, day, user_id, metered_ms, metered_milli, multiplier_milli, cost_micros)
-      select ?, ?, ?, ?, ?, ?, ?
+      insert into cloud_computer_days (instance_id, day, user_id, metered_ms, metered_milli, multiplier_milli, cost_micros, free_cost_micros)
+      select ?, ?, ?, ?, ?, ?, ?, case when exists (select 1 from cloud_accounts where user_id = ? and ${PAID_RULES_SQL}) then 0 else ? end
       where ${guard ? guard.sql : "1"}
       on conflict (instance_id, day) do update set
         metered_ms = metered_ms + excluded.metered_ms,
         metered_milli = metered_milli + excluded.metered_milli,
         multiplier_milli = excluded.multiplier_milli,
-        cost_micros = cost_micros + excluded.cost_micros
-    `).bind(computer.instance_id, day, computer.user_id, ms, milli, computer.multiplier_milli, costMicros, ...(guard?.binds ?? [])));
+        cost_micros = cost_micros + excluded.cost_micros,
+        free_cost_micros = free_cost_micros + excluded.free_cost_micros
+    `).bind(computer.instance_id, day, computer.user_id, ms, milli, computer.multiplier_milli, costMicros, computer.user_id, costMicros, ...(guard?.binds ?? [])));
   }
   if (chargedMilli > 0) {
     statements.push(env.DB.prepare(`update cloud_accounts set used_milli = used_milli + ?, updated_at = ? where user_id = ?${guard ? ` and ${guard.sql}` : ""}`)
@@ -704,13 +728,14 @@ export type DiskDayAccount = Pick<AccountRow, "user_id" | "plan" | "paid_plan" |
  */
 export function diskDayStatement(env: CloudDb, account: DiskDayAccount, now: number): D1PreparedStatement {
   return env.DB.prepare(`
-    insert into cloud_disk_days (user_id, day, peak_gb, plan_gb, billable)
-    values (?, ?, ${accountDiskSql("?", { billable: true })}, ?, ?)
+    insert into cloud_disk_days (user_id, day, peak_gb, plan_gb, billable, free)
+    values (?, ?, ${accountDiskSql("?", { billable: true })}, ?, ?, ?)
     on conflict (user_id, day) do update set
       peak_gb = max(peak_gb, excluded.peak_gb),
       plan_gb = max(plan_gb, excluded.plan_gb),
-      billable = min(billable, excluded.billable)
-  `).bind(account.user_id, utcDay(now), account.user_id, planDiskGbOf(account, boughtPlanIdOf(account)), diskDayBillable(account) ? 1 : 0);
+      billable = min(billable, excluded.billable),
+      free = max(free, excluded.free)
+  `).bind(account.user_id, utcDay(now), account.user_id, planDiskGbOf(account, boughtPlanIdOf(account)), diskDayBillable(account) ? 1 : 0, accountRules(account) === "free" ? 1 : 0);
 }
 
 /** This period's billable extra disk so far, in micros: the days already billed plus the ones not yet reported. */

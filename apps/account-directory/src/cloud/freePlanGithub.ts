@@ -8,6 +8,7 @@ import {
   type CloudFreePlanGithubState,
 } from "./contract";
 import { CLOUD_PLANS, FREE_INCLUDED_MILLI } from "./plans";
+import { sendOwnerAlert } from "./blocks";
 import { PAID_RULES_SQL, accountRules, isProduction, logCloud, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
 
 /**
@@ -49,6 +50,8 @@ import { PAID_RULES_SQL, accountRules, isProduction, logCloud, reportCloudFailur
  *   (the primary key); the loser is held as `github_used`.
  * - A card removed, or a dispute, after an unlock changes nothing: the unlock
  *   stays (the GitHub claim still limits it to one free plan).
+ * - A GitHub account the owner blocked (`cloud_blocks`) gets no free plan on
+ *   any ADE account: held as `github_used`, and the owner is alerted once.
  * - Without the GitHub App configured (development, tests) nobody can connect
  *   GitHub, so the rules are off. In production that is reported and the
  *   rules fail closed: a hold stays, and a new free account waits as
@@ -88,6 +91,8 @@ type Facts = {
   github_created_at: number | null;
   next_check_at: number | null;
   failures: number | null;
+  /** 1 when the owner blocked this GitHub account (`cloud_blocks`). */
+  github_blocked: number | null;
 };
 
 async function readFacts(env: CloudEnv, userId: string): Promise<Facts> {
@@ -96,12 +101,13 @@ async function readFacts(env: CloudEnv, userId: string): Promise<Facts> {
       (select github_user_id from cloud_free_github_claims where user_id = ?) as own,
       g.github_user_id, g.github_login, g.state as grant_state,
       (select user_id from cloud_free_github_claims where github_user_id = g.github_user_id) as holder,
-      a.github_created_at, a.next_check_at, a.failures
+      a.github_created_at, a.next_check_at, a.failures,
+      (select 1 from cloud_blocks b where b.github_user_id = g.github_user_id limit 1) as github_blocked
     from (select 1) one
     left join github_app_grants g on g.user_id = ?
     left join github_account_ages a on a.github_user_id = g.github_user_id
   `).bind(userId, userId).first<Facts>();
-  return row ?? { own: null, github_user_id: null, github_login: null, grant_state: null, holder: null, github_created_at: null, next_check_at: null, failures: null };
+  return row ?? { own: null, github_user_id: null, github_login: null, grant_state: null, holder: null, github_created_at: null, next_check_at: null, failures: null, github_blocked: null };
 }
 
 let notConfiguredReported = false;
@@ -270,6 +276,22 @@ async function settle(env: CloudEnv, account: AccountRow, ctx: Ctx): Promise<voi
   // In production without a working GitHub App, nothing is granted or released.
   if (rules === "broken") return holdUnsettled(env, account, ctx);
   const facts = await readFacts(env, account.user_id);
+  // A GitHub account the owner blocked gets no free plan on any ADE account. The hold reads like a used
+  // GitHub account (the person isn't told about the block); the owner is alerted once per account.
+  if (facts.github_blocked === 1 && facts.github_user_id != null) {
+    await applyHold(env, account, "github_used", ctx);
+    await sendOwnerAlert(env, {
+      key: `blocked_github:${account.user_id}:${facts.github_user_id}`,
+      kind: "blocked_github_returned",
+      userId: account.user_id,
+      subject: "ADE Cloud: a blocked GitHub account came back",
+      reason: `A GitHub account on the block list is connected to ADE account ${account.user_id}. Its free plan was refused. Paid plans still work unless you block the account.`,
+      counts: { "GitHub id": facts.github_user_id },
+      step: "blocked_returned",
+      abuse: true,
+    }, ctx.now, ctx.waitUntil);
+    return;
+  }
   if (facts.own != null) return applyHold(env, account, null, ctx);
   if (account.free_github_exempt === 1) {
     // Grandfathered: keeps its hours, and claims its GitHub account when free, so it can't feed a new free plan.

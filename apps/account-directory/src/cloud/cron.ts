@@ -8,9 +8,11 @@ import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { AWAKE_COMPUTER_CAP, cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
 import { runPlanLimitChecks } from "./planCleanup";
+import { enforceBlocksInTick } from "./safety";
 import { computersJoiningLaunches } from "./launches";
 import { runCloudAutoUpdates, updateBootStatements } from "./updates";
 import {
+  PAID_RULES_SQL,
   PENDING_TIMEOUT_MS,
   adoptionStatements,
   countedDiskGb,
@@ -160,6 +162,12 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   if (statements.length) await env.DB.batch(statements);
 
   await confirmGone(env, provider, gone, live, now);
+  // The owner's block list: a computer of a blocked account that isn't stopped (one a launch finished after the block) is stopped now.
+  try {
+    await enforceBlocksInTick(env, provider, live, now);
+  } catch (error) {
+    reportCloudFailure("cloud.block_tick_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
   const blockedUsers = await settleAccounts(env, provider, live, now);
   // Rollbacks for updates that never reported in, then a few asleep computers onto their channel's image.
   try {
@@ -639,12 +647,15 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
           where user_id = ? and not exists (select 1 from cloud_computer_days where instance_id = ? and day = ? and reconciled_at is not null)
         `).bind(delta, now, row.user_id, entry.id, day));
       }
+      // The free share of the day's cost follows the correction in proportion; a day with no metered cost takes the plan the account is on now.
       statements.push(env.DB.prepare(`
-        insert into cloud_computer_days (instance_id, day, user_id, multiplier_milli, provider_minutes, corrected_milli, reconciled_at, cost_micros)
-        values (?, ?, ?, ?, ?, ?, ?, ?)
+        insert into cloud_computer_days (instance_id, day, user_id, multiplier_milli, provider_minutes, corrected_milli, reconciled_at, cost_micros, free_cost_micros)
+        select ?, ?, ?, ?, ?, ?, ?, ?, case when exists (select 1 from cloud_accounts where user_id = ? and ${PAID_RULES_SQL}) then 0 else ? end
+        where 1
         on conflict (instance_id, day) do update set provider_minutes = excluded.provider_minutes,
-          corrected_milli = excluded.corrected_milli, reconciled_at = excluded.reconciled_at, cost_micros = excluded.cost_micros
-      `).bind(entry.id, day, row.user_id, multiplier, entry.awakeMinutes, inPeriod ? delta : 0, now, providerCost));
+          corrected_milli = excluded.corrected_milli, reconciled_at = excluded.reconciled_at, cost_micros = excluded.cost_micros,
+          free_cost_micros = case when cost_micros > 0 then cast(round(free_cost_micros * 1.0 * excluded.cost_micros / cost_micros) as integer) else excluded.free_cost_micros end
+      `).bind(entry.id, day, row.user_id, multiplier, entry.awakeMinutes, inPeriod ? delta : 0, now, providerCost, row.user_id, providerCost));
       const minutes = entry.awakeMinutes - Math.ceil((meteredMs + freeMs) / 60_000);
       if (minutes > UNEXPLAINED_MINUTES) unexplained.push({ instanceId: entry.id, day, minutes });
     }

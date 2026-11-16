@@ -1,4 +1,5 @@
 import { trustedHttpsOrigin } from "../trustedOrigin";
+import { githubAppRuntime, serveToken, type GithubAppEnv } from "../githubApp/grants";
 import { sendCloudEmail } from "./email";
 import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
 
@@ -46,7 +47,8 @@ export type VaultFacts = {
 
 const UNKNOWN: VaultFacts = { git: "unknown", limits: null };
 
-function relayFetch(env: RelayEnv): { base: string; fetch: typeof fetch } | null {
+/** The push relay through the service binding, or null when it isn't set up. The vault proxy (`accountSignIns.ts`) uses it too. */
+export function relayFetch(env: RelayEnv): { base: string; fetch: typeof fetch } | null {
   const base = trustedHttpsOrigin(env.PUSH_RELAY_URL);
   const relay = env.ACTIVITY_RELAY;
   return base && relay ? { base, fetch: relay.fetch.bind(relay) } : null;
@@ -153,19 +155,76 @@ export function connectGitHubSentence(origin: string): string {
   return `${name} isn't public on GitHub, and your ADE account has no GitHub sign-in a cloud computer can clone it with. Connect GitHub in Settings › GitHub so your sign-in follows your ADE account, then send again.`;
 }
 
+/** Where a person installs the ADE GitHub App on an owner (`ADE_GITHUB_APP_INSTALL_URL` in the desktop). */
+export const GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
+
+/** The plain sentence a launch refused for a missing App installation gives. */
+export function giveAdeAccessSentence(origin: string): string {
+  const [, owner = "", repo = ""] = origin.split("/");
+  return `Give ADE access to ${owner}: install the ADE GitHub App on ${owner} with ${repo} selected, then send again.`;
+}
+
+export type ServerGitCheck = { ok: true } | { ok: false; code: "git_credential_missing" | "github_app_not_installed"; message: string; installUrl?: string };
+
 /**
- * C4 on the server: can a new computer clone this repository? Refused only on
- * a clear no (no credential follows the account and GitHub says the repository
- * isn't public). Anything unknown goes on, with a log line.
+ * Whether the account's ADE GitHub App sign-in reaches this repository: one
+ * read of `GET /repos/{owner}/{repo}` with the App's user token. A user
+ * token sees a private repository only where the App is installed with it,
+ * so 200 is yes and 404 is "not installed there". A public repository
+ * answers 200 either way; it clones without the App. Never throws.
  */
-export async function serverGitCheck(env: RelayEnv, authorization: string | null, origin: string): Promise<{ ok: true } | { ok: false; message: string }> {
+async function githubAppRepoAccess(env: GithubAppEnv, userId: string, origin: string): Promise<"ok" | "not_installed" | "not_connected" | "unknown"> {
+  const [, owner, repo] = origin.split("/");
+  if (!owner || !repo) return "unknown";
+  try {
+    const rt = await githubAppRuntime(env);
+    if (!rt) return "unknown";
+    const outcome = await serveToken(rt, userId, { rejectedSha256: null });
+    if (outcome.kind === "not_connected" || outcome.kind === "needs_reauth") return "not_connected";
+    if (outcome.kind !== "token") return "unknown";
+    const response = await fetch(`${rt.config.apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
+      headers: { accept: "application/vnd.github+json", authorization: `Bearer ${outcome.token.accessToken}`, "user-agent": "ADE" },
+      signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+    });
+    await response.body?.cancel().catch(() => {});
+    if (response.ok) return "ok";
+    if (response.status === 404) return "not_installed";
+    return "unknown";
+  } catch (error) {
+    logCloud("cloud.git_check_app_failed", { error: error instanceof Error ? error.name : "unknown" });
+    return "unknown";
+  }
+}
+
+/**
+ * C4 on the server: can a new computer clone this repository? The account's
+ * git credentials first (a pasted token or a `gh` login in the vault), then
+ * the ADE GitHub App sign-in, which the computer's git also uses. Refused
+ * only on a clear no: the App is connected but not installed where it can
+ * see a private repository ("Give ADE access to <owner>"), or nothing follows
+ * the account and GitHub says the repository isn't public. Anything unknown
+ * goes on, with a log line.
+ */
+export async function serverGitCheck(env: RelayEnv, authorization: string | null, origin: string, userId?: string): Promise<ServerGitCheck> {
   const facts = await readVaultFacts(env, authorization);
-  if (facts.git !== "none") {
-    if (facts.git === "unknown") logCloud("cloud.git_check_unknown", { reason: "vault" });
+  if (facts.git === "ok") return { ok: true };
+  const app = userId ? await githubAppRepoAccess(env as RelayEnv & GithubAppEnv, userId, origin) : "unknown";
+  if (app === "ok") return { ok: true };
+  if (app === "not_installed") {
+    const visibility = await githubRepoVisibility(origin);
+    if (visibility !== "public") {
+      return { ok: false, code: "github_app_not_installed", message: giveAdeAccessSentence(origin), installUrl: GITHUB_APP_INSTALL_URL };
+    }
+    // A public repository clones without the App; only a push would need it.
+    logCloud("cloud.git_check_app_not_installed_public", {});
+    return { ok: true };
+  }
+  if (facts.git === "unknown") {
+    logCloud("cloud.git_check_unknown", { reason: "vault" });
     return { ok: true };
   }
   const visibility = await githubRepoVisibility(origin);
-  if (visibility === "private") return { ok: false, message: connectGitHubSentence(origin) };
+  if (visibility === "private") return { ok: false, code: "git_credential_missing", message: connectGitHubSentence(origin) };
   if (visibility === "unknown") logCloud("cloud.git_check_unknown", { reason: "github" });
   return { ok: true };
 }

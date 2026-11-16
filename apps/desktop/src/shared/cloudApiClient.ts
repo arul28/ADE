@@ -24,6 +24,9 @@ import {
   type CloudInstance,
   type CloudLaunchJoinRequest,
   type CloudLaunchJoinResult,
+  type CloudLaunchList,
+  type CloudLaunchMessage,
+  type CloudLaunchMessageReport,
   type CloudLaunchRecord,
   type CloudLaunchStagesUpdate,
   type CloudProjectComputersDeleteStarted,
@@ -138,6 +141,13 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** 201 for a new launch; the same `launchId` again answers the same launch. */
     startLaunch: (launch: CloudServerLaunchRequest) => request<CloudLaunchRecord>("POST", CLOUD_PATHS.launches, { body: launch, timeoutMs: timeoutMs * 4 }),
     launchStatus: (launchId: string) => request<CloudLaunchRecord>("GET", launchPath(launchId)),
+    /** The caller's launches still in progress (and failures of the last day). */
+    activeLaunches: () => request<CloudLaunchList>("GET", `${CLOUD_PATHS.launches}?active=1`),
+    /** The launch's messages, in order (row 1 is the first message). */
+    launchMessages: (launchId: string) => request<{ messages: CloudLaunchMessage[] }>("GET", `${launchPath(launchId)}/messages`),
+    /** A message for a chat launch whose chat doesn't exist yet; the same `messageId` is the same message. */
+    addLaunchMessage: (launchId: string, message: { messageId: string; text: string }) =>
+      request<CloudLaunchMessage>("POST", `${launchPath(launchId)}/messages`, { body: message }),
     /** Before the agent starts it deletes the computer; after, the server refuses with `launch_started`. */
     cancelLaunch: (launchId: string) => request<CloudLaunchRecord>("DELETE", launchPath(launchId)),
 
@@ -195,6 +205,12 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       }),
     reportLaunchStages: (launchId: string, update: CloudLaunchStagesUpdate) =>
       request<CloudLaunchRecord>("PUT", `${launchPath(launchId)}/stages`, { body: update }),
+    /** From the computer: takes one queued message to send it (409 `message_taken` once another claim has it). */
+    claimLaunchMessage: (launchId: string, messageId: string, claimId: string) =>
+      request<CloudLaunchMessage>("POST", `${launchPath(launchId)}/messages/${encodeURIComponent(messageId)}/claim`, { body: { claimId } }),
+    /** From the computer that claimed it: sent, or not. */
+    reportLaunchMessage: (launchId: string, messageId: string, report: CloudLaunchMessageReport) =>
+      request<CloudLaunchMessage>("PUT", `${launchPath(launchId)}/messages/${encodeURIComponent(messageId)}`, { body: report }),
     readLaunchFile: async (launchId: string, fileId: string): Promise<ArrayBuffer> => {
       const response = await request<Response>("GET", `${launchPath(launchId)}/files/${encodeURIComponent(fileId)}`, { rawResponse: true, timeoutMs: timeoutMs * 4 });
       return await response.arrayBuffer();

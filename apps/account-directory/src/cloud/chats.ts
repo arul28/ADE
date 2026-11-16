@@ -12,6 +12,7 @@ import {
 } from "./contract";
 import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
 import { rewardAfterCloudChat } from "./referrals";
+import { captureCloudSafety } from "./analytics";
 import { logCloud, ownedComputer, type CloudEnv } from "./store";
 
 /**
@@ -388,7 +389,30 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
   // first, so a reward that failed is retried by the next save; with nothing pending that is
   // one primary-key read. Never fails the save.
   await rewardAfterCloudChat(env, userId, now);
+  await noteFirstCloudChat(env, userId, now);
   return json({ ok: true, lastSeq: row.lastSeq } satisfies CloudChatPartResponse);
+}
+
+/** Accounts this isolate already saw past their first chat: their saves skip the write below. */
+const firstChatSeen = new Set<string>();
+const FIRST_CHAT_SEEN_MAX = 10_000;
+
+/**
+ * The account's first saved cloud chat part, once (`cloud_accounts.first_chat_at`):
+ * a log line and one `ade_cloud_safety` `first_chat`. Never fails the save.
+ */
+async function noteFirstCloudChat(env: CloudEnv, userId: string, now: number): Promise<void> {
+  if (firstChatSeen.has(userId)) return;
+  try {
+    const result = await env.DB.prepare("update cloud_accounts set first_chat_at = ? where user_id = ? and first_chat_at is null").bind(now, userId).run();
+    if (firstChatSeen.size >= FIRST_CHAT_SEEN_MAX) firstChatSeen.clear();
+    firstChatSeen.add(userId);
+    if ((result.meta.changes ?? 0) !== 1) return;
+    logCloud("cloud.first_chat", { userId });
+    captureCloudSafety(env, undefined, userId, "first_chat", "first_chat", now);
+  } catch (error) {
+    logCloud("cloud.first_chat_note_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+  }
 }
 
 function rowToJson(row: CopyRow, summary: Record<string, unknown> | null): CloudChatRow {

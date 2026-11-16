@@ -1,6 +1,7 @@
 import {
   cloudRemoteSignInRefusal,
   cloudRemoteSignInOf,
+  cloudRemoteSignInRuns,
   type CloudRemoteSignInStart,
   type CloudRemoteSignInState,
   type CloudRemoteSignInStatus,
@@ -89,8 +90,8 @@ export async function routeSignIns(request: Request, computer: ComputerRow, rest
     if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     const row = cloudRemoteSignInOf(body.provider);
     if (!row) return badRequest("ADE doesn't know that provider.");
-    // Refused before anything wakes: this one can only be signed in on a computer the person sits at.
-    if (row.remoteSignIn === "none") return fail("sign_in_elsewhere", cloudRemoteSignInRefusal(row), 409);
+    // Refused before anything wakes: an API key the account keeps, or a sign-in only ADE desktop runs.
+    if (!cloudRemoteSignInRuns(row)) return fail("sign_in_elsewhere", cloudRemoteSignInRefusal(row), 409);
     const ran = await exec(`ade providers sign-in ${row.provider} --remote --json`);
     if (ran instanceof Response) return ran;
     const result = readResult(ran.stdout);

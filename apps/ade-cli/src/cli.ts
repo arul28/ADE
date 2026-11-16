@@ -31930,6 +31930,22 @@ async function runServe(
         submitCode: (loginId, code) => runner.submitCode(loginId, code),
       };
     },
+    // Claude's pass (`claude setup-token`) through this machine's own cloud
+    // sign-in actions, which save the pass to the account vault.
+    claudePass: async () => {
+      const cloud = (await machineAccountDomains()).cloud as Record<string, ((args?: unknown) => Promise<unknown>) | undefined>;
+      const call = async (action: string, args?: unknown) => {
+        const run = cloud[action];
+        if (typeof run !== "function") throw new Error("ADE on this computer can't run Claude's sign-in.");
+        const status = await run(args) as { claude?: { state: string; url: string | null; awaitingCode: boolean; message: string | null } | null } | null;
+        return status?.claude ?? null;
+      };
+      return {
+        start: () => call("cloud_sign_in_start", {}),
+        status: () => call("cloud_sign_in_status"),
+        submitCode: (code: string) => call("cloud_sign_in_code", { code }),
+      };
+    },
   });
 
   // A lane launch's setup that filled the disk waits through the grow's
@@ -31971,6 +31987,33 @@ async function runServe(
       chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
       cloudClient: async () => await (await getCloudBrainAccess()).client(),
       holdCloudWork: holdCloudWork ?? null,
+      // A chat whose provider isn't signed in here waits for the person's
+      // sign-in: the saved sign-ins on disk and the keys the vault put in the
+      // environment, read with no CLI started. Only a provider ADE sees as
+      // installed and signed out waits; anything unclear goes on.
+      providerReady: async (provider) => {
+        const { detectAllAuth } = await import("../../desktop/src/main/services/ai/authDetector");
+        const auth = await detectAllAuth(undefined, { force: true, skipCliAuthProbe: true });
+        const cli = auth.find((entry) => entry.type === "cli-subscription" && entry.cli === provider);
+        if (cli?.type === "cli-subscription" && cli.authenticated) return "ready";
+        const anyKey = auth.some((entry) => entry.type === "api-key" || entry.type === "openrouter");
+        if (provider === "opencode" || provider === "pi") return anyKey ? "ready" : "missing";
+        if (provider === "cursor" && auth.some((entry) => entry.type === "api-key" && /cursor/i.test(entry.provider))) return "ready";
+        return cli ? "missing" : "unknown";
+      },
+      remoteSignIn: remoteProviderSignIn
+        ? { start: (provider) => remoteProviderSignIn.start(provider), status: (jobId) => remoteProviderSignIn.status(jobId) }
+        : undefined,
+      refreshVault: async () => {
+        const runtime = await getMachineAccountRuntime();
+        await runtime.accountVaultStore?.sync();
+      },
+      // The person's messages sent before the chat existed (the server keeps them).
+      sendChatMessage: async (projectId, sessionId, message) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        if (!chat) throw new Error("This ADE runtime has no chats.");
+        await chat.sendMessage({ sessionId, text: message.text, clientSendId: message.clientSendId });
+      },
       // An automation's run (C9): its chat's turn ending is the run's end. Nobody
       // watches that chat, so one that stops to ask for input ends the run as
       // failed rather than holding its computer until the server's stop limit.
