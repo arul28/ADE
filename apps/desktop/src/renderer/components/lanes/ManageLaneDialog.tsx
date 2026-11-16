@@ -46,6 +46,8 @@ import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { LaneEmojiPicker } from "./LaneEmojiPicker";
 import { isImeComposing } from "../../lib/imeComposition";
 import { formatBytes } from "../../../shared/formatting";
+import { CloudLaneComputerPanel } from "../cloudLane/CloudLaneComputerPanel";
+import { KeepChatsCheckbox } from "../cloudLane/deleteCloudLane";
 
 /** Independent delete targets shown as a checklist. */
 export type LaneDeleteSelection = {
@@ -335,7 +337,7 @@ export function laneActionErrorTone(error: LaneActionError): Pick<BannerModel, "
   return noticeKindModel(error.kind, error.kind === "failure" || error.reportable ? report : undefined);
 }
 
-export type ManageLaneTab = "appearance" | "archive" | "delete";
+export type ManageLaneTab = "computer" | "appearance" | "archive" | "delete";
 
 type ManageLaneTabDef = {
   id: ManageLaneTab;
@@ -461,7 +463,8 @@ export function ManageLaneDialog({
   laneActionKind?: "delete" | "archive" | null;
   /** Resolves true when every lane was archived. */
   onArchive: () => Promise<boolean>;
-  onDelete: () => void;
+  /** `keepChats`: an ADE Cloud lane's saved chats stay on ADE Cloud (the Delete tab's box). */
+  onDelete: (options?: { keepChats?: boolean }) => void;
   onAppearanceChanged?: () => void | Promise<void>;
   /** The managed lanes' machine. Null: nothing is sent. */
   runtimePin: OpenProjectBinding | null | undefined;
@@ -507,6 +510,8 @@ export function ManageLaneDialog({
   const [reclaimError, setReclaimError] = useState<string | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<LaneDeleteProgress | null>(null);
   const [activeTab, setActiveTab] = useState<ManageLaneTab>("delete");
+  // An ADE Cloud lane's saved chats go with it unless this is ticked.
+  const [keepCloudChats, setKeepCloudChats] = useState(false);
   // Archiving a lane whose Linear issue is still open can also cancel the issue.
   const openLinearIssue = singleLane?.linearIssue
     && singleLane.linearIssue.stateType !== "completed"
@@ -537,18 +542,21 @@ export function ManageLaneDialog({
 
   const tabDefs = React.useMemo((): ManageLaneTabDef[] => {
     return [
+      // An ADE Cloud lane's computer: size, sleep, free it. First, as it is what a cloud lane is managed for.
+      { id: "computer" as const, label: "Computer", icon: Cloud, show: singleCloud },
       { id: "delete" as const, label: "Delete", icon: Trash, show: true },
       { id: "appearance" as const, label: "Appearance", icon: Palette, show: !!singleLaneType },
       { id: "archive" as const, label: "Archive", icon: Archive, show: true },
     ]
       .filter((t) => t.show)
       .map(({ show: _, ...tab }) => tab);
-  }, [singleLaneType]);
+  }, [singleCloud, singleLaneType]);
   // Manage Lane opens on Delete, the first tab and the action users reach for
   // most, with nothing ticked (the hosts start with an empty selection and
   // Force delete off). Callers can pick another tab ("Archive all" opens on Archive).
   const defaultTab = React.useMemo((): ManageLaneTab => {
     if (initialTab && tabDefs.some((tab) => tab.id === initialTab)) return initialTab;
+    if (tabDefs.some((tab) => tab.id === "computer")) return "computer";
     return tabDefs.some((tab) => tab.id === "delete") ? "delete" : tabDefs[0]?.id ?? "archive";
   }, [initialTab, tabDefs]);
 
@@ -561,6 +569,7 @@ export function ManageLaneDialog({
       setDiscardDirtyConfirmed(false);
       setReclaimError(null);
       setDeleteProgress(null);
+      setKeepCloudChats(false);
       return;
     }
     setActiveTab(defaultTab);
@@ -761,6 +770,18 @@ export function ManageLaneDialog({
         <div className="space-y-4" data-tour="lanes.manageDialog">
           <ManageLaneTabBar tabs={tabDefs} active={activeTab} onChange={setActiveTab} />
 
+          {activeTab === "computer" && singleLane && singleCloud ? (
+            <ManageLaneTabPanel tone="neutral">
+              <CloudLaneComputerPanel
+                pin={runtimePin}
+                laneId={singleLane.id}
+                laneName={singleLane.name}
+                onClose={() => onOpenChange(false)}
+                onDelete={() => setActiveTab("delete")}
+              />
+            </ManageLaneTabPanel>
+          ) : null}
+
           {activeTab === "appearance" && singleLane ? (
             <ManageLaneTabPanel tone="accent">
               <AppearanceSection
@@ -901,7 +922,10 @@ export function ManageLaneDialog({
           {activeTab === "delete" ? (
             <ManageLaneTabPanel tone="delete">
               {onlyCloud ? (
-                <CloudLaneDeleteNote count={cloudLanes.length} />
+                <>
+                  <CloudLaneDeleteNote count={cloudLanes.length} />
+                  <KeepChatsCheckbox checked={keepCloudChats} disabled={laneActionBusy} onChange={setKeepCloudChats} />
+                </>
               ) : (
               <>
               <p className="text-xs text-red-200/70">
@@ -912,8 +936,11 @@ export function ManageLaneDialog({
               </p>
               {cloudLanes.length ? (
                 <p className="mt-2 text-xs text-muted-fg/80">
-                  {cloudLanes.map((lane) => lane.name).join(", ")} {cloudLanes.length === 1 ? "is an ADE Cloud lane. It goes" : "are ADE Cloud lanes. They go"} with {cloudLanes.length === 1 ? "its" : "their"} computer; the choices below do not apply. If work there isn&apos;t on GitHub, ADE shows it first.
+                  {cloudLanes.map((lane) => lane.name).join(", ")} {cloudLanes.length === 1 ? "is an ADE Cloud lane. It goes" : "are ADE Cloud lanes. They go"} with {cloudLanes.length === 1 ? "its" : "their"} computer and chats; the choices below do not apply. If work there isn&apos;t on GitHub, ADE shows it first.
                 </p>
+              ) : null}
+              {cloudLanes.length ? (
+                <KeepChatsCheckbox checked={keepCloudChats} disabled={laneActionBusy} onChange={setKeepCloudChats} />
               ) : null}
 
               {/* Uncommitted changes are named once, by the header chip; the
@@ -983,7 +1010,7 @@ export function ManageLaneDialog({
                   casing="sentence"
                   data-tour="lanes.manageDialog.delete"
                   disabled={deleteDisabled}
-                  onClick={onDelete}
+                  onClick={() => onDelete(cloudLanes.length ? { keepChats: keepCloudChats } : undefined)}
                   className={deleteDisabled
                     ? "!border-fg/[0.1] !bg-fg/[0.05] !text-muted-fg disabled:!opacity-100"
                     : "!border-red-600 !bg-red-600 !text-white hover:!bg-red-500"}
@@ -1017,10 +1044,10 @@ function CloudLaneDeleteNote({ count }: { count: number }) {
   return (
     <div className="space-y-1.5 text-xs leading-relaxed">
       <p className="text-red-200/80">
-        {one ? "Deletes the lane and its ADE Cloud computer." : `Deletes the ${count} lanes and their ADE Cloud computers.`} Everything on {one ? "that computer" : "those computers"} goes for good.
+        {one ? "Deletes the lane, its ADE Cloud computer and its chats." : `Deletes the ${count} lanes, their ADE Cloud computers and their chats.`} Everything on {one ? "that computer" : "those computers"} goes for good.
       </p>
       <p className="text-muted-fg/80">
-        If work there isn&apos;t on GitHub, ADE shows it first and offers to push it. {one ? "The lane's chats stay" : "Their chats stay"} readable.
+        If work there isn&apos;t on GitHub, ADE shows it first and offers to push it.
       </p>
     </div>
   );

@@ -50,8 +50,8 @@ export async function cloudLaneWorkState(instanceId: string): Promise<CloudLaneW
   return await call("workState", { instanceId });
 }
 
-export async function deleteCloudLane(instanceId: string, options: { skipCheck: boolean }): Promise<CloudLaneDeleteResult> {
-  const done = await call("deleteLane", { instanceId, skipCheck: options.skipCheck });
+export async function deleteCloudLane(instanceId: string, options: { skipCheck: boolean; keepChats?: boolean }): Promise<CloudLaneDeleteResult> {
+  const done = await call("deleteLane", { instanceId, skipCheck: options.skipCheck, keepChats: options.keepChats === true });
   if (done.ok) forgetCloudLaneComputer(instanceId);
   return done;
 }

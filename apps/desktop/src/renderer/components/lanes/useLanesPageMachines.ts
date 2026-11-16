@@ -97,7 +97,7 @@ export function useLanesPageMachines({
   allMachineLanesRef.current = allMachineLanes;
   // ADE Cloud computers the account no longer has (`computerGone`, decided by
   // the account's computer list): their lanes live only as saved chats, listed
-  // once in the "deleted computers" place (`CloudLanesOnDeletedComputers`),
+  // once in the "deleted computers" place (`CloudLanesWithoutComputerBlock`),
   // never among the live lanes or as a machine chip.
   const crossMachineEntries = useRootAppStore((state) => state.crossMachineLanesByMachineId);
   const goneMachineKey = useMemo(

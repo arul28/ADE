@@ -149,7 +149,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
 
   // A lane on its own ADE Cloud computer gets the cloud delete.
   const cloud = useCloudLaneDelete();
-  const handleDelete = useCallback(() => {
+  const handleDelete = useCallback((options?: { keepChats?: boolean }) => {
     if (!lane || lane.laneType === "primary") return;
     // An ADE Cloud lane goes with its computer: one account-level delete, warned only when work isn't on GitHub.
     if (cloud.deleteIfCloudLane({
@@ -157,6 +157,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       laneId: lane.id,
       laneName: lane.name,
       machineId: foreignPin ? machineIdForBinding(foreignPin) : null,
+      keepChats: options?.keepChats,
     })) {
       setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
       onClose();

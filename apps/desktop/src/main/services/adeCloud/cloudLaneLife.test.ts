@@ -42,6 +42,9 @@ describe("cloud lane life: the work check", () => {
   let run: ReturnType<typeof vi.fn>;
   let forgetMachineConnections: ReturnType<typeof vi.fn>;
   let changed: ReturnType<typeof vi.fn>;
+  let listSavedChats: ReturnType<typeof vi.fn>;
+  let deleteSavedChat: ReturnType<typeof vi.fn>;
+  let deletedChats: string[];
 
   function instance(): CloudInstance {
     return { id: INSTANCE, status: "running", type: "default", resources: { cpu: 2, memory: 4 }, metadata: { ...LANE_METADATA } } as unknown as CloudInstance;
@@ -52,6 +55,8 @@ describe("cloud lane life: the work check", () => {
       getInstance: vi.fn(async () => instance()),
       exec,
       listLanesWithoutComputer: vi.fn(async () => []),
+      listSavedChats,
+      deleteSavedChat,
     } as unknown as CloudProvider;
     const deps = {
       recordsDir,
@@ -81,6 +86,14 @@ describe("cloud lane life: the work check", () => {
     run = vi.fn(async () => ({ ok: true, message: null }));
     forgetMachineConnections = vi.fn();
     changed = vi.fn();
+    // The server's list by machine key; a stray row of another computer must never be deleted.
+    let saved = [{ machineKey: "mk_1", chatId: "chat_a" }, { machineKey: "MK_1", chatId: "chat_b" }, { machineKey: "mk_other", chatId: "chat_c" }];
+    listSavedChats = vi.fn(async () => ({ chats: saved, nextCursor: null }));
+    deletedChats = [];
+    deleteSavedChat = vi.fn(async (args: { machineKey: string; chatId: string }) => {
+      saved = saved.filter((chat) => chat.chatId !== args.chatId);
+      deletedChats.push(args.chatId);
+    });
   });
 
   afterEach(() => {
@@ -101,6 +114,25 @@ describe("cloud lane life: the work check", () => {
     expect(result.unpushedLanes).toEqual([]);
     expect(result.message).not.toBeNull();
     expect(machines.runPushWork).toHaveBeenCalledWith(INSTANCE, { check: true });
+  });
+
+  // A person's delete takes the lane's saved chats, after the computer is gone; "keep its chats" and a failed delete leave every one.
+  it.each<[string, { keepChats?: boolean; arrange?: () => void }, { deleted: string[]; chatsKept: boolean }]>([
+    ["by default", {}, { deleted: ["chat_a", "chat_b"], chatsKept: false }],
+    ["when the person keeps its chats", { keepChats: true }, { deleted: [], chatsKept: true }],
+    ["when the computer's delete fails", { arrange: () => { run.mockResolvedValue({ ok: false, message: "no" }); } }, { deleted: [], chatsKept: true }],
+    ["when ADE Cloud refuses a chat's delete", { arrange: () => { deleteSavedChat.mockRejectedValue(new Error("503")); } }, { deleted: [], chatsKept: true }],
+  ])("deleting a lane %s", async (_label, { keepChats, arrange }, expected) => {
+    arrange?.();
+    const { lane } = build();
+
+    const result = await lane.deleteLane({ instanceId: INSTANCE, skipCheck: true, keepChats });
+
+    expect(deletedChats).toEqual(expected.deleted);
+    expect(result.chatsKept).toBe(expected.chatsKept);
+    // The chats go only after the computer is gone.
+    if (listSavedChats.mock.calls.length) expect(run.mock.invocationCallOrder[0]!).toBeLessThan(listSavedChats.mock.invocationCallOrder[0]!);
+    if (keepChats || !result.ok) expect(listSavedChats).not.toHaveBeenCalled();
   });
 
   // Freeing a lane keeps its computer unless every check says the work is on GitHub.

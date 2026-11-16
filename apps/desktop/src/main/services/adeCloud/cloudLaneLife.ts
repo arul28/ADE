@@ -250,11 +250,38 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
   };
 
   /**
-   * Deletes the computer and so the lane on it. Never refused: `skipCheck`
-   * leaves out the work check when the person was already warned. Its chats
-   * stay readable from the saved copy, which this does not touch.
+   * Deletes every saved chat the computer left on ADE Cloud. Its chats are
+   * listed by its key and deleted one by one, which every server version
+   * answers. Resolves how many went, or null when the list or a delete failed
+   * (what was deleted stays deleted).
    */
-  const deleteLane = async (args: { instanceId: string; skipCheck?: boolean }): Promise<CloudLaneDeleteResult> => {
+  const deleteSavedChatsOf = async (machineKey: string): Promise<number | null> => {
+    let deleted = 0;
+    try {
+      const client = await deps.client();
+      // Each pass lists what is left, so the next page is the first page again.
+      for (let pass = 0; pass < 20; pass += 1) {
+        const page = await client.listSavedChats({ machineKey, limit: 200 });
+        const mine = page.chats.filter((chat) => chat.machineKey.toLowerCase() === machineKey.toLowerCase());
+        for (const chat of mine) {
+          await client.deleteSavedChat({ machineKey: chat.machineKey, chatId: chat.chatId });
+          deleted += 1;
+        }
+        if (!page.nextCursor || mine.length === 0) return deleted;
+      }
+      return deleted;
+    } catch (error) {
+      logger.warn?.("cloud.lane_saved_chats_delete_failed", { deleted, error: getErrorMessage(error) });
+      return null;
+    }
+  };
+
+  /**
+   * Deletes the computer and so the lane on it. Never refused: `skipCheck`
+   * leaves out the work check when the person was already warned. Its saved
+   * chats go too, unless `keepChats`: then they stay readable from ADE Cloud.
+   */
+  const deleteLane = async (args: { instanceId: string; skipCheck?: boolean; keepChats?: boolean }): Promise<CloudLaneDeleteResult> => {
     if (Array.from(jobs.values()).some((record) => isLive(record.job) && record.job.instanceId === args.instanceId)) {
       // A tier change mid-way would make a computer the delete doesn't know.
       return { ok: false, message: "This lane is changing size. Wait for it to finish, or cancel it, then delete.", unpushed: null, unpushedLanes: [] };
@@ -263,12 +290,20 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     const machineKey = instance?.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null;
     const state = args.skipCheck || !instance ? null : await workState({ instanceId: args.instanceId });
     const result = await deps.machines.run({ action: "delete", instanceId: args.instanceId, machineKey });
+    // The chats go after the computer, so a turn that saves a last part can't bring one back.
+    const chatsDeleted = result.ok && !args.keepChats && machineKey ? await deleteSavedChatsOf(machineKey) : null;
     if (result.ok) {
       forgetConnections(machineKey, args.instanceId);
       deps.changed();
     }
-    logger.info?.("cloud.lane_deleted", { instanceId: args.instanceId, ok: result.ok, unpushed: state?.unpushed ?? null });
-    return { ok: result.ok, message: result.message, unpushed: state?.unpushed ?? null, unpushedLanes: state?.unpushedLanes ?? [] };
+    logger.info?.("cloud.lane_deleted", { instanceId: args.instanceId, ok: result.ok, unpushed: state?.unpushed ?? null, keepChats: args.keepChats === true, chatsDeleted });
+    return {
+      ok: result.ok,
+      message: result.message,
+      unpushed: state?.unpushed ?? null,
+      unpushedLanes: state?.unpushedLanes ?? [],
+      chatsKept: result.ok ? args.keepChats === true || chatsDeleted == null : true,
+    };
   };
 
   /**

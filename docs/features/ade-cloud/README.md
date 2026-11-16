@@ -1064,9 +1064,29 @@ Each call is account level: it names a computer of the account, never a pin.
   without being merged reads as unsaved and is pushed again. A fetch that fails marks that
   project's lanes `failed`: the computer is kept, and delete says ADE couldn't
   read the work.
-- **Delete lane.** The computer goes, and the lane with it. ADE never refuses
-  it. The work check runs first unless the person was already warned, and the
-  answer says whether work was only on the computer. Saved chats stay.
+- **Delete lane.** The computer goes, and the lane and its saved chats with
+  it. ADE never refuses it. The work check runs first unless the person was
+  already warned, and the answer says whether work was only on the computer.
+  "Keep its chats to read later" (off by default; Manage lane's Delete tab and
+  every delete confirm) keeps the saved chats: `deleteLane` gets `keepChats`.
+  Otherwise main lists the computer's saved chats by its machine key and
+  deletes each one after the computer is gone (every server version answers
+  that), and the answer's `chatsKept` says whether any stayed. An agent's or
+  the CLI's delete keeps them.
+- **Manage lane on a cloud lane.** One lane opens on a Computer tab
+  (`CloudLaneComputerPanel.tsx`): Change size, Put to sleep, Keep the lane and
+  free its computer (`freeCloudLaneWithConfirm`, shared with the ADE Cloud
+  page), Keep this computer while the idle cleanup warned, and the ADE Cloud
+  page. Its Delete tab is the cloud delete with the keep-chats box. A local
+  lane's Manage lane is unchanged.
+- **Lanes without a computer** (`CloudLanesWithoutComputerBlock.tsx`): one
+  folded block above the Work list and in the Lanes tab. It lists this
+  project's lanes the server kept without a computer (with "New computer" on
+  the same branch) and lanes whose computer was deleted with their chats kept.
+  Each row says what happened in one line, from the server's reason. Delete is
+  in the row's ⋯ menu: a kept lane's record and its chats, or the chats. A
+  gold dot on the head marks a row not seen yet (`localStorage`
+  `ade.cloudLanesWithoutComputer.seen.v1`); opening the block marks them seen.
 - **Keep the lane on a fresh computer.** ADE pushes the work first. A push
   that can't save everything keeps the computer, and freeing is refused while
   the agent works ("Stop it or wait, then free the computer"). `ade cloud
@@ -1277,6 +1297,13 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   computer…" and the Work row reads "Waking". The renderer decides this at send
   time from the saved copy (`markCloudWakeForSend` in `cloudSavedChatsSync.ts`).
   It is display only: the send goes to the same machine as before.
+- Each row of `GET /cloud/chats` carries `computer`: `exists`, or `deleted`
+  with its time and reason (`you`, `freed`, `idle`, `plan`, `automation`,
+  `project`, `launch`, `other`), from the server's computer rows and delete
+  log. A saved chat whose computer the server calls deleted lists as on a
+  deleted computer from the first read, so its rows never show as live and
+  then move into the block when a computer list loads. An older server leaves
+  it out, and the computer lists decide as before.
 - A sleeping computer that still exists looks connected in Work: its lanes are
   not dimmed or marked offline (`machineIsCloudResting` in `crossMachineLanes.ts`).
   Its rows stay `online: false` for every guard. A deleted computer's saved

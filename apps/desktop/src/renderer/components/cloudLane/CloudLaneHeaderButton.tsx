@@ -97,7 +97,7 @@ async function keepLaneComputer(instanceId: string, name: string): Promise<void>
 }
 
 /** Sleep from the chat header: the shared confirm and IPC call, a toast either way, then the list read again. */
-async function sleepLaneComputer(instanceId: string, name: string, turnRunning: boolean): Promise<void> {
+export async function sleepLaneComputer(instanceId: string, name: string, turnRunning: boolean): Promise<void> {
   if (!(await confirmCloudSleep(`${name}'s computer`, turnRunning ? 1 : 0))) return;
   const result = await callCloudMachineAction({ instanceId, action: "sleep" });
   if (result?.ok) {

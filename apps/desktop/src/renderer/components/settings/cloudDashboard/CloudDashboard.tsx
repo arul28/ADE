@@ -54,8 +54,8 @@ import {
   prefersReducedMotion,
   type DashLane,
 } from "./cloudDashboardModel";
-import { clearCloudLaneCaches, cloudLaneLifeAvailable, freeCloudLane } from "../../cloudLane/cloudLaneActions";
-import { deleteCloudLaneWithCheck, useCloudLaneDeletes, type CloudLaneDeletePhase } from "../../cloudLane/deleteCloudLane";
+import { clearCloudLaneCaches, cloudLaneLifeAvailable } from "../../cloudLane/cloudLaneActions";
+import { deleteCloudLaneWithCheck, freeCloudLaneWithConfirm, useCloudLaneDeletes, type CloudLaneDeletePhase } from "../../cloudLane/deleteCloudLane";
 import { cloudLaneJobFor, cloudLaneJobVisible, refreshCloudLanesWithoutComputer, useCloudLaneJobs, useCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStores";
 import { CloudLaneJobCard, cloudLaneJobPresentation } from "../../cloudLane/CloudLaneJobCard";
 import type { CloudLaneJobSnapshot } from "../../../../shared/cloudLaneLife";
@@ -211,21 +211,9 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 
   const freeLane = async (lane: DashLane) => {
     if (!lane.instanceId) return;
-    const ok = await confirmDialog({
-      title: `Free the computer of ${lane.name}?`,
-      message: "ADE pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.",
-      confirmLabel: "Free the computer",
-      cancelLabel: "Cancel",
-    });
-    if (!ok) return;
     setBusyKey(lane.key);
     try {
-      const done = await freeCloudLane(lane.instanceId);
-      showToast({ tone: done.ok ? "success" : "error", title: done.ok ? `Freed ${lane.name}'s computer` : `Kept ${lane.name}'s computer`, message: done.message });
-      refresh();
-      refreshCloudLanesWithoutComputer();
-    } catch (error) {
-      showToast({ tone: "error", title: `Couldn't free ${lane.name}'s computer`, message: errorText(error) });
+      await freeCloudLaneWithConfirm({ instanceId: lane.instanceId, laneName: lane.name, onDone: refresh });
     } finally {
       setBusyKey(null);
     }

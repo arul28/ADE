@@ -68,7 +68,7 @@ export function registerCloudLaneLifeIpc(args: {
       case "workState":
         return await life.workState({ instanceId: textArg(callArgs, "instanceId") });
       case "deleteLane":
-        return await life.deleteLane({ instanceId: textArg(callArgs, "instanceId"), skipCheck: callArgs.skipCheck === true });
+        return await life.deleteLane({ instanceId: textArg(callArgs, "instanceId"), skipCheck: callArgs.skipCheck === true, keepChats: callArgs.keepChats === true });
       case "freeLane": {
         const freed = await life.freeLane({ instanceId: textArg(callArgs, "instanceId") }).catch((error: unknown) => {
           captureCloudLaneAnalytics(args.analytics, "desktop", "cloud_lane_freed", "failed");

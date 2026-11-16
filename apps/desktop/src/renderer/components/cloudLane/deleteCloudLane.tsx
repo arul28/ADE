@@ -8,7 +8,8 @@ import { ipcErrorMessage } from "../../lib/format";
 import { READABLE_TOAST_DURATION_MS, dismissToast, getToasts, showToast } from "../app/toast/toastStore";
 import { CloudMark, ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
 import { confirmDialog } from "../ui/dialog";
-import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneComputerOfLane, cloudLaneLifeAvailable, cloudLaneWorkState, deleteCloudLane, pushCloudLaneWork } from "./cloudLaneActions";
+import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneComputerOfLane, cloudLaneLifeAvailable, cloudLaneWorkState, deleteCloudLane, freeCloudLane, pushCloudLaneWork } from "./cloudLaneActions";
+import { refreshCloudLanesWithoutComputer } from "./cloudLaneStores";
 import "./cloudLane.css";
 
 /**
@@ -58,10 +59,11 @@ function dismissProgressToast(toastId: string): void {
 }
 
 /**
- * Delete a cloud lane: the lane and its computer go together. It is direct,
- * with one exception: when the computer holds work that isn't on GitHub (or
- * ADE couldn't check), it warns first, with "Push all work to GitHub" and
- * "Delete anyway". Its chats stay readable from the saved copy.
+ * Delete a cloud lane: the lane, its computer and its saved chats go
+ * together. It is direct, with one exception: when the computer holds work
+ * that isn't on GitHub (or ADE couldn't check), it warns first, with "Push all
+ * work to GitHub" and "Delete anyway". `keepChats` keeps the saved chats on
+ * ADE Cloud to read later; the confirm that `askFirst` shows offers it too.
  *
  * One flow with feedback from the click: on an awake computer the work check
  * starts at once, and the question (`askFirst`) shows at the same moment
@@ -83,6 +85,8 @@ export async function deleteCloudLaneWithCheck(input: {
   instanceId: string;
   laneName: string;
   askFirst: boolean;
+  /** Keep its saved chats on ADE Cloud. Off: they go with the lane. */
+  keepChats?: boolean;
   /** Runs after a delete that worked (a list refresh, a selection clear). */
   onDeleted?: () => void;
 }): Promise<boolean> {
@@ -122,6 +126,7 @@ export async function deleteCloudLaneWithCheck(input: {
   });
 
   let deleted = false;
+  let keepChats = input.keepChats === true;
   try {
     setDeletePhase(instanceId, "checking");
     // On an awake computer the check runs while the question is up, so a yes
@@ -131,10 +136,11 @@ export async function deleteCloudLaneWithCheck(input: {
     if (input.askFirst) {
       const confirmed = await confirmDialog({
         title: `Delete ${laneName}?`,
-        message: "ADE deletes the lane and its computer. If any of its work isn't on GitHub, ADE asks again first. Its chats stay readable.",
+        message: "ADE deletes the lane, its computer and its chats. If any of its work isn't on GitHub, ADE asks again first.",
         icon: <CloudMark size={16} brand />,
         confirmLabel: "Delete lane",
         destructive: true,
+        children: () => <KeepChatsCheckbox defaultChecked={keepChats} onChange={(value) => { keepChats = value; }} />,
       });
       if (!confirmed) return false;
     }
@@ -171,7 +177,7 @@ export async function deleteCloudLaneWithCheck(input: {
               <CloudArrowUp size={13} />
               Push all work to GitHub
             </button>
-            <p className="adecl-delete-note">ADE pushes every lane&apos;s work on this computer, then deletes the lane. Its chats stay readable.</p>
+            <p className="adecl-delete-note">ADE pushes every lane&apos;s work on this computer, then deletes the lane.</p>
           </div>
         ),
       });
@@ -199,15 +205,22 @@ export async function deleteCloudLaneWithCheck(input: {
 
     setDeletePhase(instanceId, "deleting");
     progress("Deleting its computer…");
-    const done = await deleteCloudLane(instanceId, { skipCheck: true });
+    const done = await deleteCloudLane(instanceId, { skipCheck: true, keepChats });
     if (!done.ok) return fail(new Error(done.message));
     deleted = true;
     setDeletePhase(instanceId, "deleted");
+    // An older main answers no `chatsKept`: it kept them.
+    const chatsKept = done.chatsKept ?? true;
     showToast({
       id: toastId,
-      tone: "success",
+      tone: chatsKept && !keepChats ? "warning" : "success",
       title: `Deleted ${laneName}`,
-      message: "The lane and its computer are gone. Its chats stay readable.",
+      message: keepChats
+        ? "The lane and its computer are gone. Its chats stay in Work to read."
+        : chatsKept
+          ? "The lane and its computer are gone. ADE couldn't delete its chats; remove them in Work."
+          : "The lane, its computer and its chats are gone.",
+      durationMs: chatsKept && !keepChats ? READABLE_TOAST_DURATION_MS : undefined,
       replayMask: { title: true },
     });
     input.onDeleted?.();
@@ -219,6 +232,35 @@ export async function deleteCloudLaneWithCheck(input: {
       setDeletePhase(instanceId, null);
       dismissProgressToast(toastId);
     }
+  }
+}
+
+/**
+ * "Keep the lane, free its computer": asks once, then ADE pushes the work,
+ * removes the computer and keeps the lane with its chats. The next message
+ * makes a new computer. The ADE Cloud page and Manage lane both call this.
+ * Resolves true when the computer was freed.
+ */
+export async function freeCloudLaneWithConfirm(input: { instanceId: string; laneName: string; onDone?: () => void }): Promise<boolean> {
+  const { instanceId, laneName } = input;
+  const ok = await confirmDialog({
+    title: `Free the computer of ${laneName}?`,
+    message: "ADE pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.",
+    icon: <CloudMark size={16} brand />,
+    confirmLabel: "Free the computer",
+    cancelLabel: "Cancel",
+  });
+  if (!ok) return false;
+  try {
+    const done = await freeCloudLane(instanceId);
+    showToast({ tone: done.ok ? "success" : "error", title: done.ok ? `Freed ${laneName}'s computer` : `Kept ${laneName}'s computer`, message: done.message, replayMask: { title: true } });
+    return done.ok;
+  } catch (error) {
+    showToast({ tone: "error", title: `Couldn't free ${laneName}'s computer`, message: ipcErrorMessage(error) || "Try again in a moment.", replayMask: { title: true } });
+    return false;
+  } finally {
+    input.onDone?.();
+    refreshCloudLanesWithoutComputer();
   }
 }
 
@@ -244,6 +286,8 @@ export function useCloudLaneDelete() {
         laneId: string;
         laneName: string;
         machineId: string | null;
+        /** Keep its saved chats on ADE Cloud (Manage lane's checkbox). */
+        keepChats?: boolean;
         onDeleted?: () => void;
       }): boolean => {
         const cloudLane = computerOf(input.pin, input.laneId);
@@ -252,6 +296,7 @@ export function useCloudLaneDelete() {
           instanceId: cloudLane.instanceId,
           laneName: input.laneName,
           askFirst: false,
+          keepChats: input.keepChats,
           onDeleted: () => {
             if (input.machineId) requestCrossMachineLanesForMachine(input.machineId);
             input.onDeleted?.();
@@ -261,6 +306,35 @@ export function useCloudLaneDelete() {
       },
     };
   }, [computers]);
+}
+
+/** "Keep its chats": off by default, so a deleted lane leaves nothing behind. */
+export function KeepChatsCheckbox({
+  checked,
+  defaultChecked = false,
+  disabled,
+  onChange,
+}: {
+  /** Set for a controlled box (Manage lane); leave out for a confirm dialog's. */
+  checked?: boolean;
+  defaultChecked?: boolean;
+  disabled?: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <label className="adecl-keep-chats">
+      <input
+        type="checkbox"
+        {...(checked === undefined ? { defaultChecked } : { checked })}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <span>
+        Keep its chats to read later
+        <span className="adecl-muted">They stay in Work under the lanes without a computer.</span>
+      </span>
+    </label>
+  );
 }
 
 function UnpushedList({ lanes }: { lanes: readonly CloudLaneWorkLane[] }) {

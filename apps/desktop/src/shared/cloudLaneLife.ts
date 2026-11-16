@@ -47,6 +47,8 @@ export type CloudLaneDeleteResult = {
   /** From the work check before the delete, when it ran; null when it was skipped or couldn't run. */
   unpushed: boolean | null;
   unpushedLanes: CloudLaneWorkLane[];
+  /** Whether its saved chats are still on ADE Cloud: asked to keep them, or their delete failed. Absent from an older app. */
+  chatsKept?: boolean;
 };
 
 export type CloudLaneFreeResult = {

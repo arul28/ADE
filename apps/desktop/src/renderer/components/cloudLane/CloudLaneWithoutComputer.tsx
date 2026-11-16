@@ -14,8 +14,7 @@ import { CloudMark } from "../remoteTargets/cloudBrand";
 import { confirmDialog } from "../ui/dialog";
 import { cn } from "../ui/cn";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneLifeAvailable, forgetCloudLaneWithoutComputer } from "./cloudLaneActions";
-import { refreshCloudLanesWithoutComputer, useCloudLanesWithoutComputer } from "./cloudLaneStores";
-import { useAdeCloudEnabled } from "../../state/cloudAccess";
+import { refreshCloudLanesWithoutComputer } from "./cloudLaneStores";
 import "./cloudLane.css";
 
 /**
@@ -62,7 +61,8 @@ export function cloudLaneRestartProblem(lane: CloudLaneWithoutComputer, binding:
   return null;
 }
 
-function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer, account: CloudAccountState | null) {
+/** "New computer on the same branch" for a lane kept without one: the problem that blocks it here, and the start. */
+export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer, account: CloudAccountState | null) {
   const binding = useAppStore((state) => state.projectBinding);
   const defaultTier = useRootAppStore((state) => state.cloudDefaultTier);
   const originUrl = originUrlForBinding(binding);
@@ -161,31 +161,6 @@ export function CloudLaneWithoutComputerNotice({
           </button>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-/**
- * The project's ADE Cloud lanes that have no computer now, for a list of
- * lanes (the Lanes tab): one row each with its next step. Nothing when there
- * are none, when ADE Cloud is off, or where this ADE can't ask.
- */
-export function CloudLanesWithoutComputerList({ originUrl, className }: { originUrl: string | null; className?: string }) {
-  const enabled = useAdeCloudEnabled() && cloudLaneLifeAvailable();
-  const { lanes } = useCloudLanesWithoutComputer(enabled);
-  const identity = normalizeGitRemoteIdentity(originUrl);
-  const mine = useMemo(
-    () => (identity ? lanes.filter((lane) => lane.projectOrigin === identity) : []),
-    [identity, lanes],
-  );
-  if (!enabled || !mine.length) return null;
-  return (
-    <div className={cn("adecl-nocomp-list", className)} aria-label="ADE Cloud lanes without a computer">
-      <div className="adecl-nocomp-list-head">
-        <CloudMark size={11} brand />
-        <span>{mine.length === 1 ? "1 ADE Cloud lane has no computer now" : `${mine.length} ADE Cloud lanes have no computer now`}</span>
-      </div>
-      {mine.map((lane) => <CloudLaneWithoutComputerNotice key={lane.laneId} lane={lane} account={null} variant="row" />)}
     </div>
   );
 }
