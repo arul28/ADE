@@ -16742,9 +16742,15 @@ describe("describeLastFailureForStartupLog", () => {
 });
 
 describe("monitorBrainSocketOwnership", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   const flush = async (): Promise<void> => {
     // The monitor floors its poll interval at 250ms; outlast one tick.
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await vi.advanceTimersByTimeAsync(400);
   };
   const socketPath = "/tmp/ade-ownership/ade.sock";
 

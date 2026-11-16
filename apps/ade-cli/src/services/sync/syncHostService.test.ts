@@ -8950,6 +8950,9 @@ describe("CTO-gated Linear sync commands", () => {
         controllerAllowedActions.add(action);
       }
 
+      // Every command goes out before any result is awaited: one at a time,
+      // each round trip paid a poll interval, seconds across the whole list.
+      const sent: Array<{ requestId: string; viewerBlocked: boolean }> = [];
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
         // `apple.*` is registered only by a runtime that built a simulator
         // service — which this fixture does not, and a Windows brain never
@@ -9013,7 +9016,10 @@ describe("CTO-gated Linear sync commands", () => {
                 : {},
           },
         }));
+        sent.push({ requestId, viewerBlocked });
+      }
 
+      for (const { requestId, viewerBlocked } of sent) {
         const result = await waitForEnvelope(peer.envelopes, "command_result", requestId);
         const errorCode = (result.payload as { error?: { code?: string } }).error?.code;
         if (viewerBlocked) {

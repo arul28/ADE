@@ -12,6 +12,13 @@ inputs:
     description: '"true" checks for the entry without downloading it'
     required: false
     default: "false"
+  install-on-miss:
+    description: >-
+      "true" installs the group with scripts/ci/install-core-node-modules.sh
+      when no entry matches the key, so the job does not have to wait for
+      ci.yml's install job. This action never saves the entry.
+    required: false
+    default: "false"
 
 outputs:
   cache-hit:
@@ -46,3 +53,11 @@ runs:
         lookup-only: ${{ inputs.lookup-only }}
         path: ${{ steps.entry.outputs.paths }}
         key: ${{ steps.entry.outputs.key }}
+
+    # The restore has no restore-keys, so a hit is always the exact key. On a
+    # miss, npm ci deletes any node_modules it finds before it installs, so a
+    # restore that failed halfway cannot leave stale files in the result.
+    - name: Install core node_modules (no cache entry)
+      if: inputs.install-on-miss == 'true' && inputs.lookup-only != 'true' && steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: scripts/ci/install-core-node-modules.sh

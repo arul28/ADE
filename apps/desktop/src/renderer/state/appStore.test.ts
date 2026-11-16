@@ -51,7 +51,7 @@ const mockLocalStorage = {
 };
 
 // Import after window is set up
-import { createProjectAppStore, effectiveThemeId, retainProjectAppStoreState, selectEffectiveThemeId, useAppStore, DEFAULT_TERMINAL_PREFERENCES, DEFAULT_CHAT_FONT_SIZE_PX } from "./appStore";
+import { createProjectAppStore, effectiveThemeId, flushWorkViewStatePersistForTests, retainProjectAppStoreState, selectEffectiveThemeId, useAppStore, DEFAULT_TERMINAL_PREFERENCES, DEFAULT_CHAT_FONT_SIZE_PX } from "./appStore";
 import { DEFAULT_APPLE_DEVICE_PREFERENCES } from "../../shared/appleDeviceSettings";
 import { rememberProjectOriginSummaries, resetProjectOriginMemory } from "../components/lanes/laneMachines";
 
@@ -132,6 +132,10 @@ function laneCacheKey(projectRoot: string): string {
 
 describe("appStore", () => {
   beforeEach(() => {
+    // A test's debounced work-view write (a real 300 ms timer) must not land in
+    // the next test: on a slow runner it fired mid-way through one and wrote
+    // its stale project over that test's state.
+    flushWorkViewStatePersistForTests();
     mockStorage.clear();
     vi.clearAllMocks();
     resetStore();
