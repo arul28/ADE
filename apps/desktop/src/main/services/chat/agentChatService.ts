@@ -5826,6 +5826,19 @@ type ManagedChatSession = {
     event: Extract<AgentChatEvent, { type: "plan" }>;
     timer: NodeJS.Timeout | null;
   } | null;
+  /**
+   * Codex command output not yet emitted: the deltas of one command, joined.
+   * A busy command sends many deltas a second, and each one was a stored
+   * event, an IPC message and a new row. They go out as one chunk on the
+   * 100 ms text clock, or before any other event of the session.
+   */
+  bufferedCommandOutput?: {
+    runtime: CodexRuntime;
+    itemId: string;
+    turnId: string | undefined;
+    delta: string;
+    timer: NodeJS.Timeout | null;
+  } | null;
   previewTextBuffer: {
     text: string;
     messageId?: string;
@@ -6390,6 +6403,11 @@ const CLAUDE_POST_TOOL_HOOK_SKIPPED_TOOLS: ReadonlySet<string> = new Set(["WebFe
 const CLAUDE_POST_TOOL_HOOK_MATCHER = `^(?!${[...CLAUDE_POST_TOOL_HOOK_SKIPPED_TOOLS].map((tool) => `${tool}$`).join("|")}).*`;
 const CLAUDE_TOOL_OUTPUT_TRIM_PREVIEW_CHARS = 24 * 1024;
 const BUFFERED_TEXT_FLUSH_MS = 100;
+/**
+ * A Codex command's joined output goes out early at this size, so one fast
+ * burst does not become one very large event before the 100 ms clock fires.
+ */
+const BUFFERED_COMMAND_OUTPUT_FLUSH_CHARS = 64 * 1024;
 /**
  * Longest a chat's stored preview line trails its stream. Every streamed text
  * flush and command chunk moves the preview, and each write is a synchronous
@@ -16509,8 +16527,10 @@ export function createAgentChatService(args: {
       }
     }
     const managed = ensureManagedSession(sessionId);
-    // Flush any pending buffered text so the transcript includes all content
+    // Flush any pending buffered text and command output so the transcript
+    // includes all content.
     flushBufferedText(managed);
+    flushBufferedCommandOutput(managed);
     const {
       entries: transcriptEntries,
       entryPositions,
@@ -16601,6 +16621,7 @@ export function createAgentChatService(args: {
     }
     const managed = ensureManagedSession(sessionId);
     flushBufferedText(managed);
+    flushBufferedCommandOutput(managed);
     const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
     if (!transcriptPath) {
       return {
@@ -25632,7 +25653,110 @@ export function createAgentChatService(args: {
   const deleteThreadComment = (args: ChatThreadCommentDeleteArgs): { deleted: boolean } =>
     threadComments.delete({ ...args, sessionId: assertThreadCommentSession(args?.sessionId) });
 
+  /**
+   * Emits one chunk of a Codex command's output: a stored `command` event, or
+   * a live-only one once the stored copy is full. A joined burst of deltas
+   * reads exactly like one larger delta from Codex.
+   */
+  const emitCodexCommandOutput = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    itemId: string,
+    turnId: string | undefined,
+    delta: string,
+  ): void => {
+    const storageClosed = runtime.commandOutputStorageClosedItemIds.has(itemId);
+    const currentOutput = runtime.commandOutputByItemId.get(itemId) ?? "";
+    const next = storageClosed ? currentOutput : `${currentOutput}${delta}`;
+    const compacted = storageClosed
+      ? null
+      : compactRunningCommandOutput(next);
+    if (!storageClosed) {
+      runtime.commandOutputByItemId.set(itemId, compacted?.text ?? next);
+      evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
+      if (compacted) runtime.commandOutputStorageClosedItemIds.add(itemId);
+    }
+    const liveCommandEvent: AgentChatEvent = {
+      type: "command",
+      command: "command",
+      cwd: managed.laneWorktreePath,
+      output: delta,
+      itemId,
+      turnId,
+      status: "running",
+    };
+    if (storageClosed) {
+      emitLiveOnlyChatEvent(managed, liveCommandEvent);
+      return;
+    }
+    const storedCommandEvent: AgentChatEvent = {
+      type: "command",
+      command: "command",
+      cwd: managed.laneWorktreePath,
+      output: compacted?.text ?? delta,
+      itemId,
+      turnId,
+      status: "running",
+      ...(compacted ? {
+        outputOriginalBytes: compacted.originalBytes,
+        outputOmittedBytes: compacted.omittedBytes,
+      } : {}),
+    };
+    emitChatEvent(
+      managed,
+      storedCommandEvent,
+      compacted ? { liveEvent: liveCommandEvent } : undefined,
+    );
+  };
+
+  /** Sends the buffered command output now. Safe to call with nothing buffered. */
+  const flushBufferedCommandOutput = (managed: ManagedChatSession): void => {
+    const buffered = managed.bufferedCommandOutput;
+    if (!buffered) return;
+    if (buffered.timer) clearTimeout(buffered.timer);
+    // Cleared first: the emit below re-enters `emitChatEvent`, which flushes.
+    managed.bufferedCommandOutput = null;
+    // A deleted chat has no transcript to store it in.
+    if (managed.deleted) return;
+    emitCodexCommandOutput(managed, buffered.runtime, buffered.itemId, buffered.turnId, buffered.delta);
+  };
+
+  /**
+   * One Codex output delta. Deltas of the same command join the buffer; any
+   * other event of the session flushes it first, so the order never changes.
+   */
+  const queueCodexCommandOutput = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    itemId: string,
+    turnId: string | undefined,
+    delta: string,
+  ): void => {
+    const buffered = managed.bufferedCommandOutput;
+    if (buffered && buffered.runtime === runtime && buffered.itemId === itemId && buffered.turnId === turnId) {
+      buffered.delta += delta;
+      if (buffered.delta.length >= BUFFERED_COMMAND_OUTPUT_FLUSH_CHARS) flushBufferedCommandOutput(managed);
+      return;
+    }
+    flushBufferedCommandOutput(managed);
+    // The working line shows at once, as before. While the buffer is open no
+    // other event goes out, so the same line for the later deltas would be a
+    // repeat that `emitChatEvent` drops anyway.
+    emitChatEvent(managed, {
+      type: "activity",
+      activity: "running_command",
+      detail: "Shell command running",
+      turnId,
+    });
+    const timer = setTimeout(() => {
+      if (managed.bufferedCommandOutput) managed.bufferedCommandOutput.timer = null;
+      flushBufferedCommandOutput(managed);
+    }, BUFFERED_TEXT_FLUSH_MS);
+    managed.bufferedCommandOutput = { runtime, itemId, turnId, delta, timer };
+  };
+
   const emitLiveOnlyChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    flushBufferedCommandOutput(managed);
     managed.lastActivityTimestamp = Date.now();
     // Retry/reconnect activity bypasses emitChatEvent so it stays live-only.
     // Flush any 100ms text/reasoning buffer first, otherwise that older
@@ -26115,6 +26239,8 @@ export function createAgentChatService(args: {
     // A draft warmup has no chat to show an event in, and an event would put
     // an empty chat in every client's list.
     if (managed.draftWarm) return;
+    // Buffered command output came first, so it goes out first.
+    flushBufferedCommandOutput(managed);
     // A message ADE wrote carries its row's one line, so no client keeps its
     // own table of reasons (`HOST_CONTINUATION_REASON_LABEL`).
     const continuation = event.type === "user_message" ? event.metadata?.hostContinuation : undefined;
@@ -30266,6 +30392,9 @@ export function createAgentChatService(args: {
     runtimeTeardownEpochs.set(managed, runtimeTeardownEpoch(managed) + 1);
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
+    // Codex command output still on the 100 ms clock is stored before the
+    // runtime goes, not by a timer that fires after it.
+    flushBufferedCommandOutput(managed);
     closeHttpMcpServers(managed);
 
     const reasonAllowsPreservation =
@@ -30676,6 +30805,7 @@ export function createAgentChatService(args: {
     clearSubagentSnapshots(managed.session.id);
     flushBufferedText(managed);
     flushBufferedReasoning(managed);
+    flushBufferedCommandOutput(managed);
     // The last preview lands before the row ends, never after it.
     if (managed.previewWriteTimer) {
       clearTimeout(managed.previewWriteTimer);
@@ -42357,6 +42487,8 @@ export function createAgentChatService(args: {
   ): void => {
     const interruptedTurnId = turnId?.trim() || runtime.activeTurnId || runtime.startedTurnId || randomUUID();
     clearCodexNoFirstEventWatchdog(managed);
+    // Output of the turn goes out before its per-command state clears.
+    flushBufferedCommandOutput(managed);
     markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
     rememberInterruptedCodexTurn(runtime, interruptedTurnId);
     rememberTerminalCodexTurn(runtime, interruptedTurnId, managed);
@@ -46543,54 +46675,7 @@ export function createAgentChatService(args: {
       const itemId = String((params.itemId as string | undefined) ?? randomUUID());
       const delta = String((params.delta as string | undefined) ?? "");
       const turnId = turnIdFromParams ?? runtime.itemTurnIdByItemId.get(itemId) ?? runtime.activeTurnId ?? undefined;
-      const storageClosed = runtime.commandOutputStorageClosedItemIds.has(itemId);
-      const currentOutput = runtime.commandOutputByItemId.get(itemId) ?? "";
-      const next = storageClosed ? currentOutput : `${currentOutput}${delta}`;
-      const compacted = storageClosed
-        ? null
-        : compactRunningCommandOutput(next);
-      if (!storageClosed) {
-        runtime.commandOutputByItemId.set(itemId, compacted?.text ?? next);
-        evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
-        if (compacted) runtime.commandOutputStorageClosedItemIds.add(itemId);
-      }
-      const liveCommandEvent: AgentChatEvent = {
-        type: "command",
-        command: "command",
-        cwd: managed.laneWorktreePath,
-        output: delta,
-        itemId,
-        turnId,
-        status: "running",
-      };
-      emitChatEvent(managed, {
-        type: "activity",
-        activity: "running_command",
-        detail: "Shell command running",
-        turnId,
-      });
-      if (storageClosed) {
-        emitLiveOnlyChatEvent(managed, liveCommandEvent);
-        return;
-      }
-      const storedCommandEvent: AgentChatEvent = {
-        type: "command",
-        command: "command",
-        cwd: managed.laneWorktreePath,
-        output: compacted?.text ?? delta,
-        itemId,
-        turnId,
-        status: "running",
-        ...(compacted ? {
-          outputOriginalBytes: compacted.originalBytes,
-          outputOmittedBytes: compacted.omittedBytes,
-        } : {}),
-      };
-      emitChatEvent(
-        managed,
-        storedCommandEvent,
-        compacted ? { liveEvent: liveCommandEvent } : undefined,
-      );
+      queueCodexCommandOutput(managed, runtime, itemId, turnId, delta);
       return;
     }
 
@@ -46684,6 +46769,7 @@ export function createAgentChatService(args: {
         return;
       }
       const turnId = resolvedAbortTurnId ?? randomUUID();
+      flushBufferedCommandOutput(managed);
       markAcceptedCodexSteersUnprocessed(managed, runtime, turnId);
       rememberInterruptedCodexTurn(runtime, turnId);
       rememberTerminalCodexTurn(runtime, turnId, managed);
@@ -59390,6 +59476,7 @@ export function createAgentChatService(args: {
     }
 
     if (managed.runtime?.kind === "codex" && !isBusyError) {
+      flushBufferedCommandOutput(managed);
       managed.runtime.activeTurnId = null;
       managed.runtime.startedTurnId = null;
       managed.runtime.awaitingTurnStart = false;
