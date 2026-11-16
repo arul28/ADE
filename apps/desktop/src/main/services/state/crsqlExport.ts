@@ -166,6 +166,13 @@ export type ExportHelper = {
   run: (plan: Generator<ExportPlanQuery | typeof EXPORT_PLAN_BEGIN_SNAPSHOT, ExportedChangeRow[], unknown[]>) => Promise<ExportedChangeRow[]>;
   /** `waitForRelease`: block (bounded) until the helper's connection is closed; a database close needs it, dropping a failed helper does not. */
   close: (waitForRelease: boolean) => void;
+  /**
+   * Ends an idle helper without blocking: the exports already queued finish,
+   * then the helper finalizes cr-sqlite, closes its connection and its thread
+   * exits. The caller drops its reference first, so a later export starts a
+   * new helper.
+   */
+  retire: () => Promise<void>;
 };
 
 /**
@@ -206,7 +213,7 @@ const closeDb = () => {
   Atomics.notify(closed, 0);
 };
 parentPort.on("message", (message) => {
-  if (message.type === "close") { closeDb(); return; }
+  if (message.type === "close") { closeDb(); parentPort.postMessage({ type: "closed" }); return; }
   try {
     if (!db) throw new Error("export helper connection is not open");
     let rows = [];
@@ -334,6 +341,40 @@ export function createExportHelper(dbPath: string, extensionPath: string, busyTi
         // A worker that already exited holds no connection.
       }
       void worker.terminate();
+    },
+    retire: async () => {
+      await queue;
+      if (failure) {
+        // A failed or dead helper holds no connection.
+        await worker.terminate().catch(() => undefined);
+        return;
+      }
+      // Not `Atomics.wait` as in `close`: nothing waits on this helper, so the
+      // event loop must not. The helper answers `closed` once cr-sqlite is
+      // finalized and its connection is closed; one that died says nothing.
+      await new Promise<void>((resolve) => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const onMessage = (message: { type?: string }): void => {
+          if (message?.type === "closed") done();
+        };
+        const done = (): void => {
+          if (timer) clearTimeout(timer);
+          worker.off("message", onMessage);
+          worker.off("exit", done);
+          resolve();
+        };
+        timer = setTimeout(done, EXPORT_HELPER_CLOSE_WAIT_MS);
+        timer.unref?.();
+        worker.on("message", onMessage);
+        worker.once("exit", done);
+        try {
+          worker.postMessage({ type: "close" });
+        } catch {
+          done();
+        }
+      });
+      failAll(new Error("export helper retired"));
+      await worker.terminate().catch(() => undefined);
     },
   };
 }

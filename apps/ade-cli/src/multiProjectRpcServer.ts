@@ -121,6 +121,7 @@ import { requestMachineRemovalFromUser } from "./services/account/machineRemoval
 import { captureAgentCardAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
 import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
+import { noteUserClientClosed, noteUserClientOpened, type IdleMemorySources } from "./services/runtime/brainIdleMemory";
 import {
   isRemoteRuntimeEventCategory,
   sanitizeMachineName,
@@ -1064,59 +1065,6 @@ const ICON_WRITE_RESOLVE_BUDGET_MS = 8_000;
 let machineUpdateAndRestartInFlight: Promise<unknown> | null = null;
 
 /**
- * Desktop windows connected to this brain, across every connection.
- *
- * The brain keeps history for the windows that read it: each project's
- * runtime event buffer (up to 16 MB, kept so a window that reconnects can
- * replay what it missed) and the chat service's event rings and parsed
- * transcript windows (released after ten quiet minutes). After the last
- * desktop window disconnects (the app quit), that history has no reader, so
- * it goes after a short wait instead (`releaseHistoryWithNoDesktop`). Every
- * piece rebuilds on the next read; a replay from an older cursor reports a
- * gap, as it does after eviction. A brain no desktop ever connected to
- * (a headless server, a cloud computer) never runs it.
- */
-let desktopConnectionCount = 0;
-let desktopGoneReleaseTimer: ReturnType<typeof setTimeout> | null = null;
-const DESKTOP_GONE_RELEASE_DELAY_MS = 15_000;
-
-function noteDesktopConnectionOpened(): void {
-  desktopConnectionCount += 1;
-  if (desktopGoneReleaseTimer) {
-    clearTimeout(desktopGoneReleaseTimer);
-    desktopGoneReleaseTimer = null;
-  }
-}
-
-function noteDesktopConnectionClosed(scopeRegistry: Pick<ProjectScopeRegistry, "listReady"> | null): void {
-  desktopConnectionCount = Math.max(0, desktopConnectionCount - 1);
-  if (desktopConnectionCount > 0 || !scopeRegistry || desktopGoneReleaseTimer) return;
-  desktopGoneReleaseTimer = setTimeout(() => {
-    desktopGoneReleaseTimer = null;
-    if (desktopConnectionCount > 0) return;
-    releaseHistoryWithNoDesktop(scopeRegistry);
-  }, DESKTOP_GONE_RELEASE_DELAY_MS);
-  desktopGoneReleaseTimer.unref?.();
-}
-
-function releaseHistoryWithNoDesktop(scopeRegistry: Pick<ProjectScopeRegistry, "listReady">): void {
-  let scopes: ProjectScope[] = [];
-  try {
-    scopes = typeof scopeRegistry.listReady === "function" ? scopeRegistry.listReady() : [];
-  } catch {
-    return;
-  }
-  for (const scope of scopes) {
-    try {
-      scope.runtime.agentChatService?.releaseQuietChatHistory?.();
-      scope.runtime.eventBuffer.releaseRetained?.();
-    } catch {
-      // Memory only: a scope mid-teardown keeps its history until it is gone.
-    }
-  }
-}
-
-/**
  * What the shared project record asks of one icon resolve (see
  * `RemoteProjectIconRecordMode`), and where a `migrate` answer's shrunk copy
  * of this machine's own icon goes.
@@ -1947,8 +1895,15 @@ export function createMultiProjectRpcRequestHandler(
    * into an already-drained map and never cleaned up.
    */
   let disposed = false;
-  /** This connection is a desktop window (`noteDesktopConnectionOpened`). */
+  /** This connection is a desktop window (`brainIdleMemory.ts`). */
   let countedAsDesktop = false;
+  /**
+   * This connection comes from another machine (a phone, another computer, the
+   * web app, another machine's agents): a paired channel names its device. It
+   * keeps the brain's idle memory release away while it is open.
+   */
+  let countedAsRemote = Boolean(options.peerDeviceId?.trim());
+  if (countedAsRemote) noteUserClientOpened("remote");
   const frameDemand = createConnectionFrameDemand();
   const disposeProjectRuntimeCaches = (projectId: ProjectId): void => {
     frameDemand.forgetProject(projectId);
@@ -3089,7 +3044,7 @@ export function createMultiProjectRpcRequestHandler(
       initializedParams = params;
       if (!countedAsDesktop && !disposed && isDesktopClientName(callerClientName())) {
         countedAsDesktop = true;
-        noteDesktopConnectionOpened();
+        noteUserClientOpened("desktop");
       }
       return {
         protocolVersion:
@@ -5006,11 +4961,20 @@ export function createMultiProjectRpcRequestHandler(
 
   handler.dispose = () => {
     disposed = true;
-    if (countedAsDesktop) {
-      countedAsDesktop = false;
-      // Only a brain whose scopes outlive this connection has history to give back.
+    if (countedAsDesktop || countedAsRemote) {
+      // Only a brain whose scopes outlive this connection has memory to give back.
       const sharedScopes = options.scopeRegistry && options.disposeScopesOnDispose !== true ? options.scopeRegistry : null;
-      noteDesktopConnectionClosed(sharedScopes);
+      const sources: IdleMemorySources | null = sharedScopes
+        ? { listRuntimes: () => (typeof sharedScopes.listReady === "function" ? sharedScopes.listReady() : []).map((scope) => scope.runtime) }
+        : null;
+      if (countedAsDesktop) {
+        countedAsDesktop = false;
+        noteUserClientClosed("desktop", sources);
+      }
+      if (countedAsRemote) {
+        countedAsRemote = false;
+        noteUserClientClosed("remote", sources);
+      }
     }
     for (const subscription of eventSubscriptions.values()) {
       subscription.unsubscribe();
