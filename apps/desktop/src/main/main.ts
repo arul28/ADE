@@ -261,6 +261,7 @@ import {
   emitPrCardsForChange,
 } from "./services/prs/prChatCards";
 import { openExternalUrl } from "./services/shared/externalLinks";
+import { armLaunchQuiet } from "./services/shared/launchQuiet";
 import {
   CaptureHelper,
   resolveCaptureHelperExecutablePath,
@@ -1756,6 +1757,21 @@ const deeplinkClaimAsDefault = app.isPackaged && deeplinkChannel === null;
 if (process.platform === "win32") {
   app.setAppUserModelId(ADE_WINDOWS_APP_USER_MODEL_ID);
 }
+
+// macOS: no Electron default menu. With no menu set by now, Electron builds
+// its default one while the app finishes launching, and AppKit then looks up
+// an SF Symbol for each item (about 0.7 MB of the CoreGlyphs catalog on a cold
+// disk), all before `ready`. ADE replaces that menu with its own right after
+// the first window is created (`installApplicationMenuOnce`), so the default
+// one was built only to be thrown away. Windows and Linux keep theirs: there
+// the menu belongs to each window.
+if (process.platform === "darwin") {
+  Menu.setApplicationMenu(null);
+}
+
+// Background provider CLI work (usage polls, model list warms) waits out the
+// first seconds of the launch; see `launchQuiet.ts`.
+armLaunchQuiet();
 
 const pendingAppNavigationRequests: AppNavigationRequest[] = [];
 let dispatchAppNavigationRequest: ((request: AppNavigationRequest) => void) | null = null;
@@ -10769,14 +10785,29 @@ app.whenReady().then(async () => {
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
   };
 
-  installApplicationMenu();
+  // Windows and Linux attach the menu to each window, so it is in place before
+  // the first one. macOS installs it right after the first window is created
+  // (below, next to `createWindow`): the menu bar's symbol reads then overlap
+  // the page load instead of coming before the window. The timer is a guard
+  // for a launch that never gets that far.
+  let applicationMenuInstalled = false;
+  const installApplicationMenuOnce = (): void => {
+    if (applicationMenuInstalled) return;
+    applicationMenuInstalled = true;
+    installApplicationMenu();
+  };
+  if (process.platform === "darwin") {
+    setTimeout(installApplicationMenuOnce, 3_000);
+  } else {
+    installApplicationMenuOnce();
+  }
   // The update item's label follows the updater; rebuild only when it changes.
   let nativeUpdateLabel = nativeUpdateMenuLabel(autoUpdateService.getSnapshot());
   autoUpdateService.onStateChange((snapshot) => {
     const label = nativeUpdateMenuLabel(snapshot);
     if (label === nativeUpdateLabel) return;
     nativeUpdateLabel = label;
-    if (process.platform === "darwin") installApplicationMenu();
+    if (process.platform === "darwin" && applicationMenuInstalled) installApplicationMenu();
   });
   requestNativeUpdateInstall = () => runUpdateFromNativeUi(BrowserWindow.getFocusedWindow());
   if (nativeUpdateInstallPending) {
@@ -11460,6 +11491,7 @@ app.whenReady().then(async () => {
     onCloseRequested: handleMainWindowCloseRequested,
     hidden: quitInstallLaunch,
   });
+  installApplicationMenuOnce();
   // Node loads its `fetch` code on the first call: about 10 ms of main thread.
   // The first call came from the window's own launch reads (ADE Cloud access,
   // analytics), inside its wait for its session. Make that first call now, a

@@ -34,7 +34,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { BrowserWindow, session as electronSession } from "electron";
-import { ArrayBufferTarget, Muxer } from "mp4-muxer";
+import { loadMp4Muxer } from "../shared/lazyPackages";
 import {
   DEMO_ANALYSIS_MIN_INTERVAL_SECONDS,
   DEMO_ANALYSIS_PIXEL_DELTA,
@@ -1158,6 +1158,7 @@ export function createChromiumDemoEngine(deps: { logger: Logger }): ChromiumDemo
         throw new Error(`The demo plan's output size ${output.width}x${output.height} is not a positive even size.`);
       }
       if (!(output.fps > 0) || !(output.bitrate > 0)) throw new Error("The demo plan's frame rate or bitrate is not positive.");
+      const { ArrayBufferTarget, Muxer } = loadMp4Muxer();
       const muxer = new Muxer({
         target: new ArrayBufferTarget(),
         video: { codec: "avc", width: output.width, height: output.height, frameRate: output.fps },

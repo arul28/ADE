@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { parseYaml, stringifyYaml } from "../../../../desktop/src/main/services/shared/lazyPackages";
 
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import {

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ActiveScene } from "./useScene";
 
 type ImageScene = Extract<ActiveScene, { kind: "image" }>;
@@ -10,6 +10,62 @@ const FADE_MS = 420;
 // box, a tab coming back) shows it at once, in step with any fade still
 // running, instead of fading it in again from nothing.
 const shownAt = new Map<string, number>();
+
+/*
+ * A window's first picture waits for its first prompt box.
+ *
+ * At launch the picture (up to 1.9 MB, decoded to a window-sized bitmap) was
+ * fetched while the prompt box's own code was still loading from the same
+ * cold disk, and decoded beside the first frames a person types into. It
+ * fades in anyway, so it now starts a moment after the prompt box has painted
+ * (`ade:early-composer:shown` or `ade:boot:composer`), or at
+ * FIRST_PICTURE_MAX_WAIT_MS into the page on a screen with no prompt box.
+ * Later pictures, and layers that mount later, load at once.
+ */
+const FIRST_PICTURE_SETTLE_MS = 250;
+const FIRST_PICTURE_MAX_WAIT_MS = 1_500;
+const PROMPT_BOX_MARKS = ["ade:early-composer:shown", "ade:boot:composer"];
+let firstPictureAllowed = false;
+let firstPictureWait: Promise<void> | null = null;
+
+function promptBoxMarked(): boolean {
+  try {
+    return PROMPT_BOX_MARKS.some((name) => performance.getEntriesByName(name, "mark").length > 0);
+  } catch {
+    return false;
+  }
+}
+
+function waitForFirstPicture(): Promise<void> {
+  firstPictureWait ??= new Promise<void>((resolve) => {
+    let observer: PerformanceObserver | null = null;
+    let settleTimer: number | null = null;
+    const allow = () => {
+      observer?.disconnect();
+      window.clearTimeout(capTimer);
+      if (settleTimer != null) window.clearTimeout(settleTimer);
+      firstPictureAllowed = true;
+      resolve();
+    };
+    const settle = () => {
+      if (settleTimer == null) settleTimer = window.setTimeout(allow, FIRST_PICTURE_SETTLE_MS);
+    };
+    const capTimer = window.setTimeout(allow, Math.max(0, FIRST_PICTURE_MAX_WAIT_MS - performance.now()));
+    if (promptBoxMarked()) {
+      settle();
+      return;
+    }
+    try {
+      observer = new PerformanceObserver((list) => {
+        if (list.getEntries().some((entry) => PROMPT_BOX_MARKS.includes(entry.name))) settle();
+      });
+      observer.observe({ type: "mark" });
+    } catch {
+      // No observer: the cap still lets the picture in.
+    }
+  });
+  return firstPictureWait;
+}
 
 /**
  * One box's slice of a window-sized picture.
@@ -35,6 +91,18 @@ export function SceneImageLayer({ scene }: { scene: ImageScene }) {
     shownOnMount ? { id: scene.id, url: shownOnMount } : null,
   );
   const loadedUrl = loaded?.url ?? null;
+  const [pictureAllowed, setPictureAllowed] = useState(() => firstPictureAllowed || shownOnMount !== null);
+
+  useEffect(() => {
+    if (pictureAllowed) return;
+    let live = true;
+    void waitForFirstPicture().then(() => {
+      if (live) setPictureAllowed(true);
+    });
+    return () => {
+      live = false;
+    };
+  }, [pictureAllowed]);
 
   useLayoutEffect(() => {
     const host = hostRef.current;
@@ -110,7 +178,7 @@ export function SceneImageLayer({ scene }: { scene: ImageScene }) {
             style={{ objectPosition: scene.position }}
           />
         ) : null}
-        {scene.url ? (
+        {scene.url && pictureAllowed ? (
           <img
             key={scene.url}
             src={scene.url}

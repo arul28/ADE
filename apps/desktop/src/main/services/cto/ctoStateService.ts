@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import YAML from "yaml";
+import { YAML } from "../shared/lazyPackages";
 import {
   CTO_IDENTITY_SCHEMA_VERSION,
   CTO_MAX_FALLBACK_MODELS,

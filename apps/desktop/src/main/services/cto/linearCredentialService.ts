@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import YAML from "yaml";
+import { YAML } from "../shared/lazyPackages";
 import { safeStorage } from "electron";
 import { isSecureStorageAvailable, isSecureStorageCheckPending } from "../shared/secureStorage";
 import type { Logger } from "../logging/logger";

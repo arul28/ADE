@@ -170,13 +170,15 @@ function resolveNativeUpdater(): NativeUpdaterLike | null {
  * Requiring electron-updater, and the platform updater its `autoUpdater`
  * getter builds, ran on every launch before the first window, while the
  * first check waits seconds (`startupDelayMs`). Until the first real use, the
- * fields the service sets (`logger`, `autoDownload`, ...) and the listeners it
- * adds or removes are kept, and replayed in the same order onto the real
- * updater when it loads. Any other use (a check, a download, a read of a
- * field not set here, the net recovery reading its executor) loads it first,
- * so everything after the load talks to the real updater as before.
+ * fields the service sets (`logger`, `autoDownload`, ...), the listeners it
+ * adds or removes, and the feed it points the updater at (`setFeedURL`, which
+ * the track policy calls at construction on every Beta build) are kept, and
+ * replayed in the same order onto the real updater when it loads. Any other
+ * use (a check, a download, a read of a field not set here, the net recovery
+ * reading its executor) loads it first, so everything after the load talks to
+ * the real updater as before.
  */
-function lazyElectronAutoUpdater(): AutoUpdaterLike {
+function lazyElectronAutoUpdater(logger?: Pick<Logger, "warn">): AutoUpdaterLike {
   let real: AutoUpdaterLike | null = null;
   const written = new Map<PropertyKey, unknown>();
   const replay: Array<(updater: AutoUpdaterLike) => void> = [];
@@ -204,11 +206,30 @@ function lazyElectronAutoUpdater(): AutoUpdaterLike {
       replay.push((updater) => updater.removeListener(event, listener));
       return proxy;
     },
+    setFeedURL: (options: Parameters<NonNullable<AutoUpdaterLike["setFeedURL"]>>[0]): void => {
+      if (real) {
+        real.setFeedURL?.(options);
+        return;
+      }
+      replay.push((updater) => {
+        // Called at construction inside the service's own try/catch, which
+        // logs a failure and keeps the packaged feed. Replayed here, the same
+        // failure is logged the same way and does not stop the load.
+        try {
+          updater.setFeedURL?.(options);
+        } catch (error) {
+          logger?.warn("autoUpdate.feed_config_failed", {
+            message: error instanceof Error ? error.message : String(error),
+            deferred: true,
+          });
+        }
+      });
+    },
   };
   const proxy = new Proxy({} as AutoUpdaterLike, {
     get(_target, key) {
       if (real) return read(real, key);
-      if (key === "on" || key === "removeListener") return kept[key];
+      if (key === "on" || key === "removeListener" || key === "setFeedURL") return kept[key];
       if (written.has(key)) return written.get(key);
       return read(load(), key);
     },
@@ -675,7 +696,7 @@ export function createAutoUpdateService({
   logger,
   currentVersion,
   globalStatePath,
-  updater = lazyElectronAutoUpdater(),
+  updater = lazyElectronAutoUpdater(logger),
   beforeQuitAndInstall,
   stopOwnedRuntimeCooperatively,
   rollbackQuitAndInstall,

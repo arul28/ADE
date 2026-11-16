@@ -230,6 +230,7 @@ import {
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { isRemoteWorkLaneId } from "../../desktop/src/shared/types/remoteWork";
 import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
+import { armLaunchQuiet } from "../../desktop/src/main/services/shared/launchQuiet";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import { trackPtyOutputBacklog } from "../../desktop/src/main/services/pty/ptyOutputFlowControl";
 import { forgetCliSessionsToReopen } from "../../desktop/src/main/services/pty/cliReopenAfterRestart";
@@ -29781,6 +29782,9 @@ async function runServe(
     const { getRuntimeServiceStatus } = await import("./serviceManager");
     return getRuntimeServiceStatus();
   }
+  // A brain starts with the desktop app on a cold launch: its background
+  // provider CLI work waits out the launch (`launchQuiet.ts`).
+  armLaunchQuiet();
   // Before anything reads the env: a brain started from an agent's shell must
   // not lend that agent's identity to every client it serves.
   const droppedCallerIdentityKeys = dropInheritedCallerIdentity(process.env);

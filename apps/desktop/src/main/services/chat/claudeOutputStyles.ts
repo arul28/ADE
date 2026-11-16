@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parse as parseYaml } from "yaml";
+import { parseYaml } from "../shared/lazyPackages";
 import type { AgentChatClaudeOutputStyle, AgentChatClaudePlugin } from "../../../shared/types/chat";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
 import { claudeConfigHome } from "../shared/providerConfigHomes";

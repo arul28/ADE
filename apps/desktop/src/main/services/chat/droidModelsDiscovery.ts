@@ -1,11 +1,15 @@
-import { tmpdir } from "node:os";
+import fs from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import path from "node:path";
 import {
   createDynamicDroidCliModelDescriptor,
   sortDroidCliDescriptorsForPicker,
   type ModelCapabilities,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import { spawnAsync } from "../shared/utils";
+import { resolveAdeCacheFile } from "../shared/adeCacheFile";
+import { runAfterLaunchQuiet } from "../shared/launchQuiet";
+import { spawnAsync, writeTextAtomic } from "../shared/utils";
 
 export type DroidExecHelpModelRow = {
   id: string;
@@ -27,6 +31,91 @@ const TTL_MS = 120_000;
 // Serve last-known-good rows well past the freshness window (revalidating in
 // the background) so passive consumers never lose models between probes.
 const POSITIVE_TTL_MS = 6 * 60 * 60_000;
+
+/*
+ * The last `droid exec --help` answer, on disk. That answer comes from the
+ * binary and from the custom models in Factory's `settings.json`, so it is
+ * kept with both files' size and modification time: a brain that starts
+ * with neither file changed shows the list without starting droid (about
+ * 40 MB read from disk on a cold start). A changed file, an answer older
+ * than {@link POSITIVE_TTL_MS}, or a sign-in change (`clearDroidCliModelsCache`)
+ * drops it.
+ */
+const DISK_CACHE_FILE = "droid-models-cache.json";
+const DISK_CACHE_VERSION = 1;
+
+type FileStamp = { size: number; mtimeMs: number };
+type DroidModelsDiskEntry = {
+  version: typeof DISK_CACHE_VERSION;
+  droidPath: string;
+  binary: FileStamp;
+  settings: FileStamp | null;
+  savedAt: number;
+  models: DroidExecHelpModelRow[];
+};
+
+function fileStamp(filePath: string): FileStamp | null {
+  try {
+    const stat = fs.statSync(filePath);
+    return stat.isFile() ? { size: stat.size, mtimeMs: stat.mtimeMs } : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameStamp(a: FileStamp | null | undefined, b: FileStamp | null): boolean {
+  if (!a || !b) return !a && !b;
+  return a.size === b.size && a.mtimeMs === b.mtimeMs;
+}
+
+/** Factory's settings file, as the spawned droid finds it (`FACTORY_HOME_OVERRIDE` names the home that holds `.factory`). */
+function factorySettingsPath(): string {
+  const home = process.env.FACTORY_HOME_OVERRIDE?.trim() || homedir();
+  return path.join(home, ".factory", "settings.json");
+}
+
+function readDiskModels(droidPath: string): DroidExecHelpModelRow[] | null {
+  try {
+    const entry = JSON.parse(fs.readFileSync(resolveAdeCacheFile(DISK_CACHE_FILE), "utf8")) as Partial<DroidModelsDiskEntry>;
+    if (entry.version !== DISK_CACHE_VERSION || entry.droidPath !== droidPath) return null;
+    if (typeof entry.savedAt !== "number" || Date.now() - entry.savedAt > POSITIVE_TTL_MS) return null;
+    const binary = fileStamp(droidPath);
+    if (!binary || !sameStamp(entry.binary, binary) || !sameStamp(entry.settings, fileStamp(factorySettingsPath()))) return null;
+    const models = Array.isArray(entry.models)
+      ? entry.models.filter((row): row is DroidExecHelpModelRow =>
+        typeof row?.id === "string" && row.id.length > 0 && typeof row.displayName === "string")
+      : [];
+    return models.length ? models : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDiskModels(droidPath: string, models: DroidExecHelpModelRow[]): void {
+  const binary = fileStamp(droidPath);
+  if (!binary || !models.length) return;
+  const entry: DroidModelsDiskEntry = {
+    version: DISK_CACHE_VERSION,
+    droidPath,
+    binary,
+    settings: fileStamp(factorySettingsPath()),
+    savedAt: Date.now(),
+    models,
+  };
+  try {
+    writeTextAtomic(resolveAdeCacheFile(DISK_CACHE_FILE), JSON.stringify(entry));
+  } catch {
+    // Without the file the next brain asks droid again; nothing else changes.
+  }
+}
+
+function clearDiskModels(): void {
+  try {
+    fs.rmSync(resolveAdeCacheFile(DISK_CACHE_FILE), { force: true });
+  } catch {
+    // Best effort, as the write.
+  }
+}
 
 const CANONICAL_DROID_ANTHROPIC_CAPABILITIES: Partial<ModelCapabilities> = {
   tools: true,
@@ -104,6 +193,7 @@ async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExec
       const rows = parseDroidExecHelpModels(helpResult.stdout ?? "");
       if (rows.length) {
         cached = { at: now, models: rows };
+        writeDiskModels(droidPath, rows);
         return rows;
       }
     }
@@ -264,6 +354,7 @@ async function listDroidModelsFromSdk(droidPath: string): Promise<DroidExecHelpM
 }
 
 export function clearDroidCliModelsCache(): void {
+  clearDiskModels();
   cached = null;
   inflight = null;
   warmInFlight = false;
@@ -290,7 +381,9 @@ function warmDroidModels(droidPath: string): void {
   if (cached && now - cached.at < TTL_MS) return;
   lastWarmAttemptAt = now;
   warmInFlight = true;
-  void listDroidModelsFromSdk(droidPath)
+  // Not in the first seconds of a launch, and not beside the other
+  // background CLI starts (`launchQuiet.ts`).
+  void runAfterLaunchQuiet(() => listDroidModelsFromSdk(droidPath))
     .catch(() => undefined)
     .finally(() => {
       warmInFlight = false;
@@ -301,6 +394,12 @@ function getCachedDroidModels(droidPathForRevalidate?: string | null): DroidExec
   const now = Date.now();
   if (cached && now - cached.at < TTL_MS) {
     return cached.models;
+  }
+  // A new process: the last answer for this same droid and settings file.
+  const fromDisk = !cached && droidPathForRevalidate ? readDiskModels(droidPathForRevalidate) : null;
+  if (fromDisk) {
+    cached = { at: now, models: fromDisk };
+    return fromDisk;
   }
   // Stale-while-revalidate: serve last-known-good rows past the freshness
   // window and refresh in the background so passive consumers never watch

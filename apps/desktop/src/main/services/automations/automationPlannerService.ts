@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { automationCloudProblem, isIanaTimeZone, parseAutomationCloudTarget } from "../../../shared/automationCloud";
 import fs from "node:fs";
 import path from "node:path";
-import cron from "node-cron";
+import { loadNodeCron } from "../shared/lazyPackages";
 import {
   type ConfigAutomationRule,
   AUTOMATION_TRIGGER_TYPES,
@@ -723,7 +723,7 @@ function normalizeDraft(args: {
     if (triggerType === "schedule") {
       if (!cronExpr) {
         issues.push({ level: "error", path: `triggers[${index}].cron`, message: "Schedule trigger requires cron." });
-      } else if (!cron.validate(cronExpr)) {
+      } else if (!loadNodeCron().validate(cronExpr)) {
         issues.push({ level: "error", path: `triggers[${index}].cron`, message: `Invalid cron expression '${cronExpr}'.` });
       } else {
         trigger.cron = cronExpr;
