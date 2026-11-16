@@ -36,7 +36,7 @@ import type {
   TerminalSessionSummary,
 } from "../../shared/types";
 import type { CloudLaneWithoutComputer } from "../../shared/cloudLaneLaunch";
-import { distinctMachineNames, THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
+import { distinctMachineNames, machineIdOfSlot, THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { formatMachineVersions } from "../../shared/machineVersions";
 import type { MachineAddress } from "../../shared/repositoryTab";
 import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, machineLabelForMachine, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
@@ -377,12 +377,14 @@ export function buildAllMachineLanes(input: {
     // The union keeps it only for its saved chats, so no lane surface lists it.
     if (entry.computerGone === true) continue;
     const binding = entry.binding ?? null;
-    const connection = connectionById.get(entry.targetId ?? entry.machineId);
-    const isThisMachine = entry.machineId === THIS_MACHINE_ID;
+    // A second checkout on a computer has a slice id of its own; the computer is the part before it.
+    const ownMachineId = machineIdOfSlot(entry.machineId);
+    const connection = connectionById.get(entry.targetId ?? ownMachineId);
+    const isThisMachine = ownMachineId === THIS_MACHINE_ID;
     const pin = binding;
     const machine: LaneMachine = {
       machineId: entry.machineId,
-      machineName: shownName(binding, entry.machineId, entry.machineName?.trim() || connection?.target.name?.trim() || entry.machineId),
+      machineName: shownName(binding, ownMachineId, entry.machineName?.trim() || connection?.target.name?.trim() || ownMachineId),
       online: entry.online,
       isThisMachine,
       isActiveBinding: false,
@@ -454,19 +456,26 @@ export function buildAllMachineLanes(input: {
 
   // Two computers that share a name ("Arul's Mac Studio" twice) are told
   // apart here, once, for every list and picker built from this.
-  const shown = distinctMachineNames([...machines, ...machinesWithoutRepo].map((machine) => ({
-    id: machine.machineId,
+  // A computer with two checkouts is one computer here: its slices share its label.
+  const namedOnce = new Map<string, LaneMachine>();
+  for (const machine of [...machines, ...machinesWithoutRepo]) {
+    const ownId = machineIdOfSlot(machine.machineId);
+    if (!namedOnce.has(ownId)) namedOnce.set(ownId, machine);
+  }
+  const shown = distinctMachineNames([...namedOnce].map(([id, machine]) => ({
+    id,
     name: machine.machineName,
     isThisMachine: machine.isThisMachine,
     hostname: machine.hostname,
     deviceId: machine.deviceId,
   })));
+  const distinctLabelOf = (machine: LaneMachine) => shown.get(machineIdOfSlot(machine.machineId));
   const renamed = (machine: LaneMachine) => {
-    const name = shown.get(machine.machineId);
+    const name = distinctLabelOf(machine);
     return name != null && name !== machine.machineName;
   };
   const relabel = <T extends LaneMachine>(machine: T): T =>
-    renamed(machine) ? { ...machine, machineName: shown.get(machine.machineId)! } : machine;
+    renamed(machine) ? { ...machine, machineName: distinctLabelOf(machine)! } : machine;
   if (machines.some(renamed) || machinesWithoutRepo.some(renamed)) {
     machines.splice(0, machines.length, ...machines.map(relabel));
     machinesWithoutRepo.splice(0, machinesWithoutRepo.length, ...machinesWithoutRepo.map(relabel));

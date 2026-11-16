@@ -463,8 +463,9 @@ describe("bootstrapPairedRuntime", () => {
 
     expect(captured).toBeInstanceOf(PairedRuntimeTransportUnavailableError);
     const unavailable = captured as PairedRuntimeTransportUnavailableError;
+    // The computer's ADE name ("Studio"), not its operating system's host name.
     expect(unavailable.message).toBe(
-      "Arul's Mac Studio says this device's pairing is out of date — pair it again.",
+      "Studio says this device's pairing is out of date — pair it again.",
     );
     // The headline is the whole message: no route list, no host, no port.
     for (const forbidden of ["192.168", "8788", "ts.net", "relay", "lan", "unknown", ";"]) {

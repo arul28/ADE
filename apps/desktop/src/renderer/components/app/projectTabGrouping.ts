@@ -134,6 +134,17 @@ function remoteMachine(binding: RemoteOpenProjectBinding): ProjectTabMachine {
  *   parent repo's origin, so without this a worktree and its parent would
  *   silently become one tab that can't represent both. A second open folder
  *   on the same machine keeps its own tab.
+ * - A tab never takes in another open tab. A copy in `ownTabKeys` (a second
+ *   clone that already has its own tab) keeps that tab while it stays open,
+ *   even after the copy it stood next to moved to another machine. Without
+ *   this, the one-copy rule would close it as a duplicate of the moved tab.
+ *   When every open copy of the repository is such a copy, the first one is
+ *   the repository tab (with every known copy) and the rest keep their own.
+ * - A move stays in the tab it was made in. A copy in `joinTabOf` (the copy a
+ *   tab just moved to, keyed to the copy it moved from) joins the tab of that
+ *   copy, whatever tab that is, as long as both are one repository. Without
+ *   this, a second clone's tab that moved to another machine joined the first
+ *   tab of the repository, and the one-copy rule closed that tab's copy.
  */
 export function groupProjectTabs(args: {
   localTabs: readonly RecentProjectSummary[];
@@ -154,6 +165,11 @@ export function groupProjectTabs(args: {
   canonicalOrigin?: (origin: string) => string;
   /** The repository tab id of an origin. Defaults to `repo:<origin>`. */
   repositoryIdForOrigin?: (origin: string) => string;
+  /** Open copies that head a tab of their own (a second clone): each keeps
+   *  that tab and joins no other. */
+  ownTabKeys?: ReadonlySet<string>;
+  /** The copy a tab just moved to → the copy it moved from: it joins that tab. */
+  joinTabOf?: ReadonlyMap<string, string>;
 }): ProjectTabGroup[] {
   const {
     localTabs,
@@ -166,6 +182,8 @@ export function groupProjectTabs(args: {
     order = [],
     canonicalOrigin = (origin: string) => origin,
     repositoryIdForOrigin = (origin: string) => `repo:${origin}`,
+    ownTabKeys,
+    joinTabOf,
   } = args;
   const repositoryOf = (origin: string | null): string | null => (origin ? canonicalOrigin(origin) : null);
 
@@ -215,9 +233,31 @@ export function groupProjectTabs(args: {
     origin,
   });
 
+  const openKeySet = new Set(openEntries.map((entry) => entry.machine.bindingKey));
+  // A moved copy waits for the tab it moved from (it can sort before it).
+  const movesIn = (machine: ProjectTabMachine, origin: string | null): boolean => {
+    const from = joinTabOf?.get(machine.bindingKey);
+    if (!from || !origin || !openKeySet.has(from)) return false;
+    return openEntries.some((entry) => entry.machine.bindingKey === from && entry.origin === origin);
+  };
+  // The repositories with an open copy that has no tab of its own: that copy
+  // heads the repository tab. Without one, the first own copy heads it, so a
+  // tab of its own that is now the repository's only tab gets every copy.
+  const sharedOpen = new Set<string>();
   for (const { machine, origin } of openEntries) {
-    if (!origin) {
-      groups.push(standalone(machine, null));
+    if (origin && !ownTabKeys?.has(machine.bindingKey) && !movesIn(machine, origin)) sharedOpen.add(origin);
+  }
+  const moved: { machine: ProjectTabMachine; origin: string }[] = [];
+  for (const { machine, origin } of openEntries) {
+    if (origin && movesIn(machine, origin)) {
+      moved.push({ machine, origin });
+      continue;
+    }
+    if (
+      !origin
+      || (ownTabKeys?.has(machine.bindingKey) && (sharedOpen.has(origin) || groupByOrigin.has(origin)))
+    ) {
+      groups.push(standalone(machine, origin));
       continue;
     }
     const existing = groupByOrigin.get(origin);
@@ -241,11 +281,21 @@ export function groupProjectTabs(args: {
     if (machine.bindingKey === activeBindingKey) existing.activeBindingKey = machine.bindingKey;
   }
 
+  for (const { machine, origin } of moved) {
+    const from = joinTabOf!.get(machine.bindingKey)!;
+    const tab = groups.find((group) => group.machines.some((candidate) => candidate.bindingKey === from))!;
+    tab.machines.push(machine);
+    claimedMachines.get(origin)?.add(machine.machineId);
+    if (machine.bindingKey === activeBindingKey) tab.activeBindingKey = machine.bindingKey;
+  }
+
   // Attach discovered counterparts only after open entries establish the tab
   // set. This is what lets an unopened local checkout appear in the machine
-  // switcher without turning every recent project into an open tab.
+  // switcher without turning every recent project into an open tab. A copy
+  // open in a tab of its own is that tab's, never another tab's machine.
+  const openKeys = new Set(openEntries.map((entry) => entry.machine.bindingKey));
   for (const { machine, origin } of knownEntries) {
-    if (!origin) continue;
+    if (!origin || openKeys.has(machine.bindingKey)) continue;
     const existing = groupByOrigin.get(origin);
     if (!existing) continue;
     if (existing.machines.some((candidate) => candidate.bindingKey === machine.bindingKey)) {
@@ -271,6 +321,18 @@ export function groupProjectTabs(args: {
   return groups;
 }
 
+/**
+ * The open copies in a tab of their own in `groups`: a repository's second
+ * clone, keyed by its copy, and the copy that tab just moved to.
+ */
+export function ownTabKeysOf(groups: readonly ProjectTabGroup[]): Set<string> {
+  return new Set(groups.flatMap((group) => (
+    group.origin && group.machines.some((machine) => machine.bindingKey === group.id)
+      ? group.machines.map((machine) => machine.bindingKey)
+      : []
+  )));
+}
+
 /** The key a tab is ordered by: the binding key of the checkout it opened on. */
 export function tabOrderKey(group: ProjectTabGroup): string {
   return group.machines[0]?.bindingKey ?? group.id;
@@ -294,8 +356,10 @@ export type ProjectTabFallback =
  * A logical tab is a repo, so one machine going away is not a reason to close
  * it: the tab falls back to another checkout of the same repo — the local
  * checkout first (it needs no connection and is the tab's natural default),
- * then a connected machine, then any other. `null` means the repo lives nowhere
- * else and the tab must close.
+ * then a connected machine, then any other. A checkout that another tab has
+ * open is never a fallback: moving there would close one tab and replace the
+ * other tab's view. `null` means no free checkout: the tab waits with no
+ * computer (or closes, for a folder with no repository).
  */
 export function resolveProjectTabFallback(args: {
   bindingKey: string;
@@ -328,16 +392,16 @@ export function resolveProjectTabFallback(args: {
       ? openLocalRoots.includes(machine.rootPath)
       : openRemoteKeys.has(machine.bindingKey);
 
-  const locals = others.filter(
-    (machine) => machine.isLocal && machine.exists && machine.rootPath,
+  const local = others.find(
+    (machine) => machine.isLocal && machine.exists && machine.rootPath && !isOpen(machine),
   );
-  const local = locals.find(isOpen) ?? locals[0];
   if (local) return { kind: "local", rootPath: local.rootPath };
 
   const remotes = others.filter(
     (machine): machine is ProjectTabMachine & { binding: RemoteOpenProjectBinding } =>
       machine.binding?.kind === "remote" &&
-      machine.binding.targetId !== excludeTargetId,
+      machine.binding.targetId !== excludeTargetId &&
+      !isOpen(machine),
   );
   const remote =
     remotes.find((machine) => connectedTargetIds.has(machine.binding.targetId)) ??

@@ -8,6 +8,7 @@ import { useAppStore } from "../../state/appStore";
 import { MoveProjectDialog } from "./MoveProjectDialog";
 import { chooseOldCopy } from "./oldCopyActions";
 import { displayPath, formatBytes, PROJECT_MOVE_CHANGED_EVENT, REMINDER_CHOICES } from "./projectMoveModel";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * The move dialog lives here, at the app shell, not in Settings: a finished
@@ -40,8 +41,9 @@ const REFRESH_MS = 10 * 60_000;
 export function ProjectMoveHost() {
   const target = useSyncExternalStore(subscribe, () => dialogTarget, () => null);
   const [attention, setAttention] = useState<ProjectMoveRecord[]>([]);
-  // Moving projects is macOS-only; elsewhere there is nothing to poll for.
-  const api = isMacPlatform() ? window.ade?.projectMove : undefined;
+  // Moving projects is macOS-only, and ADE Web has no moves (its stand-in
+  // rejects every call); elsewhere there is nothing to poll for.
+  const api = isMacPlatform() && isAdeAvailable(window.ade?.projectMove?.attention) ? window.ade?.projectMove : undefined;
 
   const [nextReminderAt, setNextReminderAt] = useState<number | null>(null);
 

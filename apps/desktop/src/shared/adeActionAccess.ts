@@ -898,6 +898,8 @@ const UNREPLAYED_READS = new Set<string>([
  * a person asked: they don't wake a sleeping cloud computer or keep one awake.
  */
 const BACKGROUND_WRITES = new Set<string>([
+  // Reads the repository's origin from git; a composer asks it on mount.
+  "github.detectRepo",
   "pr.reconcileOnFocus",
   "session.backfillDeltas",
   "session.clearWokeMarker",

@@ -358,6 +358,38 @@ function resolveProjectMatch(
   };
 }
 
+/**
+ * Every other checkout of the repository on one machine, beside `keepProjectId`
+ * (the one already read for it). Only proven joins count (the account project
+ * id or the git origin), and only folders that exist and that a person opened,
+ * so a deleted temp copy or a folder something ran ADE in adds no rows.
+ */
+export function otherMatchedCheckouts(
+  projects: ReadonlyArray<{
+    projectId: string;
+    rootPath: string;
+    displayName: string;
+    gitOriginUrl: string | null;
+    accountProjectId?: string;
+  } & RegisteredCheckoutRank>,
+  repoIdentity: string | null,
+  repoAccountProjectId: string | null,
+  keepProjectId: string | null,
+): Array<{ projectId: string; rootPath: string; displayName: string }> {
+  if (!repoIdentity && !repoAccountProjectId) return [];
+  return projects
+    .filter((project) =>
+      project.projectId !== keepProjectId
+      && project.exists !== false
+      && project.catalogVisibility !== "system"
+      && (
+        (!!repoAccountProjectId && project.accountProjectId === repoAccountProjectId)
+        || (!!repoIdentity && cachedGitRemoteIdentity(project.gitOriginUrl) === repoIdentity)
+      ))
+    .map((project) => ({ projectId: project.projectId, rootPath: project.rootPath, displayName: project.displayName }))
+    .sort((a, b) => a.projectId.localeCompare(b.projectId));
+}
+
 function repoMatchFor(
   project: LaneMachineProjectRef | null,
   canProveAbsence: boolean,

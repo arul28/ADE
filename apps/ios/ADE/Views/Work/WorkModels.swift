@@ -1700,7 +1700,7 @@ struct WorkSubagentSnapshot: Identifiable, Hashable {
   let label: String?
   let model: String?
   let reasoningEffort: String?
-  let status: Status
+  var status: Status
   let lastToolName: String?
   let latestSummary: String?
   let turnId: String?

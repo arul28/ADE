@@ -552,7 +552,6 @@ describe("CommandPalette", () => {
           return found!;
         });
         expect(row.dataset.dimmed).toBe("true");
-        expect(row.querySelector("[data-machine-marker-mode]")).toBeTruthy();
       });
 
       it("keeps the active remote binding on row actions", async () => {

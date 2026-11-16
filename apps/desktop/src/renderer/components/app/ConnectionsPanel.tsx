@@ -215,7 +215,10 @@ export function ConnectionsPanel(props: ConnectionsPanelProps) {
   return props.variant === "web" ? <HostedConnectionsPanel {...props} /> : <DesktopConnectionsPanel {...props} />;
 }
 
-/** The account machines, read when the panel opens and again on request. */
+/** Longer than the shared cache's 15 s, so each tick is a real directory read. */
+const ACCOUNT_MACHINES_REFRESH_MS = 20_000;
+
+/** The account machines, read when the panel opens, every 20 s while it is open, and on request. */
 function usePanelAccountMachines(enabled: boolean) {
   const [accountMachines, setAccountMachines] = useState<AdeAccountMachinesResult | null>(null);
   const loadAccountMachines = useCallback(async (options?: { force?: boolean }) => {
@@ -232,6 +235,13 @@ function usePanelAccountMachines(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     void loadAccountMachines();
+    // While the panel is open the rows follow the account directory: a
+    // computer that went offline (or came back) changes its words within one
+    // read, not when the panel next opens.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadAccountMachines();
+    }, ACCOUNT_MACHINES_REFRESH_MS);
+    return () => window.clearInterval(timer);
   }, [enabled, loadAccountMachines]);
   return { accountMachines, reloadAccountMachines };
 }
@@ -352,7 +362,7 @@ function HostedConnectionsPanel({
       <div style={{ overflowY: "auto", padding: 12 }} data-onboarding-anchor="connections-machines">
         {sessionLimit != null ? (
           <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.45, marginBottom: 10 }}>
-            This tab keeps {sessionLimit} machines connected at once. Others stay listed and connect when you
+            This tab keeps {sessionLimit} computers connected at once. Others stay listed and connect when you
             open them.
           </div>
         ) : null}
@@ -360,6 +370,7 @@ function HostedConnectionsPanel({
           onDisconnectRequested={onDisconnectRequested}
           onRemoveRequested={onRemoveRequested}
           accountMachines={accountMachines?.machines}
+          sessionLimit={sessionLimit}
           accountMachinesState={accountMachines?.state}
           accountSignedIn={accountStatus.signedIn}
           onAccountRequested={goToAccount}

@@ -1,7 +1,9 @@
+import { sessionTurnLive } from "../../../shared/sessionStatusPresentation";
 import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
+  TerminalSessionSummary,
 } from "../../../shared/types";
 
 function chatEventEndsTurn(event: AgentChatEventEnvelope["event"]): boolean {
@@ -73,12 +75,54 @@ export function transcriptLatestTurnIsTerminal(events: AgentChatEventEnvelope[])
   return true;
 }
 
+/**
+ * The brain says the chat is idle, in a summary at least as new as the
+ * transcript's last event: the transcript's open turn ended with no end event
+ * (its brain restarted, or its ADE Cloud computer slept mid-turn). The Work
+ * row reads the same summary. A turn that starts after the summary was read
+ * has a newer event (or patched the summary active), so it still shows.
+ */
+export function summarySaysTurnEnded(
+  events: AgentChatEventEnvelope[],
+  summary: AgentChatSessionSummary | null | undefined,
+): boolean {
+  if (!summary || summary.status === "active" || summary.currentTurnStartedAt || summary.awaitingInput === true) return false;
+  const last = events[events.length - 1];
+  if (!last) return false;
+  const summaryAt = Date.parse(summary.lastActivityAt);
+  const lastAt = Date.parse(last.timestamp);
+  return Number.isFinite(summaryAt) && Number.isFinite(lastAt) && lastAt <= summaryAt;
+}
+
+/**
+ * The chat's Work row, read from its own machine, says no turn runs, and it
+ * is at least as new as the transcript's last event. The pane then shows what
+ * the row shows: after a wake or a reconnect nothing else re-reads the
+ * summary, and a turn that ended with no end event would read as running for
+ * as long as the pane stays open. A saved copy (its computer asleep) is left
+ * to the sleep rule; a send or a turn started elsewhere adds a newer event, so
+ * it still shows until the row catches up.
+ */
+export function rowSaysTurnEnded(
+  events: readonly AgentChatEventEnvelope[] | undefined,
+  row: Pick<TerminalSessionSummary, "cloudSavedCopy" | "currentTurnStartedAt" | "chatIdleSinceAt" | "endedAt" | "lastActivityAt"> | null | undefined,
+): boolean {
+  if (!row || row.cloudSavedCopy === true || sessionTurnLive(row)) return false;
+  const last = events?.[events.length - 1];
+  if (!last) return false;
+  const rowAt = Math.max(
+    ...[row.chatIdleSinceAt, row.lastActivityAt, row.endedAt].map((at) => (at ? Date.parse(at) : Number.NaN)).filter(Number.isFinite),
+  );
+  const lastAt = Date.parse(last.timestamp);
+  return Number.isFinite(rowAt) && Number.isFinite(lastAt) && lastAt <= rowAt;
+}
+
 export function resolveTurnActive(
   events: AgentChatEventEnvelope[],
   derivedTurnActive: boolean,
   summary: AgentChatSessionSummary | null | undefined,
 ): boolean {
-  if (derivedTurnActive) return true;
+  if (derivedTurnActive) return !summarySaysTurnEnded(events, summary);
   return events.length > 0
     && summary?.status === "active"
     && summary.awaitingInput !== true

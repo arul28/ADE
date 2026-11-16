@@ -680,8 +680,8 @@ ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-
 ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --prompt "fix failing tests"
 ade new chat --mode chat --lane lane-id --prompt-file brief.md   # a long or multi-line first message from a file, or stdin with -
-ade new chat --mode chat --lane lane-id --prompt "repro the flake"   # from an agent: a subagent that reports back (the default); --type peer for no report
-ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals and show in the parent as a subagent card that closes when the CLI exits (use --mode chat for per-turn reports); shell sessions do not record lineage
+ade new chat --mode chat --lane lane-id --prompt "repro the flake"   # from an agent: a subagent that reports back (the default); --no-report for no report
+ade new chat --mode cli --lane lane-id --provider codex --no-report --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals and show in the parent as a subagent card that closes when the CLI exits (use --mode chat for per-turn reports); shell sessions do not record lineage
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --permissions full-auto --print-config --json
 ade chat create --lane lane-id --provider codex --model openai/gpt-6.1-sol --ultrafast   # Fast at Codex's Ultrafast tier, on accounts whose Codex catalog offers it (also on `new chat` and `chat handoff`)
@@ -730,9 +730,9 @@ ade chat scheduled-work cancel session-id job-id    # cancel one job (owning cha
 ade chat wait session-id --for idle --timeout-ms 600000
 ade chat recover session-id --turn turn-id --action nudge        # provider-neutral wait | nudge | retry | resume; falls back for older Codex brains
 ade chat resolve-unprocessed session-id --steer steer-id --action run-next  # durable/idempotent; action is run-next | dismiss
-ade chat demote [session-id]                                     # take over a subagent: it becomes a peer and reports stop; defaults to $ADE_CHAT_SESSION_ID
-ade chat promote [session-id]                                    # restore a peer as a subagent so it reports to its parent again
-ade chat set-parent <session-id> --parent <chat> [--type subagent|peer]  # relink a chat to a new parent (reports go there next turn)
+ade chat demote [session-id]                                     # take over a subagent: its reports to its parent stop; defaults to $ADE_CHAT_SESSION_ID
+ade chat promote [session-id]                                    # make the chat report back to its parent again
+ade chat set-parent <session-id> --parent <chat> [--no-report]  # relink a chat to a new parent (reports go there next turn)
 ade chat set-parent <session-id> --no-parent                     # detach a chat from its parent
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane

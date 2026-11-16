@@ -7,6 +7,7 @@
 import { findMachineProject, remoteProjectBindingKey } from "../../shared/projectIdentity";
 import type { CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import type { OpenProjectBinding } from "../../shared/types/core";
+import type { LaneSummary } from "../../shared/types/lanes";
 import type { RemoteRuntimeConnectionStatus } from "../../shared/types/remoteRuntime";
 import type { AgentChatApi } from "../components/chat/agentChatApi";
 import { isRuntimeTransportTimeoutError } from "../../shared/runtimeErrors";
@@ -15,6 +16,7 @@ import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../shared/wokenMachine";
 import { rootAppStoreApi } from "./appStore";
 import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, cloudLaneIndexFresh } from "./adeCloudLaneIndex";
 import { sameMachineKey } from "../../shared/machineAddress";
+import { readWebAccountMachineKeys } from "./webAccountMachineKeys";
 import { projectPinOnMachine } from "../lib/machineConnect";
 import { MachineConnectError } from "../../shared/machineAddress";
 import { adeCloudEnabled } from "./cloudAccess";
@@ -23,7 +25,9 @@ import { watchedCloudMachines } from "../components/remoteTargets/useCloudMachin
 import { SAVED_CHATS_MACHINE_PREFIX } from "../../shared/cloudSavedChats";
 import { isAdeAvailable } from "../lib/adeAvailability";
 import {
+  cloudConnectionMachineKey,
   isSavedChatsMachineId,
+  replaceCloudConnectionTargets,
   replaceSavedChatLocations,
   savedChatLane,
   savedChatLocation,
@@ -50,7 +54,11 @@ export type SavedChatsContext = {
 
 let timer: ReturnType<typeof setTimeout> | null = null;
 let lastReadAtMs = 0;
+/** The project that read was for: another project's tab reads at once. */
+let lastReadProjectKey: string | null = null;
 let inFlight = false;
+/** A forced read is waiting in the debounce. */
+let forcePending = false;
 /** A read asked for while one was running (a project switch); it runs next. */
 let queuedContext: SavedChatsContext | null = null;
 
@@ -58,26 +66,48 @@ let queuedContext: SavedChatsContext | null = null;
 export function scheduleCloudSavedChatsRefresh(context: () => SavedChatsContext, options?: { force?: boolean }): void {
   if (!window.ade?.cloud?.savedChats) return;
   if (timer) clearTimeout(timer);
-  const force = options?.force === true;
+  // A plain request that replaces a forced one inside the debounce keeps it forced.
+  forcePending ||= options?.force === true;
   timer = setTimeout(() => {
     timer = null;
+    const force = forcePending;
+    forcePending = false;
     // Inside the debounce, so a window just opened has its access answer by now.
     if (!adeCloudEnabled()) return;
-    if (!force && Date.now() - lastReadAtMs < MIN_REFRESH_INTERVAL_MS) return;
-    void refreshCloudSavedChats(context());
+    const next = context();
+    if (!force && next.projectKey === lastReadProjectKey && Date.now() - lastReadAtMs < MIN_REFRESH_INTERVAL_MS) return;
+    void refreshCloudSavedChats(next);
   }, REFRESH_DEBOUNCE_MS);
 }
 
+/**
+ * The connection of the computer with this account key. ADE Web names its
+ * connections by environment id and leaves `pairedMachine.machineKey` empty;
+ * its key map says which account computer each one is.
+ */
 const connectionFor = (
   connections: readonly RemoteRuntimeConnectionStatus[],
   machineKey: string,
   instanceId: string | null,
 ): RemoteRuntimeConnectionStatus | null =>
-  connections.find((connection) => connection.target.pairedMachine?.machineKey === machineKey)
+  connections.find((connection) => sameMachineKey(connection.target.pairedMachine?.machineKey, machineKey))
+  ?? connections.find((connection) => sameMachineKey(readWebAccountMachineKeys().get(connection.target.id), machineKey))
   ?? (instanceId
     ? connections.find((connection) => connection.target.hostname?.trim().toLowerCase() === instanceId.toLowerCase())
     : undefined)
   ?? null;
+
+/**
+ * The project's name for a binding made from saved data: the folder's name,
+ * else the repository's name from its origin. Never the computer's name: a
+ * row's line names the project (rule A), and the binding's `displayName` is
+ * the project's.
+ */
+function savedProjectName(rootPath: string | null | undefined, origin: string | null | undefined): string {
+  const last = (value: string | null | undefined) =>
+    (value ?? "").trim().replace(/[\\/]+$/, "").split(/[\\/:]/).pop()?.replace(/\.git$/i, "") ?? "";
+  return last(rootPath) || last(origin) || "Project";
+}
 
 const savedBinding = (machineId: string, row: CloudSavedChatRow, runtimeName: string): OpenProjectBinding => ({
   kind: "remote",
@@ -89,7 +119,7 @@ const savedBinding = (machineId: string, row: CloudSavedChatRow, runtimeName: st
   ...(row.instanceId ? { hostname: row.instanceId } : {}),
   projectId: row.projectId ?? row.projectKey ?? row.machineKey,
   rootPath: row.projectRoot ?? "",
-  displayName: runtimeName,
+  displayName: savedProjectName(row.projectRoot, row.projectKey),
 });
 
 const realBinding = (
@@ -113,7 +143,7 @@ const realBinding = (
     ...(connection.target.hostname ? { hostname: connection.target.hostname } : {}),
     projectId,
     rootPath: project?.rootPath ?? row.projectRoot ?? "",
-    displayName: project?.displayName ?? connection.target.name,
+    displayName: project?.displayName ?? savedProjectName(row.projectRoot, row.projectKey),
   };
 };
 
@@ -154,18 +184,31 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
   if (!bridge || !context.isActive() || !context.projectKey) return;
   inFlight = true;
   lastReadAtMs = Date.now();
+  lastReadProjectKey = context.projectKey;
   try {
     const list = await bridge.list({ projectKey: context.projectKey, limit: 500 });
     if (!list || !context.isActive()) return;
     const store = rootAppStoreApi.getState();
+    // Live here: connected, and its rows not dimmed. A connection can stay up
+    // after its computer stopped answering (ADE Web's relay holds it), and the
+    // list hides a dimmed live slice: its saved copies show instead.
+    const liveHere = (connection: RemoteRuntimeConnectionStatus | null) =>
+      connection?.state === "connected" && store.crossMachineLanesByMachineId[connection.target.id]?.online !== false;
     const byMachine = new Map<string, RoutedSavedChatRow[]>();
-    for (const row of routeSavedChatsToLaneComputers(list.chats)) {
+    // Only this project's chats, as the server filters them: a row that names
+    // another project never lists in this tab.
+    const projectChats = list.chats.filter((row) => !row.projectKey || !context.projectKey || row.projectKey === context.projectKey);
+    for (const row of routeSavedChatsToLaneComputers(projectChats)) {
       const rows = byMachine.get(row.machineKey);
       if (rows) rows.push(row);
       else byMachine.set(row.machineKey, [row]);
     }
     const nextLocations: Array<{ pinKey: string; location: SavedChatLocation }> = [];
     const keptSyntheticIds = new Set<string>();
+    // Slices that hold a lane computer of this project: they stay for their lane.
+    const laneSliceIds = new Set<string>();
+    // Slices this read put this project's saved copies on.
+    const savedSliceIds = new Set<string>();
     // The account's cloud computers, when a surface keeps that list current.
     // A computer missing from it was deleted, even while this desktop still
     // holds a saved connection to it (a move made on another desktop).
@@ -184,6 +227,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         || (cloudBoxes != null ? !box : !connection && cloudLaneIndexFresh() && !laneComputer);
       machineFacts.set(machineKey, { connection, gone, name: box?.name ?? laneComputer?.laneName ?? null });
     }
+    replaceCloudConnectionTargets([...machineFacts.entries()]
+      .flatMap(([machineKey, facts]) => (facts.connection && !facts.gone ? [[facts.connection.target.id, machineKey] as const] : [])));
     // One computer shows each chat. After a move, the new computer saves the
     // same chats (same ids) as the old one. A computer that still exists wins
     // over a deleted one; between two that exist, a connected one, then the
@@ -192,7 +237,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     for (const [machineKey, rows] of byMachine) {
       const facts = machineFacts.get(machineKey)!;
       if (facts.gone) continue;
-      const connected = facts.connection?.state === "connected";
+      const connected = liveHere(facts.connection);
       for (const row of rows) {
         const current = ownerByChatId.get(row.chatId);
         if (
@@ -202,6 +247,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         ) ownerByChatId.set(row.chatId, { machineKey, connected, updatedAt: row.updatedAt });
       }
     }
+    // Machines whose own saved chats show (the lane fallback below is for the rest).
+    const showsSavedChats = new Set<string>();
     for (const [machineKey, machineRows] of byMachine) {
       const { connection, gone, name } = machineFacts.get(machineKey)!;
       const rows = machineRows.filter((row) => {
@@ -211,7 +258,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       if (rows.length === 0) {
         // Every chat it saved shows from another computer now: drop the saved
         // copies an earlier read put on its connection's slice.
-        const stale = connection && connection.state !== "connected"
+        const stale = connection && !liveHere(connection)
           ? store.crossMachineLanesByMachineId[connection.target.id] ?? null
           : null;
         if (stale?.sessions.some((session) => session.cloudSavedCopy)) {
@@ -229,9 +276,10 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         }
         continue;
       }
+      showsSavedChats.add(machineKey);
       const first = rows[0]!;
-      // Connected: the live list owns this machine. Nothing saved shows.
-      if (connection?.state === "connected") continue;
+      // Live: the live list owns this machine. Nothing saved shows.
+      if (liveHere(connection)) continue;
       const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
       const previous = store.crossMachineLanesByMachineId[machineId] ?? null;
       if (!connection) keptSyntheticIds.add(machineId);
@@ -250,6 +298,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         }
       }
       const retained = (previous?.sessions ?? []).filter((session) => !session.cloudSavedCopy && !rows.some((row) => row.chatId === session.id));
+      savedSliceIds.add(machineId);
       store.mergeCrossMachineLanes({
         machineId,
         machineName,
@@ -276,10 +325,81 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         });
       }
     }
+    // A lane computer of this project that is asleep or not connected here,
+    // with no saved chat: its lane still belongs in the list, as a normal row.
+    // Opening it reaches the computer by its key, which wakes it.
+    for (const computer of adeCloudLaneComputersNow()) {
+      const machineKey = computer.machineKey;
+      // A machine whose every saved chat now shows from another computer
+      // still gets its lane row here.
+      if (!machineKey || showsSavedChats.has(machineKey) || goneMachineKeys.has(machineKey.toLowerCase())) continue;
+      if (!computer.projectOrigin || computer.projectOrigin !== context.projectKey) continue;
+      const connection = connectionFor(context.connections, machineKey, computer.instanceId);
+      if (liveHere(connection)) continue;
+      const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
+      const previous = store.crossMachineLanesByMachineId[machineId] ?? null;
+      laneSliceIds.add(machineId);
+      // A connection's slice from its live reads keeps its own lanes.
+      if (previous && previous.lanes.length > 0 && !isSavedChatsMachineId(machineId)) continue;
+      if (!connection) keptSyntheticIds.add(machineId);
+      const machineName = connection?.target.name ?? computer.laneName;
+      const binding: OpenProjectBinding = previous?.binding ?? {
+        kind: "remote",
+        key: `${machineId}:${computer.projectOrigin}`,
+        targetId: machineId,
+        runtimeName: machineName,
+        transport: "paired",
+        hostname: computer.instanceId,
+        projectId: computer.projectOrigin,
+        rootPath: "",
+        displayName: savedProjectName(null, computer.projectOrigin),
+      };
+      store.mergeCrossMachineLanes({
+        machineId,
+        machineName,
+        targetId: connection?.target.id ?? null,
+        projectId: binding.kind === "remote" ? binding.projectId : null,
+        binding,
+        online: false,
+        lanes: [laneComputerLane(computer, previous?.lanes.find((lane) => lane.id === computer.laneId))],
+        // This computer shows no saved chat of its own (they moved to another
+        // computer, or there were none): saved copies an earlier read left on
+        // its slice are stale and would show as duplicates.
+        sessions: (previous?.sessions ?? []).filter((session) => !session.cloudSavedCopy),
+        error: null,
+      });
+    }
     replaceSavedChatLocations(nextLocations);
     const staleSynthetic = Object.keys(store.crossMachineLanesByMachineId)
       .filter((machineId) => isSavedChatsMachineId(machineId) && !keptSyntheticIds.has(machineId));
     if (staleSynthetic.length) store.dropCrossMachineLanes(staleSynthetic);
+    // Saved copies this read did not return belong to another project (a tab
+    // switch from atlas to orbit keeps the computer's slice) or were removed:
+    // they leave. A slice that held only them, with its computer away, leaves too,
+    // unless it holds a lane computer of this project: its lane stays listed.
+    const current = rootAppStoreApi.getState().crossMachineLanesByMachineId;
+    const emptied: string[] = [];
+    for (const [machineId, slice] of Object.entries(current)) {
+      if (savedSliceIds.has(machineId) || isSavedChatsMachineId(machineId)) continue;
+      if (!slice.sessions.some((session) => session.cloudSavedCopy)) continue;
+      const live = slice.sessions.filter((session) => !session.cloudSavedCopy);
+      if (live.length === 0 && slice.online === false && !laneSliceIds.has(machineId)) {
+        emptied.push(machineId);
+        continue;
+      }
+      store.mergeCrossMachineLanes({
+        machineId: slice.machineId,
+        machineName: slice.machineName,
+        targetId: slice.targetId,
+        projectId: slice.projectId,
+        binding: slice.binding,
+        online: slice.online,
+        lanes: slice.lanes,
+        sessions: live,
+        error: slice.error ?? null,
+      });
+    }
+    if (emptied.length) store.dropCrossMachineLanes(emptied);
   } catch (error) {
     // Keep what the list last showed; the next focus or connection change reads again.
     console.warn("[cloud] saved chats list failed", error instanceof Error ? error.message : String(error));
@@ -289,6 +409,27 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     queuedContext = null;
     if (next) void refreshCloudSavedChats(next);
   }
+}
+
+/**
+ * The one lane an ADE Cloud lane computer holds, as a row while the computer
+ * can't answer. Keeps the row's first-seen time so the list does not reorder.
+ */
+function laneComputerLane(computer: { laneId: string; laneName: string }, previous: LaneSummary | undefined): LaneSummary {
+  return {
+    id: computer.laneId,
+    name: computer.laneName,
+    laneType: "worktree",
+    baseRef: "",
+    branchRef: "",
+    worktreePath: "",
+    isEditProtected: false,
+    status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
+    color: null,
+    icon: null,
+    tags: [],
+    createdAt: previous?.createdAt ?? new Date().toISOString(),
+  };
 }
 
 const machineOnline = (machineId: string): boolean =>
@@ -380,6 +521,25 @@ export function markCloudWakeForSend(
   };
 }
 
+/** The chat's waking mark for a wake that is not a saved chat's send; returns its end. */
+function beginCloudWakeMark(sessionId: string): () => void {
+  const holds = wakeHolds.get(sessionId) ?? 0;
+  wakeHolds.set(sessionId, holds + 1);
+  if (holds === 0) rootAppStoreApi.getState().setCloudSessionWaking(sessionId, new Date().toISOString());
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    const left = (wakeHolds.get(sessionId) ?? 1) - 1;
+    if (left > 0) {
+      wakeHolds.set(sessionId, left);
+      return;
+    }
+    wakeHolds.delete(sessionId);
+    rootAppStoreApi.getState().setCloudSessionWaking(sessionId, null);
+  };
+}
+
 /**
  * Sends with the chat's waking mark around it: every send to a saved chat
  * (submit, retry, a command) says it is waking the computer the same way.
@@ -412,9 +572,11 @@ export function savedChatAwareAgentChatApi(api: AgentChatApi): AgentChatApi {
   if (cached) return cached;
   // A saved chat's computer this window never connected to is reached by its
   // machine key (contract C2), and the window follows the chat there.
-  // The web client has no `machines` yet: its fallback proxy answers every
-  // missing member with a stand-in, so only `isAdeAvailable` can tell.
-  const reach: SavedChatReach | null = isAdeAvailable(window.ade?.machines) && isAdeAvailable(window.ade.machines.connect)
+  // Only the method is checked: ADE Web implements `machines.connect` (it
+  // wakes an asleep ADE Cloud computer through the account) while its
+  // `machines` namespace reads as a stand-in, and a window without it gets
+  // the fallback proxy's stand-in method, which `isAdeAvailable` rejects.
+  const reach: SavedChatReach | null = isAdeAvailable(window.ade?.machines?.connect)
     ? {
         pinFor: async (location) => {
           try {
@@ -438,6 +600,22 @@ export function savedChatAwareAgentChatApi(api: AgentChatApi): AgentChatApi {
           void import("../lib/otherMachineNavigation")
             .then(({ followSessionToMachine }) => followSessionToMachine(location.chatId, location.machineKey))
             .catch((error: unknown) => console.warn("[cloud] following a saved chat to its computer failed", error));
+        },
+        wakeForSend: async (pin, sessionId) => {
+          const machineKey = cloudConnectionMachineKey(pin.targetId);
+          if (!machineKey) return null;
+          // The chat says it is waking the computer, as a send to a saved chat does.
+          const mark = beginCloudWakeMark(sessionId);
+          try {
+            const { pin: woken } = await projectPinOnMachine(machineKey, {
+              projectId: pin.projectId,
+              rootPath: pin.rootPath,
+              originUrl: pin.gitOriginUrl ?? null,
+            });
+            return woken;
+          } finally {
+            mark();
+          }
         },
       }
     : null;

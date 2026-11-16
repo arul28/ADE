@@ -276,8 +276,9 @@ export function buildCliSpawnReportGuidance(
   if (!parent) return null;
   // `$ADE_PARENT_CHAT_SESSION_ID` is exported to this process and holds the
   // same id; it is named here too in case a shell loses the variable.
+  // `peer` is the stored name of a chat that does not report back.
   if (lineage?.spawnKind === "peer") {
-    return `ADE chat ${parent} started you as a peer: nobody waits on your result. If that chat needs it, report it. ${ADE_PARENT_REPORT_COMMAND_GUIDANCE}`;
+    return `ADE chat ${parent} started you. Nobody waits for your result. If that chat needs it, report it with \`ade chat message\`. ${ADE_PARENT_REPORT_COMMAND_GUIDANCE}`;
   }
   return [
     `You are a subagent of ADE chat ${parent} ($ADE_PARENT_CHAT_SESSION_ID). That chat cannot see this terminal, so report to it yourself:`,

@@ -186,6 +186,7 @@ function accountClient(
     bootstrap: vi.fn(async () => snapshot),
     getAccessToken: vi.fn(async () => "token"),
     getRelayBaseUrls: vi.fn(() => snapshot.relayBaseUrls),
+    onMachinesChanged: vi.fn(() => () => undefined),
     ...overrides,
   } as unknown as BrowserAccountClient;
 }
