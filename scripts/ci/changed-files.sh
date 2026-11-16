@@ -35,7 +35,7 @@ RUN_ALL=3
 # The merge or squash commit against its first parent.
 first_parent_diff() {
   local files
-  files="$(git diff --no-renames --name-only HEAD^1 HEAD)" || exit "$RUN_ALL"
+  files="$(git -c core.quotePath=false diff --no-renames --name-only HEAD^1 HEAD)" || exit "$RUN_ALL"
   [ -z "$files" ] || printf '%s\n' "$files"
   exit 0
 }

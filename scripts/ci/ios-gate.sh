@@ -75,8 +75,10 @@ ios_part() {
 if [ "$#" -eq 1 ] && [ "$1" = "--fingerprint" ]; then
   set -e
   {
-    # IOS_PATHS anchored right after ls-tree's tab instead of at line start.
-    git ls-tree -r --full-tree HEAD | grep -E $'\t'"${IOS_PATHS#^}" || true
+    # -z: paths unquoted (a quoted "apps/ios/Café.swift" would miss the
+    # pattern and drop out of the hash), one NUL-ended record each. IOS_PATHS
+    # is anchored right after ls-tree's tab instead of at the record start.
+    git ls-tree -r -z --full-tree HEAD | grep -zE $'\t'"${IOS_PATHS#^}" || true
     git ls-tree --full-tree HEAD -- "$CI_FILE"
   } | sha256sum | cut -c1-64
   exit 0
