@@ -2876,7 +2876,7 @@ describe("AgentChatComposer", () => {
     });
 
     openIssueContext();
-    fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Linear issue/i }));
 
     await screen.findByText(/Linear token missing/i);
     fireEvent.click(screen.getByRole("button", { name: "Open Linear settings" }));
@@ -2912,7 +2912,7 @@ describe("AgentChatComposer", () => {
     });
 
     openIssueContext();
-    fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Linear issue/i }));
 
     await waitFor(() => expect(searchLinearIssues).toHaveBeenCalled());
     await screen.findByRole("button", { name: /ADE-123/ });
@@ -2979,7 +2979,7 @@ describe("AgentChatComposer", () => {
     });
 
     openIssueContext();
-    fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Linear issue/i }));
 
     await waitFor(() => expect(screen.getAllByText("ADE-123").length).toBeGreaterThan(0));
     expect(searchLinearIssues).toHaveBeenCalledTimes(1);
@@ -4150,5 +4150,94 @@ describe("the OpenCode Fast chip reads the effort a launch sends", () => {
     const chip = within(row).getByRole("button", { name: /Fast mode for/i }) as HTMLButtonElement;
     expect(chip.disabled).toBe(true);
     expect(chip.title).toBe(`OpenCode cannot run ${model.displayName} in Fast mode at high effort.`);
+  });
+
+  it("clears a launch account pick when the draft moves to another machine", async () => {
+    const previousAde = (window as any).ade;
+    const list = vi.fn(async (_args: { provider?: string }, pin?: OpenProjectBinding | null) => {
+      if (pin?.key === "local:/repo-b") throw new Error("machine offline");
+      return [{
+        id: "codex-work",
+        provider: "codex",
+        label: "Work",
+        signedIn: true,
+        isDefault: true,
+        account: { email: "work@example.com" },
+      }];
+    });
+    (window as any).ade = {
+      ...(previousAde ?? {}),
+      providerInstances: { list },
+    };
+    try {
+      const onLaunchAccountChange = vi.fn();
+      const props = buildComposerProps({
+        modelRuntimePin: CHAT_BINDING,
+        launchAccountId: "codex-work",
+        onLaunchAccountChange,
+      });
+      const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
+      await waitFor(() => expect(list).toHaveBeenCalled());
+
+      view.rerender(
+        <AgentChatComposer
+          {...props}
+          modelRuntimePin={{
+            ...CHAT_BINDING,
+            key: "local:/repo-b",
+            rootPath: "/repo-b",
+            displayName: "repo-b",
+          }}
+        />,
+      );
+
+      await waitFor(() => expect(onLaunchAccountChange).toHaveBeenCalledWith(null));
+    } finally {
+      (window as any).ade = previousAde;
+    }
+  });
+
+  it("clears a launch account pick when the draft switches provider", async () => {
+    const previousAde = (window as any).ade;
+    const list = vi.fn(async (args: { provider?: string }) => {
+      if (args.provider === "claude") throw new Error("accounts offline");
+      return [{
+        id: "codex-work",
+        provider: "codex",
+        label: "Work",
+        signedIn: true,
+        isDefault: true,
+        account: { email: "work@example.com" },
+      }];
+    });
+    (window as any).ade = {
+      ...(previousAde ?? {}),
+      providerInstances: { list },
+    };
+    try {
+      const onLaunchAccountChange = vi.fn();
+      const props = buildComposerProps({
+        modelRuntimePin: CHAT_BINDING,
+        launchAccountId: "codex-work",
+        onLaunchAccountChange,
+      });
+      const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
+      await waitFor(() => expect(list).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "codex" }),
+        expect.anything(),
+      ));
+
+      view.rerender(
+        <AgentChatComposer
+          {...props}
+          modelId="anthropic/claude-sonnet-5"
+          availableModelIds={["anthropic/claude-sonnet-5", "openai/gpt-5.4"]}
+        />,
+      );
+
+      await waitFor(() => expect(onLaunchAccountChange).toHaveBeenCalledWith(null));
+    } finally {
+      (window as any).ade = previousAde;
+    }
   });
 });

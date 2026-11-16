@@ -142,7 +142,8 @@ extension SyncService {
       cursorConfigValues: nil,
       computerUse: nil,
       requestedCwd: nil,
-      presetId: request.chat.presetId
+      presetId: request.chat.presetId,
+      instanceId: request.chat.instanceId
     )
     chatLaunchStore.updateLocal(launchId: request.launchId) { state in
       state.request = ChatLaunchLocalRequest(

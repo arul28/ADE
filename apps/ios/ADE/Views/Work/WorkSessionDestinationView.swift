@@ -242,8 +242,8 @@ func workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: Bool) -> 
 /// The CTO chat (and any other caller passing `showsLaneActions: false`) reuses
 /// this destination with a *synthetic* lane id, so resolving that lane would
 /// hand back the project's primary-lane PR and render it as this chat's badge.
-/// `showsLaneActions` only hides the header menu's PR items, so the lookup and
-/// the composer badge read this policy instead.
+/// `showsLaneActions` turns off every lane-owned surface (PR items and issue
+/// attach); the lookup and the composer badge read this policy instead.
 struct WorkChatLanePrPolicy {
   var showsLaneActions: Bool
 
@@ -509,6 +509,8 @@ struct WorkSessionDestinationView: View {
   @State var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot] = []
   @State var scheduledWorkSnapshotsRenderSignature = 0
   @State var chatInfoPresented = false
+  /// The GitHub issue picker opened from the composer's Issue context menu.
+  @State var githubIssueAttachPresented = false
   @State var expandedSubagentDetailIds: Set<String> = []
   @State var remoteSubagentRefreshInFlight = false
   /// Central expansion state for every collapsible transcript card. Lives
@@ -1464,7 +1466,6 @@ struct WorkSessionDestinationView: View {
       showsPinAction: !personalChat
         || syncService.canInvokeChatRemoteAction("chat.setPinned", sessionId: session.id),
       showsSessionLink: !personalChat,
-      canAttachIssue: syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession"),
       showsRename: !CursorCloudNaming.ownsName(
         composerChatSummary?.cursorCloudAgentId ?? session.cursorCloudAgentId
       ),
@@ -1733,6 +1734,12 @@ struct WorkSessionDestinationView: View {
           .task {
             await refreshRemoteSubagentSnapshots()
           }
+      }
+      .sheet(isPresented: $githubIssueAttachPresented) {
+        WorkGitHubIssuePickerSheet(syncService: syncService) { issue, repo in
+          githubIssueAttachPresented = false
+          Task { await attachGitHubIssueToChat(issue, repo: repo) }
+        }
       }
       .sheet(isPresented: $createPrPresented) {
         chatCreatePrWizardSheet
@@ -2540,12 +2547,23 @@ struct WorkSessionDestinationView: View {
       duoPane: duoPane,
       duoPaneOpen: duoPaneOpen,
       toolsRelay: toolsRelay,
-      onAttachIssue: personalChat || !syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession")
+      onAttachIssue: personalChat || isCrossProject || isRemoteMachineChat
+        || !showsLaneActions || sideChatParentSessionId != nil
+        || !syncService.canInvokeChatRemoteAction("lanes.attachLinearIssueToSession", sessionId: session.id)
         ? nil
         : {
           ADEHaptics.light()
           syncService.linearPaneAttachSessionId = session.id
           syncService.linearPanePresented = true
+        },
+      onAttachGitHubIssue: personalChat || isCrossProject || isRemoteMachineChat
+        || !showsLaneActions || sideChatParentSessionId != nil
+        || !syncService.canInvokeChatRemoteAction("lanes.attachGitHubIssueToSession", sessionId: session.id)
+        || !syncService.supportsGitHubIssuesPane
+        ? nil
+        : {
+          ADEHaptics.light()
+          githubIssueAttachPresented = true
         },
       onOpenSideChat: openSideChatAction
     )

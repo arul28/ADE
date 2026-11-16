@@ -1,5 +1,8 @@
 import fs from "node:fs";
-import type { ExternalSessionProvider } from "../../../shared/types/externalSessions";
+import {
+  EXTERNAL_SESSION_PROVIDERS_WITH_MANAGED_STORE,
+  type ExternalSessionProvider,
+} from "../../../shared/types/externalSessions";
 import type {
   ExternalSessionDetail,
   ExternalSessionDetailArgs,
@@ -198,7 +201,11 @@ export async function loadExternalSessionDetail(
   };
   const record = await discoverExternalSessionRecord(args.provider, args.sessionId, {
     ...home,
-    ...(options.includeAdeOwned ? { includeAdeOwned: true } : {}),
+    // OpenCode's exact lookup must see ADE's managed store; a preview for an
+    // ADE-launched session is still that session's own conversation.
+    ...(options.includeAdeOwned || EXTERNAL_SESSION_PROVIDERS_WITH_MANAGED_STORE.has(args.provider)
+      ? { includeAdeOwned: true }
+      : {}),
   });
   if (!record) return emptyDetail(args);
   const sourcePath = record.sourcePath?.trim() || null;

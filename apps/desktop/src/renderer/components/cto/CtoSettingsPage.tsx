@@ -58,6 +58,7 @@ import {
   type OpenProjectBinding,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
+import { providerAccountCanTakeChats } from "../../../shared/types/providerInstances";
 import {
   ModernPage,
   ModernRow,
@@ -526,7 +527,7 @@ function BrainPane(props: CtoSettingsPageProps & { name: string }) {
     const provider = ctoAccountProviderFor(modelId);
     const accounts = provider && window.ade?.providerInstances?.list
       ? (await window.ade.providerInstances.list({ provider }, pin ?? null).catch(() => []))
-        .filter((row) => row.signedIn && !row.sameLoginAs)
+        .filter(providerAccountCanTakeChats)
       : [];
     const free = accounts.find((account) => !taken.has(choiceKey({ modelId, instanceId: account.isDefault ? null : account.id })));
     if (!free) {

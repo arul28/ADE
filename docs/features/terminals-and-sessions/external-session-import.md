@@ -51,7 +51,7 @@ ADE first learns it.
 | `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex threads from **every** Codex config home — `CODEX_HOME` / `~/.codex`, each `<ADE_HOME>/provider-homes/codex/<instance>`, and the preset / API-key homes ADE launches with — reading each home's `state_5.sqlite`: top-level threads only, fork continuations collapsed, enriched from the rollout JSONL under `sessions/YYYY/MM/DD/` and `session_index.jsonl`. Falls back to scanning rollout files when a thread store is unusable, and keeps the config home on the record for import. |
 | `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Groups every Cursor artifact — `~/.cursor/chats/<workspace-md5>/<id>/store.db`, its `meta.json`, and `~/.cursor/projects/<slug>/agent-transcripts/` (including `empty-window`) — by the bare conversation uuid, keeps the fullest copy of each, resolves cwd from `meta.json` before the md5/slug reverse-mappings, and excludes SDK `agent-<uuid>` sessions. Also owns `openCursorStoreConversation`, the reader for the conversation inside a `store.db` (see [Cursor](#cursor)). |
 | `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `<factoryConfigHome>/sessions/<escaped-cwd>/` (default `~/.factory`) and under `<home>/.factory/sessions/` of each preset, route and API-key home ADE runs Droid on, one record per session id, using the `session_start` row for id/cwd/title. A record from an ADE home keeps that home (`configHome`). |
-| `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts`, `openCodeStore.ts` | Discovers OpenCode sessions by reading the user's own OpenCode SQLite store directly, read-only (v1 `session`/`message`/`part` or v2 `session_v2`/`session_message`), and drops ADE's own background-task titles. Never shells out to the CLI and never starts a 2.0 server on that store. |
+| `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts`, `openCodeStore.ts` | Discovers OpenCode sessions by reading the user's own OpenCode SQLite store and, for the import list, ADE's managed store directly, read-only (v1 `session`/`message`/`part` or v2 `session_v2`/`session_message`), and drops ADE's own background-task titles. The managed store is what every ADE-launched OpenCode terminal and chat uses, so without it those sessions were invisible. Never shells out to the CLI and never starts a 2.0 server on either store. |
 | `apps/desktop/src/main/services/externalSessions/discoverPi.ts` | Discovers Pi's native JSONL sessions in the default Pi session store and in the session store of each preset and route home ADE runs Pi on (`PI_CODING_AGENT_DIR`). Drops ADE's own Pi chats: a session whose `.ade-owner` marker names owner `sdk` (an ADE chat; the marker outlives the chat), or one that opens with ADE's `## ADE` guidance. A CLI session from an ADE terminal (owner `cli`) still lists. `defaultHomeOnly` limits it to the default store, for the tracked-terminal id lookup in `ptyService`. |
 | `apps/desktop/src/main/services/externalSessions/discoverQwen.ts`, `discoverKimi.ts`, `discoverGrok.ts`, `discoverCopilot.ts`, `discoverAntigravity.ts` | The ACP-provider discoverers. Each reads its CLI's own on-disk store, drops ADE-launched and subagent sessions, and drops sessions with no prompt. Kimi and Grok also read the store in each preset and route home ADE runs them on (`KIMI_CODE_HOME`, `GROK_HOME`). See [ACP providers](#acp-providers-qwen-kimi-grok-copilot). |
 | `apps/desktop/src/main/services/externalSessions/discoverAcpShared.ts` | Shared plumbing for the four ACP discoverers. Each discoverer maps its records to one neutral `{ type, timestamp, message: { role, content } }` form, and the shared helpers compute the preview, the sampled `messages`, and the prompt count from that form. Also: bounded head + tail reads, the `## ADE` guidance test, `~` expansion for env overrides, and a newest-first read loop that stops when enough sessions survive. |
@@ -710,9 +710,11 @@ runtime opens the pointer from the store that the CLI writes:
 - Droid: `droidSdkSessionId`, opened by the Droid SDK `resumeSession` from
   `~/.factory/sessions`.
 - OpenCode: `providerSessionId`, opened by `session.get` on ADE's own shared
-  server. ADE's server never opens the user's personal data directory, so a
-  pointer that lives only there stays readable from the transcript but cannot
-  take a new turn (`OpenCodeSessionInPersonalStoreError`).
+  server. The import plan offers Continue only for a session in ADE's managed
+  store, where ADE-launched and managed-imported sessions live. A pointer that
+  lives only in the user's personal store is offered as a copy instead: ADE's
+  server never opens that directory, so a forced continue throws
+  `OpenCodeSessionInPersonalStoreError`.
 - Pi: `piSessionId`, opened by `SessionManager.list(cwd)` over the one Pi
   session store that chat and CLI share.
 - Copilot: the SDK session id, seeded as `copilotSdkSessionId`, opened by
@@ -813,7 +815,7 @@ Converters and their fidelity:
 | Claude, Droid | The session JSONL (same message shape) | Text, tool calls, tool results (failed status kept). Thinking blocks are dropped, as on import. Shares `claudeRecordsToContentEvents` with the import. |
 | Codex | The rollout JSONL | Three layouts: current (`event_msg` `item_completed` items, plus `function_call`s no item covers, such as `spawn_agent`), legacy (`user_message` / `agent_message` plus `response_item` tool calls), and bare (`response_item` only). Commands, file changes, reasoning, and MCP tool calls map through `codexTurnsToContentEvents`. The code-mode `exec` wrapper and its `wait` polls are dropped because the commands and patches they ran are already items. |
 | Cursor | `agent-transcripts/<id>/<id>.jsonl`, else `store.db` | From the transcript: text and tool calls. The transcript has no timestamps, tool ids, or tool results, so each call gets an empty completed result. A chat known only through `store.db` goes through `loadCursorStorePage`: user text, assistant text, readable reasoning, tool calls, and tool results (failed status kept), plus a `context_compact` marker where a summarization replaced earlier turns. The cursor's `end` is a message index (the store's list only grows at its end), and a page reads back one message at a time until it holds the page's events or bytes. A message blob over 8 MB (`CURSOR_STORE_MAX_MESSAGE_BYTES`) is left out with an info notice ("One message (N MB) was left out…") instead of silently vanishing. Cursor's `<user_info>` environment message is dropped. |
-| OpenCode | The user's own OpenCode SQLite store, read-only (`loadOpenCodeStoreEvents`) | Every message/part row for the session, up to a 96 MB cap that drops the oldest messages first. Handles both a 1.x store's `session`/`message`/`part` shape and a 2.0 store's `session_v2`/`session_message` shape. Falls back to the sampled preview messages when the store or the session cannot be read. |
+| OpenCode | The OpenCode SQLite store that owns the session — the user's own or ADE's managed store — read-only (`loadOpenCodeStoreEvents`) | Every message/part row for the session, up to a 96 MB cap that drops the oldest messages first. Handles both a 1.x store's `session`/`message`/`part` shape and a 2.0 store's `session_v2`/`session_message` shape. Falls back to the sampled preview messages when the store or the session cannot be read. |
 | Pi | The session JSONL | Text, thinking, tool calls, and tool results. |
 | Qwen | `chats/<id>.jsonl` | Text, `thought` parts as reasoning, `functionCall` / `functionResponse`. User rows that Qwen injected (a `provenance` other than `real_user`) are dropped, the same test discovery uses (`isQwenPromptRecord`). Verified only for text turns; tool shapes follow the Gemini CLI format. |
 | Grok | `chat_history.jsonl` | Text, `tool_calls`, tool results, and reasoning summaries. Injected (`synthetic_reason`) user rows are dropped. Rows have no timestamps. |
@@ -1154,8 +1156,8 @@ cwd-locked.
 
 ### OpenCode
 
-OpenCode discovery (`openCodeStore.ts`) reads the user's own OpenCode SQLite
-store directly, read-only, and never shells out to the CLI: a piped
+OpenCode discovery (`openCodeStore.ts`) reads the OpenCode SQLite stores
+directly, read-only, and never shells out to the CLI: a piped
 `opencode session list` truncated its own stdout at 64 KiB, and ADE never
 starts a 2.0 server on the user's store (2.0 migrates a v1 database in place
 the moment it opens one, and the user's own install may still be 1.x). Two
@@ -1165,6 +1167,17 @@ both, and only `session_v2` lists every session. `ADE_BACKGROUND_TASK_TITLES`
 filters out ADE's own background prompts (terminal summaries, commit
 messages, chat titles, …), which otherwise dominate the user's OpenCode
 history.
+
+The import list reads two stores: the user's own and ADE's managed store under
+the machine's ADE home. Every OpenCode terminal and chat ADE launches is
+rewritten onto ADE's shared server, whose store is the managed one; reading
+only the user's store made those sessions invisible and hid an
+already-imported ADE session behind the duplicate guard. A row from the
+managed store can continue in place; a row that exists only in the user's
+store is offered as an ADE-chat copy, because ADE's shared server cannot open
+that store, and a CLI continue or fork is not offered. A row ADE already
+tracks stays in the list with the "Already in ADE" action instead of
+disappearing.
 
 No store (OpenCode never ran on this machine) or an unrecognized schema reads
 as an empty list, never an error — resume and fork commands still use

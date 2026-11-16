@@ -41,6 +41,12 @@ struct GitHubIssuesPaneSheet: View {
 struct GitHubIssueListScreen: View {
   @ObservedObject var store: GitHubIssuesPaneStore
   var onClose: () -> Void
+  /// Pick mode: tapping an issue hands it back to a launch or chat composer
+  /// instead of opening its detail. The GitHub twin of Linear's
+  /// `onAttachIssue`.
+  var onPickIssue: ((GitHubIssueRow) -> Void)? = nil
+
+  private var picking: Bool { onPickIssue != nil }
 
   var body: some View {
     List {
@@ -52,7 +58,7 @@ struct GitHubIssueListScreen: View {
     .safeAreaInset(edge: .top, spacing: 0) { stateBar }
     .searchable(text: $store.query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Filter issues")
     .refreshable { await store.reload() }
-    .navigationTitle(store.repo?.label ?? "GitHub issues")
+    .navigationTitle(picking ? "Attach issue" : (store.repo?.label ?? "GitHub issues"))
     .navigationBarTitleDisplayMode(.inline)
     .toolbar { toolbar }
   }
@@ -123,10 +129,20 @@ struct GitHubIssueListScreen: View {
         )
       } else {
         ForEach(rows) { issue in
-          NavigationLink(value: GitHubIssuesRoute.issue(issue)) {
-            GitHubIssueListRow(issue: issue)
+          if let onPickIssue {
+            Button {
+              onPickIssue(issue)
+            } label: {
+              GitHubIssueListRow(issue: issue)
+            }
+            .buttonStyle(.plain)
+            .listRowBackground(Color.clear)
+          } else {
+            NavigationLink(value: GitHubIssuesRoute.issue(issue)) {
+              GitHubIssueListRow(issue: issue)
+            }
+            .listRowBackground(Color.clear)
           }
-          .listRowBackground(Color.clear)
         }
       }
     }
