@@ -1455,20 +1455,24 @@ export class LocalRuntimeConnectionPool {
    * How old a cached service-health snapshot a read may serve before it probes
    * again. Only `steadyWindowApplies` gets the long window; everything else
    * (disconnected, connecting, an app-owned fallback, an install in flight, a
-   * failed probe, and every read on macOS and Linux) keeps the 2 s window.
+   * failed probe) keeps the 2 s window.
    */
   private serviceHealthReadMaxAgeMs(): number {
     return this.steadyWindowApplies() ? SERVICE_HEALTH_STEADY_MAX_AGE_MS : SERVICE_HEALTH_READ_MAX_AGE_MS;
   }
 
   /**
-   * Whether the cached snapshot may be read through the long window: Windows,
-   * connected to the brain client the snapshot was taken under, and that brain
-   * is the machine service's own (see `isServiceHealthSteady`).
+   * Whether the cached snapshot may be read through the long window: connected
+   * to the brain client the snapshot was taken under, and that brain is the
+   * machine service's own (see `isServiceHealthSteady`). On every platform: the
+   * macOS and Linux probe is cheaper than Windows', but it is a `spawnSync` on
+   * the main thread, and status polls asked for one every few seconds while
+   * the app sat idle. A brain that goes away clears `activeClient`, which ends
+   * the window, and a surface that shows service health still probes on open
+   * (`refreshServiceHealthForView`).
    */
   private steadyWindowApplies(): boolean {
-    return process.platform === "win32"
-      && this.isServiceHealthSteady()
+    return this.isServiceHealthSteady()
       && this.serviceHealthSteadyClient === this.activeClient;
   }
 
