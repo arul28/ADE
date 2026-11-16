@@ -10256,7 +10256,14 @@ export function AgentChatPane({
 
   useEffect(() => {
     const next = new Set<string>();
-    for (const session of sessions) next.add(session.sessionId);
+    // The Work new-chat box shows no chat: the lane's other chats stream into
+    // their own panes. Taking their events here queued, merged and derived
+    // every streamed word of every chat in the lane, and rendered this pane,
+    // composer included, while the person typed. It keeps the chats it is
+    // launching (optimistic, pending) and any chat it shows.
+    if (!isWorkDraftComposer) {
+      for (const session of sessions) next.add(session.sessionId);
+    }
     if (selectedSessionId) next.add(selectedSessionId);
     if (lockSessionId) next.add(lockSessionId);
     if (initialSessionId) next.add(initialSessionId);
@@ -10299,7 +10306,7 @@ export function AgentChatPane({
     if (!departed.length) return;
     for (const sessionId of departed) releaseRetainedChatSession(sessionId);
     clearAgentChatSessionViewCacheForSessions(departed);
-  }, [initialSessionId, lockSessionId, lockedSingleSessionMode, selectedSessionId, sessions]);
+  }, [initialSessionId, isWorkDraftComposer, lockSessionId, lockedSingleSessionMode, selectedSessionId, sessions]);
 
   // Stay true until this open has seeded the source chat's model. The catalog
   // can arrive without it; treating that fallback as a user choice would keep

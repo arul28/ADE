@@ -22,10 +22,10 @@ import type { AgentChatEventEnvelope } from "../../../shared/types";
  * back, under the same trim caps. On return the pane calls
  * `adoptRetainedSession(sessionId)`, which tears the module handler down again.
  *
- * BATCHED, LIKE THE LIVE PATH
- * ---------------------------
+ * BATCHED
+ * -------
  * Envelopes are buffered per session and handed to the host in one batch on a
- * ~16ms timer — the same cadence the visible pane's own flush uses. Appending
+ * 250 ms timer (`CHAT_SESSION_RETENTION_FLUSH_MS`). Appending
  * one-at-a-time makes a HIDDEN chat cost more per event than a visible one
  * (each append re-walks the whole transcript to dedupe, trim, derive and
  * measure), which janks the tab the user is actually looking at. Adoption and
@@ -66,10 +66,13 @@ export const CHAT_SESSION_RETENTION_TTL_MS = 5 * 60 * 1000;
 export const MAX_RETAINED_CHAT_SESSIONS = 2;
 
 /**
- * Coalescing window for buffered envelopes. Matches the visible pane's own
- * queued-event flush so a hidden chat costs no more per event than a shown one.
+ * Coalescing window for buffered envelopes. A hidden chat draws nothing, and
+ * only the pane that adopts it reads the cache, after a synchronous flush. So
+ * each append (a merge, trim and derive over the cached transcript) runs a
+ * few times a second, not once per streamed batch: a chat streaming in the
+ * background costs the tab the person is typing in almost nothing.
  */
-export const CHAT_SESSION_RETENTION_FLUSH_MS = 16;
+export const CHAT_SESSION_RETENTION_FLUSH_MS = 250;
 
 export type ChatSessionRetentionHost = {
   /**
