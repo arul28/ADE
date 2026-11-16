@@ -14,7 +14,7 @@ const DEFAULT_WAIT_TIMEOUT_MS = windowsScaledTimeout(4_000);
 type WaitOptions = number | { timeout?: number; interval?: number } | undefined;
 function withDefaultWaitTimeout(options: WaitOptions): { timeout?: number; interval?: number } {
   if (typeof options === "number") return { timeout: options };
-  return { timeout: DEFAULT_WAIT_TIMEOUT_MS, ...options };
+  return { ...options, timeout: options?.timeout ?? DEFAULT_WAIT_TIMEOUT_MS };
 }
 {
   const originalWaitFor = vi.waitFor.bind(vi);
