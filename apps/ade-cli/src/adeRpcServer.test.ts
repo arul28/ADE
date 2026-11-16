@@ -896,6 +896,12 @@ function applyDrainFilter<T extends { events: Array<{ category: string }> }>(
   return filter ? { ...result, events: result.events.filter(filter) } : result;
 }
 
+
+/** The workspace-write network flag as a launch preview spells it: POSIX shells single-quote `key=value`, cmd double-quotes it. */
+const NETWORK_FLAG_PREVIEW = process.platform === "win32"
+  ? "\"sandbox_workspace_write.network_access=true\""
+  : "'sandbox_workspace_write.network_access=true'";
+
 describe("adeRpcServer", () => {
   it("does not report a green rollup to agents when only third-party bots reported", async () => {
     // ADE-135: `summarizePrChecks` initialised `overall` to "passing" and was
@@ -3013,12 +3019,12 @@ describe("adeRpcServer", () => {
     expect(response?.isError).toBeUndefined();
     const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
     const launchText = createCall.args?.join(" ") ?? createCall.startupCommand ?? "";
-    expect(launchText).toContain("--sandbox workspace-write --ask-for-approval on-request");
+    expect(launchText).toContain("--sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request");
     expect(launchText).toContain("ade chat note");
     expect(launchText).toContain("ade chat ask");
     expect(launchText).toContain("You cannot settle or unsettle a session");
     expect(launchText).not.toContain("--full-auto");
-    expect(createCall.startupCommand).toContain("--sandbox workspace-write --ask-for-approval on-request");
+    expect(createCall.startupCommand).toContain(`--sandbox workspace-write -c ${NETWORK_FLAG_PREVIEW} --ask-for-approval on-request`);
     expect(createCall.startupCommand).not.toContain("--full-auto");
   });
 
@@ -3640,7 +3646,7 @@ describe("adeRpcServer", () => {
       args?: string[];
       startupCommand?: string;
     };
-    expect(createCall.startupCommand).toContain("codex --sandbox workspace-write --ask-for-approval on-request");
+    expect(createCall.startupCommand).toContain(`codex --sandbox workspace-write -c ${NETWORK_FLAG_PREVIEW} --ask-for-approval on-request`);
     expect(createCall.command).toBe(codexPath);
     expect(createCall.args).toEqual(expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]));
     expect(response.structuredContent.startupCommand).not.toContain("--full-auto");
