@@ -32002,13 +32002,13 @@ async function runServe(
       remoteSignIn: remoteProviderSignIn
         ? { start: (provider) => remoteProviderSignIn.start(provider), status: (jobId) => remoteProviderSignIn.status(jobId) }
         : undefined,
-      // Pulls the vault, then runs one sign-in pass, so a pass or key saved on
-      // another screen is applied here now (the Claude pass reconcile hears the pass).
+      // Pulls the vault, then runs one sign-in pass on it, so a pass or key saved
+      // on another screen is applied here now (the Claude pass reconcile hears the pass).
       refreshVault: async () => {
         const runtime = await getMachineAccountRuntime();
         await runtime.accountVaultStore?.sync();
         const { providerLoginSync } = await import("../../desktop/src/main/services/providerLogins/providerLoginSync");
-        await providerLoginSync()?.captureNow(null);
+        await providerLoginSync()?.pass(null);
       },
       // The person's messages sent before the chat existed (the server keeps them).
       sendChatMessage: async (projectId, sessionId, message) => {

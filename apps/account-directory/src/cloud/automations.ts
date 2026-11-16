@@ -19,7 +19,7 @@ import {
   type CloudLaunchRecord,
   type CloudTierId,
 } from "./contract";
-import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
+import { UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson } from "./http";
 import { isCloudBlocked } from "./blocks";
 import { githubOriginOf, startServerLaunch, type LaunchRouteDeps, type ParsedLaunchRequest } from "./launches";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
@@ -158,13 +158,13 @@ export type AutomationDeps = {
 };
 
 const notFound = () => fail("not_found", "ADE Cloud has no such automation.", 404);
-const badRequest = (message: string) => fail("bad_request", message, 400);
 const OPEN_STATES = "('queued', 'starting', 'running', 'finishing')";
 const ACTIVE_STATES = "('starting', 'running')";
 
 /* ---- The spec ---- */
 
-function shortString(value: unknown, max: number): string | null {
+/** Like `shortString` in http.ts, but keeps tabs and line breaks: a prompt or rule may span lines. */
+function multilineShortString(value: unknown, max: number): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.replace(/[\u0000-\u0008\u000b-\u001f]/g, " ").trim();
   return trimmed && trimmed.length <= max ? trimmed : null;
@@ -174,7 +174,7 @@ function parseTrigger(value: unknown): CloudAutomationTrigger | string {
   const raw = value && typeof value === "object" ? value as Record<string, unknown> : null;
   if (raw?.kind === "manual") return { kind: "manual" };
   if (raw?.kind === "schedule") {
-    const cron = shortString(raw.cron, 120);
+    const cron = multilineShortString(raw.cron, 120);
     if (!cron || !parseCron(cron)) return "That schedule isn't one ADE can read.";
     if (!isTimeZone(raw.timezone)) return "That schedule's time zone isn't one ADE knows.";
     return { kind: "schedule", cron, timezone: raw.timezone };
@@ -191,13 +191,13 @@ function parseTrigger(value: unknown): CloudAutomationTrigger | string {
 
 /** The registration's body as one, or the sentence that says what's wrong. */
 export function parseRegistration(body: Record<string, unknown>): CloudAutomationRegistration | string {
-  const ruleVersion = shortString(body.ruleVersion, 64);
+  const ruleVersion = multilineShortString(body.ruleVersion, 64);
   if (!ruleVersion) return "A registration needs the rule's version.";
   if (typeof body.enabled !== "boolean") return "A registration says whether the rule is on.";
   const startsAt = body.startsAt == null ? null : Number(body.startsAt);
   if (startsAt != null && !Number.isFinite(startsAt)) return UNREADABLE_REQUEST_MESSAGE;
   const spec = body.spec && typeof body.spec === "object" ? body.spec as Record<string, unknown> : null;
-  const name = shortString(spec?.name, 200);
+  const name = multilineShortString(spec?.name, 200);
   if (!spec || !name) return "A registration needs the rule's name.";
   const project = spec.project && typeof spec.project === "object" ? spec.project as Record<string, unknown> : null;
   const origin = githubOriginOf(project?.origin);
@@ -1170,7 +1170,7 @@ export async function routeAutomations(request: Request, url: URL, path: string,
     if (request.method === "PUT") return await handleRegister(request, env, userId, ruleId, deps.now);
     if (request.method === "DELETE") {
       // `through`: a brain releasing what it saw (a rule deleted, or homed on a computer) never takes a newer save with it.
-      const through = shortString(url.searchParams.get("through"), 64);
+      const through = multilineShortString(url.searchParams.get("through"), 64);
       const deleted = await env.DB.prepare(`delete from cloud_automations where user_id = ? and rule_id = ?${through ? " and rule_version <= ?" : ""}`)
         .bind(...(through ? [userId, ruleId, through] : [userId, ruleId])).run();
       if (through && (deleted.meta?.changes ?? 0) === 0 && await readRule(env, userId, ruleId)) {

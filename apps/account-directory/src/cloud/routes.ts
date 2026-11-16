@@ -38,7 +38,7 @@ import { accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusa
 import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
 import { INSTANCE_LIST_TTL_S, listInstancesCached } from "./instanceListCache";
 import { boundedDisplayText } from "../displayText";
-import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
+import { UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson } from "./http";
 import {
   AWAKE_COMPUTER_CAP,
   DISK_ON_CREATE_GB,
@@ -134,7 +134,6 @@ const FREE_WAKE_COOLDOWN_MS = 24 * 60 * 60_000;
 
 const NOT_FOUND_MESSAGE = "ADE Cloud has no such computer.";
 const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
-const badRequest = (message: string) => fail("bad_request", message, 400);
 const outOfHours = () => fail("out_of_hours", "You're out of ADE Cloud hours for this period.", 402);
 const badDiskStep = () => badRequest(`Disk grows in steps of ${DISK_STEP_GB} GB.`);
 const noProviderKey = () => fail("unavailable", cloudErrorMessage("no_provider_key", 503), 503);

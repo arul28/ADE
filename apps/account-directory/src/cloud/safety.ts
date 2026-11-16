@@ -65,8 +65,13 @@ export async function enforceBlockOnComputer(env: CloudEnv, provider: CloudProvi
       if (error instanceof CloudProviderError && error.code === TRY_AGAIN_CODE) denied = true;
       else reportCloudFailure("cloud.block_network_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
     }
-    await env.DB.prepare("update cloud_computers set network_deny_tried_at = ?, network_denied_at = ? where instance_id = ?")
-      .bind(now, denied ? now : null, computer.instance_id).run();
+    // A failed note of the try must not skip the stop below.
+    try {
+      await env.DB.prepare("update cloud_computers set network_deny_tried_at = ?, network_denied_at = ? where instance_id = ?")
+        .bind(now, denied ? now : null, computer.instance_id).run();
+    } catch (error) {
+      reportCloudFailure("cloud.block_network_note_failed", { instanceId: computer.instance_id, message: error instanceof Error ? error.message : String(error) });
+    }
     computer.network_deny_tried_at = now;
     if (denied) computer.network_denied_at = now;
   }

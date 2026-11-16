@@ -263,10 +263,6 @@ export function logCloud(event: string, meta: Record<string, unknown> = {}): voi
 const FAILURE_REPORT_INTERVAL_MS = 60 * 60_000;
 const lastFailureReport = new Map<string, number>();
 
-/**
- * {@link logCloud} for a failure that's ADE's to fix: the line stays local, the event name reaches Sentry.
- * `area` tags the Sentry issue (`cloud`, `cloud-referrals`, `cloud-free-plan`) so alert rules can pick one.
- */
 /** A JSON column of a launch row, or `fallback` when it is empty or unreadable (reported). */
 export function parseJsonColumn<T>(text: string | null, fallback: T, where: { launchId: string; column: string }): T {
   if (!text) return fallback;
@@ -278,6 +274,10 @@ export function parseJsonColumn<T>(text: string | null, fallback: T, where: { la
   }
 }
 
+/**
+ * {@link logCloud} for a failure that's ADE's to fix: the line stays local, the event name reaches Sentry.
+ * `area` tags the Sentry issue (`cloud`, `cloud-referrals`, `cloud-free-plan`) so alert rules can pick one.
+ */
 export function reportCloudFailure(event: string, meta: Record<string, unknown> = {}, area = "cloud"): void {
   logCloud(event, meta);
   const now = Date.now();
