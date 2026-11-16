@@ -3440,7 +3440,10 @@ function renderEvent(
         // `overflow-x-clip`, not `overflow-hidden`: an interim row's hover
         // actions float below the row, and `hidden` would clip them.
         className="flex min-w-0 max-w-full w-full justify-start overflow-x-clip"
-        initial={playEntrance ? { opacity: 0 } : false}
+        // The reply's first words are readable on their first frame: the row
+        // settles from 0.8, not from nothing, so the fade never holds back
+        // text the person is waiting for.
+        initial={playEntrance ? { opacity: 0.8 } : false}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.14, ease: "easeOut" }}
       >
