@@ -1036,8 +1036,10 @@ async function handleActiveList(env: CloudEnv, userId: string, now: number): Pro
   const rows = (await env.DB.prepare(`
     select * from cloud_launches
     where user_id = ? and state not in ('draft', 'done', 'cancelled') and (state <> 'failed' or updated_at > ?)
-      -- A launch whose computer is gone is not in progress, even one left from before the delete closed it.
-      and not exists (select 1 from cloud_computers c where c.instance_id = cloud_launches.instance_id and c.deleted_at is not null)
+      -- A launch still "in progress" on a deleted computer is not (one left from before the delete closed it).
+      -- A failure stays for its window with its error and Retry; a Retry in flight stays too.
+      and (state in ('failed', 'retrying')
+        or not exists (select 1 from cloud_computers c where c.instance_id = cloud_launches.instance_id and c.deleted_at is not null))
     order by created_at desc limit ?
   `).bind(userId, now - ACTIVE_FAILED_MS, ACTIVE_LIST_LIMIT).all<LaunchRow>()).results ?? [];
   const answer: CloudLaunchList = { launches: rows.map((row) => summaryOf(row, now)) };
