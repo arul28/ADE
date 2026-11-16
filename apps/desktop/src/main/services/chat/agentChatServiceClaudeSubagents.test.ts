@@ -37,6 +37,7 @@ import {
   waitForSessionTitle,
   writePersistedChatState,
   dedicatedTranscriptPath,
+  settleSteppingTimeouts,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
 
@@ -4181,7 +4182,7 @@ describe("createAgentChatService", () => {
       try {
         const warm = async (service: ReturnType<typeof createService>["service"], text: string) => {
           const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
-          await service.runSessionTurn({ sessionId: session.id, text, timeoutMs: 15_000 });
+          await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text, timeoutMs: 15_000 }));
         };
 
         // Fill the budget inside the first service. Nothing is evicted: the cap
