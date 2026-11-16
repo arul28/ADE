@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { resolveNpmInvocation } from "./dev-shared.mjs";
 import { computeChannelVersion, resolveChannelBaseVersion } from "./channelVersion.mjs";
@@ -388,6 +389,20 @@ function signLocalMacApp(appPath, decision) {
   });
 }
 
+/**
+ * `codesign --deep` above gave the brain copy (mode `brain-copy` only) a
+ * signing identifier of its own; it must carry the app's. Nothing without a
+ * copy, or in a checkout from before the copy existed.
+ */
+function signBrainCopy(desktopRoot, appPath) {
+  if (process.platform !== "darwin") return;
+  const helperPath = path.join(desktopRoot, "scripts", "mac-brain-copy.cjs");
+  if (!fs.existsSync(helperPath)) return;
+  createRequire(import.meta.url)(helperPath).signBrainCopyIfPresent(appPath, {
+    log: (line) => process.stdout.write(`${line}\n`),
+  });
+}
+
 const AZURE_SIGNING_ENV = ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"];
 
 /**
@@ -529,6 +544,7 @@ function buildChannel(repoRoot, channel, options) {
   if (!appPath) fail(`Build finished but no .app was found in ${outputRoot}.`);
   postprocessChannelApp(appPath, channel, config, options, signingDecision?.source);
   signLocalMacApp(appPath, signingDecision);
+  signBrainCopy(desktopRoot, appPath);
   const zipPath = zipApp(appPath, outputRoot, channel, options);
   process.stdout.write(`\n[ade] Built ${config.productName}: ${appPath}\n`);
   if (zipPath) process.stdout.write(`[ade] Zipped app: ${zipPath}\n`);

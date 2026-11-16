@@ -4603,6 +4603,29 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   settingSources?: AgentChatSettingSources;
 };
 
+/**
+ * A draft composer's warmup request (`agentChat.prewarmDraft`): the same
+ * fields its `create` will send, plus the chat id the draft reserved. The
+ * `create` that sends that id and resolves to the same settings adopts the
+ * warm provider instead of starting a new one.
+ */
+export type AgentChatPrewarmDraftArgs = AgentChatCreateArgs & {
+  sessionId: string;
+  /** Cursor's runtime pick for the first send; a cloud agent is not warmed. */
+  cursorRuntime?: AgentChatRuntime;
+};
+
+export type AgentChatPrewarmDraftResult = {
+  warming: boolean;
+  /** Why nothing was warmed. Informational only. */
+  reason?:
+    | "unsupported_launch"
+    | "chat_exists"
+    | "unavailable"
+    | "invalid_settings"
+    | "provider_not_supported";
+};
+
 export type AgentChatImportExternalSessionArgs = {
   provider: AgentChatImportProvider;
   externalSessionId: string;
@@ -5805,11 +5828,30 @@ export type AgentChatSendArgs = {
    */
   clientSendId?: string;
   /**
+   * Wall-clock ms when the person pressed Enter in the desktop composer. Only
+   * the host's per-turn timing log (`agent_chat.send_timing`) reads it; the
+   * host drops it before the send goes anywhere else.
+   */
+  clientSubmittedAtMs?: number;
+  /**
    * A person typed this in a composer (a paired phone or web client over
    * sync). Carried onto the steer when the send lands on a running turn; see
    * `AgentChatSteerArgs.sentByUser`. Agent and CLI senders leave it unset.
    */
   sentByUser?: boolean;
+};
+
+/**
+ * A new chat and its first message in one call (`agentChat.createAndSend`;
+ * the brain's `chat.createSessionAndSend`). `message` is the opening send
+ * without the session id. The brain sets its provider-specific fields from the
+ * created chat, as the create-then-send path does: `interactionMode` only for
+ * a Claude chat (the chat's own mode first, then the message's), and
+ * `runtime: "local"` for a Cursor chat. A failed send deletes the new chat.
+ */
+export type AgentChatCreateAndSendArgs = {
+  create: AgentChatCreateArgs;
+  message: Omit<AgentChatSendArgs, "sessionId">;
 };
 
 export type AgentChatDispatchSteerMode = "inline" | "interrupt";

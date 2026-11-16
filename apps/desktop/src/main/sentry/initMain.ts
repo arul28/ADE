@@ -33,6 +33,19 @@ let started = false;
 /** Integrations ADE leaves out: local variables can hold anything, and ADE wires its own preload. */
 const EXCLUDED_INTEGRATIONS = /^(?:LocalVariables|PreloadInjection|Screenshots)/;
 
+/**
+ * The relay calls that ADE repeats in the background for as long as a window
+ * is open: the presence heartbeat (`POST /attention/account/presence`, every
+ * 30 s) and the Activity poll (`GET /attention/account/snapshot`, every
+ * 15-120 s). Their fetches get no span and no breadcrumb. At rest each one
+ * cost main a span, a span envelope to Sentry, and a breadcrumb that made the
+ * minidump integration rebuild the event defaults (Electron's process metrics
+ * included) and rewrite its scope file. Their successes also pushed useful
+ * breadcrumbs out of the 100 kept. Each path carries only that one request,
+ * and ADE's own logger still records a failure.
+ */
+const BACKGROUND_RELAY_POLL_URL = /\/attention\/account\/(?:presence|snapshot)(?:[?#]|$)/u;
+
 export function initMainSentry(options: {
   /** Names an IPC call for its issue and breadcrumb; see `installIpcErrorCapture`. */
   ipcLabel: (channel: string, args: readonly unknown[]) => string;
@@ -57,7 +70,13 @@ export function initMainSentry(options: {
     sendClientReports: true,
     maxBreadcrumbs: 100,
     dataCollection: SENTRY_DATA_COLLECTION,
-    integrations: (defaults) => defaults.filter((integration) => !EXCLUDED_INTEGRATIONS.test(integration.name)),
+    integrations: (defaults) => [
+      ...defaults.filter((integration) =>
+        !EXCLUDED_INTEGRATIONS.test(integration.name) && integration.name !== "NodeFetch"),
+      Sentry.nativeNodeFetchIntegration({
+        ignoreOutgoingRequests: (url) => BACKGROUND_RELAY_POLL_URL.test(url),
+      }),
+    ],
     beforeSend: hooks.beforeSend,
     beforeBreadcrumb: hooks.beforeBreadcrumb,
     beforeSendSpan: hooks.beforeSendSpan,

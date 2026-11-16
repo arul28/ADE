@@ -147,7 +147,14 @@ export type RosterBootedScope = {
   runtime: {
     agentChatService?: RosterAgentChatService | null;
     ptyService?: RosterPtyService | null;
+    /** The booted project's own open database (statements are kept prepared). */
+    db?: RosterLiveDb | null;
   };
+};
+
+/** The read half of the project database a booted scope already holds open. */
+export type RosterLiveDb = {
+  all<T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: Array<string | number | null>): T[];
 };
 
 export type RosterScopeRegistry = {
@@ -382,6 +389,137 @@ function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> 
   return data ?? emptyDiskProject();
 }
 
+/** How {@link readProjectRows} reads: a read-only file connection, or a booted scope's own database. */
+type ProjectRowSource = {
+  hasTable(table: string): boolean;
+  all<T>(sql: string): T[];
+};
+
+/** The roster's rows of one project database; throws what the source throws. */
+function readProjectRows(source: ProjectRowSource): DiskProjectData {
+  if (!source.hasTable("lanes")) return emptyDiskProject();
+
+  const lanes = source
+    .all<LaneRow>(
+      `
+        select id, name, color, icon, lane_type, branch_ref,
+               worktree_path, attached_root_path, status, archived_at, created_at
+        from lanes
+        where coalesce(status, 'active') != 'archived'
+          and archived_at is null
+      `,
+    );
+
+  const chats = source.hasTable("terminal_sessions")
+    ? (() => {
+        // One PRAGMA for every column probe below: probing each column on its own
+        // re-ran table_info once per column for every project database.
+        const sessionColumns = new Set(
+          source.all<{ name?: string }>("pragma table_info(terminal_sessions)").map((row) => row.name),
+        );
+        const chatSessionIdColumn = sessionColumns.has("chat_session_id")
+          ? "chat_session_id"
+          : "null as chat_session_id";
+        const settledAtColumn = sessionColumns.has("settled_at")
+          ? "settled_at"
+          : "null as settled_at";
+        const statusNoteColumn = sessionColumns.has("status_note")
+          ? "status_note"
+          : "null as status_note";
+        const activityStatusColumn = sessionColumns.has("activity_status_json")
+          ? "activity_status_json"
+          : "null as activity_status_json";
+        const activityStatusChangedAtColumn = sessionColumns.has("activity_status_changed_at")
+          ? "activity_status_changed_at"
+          : "null as activity_status_changed_at";
+        const attentionRequestedAtColumn = sessionColumns.has("attention_requested_at")
+          ? "attention_requested_at"
+          : "null as attention_requested_at";
+        const attentionMessageColumn = sessionColumns.has("attention_message")
+          ? "attention_message"
+          : "null as attention_message";
+        const lastTurnFailedAtColumn = sessionColumns.has("last_turn_failed_at")
+          ? "last_turn_failed_at"
+          : "null as last_turn_failed_at";
+        const snoozedUntilColumn = sessionColumns.has("snoozed_until")
+          ? "snoozed_until"
+          : "null as snoozed_until";
+        const snoozedAtColumn = sessionColumns.has("snoozed_at")
+          ? "snoozed_at"
+          : "null as snoozed_at";
+        const resumeMetadataColumn = sessionColumns.has("resume_metadata_json")
+          ? "resume_metadata_json"
+          : "null as resume_metadata_json";
+        return source
+          .all<TerminalSessionRow>(
+            `
+              select id, lane_id, ${chatSessionIdColumn}, tool_type, title, status, ended_at, last_output_preview,
+                     last_output_at, pinned, exit_code, started_at,
+                     ${settledAtColumn}, ${statusNoteColumn}, ${activityStatusColumn}, ${activityStatusChangedAtColumn}, ${attentionRequestedAtColumn},
+                     ${attentionMessageColumn}, ${lastTurnFailedAtColumn},
+                     ${snoozedUntilColumn}, ${snoozedAtColumn}, ${resumeMetadataColumn}
+              from terminal_sessions
+              where archived_at is null
+            `,
+          );
+      })()
+    : [];
+
+  const prWaitingReasonByLaneId = new Map<string, "ci" | "review">();
+  if (source.hasTable("pull_requests")) {
+    const prsByLaneId = new Map<string, Array<{
+      state: string;
+      checksStatus: string | null;
+      reviewStatus: string | null;
+    }>>();
+    const rows = source
+      .all<PullRequestRow>(
+        `
+          select lane_id, state, checks_status, review_status
+          from pull_requests
+          where state in ('open', 'draft')
+        `,
+      );
+    for (const row of rows) {
+      const list = prsByLaneId.get(row.lane_id) ?? [];
+      list.push({
+        state: row.state,
+        checksStatus: row.checks_status,
+        reviewStatus: row.review_status,
+      });
+      prsByLaneId.set(row.lane_id, list);
+    }
+    for (const [laneId, prs] of prsByLaneId) {
+      const reason = lanePrWaitingReason(prs);
+      if (reason) prWaitingReasonByLaneId.set(laneId, reason);
+    }
+  }
+
+  return { lanes, chats, prWaitingReasonByLaneId };
+}
+
+/**
+ * The same rows from a booted project's own open database. The file read
+ * opens a new connection and parses the whole schema (about 450 tables) each
+ * time its cache misses, and an open project writes often enough (device
+ * stamps, activity) that it misses on most 30 s attention beats. The scope's
+ * connection is already open and keeps its statements prepared, so this costs
+ * the queries alone. Null on any failure, so the caller reads the file.
+ */
+function readProjectFromLiveDb(db: RosterLiveDb, logger?: Pick<Logger, "warn"> | null): DiskProjectData | null {
+  try {
+    return readProjectRows({
+      hasTable: (table) => db.all("select 1 as present from sqlite_master where type = 'table' and name = ? limit 1", [table]).length > 0,
+      all: <T>(sql: string) => db.all(sql) as T[],
+    });
+  } catch (error) {
+    logger?.warn?.("sync_host.roster_live_project_read_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 /** Null when the read failed (locked, unreadable) so the caller retries next time. */
 function readProjectFromDiskUncached(
   dbPath: string,
@@ -393,109 +531,11 @@ function readProjectFromDiskUncached(
   try {
     db = openReadOnlyDatabase(dbPath);
     db.exec("PRAGMA busy_timeout = 2000");
-    if (!hasTable(db, "lanes")) return empty;
-
-    const lanes = db
-      .prepare(
-        `
-          select id, name, color, icon, lane_type, branch_ref,
-                 worktree_path, attached_root_path, status, archived_at, created_at
-          from lanes
-          where coalesce(status, 'active') != 'archived'
-            and archived_at is null
-        `,
-      )
-      .all<LaneRow>();
-
-    const chats = hasTable(db, "terminal_sessions")
-      ? (() => {
-          const activeDb = db!;
-          // One PRAGMA for every column probe below: probing each column on its own
-          // re-ran table_info once per column for every project database.
-          const sessionColumns = new Set(
-            activeDb.prepare("pragma table_info(terminal_sessions)").all<{ name?: string }>().map((row) => row.name),
-          );
-          const chatSessionIdColumn = sessionColumns.has("chat_session_id")
-            ? "chat_session_id"
-            : "null as chat_session_id";
-          const settledAtColumn = sessionColumns.has("settled_at")
-            ? "settled_at"
-            : "null as settled_at";
-          const statusNoteColumn = sessionColumns.has("status_note")
-            ? "status_note"
-            : "null as status_note";
-          const activityStatusColumn = sessionColumns.has("activity_status_json")
-            ? "activity_status_json"
-            : "null as activity_status_json";
-          const activityStatusChangedAtColumn = sessionColumns.has("activity_status_changed_at")
-            ? "activity_status_changed_at"
-            : "null as activity_status_changed_at";
-          const attentionRequestedAtColumn = sessionColumns.has("attention_requested_at")
-            ? "attention_requested_at"
-            : "null as attention_requested_at";
-          const attentionMessageColumn = sessionColumns.has("attention_message")
-            ? "attention_message"
-            : "null as attention_message";
-          const lastTurnFailedAtColumn = sessionColumns.has("last_turn_failed_at")
-            ? "last_turn_failed_at"
-            : "null as last_turn_failed_at";
-          const snoozedUntilColumn = sessionColumns.has("snoozed_until")
-            ? "snoozed_until"
-            : "null as snoozed_until";
-          const snoozedAtColumn = sessionColumns.has("snoozed_at")
-            ? "snoozed_at"
-            : "null as snoozed_at";
-          const resumeMetadataColumn = sessionColumns.has("resume_metadata_json")
-            ? "resume_metadata_json"
-            : "null as resume_metadata_json";
-          return activeDb
-            .prepare(
-              `
-                select id, lane_id, ${chatSessionIdColumn}, tool_type, title, status, ended_at, last_output_preview,
-                       last_output_at, pinned, exit_code, started_at,
-                       ${settledAtColumn}, ${statusNoteColumn}, ${activityStatusColumn}, ${activityStatusChangedAtColumn}, ${attentionRequestedAtColumn},
-                       ${attentionMessageColumn}, ${lastTurnFailedAtColumn},
-                       ${snoozedUntilColumn}, ${snoozedAtColumn}, ${resumeMetadataColumn}
-                from terminal_sessions
-                where archived_at is null
-              `,
-            )
-            .all<TerminalSessionRow>();
-        })()
-      : [];
-
-    const prWaitingReasonByLaneId = new Map<string, "ci" | "review">();
-    if (hasTable(db, "pull_requests")) {
-      const prsByLaneId = new Map<string, Array<{
-        state: string;
-        checksStatus: string | null;
-        reviewStatus: string | null;
-      }>>();
-      const rows = db
-        .prepare(
-          `
-            select lane_id, state, checks_status, review_status
-            from pull_requests
-            where state in ('open', 'draft')
-          `,
-        )
-        .all<PullRequestRow>();
-      for (const row of rows) {
-        const list = prsByLaneId.get(row.lane_id) ?? [];
-        list.push({
-          state: row.state,
-          checksStatus: row.checks_status,
-          reviewStatus: row.review_status,
-        });
-        prsByLaneId.set(row.lane_id, list);
-      }
-      for (const [laneId, prs] of prsByLaneId) {
-        const reason = lanePrWaitingReason(prs);
-        if (reason) prWaitingReasonByLaneId.set(laneId, reason);
-      }
-    }
-
-    return { lanes, chats, prWaitingReasonByLaneId };
+    const activeDb = db;
+    return readProjectRows({
+      hasTable: (table) => hasTable(activeDb, table),
+      all: <T>(sql: string) => activeDb.prepare(sql).all() as T[],
+    });
   } catch (error) {
     logger?.warn?.("sync_host.roster_project_read_failed", {
       projectRoot,
@@ -791,7 +831,29 @@ async function buildRosterProject(
   // A refused project is listed without rows: reading its database and chat
   // folder here, on the brain's thread, is the freeze it was refused for.
   const refused = scopeRegistry.isOpenBlocked(record.projectId);
-  const disk = refused ? emptyDiskProject() : readProjectFromDisk(record.rootPath, logger);
+  let bootedPromise: Promise<RosterBootedScope> | null = null;
+  try {
+    bootedPromise = scopeRegistry.getIfBooted(record.projectId);
+  } catch {
+    // A booted-scope overlay is best-effort; fall back to disk-only fidelity.
+  }
+  // Path A overlay: only for projects already booted on the runtime. NEVER
+  // boots a scope (getIfBooted is non-booting). When booted, listSessions()
+  // carries true running/awaiting fidelity keyed by sessionId.
+  const scope = bootedPromise
+    ? await Promise.race([
+        bootedPromise.catch(() => null),
+        new Promise<null>((resolve) =>
+          setTimeout(() => resolve(null), ROSTER_BOOT_OVERLAY_TIMEOUT_MS),
+        ),
+      ])
+    : null;
+  // A booted project answers from the database it already holds open; the
+  // file read stays for every other project, and for a failed live read.
+  const liveDb = refused ? null : scope?.runtime.db ?? null;
+  const disk = refused
+    ? emptyDiskProject()
+    : (liveDb ? readProjectFromLiveDb(liveDb, logger) : null) ?? readProjectFromDisk(record.rootPath, logger);
   const chatSessionsDir = resolveAdeLayout(record.rootPath).chatSessionsDir;
   // The link is part of the key: a sign-out must drop it from a memoized row.
   const recordKey = rosterRecordKey(record, account);
@@ -799,7 +861,7 @@ async function buildRosterProject(
   const memo = unbootedProjectMemo.get(record.projectId);
   if (
     memo
-    && !scopeRegistry.getIfBooted(record.projectId)
+    && !bootedPromise
     && memo.disk === disk
     && memo.sidecarFolderIdentity === sidecarFolderIdentity
     && memo.recordKey === recordKey
@@ -808,23 +870,11 @@ async function buildRosterProject(
     return memo.project;
   }
 
-  // Path A overlay: only for projects already booted on the runtime. NEVER
-  // boots a scope (getIfBooted is non-booting). When booted, listSessions()
-  // carries true running/awaiting fidelity keyed by sessionId.
   const liveBySessionId = new Map<string, RosterLiveSession>();
   let booted = false;
   let livePtyService: RosterPtyService | null = null;
   let liveChatLogState: ((sessionId: string) => AgentChatLogState | null) | null = null;
   try {
-    const bootedPromise = scopeRegistry.getIfBooted(record.projectId);
-    const scope = bootedPromise
-      ? await Promise.race([
-          bootedPromise.catch(() => null),
-          new Promise<null>((resolve) =>
-            setTimeout(() => resolve(null), ROSTER_BOOT_OVERLAY_TIMEOUT_MS),
-          ),
-        ])
-      : null;
     const agentChatService = scope?.runtime.agentChatService;
     livePtyService = scope?.runtime.ptyService ?? null;
     if (agentChatService) {

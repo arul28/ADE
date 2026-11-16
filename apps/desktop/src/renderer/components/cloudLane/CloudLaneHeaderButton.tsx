@@ -58,7 +58,7 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
       key: "sleep",
       label: "Put its computer to sleep",
       icon: <Moon size={13} />,
-      onSelect: () => void sleepLaneComputer(computer.instanceId, name, turnRunning),
+      onSelect: () => void sleepLaneComputer(computer.instanceId, name, turnRunning ? 1 : 0),
     });
   }
   if (life) {
@@ -88,17 +88,23 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
   );
 }
 
-/** "Keep it" from the chat header: the server restarts the computer's idle clock with no wake. */
-async function keepLaneComputer(instanceId: string, name: string): Promise<void> {
-  const result = await window.ade.cloud?.keepIdleComputer?.(instanceId).catch((error: unknown) => ({ ok: false, message: error instanceof Error ? error.message : undefined }));
+/** "Keep it" (the chat header, Manage lane): the server restarts the computer's idle clock with no wake. */
+export async function keepLaneComputer(instanceId: string, name: string): Promise<void> {
+  const result = await window.ade.cloud?.keepIdleComputer?.(instanceId).catch((error: unknown) => {
+    console.warn("[cloud] keeping a lane's computer failed", error);
+    return { ok: false, message: error instanceof Error ? error.message : undefined };
+  });
   if (result?.ok) showToast({ tone: "success", title: `Kept ${name}'s computer`, message: "ADE Cloud won't delete it. Its unused days count again from now." });
   else showToast({ tone: "warning", title: `Couldn't keep ${name}'s computer`, message: result?.message || "Send a message in the lane to keep it." });
   refreshCloudMachines();
 }
 
-/** Sleep from the chat header: the shared confirm and IPC call, a toast either way, then the list read again. */
-async function sleepLaneComputer(instanceId: string, name: string, turnRunning: boolean): Promise<void> {
-  if (!(await confirmCloudSleep(`${name}'s computer`, turnRunning ? 1 : 0))) return;
+/**
+ * Sleep (the chat header, Manage lane): the shared confirm, which asks when
+ * chats run there, the IPC call, a toast either way, then the list read again.
+ */
+export async function sleepLaneComputer(instanceId: string, name: string, runningChats: number): Promise<void> {
+  if (!(await confirmCloudSleep(`${name}'s computer`, runningChats))) return;
   const result = await callCloudMachineAction({ instanceId, action: "sleep" });
   if (result?.ok) {
     showToast({ tone: "info", title: `${name}'s computer is going to sleep.` });

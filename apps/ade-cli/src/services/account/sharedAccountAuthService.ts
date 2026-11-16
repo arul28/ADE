@@ -137,6 +137,26 @@ function rememberProjectSecret(gate: AccountConfigRootGate, projectRoot: string,
   }
 }
 
+/**
+ * One project secret service per project folder. Account settings are read
+ * from each registered project on every sign-in and directory lookup, several
+ * times a minute at idle. The service keeps no values of its own (each read
+ * asks the machine's password store, whose reads are cached against the
+ * credential file), so one object can answer every read. Keeping it also keeps
+ * its old per-project store object, whose reads are cached by the file's stat.
+ */
+const projectSecretServices = new Map<string, ReturnType<typeof createProjectSecretService>>();
+
+function projectSecretServiceFor(projectRoot: string): ReturnType<typeof createProjectSecretService> {
+  const key = path.resolve(projectRoot);
+  let service = projectSecretServices.get(key);
+  if (!service) {
+    service = createProjectSecretService(projectRoot);
+    projectSecretServices.set(key, service);
+  }
+  return service;
+}
+
 function readProjectSecret(projectRoot: string, name: string): string | null {
   const gate = accountConfigRootGate;
   if (gate?.skip(projectRoot)) {
@@ -149,7 +169,7 @@ function readProjectSecret(projectRoot: string, name: string): string | null {
   }
   let value: string | null;
   try {
-    value = createProjectSecretService(projectRoot).getSignInConfig({ name }).value.trim() || null;
+    value = projectSecretServiceFor(projectRoot).getSignInConfig({ name }).value.trim() || null;
   } catch (error) {
     // The secret service answers "not set" with an expected `user` error;
     // anything else is a read that failed. Only a real answer is remembered,

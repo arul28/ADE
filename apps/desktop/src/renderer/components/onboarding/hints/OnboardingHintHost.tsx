@@ -17,7 +17,7 @@ import {
 } from "../../../onboarding/onboardingProgress";
 import { ONBOARDING_HINTS, type OnboardingHintDef } from "./onboardingHintDefs";
 import { AdeTourCursorArt } from "../tour/AdeTourCursorArt";
-import { watchTourDom, type TourWatch } from "../tour/tourWatch";
+import { TOUR_WATCH_IGNORE_STREAMING_CONTENT, watchTourDom, type TourWatch } from "../tour/tourWatch";
 import {
   anchorRadius,
   createSettle,
@@ -155,7 +155,7 @@ function OnboardingHintScanner({ openIds }: { openIds: readonly OnboardingHintId
       }
       commit(next);
     };
-    watch = watchTourDom(scan, { minIntervalMs: SCAN_INTERVAL_MS });
+    watch = watchTourDom(scan, { minIntervalMs: SCAN_INTERVAL_MS, ignoreWithin: TOUR_WATCH_IGNORE_STREAMING_CONTENT });
     return () => watch?.dispose();
   }, [openIds]);
 

@@ -13,6 +13,7 @@ const {
   diffRuntimeArtifacts,
   formatRuntimeArtifactDiff,
 } = require("./runtime-resource-targets.cjs");
+const { createBrainCopy } = require("./mac-brain-copy.cjs");
 
 const appDir = path.resolve(__dirname, "..");
 
@@ -505,6 +506,13 @@ module.exports = async function afterPack(context) {
     replaceCpuFeaturesNativeAddon(runtimeRoot, context);
   }
   pruneOpenCodeInstallShim(runtimeRoot);
+  if (platform === "darwin" && appBundlePath) {
+    // The brain-executable switch (`brainExecutableMode.json`, mode
+    // `brain-copy`). Signed later, after electron-builder's own pass
+    // (after-sign-notarize.cjs) or the channel build's (package-channel.mjs).
+    const brainCopy = createBrainCopy(appBundlePath);
+    if (brainCopy) console.log(`[afterPack] Added brain copy: ${path.relative(appBundlePath, brainCopy)}`);
+  }
   assertNoRuntimeFetchedToolPackages(
     resourcesRoot,
     runtimeRoot,

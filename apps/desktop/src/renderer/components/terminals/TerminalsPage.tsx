@@ -24,8 +24,8 @@ import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/
 import { PROJECT_SIDEBAR_DEFAULT_WIDTH, useProjectSidebarHidden } from "../app/projectSidebar/projectSidebarPrefs";
 import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
 import { cn } from "../ui/cn";
-import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
-import { AndroidDeviceMiniPlayer } from "../android/AndroidDeviceMiniPlayer";
+// The players' code loads when a device floats (WorkDeviceMiniPlayers).
+import { AppleDeviceMiniPlayer, AndroidDeviceMiniPlayer } from "./WorkDeviceMiniPlayers";
 import { useWorkShowRequests } from "./useWorkShowRequests";
 import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
 import { AndroidShutdownConfirmHost } from "../android/AndroidShutdownConfirm";

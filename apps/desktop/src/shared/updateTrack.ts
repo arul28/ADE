@@ -62,6 +62,19 @@ export function resolveUpdateTrackFromArgv(argv: readonly string[] | undefined):
   return "stable";
 }
 
+/** Hands the running build's version to the preload, so first paint can read it without IPC. */
+export const APP_VERSION_ARGV_PREFIX = "--ade-app-version=";
+
+/** The running build's version in the renderer/preload, or null when main did not pass one. */
+export function resolveAppVersionFromArgv(argv: readonly string[] | undefined): string | null {
+  for (const arg of argv ?? []) {
+    if (typeof arg === "string" && arg.startsWith(APP_VERSION_ARGV_PREFIX)) {
+      return arg.slice(APP_VERSION_ARGV_PREFIX.length).trim() || null;
+    }
+  }
+  return null;
+}
+
 /**
  * A released version, or null for a dev or test build (the package.json
  * placeholder, `0.0.0`, or nothing). Only released builds keep database

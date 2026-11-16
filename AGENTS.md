@@ -78,6 +78,8 @@ the app from unusable to smooth. Do not let them climb back.
    (git, shells); reads files or databases on a hot path; builds caches or
    large in-memory structures; or adds a surface that loads its own data. CPU,
    GPU and memory all count. When in doubt, it applies.
+   Before you add a poll, timer, spawn or periodic job, read **Patterns that
+   bloat ADE** in the doc.
 2. **Measure before and after, during the work,** with the scripts the doc
    lists, on the same machine and under the same conditions. Follow the doc's
    gotchas: no perf run for idle, GPU, typing or memory numbers; close extra

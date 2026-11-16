@@ -49,6 +49,8 @@ export type ProjectConfigAccountBackend = {
   list(scope: string): ReadonlyArray<{ key: string }>;
   /** Keys some computer deleted, so a stale copy does not come back. */
   deletedKeys(scope: string): ReadonlyArray<{ key: string }>;
+  /** Changes whenever the rows may have changed; absent means the store cannot say. */
+  revision?(): number;
 };
 
 type PendingConflict = { row: string; localValue: unknown };
@@ -236,8 +238,11 @@ export function createProjectConfigAccountLayer(args: {
     };
   };
 
+  /** Counts state changes, for `revision()`. */
+  let stateWrites = 0;
   const writeState = (next: LayerState): void => {
     if (state && isDeepStrictEqual(state, next)) return;
+    stateWrites += 1;
     state = {
       account: next.account,
       scope: next.scope,
@@ -277,6 +282,28 @@ export function createProjectConfigAccountLayer(args: {
   };
 
   return {
+    /**
+     * Changes whenever `overlay`, `notices` or `fingerprint` may answer
+     * differently for the same file: the account's rows, the signed-in
+     * account, the origin, or this layer's state. Null when the store cannot
+     * say, so a caller must not keep what it derived. The values judged alone
+     * (`validAlone`) can also change with the disk; a caller that keeps an
+     * answer re-reads it on its own clock.
+     */
+    revision(): string | null {
+      const backend = args.backend();
+      if (!backend) return "none";
+      const rows = backend.revision?.();
+      if (typeof rows !== "number") return null;
+      let origin: string | null;
+      try {
+        origin = args.readOriginUrl();
+      } catch {
+        return null;
+      }
+      return `${rows}|${args.accountUserId() ?? ""}|${origin ?? ""}|${stateWrites}`;
+    },
+
     /** The file's config with the account's value in place of each moved key. */
     overlay(local: ProjectConfigFile): ProjectConfigFile {
       const target = active();

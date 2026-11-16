@@ -217,14 +217,21 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     const machineFacts = new Map<string, { connection: RemoteRuntimeConnectionStatus | null; gone: boolean; name: string | null }>();
     for (const [machineKey, rows] of byMachine) {
       const connection = connectionFor(context.connections, machineKey, rows[0]!.instanceId);
-      // Gone only when the account says so: the computer list doesn't have it
-      // (the live list, or a read of it in the last few minutes), or a reach
-      // found it off the account. No connection on THIS desktop is not gone:
-      // another desktop made it, and a send reaches it by its key.
       const box = cloudBoxes ? cloudBoxForMachine(cloudBoxes, { machineKey, hostname: rows[0]!.instanceId }) : null;
       const laneComputer = adeCloudLaneComputerForMachine({ machineKey, hostname: rows[0]!.instanceId });
+      // Gone only when the account says so: the list's own answer for the
+      // computer that saved the chats (a row moved to its lane's new computer
+      // speaks for the old one, so it doesn't count), the live computer list,
+      // or a reach that found it off the account. With no answer from the
+      // list (an older server), a lane index read in the last few minutes
+      // decides. No connection on THIS desktop is not gone: another desktop
+      // made it, and a send reaches it by its key. One row that says the
+      // computer exists, or a live entry in the computer list, outweighs a delete.
+      const answers = rows.flatMap((row) => (!row.savedOnMachineKey && row.computer ? [row.computer] : []));
+      const told = answers.find((answer) => answer.state === "exists") ?? answers[0] ?? null;
       const gone = goneMachineKeys.has(machineKey.toLowerCase())
-        || (cloudBoxes != null ? !box : !connection && cloudLaneIndexFresh() && !laneComputer);
+        || (told?.state === "deleted" && !box)
+        || (cloudBoxes != null ? !box : !told && !connection && cloudLaneIndexFresh() && !laneComputer);
       machineFacts.set(machineKey, { connection, gone, name: box?.name ?? laneComputer?.laneName ?? null });
     }
     const cloudTargets = new Map<string, string>();

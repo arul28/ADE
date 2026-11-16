@@ -285,6 +285,8 @@ export const IPC = {
   personalChatsCall: "ade.personalChats.call",
   personalChatsStreamEvents: "ade.personalChats.streamEvents",
   runtimeEvent: "ade.runtime.event",
+  /** Main to window: a runtime event stream ended by itself; `{ bindingKey }`. The pump re-subscribes at once. */
+  runtimeEventStreamEnded: "ade.runtime.event.streamEnded",
   runtimeEventsRelease: "ade.runtime.events.release",
   projectStateGetSnapshot: "ade.project.state.getSnapshot",
   projectStateInitializeOrRepair: "ade.project.state.initializeOrRepair",
@@ -504,6 +506,8 @@ export const IPC = {
   agentChatSetScheduledWorkItemPaused: "ade.agentChat.scheduledWork.pauseItem",
   agentChatRunScheduledWorkNow: "ade.agentChat.scheduledWork.runNow",
   agentChatWarmupModel: "ade.agentChat.warmupModel",
+  agentChatPrewarmDraft: "ade.agentChat.prewarmDraft",
+  agentChatCreateAndSendSupported: "ade.agentChat.createAndSendSupported",
   agentChatSlashCommands: "ade.agentChat.slashCommands",
   agentChatListClaudePlugins: "ade.agentChat.claudePlugins.list",
   agentChatListCodexPlugins: "ade.agentChat.codexPlugins.list",

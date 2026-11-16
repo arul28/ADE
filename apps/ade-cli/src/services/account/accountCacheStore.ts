@@ -320,6 +320,12 @@ export type AccountCacheStore<
   /** How this machine's sync is doing; reads the cache, never the network. */
   health(): AccountCacheHealth;
   /**
+   * A number that changes whenever the cached rows may have changed: a local
+   * write, a pull, a reset, an account switch. Equal numbers mean the rows
+   * are the same, so a caller can keep what it derived from them.
+   */
+  revision(): number;
+  /**
    * Also send this store's log events to `logger`. The store is one per
    * machine and built by whichever caller comes first; this is how its
    * failures reach the machine's own log whoever that was.
@@ -382,6 +388,15 @@ export function createAccountCacheStore<
   const relayChecksConflicts = (current: AccountCacheFile<TRow, TPending>): boolean =>
     current.conflictCheckingRelay === relayKey();
   let cache: AccountCacheFile<TRow, TPending> | null = null;
+  /**
+   * See `revision()`. Every change in place is followed by `persist()`, which
+   * counts one; a cache replaced (reset, account switch, a failed write put
+   * back, a reload) is a new object, which `revision()` notices.
+   */
+  let revisionCount = 0;
+  let revisionCache: AccountCacheFile<TRow, TPending> | null = null;
+  /** The last `persist()` failed, so the file may be behind this cache. */
+  let lastPersistFailed = false;
   let corruptEntryLogged = false;
   let syncInFlight: Promise<AccountCacheSyncStatus> | null = null;
   let syncTimer: ReturnType<typeof setInterval> | null = null;
@@ -570,6 +585,7 @@ export function createAccountCacheStore<
   }
 
   function persist(): boolean {
+    revisionCount += 1;
     if (!cache) return true;
     const { rows, ...rest } = cache;
     const serialized = { ...rest, [rowsField]: rows };
@@ -582,8 +598,10 @@ export function createAccountCacheStore<
       } else {
         writeFileAtomic(cachePath, contents, { mode: 0o600 });
       }
+      lastPersistFailed = false;
       return true;
     } catch (error) {
+      lastPersistFailed = true;
       log.warn(config.events.writeFailed, {
         error: error instanceof Error ? error.message : String(error ?? ""),
       });
@@ -883,6 +901,10 @@ export function createAccountCacheStore<
         const after = readCache();
         const stillPending = new Set(after.pending.map((entry) => config.pendingKey(entry)));
         appliedRemoteRows = false;
+        // A page that changes nothing (the usual answer while other machines
+        // write rows of another kind) is not written back: the file already
+        // holds this cache, unless the last write failed.
+        let pageChanged = false;
         for (const remote of page.rows) {
           const key = config.remoteKey(remote);
           // A key this machine has queued is not the server's to answer yet.
@@ -900,7 +922,10 @@ export function createAccountCacheStore<
             // ahead.
             if (cached.deleted && remote.deleted) {
               const tombstone = config.toRow(remote, cached);
-              if (tombstone !== null) after.rows[key] = tombstone;
+              if (tombstone !== null) {
+                after.rows[key] = tombstone;
+                pageChanged = true;
+              }
             }
             continue;
           }
@@ -908,9 +933,13 @@ export function createAccountCacheStore<
           if (next === null) continue;
           after.rows[key] = next;
           appliedRemoteRows = true;
+          pageChanged = true;
         }
-        if (page.cursor) after.cursor = page.cursor;
-        if (!persist()) return "failed";
+        if (page.cursor && page.cursor !== after.cursor) {
+          after.cursor = page.cursor;
+          pageChanged = true;
+        }
+        if ((pageChanged || lastPersistFailed) && !persist()) return "failed";
         if (appliedRemoteRows) notifyRemoteRowsApplied();
         if (!page.truncated) {
           if (uploadFailure !== undefined) return "failed";
@@ -1131,6 +1160,15 @@ export function createAccountCacheStore<
 
     parkedKeys(): string[] {
       return readCache().pending.filter((entry) => entry.parked).map((entry) => config.pendingKey(entry));
+    },
+
+    revision(): number {
+      const current = readCache();
+      if (current !== revisionCache) {
+        revisionCache = current;
+        revisionCount += 1;
+      }
+      return revisionCount;
     },
 
     health(): AccountCacheHealth {

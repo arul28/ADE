@@ -31,8 +31,11 @@ export type MachineRelayTunnelArgs = {
    * client instead of registering the same machineKey a second time.
    */
   configPath: string;
-  /** Relay is usable only while the host has a current ADE account session. */
-  accountAuthService: Pick<AccountAuthService, "getStatus" | "getAccessToken">;
+  /**
+   * Relay is usable only while the host has a current ADE account session. Its
+   * sign-in and sign-out events make the tunnel check the account at once.
+   */
+  accountAuthService: Pick<AccountAuthService, "getStatus" | "getAccessToken" | "onSignedIn" | "onSignedOut">;
   /**
    * The shared sync listener the relay bridges into, or null for a runtime that
    * does not host phone sync at all.
@@ -48,7 +51,7 @@ export type MachineRelayTunnelArgs = {
  * dynamic imports.
  */
 export function createMachineRelayAccountLease(
-  accountAuthService: MachineRelayTunnelArgs["accountAuthService"],
+  accountAuthService: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
 ): {
   isAccountSignedIn: () => boolean;
   getAccountLease: () => Promise<{ userId: string; expiresAt: string | null } | null>;
@@ -135,6 +138,21 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
     import("../power/sharedMachinePowerMonitor"),
   ]);
   const lease = createMachineRelayAccountLease(args.accountAuthService);
+  const { accountAuthService } = args;
+  // Sign-in, sign-out and the owner's relay setting are the changes the
+  // tunnel must react to fast (turning ADE Relay off closes it within a
+  // second). As events they need no 1 s account poll, so the tunnel polls only
+  // as a backstop.
+  const subscribeEligibilityChanges = (listener: () => void): (() => void) => {
+    const stops = [
+      onMachineRelayPreferenceChanged(listener),
+      accountAuthService.onSignedIn(listener),
+      accountAuthService.onSignedOut?.(listener),
+    ];
+    return () => {
+      for (const stop of stops) stop?.();
+    };
+  };
 
   const tunnel = getSharedSyncTunnelClientService(args.configPath, () =>
     createSyncTunnelClientService({
@@ -142,6 +160,7 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
       configStore: args.configStore,
       isAccountSignedIn: lease.isAccountSignedIn,
       getAccountLease: lease.getAccountLease,
+      subscribeEligibilityChanges,
       onPublicationStateChanged: args.onPublicationStateChanged,
       // A long sleep leaves the control socket dead; check it on wake.
       powerSource: borrowSharedMachinePowerSource(),

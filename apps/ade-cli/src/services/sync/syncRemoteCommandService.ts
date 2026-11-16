@@ -1807,10 +1807,11 @@ function parseAgentChatLaunchArgs(value: Record<string, unknown>): AgentChatLaun
   };
 }
 
-function parseWarmupModelArgs(value: Record<string, unknown>): { sessionId: string; modelId: string } {
+function parseWarmupModelArgs(value: Record<string, unknown>): { sessionId: string; modelId: string; sdkOnly?: true } {
   return {
     sessionId: requireString(value.sessionId, "chat.warmupModel requires sessionId."),
     modelId: requireString(value.modelId, "chat.warmupModel requires modelId."),
+    ...(value.sdkOnly === true ? { sdkOnly: true as const } : {}),
   };
 }
 

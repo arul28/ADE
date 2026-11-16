@@ -88,7 +88,7 @@ import {
   type ProjectRegistrationIntent,
   type ProjectRegistrationSource,
 } from "./services/projects/projectRegistry";
-import { ProjectScopeRegistry } from "./services/projects/projectScope";
+import { ProjectScopeRegistry, type ProjectScope } from "./services/projects/projectScope";
 import type { AdeRuntime } from "./bootstrap";
 import type { AndroidEmulatorEvent } from "../../desktop/src/shared/types/androidEmulator";
 import type { AndroidMachineSettingsService } from "../../desktop/src/main/services/android/androidMachineSettingsService";
@@ -121,6 +121,7 @@ import { requestMachineRemovalFromUser } from "./services/account/machineRemoval
 import { captureAgentCardAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
 import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
+import { noteUserClientClosed, noteUserClientOpened, type IdleMemorySources } from "./services/runtime/brainIdleMemory";
 import {
   isRemoteRuntimeEventCategory,
   sanitizeMachineName,
@@ -1178,13 +1179,20 @@ function runProjectIconWorker(
  * with it: measured, a dev brain answering a lane list every 3 s started 24
  * such processes a minute. An answer is reused while the same signature the
  * in-process resolver trusts still holds (the folders it scans, the project's
- * `.ade/local.yaml` icon setting, the icon file itself). Past five minutes an
- * answer whose signature still holds is served while one worker re-checks in
- * the background, so a list never waits on a cold worker for an icon it
+ * `.ade/local.yaml` icon setting, the icon file itself). Past its age limit
+ * an answer whose signature still holds is served while one worker re-checks
+ * in the background, so a list never waits on a cold worker for an icon it
  * already has. The stats are async: a project on a dead network mount must
  * not stop the event loop.
+ *
+ * The age limit is an hour, not five minutes. Each re-check is a new node
+ * process that loads the whole CLI bundle (about 0.5 to 1 s of CPU and a
+ * short 60 to 120 MB peak), and a held signature already says that nothing
+ * the scan reads at the top level changed. An icon write drops the answer at
+ * once (`forgetProjectIconAnswer`), so only a new icon file deep in a folder
+ * the signature does not stat waits for the re-check.
  */
-const PROJECT_ICON_ANSWER_TTL_MS = 5 * 60_000;
+const PROJECT_ICON_ANSWER_TTL_MS = 60 * 60_000;
 /**
  * How long a worker may run. The list's caller stops waiting at its own
  * budget (750 ms) and shows no icon, as before, but the worker finishes and
@@ -1887,6 +1895,15 @@ export function createMultiProjectRpcRequestHandler(
    * into an already-drained map and never cleaned up.
    */
   let disposed = false;
+  /** This connection is a desktop window (`brainIdleMemory.ts`). */
+  let countedAsDesktop = false;
+  /**
+   * This connection comes from another machine (a phone, another computer, the
+   * web app, another machine's agents): a paired channel names its device. It
+   * keeps the brain's idle memory release away while it is open.
+   */
+  let countedAsRemote = Boolean(options.peerDeviceId?.trim());
+  if (countedAsRemote) noteUserClientOpened("remote");
   const frameDemand = createConnectionFrameDemand();
   const disposeProjectRuntimeCaches = (projectId: ProjectId): void => {
     frameDemand.forgetProject(projectId);
@@ -3025,6 +3042,10 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "ade/initialize") {
       initializedParams = params;
+      if (!countedAsDesktop && !disposed && isDesktopClientName(callerClientName())) {
+        countedAsDesktop = true;
+        noteUserClientOpened("desktop");
+      }
       return {
         protocolVersion:
           typeof params.protocolVersion === "string"
@@ -3057,6 +3078,9 @@ export function createMultiProjectRpcRequestHandler(
           // `chat.sendMessage` drops a repeat of a `clientSendId` it has seen.
           // A client retries a send of unknown outcome only against this.
           clientSendDedupe: true,
+          // `chat.createSessionAndSend` makes a new chat and sends its first
+          // message in one call. A client without it makes two calls.
+          chatCreateAndSend: true,
           // The chat launch kinds this brain runs. An ADE Cloud hand-off of a
           // CLI or lane launch is refused by a brain that doesn't list it.
           chatLaunchKinds: [...CHAT_LAUNCH_KINDS],
@@ -4940,6 +4964,21 @@ export function createMultiProjectRpcRequestHandler(
 
   handler.dispose = () => {
     disposed = true;
+    if (countedAsDesktop || countedAsRemote) {
+      // Only a brain whose scopes outlive this connection has memory to give back.
+      const sharedScopes = options.scopeRegistry && options.disposeScopesOnDispose !== true ? options.scopeRegistry : null;
+      const sources: IdleMemorySources | null = sharedScopes
+        ? { listRuntimes: () => (typeof sharedScopes.listReady === "function" ? sharedScopes.listReady() : []).map((scope) => scope.runtime) }
+        : null;
+      if (countedAsDesktop) {
+        countedAsDesktop = false;
+        noteUserClientClosed("desktop", sources);
+      }
+      if (countedAsRemote) {
+        countedAsRemote = false;
+        noteUserClientClosed("remote", sources);
+      }
+    }
     for (const subscription of eventSubscriptions.values()) {
       subscription.unsubscribe();
     }

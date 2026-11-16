@@ -71,7 +71,15 @@ import { createEpisodeAnalytics } from "./episodeAnalytics";
 import { readAccountHardwareId } from "./hardwareAnchor";
 
 export const ACCOUNT_MACHINE_HEARTBEAT_MS = 60_000;
-export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
+/**
+ * How often the publisher looks for a relay publish state change that came
+ * with no event. Relay route changes push a republish at once
+ * (`onPublicationStateChanged`), so this mainly finds network changes (LAN
+ * address, port, tailnet). The network interfaces are cached for 5 s, so a
+ * faster poll mostly read the same cached answer; at 5 s other machines see a
+ * network change at most about 3 s later than before.
+ */
+export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 5_000;
 // Keep outage recovery comfortably inside the directory's 150-second online
 // window while bounding sustained failures at a 20-second request cadence.
 export const ACCOUNT_MACHINE_RETRY_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 20_000] as const;
@@ -911,6 +919,11 @@ export function createAccountMachinePublisherService(options: {
   let disposed = false;
   let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   let relayStatePollTimer: ReturnType<typeof setTimeout> | null = null;
+  // The install's name comes from the environment and the home folder, which
+  // do not change while the process runs; the relay state poll needs it on
+  // every look.
+  let adeInstall: ReturnType<typeof describeAdeInstall> | null = null;
+  const readAdeInstall = (): ReturnType<typeof describeAdeInstall> => (adeInstall ??= describeAdeInstall());
   const activeControllers = new Set<AbortController>();
   let inFlight: Promise<void> | null = null;
   let triggeredPublishPending = false;
@@ -1429,7 +1442,7 @@ export function createAccountMachinePublisherService(options: {
       packageChannel: process.env.ADE_PACKAGE_CHANNEL,
       publicKeyRawBase64,
       powerPublication: readPowerPublication(),
-      install: describeAdeInstall(),
+      install: readAdeInstall(),
     });
     if (!observedRegistration) {
       outcome("machine_key_unavailable", {
@@ -1964,7 +1977,7 @@ export function createAccountMachinePublisherService(options: {
       snapshot,
       packageChannel: process.env.ADE_PACKAGE_CHANNEL,
       publicKeyRawBase64,
-      install: describeAdeInstall(),
+      install: readAdeInstall(),
     });
     if (!registration) return;
 
@@ -1981,7 +1994,7 @@ export function createAccountMachinePublisherService(options: {
     if (!started || disposed || relayStatePollTimer) return;
     relayStatePollTimer = setTimeout(() => {
       relayStatePollTimer = null;
-      // The 2-second observation window also debounces/coalesces rapid tunnel
+      // The observation window also debounces/coalesces rapid tunnel
       // readiness changes without coupling this publisher to the tunnel client.
       void inspectRelayPublishState().finally(scheduleRelayStatePoll);
     }, relayStatePollMs);

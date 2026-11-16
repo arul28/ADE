@@ -366,6 +366,7 @@ import type {
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatCreateArgs,
+  AgentChatCreateAndSendArgs,
   AgentChatLaunchArgs,
   AgentChatLaunchCliArgs,
   AgentChatLaunchCliResult,
@@ -440,6 +441,8 @@ import type {
   AgentChatClaudeOutputStylesArgs,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSetScheduledWorkPausedArgs,
+  AgentChatPrewarmDraftArgs,
+  AgentChatPrewarmDraftResult,
   AgentChatSetScheduledWorkItemPausedArgs,
   AgentChatSetScheduledWorkItemPausedResult,
   AgentChatRunScheduledWorkNowArgs,
@@ -1277,6 +1280,8 @@ declare global {
         packageChannel: AppPackageChannel;
         /** The running build's update track (Stable or Beta). Synchronous, like `packageChannel`. */
         updateTrack: UpdateTrack;
+        /** The running build's version, or null when unknown (web client, tests). Synchronous, like `updateTrack`. */
+        appVersion?: string | null;
         ping: () => Promise<"pong">;
         setDockBadgeCount: (count: number) => Promise<{ ok: true }>;
         /** Swallow this window's menu accelerators while a takeover drives. */
@@ -1307,7 +1312,8 @@ declare global {
         onRuntimeStatusChanged: (
           cb: (status: LocalRuntimeStatus) => void,
         ) => () => void;
-        getResourceUsage: () => Promise<AppResourceUsageSnapshot>;
+        /** `fresh`: always a new process sample (Settings > Health); otherwise a calm sample may be reused for 30 s. */
+        getResourceUsage: (args?: { fresh?: boolean }) => Promise<AppResourceUsageSnapshot>;
         getRuntimeHealth: () => Promise<RuntimeHealthSnapshot>;
         /**
          * Restarts this Mac's ADE brain (com.ade.runtime) and resolves once the
@@ -2717,6 +2723,13 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<AgentChatSessionSummary | null>;
         create: (args: AgentChatCreateArgs, pin: OpenProjectBinding) => Promise<AgentChatSession>;
+        /**
+         * A new chat and its first message in one call to the chat's machine.
+         * Null when that machine predates the call (nothing was sent): the
+         * caller then makes `create` and `send`. Absent from adapters that
+         * only make the two calls.
+         */
+        createAndSend?: (args: AgentChatCreateAndSendArgs, pin: OpenProjectBinding) => Promise<AgentChatSession | null>;
         launch: (args: AgentChatLaunchArgs, pin: OpenProjectBinding) => Promise<AgentChatSession>;
         launchCli: (
           args: AgentChatLaunchCliArgs,
@@ -2992,9 +3005,15 @@ declare global {
           args: {
             sessionId: string;
             modelId: string;
+            /** Load the provider's SDK only; start no process (typing in an open chat). */
+            sdkOnly?: boolean;
           },
           pin: OpenProjectBinding,
         ) => Promise<void>;
+        prewarmDraft: (
+          args: AgentChatPrewarmDraftArgs,
+          pin: OpenProjectBinding,
+        ) => Promise<AgentChatPrewarmDraftResult>;
         onEvent: (
           cb: (ev: AgentChatEventEnvelope) => void,
           pin: OpenProjectBinding,

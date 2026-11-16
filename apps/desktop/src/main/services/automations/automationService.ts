@@ -1991,6 +1991,37 @@ export function createAutomationService({
    */
   const ruleRunsHere = (rule: AutomationRule): boolean => rule.runsHere !== false;
   const listRunnableRules = (): AutomationRule[] => listRules().filter(ruleRunsHere);
+  /**
+   * Which trigger families an enabled rule that runs here uses. The GitHub
+   * poller (every 30 s), the Linear and Cursor relays (every 45 s) and their
+   * wake-socket retries (up to once a minute each, also with no rule) each
+   * asked, and each ask read the whole project config: two file stats, the
+   * account overlay, validation (a stat per path the config names) and the
+   * account rule merge. The answer is kept for 15 s, which is shorter than
+   * any of those polls, and dropped on every `syncFromConfig` (each rule
+   * save, delete and move through this service runs it).
+   */
+  const TRIGGER_FAMILIES_TTL_MS = 15_000;
+  let triggerFamilies: { atMs: number; github: boolean; linear: boolean; cursor: boolean } | null = null;
+  const enabledTriggerFamilies = (): { github: boolean; linear: boolean; cursor: boolean } => {
+    const nowMs = Date.now();
+    if (triggerFamilies && nowMs - triggerFamilies.atMs < TRIGGER_FAMILIES_TTL_MS) return triggerFamilies;
+    let github = false;
+    let linear = false;
+    let cursor = false;
+    for (const rule of listRunnableRules()) {
+      if (!rule.enabled) continue;
+      for (const trigger of rule.triggers) {
+        const type = normalizeTriggerType(trigger.type);
+        // `github.pr_checks_failed` comes from the PR poller, not the repo poller.
+        if (type.startsWith("github.") && type !== "github.pr_checks_failed") github = true;
+        else if (type.startsWith("linear.")) linear = true;
+        else if (type.startsWith("cursor.")) cursor = true;
+      }
+    }
+    triggerFamilies = { atMs: nowMs, github, linear, cursor };
+    return triggerFamilies;
+  };
   const notHomeMessage = (rule: AutomationRule): string =>
     rule.needsNewerAde
       ? `'${rule.name}' was made with a newer ADE. Update ADE on this computer to run it here.`
@@ -5393,6 +5424,7 @@ export function createAutomationService({
 
   const warnedActiveHoursZones = new Set<string>();
   const syncFromConfig = () => {
+    triggerFamilies = null;
     const rules = listRunnableRules();
     const desired = new Set<string>();
     for (const rule of rules) {
@@ -5808,28 +5840,15 @@ export function createAutomationService({
     },
 
     hasEnabledGithubRules(): boolean {
-      return listRunnableRules().some((rule) =>
-        rule.enabled
-        // `github.pr_checks_failed` comes from the PR poller, not the repo poller.
-        && rule.triggers.some((trigger) => {
-          const type = normalizeTriggerType(trigger.type);
-          return type.startsWith("github.") && type !== "github.pr_checks_failed";
-        })
-      );
+      return enabledTriggerFamilies().github;
     },
 
     hasEnabledLinearRules(): boolean {
-      return listRunnableRules().some((rule) =>
-        rule.enabled
-        && rule.triggers.some((trigger) => normalizeTriggerType(trigger.type).startsWith("linear."))
-      );
+      return enabledTriggerFamilies().linear;
     },
 
     hasEnabledCursorCloudRules(): boolean {
-      return listRunnableRules().some((rule) =>
-        rule.enabled
-        && rule.triggers.some((trigger) => normalizeTriggerType(trigger.type).startsWith("cursor."))
-      );
+      return enabledTriggerFamilies().cursor;
     },
 
     listScheduledCleanups(): AutomationScheduledCleanup[] {

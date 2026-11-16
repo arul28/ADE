@@ -84,11 +84,28 @@ export function useProjectTabStripOverflow(
     };
   }, [revealActiveTab, stripRef, syncEdges]);
 
+  // On a layout change, measure after the browser's own layout of the frame,
+  // not inside React's commit: offsetLeft/scrollWidth read here forced a
+  // synchronous layout of the whole page (twice at launch, 15 ms, the second
+  // in the same task as the Work page). A ResizeObserver's first callback
+  // comes after that layout and before paint, so the strip still shows the
+  // active tab in view on the frame the change paints. A strip with no box
+  // yet is handled when it gets one.
   useLayoutEffect(() => {
-    if (pressedRef.current) {
-      syncEdges();
+    const run = () => {
+      if (pressedRef.current) syncEdges();
+      else revealActiveTab();
+    };
+    const strip = stripRef.current;
+    if (!strip || typeof ResizeObserver !== "function") {
+      run();
       return;
     }
-    revealActiveTab();
-  }, [layoutKey, revealActiveTab, syncEdges]);
+    const observer = new ResizeObserver(() => {
+      observer.disconnect();
+      run();
+    });
+    observer.observe(strip);
+    return () => observer.disconnect();
+  }, [layoutKey, revealActiveTab, stripRef, syncEdges]);
 }

@@ -533,6 +533,10 @@ const floatMocks = vi.hoisted(() => ({
 vi.mock("../apple/appleMiniPlayerStore", async () => ({
   ...(await vi.importActual<typeof import("../apple/appleMiniPlayerStore")>("../apple/appleMiniPlayerStore")),
   floatAppleMiniPlayerForChat: floatMocks.floatAppleMiniPlayerForChat,
+  // A device is floating, so the Work page's floating-device host renders the
+  // player this file mocks. Whether a player exists at all is the device's own
+  // test's question.
+  useAppleMiniPlayerTarget: () => ({ laneId: "lane-1", chatSessionId: null, deviceUdid: "udid-mini" }),
 }));
 
 vi.mock("../apple/AppleDeviceMiniPlayer", () => ({

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { app } from "electron";
-import { autoUpdater, type UpdateInfo } from "electron-updater";
+import type { AppUpdater, UpdateInfo } from "electron-updater";
 import {
   DEFAULT_AUTO_UPDATE_PREFERENCES,
   isPendingInstallHandoffStep,
@@ -118,7 +118,7 @@ type CancellationTokenLike = {
 };
 
 type AutoUpdaterLike = {
-  logger: typeof autoUpdater.logger;
+  logger: AppUpdater["logger"];
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
   disableDifferentialDownload?: boolean;
@@ -162,6 +162,69 @@ function resolveNativeUpdater(): NativeUpdaterLike | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * electron-updater's `autoUpdater`, loaded at its first real use.
+ *
+ * Requiring electron-updater, and the platform updater its `autoUpdater`
+ * getter builds, ran on every launch before the first window, while the
+ * first check waits seconds (`startupDelayMs`). Until the first real use, the
+ * fields the service sets (`logger`, `autoDownload`, ...) and the listeners it
+ * adds or removes are kept, and replayed in the same order onto the real
+ * updater when it loads. Any other use (a check, a download, a read of a
+ * field not set here, the net recovery reading its executor) loads it first,
+ * so everything after the load talks to the real updater as before.
+ */
+function lazyElectronAutoUpdater(): AutoUpdaterLike {
+  let real: AutoUpdaterLike | null = null;
+  const written = new Map<PropertyKey, unknown>();
+  const replay: Array<(updater: AutoUpdaterLike) => void> = [];
+  const load = (): AutoUpdaterLike => {
+    if (real) return real;
+    // Resolved through require so the module stays external and loads here.
+    const loaded = (require("electron-updater") as { autoUpdater: AppUpdater }).autoUpdater as unknown as AutoUpdaterLike;
+    real = loaded;
+    for (const apply of replay.splice(0)) apply(loaded);
+    written.clear();
+    return loaded;
+  };
+  const read = (target: AutoUpdaterLike, key: PropertyKey): unknown => {
+    const value: unknown = Reflect.get(target, key);
+    return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+  };
+  const kept = {
+    on: (event: string, listener: (...args: any[]) => void): unknown => {
+      if (real) return real.on(event, listener);
+      replay.push((updater) => updater.on(event, listener));
+      return proxy;
+    },
+    removeListener: (event: string, listener: (...args: any[]) => void): unknown => {
+      if (real) return real.removeListener(event, listener);
+      replay.push((updater) => updater.removeListener(event, listener));
+      return proxy;
+    },
+  };
+  const proxy = new Proxy({} as AutoUpdaterLike, {
+    get(_target, key) {
+      if (real) return read(real, key);
+      if (key === "on" || key === "removeListener") return kept[key];
+      if (written.has(key)) return written.get(key);
+      return read(load(), key);
+    },
+    set(_target, key, value) {
+      if (real) return Reflect.set(real, key, value);
+      written.set(key, value);
+      replay.push((updater) => {
+        Reflect.set(updater, key, value);
+      });
+      return true;
+    },
+    has(_target, key) {
+      return key in load();
+    },
+  });
+  return proxy;
 }
 
 type CreateAutoUpdateServiceArgs = {
@@ -612,7 +675,7 @@ export function createAutoUpdateService({
   logger,
   currentVersion,
   globalStatePath,
-  updater = autoUpdater as unknown as AutoUpdaterLike,
+  updater = lazyElectronAutoUpdater(),
   beforeQuitAndInstall,
   stopOwnedRuntimeCooperatively,
   rollbackQuitAndInstall,

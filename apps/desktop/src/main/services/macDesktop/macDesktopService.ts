@@ -306,6 +306,12 @@ function asNullableDisplayId(raw: unknown): number | null {
  */
 export type MacDesktopRuntimeService = MacDesktopServiceApi & {
   /**
+   * Stops the screen helper while no lane screen, lease or call uses it. The
+   * brain calls it with no window and no other machine connected; the next
+   * call that needs the helper starts it again. Host-local.
+   */
+  releaseIdleDriver(): boolean;
+  /**
    * The lane whose display holds this process's windows, or null. App Control
    * asks before it attaches, so one lane cannot drive an app another lane
    * parked on its screen. Host-local, so it is not on the shared contract.
@@ -2035,6 +2041,21 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
   }
 
   return Object.assign(api, {
+    /**
+     * Stops the screen helper while nothing uses it: no lane screen, no input
+     * lease, no screen start or stop queued, no long Windows operation, and no
+     * request waiting for the helper. The brain calls this once no window and no other
+     * machine is connected (`brainIdleMemory.ts`). Every call that needs the
+     * helper starts it again, `getStatus` included, so a phone or a remote
+     * caller that comes back gets a new one on its first read.
+     */
+    releaseIdleDriver(): boolean {
+      if (disposed || !seatSupported) return false;
+      if (ownership.laneIds().length > 0 || lifecycleTails.size > 0 || windowsLongOperationInFlight > 0) return false;
+      // A lease still held would be pushed to the helper when it ends.
+      if (leases.list().length > 0) return false;
+      return driverLifecycle.releaseIdleDriver();
+    },
     /** The sync half of `getDisplay`, for the prompt gate and the lane marker. */
     hasDisplaySync(laneId: string | null | undefined): boolean {
       const trimmed = laneId?.trim();

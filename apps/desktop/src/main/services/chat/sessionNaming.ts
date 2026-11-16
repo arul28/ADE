@@ -486,13 +486,60 @@ export function buildNamingModelCandidates(args: {
   }, []);
 }
 
+const COST_TIER_RANK: Record<NonNullable<ModelDescriptor["costTier"]>, number> = { low: 0, medium: 1, high: 2, very_high: 3 };
+
 /**
- * Session intelligence runs on exactly one model, from the vendor the chat
- * already talks to: the cheap helper for a Claude, Codex, or Cursor chat
- * (Haiku, Luna, Composer), and the chat's own model for every other provider.
- * There is no second candidate, so a chat's content never goes to another
- * vendor; when that one call fails the caller keeps its deterministic title,
- * and the agent renames the chat or lane itself.
+ * Whether `candidate` is known to cost less than `current`: by input price,
+ * else by Copilot's request multiplier, else by the curated tier.
+ */
+function isCheaperModel(candidate: ModelDescriptor, current: ModelDescriptor): boolean {
+  if (candidate.inputPricePer1M != null && current.inputPricePer1M != null) {
+    return candidate.inputPricePer1M < current.inputPricePer1M;
+  }
+  if (candidate.billingMultiplier != null && current.billingMultiplier != null) {
+    return candidate.billingMultiplier < current.billingMultiplier;
+  }
+  if (candidate.costTier && current.costTier) return COST_TIER_RANK[candidate.costTier] < COST_TIER_RANK[current.costTier];
+  return false;
+}
+
+/**
+ * The cheapest model the chat's own provider serves on the same route and the
+ * same upstream (OpenCode and Pi each carry several vendors, so the upstream
+ * must match too), for a naming call. Null when none is known to be cheaper
+ * than the chat's model, or when the chat's model belongs to another runtime
+ * than the chat (an OpenCode chat on a Claude registry row would otherwise
+ * name itself through the Claude CLI). A chat's text never goes to another
+ * vendor or runtime this way.
+ */
+export function cheaperSameRouteModelId(
+  availableModels: ModelDescriptor[],
+  provider: string | null | undefined,
+  sessionModelRef: string | null | undefined,
+): string | null {
+  const current = sessionModelRef?.trim() ? resolveModelDescriptor(sessionModelRef.trim()) : null;
+  if (!current || !provider?.trim() || resolveProviderGroupForModel(current) !== provider.trim()) return null;
+  let best: ModelDescriptor | null = null;
+  for (const candidate of availableModels) {
+    if (candidate.id === current.id || candidate.deprecated) continue;
+    if (candidate.providerRoute !== current.providerRoute || candidate.family !== current.family) continue;
+    if ((candidate.openCodeProviderId ?? null) !== (current.openCodeProviderId ?? null)) continue;
+    if ((candidate.piProviderId ?? null) !== (current.piProviderId ?? null)) continue;
+    if (!isCheaperModel(candidate, current)) continue;
+    if (!best || isCheaperModel(candidate, best)) best = candidate;
+  }
+  return best?.id ?? null;
+}
+
+/**
+ * Session intelligence runs on a model from the vendor the chat already talks
+ * to: the cheap helper for a Claude, Codex, or Cursor chat (Haiku, Luna,
+ * Composer). For every other provider it is the cheapest model the same
+ * provider and upstream serve (`cheaperSameRouteModelId`), with the chat's
+ * own model behind it, or the chat's own model alone when nothing cheaper is
+ * known. A chat's content never goes to another vendor; when the calls fail
+ * the caller keeps its deterministic title, and the agent renames the chat or
+ * lane itself.
  */
 export function buildSessionIntelligenceModelCandidates(args: {
   availableModels: ModelDescriptor[];
@@ -504,13 +551,18 @@ export function buildSessionIntelligenceModelCandidates(args: {
   const hasProvider = typeof args.provider === "string" && args.provider.trim().length > 0;
   const utilityProvider = adeBackgroundUtilityProvider(args.provider)
     ?? (hasProvider ? null : adeBackgroundUtilityProviderFromToolType(args.toolType));
-  const preferred = utilityProvider
-    ? [backgroundUtilityModelId(utilityProvider)]
-    : [args.sessionModelId, args.sessionModel];
-  return buildNamingModelCandidates({
-    availableModels: withSessionModelDescriptors(args.availableModels, preferred),
-    preferred,
-  }).slice(0, 1);
+  if (utilityProvider) {
+    const preferred = [backgroundUtilityModelId(utilityProvider)];
+    return buildNamingModelCandidates({
+      availableModels: withSessionModelDescriptors(args.availableModels, preferred),
+      preferred,
+    }).slice(0, 1);
+  }
+  const preferred = [args.sessionModelId, args.sessionModel];
+  const pool = withSessionModelDescriptors(args.availableModels, preferred);
+  const own = buildNamingModelCandidates({ availableModels: pool, preferred }).slice(0, 1);
+  const cheaper = cheaperSameRouteModelId(args.availableModels, args.provider, own[0] ?? args.sessionModelId ?? args.sessionModel);
+  return cheaper ? [cheaper, ...own] : own;
 }
 
 export type NamingAttemptFailure = {

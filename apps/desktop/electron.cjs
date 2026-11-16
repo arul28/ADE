@@ -1,5 +1,10 @@
 // Electron entrypoint for `electron .`
 // We point Electron at the compiled main process output.
+
+// Boot marks for `startup.main_boot` (main.ts): when this file starts (the time
+// before it is Electron's own start) and when the main bundle starts to load.
+globalThis.__adeBootMarks = { entryMs: Math.round(process.uptime() * 1000) };
+
 const os = require("node:os");
 const path = require("node:path");
 const Module = require("node:module");
@@ -34,6 +39,7 @@ function compileCacheDir() {
 }
 
 enableMainCompileCache();
+globalThis.__adeBootMarks.mainRequireMs = Math.round(process.uptime() * 1000);
 
 // When developing, `tsup --watch` writes to `dist/main/main.cjs`.
 require(path.join(__dirname, "dist", "main", "main.cjs"));

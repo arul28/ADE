@@ -789,11 +789,13 @@ export function createSyncService(args: SyncServiceArgs) {
   // Route health deliberately does NOT use this: `ade doctor` and the desktop
   // banner must still report relay as enabled-but-suppressed rather than
   // silently "disabled", which is how this whole failure stayed invisible.
-  const isCloudRelayUsable = (): boolean =>
-    cloudRelayStore.isRelayEnabled()
-    && isRelayAccountSignedIn()
-    && (args.syncTunnelClientService?.getStatus().accountLeaseValid ?? true)
-    && args.syncTunnelClientService?.getStatus().controlSuppressed !== true;
+  const relayTunnelUsable = (
+    tunnelStatus: { accountLeaseValid?: boolean; controlSuppressed?: boolean } | null,
+  ): boolean => (tunnelStatus?.accountLeaseValid ?? true) && tunnelStatus?.controlSuppressed !== true;
+  const isCloudRelayUsable = (): boolean => {
+    if (!cloudRelayStore.isRelayEnabled() || !isRelayAccountSignedIn()) return false;
+    return relayTunnelUsable(args.syncTunnelClientService?.getStatus() ?? null);
+  };
 
   const deviceRegistryService = createDeviceRegistryService({
     db: args.db,
@@ -2092,10 +2094,18 @@ export function createSyncService(args: SyncServiceArgs) {
           "Account-directory publisher health is unavailable.",
         );
       }
+      // One read of the account and the relay switch for this status: the
+      // relay route health and the pairing connect info below used to read
+      // them again, and each tunnel status read re-reads the account status.
+      // Nothing between here and the pairing info awaits, so the values are
+      // the ones the separate reads returned.
+      const relayEnabled = cloudRelayStore.isRelayEnabled();
+      const relayAccountSignedIn = isRelayAccountSignedIn();
+      const relayUsable = relayEnabled && relayAccountSignedIn && relayTunnelUsable(tunnelStatus);
       const relayRouteHealth = buildRelayRouteHealth({
         relayConfigured: canHostPhonePairing,
-        relayTurnedOff: !cloudRelayStore.isRelayEnabled(),
-        relayAccountSignedIn: isRelayAccountSignedIn()
+        relayTurnedOff: !relayEnabled,
+        relayAccountSignedIn: relayAccountSignedIn
           && (tunnelStatus?.accountLeaseValid ?? true),
         loopbackAdeValidated,
         listenerReason,
@@ -2134,15 +2144,15 @@ export function createSyncService(args: SyncServiceArgs) {
         currentRuntime,
         clusterState: cluster,
         bootstrapToken:
-          canHostPhonePairing ? readToken() : null,
-        pairingPin: canHostPhonePairing ? pinStore.getPin() : null,
+          canHostPhonePairing && options?.includePairingSecrets !== false ? readToken() : null,
+        pairingPin: canHostPhonePairing && options?.includePairingSecrets !== false ? pinStore.getPin() : null,
         pairingPinConfigured: canHostPhonePairing ? pinStore.hasPin() : false,
         runtimeName: runtimeNameStore.getRuntimeName(),
         pairingConnectInfo:
           canHostPhonePairing
             ? buildPairingConnectInfo({
                 localDevice,
-                relayWssUrl: isCloudRelayUsable() ? cloudRelayStore.getRelayWssUrl() : null,
+                relayWssUrl: relayUsable ? cloudRelayStore.getRelayWssUrl() : null,
               })
             : null,
         connectedPeers,

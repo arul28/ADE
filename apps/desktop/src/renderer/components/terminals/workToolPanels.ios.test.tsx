@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import type { WorkToolPanelProps } from "./workToolPanels";
 
 /**
@@ -129,7 +129,7 @@ describe("the Apple tool panel's handover", () => {
    * through its own retake handover, and only the mounted tool counts as
    * "on screen" for the show's answer.
    */
-  it("takes the device back from the floating player on mount, and says it is mounted", () => {
+  it("takes the device back from the floating player on mount, and says it is mounted", async () => {
     resetWorkToolOnScreenForTests();
     openAppleMiniPlayer({
       laneId: LANE,
@@ -142,6 +142,9 @@ describe("the Apple tool panel's handover", () => {
     });
     expect(isWorkSurfaceElementMounted(workSurfaceKey("ios", TAB.key, LANE))).toBe(false);
     const view = render(<WorkIosTool {...props()} />);
+    // The tool mounts once its panel code is in (`gatedWorkTool`): the pane's
+    // hand-over runs from that mount, not from an empty body.
+    await screen.findByTestId("fake-decoder", {}, { timeout: 5_000 });
     expect(getAppleMiniPlayerTarget()).toBeNull();
     expect(isWorkSurfaceElementMounted(workSurfaceKey("ios", TAB.key, LANE))).toBe(true);
     view.unmount();
@@ -218,7 +221,7 @@ describe("the Mac Desktop tool panel on a read-only surface", () => {
    * mac-desktop show` answers "shown" only once the surface registers, so the
    * read-only view must register it the way the browser's read-only view does.
    */
-  it("registers the read-only view as the lane's Mac Desktop surface", () => {
+  it("registers the read-only view as the lane's Mac Desktop surface", async () => {
     resetWorkToolOnScreenForTests();
     const WorkMacDesktopTool = WORK_TOOL_COMPONENTS["mac-desktop"];
     const key = workSurfaceKey("mac-desktop", TAB.key, LANE);
@@ -229,7 +232,9 @@ describe("the Mac Desktop tool panel on a read-only surface", () => {
         toolContext={{ isWebClient: true } as WorkToolPanelProps["toolContext"]}
       />,
     );
-    expect(view.getByTestId("read-only-mac-desktop")).toBeTruthy();
+    // The panel's code loads on first use, so the read-only view appears once
+    // it is in.
+    expect(await view.findByTestId("read-only-mac-desktop", {}, { timeout: 5_000 })).toBeTruthy();
     expect(isWorkSurfaceElementMounted(key)).toBe(true);
     view.unmount();
     expect(isWorkSurfaceElementMounted(key)).toBe(false);

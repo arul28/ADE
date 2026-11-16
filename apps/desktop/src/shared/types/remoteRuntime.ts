@@ -499,6 +499,8 @@ export type RemoteRuntimeCapabilities = {
   machineProjects: Partial<Record<RemoteRuntimeMachineProjectCapability, boolean>>;
   /** `chat.sendMessage` recognizes a repeat of a `clientSendId`. Absent on an older brain. */
   clientSendDedupe?: boolean;
+  /** The brain runs `chat.createSessionAndSend` (a new chat and its first message in one call). Absent on an older brain. */
+  chatCreateAndSend?: boolean;
   /** The chat launch kinds the brain runs (`CHAT_LAUNCH_KINDS`). Absent on an older brain. */
   chatLaunchKinds?: string[];
   /** The brain answers its own settings with no project (`shared/machineScope.ts`). Absent on an older brain. */

@@ -924,12 +924,14 @@ Runtime support files outside `services/sync/`:
   hand.
   Successful account sign-in also requests an immediate publish; the brain
   observes both its local auth event and cross-process credential-file changes
-  from desktop sign-in. Separately, a lightweight 2-second observer computes a
-  signature for the publish-relevant relay control/bridge state and reachable
-  endpoints. Its first valid snapshot and every later change trigger a
-  coalesced publish, so a
-  newly validated or lost relay route reaches the directory without waiting for
-  the heartbeat. A triggered write becomes the new heartbeat anchor rather than
+  from desktop sign-in. A relay control or bridge change requests a publish at
+  once through the tunnel's `onPublicationStateChanged`. Separately, a
+  lightweight 5-second observer (`ACCOUNT_MACHINE_RELAY_STATE_POLL_MS`, the same
+  period as the network interface cache) computes a signature for the
+  publish-relevant relay control/bridge state and reachable endpoints. Its
+  first valid snapshot and every later change trigger a coalesced publish, so a
+  changed LAN address, port or tailnet route reaches the directory without
+  waiting for the heartbeat. A triggered write becomes the new heartbeat anchor rather than
   causing a duplicate write at the old deadline. A confirmed Relay
   identity-conflict recovery also requests
   another publish as soon as the replacement control route validates. Every
@@ -2985,8 +2987,8 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `MAX_CONTROL_REPLACED_REATTEMPTS` (3) times, then stops dialing entirely and
   reports `controlSuppressed` with the actionable reason "Another ADE process
   owns the relay connection for this machine." Suppression is enforced at the
-  dial itself as well as in the reconnect scheduler, because the once-a-second
-  account-lease poll calls `connectControl` directly. Because the rival usually
+  dial itself as well as in the reconnect scheduler, because the account-lease
+  poll and its eligibility events call `connectControl` directly. Because the rival usually
   exits on its own, a stopped client re-arms once after
   `CONTROL_REPLACED_REARM_MS` (10 minutes); `clearControlSuppression()` also
   re-arms immediately when this process (re)acquires the sync host lease, and a
@@ -4575,11 +4577,15 @@ The setting is `sync-relay-preference.json` beside the relay identity file;
 absent or unreadable means on, so a damaged file never cuts a computer off.
 Off means the tunnel client treats the computer as ineligible
 (`isRelayEnabled` → `RELAY_TURNED_OFF_MESSAGE`, control socket and tunnels
-closed within one lease poll), the relay URL is never advertised (pairing
+closed within a second), the relay URL is never advertised (pairing
 info, `hello_ok`, the account directory), and route health reports
 `relay.enabled: false, turnedOff: true` so no relay-offline banner fires.
-Turning it on dials at once. ADE MCP rides the same control socket, so it is
-off for that computer too.
+Turning it on dials at once. The tunnel learns of the change, and of account
+sign-in and sign-out, from events (`subscribeEligibilityChanges`), and checks
+about 300 ms later so that an answer sent over the relay leaves first. The
+account-lease poll is a 5 s backstop for what has no event, such as a lease a
+token refresh lost. ADE MCP rides the same control socket, so it is off for
+that computer too.
 
 The switch is read and changed on the computer it belongs to:
 `account.getConnectionRoutes` / `account.setRelayEnabled` through
@@ -4798,7 +4804,8 @@ candidate is shadowed fails to bind and the startup loop retries.
   you turn it on, both an in-process host and the standing runtime can be
   alive simultaneously on the same machine — that's intentional for
   comparing behaviors, but production builds should never run with
-  that flag set.
+  that flag set. A packaged build drops the in-process project runtime from
+  main, so the flag only works from a dev build; set it there.
 - **Project-scoped commands need `projectId`.** A runtime hosting
   multiple projects has no implicit "current project". Forward the
   active `projectId` on every project-scoped command or the runtime

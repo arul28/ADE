@@ -3131,7 +3131,10 @@ function AgentChatComposerImpl({
 
   const issueContextButtonRef = useRef<HTMLButtonElement | null>(null);
   const [dragActive, setDragActive] = useState<false | "files" | "reference">(false);
-  const [commandMenuTrigger, setCommandMenuTrigger] = useState<ComposerTrigger | null>(null);
+  // Each keystroke without a trigger closes the menu twice (change, then
+  // select). A plain `useState` rendered the composer again for that
+  // same-value write.
+  const [commandMenuTrigger, setCommandMenuTrigger] = useStateSkippingSameValue<ComposerTrigger | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
   // The last trigger the user dismissed (Escape) or that died on a no-match
@@ -3141,7 +3144,7 @@ function AgentChatComposerImpl({
   const closeCommandMenu = useCallback(() => {
     dismissedTriggerRef.current = null;
     setCommandMenuTrigger(null);
-  }, []);
+  }, [setCommandMenuTrigger]);
   /**
    * Close the menu and leave any existing dismissal untouched.
    *
@@ -3154,14 +3157,14 @@ function AgentChatComposerImpl({
    */
   const closeCommandMenuKeepingDismissal = useCallback(() => {
     setCommandMenuTrigger(null);
-  }, []);
+  }, [setCommandMenuTrigger]);
   /** Close the menu and keep it closed while the user extends this query. */
   const dismissCommandMenu = useCallback((trigger: ComposerTrigger | null) => {
     dismissedTriggerRef.current = trigger
       ? { type: trigger.type, start: trigger.start, query: trigger.query }
       : null;
     setCommandMenuTrigger(null);
-  }, []);
+  }, [setCommandMenuTrigger]);
   /**
    * True when this trigger may open the menu. A trigger that is no longer
    * covered by the dismissal clears it, so the next dead query starts fresh.
@@ -3213,6 +3216,8 @@ function AgentChatComposerImpl({
     setSmartLinkEditorEnabled(true);
   };
   useEffect(() => {
+    // Already rich: the five parses below would only confirm it, per keystroke.
+    if (smartLinkEditorEnabled) return;
     if (
       hasChatOutputContext(draft)
       || hasBrowserTabMention(draft)
@@ -4811,7 +4816,7 @@ function AgentChatComposerImpl({
     setCommandMenuTrigger(trigger);
     const anchor = getCommandMenuAnchor(node);
     if (anchor) setCommandMenuAnchor(anchor);
-  }, [allowCommandMenuTrigger, attachedPaths, closeCommandMenu, closeCommandMenuKeepingDismissal]);
+  }, [allowCommandMenuTrigger, attachedPaths, closeCommandMenu, closeCommandMenuKeepingDismissal, setCommandMenuTrigger]);
 
   const restoreTextareaCaret = useCallback((caret: number) => {
     lastPlainSelectionRef.current = caret;
@@ -7367,7 +7372,7 @@ function AgentChatComposerImpl({
     const anchor = getCommandMenuAnchor(editor);
     if (anchor) setCommandMenuAnchor(anchor);
     captureRichSelection();
-  }, [allowCommandMenuTrigger, captureRichSelection, clearPromptHistory, closeCommandMenu, closeCommandMenuKeepingDismissal, disarmAttachmentChip, getRichTriggerContext, onDraftChange, removeAttachmentsForDeletedChips, serializeRichEditor, tokenizeSmartLinksInEditor]);
+  }, [allowCommandMenuTrigger, captureRichSelection, clearPromptHistory, closeCommandMenu, closeCommandMenuKeepingDismissal, disarmAttachmentChip, getRichTriggerContext, onDraftChange, removeAttachmentsForDeletedChips, serializeRichEditor, setCommandMenuTrigger, tokenizeSmartLinksInEditor]);
 
   const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
   // A running turn already has its model, and the picker is locked mid-turn:

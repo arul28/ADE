@@ -30,7 +30,7 @@ import { appendEvent, initPerfRunFromEnv } from "./perfLog";
  * `appendEvent` uses a single `appendFileSync` of one already-terminated line,
  * i.e. one O_APPEND write per event, so interleaved writers cannot split a line.
  */
-export type ChatTextFlushReason = "timer" | "identityBreak" | "interleave" | "other";
+export type ChatTextFlushReason = "first" | "timer" | "identityBreak" | "interleave" | "other";
 
 const enabled = (process.env.ADE_PERF_RUN_ID ?? "").length > 0;
 const MAX_TRACKED_SESSIONS = 512;

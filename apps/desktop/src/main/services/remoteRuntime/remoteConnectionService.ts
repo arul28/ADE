@@ -569,6 +569,16 @@ export class RemoteConnectionService {
   }
 
   /**
+   * Whether the connected brain runs `chat.createSessionAndSend`. False while
+   * the machine is not connected or predates the action: the caller then
+   * makes the create and the send as two calls.
+   */
+  supportsChatCreateAndSend(targetId: string): boolean {
+    const status = this.statusById.get(targetId);
+    return status?.state === "connected" && status.capabilities?.chatCreateAndSend === true;
+  }
+
+  /**
    * Canonical account-trust reconciliation command. Sign-out revokes Relay
    * leases but preserves host-issued paired secrets so LAN/Tailscale remain
    * available. Switching to a different signed-in account prunes the previous

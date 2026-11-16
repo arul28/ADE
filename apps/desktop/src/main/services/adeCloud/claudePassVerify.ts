@@ -21,9 +21,11 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { query as claudeQuery, type SDKUserMessage, type SpawnOptions, type SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
+// Types only: the SDK loads on the first verify, not with this module.
+import type { Query as ClaudeQuery, query as claudeQuery, SDKUserMessage, SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { ensurePrivateDirectory } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import { loadClaudeSdk } from "../ai/claudeSdkLoader";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "../shared/processExecution";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
@@ -239,9 +241,13 @@ export async function verifyClaudePass(
     return created as unknown as SpawnedProcess;
   };
 
-  let stream: ReturnType<typeof claudeQuery> | null = null;
+  let stream: ClaudeQuery | null = null;
   try {
-    stream = (options.query ?? claudeQuery)({
+    // `loadClaudeSdk` falls back to `require`, which the packaged brain needs:
+    // its `cli.cjs` sits outside `app.asar` and finds its external packages
+    // through `NODE_PATH`, which a native `import()` does not read.
+    const claudeSdk = await loadClaudeSdk();
+    stream = (options.query ?? claudeSdk.query)({
       prompt: noPrompt(),
       options: {
         cwd: dir,

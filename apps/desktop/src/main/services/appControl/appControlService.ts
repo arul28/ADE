@@ -158,6 +158,9 @@ export function createAppControlService(serviceArgs: CreateAppControlServiceArgs
     for (const controller of controllers.values()) controller.refreshFrameDemand();
   };
 
+  const windowRecorder = args.windowRecorder !== undefined
+    ? args.windowRecorder
+    : createAppControlWindowRecorder({ logger: args.logger });
   const recording = createAppControlRecording({
     logger: args.logger,
     projectRoot: args.projectRoot,
@@ -170,9 +173,7 @@ export function createAppControlService(serviceArgs: CreateAppControlServiceArgs
     getLatestFrame: async (laneId) => await controllers.get(laneId)?.getLatestFrame() ?? null,
     resolveAppProcessId: async (laneId) => await controllers.get(laneId)?.resolveAppProcessId() ?? null,
     resolveTargetTitle: async (laneId) => await controllers.get(laneId)?.getTargetTitle() ?? null,
-    windowRecorder: args.windowRecorder !== undefined
-      ? args.windowRecorder
-      : createAppControlWindowRecorder({ logger: args.logger }),
+    windowRecorder,
     screencastRecorder: () => args.getScreencastRecorder?.() ?? null,
     getChromiumDemoEngine: args.getChromiumDemoEngine ?? null,
     ingestArtifacts: args.ingestArtifacts ?? null,
@@ -625,6 +626,12 @@ export function createAppControlService(serviceArgs: CreateAppControlServiceArgs
       const laneId = cleanClaimId(ref.laneId);
       return laneId ? controllers.get(laneId)?.getLastSelectedItem() ?? null : null;
     },
+    /**
+     * Stops the desktop helper that window recordings use, when no recording
+     * runs. The brain calls this once no window and no other machine is
+     * connected; the next recording or permission read starts it again.
+     */
+    releaseIdleHelpers: (): boolean => windowRecorder?.releaseIdle?.() ?? false,
     dispose: () => {
       offRemoteWorkDeviceCheck();
       offRemoteWorkReleased();

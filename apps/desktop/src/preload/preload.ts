@@ -44,7 +44,7 @@ import type { MachineStats } from "../shared/types/machineStats";
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type { NewLaneDefaults } from "../shared/laneStart";
-import { resolveUpdateTrackFromArgv, type UpdateTrack } from "../shared/updateTrack";
+import { resolveAppVersionFromArgv, resolveUpdateTrackFromArgv, type UpdateTrack } from "../shared/updateTrack";
 import type {
   ProjectMoveAttention,
   ProjectMoveCleanupArgs,
@@ -195,6 +195,7 @@ import {
   rememberPinnedRuntimeEventId,
   REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS,
   REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS,
+  LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS,
   REMOTE_RUNTIME_EVENT_IDLE_POLL_MS,
 } from "./pinnedRuntimeEvents";
 import type {
@@ -720,6 +721,7 @@ import type {
   AgentChatCodexTerminateBackgroundTerminalArgs,
   AgentChatCodexGetGoalArgs,
   AgentChatCreateArgs,
+  AgentChatCreateAndSendArgs,
   AgentChatLaunchArgs,
   AgentChatLaunchCliArgs,
   AgentChatLaunchCliResult,
@@ -796,6 +798,8 @@ import type {
   AgentChatClaudeOutputStylesArgs,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSetScheduledWorkPausedArgs,
+  AgentChatPrewarmDraftArgs,
+  AgentChatPrewarmDraftResult,
   AgentChatSetScheduledWorkItemPausedArgs,
   AgentChatSetScheduledWorkItemPausedResult,
   AgentChatRunScheduledWorkNowArgs,
@@ -1943,6 +1947,16 @@ async function refreshProjectBinding(): Promise<OpenProjectBinding | null> {
     .then((session: { binding?: OpenProjectBinding | null } | null) => {
       const binding = session?.binding ?? null;
       if (projectBindingVersion !== refreshVersion) return currentProjectBinding;
+      // A switch to a folder on this computer names its target here before
+      // main binds the window, and main's answer until then is the binding
+      // from before the switch (none, at launch). Adopting it would publish
+      // that old binding and take the window off the folder it is opening
+      // (the launch's saved Work view went to Home). This read still goes to
+      // the project main has open, when there is one; the switch publishes its
+      // settled binding when it ends, on success and on failure.
+      if (projectRuntimeTransitionDepth > 0 && currentProjectBinding?.kind === "local") {
+        return binding ?? currentProjectBinding;
+      }
       rememberProjectBinding(binding);
       return binding;
     })
@@ -3709,7 +3723,8 @@ let remoteRuntimeEventReplaySuppressed = false;
 let remoteRuntimeEmptyPollCount = 0;
 let remoteRuntimeSeenEventBindingKey: string | null = null;
 const remoteRuntimeSeenEventIds = new Set<number>();
-const LOCAL_RUNTIME_EVENT_IDLE_POLL_MS = 750;
+/** A stream-ended notice came while a poll was in flight: poll again when it is done. */
+let remoteRuntimeEventRepollWhenDone = false;
 const REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS = 2_500;
 
 // Every pump that reads a binding the window is not bound to lives in this
@@ -3720,6 +3735,7 @@ const pinnedRuntimeEvents = createPinnedRuntimeEvents({
   syncPtyDataSubscriptions: () => syncPtyDataSubscriptions(),
   isPtyDataFilteringConfigured: () => ptyDataSubscriptionsConfigured,
   isRemoteTargetOffline: (targetId) => remoteTargetGate.isOffline(targetId),
+  activePumpKeepsSubscription: (pin) => activeRuntimeEventPumpKeepsSubscription(pin),
 });
 const startPinnedRuntimeEventPump =
   pinnedRuntimeEvents.startPinnedRuntimeEventPump;
@@ -3855,6 +3871,24 @@ function releaseRuntimeEventSubscriptionForPreviousBinding(
   remoteRuntimeEventBinding = nextBinding;
   if (!previous || previous.key === nextBinding?.key) return;
   pinnedRuntimeEvents.releaseRuntimeEventSubscriptionIfUnpinned(previous);
+}
+
+/**
+ * Asked when the last pinned pump on `pin` lets go of main's uncategorized
+ * subscription, which the active pump shares when it reads the same binding.
+ * True keeps it: the active pump still has listeners. With none, the release
+ * goes ahead, and the pending keep-alive is dropped so the next listener
+ * subscribes again at once (`ensureRemoteRuntimeEventPump` waits on a pending
+ * timer, which on this computer is up to 45 s).
+ */
+function activeRuntimeEventPumpKeepsSubscription(pin: OpenProjectBinding): boolean {
+  if (remoteRuntimeEventBindingKey !== pin.key) return false;
+  if (hasRemoteRuntimeEventSubscribers()) return true;
+  if (remoteRuntimeEventTimer) {
+    clearTimeout(remoteRuntimeEventTimer);
+    remoteRuntimeEventTimer = null;
+  }
+  return false;
 }
 
 function scheduleRemoteRuntimeEventPoll(delayMs: number): void {
@@ -4008,7 +4042,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       nextDelayMs =
         binding.kind === "remote"
           ? REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS
-          : LOCAL_RUNTIME_EVENT_IDLE_POLL_MS;
+          : LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS;
     } else if (binding.kind === "remote") {
       remoteRuntimeEmptyPollCount += 1;
       nextDelayMs =
@@ -4016,7 +4050,8 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
           ? REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS
           : REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
     } else {
-      nextDelayMs = LOCAL_RUNTIME_EVENT_IDLE_POLL_MS;
+      // Local events come by push; this poll only keeps main's subscription.
+      nextDelayMs = LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS;
     }
   } catch (error) {
     const stalePoll =
@@ -4032,6 +4067,10 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     }
   } finally {
     remoteRuntimeEventInFlight = false;
+    if (remoteRuntimeEventRepollWhenDone) {
+      remoteRuntimeEventRepollWhenDone = false;
+      if (nextDelayMs != null) nextDelayMs = 0;
+    }
     if (
       nextDelayMs != null &&
       hasRemoteRuntimeEventSubscribers() &&
@@ -4117,6 +4156,24 @@ function toRemoteRuntimeBufferedEvent(
 
 ipcRenderer.on(IPC.runtimeEvent, (_event, payload: unknown) => {
   handleRemoteRuntimeEventNotification(payload);
+});
+
+/**
+ * Main says a runtime event stream of `bindingKey` ended by itself (its
+ * runtime connection closed). The pumps on that copy poll now, which
+ * subscribes again; a local pump would otherwise wait for its keep-alive.
+ */
+ipcRenderer.on(IPC.runtimeEventStreamEnded, (_event, payload: unknown) => {
+  const bindingKey = isRecord(payload) && typeof payload.bindingKey === "string" ? payload.bindingKey : "";
+  if (!bindingKey) return;
+  pinnedRuntimeEvents.handlePinnedRuntimeStreamEnded(bindingKey);
+  if (currentProjectBinding?.key !== bindingKey || remoteRuntimeEventPollParked) return;
+  if (remoteRuntimeEventInFlight) {
+    remoteRuntimeEventRepollWhenDone = true;
+    return;
+  }
+  clearPendingRemoteRuntimeEventPoll();
+  scheduleRemoteRuntimeEventPoll(0);
 });
 
 function dispatchRemoteRuntimeEventPayload(
@@ -5267,6 +5324,8 @@ const adeBridge = {
     }),
     // The running build's update track, synchronous for the header label.
     updateTrack: resolveUpdateTrackFromArgv(process.argv),
+    // The running build's version, synchronous for the boot splash's first paint.
+    appVersion: resolveAppVersionFromArgv(process.argv),
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     setDockBadgeCount: async (count: number): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetDockBadgeCount, { count }),
@@ -5285,8 +5344,8 @@ const adeBridge = {
     // twice must still be two subscriptions.
     onRuntimeStatusChanged: (cb: (status: LocalRuntimeStatus) => void) =>
       runtimeStatusFanout((status) => cb(status)),
-    getResourceUsage: async (): Promise<AppResourceUsageSnapshot> =>
-      ipcRenderer.invoke(IPC.appGetResourceUsage),
+    getResourceUsage: async (args?: { fresh?: boolean }): Promise<AppResourceUsageSnapshot> =>
+      ipcRenderer.invoke(IPC.appGetResourceUsage, args ?? null),
     getRuntimeHealth: async (): Promise<RuntimeHealthSnapshot> =>
       ipcRenderer.invoke(IPC.appGetRuntimeHealth),
     restartBackgroundService: async (): Promise<void> =>
@@ -8841,6 +8900,29 @@ const adeBridge = {
       agentChatSummaryCache.clear();
       return session as AgentChatSession;
     },
+    // The Work prompt box's new chat: the create and the first send in one
+    // call to the chat's machine, with the same stamps as `create` and `send`.
+    // Null, with nothing sent, when that brain predates the call.
+    createAndSend: async (
+      rawArgs: AgentChatCreateAndSendArgs,
+      pin: OpenProjectBinding,
+    ): Promise<AgentChatSession | null> => {
+      const supported = (await ipcRenderer.invoke(IPC.agentChatCreateAndSendSupported, {
+        targetId: pin.kind === "remote" ? pin.targetId : null,
+      })) === true;
+      if (!supported) return null;
+      agentChatSummaryCache.clear();
+      const [create, inputOrigin] = await Promise.all([
+        withPresetSnapshot(rawArgs.create),
+        sessionInputOriginFor(pin),
+      ]);
+      const message = { ...rawArgs.message, clientSendId: rawArgs.message.clientSendId ?? randomClientId() };
+      const session = await callPinnedRuntimeAction<AgentChatSession>(pin, "chat", "createSessionAndSend", {
+        args: { create, message, inputOrigin },
+      });
+      agentChatSummaryCache.clear();
+      return session;
+    },
     launch: async (
       rawArgs: AgentChatLaunchArgs,
       pin?: OpenProjectBinding | null,
@@ -9676,11 +9758,22 @@ const adeBridge = {
       args: {
         sessionId: string;
         modelId: string;
+        /** Load the provider's SDK only; start no process (typing in an open chat). */
+        sdkOnly?: boolean;
       },
       pin?: OpenProjectBinding | null,
     ): Promise<void> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "warmupModel", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatWarmupModel, args),
+      ),
+    // A draft's first keystroke: warm its provider on the machine that owns
+    // the draft's lane (the pin), so the first send finds it started.
+    prewarmDraft: async (
+      args: AgentChatPrewarmDraftArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatPrewarmDraftResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "prewarmDraft", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatPrewarmDraft, args),
       ),
     onEvent: subscribeAgentChatEvents,
     slashCommands: async (

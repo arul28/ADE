@@ -30,7 +30,8 @@ import { WorkGridView, SingleSessionGridDropZone } from "./WorkGridView";
 import { fgTint } from "../lanes/laneDesignTokens";
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
-import { TerminalView } from "./TerminalView";
+// xterm loads with the first terminal, not with the Work page (LazyTerminalView).
+import { scheduleTerminalViewPreload, TerminalView } from "./LazyTerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
@@ -75,6 +76,7 @@ import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { isImeComposing } from "../../lib/imeComposition";
 import { noChatMachineError, withChatPin } from "../chat/chatMachinePin";
+import { useWorkInputFocusOnChatSwitch } from "../work/workShortcuts";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -1124,14 +1126,29 @@ export function SessionSurface({
 const WORK_AREA_MODE_TRANSITION = { duration: 0.3, ease: STANDARD_EASE } as const;
 const WORK_AREA_DOCK_TRANSITION = { duration: 0.14, ease: STANDARD_EASE } as const;
 
-/** `custom` = the switch is a composer dock (no blur, quick swap). */
+/**
+ * `custom` = the switch is a composer dock (no blur, quick swap).
+ *
+ * At rest the layer has no filter at all (`transitionEnd`), not `blur(0px)`:
+ * a filter on the whole Work area that holds a composited child (the usage
+ * chart's canvas, a chat's scroller) makes Chromium draw the whole area as
+ * one more window-sized layer, about 48 MB of tiles on a large screen. The
+ * blur is the same at 0 px, so nothing on screen changes. Motion animates the
+ * exit blur up from `none` as from 0 px.
+ */
 const WORK_AREA_MODE_VARIANTS = {
   enter: (dock: boolean) => (dock
-    ? { opacity: 1, filter: "blur(0px)", scale: 1 }
+    ? { opacity: 1, scale: 1 }
     : { opacity: 0, filter: "blur(12px)", scale: 0.992 }),
-  visible: { opacity: 1, filter: "blur(0px)", scale: 1, transition: WORK_AREA_MODE_TRANSITION },
+  visible: {
+    opacity: 1,
+    filter: "blur(0px)",
+    scale: 1,
+    transition: WORK_AREA_MODE_TRANSITION,
+    transitionEnd: { filter: "none" },
+  },
   exit: (dock: boolean) => (dock
-    ? { opacity: 0, filter: "blur(0px)", scale: 1, transition: WORK_AREA_DOCK_TRANSITION }
+    ? { opacity: 0, scale: 1, transition: WORK_AREA_DOCK_TRANSITION }
     : { opacity: 0, filter: "blur(12px)", scale: 0.992, transition: WORK_AREA_MODE_TRANSITION }),
 };
 
@@ -1397,6 +1414,15 @@ export function WorkViewArea({
   // Coarse work-area mode — switching sessions stays "single" (no remount), but
   // the new-chat → real-chat and grid↔single transitions cross-fade with a blur
   // dissolve (the "new-chat pane dissolves into the chat" showcase moment).
+  // A view that remembers an open chat shows this draft until the session list
+  // has it (at launch, `activeSession` is null until then), and then swaps to
+  // the chat. Text typed into the draft meanwhile means the person is on the
+  // draft: the view stays on it. Otherwise the swap takes the field away
+  // mid-word (an open IME composition is lost, and the keyboard with it) and
+  // the text turns up in the draft on the next launch.
+  const claimDraftWhileChatLoads = activeItemId != null && !activeSession
+    ? () => onShowDraftKind(draftKind)
+    : undefined;
   const workAreaMode: "grid" | "single" | "empty" = activeGridSet
     ? "grid"
     : activeSession
@@ -1447,6 +1473,8 @@ export function WorkViewArea({
         className="relative flex h-full min-h-0 flex-col overflow-hidden"
         data-work-draft-surface=""
         onContextMenu={draftBackgroundMenu.onContextMenu}
+        onInputCapture={claimDraftWhileChatLoads}
+        onCompositionStartCapture={claimDraftWhileChatLoads}
       >
         {draftBackgroundMenu.menu}
         {/* The new chat pane is part of the window gradient, so the top bar above
@@ -1486,8 +1514,16 @@ export function WorkViewArea({
   // composer glides down from the draft's position (`chatLaunchDock`), so the
   // surface underneath just swaps quickly instead of blurring the glide away.
   const composerDockTransition = workAreaMode === "single" && hasPendingComposerDock(activeSession?.id);
+  // The prompt box takes the keyboard when the view first shows a chat after
+  // launch, and after a click switches the chat (a new chat included). A grid
+  // focuses its own active tile (`shouldAutofocus`).
+  const workAreaBodyRef = useRef<HTMLDivElement>(null);
+  useWorkInputFocusOnChatSwitch(workAreaBodyRef, activeItemId ?? null, pageActive && workAreaMode !== "grid");
+  // The terminal code loads once the person stops for a moment, so the first
+  // terminal they open does not wait for it (LazyTerminalView).
+  useEffect(() => scheduleTerminalViewPreload(), []);
   const tabBody = (
-    <div className="relative min-h-0 flex-1" style={{ background: workAreaMode === "empty" ? "transparent" : "var(--chat-canvas-bg)" }}>
+    <div ref={workAreaBodyRef} className="relative min-h-0 flex-1" style={{ background: workAreaMode === "empty" ? "transparent" : "var(--chat-canvas-bg)" }}>
       <AnimatePresence initial={false} custom={composerDockTransition}>
         <WorkAreaModeLayer key={workAreaMode} dock={composerDockTransition}>
           {workAreaContent}

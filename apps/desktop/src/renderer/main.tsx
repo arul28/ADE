@@ -1,3 +1,6 @@
+// Launch timing (`ade:boot:*`, see `markBoot`): the entry chunk runs.
+try { performance.mark("ade:boot:entry"); } catch { /* diagnostics only */ }
+
 /**
  * Outside Electron (a Vite-only preview) the browser mock stubs \`window.ade\`
  * before any app module runs. Inside Electron the preload has already set it,
@@ -8,6 +11,7 @@ const w = window as unknown as { ade?: { sync?: { getStatus?: unknown } }; __ade
 const hasElectronPreload = Boolean(w.ade && !w.__adeBrowserMock && typeof w.ade.sync?.getStatus === "function");
 void (async () => {
   if (!hasElectronPreload) await import("./browserMock");
+  try { performance.mark("ade:boot:boot-import"); } catch { /* diagnostics only */ }
   await import("./rendererBoot");
 })();
 

@@ -508,6 +508,36 @@ export function createAccountVaultStore(args: {
     return stale ? "stale" : "queued";
   };
 
+  /**
+   * The cached items' keys, split and sorted by key, for each scope and for
+   * all of them. Every provider login pass, Claude pass check, Jira read and
+   * project secret read lists the vault, and each list split every key again.
+   * Built once per cache revision (any write, pull, reset or account switch
+   * changes it); the items themselves are always read live.
+   */
+  type SplitKey = { composite: string; split: { scope: string; kind: AccountVaultItemKind; key: string } };
+  let keyIndex: { revision: number; all: SplitKey[]; byScope: Map<string, SplitKey[]> } | null = null;
+  const indexedKeys = (scope: string | undefined): SplitKey[] => {
+    const revision = cache.revision();
+    if (keyIndex?.revision !== revision) {
+      const all: SplitKey[] = [];
+      for (const composite of Object.keys(cache.readCache().rows)) {
+        const split = splitCacheKey(composite);
+        if (split) all.push({ composite, split });
+      }
+      // Stable, so keys equal across scopes keep the cache's order, as before.
+      all.sort((left, right) => left.split.key.localeCompare(right.split.key));
+      const byScope = new Map<string, SplitKey[]>();
+      for (const entry of all) {
+        const inScope = byScope.get(entry.split.scope);
+        if (inScope) inScope.push(entry);
+        else byScope.set(entry.split.scope, [entry]);
+      }
+      keyIndex = { revision, all, byScope };
+    }
+    return scope ? keyIndex.byScope.get(scope) ?? [] : keyIndex.all;
+  };
+
   return {
     /**
      * Every item this machine knows about, with values omitted.
@@ -529,13 +559,13 @@ export function createAccountVaultStore(args: {
       /** Pass back as `expectedRevision` to write only while the item is still this. */
       revision: string;
     }> {
+      const entries = indexedKeys(scope);
       const current = cache.readCache();
       const queuedSeq = new Map(current.pending.map((entry) => [cacheKey(entry.scope, entry.kind, entry.key), entry.seq]));
       const rows = [];
-      for (const [composite, item] of Object.entries(current.rows)) {
-        const split = splitCacheKey(composite);
-        if (!split) continue;
-        if (scope && split.scope !== scope) continue;
+      for (const { composite, split } of entries) {
+        const item = current.rows[composite];
+        if (!item) continue;
         const seq = queuedSeq.get(composite);
         rows.push({
           ...split,
@@ -547,7 +577,8 @@ export function createAccountVaultStore(args: {
           revision: seq !== undefined ? `local:${seq}` : item.updatedAt,
         });
       }
-      return rows.sort((left, right) => left.key.localeCompare(right.key));
+      // Already in key order: the index is sorted.
+      return rows;
     },
 
     /** The credential itself. Callers are the services that use it, not the UI. */

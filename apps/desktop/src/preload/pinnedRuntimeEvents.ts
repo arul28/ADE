@@ -17,6 +17,17 @@ type IpcRendererLike = {
 export const REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS = 750;
 export const REMOTE_RUNTIME_EVENT_IDLE_POLL_MS = 5_000;
 export const REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS = 50;
+/**
+ * How often a pump on this computer's runtime polls. Its events come by push
+ * (main answers a local poll with no events), so a poll only renews main's
+ * subscription, whose idle expiry is 180 s, and reads the runtime's epoch.
+ * When the stream ends, main says so (`IPC.runtimeEventStreamEnded`) and the
+ * pump polls at once; a failed poll retries on the failure backoff. 45 s stays
+ * inside the expiry even when Chromium throttles a hidden window's timers to
+ * one wake a minute. At 750 ms the bound window alone made about 80 IPC calls
+ * a minute at idle, each reading the window session.
+ */
+export const LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS = 45_000;
 const PINNED_RUNTIME_EVENT_FAILURE_BASE_POLL_MS = 2_000;
 const PINNED_RUNTIME_EVENT_FAILURE_MAX_POLL_MS = 30_000;
 
@@ -25,9 +36,12 @@ export function normalizePinnedRuntimeEventEpoch(value: unknown): string | null 
 }
 
 function pinnedRuntimeBatchDelayMs(
+  pin: OpenProjectBinding,
   batch: RemoteRuntimeStreamEventsResult,
 ): number {
   if (batch.hasMore) return REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS;
+  // A remote poll can return events the push lost on the way; a local one never does.
+  if (pin.kind === "local") return LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS;
   return batch.events?.length
     ? REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS
     : REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
@@ -85,6 +99,8 @@ type PinnedPtyEventState = {
   // flight across the rewind must discard its result instead of restoring the
   // pre-rewind cursor, which would silently cancel the replay-from-zero.
   epochGeneration: number;
+  /** A stream-ended notice came while a poll was in flight: poll again when it is done. */
+  repollWhenDone: boolean;
   /** The machine is offline: no poll runs until it is back (see `resumePinnedRuntimeEventPumps`). */
   parked: boolean;
   cancelled: boolean;
@@ -154,6 +170,15 @@ type PinnedRuntimeEventsDeps = {
    * `resumePinnedRuntimeEventPumps` when the machine is back.
    */
   isRemoteTargetOffline: (targetId: string) => Promise<boolean>;
+  /**
+   * True while the window's active pump still reads `pin`'s uncategorized
+   * stream. Main keys that subscription by binding and category alone, so the
+   * active pump and a pinned pump on the bound copy share it, and only the
+   * pinned side holds a ref here. Releasing it under a live active pump cut
+   * off the window's pushes until the active pump polled again (45 s on this
+   * computer): a new chat's first words came about 20 s late.
+   */
+  activePumpKeepsSubscription: (pin: OpenProjectBinding) => boolean;
 };
 
 /**
@@ -226,6 +251,7 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
       return;
     }
     pinnedSubscriptionRefs.delete(key);
+    if (!category && deps.activePumpKeepsSubscription(pin)) return;
     sendRuntimeEventRelease(pin, category);
   };
 
@@ -352,7 +378,7 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
           : state.cursor;
         if (request.replay === false) state.replaySuppressed = false;
         for (const event of batch.events ?? []) deliverPinnedRuntimeEvent(state, event);
-        delay = pinnedRuntimeBatchDelayMs(batch);
+        delay = pinnedRuntimeBatchDelayMs(pin, batch);
       }
       if (epochChanged || batch.gap === true || recovered) resyncPinnedRuntimeEventListeners(state);
     } catch (error) {
@@ -422,10 +448,8 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     const pushHandlers = pinnedPumpPushHandlers.get(state.pin.key);
     pushHandlers?.delete(state.onPush);
     if (pushHandlers && pushHandlers.size === 0) pinnedPumpPushHandlers.delete(state.pin.key);
-    // This release can also tear down the active pump's shared main-side
-    // subscription after a tab switch. Its next poll re-subscribes from the
-    // active cursor, so only push latency (750ms–5s) is lost; buffered events
-    // are not.
+    // Kept while the active pump still reads the same binding: main's
+    // subscription is shared (see `activePumpKeepsSubscription`).
     releaseRuntimeEventSubscription(state.pin);
   };
 
@@ -494,6 +518,7 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     consecutiveFailures: 0,
     seenEventIds: new Set(),
     epochGeneration: 0,
+    repollWhenDone: false,
     parked: false,
     cancelled: false,
   });
@@ -685,7 +710,7 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
         for (const event of batch.events ?? []) {
           dispatchPinnedPtyRuntimeEvent(state, event);
         }
-        nextDelayMs = pinnedRuntimeBatchDelayMs(batch);
+        nextDelayMs = pinnedRuntimeBatchDelayMs(pin, batch);
       }
     } catch (error) {
       if (!state.cancelled) {
@@ -695,6 +720,10 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
       }
     } finally {
       state.inFlight = false;
+      if (state.repollWhenDone) {
+        state.repollWhenDone = false;
+        if (nextDelayMs != null) nextDelayMs = 0;
+      }
       if (nextDelayMs != null) {
         schedulePinnedPtyEventPoll(state, nextDelayMs);
       }
@@ -812,9 +841,28 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     }
   };
 
+  /**
+   * Main says a stream of `bindingKey` ended by itself: every pump on that
+   * copy polls now, which subscribes again. A local pump otherwise waits for
+   * its keep-alive (`LOCAL_RUNTIME_EVENT_KEEPALIVE_POLL_MS`).
+   */
+  const handlePinnedRuntimeStreamEnded = (bindingKey: string): void => {
+    for (const state of [...pinnedRuntimeEventPumps.values()]) {
+      if (state.pin.key === bindingKey) pollPinnedRuntimeEventsNow(state);
+    }
+    const ptyState = pinnedPtyEventStates.get(bindingKey);
+    if (!ptyState || ptyState.cancelled || ptyState.parked || !hasPinnedPtyEventListeners(ptyState)) return;
+    if (ptyState.inFlight) {
+      ptyState.repollWhenDone = true;
+      return;
+    }
+    repollPinnedPtyEventsNow(ptyState);
+  };
+
   return {
     startPinnedRuntimeEventPump,
     handlePinnedRuntimeEventNotification,
+    handlePinnedRuntimeStreamEnded,
     collectPinnedPtyDataSubscriptionIds,
     setPinnedPtyDataSubscriptions,
     updateOpenPinnedPtyDataSubscriptions,

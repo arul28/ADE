@@ -39,6 +39,8 @@ export function boundChatRefusals(where: string) {
   return {
     // Best-effort pre-start of a CLI-backed model; a bound backend starts the provider on the first send.
     warmupModel: async () => undefined,
+    // A bound backend starts the provider on the first send.
+    prewarmDraft: async () => ({ warming: false, reason: "unavailable" as const }),
     handoff: refuse("Handoff"),
     rewindFiles: refuse("Rewind"),
     recoverContinuity: refuse("Transcript recovery"),

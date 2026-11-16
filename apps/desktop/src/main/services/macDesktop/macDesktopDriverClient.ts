@@ -1117,6 +1117,11 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       return Boolean(child && childReady);
     },
 
+    /** True while the helper is starting or owes an answer to a request. */
+    isBusy(): boolean {
+      return startPromise !== null || pending.size > 0;
+    },
+
     request,
 
     /**

@@ -283,6 +283,13 @@ export type AdeDb = {
    * final-persistence paths instead of latency-sensitive request handling.
    */
   flushNow: () => void;
+  /**
+   * Gives back memory this connection can rebuild on its next use: the cached
+   * prepared statements, SQLite's page cache (`PRAGMA shrink_memory`) and the
+   * export helper's thread. For a brain nobody is using; nothing it drops is
+   * data.
+   */
+  releaseMemory?: () => void;
   close: () => void;
 };
 
@@ -5916,6 +5923,19 @@ async function openKvDbOnce(
     maintenance,
     flushNow: () => {
       getRow(db, "pragma wal_checkpoint(TRUNCATE)");
+    },
+    releaseMemory: () => {
+      if (closed) return;
+      // Each statement is finalized when the garbage collector frees it.
+      statementCaches.get(db)?.clear();
+      try {
+        db.exec("PRAGMA shrink_memory");
+      } catch {
+        // Memory only: a busy or closing connection keeps its cache.
+      }
+      const helper = exportHelper;
+      exportHelper = null;
+      void helper?.retire().catch(() => undefined);
     },
     close: () => {
       if (!closed) {

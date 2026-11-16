@@ -669,13 +669,19 @@ export function createAccountAppTokenClient(options: AccountAppTokenClientOption
   /** Drops an entry that belongs to another account (an account switch). */
   const dropForeignEntry = (): void => {
     const userId = options.getAccountUserId()?.trim() || null;
+    const isForeign = (current: string | null): boolean => {
+      if (current == null) return false;
+      const entry = parseAccountAppCacheEntry(current);
+      return !(entry && userId && entry.accountUserId === userId);
+    };
     try {
-      update((current) => {
-        const entry = parseAccountAppCacheEntry(current);
-        if (current == null) return undefined;
-        if (entry && userId && entry.accountUserId === userId) return undefined;
-        return null;
-      });
+      // The vault tick calls this every 30 s, and nearly always there is
+      // nothing to drop. The plain read answers that from the settled cache;
+      // only a foreign entry takes the locked update, which checks it again
+      // under the lock. One that lands after this read goes on the next tick,
+      // and read paths ignore a foreign entry meanwhile.
+      if (!isForeign(readRaw())) return;
+      update((current) => (isForeign(current) ? null : undefined));
     } catch {
       // Read paths ignore a foreign entry anyway.
     }

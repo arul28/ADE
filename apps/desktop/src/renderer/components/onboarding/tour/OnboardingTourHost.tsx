@@ -43,7 +43,7 @@ import {
 } from "./onboardingTourSteps";
 import { TourCursorMotion, type Point } from "./tourCursor";
 import { TourFinishCard } from "./TourFinishCard";
-import { watchTourDom, type TourWatch } from "./tourWatch";
+import { TOUR_WATCH_IGNORE_STREAMING_CONTENT, watchTourDom, type TourWatch } from "./tourWatch";
 import { useGoTo } from "../spotlight/useGoTo";
 import "./onboardingTour.css";
 
@@ -160,7 +160,7 @@ function useFirstChatPrefill(active: boolean): FirstChatSetup {
         })
         .catch(() => undefined);
     };
-    watch = watchTourDom(check, { minIntervalMs: CHECK_INTERVAL_MS });
+    watch = watchTourDom(check, { minIntervalMs: CHECK_INTERVAL_MS, ignoreWithin: TOUR_WATCH_IGNORE_STREAMING_CONTENT });
     return () => {
       cancelled = true;
       watch?.dispose();
@@ -327,7 +327,10 @@ function TourRunner({ stepId }: { stepId: string | null }) {
       }
       commit({ kind: "waiting", outOfView: findOutOfViewAnchor(step.anchors) });
     };
-    watch = watchTourDom(evaluate, { minIntervalMs: CHECK_INTERVAL_MS });
+    watch = watchTourDom(evaluate, {
+      minIntervalMs: CHECK_INTERVAL_MS,
+      ignoreWithin: TOUR_WATCH_IGNORE_STREAMING_CONTENT,
+    });
     recheckRef.current = () => watch?.scheduleCheck();
     return () => {
       recheckRef.current = null;

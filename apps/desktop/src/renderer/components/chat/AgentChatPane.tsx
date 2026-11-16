@@ -148,7 +148,7 @@ import {
   deriveDeterministicLaneTitleFromPrompt,
   legacyAutoLaneTemporaryBranch,
 } from "../../../shared/laneNameFallback";
-import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
+import { isRemoteOutcomeUnknownError, isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import {
   machineIdForBinding,
   machineNameForBinding,
@@ -215,7 +215,7 @@ import {
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
-import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
+import { ChatLifecyclePill } from "./ChatLifecyclePill";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
@@ -235,6 +235,7 @@ import {
   ChatInfoHostContext,
 } from "./AgentChatMessageList";
 import { classifyLiveEventBatch, createChatLiveEventsStore, createComposerDraftStore, type ChatLiveEventsStore, type ComposerDraftStore } from "./chatLiveEvents";
+import { useEarlyComposerHandoff } from "./useEarlyComposerHandoff";
 import { SceneReplyContext } from "./SceneFrame";
 import { ChatTerminalRevealContext } from "./ChatCodeBlockRun";
 import { UsageLimitChip } from "./UsageLimitChip";
@@ -242,6 +243,8 @@ import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspa
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { ChatActionsToggleBadge } from "./ChatActionsToggleBadge";
 import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
+import { beginChatSendTiming, noteChatSendBubbleShown, noteChatSendTimingEvent, type ChatSendTimingHandle } from "./chatSendTiming";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ChatMachineWakeBanner, ChatMachineWakeProvider } from "./useChatMachineWake";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
@@ -254,7 +257,7 @@ import {
   sendWithCloudWakeMark,
 } from "../../state/cloudSavedChatsSync";
 import { ThreadEntityProvider } from "./threadEntities";
-import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
+import { useSessionLifecyclePillVisible } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { useRemoteConnectionMark } from "../../state/projectMachines";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
@@ -264,7 +267,6 @@ import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatDisplayEvents,
   chatEventDedupKey,
-  estimatedChatEventResidentBytes,
   INITIAL_SELECTED_CHAT_HISTORY_EVENTS,
   MAX_BACKGROUND_CHAT_SESSION_EVENTS,
   MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
@@ -274,6 +276,7 @@ import {
   readOlderHistoryBatch,
   resolveMergedSnapshotHistoryCursor,
   resolveSnapshotHistoryCursor,
+  residentChatEventBytes,
   trimChatEventHistory,
 } from "./chatHistoryWindow";
 /** No nesting to resolve in the pane's own shell filter: one hop, the chat. */
@@ -570,6 +573,8 @@ import {
 import { useChatLaunchPaneLifecycle, useChatLaunchPaneState } from "./launch/useChatLaunchPaneState";
 import { consumeChatLaunchDraftRestore, useChatLaunchDraftRestore } from "./launch/chatLaunchDraftRestore";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { logRendererDebugEvent } from "../../lib/debugLog";
+import { sessionFromSummary } from "./boundAgentChatApi";
 import {
   isDraftLaunchJobStale,
   isDraftLaunchJobTerminal,
@@ -667,6 +672,12 @@ const CHAT_ACTIONS_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const CHAT_ACTIONS_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const workCliStartupDelayMs = 180;
 const REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS = 15_000;
+/**
+ * When a combined create-and-send call lost its answer, the checks of the
+ * chat's machine: at once, then 3 s, 10 s and 20 s after the first (20 s in all). The
+ * call can still be running there.
+ */
+const DRAFT_CHAT_RECONCILE_DELAYS_MS = [0, 3_000, 7_000, 10_000] as const;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = DEFAULT_ATTACHMENT_ONLY_PROMPT;
 
 const chatToolbarActionBase =
@@ -1395,6 +1406,30 @@ function residentHeadHasOlderEvents(events: readonly AgentChatEventEnvelope[] | 
   return typeof first === "number" && first > 1;
 }
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
+/**
+ * The chats a pane showed last, before the one on screen. Each keeps its
+ * resident window at the selected-chat caps, so a switch back to it paints
+ * what was there: no tail re-read, no older-history backfill from the start.
+ * Two covers flipping between a pair of chats with one more in reach. It also
+ * bounds a locked Work pane, which used to keep the window of every chat it
+ * had ever shown (the tabbed pane prunes against its roster instead).
+ */
+const MAX_RECENTLY_VIEWED_CHATS = 2;
+
+/** `recent` with `left` in front, without `shown`, at most MAX_RECENTLY_VIEWED_CHATS long. */
+function rememberRecentlyViewedChat(
+  recent: readonly string[],
+  left: string | null,
+  shown: string | null,
+): string[] {
+  const next: string[] = [];
+  for (const sessionId of left ? [left, ...recent] : recent) {
+    if (sessionId === shown || next.includes(sessionId)) continue;
+    next.push(sessionId);
+    if (next.length >= MAX_RECENTLY_VIEWED_CHATS) break;
+  }
+  return next;
+}
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
 // The view cache holds a reference to the SAME event array the pane already
 // keeps resident, so admitting anything the pane can hold costs no extra
@@ -1468,7 +1503,8 @@ function draftLaunchRequestKey(args: {
     kind: args.kind,
     mode: args.mode,
     autoCreate: args.autoCreate,
-    snapshot: args.snapshot,
+    // The Enter time differs on each press; a double press is still one launch.
+    snapshot: { ...args.snapshot, submittedAtMs: undefined },
   });
 }
 
@@ -1584,6 +1620,26 @@ function draftDepartingScope(shell: HTMLElement | null): Element | null {
 }
 
 /**
+ * The opening message of a drafted chat before its provider is known: the
+ * draft's own `interactionMode` and no `runtime`. The brain's one-call create
+ * and send (`chat.createSessionAndSend`) applies the provider rule of
+ * `buildDraftChatMessageArgs` to it from the created chat.
+ */
+function buildDraftChatOpeningMessage(prepared: PreparedDraftLaunch): Omit<AgentChatSendArgs, "sessionId"> {
+  return {
+    text: prepared.finalText,
+    displayText: prepared.finalDisplayText
+      || (hasPastedTextPromptAttachment(prepared.selectedAttachments) ? "" : "Selected visual app context"),
+    attachments: prepared.selectedAttachments,
+    contextAttachments: prepared.selectedContextAttachments,
+    reasoningEffort: prepared.reasoningEffort,
+    executionMode: prepared.executionMode,
+    interactionMode: prepared.interactionMode ?? null,
+    ...(prepared.submittedAtMs != null ? { clientSubmittedAtMs: prepared.submittedAtMs } : {}),
+  };
+}
+
+/**
  * The opening `agentChat.send` for a drafted chat, minus the session id. Used
  * by the direct create-then-send path and by the brain-owned new-lane launch,
  * so both send the same message. `interactionMode` is only sent to Claude.
@@ -1594,13 +1650,7 @@ function buildDraftChatMessageArgs(
   interactionMode: AgentChatInteractionMode | null | undefined,
 ): Omit<AgentChatSendArgs, "sessionId"> {
   return {
-    text: prepared.finalText,
-    displayText: prepared.finalDisplayText
-      || (hasPastedTextPromptAttachment(prepared.selectedAttachments) ? "" : "Selected visual app context"),
-    attachments: prepared.selectedAttachments,
-    contextAttachments: prepared.selectedContextAttachments,
-    reasoningEffort: prepared.reasoningEffort,
-    executionMode: prepared.executionMode,
+    ...buildDraftChatOpeningMessage(prepared),
     interactionMode: provider === "claude" ? interactionMode ?? null : null,
     ...(provider === "cursor" ? { runtime: "local" as const } : {}),
   };
@@ -1880,6 +1930,34 @@ export function resolveUnchangedHistoryTurnActive(
   );
 }
 
+/**
+ * Runs `run` in the task after the next frame is drawn (a frame callback, then
+ * a task), or after `fallbackMs` when no frame comes: a hidden window gets no
+ * frame callbacks. Returns a flush that runs it now if it has not run yet;
+ * later calls do nothing.
+ */
+function runAfterNextPaint(run: () => void, fallbackMs = 50): () => void {
+  let done = false;
+  let frame: number | null = null;
+  let afterFrame: number | null = null;
+  const fallback = window.setTimeout(() => fire(), fallbackMs);
+  function fire(): void {
+    if (done) return;
+    done = true;
+    if (frame != null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
+    if (afterFrame != null) window.clearTimeout(afterFrame);
+    window.clearTimeout(fallback);
+    run();
+  }
+  if (typeof requestAnimationFrame === "function") {
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      afterFrame = window.setTimeout(fire, 0);
+    });
+  }
+  return fire;
+}
+
 export function activeTurnSessionSummaryPatch(
   timestamp: string,
   startsNewTurn: boolean,
@@ -1914,13 +1992,14 @@ function removeAgentChatSessionViewCache(sessionId: string): void {
   agentChatSessionViewCacheBySessionId.delete(sessionId);
 }
 
-function estimateAgentChatSessionViewBytes(events: readonly AgentChatEventEnvelope[]): number {
-  let estimatedBytes = 0;
-  for (const event of events) {
-    estimatedBytes += estimatedChatEventResidentBytes(event);
-    if (estimatedBytes > MAX_AGENT_CHAT_VIEW_CACHE_BYTES_PER_SESSION) break;
-  }
-  return estimatedBytes;
+/**
+ * The list's resident size as the trim keeps it, carried across live appends.
+ * This runs on every flush of the chat on screen and of each retained chat; a
+ * walk over the whole transcript here cost 0.15 ms per flush at 19,000 events,
+ * and the trim had already computed the same number for the same list.
+ */
+function estimateAgentChatSessionViewBytes(events: AgentChatEventEnvelope[]): number {
+  return residentChatEventBytes(events);
 }
 
 /** Read without touching LRU recency — safe to call during render. */
@@ -1928,6 +2007,21 @@ function peekAgentChatSessionViewCache(sessionId: string | null | undefined): Ag
   if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return null;
   if (!sessionId) return null;
   return agentChatSessionViewCacheBySessionId.get(sessionId) ?? null;
+}
+
+/**
+ * `ade:chat-open:history-asked` / `-answered` marks around a transcript read
+ * (`resume`: a delta read after a cached view). Only the latest pair is kept,
+ * so the timeline does not grow.
+ */
+function markChatHistoryRead(step: "asked" | "answered", detail: { resume: boolean; events?: number }): void {
+  const name = `ade:chat-open:history-${step}`;
+  try {
+    performance.clearMarks(name);
+    performance.mark(name, { detail });
+  } catch {
+    // best effort
+  }
 }
 
 function readAgentChatSessionViewCache(sessionId: string | null | undefined): AgentChatSessionViewCache | null {
@@ -5395,12 +5489,17 @@ export function AgentChatPane({
   // Set by the active recovery loop: an arriving event drops its backed-off
   // wait back to the base interval, so a stall after it is still caught soon.
   const recoveryLoopWakeRef = useRef<(() => void) | null>(null);
+  /** See MAX_RECENTLY_VIEWED_CHATS; newest first. */
+  const recentlyViewedChatIdsRef = useRef<string[]>([]);
+  const lastShownChatIdRef = useRef<string | null>(null);
   const draftSelectionLockedRef = useRef(false);
   const optimisticSessionIdsRef = useRef<Set<string>>(new Set());
   const pendingSelectedSessionIdRef = useRef<string | null>(null);
   const submitInFlightRef = useRef(false);
   const latestForegroundDraftLaunchJobIdRef = useRef<string | null>(null);
   const draftLaunchInFlightKeysRef = useRef<Set<string>>(new Set());
+  /** The Enter time of the submit that is starting a draft launch now (send timing). */
+  const draftLaunchSubmittedAtRef = useRef<number | null>(null);
   const createSessionPromiseRef = useRef<Promise<string | null> | null>(null);
   const pendingNativeControlUpdateRef = useRef<{
     sessionId: string;
@@ -5426,6 +5525,13 @@ export function AgentChatPane({
   const draftExecutionBindingRef = useRef<OpenProjectBinding | null>(null);
   const draftExecutionBindingRequiredRef = useRef(false);
   const draftMachineUnavailableRef = useRef(false);
+  /**
+   * The draft warmup this composer asked for (`agentChat.prewarmDraft`): the
+   * chat id it reserved, and the lane, machine and settings it was asked for.
+   * The chat `create` for that lane on that machine sends the id, so the brain
+   * can hand it the warm provider. Taken (set to null) by the first create.
+   */
+  const draftWarmRef = useRef<{ sessionId: string; key: string; laneId: string; pinKey: string } | null>(null);
   /**
    * The lane whose branch drift the composer speaks for, mirrored for `submit`:
    * the turn it launches acts on this lane's worktree (or on none at all when it
@@ -5497,6 +5603,22 @@ export function AgentChatPane({
   const computerUseSnapshotInFlightRef = useRef<{ sessionId: string; pinKey: string | null; promise: Promise<void> } | null>(null);
   const lastComputerUseSnapshotRef = useRef<{ sessionId: string; pinKey: string | null; fetchedAt: number } | null>(null);
   const knownSessionIdsRef = useRef<Set<string>>(new Set());
+  /**
+   * Chats this pane launched while it was on screen. They stay in its known
+   * set after their list row arrives (which clears the optimistic id) and
+   * until the pane hides, which is when the chat view takes the chat over.
+   * The Work new-chat box counts no list chats as known, so without this it
+   * would drop the launched chat's events once the row came.
+   */
+  const launchedSessionIdsRef = useRef<Set<string>>(new Set());
+  /**
+   * Every chat id the last known-set pass counted, list rows included, also
+   * where the known set leaves them out. The departed sweep compares these,
+   * so only a chat that left the list (or was never kept) counts as gone.
+   */
+  const knownRosterIdsRef = useRef<Set<string>>(new Set());
+  const isTileVisibleRef = useRef(isTileVisible);
+  isTileVisibleRef.current = isTileVisible;
   const seededInitialSummaryRef = useRef(false);
   /** Pending re-read of the locked chat's summary; `missingSince` is when "not found" began. */
   const lockedSummaryRetryRef = useRef<{ attempt: number; missingSince: number | null; timer: number | null }>({
@@ -5506,12 +5628,19 @@ export function AgentChatPane({
   });
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
   const cursorWarmupKeyRef = useRef<string | null>(null);
+  const claudeTypingWarmupKeyRef = useRef<string | null>(null);
   const draftLaunchConfigHydratedRef = useRef<string | null>(null);
   const draftLaunchConfigTouchedKeyRef = useRef<string | null>(null);
   const recoveredParallelLaunchKeyRef = useRef<string | null>(null);
   const paneMountedRef = useRef(true);
   /** Pending checks for sends whose call timed out (see the submit path); cleared on unmount. */
   const sendRecoveryTimersRef = useRef<Set<number>>(new Set());
+  /**
+   * A send's list update (the chat's recency and running state), held until
+   * the frame with the bubble and the cleared composer is drawn. Anything that
+   * touches that chat's list row first runs it, so updates keep their order.
+   */
+  const pendingSendListPatchRef = useRef<{ sessionId: string; flush: () => void } | null>(null);
   /**
    * User messages in a chat with one of these texts, from five minutes before
    * `sentAt` (slack for the chat machine's clock) on. A long chat paged out of
@@ -5813,8 +5942,9 @@ export function AgentChatPane({
   // Lifecycle actions must follow the session currently rendered in the pane.
   // Resolve this after the machine pin so foreign chats never send a wake or
   // unsettle request to the tab-bound runtime.
-  const composerLifecycleSession = useSessionLifecycleSnapshot(composerSessionId);
-  const hasComposerLifecyclePill = shouldRenderChatLifecyclePill(composerLifecycleSession);
+  // A boolean, not the row: a running chat's row changes on every Work list
+  // refresh, and the pane draws nothing else of it.
+  const hasComposerLifecyclePill = useSessionLifecyclePillVisible(composerSessionId);
 
   turnActiveBySessionRef.current = turnActiveBySession;
   const promptSuggestion = selectedSessionId ? promptSuggestionsBySession[selectedSessionId] ?? null : null;
@@ -5958,6 +6088,11 @@ export function AgentChatPane({
     }
   }, [setAttachments]);
   const updateSubmittedDraftTextEdit = useCallback((value: SubmittedDraftTextEdit | null) => {
+    // Every keystroke calls this, nearly always with null again. React cannot
+    // drop a same-value write while the pane has other updates queued (a
+    // streaming chat), so each such write rendered the whole pane.
+    const current = submittedDraftTextEditRef.current;
+    if (current === value || (current && value && current.submittedText === value.submittedText && current.kind === value.kind)) return;
     submittedDraftTextEditRef.current = value;
     setSubmittedDraftTextEdit(value);
   }, []);
@@ -8953,23 +9088,15 @@ export function AgentChatPane({
     });
   }, [forceDraft, initialSessionId, laneId, lockSessionId, lockedSingleSessionMode, preferDraftStart, refreshLockedSessionSummary, setSelectedSessionId]);
 
+  // The visible pane reads the model list when it shows, when the chat's
+  // provider changes, and when a turn starts and ends (`turnActive` in the
+  // deps). It used to re-read every 5 s for the whole turn; the list rarely
+  // changes mid-turn, and a model a provider adds during a long turn shows
+  // at the turn's end. A hidden pane reads nothing.
   useEffect(() => {
     if (!isTileActive) return;
     void refreshAvailableModels();
-  }, [isTileActive, refreshAvailableModels, selectedSession?.provider]);
-
-  useEffect(() => {
-    // Suspend the 5s model-list poll when this pane is mounted but hidden
-    // (e.g. a background tab/tile). Streaming event subscriptions remain
-    // so background sessions stay in sync, but polling is paused to avoid
-    // wasted IPC for panes the user can't see.
-    if (!turnActive || !selectedSession?.provider) return;
-    if (!isTileActive) return;
-    const timer = window.setInterval(() => {
-      void refreshAvailableModels();
-    }, 5000);
-    return () => window.clearInterval(timer);
-  }, [refreshAvailableModels, selectedSession?.provider, turnActive, isTileActive]);
+  }, [isTileActive, refreshAvailableModels, selectedSession?.provider, turnActive]);
 
   const refreshComputerUseSnapshot = useCallback(async (
     sessionId: string | null,
@@ -9074,6 +9201,19 @@ export function AgentChatPane({
       prev[sessionId] === cursor ? prev : { ...prev, [sessionId]: cursor }
     ));
   }, []);
+
+  /**
+   * Whether a chat's resident window takes the selected-chat caps: the chat on
+   * screen, and the ones it showed just before (MAX_RECENTLY_VIEWED_CHATS). A
+   * history read that lands after a switch away no longer cuts the chat the
+   * user left to the background cap, which made the switch back re-read its
+   * tail and page its older history in again.
+   */
+  const keepsSelectedResidentWindow = useCallback((sessionId: string): boolean => (
+    sessionId === selectedSessionIdRef.current
+    || sessionId === lockSessionId
+    || recentlyViewedChatIdsRef.current.includes(sessionId)
+  ), [lockSessionId]);
 
   const clearSessionView = useCallback((sessionId: string) => {
     // Drop the retention subscription first: it exists only to keep this
@@ -9198,7 +9338,11 @@ export function AgentChatPane({
             maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
             ...(resumeFrom ? { afterOffset: resumeFrom.offset, historyGeneration: resumeFrom.generation } : {}),
           }, chatPin));
+          // Diagnostics: the last read's ask and answer, for a probe of a chat
+          // open (counts only; each read replaces the previous pair).
+          markChatHistoryRead("asked", { resume: resume !== null });
           let snapshot: AgentChatEventHistorySnapshot = await readSnapshot(resume);
+          markChatHistoryRead("answered", { resume: resume !== null, events: snapshot?.events?.length ?? 0 });
           if (resume && snapshot?.sessionId === sessionId && snapshot.resumedFromOffset === resume.offset) {
             // The delta opens with the last event this pane already had; if that
             // seam is gone (the view was trimmed or replaced meanwhile), read
@@ -9279,7 +9423,7 @@ export function AgentChatPane({
       let merged = mergeChatHistorySnapshot(parsed, existing, {
         arrivalWatermark: historyArrivalWatermark,
       });
-      const selectedHistory = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId;
+      const selectedHistory = keepsSelectedResidentWindow(sessionId);
       const maxHistoryEvents = selectedHistory
         ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
         : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
@@ -9374,7 +9518,7 @@ export function AgentChatPane({
       // permanently blocked re-entry until the chat received a new event.
       loadedHistoryRef.current.delete(sessionId);
     }
-  }, [isBoundScopePane, applyOlderHistoryCursor, clearSessionView, initialSessionSummary, lockSessionId]);
+  }, [isBoundScopePane, applyOlderHistoryCursor, clearSessionView, initialSessionSummary, keepsSelectedResidentWindow, lockSessionId]);
 
   /**
    * Resolves `true` once the backoff elapses, or `false` if the wait was
@@ -9417,7 +9561,7 @@ export function AgentChatPane({
   const loadOlderHistory = useCallback(async (
     sessionId: string,
     pin: OpenProjectBinding | null,
-    options?: { interactive?: boolean; backfill?: boolean },
+    options?: { interactive?: boolean; backfill?: boolean; whenScrollQuiet?: () => Promise<void> | null },
   ) => {
     const cursor = olderHistoryCursorRef.current[sessionId];
     if (cursor == null) {
@@ -9452,10 +9596,11 @@ export function AgentChatPane({
     if (typeof agentChatApiRef.current.getEventHistoryPage !== "function") return;
     const requestId = ++olderHistoryRequestSequenceRef.current;
     const requestRouteKey = pin?.key ?? activeProjectBindingKeyRef.current;
-    const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+    const keepsSelectedWindow = keepsSelectedResidentWindow(sessionId);
+    const maxEvents = keepsSelectedWindow
       ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
       : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
-    const maxResidentBytes = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+    const maxResidentBytes = keepsSelectedWindow
       ? MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES
       : MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES;
     const isCurrentRequest = () => (
@@ -9485,6 +9630,14 @@ export function AgentChatPane({
         }, chatPin)),
       });
       if (!batch || !isCurrentRequest()) return false;
+      // A page that arrives mid-scroll waits for the scroll to go quiet: the
+      // prepend moves scrollTop and re-lays out the list. The merge below then
+      // reads the events as they are after the wait (streamed ones included).
+      const scrollQuiet = batch.events.length > 0 ? options?.whenScrollQuiet?.() : null;
+      if (scrollQuiet) {
+        await scrollQuiet;
+        if (!isCurrentRequest()) return false;
+      }
       const { events: olderEvents, nextCursor } = batch;
       if (olderEvents.length) {
         const existing = eventsBySessionRef.current[sessionId] ?? [];
@@ -9581,7 +9734,7 @@ export function AgentChatPane({
         setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: false }));
       }
     }
-  }, [applyOlderHistoryCursor, loadHistory, lockSessionId, waitBeforeOlderHistoryRetry]);
+  }, [applyOlderHistoryCursor, keepsSelectedResidentWindow, loadHistory, lockSessionId, waitBeforeOlderHistoryRetry]);
 
   // Cancel pending paging retries when the selection moves or the pane
   // unmounts, so no timer outlives the view that scheduled it.
@@ -9743,6 +9896,32 @@ export function AgentChatPane({
     isTileActive,
     turnActive,
   ]);
+
+  // An open Claude chat: the first keystroke asks its machine to load the
+  // Claude SDK, which the brain no longer loads at start, so the first send in
+  // a chat reopened after a brain restart does not wait for it. `sdkOnly`: it
+  // starts no query and no process. The text is read from the draft store, so
+  // typing does not render the pane, and one request per chat and model is
+  // enough.
+  useEffect(() => {
+    if (!isTileActive || !selectedSessionId || !selectedSessionModelId || turnActive) return undefined;
+    const desc = getModelById(selectedSessionModelId);
+    if (!desc?.isCliWrapped || desc.family !== "anthropic") return undefined;
+    const warmupKey = `${selectedSessionId}:${selectedSessionModelId}`;
+    if (claudeTypingWarmupKeyRef.current === warmupKey) return undefined;
+    const requestWarm = () => {
+      if (claudeTypingWarmupKeyRef.current === warmupKey) return;
+      if (!draftStore.get().trim()) return;
+      claudeTypingWarmupKeyRef.current = warmupKey;
+      withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.warmupModel({
+        sessionId: selectedSessionId,
+        modelId: selectedSessionModelId,
+        sdkOnly: true,
+      }, chatPin)).catch(() => { /* best-effort: the send loads what it needs */ });
+    };
+    requestWarm();
+    return draftStore.subscribe(requestWarm);
+  }, [draftStore, isTileActive, selectedSessionId, selectedSessionModelId, turnActive]);
 
   useEffect(() => {
     let cancelled = false;
@@ -10160,28 +10339,83 @@ export function AgentChatPane({
     };
   }, [hideLaneToolDrawers, iosSimulatorAddressesThisPane, laneId, selectedSessionId]);
 
+  // The chat on screen and the ones shown just before it. A layout effect, so
+  // the sweep below and any history read that lands after a switch already
+  // count the chat the user just left as recent.
+  const shownChatId = lockSessionId ?? selectedSessionId ?? null;
+  useLayoutEffect(() => {
+    const left = lastShownChatIdRef.current;
+    lastShownChatIdRef.current = shownChatId;
+    if (left === shownChatId) return;
+    recentlyViewedChatIdsRef.current = rememberRecentlyViewedChat(
+      recentlyViewedChatIdsRef.current,
+      left,
+      shownChatId,
+    );
+  }, [shownChatId]);
+
+  // A launched chat belongs to the chat view once this pane hides.
+  useEffect(() => {
+    if (!isTileVisible) launchedSessionIdsRef.current.clear();
+  }, [isTileVisible]);
+
   useEffect(() => {
     const next = new Set<string>();
-    for (const session of sessions) next.add(session.sessionId);
     if (selectedSessionId) next.add(selectedSessionId);
     if (lockSessionId) next.add(lockSessionId);
     if (initialSessionId) next.add(initialSessionId);
     for (const sessionId of optimisticSessionIdsRef.current) next.add(sessionId);
-    const previous = knownSessionIdsRef.current;
+    for (const sessionId of launchedSessionIdsRef.current) next.add(sessionId);
+    const roster = new Set<string>(next);
+    for (const session of sessions) roster.add(session.sessionId);
+    // The Work new-chat box shows no chat: the lane's other chats stream into
+    // their own panes. Taking their events here queued, merged and derived
+    // every streamed word of every chat in the lane, and rendered this pane,
+    // composer included, while the person typed. It keeps the chats it is
+    // launching (optimistic, launched, pending) and any chat it shows.
+    if (!isWorkDraftComposer) {
+      for (const session of sessions) next.add(session.sessionId);
+    }
+    const previous = new Set<string>([...knownRosterIdsRef.current, ...knownSessionIdsRef.current]);
     knownSessionIdsRef.current = next;
+    knownRosterIdsRef.current = roster;
+    if (lockedSingleSessionMode) {
+      // A locked pane has no roster read to prune against, so it let go of
+      // nothing: every chat it showed stayed resident. It keeps the chats it
+      // shows and the recently viewed ones; another chat it shows again is
+      // read like a first open (its view cache was already released below
+      // when it left).
+      const keep = new Set<string>(next);
+      for (const sessionId of recentlyViewedChatIdsRef.current) keep.add(sessionId);
+      if (pendingSelectedSessionIdRef.current) keep.add(pendingSelectedSessionIdRef.current);
+      const released = Object.keys(eventsBySessionRef.current).filter((sessionId) => !keep.has(sessionId));
+      if (released.length) {
+        eventsBySessionRef.current = pruneSessionRecord(eventsBySessionRef.current, keep);
+        detachedLiveEventsBySessionRef.current = pruneSessionRecord(detachedLiveEventsBySessionRef.current, keep);
+        for (const sessionId of released) {
+          loadedHistoryRef.current.delete(sessionId);
+          historyResumeBySessionRef.current.delete(sessionId);
+          backfillCappedSessionsRef.current.delete(sessionId);
+          if (detachedHistorySessionsRef.current.delete(sessionId)) {
+            setDetachedHistorySessionIds(new Set(detachedHistorySessionsRef.current));
+          }
+        }
+        setEventsBySession((prev) => pruneSessionRecord(prev, keep));
+      }
+    }
     // The view cache is module-level and outlives every pane, so a chat that
     // leaves this pane's roster (deleted, archived, or its project/lane closed)
     // would otherwise keep a whole transcript resident until eight newer chats
     // pushed it out. Release its retention subscription too.
     const departed = selectDepartedChatSessionViewCacheSessions(
       previous,
-      next,
+      roster,
       [selectedSessionId, lockSessionId, initialSessionId],
     );
     if (!departed.length) return;
     for (const sessionId of departed) releaseRetainedChatSession(sessionId);
     clearAgentChatSessionViewCacheForSessions(departed);
-  }, [initialSessionId, lockSessionId, selectedSessionId, sessions]);
+  }, [initialSessionId, isWorkDraftComposer, lockSessionId, lockedSingleSessionMode, selectedSessionId, sessions]);
 
   // Stay true until this open has seeded the source chat's model. The catalog
   // can arrive without it; treating that fallback as a user choice would keep
@@ -10606,6 +10840,12 @@ export function AgentChatPane({
     optimisticOutgoingMessageRef.current = next;
     setOptimisticOutgoingMessage(next);
   }, []);
+  // Send timing: the commit that draws a message's first bubble. A chat a
+  // draft launch opened gets its bubble from the launch's hand-off here, not
+  // from the send path, which marks its own (`chatSendTiming.ts`).
+  useLayoutEffect(() => {
+    if (optimisticOutgoingMessage) noteChatSendBubbleShown(optimisticOutgoingMessage.sessionId);
+  }, [optimisticOutgoingMessage]);
 
   useEffect(() => {
     const optimistic = optimisticOutgoingMessageRef.current;
@@ -10781,14 +11021,11 @@ export function AgentChatPane({
       }
       const combined = mergeAgentChatLiveEvents(sessionEvents, sessionQueue);
       if (combined === sessionEvents) continue;
+      const keepsSelectedWindow = keepsSelectedResidentWindow(sessionId);
       const updated = trimChatEventHistory(
         combined,
-        sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
-          ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
-          : MAX_BACKGROUND_CHAT_SESSION_EVENTS,
-        sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
-          ? MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES
-          : MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
+        keepsSelectedWindow ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS : MAX_BACKGROUND_CHAT_SESSION_EVENTS,
+        keepsSelectedWindow ? MAX_SELECTED_CHAT_SESSION_RESIDENT_BYTES : MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
       );
       if (next === eventsBySessionRef.current) next = { ...eventsBySessionRef.current };
       next[sessionId] = updated;
@@ -10810,7 +11047,7 @@ export function AgentChatPane({
       const derived = deriveRuntimeState(derivationEvents);
       const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
         ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
-      const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+      const maxEvents = keepsSelectedResidentWindow(sessionId)
         ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
         : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
       if (!detachedHistorySessionsRef.current.has(sessionId)) {
@@ -10853,7 +11090,7 @@ export function AgentChatPane({
     setTurnActiveBySession((activePrev) => patchRecord(activePrev, activePatch));
     setPendingInputsBySession((pendingPrev) => patchRecord(pendingPrev, pendingInputPatch));
     setPendingSteersBySession((steerPrev) => patchRecord(steerPrev, pendingSteerPatch));
-  }, [initialSessionSummary, liveEventsStore, lockSessionId]);
+  }, [initialSessionSummary, keepsSelectedResidentWindow, liveEventsStore, lockSessionId]);
 
   const returnHistoryToLatest = useCallback((sessionId: string, pin: OpenProjectBinding | null) => {
     if (!sessionId || !detachedHistorySessionsRef.current.has(sessionId)) return;
@@ -11145,6 +11382,9 @@ export function AgentChatPane({
       }
 
       pendingEventQueueRef.current.push(envelope);
+      if (pendingSendListPatchRef.current?.sessionId === envelope.sessionId) {
+        pendingSendListPatchRef.current.flush();
+      }
       const touchTimestamp = getChatSessionLocalTouchTimestampForEvent(envelope);
       if (touchTimestamp) {
         touchSession(envelope.sessionId, touchTimestamp);
@@ -11179,6 +11419,8 @@ export function AgentChatPane({
       } else {
         scheduleQueuedEventFlush();
       }
+      // After the flush is scheduled, so its paint mark lands after that frame.
+      noteChatSendTimingEvent(envelope);
 
       if (lockSessionId && envelope.sessionId === lockSessionId) {
         draftSelectionLockedRef.current = false;
@@ -12099,6 +12341,10 @@ export function AgentChatPane({
       draftsPerSessionRef.current.set(prevDraftKeyRef.current, composerDraftTextRef.current);
     }
     prevDraftKeyRef.current = companionStateKey;
+    // Text typed under the 350 ms write debounce is saved before the read, so
+    // a re-run for this same scope (the view's data arriving while the user
+    // types) restores what was typed, not an older snapshot.
+    flushPendingComposerDraftWrite();
     const saved = readLatestComposerDraftSnapshot(composerDraftStorageKeyValues, initialNativeControls);
     composerDraftHydratingRef.current = true;
     composerDraftHydratingTextRef.current = saved?.text ?? null;
@@ -12157,6 +12403,7 @@ export function AgentChatPane({
     composerDraftStorageKeyValue,
     composerDraftStorageKeyValues,
     draftLaunchConfigScopeKey,
+    flushPendingComposerDraftWrite,
     initialNativeControls,
     selectedSessionId,
     setAttachmentsWithIds,
@@ -12272,6 +12519,16 @@ export function AgentChatPane({
     save();
     return draftStore.subscribe(save);
   }, [companionStateKey, composerDraftStorageKeyValue, draftStore, snapshotWithDraftText]);
+
+  // After the draft is read and its saver subscribed: take what the early
+  // prompt box (the Work fallback) holds, and record this screen for it.
+  useEarlyComposerHandoff({
+    enabled: isWorkDraftComposer,
+    projectRoot,
+    dockRef: composerDockRef,
+    readDraft: draftStore.get,
+    applyDraft: updateComposerDraft,
+  });
 
   useEffect(() => {
     if (!parallelChatMode) return;
@@ -12443,6 +12700,67 @@ export function AgentChatPane({
     };
   }, [codexDaybreak, currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId]);
 
+  /**
+   * The `agentChat.create` args for a chat on `targetLaneId`, with the id a
+   * draft warmup reserved when it is for the same lane on the same machine.
+   * Takes the reservation, so a failed create never reuses it. Settings that
+   * changed since the warmup are the brain's to detect: it then starts the
+   * chat cold under the same id.
+   */
+  const takeLaneCreateRequest = useCallback((
+    targetLaneId: string,
+    launchState: DraftLaunchSnapshot | undefined,
+    pin: OpenProjectBinding | null | undefined,
+  ) => {
+    if (constrainedModelSelectionError) {
+      throw new Error(constrainedModelSelectionError);
+    }
+    const built = buildChatCreateArgs(launchState);
+    const draftWarm = draftWarmRef.current;
+    draftWarmRef.current = null;
+    const createPinKey = (pin ?? chatRuntimePinRef.current)?.key ?? null;
+    const reservedSessionId = draftWarm && draftWarm.laneId === targetLaneId && draftWarm.pinKey === createPinKey
+      ? draftWarm.sessionId
+      : null;
+    const createArgs = {
+      laneId: targetLaneId,
+      ...built.createArgs,
+      ...(reservedSessionId ? { sessionId: reservedSessionId } : {}),
+    };
+    return { built, createArgs, reservedSessionId };
+  }, [buildChatCreateArgs, constrainedModelSelectionError]);
+
+  /**
+   * The window's half of a create the brain answered: the list cache, the
+   * remembered launch settings, and the ids the chat's live events need.
+   */
+  const adoptCreatedLaneSession = useCallback((
+    created: AgentChatSession | null | undefined,
+    built: ReturnType<typeof buildChatCreateArgs>,
+    targetLaneId: string,
+  ): AgentChatSession => {
+    // Name the failure here rather than letting it travel. A runtime that
+    // answers with a session carrying no id (a contract drift, an
+    // unreachable host resolving to a fallback) used to surface three calls
+    // later as the host rejecting `chat.send` for a missing sessionId.
+    if (!created?.id) {
+      throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
+    }
+    invalidateAgentChatSessionListCache({ laneId: targetLaneId });
+    if (draftKeepsMachineDefaultsRef.current) {
+      // ADE's pick launched once; the next draft here remembers again.
+      draftKeepsMachineDefaultsRef.current = false;
+    } else {
+      rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
+    }
+    loadedHistoryRef.current.delete(created.id);
+    optimisticSessionIdsRef.current.add(created.id);
+    knownSessionIdsRef.current.add(created.id);
+    if (isTileVisibleRef.current) launchedSessionIdsRef.current.add(created.id);
+    touchSession(created.id);
+    return created;
+  }, [initialNativeControls, lastLaunchConfigStorageKey, touchSession]);
+
   const createSessionForLane = useCallback(async (
     targetLaneId: string,
     options: {
@@ -12455,43 +12773,38 @@ export function AgentChatPane({
       assertActive?: () => void;
       // Originating project binding.
       pin?: OpenProjectBinding | null;
+      /**
+       * The caller sends the first message at once and refreshes the list
+       * after it. Then no warmup and no list refresh go out here: the send
+       * starts the provider itself, and each extra call would reach the
+       * chat's machine ahead of the send.
+       */
+      sendFollows?: boolean;
+      /** Marked when the create call goes out (send timing). */
+      onCreateCalled?: () => void;
+      /** Args already taken by `takeLaneCreateRequest` (a one-call attempt the machine declined). */
+      createRequest?: ReturnType<typeof takeLaneCreateRequest>;
     } = {},
   ): Promise<AgentChatSession> => {
-      if (constrainedModelSelectionError) {
-        throw new Error(constrainedModelSelectionError);
-      }
-      const built = buildChatCreateArgs(options.launchState);
-      const { createArgs: laneFreeCreateArgs, desc, launchModelId } = built;
-      const createArgs = { laneId: targetLaneId, ...laneFreeCreateArgs };
+      const { built, createArgs } = options.createRequest
+        ?? takeLaneCreateRequest(targetLaneId, options.launchState, options.pin);
+      const { desc, launchModelId } = built;
       // No pin given: the pane's own lane, on the chat's machine.
-      const created = await agentChatApiRef.current.create(
-        createArgs,
-        requireChatPin(chatApiPin(options.pin ?? chatRuntimePinRef.current, isBoundScopePaneRef.current)),
+      options.onCreateCalled?.();
+      const created = adoptCreatedLaneSession(
+        await agentChatApiRef.current.create(
+          createArgs,
+          requireChatPin(chatApiPin(options.pin ?? chatRuntimePinRef.current, isBoundScopePaneRef.current)),
+        ),
+        built,
+        targetLaneId,
       );
-      // Name the failure here rather than letting it travel. A runtime that
-      // answers with a session carrying no id (a contract drift, an
-      // unreachable host resolving to a fallback) used to surface three calls
-      // later as the host rejecting `chat.send` for a missing sessionId.
-      if (!created?.id) {
-        throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
-      }
-      invalidateAgentChatSessionListCache({ laneId: targetLaneId });
-      if (draftKeepsMachineDefaultsRef.current) {
-        // ADE's pick launched once; the next draft here remembers again.
-        draftKeepsMachineDefaultsRef.current = false;
-      } else {
-        rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
-      }
-      loadedHistoryRef.current.delete(created.id);
-      optimisticSessionIdsRef.current.add(created.id);
-      knownSessionIdsRef.current.add(created.id);
-      touchSession(created.id);
       if (options.select) {
         pendingSelectedSessionIdRef.current = created.id;
         draftSelectionLockedRef.current = false;
         setSelectedSessionId(created.id);
       }
-      if (desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
+      if (!options.sendFollows && desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
         withChatPin(chatApiPin(options.pin ?? chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.warmupModel({
           sessionId: created.id,
           modelId: launchModelId,
@@ -12500,9 +12813,11 @@ export function AgentChatPane({
         }).catch(() => { /* warmup is best-effort */ });
       }
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
-      if (targetLaneId === laneId && canRefreshPinnedProject(options.pin)) void refreshSessions({ force: true }).catch(() => {});
+      if (!options.sendFollows && targetLaneId === laneId && canRefreshPinnedProject(options.pin)) {
+        void refreshSessions({ force: true }).catch(() => {});
+      }
       return created;
-  }, [buildChatCreateArgs, canRefreshPinnedProject, constrainedModelSelectionError, initialNativeControls, laneId, lastLaunchConfigStorageKey, notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
+  }, [adoptCreatedLaneSession, canRefreshPinnedProject, laneId, notifySessionCreated, refreshSessions, setSelectedSessionId, takeLaneCreateRequest]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -13218,19 +13533,25 @@ export function AgentChatPane({
   ]);
 
   const cleanupDraftChatSession = useCallback(async (
-    session: AgentChatSession,
+    session: Pick<AgentChatSession, "id">,
     targetLane: DraftLaunchLaneTarget,
     pin?: OpenProjectBinding | null,
+    options?: { deleteOnMachine?: boolean },
   ) => {
     // Pin the rollback to the project that owns the session so a concurrent
     // project switch can't route the delete at the now-active project.
-    await withChatPin(chatApiPin(pin, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.delete({ sessionId: session.id }, chatPin)).catch((cleanupError: unknown) => {
-      console.warn("draft chat launch session cleanup failed", cleanupError);
-    });
+    // `deleteOnMachine: false` forgets a chat its machine says it does not
+    // have: a delete then could only reach a create that is still running there.
+    if (options?.deleteOnMachine !== false) {
+      await withChatPin(chatApiPin(pin, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.delete({ sessionId: session.id }, chatPin)).catch((cleanupError: unknown) => {
+        console.warn("draft chat launch session cleanup failed", cleanupError);
+      });
+    }
     loadedHistoryRef.current.delete(session.id);
     localTouchBySessionRef.current.delete(session.id);
     optimisticSessionIdsRef.current.delete(session.id);
     knownSessionIdsRef.current.delete(session.id);
+    launchedSessionIdsRef.current.delete(session.id);
     releaseRetainedChatSession(session.id);
     clearAgentChatSessionViewCacheForSessions([session.id]);
     invalidateSessionListCache();
@@ -13240,36 +13561,191 @@ export function AgentChatPane({
     }
   }, [canRefreshPinnedProject, laneId, refreshSessions]);
 
+  /**
+   * What the chat's machine holds for a chat whose combined create-and-send
+   * call lost its answer: "sent" (the chat, with the person's message: a new
+   * chat has no other sender), "missing" (no such chat), or "waiting" (the
+   * chat, no message yet). The same machine answers (`pin`). Checks again
+   * while the answer is "missing", "waiting" or no answer, as the call may
+   * still be running there. Null when the machine never answered.
+   */
+  const reconcileLaunchedDraftChat = useCallback(async (
+    sessionId: string,
+    pin: OpenProjectBinding,
+  ): Promise<{ outcome: "sent"; session: AgentChatSession } | { outcome: "missing" | "waiting" } | null> => {
+    let last: { outcome: "missing" | "waiting" } | null = null;
+    for (const delayMs of DRAFT_CHAT_RECONCILE_DELAYS_MS) {
+      if (delayMs > 0) await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+      try {
+        const summary = await agentChatApiRef.current.getSummary({ sessionId }, pin);
+        if (!summary) {
+          last = { outcome: "missing" };
+          continue;
+        }
+        const history = await agentChatApiRef.current.getEventHistory({ sessionId, maxEvents: 40 }, pin);
+        if (history.events.some((entry) => entry.event.type === "user_message")) {
+          return { outcome: "sent", session: sessionFromSummary(summary) };
+        }
+        last = { outcome: "waiting" };
+      } catch (readError) {
+        console.warn("draft chat launch reconcile read failed", readError);
+      }
+    }
+    return last;
+  }, []);
+
+  /**
+   * A drafted chat's create and first send as one call to its machine
+   * (`agentChat.createAndSend`). `session` is null when the machine predates
+   * the call: nothing was created, and `request` (the warmup's reserved id
+   * included) goes to the two-call path. Null when the chat API has no such
+   * call (a personal or guest adapter, ADE Web).
+   *
+   * A brain error rolls the chat back (the brain did too) and throws it
+   * unchanged. A call that lost its answer (a transport timeout, a dropped
+   * connection) may have delivered the message, so the same machine decides:
+   * a chat with the message is the launched chat; a chat it does not have is
+   * forgotten here, with no delete; any other answer keeps the chat and
+   * throws. `onOpeningMessageOut` tells the launch that its clock no longer
+   * decides (see `runRendererOwnedLaunch`).
+   */
+  const createAndSendDraftChat = useCallback(async (
+    prepared: PreparedDraftLaunch,
+    targetLane: DraftLaunchLaneTarget,
+    pin: OpenProjectBinding,
+    sendTiming: ChatSendTimingHandle | null,
+    onOpeningMessageOut?: (out: boolean) => void,
+  ): Promise<{ session: AgentChatSession | null; request: ReturnType<typeof takeLaneCreateRequest> } | null> => {
+    const createAndSend = agentChatApiRef.current.createAndSend;
+    const newSessionId = globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
+    if (isBoundScopePaneRef.current || !isAdeAvailable(createAndSend) || !newSessionId) return null;
+    const request = takeLaneCreateRequest(targetLane.laneId, prepared, pin);
+    // The window picks the id when no warmup reserved one, so the chat's live
+    // events (its user message, its running state) are taken in from the
+    // first one, as they are when the send follows a create.
+    const sessionId = request.reservedSessionId ?? newSessionId();
+    loadedHistoryRef.current.delete(sessionId);
+    optimisticSessionIdsRef.current.add(sessionId);
+    knownSessionIdsRef.current.add(sessionId);
+    launchedSessionIdsRef.current.add(sessionId);
+    sendTiming?.attach(sessionId);
+    sendTiming?.mark("createCalled");
+    sendTiming?.mark("sendCalled");
+    let session: AgentChatSession | null;
+    onOpeningMessageOut?.(true);
+    try {
+      session = await createAndSend(
+        { create: { ...request.createArgs, sessionId }, message: buildDraftChatOpeningMessage(prepared) },
+        pin,
+      );
+    } catch (launchError) {
+      if (!isRemoteOutcomeUnknownError(launchError)) {
+        // A brain error: the brain deleted the chat after a failed send. The
+        // window's own rollback runs too; a second delete is a no-op.
+        onOpeningMessageOut?.(false);
+        await cleanupDraftChatSession({ id: sessionId }, targetLane, pin);
+        throw launchError;
+      }
+      const reconciled = await reconcileLaunchedDraftChat(sessionId, pin);
+      logRendererDebugEvent("agent_chat.create_and_send_reconciled", {
+        sessionId,
+        outcome: reconciled?.outcome ?? "no-answer",
+      });
+      if (reconciled?.outcome === "sent") {
+        session = reconciled.session;
+      } else if (reconciled?.outcome === "missing") {
+        onOpeningMessageOut?.(false);
+        await cleanupDraftChatSession({ id: sessionId }, targetLane, pin, { deleteOnMachine: false });
+        throw launchError;
+      } else {
+        // The chat may exist, or its message may still arrive: keep it, so no
+        // message the agent may have is deleted. The launch fails, and the
+        // prompt stays in the composer.
+        optimisticSessionIdsRef.current.delete(sessionId);
+        invalidateSessionListCache();
+        invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });
+        throw new Error(
+          reconciled?.outcome === "waiting"
+            ? "The chat started, but ADE could not confirm that your message reached it. Open the chat to check before you send it again."
+            : "ADE could not confirm whether the chat started. Check the chat list before you send it again.",
+        );
+      }
+    }
+    if (!session) {
+      onOpeningMessageOut?.(false);
+      optimisticSessionIdsRef.current.delete(sessionId);
+      knownSessionIdsRef.current.delete(sessionId);
+      launchedSessionIdsRef.current.delete(sessionId);
+      return { session: null, request };
+    }
+    if (session.id !== sessionId) {
+      optimisticSessionIdsRef.current.delete(sessionId);
+      knownSessionIdsRef.current.delete(sessionId);
+      launchedSessionIdsRef.current.delete(sessionId);
+    }
+    sendTiming?.mark("sessionCreated");
+    sendTiming?.mark("sendResolved");
+    return { session: adoptCreatedLaneSession(session, request.built, targetLane.laneId), request };
+  }, [adoptCreatedLaneSession, cleanupDraftChatSession, reconcileLaunchedDraftChat, takeLaneCreateRequest]);
+
   const startDraftChatLaunch = useCallback(async (
     prepared: PreparedDraftLaunch,
     targetLane: DraftLaunchLaneTarget,
     pin?: OpenProjectBinding | null,
     assertActive?: () => void,
+    onOpeningMessageOut?: (out: boolean) => void,
   ): Promise<StartedDraftLaunch> => {
     let createdSession: AgentChatSession | null = null;
+    // Set once the one call answered with the chat: its message is with the
+    // agent, so nothing after this deletes the chat.
+    let sentInOneCall = false;
+    // Send timing from the Enter press that started this launch (`chatSendTiming.ts`).
+    const sendTiming = prepared.submittedAtMs != null ? beginChatSendTiming(prepared.submittedAtMs) : null;
     try {
       // Re-assert immediately before each mutating call (not just once up the
       // stack): a timed-out launch can keep its IPC work alive, so each step
       // checks that the renderer-side launch is still valid before continuing.
       assertActive?.();
-      createdSession = await createSessionForLane(targetLane.laneId, { select: false, launchState: prepared, assertActive, pin });
-      // Re-assert after creation: if the launch timed out while the session was
-      // being created, abort now so the catch tears the session down rather
-      // than sending into a stale launch.
-      assertActive?.();
-      touchSession(createdSession.id);
-      const sendArgs = {
-        sessionId: createdSession.id,
-        ...buildDraftChatMessageArgs(
-          prepared,
-          createdSession.provider,
-          createdSession.interactionMode ?? prepared.interactionMode,
-        ),
-      };
-      await agentChatApiRef.current.send(sendArgs, requireChatPin(pin));
+      // One call to the chat's machine when it takes it; else create, then send.
+      const oneCall = pin ? await createAndSendDraftChat(prepared, targetLane, pin, sendTiming, onOpeningMessageOut) : null;
+      if (oneCall?.session) {
+        createdSession = oneCall.session;
+        sentInOneCall = true;
+      } else {
+        createdSession = await createSessionForLane(targetLane.laneId, {
+          select: false,
+          launchState: prepared,
+          assertActive,
+          pin,
+          // `runRendererOwnedDraftLaunch` refreshes the list after the send.
+          sendFollows: true,
+          onCreateCalled: () => sendTiming?.mark("createCalled"),
+          ...(oneCall ? { createRequest: oneCall.request } : {}),
+        });
+        sendTiming?.mark("sessionCreated");
+        // Re-assert after creation: if the launch timed out while the session was
+        // being created, abort now so the catch tears the session down rather
+        // than sending into a stale launch.
+        assertActive?.();
+        touchSession(createdSession.id);
+        const sendArgs = {
+          sessionId: createdSession.id,
+          ...buildDraftChatMessageArgs(
+            prepared,
+            createdSession.provider,
+            createdSession.interactionMode ?? prepared.interactionMode,
+          ),
+        };
+        sendTiming?.attach(createdSession.id);
+        sendTiming?.mark("sendCalled");
+        await agentChatApiRef.current.send(sendArgs, requireChatPin(pin));
+        sendTiming?.mark("sendResolved");
+      }
       // If the launch timed out while the prompt was in flight, tear the
-      // session down rather than leaving a started-but-orphaned chat.
-      assertActive?.();
+      // session down rather than leaving a started-but-orphaned chat. A chat
+      // sent in one call stays: the launch clock stopped deciding when that
+      // call went out.
+      if (!sentInOneCall) assertActive?.();
       if (canRefreshPinnedProject(pin)) {
         // The brain accepted the first turn. The create response still says idle,
         // so report the chat in flight: the new row reads "Working", not "Done",
@@ -13290,7 +13766,7 @@ export function AgentChatPane({
         draftKind: "chat",
       };
     } catch (launchError) {
-      if (createdSession) {
+      if (createdSession && !sentInOneCall) {
         await cleanupDraftChatSession(createdSession, targetLane, pin);
       }
       throw launchError;
@@ -13298,6 +13774,7 @@ export function AgentChatPane({
   }, [
     cleanupDraftChatSession,
     canRefreshPinnedProject,
+    createAndSendDraftChat,
     createSessionForLane,
     notifySessionCreated,
     touchSession,
@@ -13639,6 +14116,9 @@ export function AgentChatPane({
   }, [buildDraftLaunchSnapshotForCurrentState, copyPromptForLaunch, launchDraftIntoNewLane, modelId]);
 
   const launchDraftSession = useCallback(async (kind: DraftLaunchKind, mode: DraftLaunchMode) => {
+    // Taken at once, so a launch that returns early leaves no stale time behind.
+    const submittedAtMs = draftLaunchSubmittedAtRef.current;
+    draftLaunchSubmittedAtRef.current = null;
     // Machine selection starts the store transition synchronously, before React
     // can publish a fresh `projectTransitionBlocksChat` render. Read the store
     // at the mutation boundary too so foreground and background launches cannot
@@ -13699,7 +14179,10 @@ export function AgentChatPane({
       setError({ message: "Select a model first", kind: "hint" });
       return;
     }
-    const snapshot = buildDraftLaunchSnapshotForCurrentState();
+    const builtSnapshot = buildDraftLaunchSnapshotForCurrentState();
+    const snapshot = builtSnapshot && kind === "chat" && submittedAtMs != null
+      ? { ...builtSnapshot, submittedAtMs }
+      : builtSnapshot;
     if (!snapshot) {
       setError({ message: kind === "cli"
         ? "Enter a prompt or attach context before launching a CLI session."
@@ -15150,7 +15633,47 @@ export function AgentChatPane({
     return true;
   }, [isBoundScopePane, selectedSession, selectedSessionId, sessionProvider, updateComposerDraft, workSidebar]);
 
+  // A launch can show this view from saved state while its project is still
+  // opening (`cachedProjectViewRoot`, see `switchProjectToPath`). A send made
+  // then waits, with the text kept in the composer, and goes out once the
+  // open settles: to the same chat, lane and machine it was typed for, or not
+  // at all.
+  const cachedProjectViewRoot = useRootAppStore((s) => s.cachedProjectViewRoot);
+  const projectOpeningForView = cachedProjectViewRoot != null && cachedProjectViewRoot === projectRoot;
+  const sendTargetKey = JSON.stringify([
+    selectedSessionId ?? null,
+    laneId ?? null,
+    draftExecutionBindingRef.current?.key ?? chatRuntimePinRef.current?.key ?? null,
+  ]);
+  const sendTargetKeyRef = useRef(sendTargetKey);
+  sendTargetKeyRef.current = sendTargetKey;
+  const queuedSendUntilOpenRef = useRef<{
+    mode: AgentChatDispatchSteerMode | undefined;
+    projectRoot: string;
+    targetKey: string;
+    /** The composer's text when Enter was pressed: the message that was submitted. */
+    text: string;
+  } | null>(null);
+  const queueSendUntilProjectOpens = useCallback((mode?: AgentChatDispatchSteerMode): boolean => {
+    const openingRoot = rootAppStoreApi.getState().cachedProjectViewRoot;
+    if (openingRoot == null || openingRoot !== projectRoot) return false;
+    // The message is the text in the composer now. Reading the draft again
+    // after the open would send whatever was typed since (or nothing, if the
+    // composer was emptied while the project opened).
+    queuedSendUntilOpenRef.current = {
+      mode,
+      projectRoot: openingRoot,
+      targetKey: sendTargetKeyRef.current,
+      text: draftStore.get(),
+    };
+    setError({ message: "Opening the project. Your message sends when it is ready.", kind: "status" });
+    return true;
+  }, [projectRoot]);
+
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
+    // Logged only for a plain send to a chat (`chatSendTiming.ts`); other branches drop it.
+    const sendTiming = beginChatSendTiming();
+    if (queueSendUntilProjectOpens(activeTurnDispatchMode)) return;
     const draft = draftStore.get();
     // A turn is about to run against this worktree — surface the branch-drift
     // strip if HEAD has wandered off the lane's branch. No-op when it hasn't.
@@ -15594,6 +16117,7 @@ export function AgentChatPane({
     }
 
     if (draftLaunchTargetIsAutoCreate && selectedSessionId == null && workDraftKind === "chat") {
+      draftLaunchSubmittedAtRef.current = sendTiming.enterAtMs;
       await launchDraftChat("foreground");
       return;
     }
@@ -15606,6 +16130,7 @@ export function AgentChatPane({
       && !lockSessionId
       && !draftLaunchTargetIsAutoCreate
     ) {
+      draftLaunchSubmittedAtRef.current = sendTiming.enterAtMs;
       await launchDraftChat("foreground");
       return;
     }
@@ -15802,6 +16327,8 @@ export function AgentChatPane({
       }
     }
     if (selectedSessionId && !turnActiveBySession[selectedSessionId] && !suppressOptimisticOutgoing) {
+      sendTiming.attach(selectedSessionId);
+      sendTiming.markBubblePaintedAfterFrame();
       setOptimisticOutgoingMessageSynced({
         sessionId: selectedSessionId,
         envelope: {
@@ -15885,6 +16412,8 @@ export function AgentChatPane({
       });
       const setOptimisticIfAllowed = (nextSessionId: string) => {
         if (suppressOptimisticOutgoing) return;
+        sendTiming.attach(nextSessionId);
+        sendTiming.markBubblePaintedAfterFrame();
         setOptimisticOutgoingMessageSynced({ sessionId: nextSessionId, envelope: optimisticEnvelope(nextSessionId) });
       };
 
@@ -15942,6 +16471,7 @@ export function AgentChatPane({
         if (!sessionId) {
           throw new Error("Unable to create chat session.");
         }
+        sendTiming.mark("sessionCreated");
         justCreatedSession = true;
         if (isBoundScopePane) {
           // The new chat now owns this text under its own key; the "new chat"
@@ -15972,11 +16502,24 @@ export function AgentChatPane({
       const sentTexts = [finalText, finalDisplayText].map((value) => value.trim()).filter(Boolean);
       // Identical messages already in the chat, so only a new one counts as arrived.
       handedOff = { sessionId, submittedAt, texts: sentTexts, alreadyThere: countSentMessages(sessionId, sentTexts, submittedAt) };
-      touchSession(sessionId, submittedAt);
-      patchSessionSummary(
-        sessionId,
-        activeTurnSessionSummaryPatch(submittedAt, !turnActive),
-      );
+      // The bubble and the cleared composer draw first. Re-sorting the list
+      // and marking the chat as running re-render every surface that reads
+      // the list, so that waits for the task after the frame: one frame later.
+      const listPatchSessionId = sessionId;
+      const listPatchStartsNewTurn = !turnActive;
+      pendingSendListPatchRef.current?.flush();
+      const listPatch = {
+        sessionId: listPatchSessionId,
+        flush: runAfterNextPaint(() => {
+          if (pendingSendListPatchRef.current === listPatch) pendingSendListPatchRef.current = null;
+          touchSession(listPatchSessionId, submittedAt);
+          patchSessionSummary(
+            listPatchSessionId,
+            activeTurnSessionSummaryPatch(submittedAt, listPatchStartsNewTurn),
+          );
+        }),
+      };
+      pendingSendListPatchRef.current = listPatch;
 
       const steerMessage = async (): Promise<AgentChatSteerResult> => {
         return await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.steer({
@@ -16010,8 +16553,11 @@ export function AgentChatPane({
           }
           const sendInteractionMode: AgentChatInteractionMode | null =
             sessionProvider === "claude" ? interactionMode : null;
+          sendTiming.attach(sessionId);
+          sendTiming.mark("sendCalled");
           await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.send({
             sessionId,
+            clientSubmittedAtMs: sendTiming.enterAtMs,
             text: finalText,
             ...(compactFirst.sendRef.current?.sessionId === sessionId ? { compactFirst: compactFirst.sendRef.current.value } : {}),
             displayText: hasPastedPrompt
@@ -16025,6 +16571,7 @@ export function AgentChatPane({
             interactionMode: sendInteractionMode,
             ...(sessionProvider === "cursor" ? { runtime: cursorRuntime } : {}),
           }, chatPin));
+          sendTiming.mark("sendResolved");
         } catch (sendError) {
           // Race condition: the turn may have started between our state check
           // and the backend call. If so, automatically fall back to steer
@@ -16058,6 +16605,7 @@ export function AgentChatPane({
       } else {
         await sendMessageOrSteerIfBusy();
       }
+      listPatch.flush();
       if (steerResult?.reason === "queue_full") {
         // The steer queue is full — the backend dropped the message (and emitted
         // its own notice). Restore the composer rather than clearing it as if the
@@ -16081,6 +16629,8 @@ export function AgentChatPane({
       setAppControlContextItems(keepEmptyArray);
       setBuiltInBrowserContextItems(keepEmptyArray);
     } catch (submitError) {
+      // The list update goes before the error path's own updates, as before.
+      pendingSendListPatchRef.current?.flush();
       // A call that gave up after the message left keeps the mark: the wake usually still delivers it.
       cloudWake?.settle(submitError, handedOff != null);
       // One plain sentence: a pinned call's failure arrives inside Electron's
@@ -16232,7 +16782,38 @@ export function AgentChatPane({
     subagentView,
     selectedSubagentCapability,
     updateComposerDraft,
+    queueSendUntilProjectOpens,
   ]);
+
+  const submitRef = useRef(submit);
+  submitRef.current = submit;
+  // The open settled: a waiting send goes out now, through the normal send
+  // path and its checks. If the open failed, the window moved to another
+  // project, or the chat, lane or machine changed under it, nothing is sent
+  // and the text stays in the composer.
+  useEffect(() => {
+    if (projectOpeningForView) return;
+    const queued = queuedSendUntilOpenRef.current;
+    if (!queued) return;
+    queuedSendUntilOpenRef.current = null;
+    const root = rootAppStoreApi.getState();
+    const opened = root.project?.rootPath === queued.projectRoot
+      && root.projectTransition == null
+      && root.projectTransitionError == null;
+    if (!opened || queued.targetKey !== sendTargetKeyRef.current) {
+      setError({ message: "Your message was not sent. Check the chat, then send it again.", kind: "status" });
+      return;
+    }
+    // Send the message that was submitted. A draft that changed since Enter
+    // (text typed after it, or a draft emptied meanwhile) is not what the
+    // person asked to send, so nothing goes out and the draft stays as it is.
+    if (draftStore.get() !== queued.text) {
+      setError({ message: "Your draft changed while the project opened. Send it again when you are ready.", kind: "status" });
+      return;
+    }
+    setError(null);
+    void submitRef.current(queued.mode);
+  }, [projectOpeningForView]);
 
   const compactContext = useCallback(async () => {
     const sessionId = composerSessionId ?? selectedSessionId;
@@ -17546,6 +18127,70 @@ export function AgentChatPane({
   }, [chatRuntimePinKey, draftExecutionBindingKey, refetchDevinCloudAuth]);
   draftMachineUnavailableRef.current = draftMachineUnavailable;
   composerDriftLaneIdRef.current = composerDriftLaneId;
+  // Draft warmup: the first keystroke in a new Work chat asks the lane's
+  // machine to start the provider this chat will use, so pressing Enter does
+  // not wait for it. Typing is the intent; focus alone starts nothing, so an
+  // idle window keeps no process. A new-lane launch has no lane to warm yet,
+  // and ADE Cloud starts its own computer. The text is read from the draft
+  // store, so typing does not render the pane; the key below makes later
+  // keystrokes free. A model, mode, lane or machine change re-warms.
+  const draftWarmEligible = isWorkDraftComposer
+    && workDraftKind === "chat"
+    && !selectedSessionId
+    && !draftLaunchTargetIsAutoCreate
+    && !adeCloudMode
+    && Boolean(laneId)
+    && Boolean(modelId)
+    && !constrainedModelSelectionError
+    && !draftMachineUnavailable
+    && !draftLaneCatalogLoading
+    && draftExecutionBindingKey != null;
+  useEffect(() => {
+    if (!draftWarmEligible || !laneId) return undefined;
+    // Settings cannot change inside one run of this effect, so after one
+    // request the only thing that needs a new one is a create taking the id.
+    let requested = false;
+    const requestDraftWarm = () => {
+      if (requested && draftWarmRef.current) return;
+      if (!draftStore.get().trim()) return;
+      requested = true;
+      const pin = draftExecutionBindingRef.current;
+      if (!pin) return;
+      // An older or partial chat API has no draft warmup; then no id is
+      // reserved, and the create stays exactly as it was.
+      if (typeof agentChatApiRef.current.prewarmDraft !== "function") return;
+      let built: ReturnType<typeof buildChatCreateArgs>;
+      try {
+        built = buildChatCreateArgs();
+      } catch {
+        return;
+      }
+      const cursorRuntimeForSend = built.provider === "cursor" ? (cursorCloudMode ? "cloud" as const : "local" as const) : undefined;
+      const key = JSON.stringify([laneId, pin.key, built.createArgs, cursorRuntimeForSend ?? null]);
+      const current = draftWarmRef.current;
+      if (current?.key === key) return;
+      // The id stays with the draft until a create takes it; the brain
+      // replaces a warm runtime whose settings changed.
+      let sessionId = current?.sessionId ?? null;
+      try {
+        sessionId ??= globalThis.crypto?.randomUUID?.() ?? null;
+      } catch {
+        // An insecure context has no randomUUID; the brain needs a real UUID.
+      }
+      if (!sessionId) return;
+      draftWarmRef.current = { sessionId, key, laneId, pinKey: pin.key };
+      void agentChatApiRef.current.prewarmDraft({
+        laneId,
+        ...built.createArgs,
+        sessionId,
+        ...(cursorRuntimeForSend ? { cursorRuntime: cursorRuntimeForSend } : {}),
+      }, pin).catch(() => { /* best-effort: the first send starts the provider */ });
+    };
+    requestDraftWarm();
+    return draftStore.subscribe(requestDraftWarm);
+    // Keyed on the binding's key, not the binding: a rebuilt pin for the same
+    // machine must not re-warm.
+  }, [buildChatCreateArgs, cursorCloudMode, draftExecutionBindingKey, draftStore, draftWarmEligible, laneId]);
   const activeComposerRuntimeBinding = selectedSessionId
     ? (chatRuntimePin ?? projectBinding)
     : draftExecutionBinding;
@@ -18110,8 +18755,11 @@ export function AgentChatPane({
   // mounted transcript row each time.
   const listLoadOlderHistory = useLatestCallback(
     !subagentView && renderedSessionId
-      ? (options?: { backfill?: boolean }) => {
-          void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, { backfill: options?.backfill });
+      ? (options?: { backfill?: boolean; whenScrollQuiet?: () => Promise<void> | null }) => {
+          void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, {
+            backfill: options?.backfill,
+            whenScrollQuiet: options?.whenScrollQuiet,
+          });
         }
       : undefined,
   );
@@ -19881,7 +20529,11 @@ export function AgentChatPane({
             onSubmit={() => {
               void submit();
             }}
-            onSubmitBlocked={(message) => setError({ message: message, kind: "hint" })}
+            onSubmitBlocked={(message) => {
+              // Models load once the project is open: a send before that waits.
+              if (queueSendUntilProjectOpens()) return;
+              setError({ message: message, kind: "hint" });
+            }}
             onSubmitInBackground={showDraftLaunchControls ? () => {
               if (workDraftKind === "cli") {
                 void launchDraftCliSession("background");

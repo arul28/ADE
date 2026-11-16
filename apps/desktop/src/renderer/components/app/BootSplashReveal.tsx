@@ -8,9 +8,11 @@ import {
 } from "../ui/LiquidGlassLogoReveal";
 
 /*
- * The boot splash shows for as long as the boot or its logo reveal, whichever
- * ends later, and never longer: a fast boot still sees the whole reveal, a slow
- * one sees the finished logo until it is done.
+ * The first launch of each version (a new install or an update) shows the
+ * splash for as long as the boot or its logo reveal, whichever ends later: a
+ * fast boot still sees the whole reveal, a slow one sees the finished logo
+ * until it is done. Every other launch shows the splash only while the boot
+ * runs, so a fast boot reaches the app at once.
  *
  * The reveal plays once per window. One clock is shared by every splash the
  * window mounts (the boot guard, then a Suspense fallback), so a remount
@@ -29,8 +31,41 @@ import {
 
 // The logo texture takes a moment to build before the reveal starts; past that, the reveal's own length.
 const HOLD_CAP_MS = 1500 + ADE_LOGO_REVEAL_SECONDS * 1000;
+// The version whose full reveal this computer already saw; a launch of that version holds nothing.
+const REVEALED_VERSION_KEY = "ade.bootSplash.revealedVersion";
+// Web clients and tests carry no version: they see the full reveal once, then never wait for it.
+const UNKNOWN_VERSION = "unknown";
 // A logo box older than this is stale: the splash left long enough ago that nothing on screen continues it.
 const LOGO_BOX_FRESH_MS = 400;
+
+function runningVersion(): string {
+  const version = typeof window === "undefined" ? null : window.ade?.app?.appVersion;
+  return typeof version === "string" && version.trim() ? version.trim() : UNKNOWN_VERSION;
+}
+
+function readRevealOwed(): boolean {
+  try {
+    return window.localStorage.getItem(REVEALED_VERSION_KEY) !== runningVersion();
+  } catch {
+    // No storage (private mode, blocked): keep the old behavior and play the reveal.
+    return true;
+  }
+}
+
+function rememberRevealed(): void {
+  try {
+    window.localStorage.setItem(REVEALED_VERSION_KEY, runningVersion());
+  } catch {
+    // Expected without storage: the next launch plays the reveal again, nothing breaks.
+  }
+}
+
+// Read once per window: whether this launch owes the full reveal.
+let revealOwed: boolean | null = null;
+function owesReveal(): boolean {
+  if (revealOwed === null) revealOwed = readRevealOwed();
+  return revealOwed;
+}
 
 let shownAt: number | null = null;
 let playingSince: number | null = null;
@@ -62,7 +97,7 @@ function markFinished() {
 }
 
 function holdRemainingMs(): number {
-  if (shownAt === null || finished) return 0;
+  if (shownAt === null || finished || !owesReveal()) return 0;
   return Math.max(0, shownAt + HOLD_CAP_MS - performance.now());
 }
 
@@ -127,7 +162,11 @@ export function BootSplashReveal({
         tileSize={tileSize}
         startTime={startTime}
         onPlaying={() => markPlaying(startTime)}
-        onFinished={markFinished}
+        onFinished={() => {
+          // The reveal played to its end: later launches of this version skip the wait.
+          rememberRevealed();
+          markFinished();
+        }}
       />
     </div>
   );
