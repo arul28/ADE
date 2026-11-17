@@ -16,6 +16,32 @@
 import {
   CLOUD_INSTANCE_HEADER,
   CLOUD_PATHS,
+  cloudCapsulePath,
+  cloudChatMessagesPath,
+  cloudChatMovePath,
+  cloudGitPath,
+  cloudInstanceMessagesPath,
+  cloudInstanceUsePath,
+  cloudSessionPath,
+  type AccountLaneIndexPut,
+  type AccountLaneIndexPutResult,
+  type AccountLaneIndexRow,
+  type CloudAccess,
+  type CloudCapsuleCommit,
+  type CloudCapsuleManifest,
+  type CloudChatMessageAddResult,
+  type CloudChatMessageReport,
+  type CloudChatMessageRequest,
+  type CloudChatMoveRequest,
+  type CloudChatMoveResult,
+  type CloudChatQueuedMessage,
+  type CloudComputerQueuedMessage,
+  type CloudGitSummary,
+  type CloudGitSummaryUpload,
+  type CloudProjectOverview,
+  type CloudSessionCopy,
+  type CloudSessionRow,
+  type CloudSessionUpload,
   type CloudAccountSignIns,
   type CloudAccountState,
   type CloudAutomationRegistered,
@@ -135,8 +161,20 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
   const instancePath = (instanceId: string) => `${CLOUD_PATHS.instances}/${encodeURIComponent(instanceId)}`;
   const automationPath = (ruleId: string) => `${CLOUD_PATHS.automations}/${encodeURIComponent(ruleId)}`;
 
+  /** A read on a route an older server lacks (or an account without ADE Cloud): null, so the caller keeps today's behavior. */
+  async function orNullOn404<T>(run: () => Promise<T>): Promise<T | null> {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof CloudApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
   return {
     /* ---- List ---- */
+    /** `enabled` false with `readOnly` true: blocked, but reading works (`reason` is the server's sentence). */
+    access: () => request<CloudAccess>("GET", CLOUD_PATHS.access),
     account: () => request<CloudAccountState>("GET", CLOUD_PATHS.account),
     listComputers: async () => (await request<{ data: CloudInstance[] }>("GET", CLOUD_PATHS.instances)).data,
 
@@ -235,6 +273,55 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       }
     },
 
+    /* ---- ADE without a computer: reads (never wake) ---- */
+    /** One project's whole ADE Cloud view. Null from an older server: read the separate lists as before. */
+    projectOverview: (origin: string) =>
+      orNullOn404(() => request<CloudProjectOverview>("GET", `${CLOUD_PATHS.projectsOverview}?origin=${encodeURIComponent(origin)}`)),
+    /** CLI-session and shell copies; null from an older server. */
+    savedSessions: (args: { machineKey?: string | null; projectKey?: string | null; cursor?: string | null } = {}) => {
+      const query = new URLSearchParams();
+      if (args.machineKey) query.set("machine", args.machineKey);
+      if (args.projectKey) query.set("project", args.projectKey);
+      if (args.cursor) query.set("cursor", args.cursor);
+      const suffix = query.size ? `?${query.toString()}` : "";
+      return orNullOn404(() => request<{ sessions: CloudSessionRow[]; nextCursor: string | null }>("GET", `${CLOUD_PATHS.sessions}${suffix}`));
+    },
+    /** One copy; null when the server has none (or predates copies). */
+    savedSession: (machineKey: string, sessionId: string) =>
+      orNullOn404(() => request<CloudSessionCopy>("GET", cloudSessionPath(machineKey, sessionId))),
+    deleteSavedSession: (machineKey: string, sessionId: string) =>
+      request<{ deleted: boolean }>("DELETE", cloudSessionPath(machineKey, sessionId)),
+    /** The project's Git summaries saved at rest; null from an older server. */
+    gitSummaries: (projectKey: string) =>
+      orNullOn404(() => request<{ summaries: CloudGitSummary[] }>("GET", `${CLOUD_PATHS.git}?project=${encodeURIComponent(projectKey)}`)),
+    gitSummary: (machineKey: string, laneId: string) =>
+      orNullOn404(() => request<CloudGitSummary>("GET", cloudGitPath(machineKey, laneId))),
+    /** The account lane index (every machine), for lane mentions only; null from an older server. */
+    accountLanes: (args: { project?: string | null; pr?: number | null } = {}) => {
+      const query = new URLSearchParams();
+      if (args.project) query.set("project", args.project);
+      if (args.pr != null) query.set("pr", String(args.pr));
+      const suffix = query.size ? `?${query.toString()}` : "";
+      return orNullOn404(() => request<{ lanes: AccountLaneIndexRow[] }>("GET", `${CLOUD_PATHS.accountLanes}${suffix}`));
+    },
+
+    /* ---- The message queue for an existing cloud chat ---- */
+    /**
+     * Queues a message and wakes the chat's computer (or, when it is gone,
+     * starts a launch that continues the chat). A refusal stores nothing and
+     * throws `CloudApiError` with the server's code and sentence. A 404 with
+     * code `not_found` from a server without the queue: fall back to
+     * wake-then-send.
+     */
+    sendChatMessage: (machineKey: string, chatId: string, message: CloudChatMessageRequest) =>
+      request<CloudChatMessageAddResult>("POST", cloudChatMessagesPath(machineKey, chatId), { body: message, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
+    /** Open and recent messages of one chat; null from an older server. */
+    chatMessages: (machineKey: string, chatId: string) =>
+      orNullOn404(async () => (await request<{ messages: CloudChatQueuedMessage[] }>("GET", cloudChatMessagesPath(machineKey, chatId))).messages),
+    /** Takes a queued message back; 409 `message_taken` once the computer has it. */
+    cancelChatMessage: (machineKey: string, chatId: string, messageId: string) =>
+      request<CloudChatQueuedMessage>("DELETE", cloudChatMessagesPath(machineKey, chatId, messageId)),
+
     /* ---- A project's computers ---- */
     previewProjectComputers: (origin: string) =>
       request<CloudProjectComputersPreview>("POST", CLOUD_PATHS.projectComputersDelete, { body: { origin, dryRun: true } }),
@@ -281,6 +368,46 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       const response = await request<Response>("GET", `${launchPath(launchId)}/files/${encodeURIComponent(fileId)}`, { rawResponse: true, timeoutMs: timeoutMs * 4 });
       return await response.arrayBuffer();
     },
+
+    /* ---- From a cloud computer: the queue, use, copies and capsules ---- */
+    /** This computer's queued messages, oldest first. */
+    computerMessages: async (instanceId: string) =>
+      (await request<{ messages: CloudComputerQueuedMessage[] }>("GET", cloudInstanceMessagesPath(instanceId))).messages,
+    /** Takes one message to send it (409 `message_taken` once another claim has it). */
+    claimComputerMessage: (instanceId: string, messageId: string, claimId: string) =>
+      request<CloudComputerQueuedMessage>("POST", cloudInstanceMessagesPath(instanceId, messageId, true), { body: { claimId } }),
+    reportComputerMessage: (instanceId: string, messageId: string, report: CloudChatMessageReport) =>
+      request<CloudComputerQueuedMessage>("PUT", cloudInstanceMessagesPath(instanceId, messageId), { body: report }),
+    /** A person used the computer while an idle save may hold it; 409 `computer_deleting` when the delete is claimed. */
+    recordComputerUse: (instanceId: string) =>
+      request<{ ok: true }>("POST", cloudInstanceUsePath(instanceId), { body: {}, headers: { [CLOUD_INSTANCE_HEADER]: instanceId } }),
+    putSessionCopy: (machineKey: string, sessionId: string, upload: CloudSessionUpload) =>
+      request<{ ok: true; updatedAt: number }>("PUT", cloudSessionPath(machineKey, sessionId), { body: upload, timeoutMs: timeoutMs * 2 }),
+    /** `kept`: the server holds a newer read and kept it. */
+    putGitSummary: (machineKey: string, laneId: string, upload: CloudGitSummaryUpload) =>
+      request<{ ok: true; kept: boolean }>("PUT", cloudGitPath(machineKey, laneId), { body: upload }),
+    /** Part `part` (1-based, at most 6 MiB) of a capsule; a put of part 1 starts a new capsule. */
+    putCapsulePart: (machineKey: string, chatId: string, part: number, instanceId: string, bytes: Uint8Array | ArrayBuffer | Blob) =>
+      request<{ ok: true; bytes: number }>("PUT", cloudCapsulePath(machineKey, chatId, { part }), {
+        raw: { bytes: bytes as BodyInit, contentType: "application/octet-stream" },
+        headers: { [CLOUD_INSTANCE_HEADER]: instanceId },
+        timeoutMs: timeoutMs * 2,
+      }),
+    commitCapsule: (machineKey: string, chatId: string, commit: CloudCapsuleCommit) =>
+      request<CloudCapsuleManifest>("POST", cloudCapsulePath(machineKey, chatId, "commit"), { body: commit }),
+    /** The capsule saved for a chat; null when there is none (replay the saved transcript). */
+    capsuleManifest: (machineKey: string, chatId: string) =>
+      orNullOn404(() => request<CloudCapsuleManifest>("GET", cloudCapsulePath(machineKey, chatId))),
+    readCapsulePart: async (machineKey: string, chatId: string, part: number): Promise<ArrayBuffer> => {
+      const response = await request<Response>("GET", cloudCapsulePath(machineKey, chatId, { part }), { rawResponse: true, timeoutMs: timeoutMs * 2 });
+      return await response.arrayBuffer();
+    },
+    /** Moves a restored chat's saved copy to this computer's machine key, with its full history. */
+    moveSavedChat: (fromMachineKey: string, chatId: string, move: CloudChatMoveRequest) =>
+      request<CloudChatMoveResult>("POST", cloudChatMovePath(fromMachineKey, chatId), { body: move }),
+    /** Any brain: its whole lane set; the same hash writes nothing. Null from an older server. */
+    putAccountLanes: (index: AccountLaneIndexPut) =>
+      orNullOn404(() => request<AccountLaneIndexPutResult>("PUT", CLOUD_PATHS.accountLanes, { body: index })),
   };
 }
 

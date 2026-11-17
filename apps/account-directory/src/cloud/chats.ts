@@ -14,6 +14,10 @@ import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
 import { rewardAfterCloudChat } from "./referrals";
 import { captureCloudSafety, type CloudWaitUntil } from "./analytics";
 import { logCloud, ownedComputer, type CloudEnv } from "./store";
+import { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type UserKeys } from "./seal";
+
+/** The seal helpers moved to `seal.ts`; older imports from here keep working. */
+export { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type UserKeys } from "./seal";
 
 /**
  * Saved chats (README, "Saved chats"). After each turn a computer sends the new
@@ -52,123 +56,6 @@ const decoder = new TextDecoder();
 
 const notFound = () => fail("not_found", "That saved chat doesn't exist.", 404);
 const unavailable = () => fail("unavailable", "Saved chats aren't available right now. Try again soon.", 503);
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-function fromBase64(value: string): Uint8Array<ArrayBuffer> {
-  const binary = atob(value);
-  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes;
-}
-
-async function masterKey(env: CloudEnv): Promise<CryptoKey | null> {
-  const raw = env.CLOUD_CHAT_MASTER_KEY?.trim();
-  if (!raw) return null;
-  // Exactly 32 bytes, base64: a weak or misshapen secret must be loud, as in the vault.
-  let bytes: Uint8Array<ArrayBuffer>;
-  try {
-    bytes = fromBase64(raw);
-  } catch {
-    return null;
-  }
-  if (bytes.length !== 32) return null;
-  return crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-}
-
-/** `v1.<iv>.<ciphertext+tag>`, both base64. */
-async function sealText(key: CryptoKey, aad: string, value: Uint8Array): Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const sealed = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv, additionalData: encoder.encode(aad) },
-    key,
-    value as Uint8Array<ArrayBuffer>,
-  );
-  return `v1.${toBase64(iv)}.${toBase64(new Uint8Array(sealed))}`;
-}
-
-async function openText(key: CryptoKey, aad: string, stored: string): Promise<Uint8Array | null> {
-  const parts = stored.split(".");
-  if (parts.length !== 3 || parts[0] !== "v1") return null;
-  try {
-    const opened = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: fromBase64(parts[1]!), additionalData: encoder.encode(aad) },
-      key,
-      fromBase64(parts[2]!),
-    );
-    return new Uint8Array(opened);
-  } catch {
-    return null;
-  }
-}
-
-/** `iv || ciphertext+tag`. */
-async function sealBytes(key: CryptoKey, aad: string, value: Uint8Array): Promise<Uint8Array> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const sealed = new Uint8Array(await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv, additionalData: encoder.encode(aad) },
-    key,
-    value as Uint8Array<ArrayBuffer>,
-  ));
-  const out = new Uint8Array(iv.length + sealed.length);
-  out.set(iv, 0);
-  out.set(sealed, iv.length);
-  return out;
-}
-
-async function openBytes(key: CryptoKey, aad: string, stored: Uint8Array): Promise<Uint8Array | null> {
-  if (stored.length <= 12) return null;
-  try {
-    const opened = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: stored.slice(0, 12), additionalData: encoder.encode(aad) },
-      key,
-      stored.slice(12),
-    );
-    return new Uint8Array(opened);
-  } catch {
-    return null;
-  }
-}
-
-type UserKeys = { aes: CryptoKey; mac: CryptoKey };
-
-const userKeyAad = (userId: string): string => `ade.cloud.chat.user-key.v1\0${userId}`;
-
-/** This user's key, made on first use. Null when `CLOUD_CHAT_MASTER_KEY` is missing or wrong. */
-async function userKeys(env: CloudEnv, userId: string, now: number): Promise<UserKeys | null> {
-  const master = await masterKey(env);
-  if (!master) {
-    logCloud("cloud.chat_key_unavailable", { userId });
-    return null;
-  }
-  const read = () => env.DB.prepare("select sealed_key from cloud_user_keys where user_id = ?").bind(userId).first<{ sealed_key: string }>();
-  let row = await read();
-  if (!row) {
-    // Insert first, then read back: two first writes race and both must use the winner.
-    const fresh = crypto.getRandomValues(new Uint8Array(32));
-    const sealed = await sealText(master, userKeyAad(userId), fresh);
-    await env.DB.prepare("insert or ignore into cloud_user_keys (user_id, sealed_key, created_at) values (?, ?, ?)").bind(userId, sealed, now).run();
-    row = await read();
-    if (!row) return null;
-  }
-  const raw = await openText(master, userKeyAad(userId), row.sealed_key);
-  if (!raw || raw.length !== 32) {
-    // A rotated or wrong master key: report it rather than treat the chats as gone.
-    logCloud("cloud.chat_key_unreadable", { userId });
-    return null;
-  }
-  // Separate keys for sealing and for the part digest, from the one stored secret.
-  const macMaterial = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array([...encoder.encode("ade.cloud.chat.mac.v1\0"), ...raw])));
-  const [aes, mac] = await Promise.all([
-    crypto.subtle.importKey("raw", raw as Uint8Array<ArrayBuffer>, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]),
-    crypto.subtle.importKey("raw", macMaterial, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
-  ]);
-  return { aes, mac };
-}
 
 const partAad = (userId: string, machineKey: string, chatId: string, seq: number): string =>
   `ade.cloud.chat.part.v1\0${userId}\0${machineKey}\0${chatId}\0${seq}`;
@@ -220,6 +107,8 @@ const SUMMARY_LIMITS: Record<keyof CloudChatRowInput, number> = {
   projectId: 160,
   projectRoot: 1000,
   lastActivityAt: 40,
+  parentChatId: 160,
+  spawnKind: 40,
 };
 
 function readRowInput(value: unknown): CloudChatRowInput | null {
@@ -263,9 +152,6 @@ async function readJsonBody(request: Request, maxBytes: number): Promise<{ ok: t
   }
 }
 
-async function digestFor(keys: UserKeys, value: Uint8Array): Promise<string> {
-  return toBase64(new Uint8Array(await crypto.subtle.sign("HMAC", keys.mac, value as Uint8Array<ArrayBuffer>)));
-}
 
 /**
  * `PUT /cloud/chats/:machine/:chat/parts/:seq`, from the computer. Parts append
