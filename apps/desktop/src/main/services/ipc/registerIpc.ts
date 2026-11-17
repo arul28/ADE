@@ -928,7 +928,7 @@ import {
   logoutCursorSdk,
 } from "../ai/cursorSdkAuth";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
-import { listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
+import { listHarnessRouteCatalog, probeOpenCodeKeyModelsInBackground } from "../chat/harnessRouteCatalog";
 import { testHarnessRoute } from "../chat/harnessRouteTest";
 import type { HarnessRouteCatalog, HarnessRouteTestResult } from "../../../shared/harnessRoutes";
 import type { createTestService } from "../tests/testService";
@@ -6416,7 +6416,17 @@ export function registerIpc({
     cancelCursorSdkLogin();
   });
 
-  handle(IPC.aiListHarnessRoutes, async (): Promise<HarnessRouteCatalog> => listHarnessRouteCatalog());
+  handle(IPC.aiListHarnessRoutes, async (): Promise<HarnessRouteCatalog> => {
+    const catalog = listHarnessRouteCatalog();
+    // A key for OpenCode Go or Zen that came through the account has no models here yet.
+    try {
+      const deps = buildOpenCodeAuthDeps();
+      probeOpenCodeKeyModelsInBackground({ projectRoot: deps.projectRoot, projectConfig: deps.projectConfig, logger: deps.logger });
+    } catch {
+      // No project open: the next read with one tries again.
+    }
+    return catalog;
+  });
 
   handle(
     IPC.aiTestHarnessRoute,

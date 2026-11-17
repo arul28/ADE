@@ -74,7 +74,7 @@ import type {
 } from "../../../shared/types/agentCliLogin";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import { noteProviderLoginChanged } from "../ai/providerLoginChanged";
-import { buildHarnessLaunchEnv, listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
+import { buildHarnessLaunchEnv, listHarnessRouteCatalog, probeOpenCodeKeyModelsInBackground } from "../chat/harnessRouteCatalog";
 import { testHarnessRoute } from "../chat/harnessRouteTest";
 import { resolveHarnessPresetForLaunch } from "../chat/harnessPresetLaunch";
 import { prepareHarnessLaunch } from "../chat/harnessLaunchPrepare";
@@ -3034,6 +3034,12 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     // sign-in, a one-token live check, and the terminal launcher's env.
     listHarnessRoutes: (args?: { harness?: unknown }) => {
       const catalog = listHarnessRouteCatalog();
+      // A key for OpenCode Go or Zen that came through the account has no models here yet.
+      probeOpenCodeKeyModelsInBackground({
+        projectRoot: runtime.projectRoot,
+        projectConfig: runtime.projectConfigService.get().effective,
+        logger: runtime.logger,
+      });
       // Echo a valid filter so a text formatter (`ade harness routes
       // --harness claude`) can show just that harness; the catalog itself is
       // harness-independent.

@@ -35,7 +35,10 @@ import {
   readOpenCodeSignedInProviderIds,
   readOpenCodeSignedInSources,
 } from "../opencode/openCodeCredentials";
-import { listPersistedOpenCodeProviderModels } from "../opencode/openCodeInventory";
+import { lastOpenCodeDiscoveredLocalModels, listPersistedOpenCodeProviderModels, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
+import { OPENCODE_HOUSE_PROVIDER_IDS } from "../../../shared/opencodeProviders";
+import type { Logger } from "../logging/logger";
+import { DEFAULT_API_CREDENTIAL_ID } from "../../../shared/types/apiCredentials";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import {
@@ -99,6 +102,50 @@ function modelsForSource(
       ...(model.maxOutputTokens ? { maxOutputTokens: model.maxOutputTokens } : {}),
       ...(model.reasoningTiers?.length ? { reasoningTiers: [...model.reasoningTiers] } : {}),
     }));
+}
+
+/**
+ * OpenCode's own services (OpenCode Go, Zen) with a key in ADE's key store but no
+ * model list yet: their models come only from ADE's OpenCode server, which never
+ * ran on a computer whose key came through the account. Until a probe lists them,
+ * the key's route has no models and is left out. The caller starts that probe.
+ */
+export function openCodeKeysWithoutModels(): string[] {
+  try {
+    return OPENCODE_HOUSE_PROVIDER_IDS.filter((providerId) =>
+      listApiCredentials(providerId).length > 0 && listPersistedOpenCodeProviderModels(providerId).length === 0);
+  } catch {
+    return [];
+  }
+}
+
+let keyModelsProbe: Promise<unknown> | null = null;
+
+/**
+ * Lists the models of `openCodeKeysWithoutModels` once, in the background, so
+ * the next read of the catalog has their routes. One probe at a time; a failed
+ * one is tried again at the next read.
+ */
+export function probeOpenCodeKeyModelsInBackground(deps: {
+  projectRoot: string;
+  projectConfig: Parameters<typeof probeOpenCodeProviderInventory>[0]["projectConfig"];
+  logger: Logger;
+}): void {
+  if (keyModelsProbe) return;
+  const missing = openCodeKeysWithoutModels();
+  if (missing.length === 0) return;
+  deps.logger.info("harness_routes.opencode_key_models_probe", { providers: missing });
+  keyModelsProbe = probeOpenCodeProviderInventory({
+    projectRoot: deps.projectRoot,
+    projectConfig: deps.projectConfig,
+    logger: deps.logger,
+    force: true,
+    discoveredLocalModels: lastOpenCodeDiscoveredLocalModels(),
+  }).catch((error: unknown) => {
+    deps.logger.warn("harness_routes.opencode_key_models_probe_failed", { error: error instanceof Error ? error.message : String(error) });
+  }).finally(() => {
+    keyModelsProbe = null;
+  });
 }
 
 /** The whole catalog. Cheap: disk caches only, no network. */
@@ -262,7 +309,10 @@ export function isPresetSourceAvailableLocally(source: HarnessPresetSource): boo
         || cliLoginBorrowableAccounts().some((login) => login.provider === source.provider);
     }
     if (source.kind === "opencode") {
-      return readOpenCodeSignedInProviderIds().includes(source.providerId.trim());
+      const providerId = source.providerId.trim();
+      // OpenCode's own login, or the provider's key in ADE's key store (the launch falls back to it).
+      return readOpenCodeSignedInProviderIds().includes(providerId)
+        || listApiCredentials(providerId).some((entry) => entry.credentialId === DEFAULT_API_CREDENTIAL_ID);
     }
     if (source.kind === "key") {
       return listApiCredentials(source.provider.trim()).some((entry) => entry.credentialId === source.credentialId.trim());
