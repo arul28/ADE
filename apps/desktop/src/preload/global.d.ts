@@ -14,7 +14,8 @@ import type {
 } from "../shared/projectRemoval";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
-import type { CloudAccessIpcAnswer } from "../shared/adeCloudMachine";
+import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
+import type { CloudCarriedSignIns, CloudLaunchRecord as AccountCloudLaunchRecord } from "../../../account-directory/src/cloud/contract";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
@@ -5111,6 +5112,17 @@ declare global {
         cloudSignInSaveKey?: (id: CloudSignInId, key: string) => Promise<CloudSignInStatus | null>;
         cloudSignInRemove?: (id: CloudSignInId) => Promise<CloudSignInStatus | null>;
         onCloudSignInChanged?: (cb: () => void) => () => void;
+        /**
+         * A message for an existing ADE Cloud chat whose computer is asleep
+         * or gone, through the account's queue. Account-level, by the chat's
+         * machine key, so no pin. `refused` carries the server's sentence;
+         * `unsupported` means wake, then send.
+         */
+        sendChatMessage?: (args: CloudChatSendRequest) => Promise<CloudChatSendAnswer>;
+        /** A launch the queue started (`wake.state: "launching"`), by its id. Account-level, no pin. Null when unknown. */
+        serverLaunchStatus?: (launchId: string) => Promise<AccountCloudLaunchRecord | null>;
+        /** Provider sign-ins the account carries to ADE Cloud (key names only). Account-level, no pin. Null when the server didn't say. */
+        carriedSignIns?: () => Promise<CloudCarriedSignIns | null>;
         /** What unattended agents may do on ADE Cloud (account vault; no pin). */
         getAgentLimits?: () => Promise<CloudAgentLimits | null>;
         setAgentLimits?: (limits: Partial<CloudAgentLimits>) => Promise<CloudAgentLimits | null>;

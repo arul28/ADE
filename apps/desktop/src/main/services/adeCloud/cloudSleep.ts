@@ -14,6 +14,7 @@
  * No Electron here: the desktop and the brain's `cloud` actions share it.
  */
 
+import { CLOUD_PLAN_PAST_DUE_SENTENCE, isCloudRefusalCode } from "../../../../../account-directory/src/cloud/contract";
 import {
   CLOUD_BACKSTOP_SLEEP_MINUTES,
   CLOUD_DEFAULT_AGENT_LIMITS,
@@ -156,23 +157,32 @@ export async function wakeCloudMachineForUse(
   }
   const instance = cloudInstanceForMachine(instances, machine.machineKey, machine.hostname);
   if (!instance) return { state: "not_cloud" };
-  if (instance.status === "running") return { state: "awake", instanceId: instance.id };
+  // The idle cleanup's own short wake makes a computer read running. A use
+  // then still calls the start: the server records the use and calls the
+  // delete off, or refuses with `computer_deleting`.
+  const idleSaving = instance.idleSaving === true;
+  if (instance.status === "running" && !idleSaving) return { state: "awake", instanceId: instance.id };
   // Already coming up (another wake, or the provider's own): its ADE answers in a
   // few seconds, so the caller waits for it the same as after our wake.
-  if (instance.status === "starting" || instance.status === "waking") {
+  if ((instance.status === "starting" || instance.status === "waking") && !idleSaving) {
     return { state: "woken", instanceId: instance.id, wakeMs: 0 };
   }
   if (instance.pastDue) {
-    return { state: "refused", message: "ADE Cloud suspended this machine, so ADE can't wake it right now." };
+    // The server's sentence for `plan_past_due`; the computer list already says it.
+    return { state: "refused", code: "plan_past_due", message: CLOUD_PLAN_PAST_DUE_SENTENCE };
   }
   const started = now();
   try {
     await wakeThroughTransition(client, instance.id, now);
   } catch (error) {
-    // 0 hours, or more disk than the free plan has: the server's sentence says why.
-    if (error instanceof CloudProviderError && (error.code === "out_of_hours" || error.code === "over_plan_disk")) return { state: "refused", message: error.message };
+    // Hours, disk, a block, too many awake, a delete under way: every refusal
+    // carries the server's code and sentence, and the caller shows the sentence.
+    if (error instanceof CloudProviderError && isCloudRefusalCode(error.code)) {
+      return { state: "refused", code: error.code, message: error.message };
+    }
     throw error;
   }
+  if (instance.status === "running") return { state: "awake", instanceId: instance.id };
   options.logger?.info?.("cloud.machine_woken_for_use", { instanceId: instance.id, wakeMs: now() - started });
   return { state: "woken", instanceId: instance.id, wakeMs: now() - started };
 }

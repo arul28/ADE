@@ -4448,7 +4448,7 @@ function cloudMachineStore(): EncryptedFileCredentialStore {
 function cloudSignInVaults(runtime: AccountDomainRuntime): CloudSignInVaults | null {
   const store = runtime.accountVaultStore;
   if (!store || runtime.accountAuthService?.getStatus().signedIn !== true) return null;
-  return (vaultKey) => cloudVaultFromStore(store, vaultKey);
+  return (vaultKey, kind) => cloudVaultFromStore(store, vaultKey, kind);
 }
 
 function cloudAccessDeps(runtime: AccountDomainRuntime): CloudAccessDeps {

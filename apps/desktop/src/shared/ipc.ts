@@ -1249,6 +1249,12 @@ export const IPC = {
   cloudSignInChanged: "cloud:cloudSignInChanged",
 
   /**
+  /** A message for an existing ADE Cloud chat, through the account's queue (`POST /cloud/chats/:m/:c/messages`). Account-level, no pin. */
+  cloudChatMessageSend: "ade.cloud.chatMessageSend",
+  /** One server launch's record (`GET /cloud/launches/:id`), for a launch the queue started. Account-level, no pin. */
+  cloudServerLaunchStatus: "ade.cloud.serverLaunchStatus",
+  /** Which provider sign-ins the account carries to ADE Cloud (`GET /cloud/sign-ins` `carried`). Account-level, no pin. */
+  cloudCarriedSignIns: "ade.cloud.carriedSignIns",
    * The account settings store, reached through the brain's `account_settings`
    * action domain. Every one of these resolves to an "unavailable" result
    * rather than rejecting when no brain is reachable — a machine with no

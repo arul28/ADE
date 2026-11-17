@@ -141,7 +141,8 @@ import type {
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
-import type { CloudAccessIpcAnswer } from "../shared/adeCloudMachine";
+import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
+import type { CloudCarriedSignIns, CloudLaunchRecord as AccountCloudLaunchRecord } from "../../../account-directory/src/cloud/contract";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
 import {
@@ -14357,6 +14358,12 @@ const adeBridge = {
     preflightCreateLaneFromPrBranch: async (
       args: CreateLaneFromPrBranchArgs,
       pin?: OpenProjectBinding | null,
+    /** The account's message queue for an existing ADE Cloud chat: account-level, by the chat's machine key, so no pin. */
+    sendChatMessage: (args: CloudChatSendRequest): Promise<CloudChatSendAnswer> => ipcRenderer.invoke(IPC.cloudChatMessageSend, args),
+    /** A launch the queue started, by its id: account-level, no pin. */
+    serverLaunchStatus: (launchId: string): Promise<AccountCloudLaunchRecord | null> => ipcRenderer.invoke(IPC.cloudServerLaunchStatus, { launchId }),
+    /** Provider sign-ins the account carries to ADE Cloud: account-level, no pin. */
+    carriedSignIns: (): Promise<CloudCarriedSignIns | null> => ipcRenderer.invoke(IPC.cloudCarriedSignIns),
     ): Promise<CreateLaneFromPrBranchPreflightResult> =>
       pin
         ? callPinnedRuntimeAction(pin, "pr", "preflightCreateLaneFromPrBranch", { args })

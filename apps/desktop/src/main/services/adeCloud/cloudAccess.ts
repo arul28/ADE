@@ -132,21 +132,28 @@ export function cloudVaultFromBridge(bridge: CloudVaultBridge, key: string): Clo
   };
 }
 
+/**
+ * The vault kinds a cloud item lives under: `integration` (ADE Cloud's own
+ * items), or `provider_api_key` (the one API key store, which ADE Cloud's keys
+ * mirror into).
+ */
+export type CloudVaultKind = typeof CLOUD_VAULT_KIND | "provider_api_key";
+
 /** The brain: one account-wide item in its own vault store. */
 export function cloudVaultFromStore(store: {
-  get(scope: string, kind: "integration", key: string): string | null;
-  set(scope: string, kind: "integration", key: string, value: string): boolean;
-  remove(scope: string, kind: "integration", key: string): boolean;
-}, key: string): CloudVault {
+  get(scope: string, kind: CloudVaultKind, key: string): string | null;
+  set(scope: string, kind: CloudVaultKind, key: string, value: string): boolean;
+  remove(scope: string, kind: CloudVaultKind, key: string): boolean;
+}, key: string, kind: CloudVaultKind = CLOUD_VAULT_KIND): CloudVault {
   return {
     async get() {
-      return { ok: true, value: store.get(ACCOUNT_SCOPE_ALL, CLOUD_VAULT_KIND, key) };
+      return { ok: true, value: store.get(ACCOUNT_SCOPE_ALL, kind, key) };
     },
     async set(value) {
-      return store.set(ACCOUNT_SCOPE_ALL, CLOUD_VAULT_KIND, key, value);
+      return store.set(ACCOUNT_SCOPE_ALL, kind, key, value);
     },
     async remove() {
-      return store.remove(ACCOUNT_SCOPE_ALL, CLOUD_VAULT_KIND, key);
+      return store.remove(ACCOUNT_SCOPE_ALL, kind, key);
     },
   };
 }

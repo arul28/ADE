@@ -216,6 +216,63 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
   };
 
   /**
+   * ADE Cloud's saved keys (`integration/cloud-key-<id>`) into the one API
+   * key store (`provider_api_key`), once per machine and safe to run again on
+   * any machine: a provider row that is empty takes the key; one that holds
+   * it already is left; one with a different key (or a key someone removed
+   * there) is left as it is, and ADE Cloud's key goes beside it as
+   * `<provider>#ade-cloud`, which cloud computers read first. Nothing is
+   * removed: older cloud computers keep reading `cloud-key-<id>`. A write
+   * that loses a race to another machine's first write is not retried.
+   */
+  const migrateCloudKeysToApiStore = async (
+    isCurrent: () => boolean,
+    expectedAccountUserId: string,
+  ): Promise<AccountMigrationSourceResult> => {
+    const { CLOUD_KEY_API_PROVIDER, savedKeyTokenOf } = await import("../providerLogins/providerLoginSyncShared");
+    const listed = await listVaultItems("all");
+    if (!listed || !isCurrent()) return { moved: 0, skipped: 0, complete: false };
+    const rows = new Map(
+      listed
+        .filter((item) => item.scope === "all" && item.kind === "provider_api_key")
+        .map((item) => [item.key, item] as const),
+    );
+    const read = async (kind: string, key: string, inline: unknown): Promise<string | null | undefined> => {
+      if (typeof inline === "string") return inline;
+      const fetched = await options.accountVaultBridge.get("all", kind, key);
+      return fetched.ok ? fetched.value : undefined;
+    };
+    let moved = 0;
+    let skipped = 0;
+    for (const item of listed) {
+      if (item.scope !== "all" || item.kind !== "integration" || item.deleted || !item.key.startsWith("cloud-key-")) continue;
+      const provider = CLOUD_KEY_API_PROVIDER[item.key.slice("cloud-key-".length)];
+      if (!provider) continue;
+      const raw = await read("integration", item.key, item.value);
+      if (raw === undefined) return { moved, skipped, complete: false };
+      const token = savedKeyTokenOf(raw);
+      if (!token) continue;
+      const own = rows.get(provider);
+      const ownValue = own && !own.deleted ? await read("provider_api_key", provider, own.value) : null;
+      if (ownValue === undefined) return { moved, skipped, complete: false };
+      const cloudKey = `${provider}#ade-cloud`;
+      const cloudRow = rows.get(cloudKey);
+      const cloudValue = cloudRow && !cloudRow.deleted ? await read("provider_api_key", cloudKey, cloudRow.value) : null;
+      if (cloudValue === undefined) return { moved, skipped, complete: false };
+      if (ownValue?.trim() === token || cloudValue?.trim() === token) {
+        skipped += 1;
+        continue;
+      }
+      // An empty provider row takes the key, never one a person removed (its tombstone stays theirs).
+      const target = !own ? provider : cloudKey;
+      const saved = await setVaultItem(isCurrent, expectedAccountUserId, "all", "provider_api_key", target, token);
+      if (!saved?.ok) return { moved, skipped, complete: false };
+      moved += 1;
+    }
+    return { moved, skipped };
+  };
+
+  /**
    * Linear connections are per project now: each project's
    * `hydrateFromVault` (run just above, for every open project) publishes its
    * own connection under the project's repo scope, and the machine that owns
@@ -413,6 +470,7 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
           sources: {
             provider_api_keys: () => migrateProviderApiKeys(isCurrent, ownerToken.userId),
             linear_credentials: () => migrateLinearRefreshToken(),
+            cloud_keys_api_store: () => migrateCloudKeysToApiStore(isCurrent, ownerToken.userId),
           },
         });
         if (machineRun.pending.length > 0 || machineRun.failed.length > 0) complete = false;

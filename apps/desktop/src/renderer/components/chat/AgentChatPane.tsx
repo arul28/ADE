@@ -446,6 +446,7 @@ import { useAdeCloudSignInNeed } from "./useAdeCloudSignInNeed";
 import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
 import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
 import { CloudLaneHeaderButton } from "../cloudLane/CloudLaneHeaderButton";
+import { CloudLaneDeletingSoonBand } from "../cloudLane/CloudLaneDeletingSoonBand";
 import { AdeCloudTray, CloudSizeButton, useCloudLaneWithoutComputerForChat } from "./AdeCloudComposerParts";
 import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
 import type { CloudAccountState } from "../../../shared/adeCloud";
@@ -21560,6 +21561,15 @@ export function AgentChatPane({
                   key="chat-view"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
+        {cloudQueueSend && cloudQueueSend.chatId === selectedSessionId ? (
+          <CloudQueueSendCard
+            send={cloudQueueSend}
+            style={RUNTIME_BANNER_STYLE}
+            onDone={() => setCloudQueueSend(null)}
+            onRestore={(text) => setDraft((current) => (current.trim().length ? current : text))}
+          />
+        ) : null}
+        {!chatScope ? <CloudLaneDeletingSoonBand laneId={selectedSession?.laneId ?? laneId ?? null} style={RUNTIME_BANNER_STYLE} /> : null}
                   transition={{ duration: 0.12, ease: "easeOut" }}
                   className="absolute inset-0 flex min-h-0 overflow-hidden"
                 >

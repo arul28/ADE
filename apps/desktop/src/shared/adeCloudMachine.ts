@@ -44,3 +44,30 @@ export const ADE_CLOUD_SIGNED_OUT_SENTENCE = "Sign in to ADE to use ADE Cloud.";
 
 /** The sentence for a blocked account when the server sent none (an old server). */
 export const ADE_CLOUD_BLOCKED_SENTENCE = "ADE Cloud is turned off for this account. Contact ADE support if you think this is a mistake.";
+
+/** `window.ade.cloud.sendChatMessage`'s request: a message for one existing ADE Cloud chat. */
+export type CloudChatSendRequest = {
+  /** The chat's computer's account key (a deleted computer's key too). */
+  machineKey: string;
+  chatId: string;
+  /** The client's send id (1 to 64 of `A-Za-z0-9_-`): the same id again is the same message. */
+  messageId: string;
+  text: string;
+  provider?: string | null;
+  modelId?: string | null;
+};
+
+/**
+ * Its answer. `sent`: queued, and `wake` says what the server did to the
+ * computer (`launching` with `launchId`: the computer was gone, and a new one
+ * continues this chat in the same row). `refused`: the server's code and
+ * sentence; nothing was stored. `unsupported`: a server without the queue
+ * (404) or an image that can't drain it (`update_needed`): use wake, then send.
+ */
+export type CloudChatSendAnswer =
+  | { state: "sent"; messageId: string; wake: { state: "awake" | "waking" | "launching"; launchId?: string | null } }
+  | { state: "refused"; code: string | null; message: string }
+  | { state: "unsupported" };
+
+/** The send id pattern the server takes. */
+export const CLOUD_CHAT_MESSAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
