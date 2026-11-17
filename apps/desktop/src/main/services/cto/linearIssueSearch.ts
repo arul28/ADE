@@ -20,8 +20,8 @@ import {
   type LinearRequestMeter,
   normalizeIssueNodes,
   OPEN_ISSUE_STATE_TYPES,
-  priorityIsValid,
 } from "./linearClientShared";
+import { buildLinearIssueBaseFilter } from "../../../shared/linearIssueNormalize";
 
 export type LinearOpenIssueMatch = {
   id: string;
@@ -66,42 +66,7 @@ export function createLinearIssueSearch(args: {
 
   // Every filter except the text query. The text query is either a full-text
   // `searchIssues` term or, as a fallback, a title/description clause.
-  const buildIssueBaseFilter = (params: IssueTrackerIssueSearchQuery): Record<string, unknown> => {
-    const filter: Record<string, unknown> = {};
-    const projectId = params.projectId?.trim();
-    const projectSlug = params.projectSlug?.trim();
-    const teamKey = params.teamKey?.trim();
-    const stateTypes = (params.stateTypes ?? []).map((entry) => entry.trim()).filter(Boolean);
-    const stateIds = (params.stateIds ?? []).map((entry) => entry.trim()).filter(Boolean);
-    const assigneeId = params.assigneeId?.trim();
-
-    if (projectId) {
-      filter.project = { id: { eq: projectId } };
-    } else if (projectSlug) {
-      filter.project = { slugId: { eq: projectSlug } };
-    }
-    if (teamKey) {
-      filter.team = { key: { eq: teamKey } };
-    }
-    if (stateTypes.length > 0 || stateIds.length > 0) {
-      filter.state = {
-        ...(stateTypes.length > 0 ? { type: { in: stateTypes } } : {}),
-        ...(stateIds.length > 0 ? { id: { in: stateIds } } : {}),
-      };
-    }
-    if (assigneeId) {
-      filter.assignee = { id: { eq: assigneeId } };
-    } else if (params.assignedToViewer === true) {
-      filter.assignee = { isMe: { eq: true } };
-    }
-    if (params.activeCycle === true) {
-      filter.cycle = { isActive: { eq: true } };
-    }
-    if (priorityIsValid(params.priority)) {
-      filter.priority = { eq: params.priority };
-    }
-    return filter;
-  };
+  const buildIssueBaseFilter = (params: IssueTrackerIssueSearchQuery): Record<string, unknown> => buildLinearIssueBaseFilter(params);
 
   const andFilters = (...filters: Array<Record<string, unknown> | null | undefined>): Record<string, unknown> => {
     const parts = filters.filter((entry): entry is Record<string, unknown> => entry != null && Object.keys(entry).length > 0);
