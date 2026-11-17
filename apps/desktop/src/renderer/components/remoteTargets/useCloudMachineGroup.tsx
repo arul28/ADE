@@ -224,7 +224,7 @@ export function useCloudMachineGroup(args: {
    * lane's computer is ADE's business; the lanes, their sizes and their
    * actions live in Settings › ADE Cloud, named by lane.
    */
-  function renderGroup(_renderRow: (row: MachineRow, section: MachineSection) => ReactNode): ReactNode {
+  function renderGroup(): ReactNode {
     if (!showCloudGroup) return null;
     return (
       <div className="ade-cx-section" data-machine-group="cloud">

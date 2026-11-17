@@ -121,7 +121,6 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
   // in "starting" must still show the failure and its Try again.
   const waking = (targetId != null && wakingTargetId === targetId)
     || (resting && error == null && (listWaking || box?.state === "starting"));
-  const machineName = scope.machineName;
   // `scope.online` follows the connection snapshot: main pushes
   // `onConnectionSnapshotChanged` once the connect succeeds, and
   // `crossMachineLanes.ts` (`applySnapshot` → `applyReachability`) sets the
@@ -173,7 +172,7 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
       } catch (connectFailure) {
         console.warn("[cloud] waking the chat's machine failed", connectFailure);
         // A refusal carries the server's sentence (hours, a block, too many awake).
-        fail(cloudWakeFailureSentence(connectFailure, machineName));
+        fail(cloudWakeFailureSentence(connectFailure));
         refresh();
         return false;
       }
@@ -193,7 +192,7 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
       if (inFlightTargetRef.current === targetId) inFlightTargetRef.current = null;
       setWakingTargetId((current) => (current === targetId ? null : current));
     }
-  }, [machineKey, machineName, refresh, settle, targetId]);
+  }, [machineKey, refresh, settle, targetId]);
 
   const wakeThen = useCallback(async (run: () => void): Promise<boolean> => {
     const online = await wake();
@@ -212,7 +211,7 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
  * "Can't wake: <the server's sentence>" for a wake that failed, else a plain
  * try-again line. Never the computer's own name.
  */
-export function cloudWakeFailureSentence(error: unknown, _machineName?: string): string {
+export function cloudWakeFailureSentence(error: unknown): string {
   const reason = ipcErrorMessage(error).trim();
   return reason ? `Can't wake: ${reason}` : "ADE couldn't wake your ADE Cloud computer. Try again.";
 }
