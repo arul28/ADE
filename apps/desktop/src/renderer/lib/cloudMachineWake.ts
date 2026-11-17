@@ -6,7 +6,7 @@ import { readWebAccountMachineKeys } from "../state/webAccountMachineKeys";
 import { showToast } from "../components/app/toast/toastStore";
 import { connectMachine } from "./machineConnect";
 import { ipcErrorMessage } from "./format";
-import type { MachineAddress } from "../../shared/machineAddress";
+import { MachineConnectError, type MachineAddress } from "../../shared/machineAddress";
 
 /**
  * Wakes from a list, by machine key: one under way (a second open of the same
@@ -122,7 +122,14 @@ export function wakeRestingCloudMachine(
       const reason = ipcErrorMessage(error).trim();
       const message = reason ? `Can't wake: ${reason}` : "ADE couldn't wake your ADE Cloud computer. Try again.";
       failure = { state: "failed", message };
-      showToast({ title: "Couldn't wake your ADE Cloud computer", message: reason || message, tone: "error" });
+      // A failed connect result is a known sentence (a refusal, asleep, out of
+      // reach), not an ADE bug, so it offers no report. Any other throw does.
+      showToast({
+        title: "Couldn't wake your ADE Cloud computer",
+        message: reason || message,
+        tone: "error",
+        ...(error instanceof MachineConnectError ? { report: false as const } : {}),
+      });
     })
     .finally(() => setListWake(machineKey, failure));
 }
