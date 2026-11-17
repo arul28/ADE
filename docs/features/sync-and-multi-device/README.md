@@ -423,30 +423,20 @@ mobile release adds required host behavior, update the shared contract and the
 iOS compatibility tests in the same branch.
 
 Alongside the required set the file keeps an **optional** list
-(`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`) for additive commands newer
-phones feature-detect but that older mobile builds never call — so their absence
-must not put a host in `limited`. The four Linear connection commands
-(`cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`,
-`cto.setLinearToken`, `cto.clearLinearToken`) that let the phone connect,
-reconnect, and disconnect Linear are optional: a brain that predates them simply
-doesn't advertise them, and the iOS Linear pane hides those affordances locally
-instead of erroring. `cto.getAttention` — the read-only probe behind the phone's
-CTO tab badge, needed because the CTO chat is excluded from every session roster
-and cannot be derived from the chat list — is optional on the same logic: the
-phone feature-detects it and otherwise leaves the badge dark, and requiring it
-would flip every already-shipped brain into `limited` mode. The
-session-lifecycle commands
-(`session.settleSessions`, `session.unsettleSessions`,
-`session.setSettleOverride`, `session.snoozeSession`, `session.wakeSession`,
-`session.clearWokeMarker`) are optional for the same reason: the phone
-feature-detects them before showing settle and snooze controls, while an older
-mobile build that never calls them must not push a newer host into `limited`.
-`chat.regenerateSessionMetadata` is also optional: newer controllers may
-feature-detect the one-call chat metadata refresh, while older phones never
-invoke it and therefore remain compatible. `chat.resumeUsageLimitNow` — the
-owner-only usage-limit **Resume now** — is optional for the same reason: the
-phone hides the button when the host does not advertise it, and an older phone
-that never calls it must not push a newer host into `limited`.
+(`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`) for additive commands that
+newer phones feature-detect and older phones never call, so a host without
+them is not `limited`. The list holds:
+
+- the Linear connection commands (`cto.startLinearMobileOAuth`,
+  `cto.completeLinearMobileOAuth`, `cto.setLinearToken`,
+  `cto.clearLinearToken`); without them the iOS Linear pane hides those
+  controls;
+- `cto.getAttention`, the read behind the CTO tab badge; without it the badge
+  stays dark;
+- the session lifecycle commands (`session.settleSessions`,
+  `session.unsettleSessions`, `session.setSettleOverride`,
+  `session.snoozeSession`, `session.wakeSession`, `session.clearWokeMarker`);
+- `chat.regenerateSessionMetadata` and `chat.resumeUsageLimitNow`.
 See `remote-commands.md` and `../linear-integration/README.md`.
 
 ## What syncs, what does not
