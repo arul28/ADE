@@ -848,8 +848,9 @@ token; `integration/github-cli`, a `gh` login that `githubGhAccountSync.ts`
 copies to the account). A private repository
 with none is refused with the way out, a public one goes on, and no answer from
 GitHub goes on with a warning on the launch card (`cloud.warning` on the
-snapshot). `window.ade.cloud.gitPreflight` answers the same check; no renderer
-surface calls it yet.
+snapshot). `window.ade.cloud.gitPreflight` answers the same check. The composer of a new
+ADE Cloud lane reads it (`useAdeCloudDraft.ts`) and turns Send off with the
+refusal before the launch starts.
 The clone passes its auth header through Git's config environment, so no token
 is left in the clone's `.git/config`. On an ADE Cloud computer only, the clone's
 local config also gets an empty `credential.https://github.com.helper` and then
