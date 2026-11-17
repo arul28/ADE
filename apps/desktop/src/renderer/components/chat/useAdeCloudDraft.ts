@@ -30,7 +30,8 @@ import { AUTO_CREATE_DRAFT_LANE_OPTION as AUTO_CREATE_LANE_OPTION, type RoutedDr
 const NO_MACHINES: readonly CloudMachine[] = [];
 
 /** The Run on menu's ADE Cloud entry. One entry for every ADE Cloud lane. */
-export const ADE_CLOUD_MACHINE_ID = "__ade_cloud__";
+import { ADE_CLOUD_MACHINE_ID } from "../../../shared/adeCloudMachine";
+export { ADE_CLOUD_MACHINE_ID };
 
 /** What can open from the label above the box: the plan row, the Free up space flow, the ADE Cloud page, or GitHub's settings. */
 export type AdeCloudTrayAction = "upgrade" | "free-space" | "settings" | "github";
