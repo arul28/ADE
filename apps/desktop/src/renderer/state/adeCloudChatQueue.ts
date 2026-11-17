@@ -8,6 +8,12 @@
  * Cloud computer…". The live chat replaces it by its send id once the
  * computer has sent it.
  *
+ * A message the server could not send (`failed`: the send failed, or the
+ * new computer for the chat never came up) stays in `failed` with the
+ * server's sentence (`error`) until the person puts the text back or
+ * dismisses it. The server cannot take back a failed message, so that
+ * choice is kept in this browser (`dismissAdeCloudFailedMessage`).
+ *
  * Reads ride existing triggers only (a send, the chat opening, the window
  * getting focus). Nothing here polls.
  */
@@ -23,13 +29,46 @@ import { savedChatLocation, savedChatLocationForSession, takeQueuedChatModel, ty
 export type AdeCloudChatQueueState = {
   /** Messages the chat shows as its own rows: queued, sending, or waiting for a sign-in. Oldest first. */
   messages: CloudChatQueuedMessage[];
+  /**
+   * Messages the server could not send (`state: "failed"`), with its sentence
+   * in `error`, until the person puts the text back or dismisses them. Oldest first.
+   */
+  failed: CloudChatQueuedMessage[];
   /** What the last send did to the computer; null before any send from this window. */
   wake: CloudWakeOutcome | null;
   /** The last read of the queue failed: the rows may be out of date. */
   readFailed: boolean;
 };
 
-const EMPTY: AdeCloudChatQueueState = { messages: [], wake: null, readFailed: false };
+const EMPTY: AdeCloudChatQueueState = { messages: [], failed: [], wake: null, readFailed: false };
+
+/** Failed messages the person put back or dismissed, by id. Per browser; the server prunes failed rows after 7 days. */
+const DISMISSED_STORAGE_KEY = "ade.cloudQueue.dismissedFailed.v1";
+const MAX_DISMISSED = 500;
+let dismissedCache: Set<string> | null = null;
+
+function dismissedIds(): Set<string> {
+  if (dismissedCache) return dismissedCache;
+  dismissedCache = new Set();
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(DISMISSED_STORAGE_KEY) ?? "[]") as unknown;
+    if (Array.isArray(stored)) for (const id of stored) if (typeof id === "string") dismissedCache.add(id);
+  } catch {
+    // No storage (a private window, blocked site data): the choice lasts for this page only.
+  }
+  return dismissedCache;
+}
+
+function rememberDismissed(messageId: string): void {
+  const ids = dismissedIds();
+  ids.add(messageId);
+  while (ids.size > MAX_DISMISSED) ids.delete(ids.values().next().value as string);
+  try {
+    window.localStorage.setItem(DISMISSED_STORAGE_KEY, JSON.stringify([...ids]));
+  } catch {
+    // As above: kept in memory only.
+  }
+}
 
 const states = new Map<string, AdeCloudChatQueueState>();
 const listeners = new Set<() => void>();
@@ -49,6 +88,13 @@ function openRows(messages: CloudChatQueuedMessage[]): CloudChatQueuedMessage[] 
     .sort((a, b) => a.seq - b.seq);
 }
 
+function failedRows(messages: CloudChatQueuedMessage[]): CloudChatQueuedMessage[] {
+  const dismissed = dismissedIds();
+  return messages
+    .filter((message) => message.state === "failed" && !delivered.has(message.messageId) && !dismissed.has(message.messageId))
+    .sort((a, b) => a.seq - b.seq);
+}
+
 /** Reads the chat's open messages from the account. An older server (null) leaves the rows as they are. */
 export async function refreshAdeCloudChatQueue(machineKey: string, chatId: string): Promise<void> {
   const read = window.ade?.adeCloud?.chatMessages;
@@ -58,7 +104,7 @@ export async function refreshAdeCloudChatQueue(machineKey: string, chatId: strin
   try {
     const messages = await read({ machineKey, chatId });
     if (!messages) return;
-    publish(key, { ...(states.get(key) ?? current), messages: openRows(messages), readFailed: false });
+    publish(key, { ...(states.get(key) ?? current), messages: openRows(messages), failed: failedRows(messages), readFailed: false });
   } catch {
     publish(key, { ...(states.get(key) ?? current), readFailed: true });
   }
@@ -109,7 +155,12 @@ export function noteAdeCloudQueuedSend(
     updatedAt: now,
   };
   const others = current.messages.filter((entry) => entry.messageId !== answer.messageId);
-  publish(key, { messages: [...others, optimistic], wake: { state: answer.wake.state, launchId: answer.wake.launchId ?? null }, readFailed: false });
+  publish(key, {
+    messages: [...others, optimistic],
+    failed: current.failed.filter((entry) => entry.messageId !== answer.messageId),
+    wake: { state: answer.wake.state, launchId: answer.wake.launchId ?? null },
+    readFailed: false,
+  });
   void refreshAdeCloudChatQueue(address.machineKey, address.chatId);
 }
 
@@ -122,6 +173,17 @@ export async function cancelAdeCloudQueuedMessage(machineKey: string, chatId: st
   const key = keyOf(machineKey, chatId);
   const current = states.get(key) ?? EMPTY;
   publish(key, { ...current, messages: current.messages.filter((message) => message.messageId !== messageId) });
+}
+
+/**
+ * The person put a failed message's text back in the composer, or dismissed
+ * it: its row goes away in this browser for good.
+ */
+export function dismissAdeCloudFailedMessage(machineKey: string, chatId: string, messageId: string): void {
+  rememberDismissed(messageId);
+  const key = keyOf(machineKey, chatId);
+  const current = states.get(key);
+  if (current) publish(key, { ...current, failed: current.failed.filter((message) => message.messageId !== messageId) });
 }
 
 /** What `withSavedChatReads` does with a send to a chat whose cloud computer is asleep. */
@@ -166,6 +228,8 @@ export function useAdeCloudChatQueue(args: { pin: OpenProjectBinding | null | un
   waking: boolean;
   refresh: () => void;
   cancel: (messageId: string) => Promise<void>;
+  /** Drops a failed row (after the person put its text back, or dismissed it). */
+  dismiss: (messageId: string) => void;
 } {
   const { pin, sessionId } = args;
   const location = sessionId ? savedChatLocation(pin, sessionId, () => false) ?? savedChatLocationForSession(sessionId) : null;
@@ -187,6 +251,9 @@ export function useAdeCloudChatQueue(args: { pin: OpenProjectBinding | null | un
     if (!machineKey || !chatId) return;
     await cancelAdeCloudQueuedMessage(machineKey, chatId, messageId);
   }, [chatId, machineKey]);
+  const dismiss = useCallback((messageId: string) => {
+    if (machineKey && chatId) dismissAdeCloudFailedMessage(machineKey, chatId, messageId);
+  }, [chatId, machineKey]);
   const waking = state.messages.some((message) => message.state === "queued") && state.wake?.state !== "launching";
-  return { ...state, address: machineKey && chatId ? { machineKey, chatId } : null, waking, refresh, cancel };
+  return { ...state, address: machineKey && chatId ? { machineKey, chatId } : null, waking, refresh, cancel, dismiss };
 }
