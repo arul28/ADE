@@ -1520,6 +1520,11 @@ enum ADEPreviewScreen: String, CaseIterable {
   case settingsMachinePage = "settings-machine-page"
   /// A machine page whose last connect failed: one status, one action.
   case settingsMachinePageFailing = "settings-machine-page-failing"
+  /// Machines behind on their track: Update on each row, "Update all", and
+  /// the ask before a restart. See `SettingsMachinesPreviewHost`.
+  case settingsMachineUpdates = "settings-machine-updates"
+  /// The Mac Studio's page with its ADE card and Update & restart.
+  case settingsMachineUpdatePage = "settings-machine-update-page"
   /// The Work list's slim "Couldn't load your chats" notice. See
   /// `WorkLoadNoticePreviewHost`.
   case workLoadNotice = "work-load-notice"
@@ -1707,6 +1712,10 @@ struct ADEPreviewScreenHost: View {
       SettingsMachinesPreviewHost(showsPage: true)
     case .settingsMachinePageFailing:
       SettingsMachinesPreviewHost(showsFailingPage: true)
+    case .settingsMachineUpdates:
+      SettingsMachinesPreviewHost(showsUpdates: true)
+    case .settingsMachineUpdatePage:
+      SettingsMachinesPreviewHost(showsPage: true, showsUpdates: true)
     case .workLoadNotice:
       WorkLoadNoticePreviewHost()
     case .filesPicker:

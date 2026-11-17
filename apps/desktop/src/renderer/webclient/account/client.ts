@@ -357,6 +357,9 @@ function machinesSignature(machines: readonly AdeAccountMachine[]): string {
     .join("\u0001");
 }
 
+/** How long one `/releases/latest` answer is reused. */
+const LATEST_RELEASES_REUSE_MS = 10 * 60_000;
+
 export class BrowserAccountClient {
   private session: BrowserAccountSession | null = null;
   private sessionGeneration = 0;
@@ -1199,6 +1202,57 @@ export class BrowserAccountClient {
     }
     return { status: response.status, body };
   }
+
+  /**
+   * The newest ADE build on each track (`GET /releases/latest`), for "Update &
+   * restart" on another machine. A browser cannot read GitHub's release
+   * downloads, so the account directory reads them. One read per ten minutes;
+   * null for a track never read. Never rejects.
+   */
+  async readLatestReleases(): Promise<{ stable: string | null; beta: string | null }> {
+    const empty = { stable: null, beta: null };
+    const config = this.config;
+    if (!config || !browserAccountIsSignedIn(this.snapshot.state)) return this.latestReleases?.value ?? empty;
+    if (this.latestReleases && Date.now() - this.latestReleases.atMs < LATEST_RELEASES_REUSE_MS) return this.latestReleases.value;
+    this.latestReleasesRead ??= (async () => {
+      try {
+        const token = await this.getAccessToken();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), DIRECTORY_MUTATION_TIMEOUT_MS);
+        try {
+          const response = await (this.options.fetchImpl ?? fetch)(`${config.directoryBaseUrl}/releases/latest`, {
+            method: "GET",
+            headers: { accept: "application/json", authorization: `Bearer ${token}` },
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            cache: "no-store",
+            redirect: "error",
+            signal: controller.signal,
+          });
+          if (!response.ok) return this.latestReleases?.value ?? empty;
+          const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+          const version = (raw: unknown): string | null =>
+            typeof raw === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(raw.trim()) ? raw.trim() : null;
+          const value = {
+            stable: version(body?.stable) ?? this.latestReleases?.value.stable ?? null,
+            beta: version(body?.beta) ?? this.latestReleases?.value.beta ?? null,
+          };
+          this.latestReleases = { value, atMs: Date.now() };
+          return value;
+        } finally {
+          clearTimeout(timer);
+        }
+      } catch {
+        return this.latestReleases?.value ?? empty;
+      } finally {
+        this.latestReleasesRead = null;
+      }
+    })();
+    return await this.latestReleasesRead;
+  }
+
+  private latestReleases: { value: { stable: string | null; beta: string | null }; atMs: number } | null = null;
+  private latestReleasesRead: Promise<{ stable: string | null; beta: string | null }> | null = null;
 
   /**
    * The account's project list, read from the account directory (S14). The

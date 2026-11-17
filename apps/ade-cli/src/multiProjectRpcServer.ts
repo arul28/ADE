@@ -48,6 +48,7 @@ import type {
 } from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
 import { isHighVolumeRuntimeEvent, runtimeEventFrameLaneId } from "./runtimeEventVolume";
+import { joinOrStartMachineUpdate } from "./services/runtime/machineUpdateInFlight";
 import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
 import type { MachineUpdateAndRestartDeps } from "./services/runtime/machineUpdateAndRestart";
 import {
@@ -1053,17 +1054,6 @@ const LIST_ICON_RESOLVE_BUDGET_MS = 750;
  * into an empty reply.
  */
 const ICON_WRITE_RESOLVE_BUDGET_MS = 8_000;
-
-/**
- * The one "Update & restart" run this process will do at a time.
- *
- * Module-scoped on purpose: overlapping callers are not one impatient client
- * but several — a desktop, a phone, and a reconnect that retried — each on its
- * own connection and its own handler. Two runs would download and swap the same
- * runtime concurrently and then both ask the service to restart, mid-swap.
- * Whoever asks while a run is in flight joins that run and gets its result.
- */
-let machineUpdateAndRestartInFlight: Promise<unknown> | null = null;
 
 /**
  * What the shared project record asks of one icon resolve (see
@@ -3552,19 +3542,14 @@ export function createMultiProjectRpcRequestHandler(
         authenticatedName: options.peerDeviceId ? options.peerDeviceName ?? null : null,
         clientName: callerClientName(),
       });
-      if (machineUpdateAndRestartInFlight) return await machineUpdateAndRestartInFlight;
-      const run = (async () => {
+      // One run per process, joined synchronously: a phone's sync command
+      // joins this run too (`machineUpdateInFlight.ts`).
+      return await joinOrStartMachineUpdate(async () => {
         const { runMachineUpdateAndRestart } = await import(
           "./services/runtime/machineUpdateAndRestart"
         );
         return await runMachineUpdateAndRestart(controls, targetVersion, requestedBy);
-      })();
-      machineUpdateAndRestartInFlight = run;
-      try {
-        return await run;
-      } finally {
-        if (machineUpdateAndRestartInFlight === run) machineUpdateAndRestartInFlight = null;
-      }
+      });
     }
 
     // The desktop's pre-suspend beat, forwarded to the brain that publishes

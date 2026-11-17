@@ -438,6 +438,12 @@ import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/ch
 import { createWebhookRemoteCommandHandlers, type WebhookRemoteSource } from "./webhookRemoteCommands";
 import { createAutomationRuleRemoteCommandHandlers, type AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 import { readAgentSkill } from "../skills/agentSkillCatalogService";
+import {
+  getMachineUpdateRemoteCommands,
+  MACHINE_UPDATE_REMOTE_COMMAND_ACTIONS,
+  MACHINE_UPDATE_REMOTE_COMMAND_POLICY,
+  runMachineUpdateRemoteCommand,
+} from "./machineUpdateRemoteCommands";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -5937,6 +5943,22 @@ function registerPersonalChatRemoteCommands({ args, register }: RemoteCommandReg
   );
 }
 
+/**
+ * "Update & restart" for this machine, from a phone or browser on the project
+ * host's socket. Registered only on a brain that can update itself.
+ */
+function registerMachineUpdateRemoteCommands({ register }: RemoteCommandRegistrationDeps): void {
+  if (!getMachineUpdateRemoteCommands()) return;
+  for (const action of MACHINE_UPDATE_REMOTE_COMMAND_ACTIONS) {
+    register(
+      action,
+      { ...MACHINE_UPDATE_REMOTE_COMMAND_POLICY },
+      async (payload) => await runMachineUpdateRemoteCommand(action, payload, null),
+      "runtime",
+    );
+  }
+}
+
 function registerPushRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   const publisher = args.pushPublisherService ?? null;
   const unavailable = (action: string) => async (): Promise<never> => {
@@ -8827,6 +8849,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerWorkRemoteCommands({ args, register });
   registerChatRemoteCommands({ args, register });
   registerPersonalChatRemoteCommands({ args, register });
+  registerMachineUpdateRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
   registerWorkToolsRemoteCommands({ args, register });
   registerComputerUseRemoteCommands({ args, register });

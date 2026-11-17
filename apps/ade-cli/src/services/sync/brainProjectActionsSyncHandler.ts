@@ -124,6 +124,12 @@ import {
   parseHelloPayload,
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
+import { evaluateRemoteCommandPolicy } from "./syncRemoteCommandService";
+import {
+  isMachineUpdateRemoteCommandAction,
+  machineUpdateRemoteCommandDescriptors,
+  runMachineUpdateRemoteCommand,
+} from "./machineUpdateRemoteCommands";
 import {
   ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS,
   buildSyncHostHelloOkPayload,
@@ -1315,6 +1321,65 @@ export function createBrainProjectActionsSyncHandler(
           }
           break;
         }
+        // This machine's "Update & restart", from a paired phone or browser:
+        // the same run the desktop's runtime RPC starts. Machine-wide, so it
+        // works with or without a project host.
+        if (isMachineUpdateRemoteCommandAction(action)) {
+          const descriptor = machineUpdateRemoteCommandDescriptors().find((entry) => entry.action === action) ?? null;
+          const rejection = evaluateRemoteCommandPolicy({
+            action,
+            descriptor,
+            peer: { pairingRecord: peer.authKind === "paired" ? peer.pairingRecord : null },
+            requestedProjectId: null,
+            hostProjectId: null,
+          });
+          if (rejection) {
+            args.logger.warn("sync_brain.machine_update_refused", {
+              action,
+              code: rejection.code,
+              peerDeviceId: peer.metadata?.deviceId ?? null,
+              peerDeviceType: peer.pairingRecord?.peerDeviceType ?? null,
+            });
+            send(peer.ws, "command_ack", {
+              commandId,
+              accepted: false,
+              status: "rejected",
+              message: rejection.message,
+            }, envelope.requestId);
+            send(peer.ws, "command_result", {
+              commandId,
+              ok: false,
+              error: { code: rejection.code, message: rejection.message },
+            }, envelope.requestId);
+            break;
+          }
+          send(peer.ws, "command_ack", {
+            commandId,
+            accepted: true,
+            status: "accepted",
+            message: `Executing ${action}.`,
+          }, envelope.requestId);
+          try {
+            const result = await runMachineUpdateRemoteCommand(
+              action,
+              commandArgs as Record<string, unknown>,
+              peer.pairingRecord,
+            );
+            if (!isCurrent()) return;
+            send(peer.ws, "command_result", { commandId, ok: true, result }, envelope.requestId);
+          } catch (error) {
+            if (!isCurrent()) return;
+            send(peer.ws, "command_result", {
+              commandId,
+              ok: false,
+              error: {
+                code: "command_failed",
+                message: error instanceof Error ? error.message : String(error),
+              },
+            }, envelope.requestId);
+          }
+          break;
+        }
         const descriptor = action.startsWith("personalChats.")
           ? personalChatCommandDescriptors(args.personalChatScope).find((entry) => entry.action === action)
           : undefined;
@@ -2098,6 +2163,16 @@ export function createBrainProjectActionsSyncHandler(
           const routedDescriptors = isRosterSyncPeer(hello.peer) ? await routedCommands.advertisedDescriptors() : [];
           if (!isPeerCurrent(lifecycleGeneration)) return;
           const syncHostRecoveryAuthorized = canManageSyncHost(peer);
+          // Offered only to a peer the policy would let run it (a paired
+          // phone or browser), and only by a brain that can update itself.
+          const machineUpdateDescriptors = machineUpdateRemoteCommandDescriptors().filter((descriptor) =>
+            !evaluateRemoteCommandPolicy({
+              action: descriptor.action,
+              descriptor,
+              peer: { pairingRecord: peer.authKind === "paired" ? peer.pairingRecord : null },
+              requestedProjectId: null,
+              hostProjectId: null,
+            }));
           const negotiatedCompression = negotiateSyncApplicationCompression(hello.compression);
           const chunkedEnvelopes = hello.peer.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY) === true;
           const helloOkPayload = buildSyncHostHelloOkPayload({
@@ -2119,8 +2194,9 @@ export function createBrainProjectActionsSyncHandler(
               ...routedDescriptors.map((entry) => entry.action),
               SYNC_HOST_DIAGNOSE_ACTION,
               ...(syncHostRecoveryAuthorized ? [SYNC_HOST_RECOVER_ACTION] : []),
+              ...machineUpdateDescriptors.map((entry) => entry.action),
             ],
-            remoteCommandDescriptors: [...personalDescriptors, ...routedDescriptors],
+            remoteCommandDescriptors: [...personalDescriptors, ...routedDescriptors, ...machineUpdateDescriptors],
             localCommandDescriptors: [],
             compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
             cloudRelayWssUrl: accountAuthService.getStatus().signedIn

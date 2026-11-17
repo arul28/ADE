@@ -10,9 +10,12 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeDoctorResult,
   RemoteRuntimeProjectRecord,
+  RemoteRuntimeUpdateAndRestartResult,
+  UpdateImpact,
   CloneProjectInput,
 } from "../../../shared/types";
 import { markExpected } from "../../../shared/expectedError";
+import { parseRuntimeUpdateImpact, UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
 import {
   sameMachineKey,
   type MachineAddress,
@@ -162,6 +165,17 @@ function readWorkspaceState(accountKey: string): WebWorkspaceState {
   } catch {
     return emptyWorkspaceState();
   }
+}
+
+const MACHINE_UPDATE_IMPACT_ACTION = "machine.updateImpact";
+const MACHINE_UPDATE_AND_RESTART_ACTION = "machine.updateAndRestart";
+/** The desktop's `REMOTE_MACHINE_UPDATE_TIMEOUT_MS`. */
+const MACHINE_UPDATE_TIMEOUT_MS = 15 * 60_000;
+const MACHINE_UPDATE_IMPACT_TIMEOUT_MS = 5_000;
+
+/** Whether the machine's ADE advertises `action` to this tab. */
+function clientSupportsAction(client: AdeSyncClient, action: string): boolean {
+  return client.getCommandDescriptors().some((descriptor) => descriptor.action === action);
 }
 
 export type FederatedWebAdapter = {
@@ -855,6 +869,39 @@ export function createFederatedWebAdapter({
       if (!client) return "";
       const answer = await client.requestDefaultParentDir();
       return answer?.ok ? answer.parentDir ?? "" : "";
+    },
+    // "Update & restart" on another machine, over that machine's own
+    // connection: the same `machine.updateAndRestart` the phone sends, and the
+    // same run the desktop's runtime RPC starts. A machine whose ADE predates
+    // the command does not advertise it, and its Update button stays hidden.
+    async updateAndRestart(targetId: string, targetVersion?: string | null): Promise<RemoteRuntimeUpdateAndRestartResult> {
+      const client = manager.getClient(targetId);
+      if (!client || !clientSupportsAction(client, MACHINE_UPDATE_AND_RESTART_ACTION)) {
+        throw new Error("That machine's ADE can't be updated from the web. Update it on the computer once.");
+      }
+      const result = await client.sendCommand(
+        MACHINE_UPDATE_AND_RESTART_ACTION,
+        {
+          targetVersion: targetVersion?.trim() || null,
+          requestedBy: { machineName: "ADE Web", clientKind: "web" },
+        },
+        // Downloading and installing a build can take minutes.
+        { timeoutMs: MACHINE_UPDATE_TIMEOUT_MS },
+      );
+      return result as RemoteRuntimeUpdateAndRestartResult;
+    },
+    // Never rejects: a machine that cannot answer is "unknown".
+    async getUpdateImpact(targetId: string): Promise<UpdateImpact> {
+      const client = manager.getClient(targetId);
+      if (!client || !clientSupportsAction(client, MACHINE_UPDATE_IMPACT_ACTION)) return UNKNOWN_UPDATE_IMPACT;
+      try {
+        const impact = parseRuntimeUpdateImpact(
+          await client.sendCommand(MACHINE_UPDATE_IMPACT_ACTION, {}, { timeoutMs: MACHINE_UPDATE_IMPACT_TIMEOUT_MS }),
+        );
+        return impact ? { ...impact, checked: true } : UNKNOWN_UPDATE_IMPACT;
+      } catch {
+        return UNKNOWN_UPDATE_IMPACT;
+      }
     },
     // A web tab reaches a machine through the relay, never over SSH, so there
     // is no host key to confirm before Connect.

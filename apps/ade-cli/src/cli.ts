@@ -30016,6 +30016,7 @@ async function runServe(
       readMachineRuntimeActivitySummary,
       readMachineBusyFacts,
       readMachineNextScheduledWakeAt,
+      readMachineUpdateImpact,
     },
     { createSharedSyncListener },
     { createLaneShareGuestRouter },
@@ -31722,6 +31723,49 @@ async function runServe(
     return routing;
   };
 
+  // An embedded runtime is a guest inside an external process. Updating and
+  // restarting the MACHINE's ADE from inside it would reach far outside the
+  // embedder's lifecycle — it is the same "never claim machine authority"
+  // invariant that forces sync off, so it belongs to the profile rather
+  // than to whatever the caller's role default happens to be.
+  const machineUpdateControls = embedded
+    ? null
+    : createMachineUpdateControls({
+      version: VERSION,
+      logger: headlessProjectLogger,
+      requestRestart: requestBrainServiceRestartFromServe,
+      requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
+      // Kept for the next start, which names who asked (`brainRestartCause.ts`).
+      noteAcceptedUpdate: (request) => writeBrainUpdateRequest(path.dirname(lastFailurePathForMachine()), request),
+      updateInstallMode: () => readDesktopUpdateInstallMode(),
+      // The app this brain reports as `desktopAppVersion`, on every platform.
+      installedApp: async () => {
+        const { readInstalledDesktopApp } = await import(
+          "../../desktop/src/main/services/native/nativeHelperPaths"
+        );
+        return readInstalledDesktopApp();
+      },
+    });
+  // The phone's "Update & restart" (sync commands), installed before any
+  // project boots so every project host registers it. Same run as the
+  // desktop's `machine.updateAndRestart` RPC below.
+  const { joinOrStartMachineUpdate } = await import("./services/runtime/machineUpdateInFlight");
+  const clearMachineUpdateRemoteCommands = machineUpdateControls
+    ? await import("./services/sync/machineUpdateRemoteCommands").then(({ setMachineUpdateRemoteCommands }) =>
+      setMachineUpdateRemoteCommands({
+        updateImpact: async () => await readMachineUpdateImpact({
+          projectRegistry,
+          scopeRegistry,
+          personalChatScope,
+          readContinueAfterRestart: () => resolveContinueAfterRestart(),
+        }),
+        updateAndRestart: (targetVersion, requestedBy) => joinOrStartMachineUpdate(async () => {
+          const { runMachineUpdateAndRestart } = await import("./services/runtime/machineUpdateAndRestart");
+          return await runMachineUpdateAndRestart(machineUpdateControls, targetVersion, requestedBy);
+        }),
+      }))
+    : () => {};
+
   // Ask once, off the boot path: agents and `ade cloud` read this answer, and a
   // chat that launches later keeps it current (`watchCloudAccessForSkills`).
   if (!embedded && servesMachineEndpoint) {
@@ -32377,33 +32421,14 @@ async function runServe(
         accountRetainsMachineOwnership: () =>
           accountSessionRetainsMachineOwnership(brainAccountAuthService.getStatus()),
       }),
-      // An embedded runtime is a guest inside an external process. Updating and
-      // restarting the MACHINE's ADE from inside it would reach far outside the
-      // embedder's lifecycle — it is the same "never claim machine authority"
-      // invariant that forces sync off, so it belongs to the profile rather
-      // than to whatever the caller's role default happens to be.
-      ...(embedded
-        ? {}
-        : {
+      // Embedded runtimes get none of these (see `machineUpdateControls`).
+      ...(machineUpdateControls
+        ? {
           readContinueAfterRestart: () => resolveContinueAfterRestart(),
-          machineUpdateControls: createMachineUpdateControls({
-            version: VERSION,
-            logger: headlessProjectLogger,
-            requestRestart: requestBrainServiceRestartFromServe,
-            requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
-            // Kept for the next start, which names who asked (`brainRestartCause.ts`).
-            noteAcceptedUpdate: (request) => writeBrainUpdateRequest(path.dirname(lastFailurePathForMachine()), request),
-            updateInstallMode: () => readDesktopUpdateInstallMode(),
-            // The app this brain reports as `desktopAppVersion`, on every platform.
-            installedApp: async () => {
-              const { readInstalledDesktopApp } = await import(
-                "../../desktop/src/main/services/native/nativeHelperPaths"
-              );
-              return readInstalledDesktopApp();
-            },
-          }),
+          machineUpdateControls,
           reportMachinePowerTransition: reportDesktopMachinePowerTransition,
-        }),
+        }
+        : {}),
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -32713,6 +32738,7 @@ async function runServe(
     }
     clearSyncRuntimeRpcHandlerFactory?.();
     clearSyncRuntimeRpcHandlerFactory = null;
+    clearMachineUpdateRemoteCommands();
   };
 
   const listen = async (

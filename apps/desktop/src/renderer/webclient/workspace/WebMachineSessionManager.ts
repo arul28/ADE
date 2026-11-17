@@ -424,7 +424,9 @@ export class WebMachineSessionManager {
                 ? "parked"
                 : "idle",
         arch: null,
-        version: null,
+        // What the machine's brain said in its hello: "Update & restart"
+        // compares it with the newest build on its track.
+        version: state === "live" ? session?.client?.getBrainAppVersion() ?? null : null,
         route: status?.endpoint
           ? {
               kind: status.endpoint.startsWith("wss://") ? "relay" : "lan",

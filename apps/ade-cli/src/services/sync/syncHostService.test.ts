@@ -9063,7 +9063,9 @@ describe("CTO-gated Linear sync commands", () => {
         // will. `android.*` is the same: only a runtime with an emulator
         // service registers it. Their absence is exactly what feature
         // detection is for, so asserting them here would be asserting the fixture.
-        if (action.startsWith("apple.") || action.startsWith("android.")) continue;
+        // `machine.*` (Update & restart) is registered only by an `ade serve`
+        // brain that can update its machine, which this fixture is not.
+        if (action.startsWith("apple.") || action.startsWith("android.") || action.startsWith("machine.")) continue;
         const viewerBlocked = viewerBlockedActions.has(action);
         const controllerAllowed = controllerAllowedActions.has(action);
         // Optional actions answered by the runtime's own stores rather than a

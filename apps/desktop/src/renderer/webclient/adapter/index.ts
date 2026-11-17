@@ -259,7 +259,12 @@ export function createAdeWebAdapter(
     keepAwakeGet: webKeepAwakeMethods.keepAwakeGet,
     keepAwakeSetLevel: webKeepAwakeMethods.keepAwakeSetLevel,
     keepAwakeFixSystemSleep: webKeepAwakeMethods.keepAwakeFixSystemSleep,
-    updateGetState: webUpdateMethods.updateGetState,
+    // This tab installs nothing; the newest build on each track is only for
+    // "Update & restart" on the account's other machines (`machineUpdates.ts`).
+    updateGetState: async () => ({
+      ...await webUpdateMethods.updateGetState(),
+      latestByTrack: await accountClient.readLatestReleases(),
+    }),
     updateGetPreferences: webUpdateMethods.updateGetPreferences,
     updateSetPreferences: webUpdateMethods.updateSetPreferences,
     updateGetInstallImpact: webUpdateMethods.updateGetInstallImpact,

@@ -1224,6 +1224,11 @@ export class AdeSyncClient {
     return result;
   }
 
+  /** The ADE version the connected machine's brain reported in its hello; null before one. */
+  getBrainAppVersion(): string | null {
+    return this.latestHello?.brain.appVersion?.trim() || null;
+  }
+
   getCommandDescriptors(): SyncRemoteCommandDescriptor[] {
     return this.latestHello?.features.commandRouting.actions ?? [];
   }

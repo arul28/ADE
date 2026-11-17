@@ -167,6 +167,28 @@ the phone leaves Linear connect/reconnect/disconnect hidden (falling back to the
 API-key path or an "update ADE on your Mac" hint) rather than treating their
 absence as a broken connection. Their omission never flips a host to `limited`.
 
+`machine.updateImpact` and `machine.updateAndRestart` are the phone's
+"Update & restart" for a computer, and they are optional too. They are the
+sync-command twins of the runtime RPC's `runtime.updateImpact` and
+`machine.updateAndRestart` that a desktop calls, and they run the same
+transaction: `joinOrStartMachineUpdate` coalesces a desktop's call and
+a phone's call into one run. Both are runtime-scoped and are answered on both
+of the phone's paths: the project host's registry and the brain ingress (a
+roster socket, or a socket parked there while the host is down). Policy is
+`controllerAllowed` only, never queueable: any paired phone or browser may
+run them, while a desktop viewer, an unpaired socket or a lane-share guest is
+refused. The requester's name comes from the pairing record when there is
+one, not from the client's claim. Only a brain started by `ade serve` that
+owns its machine installs them (`setMachineUpdateRemoteCommands`). An
+embedded runtime installs nothing, advertises nothing, and the phone keeps
+"Update ADE on that computer". ADE Web sends the same two commands from its
+`remoteRuntime.updateAndRestart` / `getUpdateImpact` (`webclient/adapter/federated.ts`),
+so the desktop's own update screens work in a browser tab. The phone and the
+web learn which build is newest from the account directory's
+`GET /releases/latest`, which reads the same two release manifests the
+desktop reads (`latestByTrack.ts`). The phone falls back to the manifests
+directly when signed out. No client moves a machine across tracks.
+
 `cto.getAttention` is optional for the same reason. The phone checks
 `supportsRemoteAction("cto.getAttention")` before probing, so against an older
 brain it simply never lights the CTO badge; putting it in the required set would
