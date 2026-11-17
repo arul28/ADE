@@ -1,9 +1,8 @@
 # Issues: opening an issue where you are
 
 Clicking an issue anywhere in ADE shows the issue itself, rendered natively,
-without leaving the page you are on. It used to open the whole Linear browser and
-search for the identifier, which covered the chat and made "show me this ticket"
-a search.
+without leaving the page you are on. It does not open the whole Linear browser
+or search for the identifier.
 
 Linear, GitHub and Jira issues open natively and are editable in place:
 status and the other properties through pickers, the title and description
@@ -140,8 +139,8 @@ test server below works. Jira URLs use `/browse/KEY-123`.
 The project binding is `issueTrackers.jira.projectKeys` in this project's
 `.ade/local.yaml`. It is the one place ADE reads Jira project keys from: the
 pane's default project filter, the create form's default project, and whether a
-bare `KEY-123` in agent prose is a Jira chip. The shared `ade.yaml` is no longer
-read.
+bare `KEY-123` in agent prose is a Jira chip. The shared `ade.yaml` is not
+read for Jira.
 
 The runtime exposes Jira as `window.ade.jira` (runtime-only; see
 [ARCHITECTURE](../../ARCHITECTURE.md)). Its actions are in the `jira` action
@@ -547,7 +546,7 @@ Issues tab and the sheet. Turning Linear off is signing out.
   the number first and refuses a pull request.
 - `apps/desktop/src/renderer/lib/linearLaunchRequests.ts` — the viewer asks the
   top-bar Linear host to launch; the launch modal and runner keep one owner.
-- `apps/desktop/src/renderer/lib/linearIssueQuickViewNavigation.ts` — now only
+- `apps/desktop/src/renderer/lib/linearIssueQuickViewNavigation.ts` — only
   "open the Linear pane" (the Issues tool's empty state, the sheet's "All
   issues").
 - `apps/desktop/src/renderer/lib/issueDrag.ts` — the drag payload for dropping
@@ -574,11 +573,11 @@ Issues tab and the sheet. Turning Linear off is signing out.
 - **Failures say what fixes them.** A failed read asks the Linear connection
   once: no project open, Linear not connected, issue not returned, or a request
   error each get their own words and action.
-- **Detaching from a sent message** used to live in the Linear details modal a
-  sent chip opened. The chip opens the viewer now, so its × detaches.
+- **Detaching from a sent message** is the sent chip's ×; the chip opens the
+  viewer.
 - **Comments over the runtime** take the issue id as a scalar (`{ arg }` in
-  preload), like `fetchIssueById`. Passing `{ args }` handed the tracker an
-  object and every runtime comment read failed.
+  preload), like `fetchIssueById`. Passing `{ args }` hands the tracker an
+  object and every runtime comment read fails.
 
 ## A plain `#123`
 
