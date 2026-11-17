@@ -39,6 +39,8 @@ import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { relativeWhen } from "../../../lib/format";
 import { ModernPage } from "../primitives";
+import { isWebClientMode } from "../../../lib/webClientMode";
+import { WEB_PASSWORDS_SENTENCE } from "../../../../shared/adeCloud/accountCalls";
 import { useSettingsSearchAnchors } from "../settingsSearchContext";
 import {
   ChangeValueDialog,
@@ -146,7 +148,27 @@ function MenuItem({ icon, children, onClick, danger, checked, hint }: { icon?: R
   );
 }
 
+/**
+ * The web client reads no vault (its calls throw `WEB_PASSWORDS_SENTENCE`):
+ * the page says where to see and change Passwords, and nothing else.
+ */
 export function PasswordsSection() {
+  if (isWebClientMode()) {
+    return (
+      <div className="ade-pw-page">
+        <ModernPage>
+          <Banner
+            layout="inline"
+            model={{ id: "passwords-web", tone: "info", title: WEB_PASSWORDS_SENTENCE, report: false }}
+          />
+        </ModernPage>
+      </div>
+    );
+  }
+  return <PasswordsSectionBody />;
+}
+
+function PasswordsSectionBody() {
   const location = useLocation();
   const searchAnchors = useSettingsSearchAnchors();
   const openProjectRoot = useAppStore((state) => state.project?.rootPath ?? null);
