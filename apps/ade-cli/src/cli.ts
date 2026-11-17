@@ -32011,28 +32011,26 @@ async function runServe(
         await providerLoginSync()?.pass(null);
       },
       // The person's messages sent before the chat existed (the server keeps them).
-      // Each goes once the chat's running turn is over (the opening message's, or
-      // the one before it): Claude takes a send during a turn and then fails that
-      // turn ("Turn already active"), so the message would be lost while reported
-      // sent. Codex refuses it (`turn_in_flight`) and is waited out the same way.
-      // The status is read every few seconds, for at most 30 minutes. The same
-      // `clientSendId` makes a retry safe.
+      // `waitForChatIdle` runs first (cloudLaunchMessages), so this is one send;
+      // the same `clientSendId` makes a retry safe.
       sendChatMessage: async (projectId, sessionId, message) => {
         const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
         if (!chat) throw new Error("This ADE runtime has no chats.");
+        await chat.sendMessage({ sessionId, text: message.text, clientSendId: message.clientSendId });
+      },
+      // A queued message waits until the chat's running turn is over (the opening
+      // message's, or the one before it): Claude takes a send during a turn and
+      // then fails that turn ("Turn already active"). Read every 5 seconds, at most
+      // 30 minutes; false when the turn still runs then.
+      waitForChatIdle: async (projectId, sessionId) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        if (!chat) return false;
         const waitUntil = Date.now() + 30 * 60_000;
-        const turnRunning = async () => Date.now() < waitUntil && (await chat.getSessionSummary(sessionId))?.status === "active";
         // A turn just accepted (the opening message's) shows as active a moment later.
         await new Promise((resolve) => setTimeout(resolve, 5_000));
         for (;;) {
-          while (await turnRunning()) await new Promise((resolve) => setTimeout(resolve, 5_000));
-          try {
-            await chat.sendMessage({ sessionId, text: message.text, clientSendId: message.clientSendId });
-            return;
-          } catch (error) {
-            const refusedForTurn = isRecord(error) && error.code === "turn_in_flight";
-            if (!refusedForTurn || Date.now() >= waitUntil) throw error;
-          }
+          if ((await chat.getSessionSummary(sessionId))?.status !== "active") return true;
+          if (Date.now() >= waitUntil) return false;
           await new Promise((resolve) => setTimeout(resolve, 5_000));
         }
       },

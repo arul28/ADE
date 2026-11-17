@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 import { CloudApiError } from "../../../../desktop/src/shared/cloudApiClient";
 import type { CloudBootLaunchDeps } from "./cloudBootLaunch";
 
-type MessageDeps = Pick<CloudBootLaunchDeps, "launchId" | "logger" | "stateFile" | "api" | "sendChatMessage">;
+type MessageDeps = Pick<CloudBootLaunchDeps, "launchId" | "logger" | "stateFile" | "api" | "sendChatMessage" | "waitForChatIdle">;
 
 /** Which messages this computer claimed and sent (`<state file>.messages.json`), so a restart never sends one twice. */
 type MessageJournal = { launchId: string; claims: Record<string, string>; attempted: string[]; sent: string[] };
@@ -47,6 +47,11 @@ function writeJournal(file: string, journal: MessageJournal): void {
   const temp = `${file}.tmp`;
   fs.writeFileSync(temp, JSON.stringify(journal));
   fs.renameSync(temp, file);
+}
+
+/** A send the chat refused because a turn runs (Codex's `turn_in_flight`). */
+function isTurnInFlight(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "turn_in_flight";
 }
 
 /**
@@ -110,11 +115,26 @@ export async function deliverQueuedMessages(deps: MessageDeps, projectId: string
       done = false;
       break;
     }
+    // Only to an idle chat, and before the attempt is written: a restart during
+    // the wait finds the message claimed but not tried, so it is sent then.
+    // A turn still running at the wait's limit: this round stops, the claim stays.
+    if (deps.waitForChatIdle && !(await deps.waitForChatIdle(projectId, sessionId))) {
+      logger.warn("cloud_boot_launch.message_waits_for_turn", { launchId });
+      done = false;
+      break;
+    }
     journal.attempted.push(message.messageId);
     writeJournal(file, journal);
     try {
       await deps.sendChatMessage(projectId, sessionId, { text: message.text, clientSendId: `launch-message-${launchId}-${message.messageId}` });
     } catch (error) {
+      // Refused for a running turn (Codex): not sent, so not an attempt; a later round sends it.
+      if (isTurnInFlight(error)) {
+        journal.attempted = journal.attempted.filter((id) => id !== message.messageId);
+        writeJournal(file, journal);
+        done = false;
+        break;
+      }
       await finish(message.messageId, claimId, "failed", `ADE couldn't send this message to the chat: ${errorText(error)}`.slice(0, 300));
       continue;
     }
