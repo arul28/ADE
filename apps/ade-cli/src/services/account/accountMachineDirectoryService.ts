@@ -615,8 +615,13 @@ export class AccountMachineDirectoryService {
       ? currentStatus.userId?.trim() ?? null
       : null;
     const prior = args.priorCredentials;
+    // Only a prior record that holds the secret this pairing just saved goes
+    // back. A host that predates account staging replaced the secret when it
+    // answered, so the prior one would be "pair it again" on every connect.
+    // Removing it instead lets the next account connect pair cleanly.
     if (
       prior
+      && prior.secret === current.secret
       && (prior.accountOwnerUserId == null || prior.accountOwnerUserId === activeOwnerUserId)
       && args.pairedStore.save
     ) {

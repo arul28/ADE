@@ -2534,6 +2534,48 @@ owner, mints a fresh device-bound secret, and returns it in `accountPairing`.
 This is what lets a signed-in device that no longer holds its manual secret
 recover over the network rather than requiring a physical trip back to the Mac.
 
+Adoption never leaves the two ends on different secrets. The new secret travels
+only inside `hello_ok`, so a link that drops before the device saves it used to
+leave the host on the new secret and the device on the old one, with "pair it
+again" on every connect. Now, for a record that already exists:
+
+- The account hello may carry `pairedSecret`, the secret the device already
+  holds for this host (desktop and web send it; iOS does not yet and gets the
+  staging below). The desktop sends it only to the host identity that issued
+  it, and only inside the sealed adoption channel, after the host signed the
+  challenge with its device id. Web sends it over the relay route that
+  already carries the same secret in every paired hello. When it matches the committed
+  or the staged secret, the host keeps that secret, applies the account's
+  ownership and grants, and omits `accountPairing`. Nothing is minted, so no
+  reply can be lost.
+- Otherwise (an older client, or one that lost its secret) the new secret is
+  **staged** behind the committed one (`pendingRotation`, `secretOnly: true`).
+  Ownership and grants apply at once, because the attestation is the proof;
+  only the secret waits. The first hello that authenticates with the new secret
+  promotes it and retires the old one. The staged secret has no expiry window:
+  the device has no follow-up to arm one with, and the old secret was valid
+  before the adoption anyway. A paired hello still needs the record's pinned
+  DPoP key.
+- A later staging (another adoption, or a PIN re-pair) does not take an
+  unproven adoption secret away: it moves to `displacedAccountSecretHashes`
+  (newest first, at most sixteen) and still authenticates and promotes like
+  the staged one. The host keeps only hashes, so it cannot hand an unproven
+  secret out again; the bound covers a device that lost many replies in a
+  row. Proving the staged secret clears the list. Proving a displaced one
+  keeps the staged rotation (a PIN re-pair waiting for `pairing_commit` keeps
+  its window) and the entries issued after it. A phone that saved one
+  adoption's secret and lost the next replies keeps working.
+
+Each account hello that reaches the store logs
+`sync_host.account_pairing_secret` (`sync_ingress.` on the brain) with
+`outcome` `kept`, `staged` or `minted`, never the secret.
+
+A first-time account pairing (no record) still writes straight through: the
+device holds no secret that a lost reply could strand. On the client,
+`reconcileStaleAccountCommit` puts a prior record back only when it holds the
+secret the host kept; after a host that minted a new secret, it removes the
+record instead of saving one the host refuses.
+
 Adoption is an authorization decision and it is gated on evidence, not on the
 caller's claim:
 
@@ -2553,9 +2595,11 @@ caller's claim:
   hello's offered key is ignored.
 
 Adoption is **deferred** while a PIN re-pair is staged on the record and the
-device has not acknowledged it (`pairingStore.hasPendingRotation`). Adoption
-writes through rather than staging, which would discard the staged secret and
-leave the device's `pairing_commit` with nothing to promote. That hello answers
+device has not acknowledged it (`pairingStore.hasPendingPinRotation`). An
+earlier adoption's staged secret does not defer: it never expires, so it would
+block every later adoption of that record. Adoption
+would replace the staged secret and leave the device's `pairing_commit` with
+nothing to promote. That hello answers
 `hello_ok` without `accountPairing` and logs
 `sync_host.account_adoption_deferred_pending_rotation`; a device mid-re-pair
 holds a working secret by definition, and every client treats an omitted

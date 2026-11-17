@@ -1685,6 +1685,13 @@ export type SyncHelloAuth =
       dpop?: SyncDpopProof | null;
       /** Optional legacy one-time desktop runtime authorization. */
       runtimeHostGrant?: string | null;
+      /**
+       * The paired secret this device already holds for the host, if any. A
+       * host that recognizes it keeps it and omits `accountPairing` from
+       * hello_ok, so adoption mints no secret a dropped reply could lose.
+       * Hosts that predate the field ignore it.
+       */
+      pairedSecret?: string | null;
     }
   | {
       kind: "account_sealed";
@@ -1793,9 +1800,10 @@ export type SyncHelloOkPayload = {
   /** Present only for capable clients authenticated through ADE Relay. */
   relayAuthorization?: SyncRelayAuthorizationLease;
   /**
-   * Fresh paired credential minted only when a verified account hello adopts a
-   * genuinely new device. Existing devices keep their stored pairing record,
-   * and the host omits this field so reconnects cannot rotate their secret.
+   * A paired credential the account hello minted: for a new device, or for an
+   * existing record whose device did not prove a secret it holds (then staged
+   * behind the old secret until a hello presents it). Omitted when the host
+   * kept the secret the device presented in `pairedSecret`: keep yours.
    */
   accountPairing?: {
     deviceId: string;

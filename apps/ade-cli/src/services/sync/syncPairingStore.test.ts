@@ -566,8 +566,97 @@ describe("account adoption of a legacy manual pairing", () => {
     expect(after?.accountOwnerUserId).toBe(OWNER_USER_ID);
     expect(after?.dpopPublicKey).toBe(VALID_DPOP_PUBLIC_KEY);
     expect(after?.createdAt).toBe(before?.createdAt);
-    expect(store.verifySecret(peer.deviceId, adopted.secret)).toBe("committed");
+    expect(store.verifySecret(peer.deviceId, adopted.secret)).toBe("pending");
+    expect(store.verifySecret(peer.deviceId, legacy.secret)).toBe("committed");
+  });
+
+  // The new secret leaves this machine inside hello_ok. A drop before the
+  // device saves it used to leave the host on the new secret and the device on
+  // the old one, permanently: "pair it again" on every connect, app restarts
+  // included. Whichever secret the device ends up holding must work.
+  // A phone can save the adopted secret and keep using that socket, so the
+  // secret stays unproven while a later staging (a PIN re-pair, another
+  // adoption) arrives. Losing that later reply must not take it away.
+  it.each([
+    { name: "the reply is lost", deviceKeeps: "old" as const, restage: null, owner: OWNER_USER_ID },
+    { name: "the device saved the reply", deviceKeeps: "new" as const, restage: null, owner: OWNER_USER_ID },
+    { name: "a PIN re-pair's reply is lost next", deviceKeeps: "new" as const, restage: "pin" as const, owner: null },
+    { name: "a second adoption's reply is lost next", deviceKeeps: "new" as const, restage: "account" as const, owner: OWNER_USER_ID },
+    { name: "four more adoptions' replies are lost", deviceKeeps: "new" as const, restage: "account4" as const, owner: OWNER_USER_ID },
+  ])("leaves the device a working secret when $name", async ({ deviceKeeps, restage, owner }) => {
+    const { filePath, pinStore, store } = createStore();
+    const legacy = store.pairPeer(peer, PIN, { dpopPublicKey: VALID_DPOP_PUBLIC_KEY });
+    const adopted = store.pairPeerViaAccount(peer, await attestationFor(OWNER_USER_ID));
+    expect(adopted.secret).not.toBe(legacy.secret);
+    if (restage === "pin") store.pairPeer(peer, PIN, { dpopPublicKey: VALID_DPOP_PUBLIC_KEY });
+    for (let i = restage === "account4" ? 4 : restage === "account" ? 1 : 0; i > 0; i -= 1) {
+      store.pairPeerViaAccount(peer, await attestationFor(OWNER_USER_ID));
+    }
+
+    // Survives a restart of the host, and a device that stays away for days.
+    const reopened = createSyncPairingStore({ filePath, pinStore });
+    vi.useFakeTimers({ now: Date.now() + 7 * 24 * 60 * 60_000 });
+    try {
+      const held = deviceKeeps === "old" ? legacy.secret : adopted.secret;
+      const other = deviceKeeps === "old" ? adopted.secret : legacy.secret;
+      expect(reopened.authenticate(peer.deviceId, held)).toBe(true);
+      expect(reopened.getPairingRecord(peer.deviceId)?.accountOwnerUserId).toBe(owner);
+      if (deviceKeeps === "new") {
+        // Proving the new secret retires the old one. A secret issued after
+        // it stays staged: the device may hold that one too.
+        expect(reopened.authenticate(peer.deviceId, other)).toBe(false);
+        expect(reopened.hasPendingRotation(peer.deviceId)).toBe(restage === "account" || restage === "account4");
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A PIN re-pair displaces an unproven adoption secret and then waits for
+  // its pairing_commit. Another connection presenting the displaced secret in
+  // that window must not cancel the re-pair the device is about to commit.
+  it("keeps a PIN re-pair committable when a displaced adoption secret signs in", async () => {
+    const { store } = createStore();
+    store.pairPeer(peer, PIN, { dpopPublicKey: VALID_DPOP_PUBLIC_KEY });
+    const adopted = store.pairPeerViaAccount(peer, await attestationFor(OWNER_USER_ID));
+    const repaired = store.pairPeer(peer, PIN, { dpopPublicKey: VALID_DPOP_PUBLIC_KEY });
+    expect(store.authenticate(peer.deviceId, repaired.secret, { deferPendingCommit: true })).toBe(true);
+
+    expect(store.authenticate(peer.deviceId, adopted.secret)).toBe(true);
+    expect(store.hasPendingPinRotation(peer.deviceId)).toBe(true);
+    expect(store.commitPendingRotation(peer.deviceId, repaired.secret)).not.toBeNull();
+    expect(store.verifySecret(peer.deviceId, repaired.secret)).toBe("committed");
+    // The PIN re-pair is the newest proof: it retires the adoption secret.
+    expect(store.verifySecret(peer.deviceId, adopted.secret)).toBeNull();
+  });
+
+  it("keeps the secret the device proves it holds instead of minting one", async () => {
+    const { store } = createStore();
+    const legacy = store.pairPeer(peer, PIN, { dpopPublicKey: VALID_DPOP_PUBLIC_KEY });
+
+    const kept = store.pairPeerViaAccount(peer, await attestationFor(OWNER_USER_ID), {
+      presentedSecret: legacy.secret,
+    });
+    expect(kept).toMatchObject({ secret: legacy.secret, keptExistingSecret: true });
+    expect(store.hasPendingRotation(peer.deviceId)).toBe(false);
+    expect(store.getPairingRecord(peer.deviceId)?.accountOwnerUserId).toBe(OWNER_USER_ID);
+
+    // A device holding an earlier adoption's staged secret proves that one:
+    // it is promoted, not replaced, so no reply is needed at all.
+    const staged = store.pairPeerViaAccount(peer, await attestationFor(OWNER_USER_ID));
+    const again = store.pairPeerViaAccount(peer, await attestationFor(OWNER_USER_ID), {
+      presentedSecret: staged.secret,
+    });
+    expect(again).toMatchObject({ secret: staged.secret, keptExistingSecret: true });
+    expect(store.verifySecret(peer.deviceId, staged.secret)).toBe("committed");
     expect(store.verifySecret(peer.deviceId, legacy.secret)).toBeNull();
+
+    // A wrong secret earns nothing: the adoption stages a fresh one.
+    const wrong = store.pairPeerViaAccount(peer, await attestationFor(OWNER_USER_ID), {
+      presentedSecret: "not-the-secret",
+    });
+    expect(wrong.keptExistingSecret).toBeUndefined();
+    expect(store.verifySecret(peer.deviceId, wrong.secret)).toBe("pending");
   });
 
   it("refuses to adopt a local pairing that has no pinned device key", async () => {
@@ -641,7 +730,10 @@ describe("account adoption of a legacy manual pairing", () => {
     // too. Otherwise a phone the switched-away account paired would keep the
     // authority to stop and restart runtimes on this machine.
     expect(store.getPairingRecord(peer.deviceId)?.syncHostRecoveryGranted).toBe(false);
-    expect(store.verifySecret(peer.deviceId, adopted.secret)).toBe("committed");
+    expect(store.verifySecret(peer.deviceId, adopted.secret)).toBe("pending");
+    // That staged secret is not a PIN re-pair. Read as one, it would defer
+    // every later adoption of this record, and it never expires.
+    expect(store.hasPendingPinRotation(peer.deviceId)).toBe(false);
 
     // And it must be durable, not just correct in memory.
     const reopened = createSyncPairingStore({ filePath, pinStore });
@@ -649,6 +741,10 @@ describe("account adoption of a legacy manual pairing", () => {
 
     // A switch to a different account leaves the now-local record alone.
     expect(store.revokeAccountOwnedExcept("user_someone_else")).toEqual([]);
+    // The device proving the adopted secret later must not bring the account
+    // ownership back that the sign-out took away.
+    expect(store.authenticate(peer.deviceId, adopted.secret)).toBe(true);
+    expect(store.getPairingRecord(peer.deviceId)?.accountOwnerUserId).toBeNull();
     expect(store.verifySecret(peer.deviceId, adopted.secret)).toBe("committed");
   });
 

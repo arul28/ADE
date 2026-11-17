@@ -9,6 +9,7 @@ import { isTailnetHostname } from "../../../shared/tailnet";
 import {
   isPairedRuntimeSupersededError,
   PairedRuntimeHelloRejectedError,
+  PairedRuntimeHostMismatchError,
   PairedRuntimeRelayAuthRequiredError,
 } from "./pairedRuntimeErrors";
 import { normalizeSyncEndpoint } from "./syncRuntimeTransport";
@@ -414,6 +415,11 @@ export function classifyPairedRuntimeFailure(
   // close arrives as a plain transport error, so the message regex below would
   // file it as "unreachable" and demote a route that just answered.
   if (isPairedRuntimeSupersededError(error)) return "superseded";
+  // A different machine answered at this address. Whatever it said, even a
+  // rejection, is not the paired host's verdict: "pair it again" would send
+  // the person to fix a pairing that is fine. "identity" also makes the dial
+  // order forget the address (`recordPairedRouteFailure`).
+  if (error instanceof PairedRuntimeHostMismatchError) return "identity";
   if (error instanceof PairedRuntimeHelloRejectedError) {
     const mapped = error.helloCode
       ? HELLO_CODE_FAILURES[error.helloCode]
@@ -450,6 +456,7 @@ export function classifyPairedRuntimeFailure(
  * none of them is present.
  */
 export function pairedRuntimeFailureCode(error: unknown): string | undefined {
+  if (error instanceof PairedRuntimeHostMismatchError) return "host_mismatch";
   const structured = findInErrorCauses(error, (candidate) => {
     const { helloCode, closeCode, code } = candidate as { helloCode?: unknown; closeCode?: unknown; code?: unknown };
     // Sent by the other machine, so only the codes this build knows are repeated.
