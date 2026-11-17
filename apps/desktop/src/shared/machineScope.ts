@@ -156,7 +156,7 @@ const MACHINE_SCOPE_ACTIONS: Readonly<Record<string, MachineScopeRule>> = {
   // A provider's sign-in terminal, in the machine scope's own workspace.
   pty: { all: true, except: [] },
   lane: { only: ["list"] },
-  usage: { only: ["getAdeUsageStats"] },
+  usage: { only: ["getAdeUsageStats", "getUsageSnapshot"] },
   chat: { only: ["listCodexPlugins"] },
   machine_stats: { only: ["get"] },
   keep_awake: { only: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"] },

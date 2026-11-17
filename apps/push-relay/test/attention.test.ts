@@ -232,6 +232,7 @@ class SqliteD1Database {
         "../migrations/0010_heartbeat_write_costs.sql",
         "../migrations/0011_live_activity_token_retention.sql",
         "../migrations/0012_attention_device_key.sql",
+        "../migrations/0013_passwords.sql",
       ]) {
         this.native.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
       }
@@ -7414,6 +7415,18 @@ describe("account deletion purge", () => {
       insert into account_settings (user_id, scope_key, setting_key, value_json, updated_at)
       values (?, 'all', 'providerLogins.cloud', '{}', '2026-11-10T00:00:00.000Z')
     `).run(userId);
+    database.native.prepare(`
+      insert into password_items (user_id, item_id, ciphertext, updated_at, deleted)
+      values (?, 'item-1', 'sealed-secret', '2026-11-10T00:00:00.000Z', 0)
+    `).run(userId);
+    database.native.prepare(`
+      insert into password_keys (user_id, wrapped_dek, epoch, created_at)
+      values (?, 'wrapped-dek', 1, '2026-11-10T00:00:00.000Z')
+    `).run(userId);
+    database.native.prepare(`
+      insert into password_key_releases (user_id, device_id, machine_kind, released_at)
+      values (?, 'device-1', 'desktop', '2026-11-10T00:00:00.000Z')
+    `).run(userId);
   }
 
   const purge = (database: SqliteD1Database, env: Omit<Partial<AttentionRelayEnv>, "DB">, headers: Record<string, string>) => {
@@ -7441,11 +7454,13 @@ describe("account deletion purge", () => {
       expect(response?.status).toBe(200);
       expect(await response?.json()).toMatchObject({ ok: true });
       for (const key of [primaryKey, secondaryKey]) {
-        expect(count(database, "account_vault_items", key)).toBe(0);
-        expect(count(database, "account_settings", key)).toBe(0);
+        for (const table of ["account_vault_items", "account_settings", "password_items", "password_keys", "password_key_releases"]) {
+          expect(count(database, table, key)).toBe(0);
+        }
       }
-      expect(count(database, "account_vault_items", otherKey)).toBe(1);
-      expect(count(database, "account_settings", otherKey)).toBe(1);
+      for (const table of ["account_vault_items", "account_settings", "password_items", "password_keys", "password_key_releases"]) {
+        expect(count(database, table, otherKey)).toBe(1);
+      }
     } finally {
       database.close();
     }

@@ -54,6 +54,7 @@ try {
   const expectedTriggerNames = [
     "attention_device_ownership_reject_stale",
     "attention_devices_enforce_user_limit",
+    "attention_devices_enforce_user_limit_update",
   ];
   if (JSON.stringify(triggerNames) !== JSON.stringify(expectedTriggerNames)) {
     throw new Error(
@@ -68,13 +69,14 @@ try {
     ) values (?, ?, 'com.ade.ios', 'production', '{}', ?, ?, ?)
   `);
   const timestamp = "2026-07-28T00:00:00.000Z";
+  const liveLease = "2099-01-01T00:00:00.000Z";
   for (let index = 0; index < 32; index += 1) {
     insertDevice.run(
       "user-limit",
       `device-${index}`,
       timestamp,
       timestamp,
-      timestamp,
+      liveLease,
     );
   }
   expectSqliteError(
@@ -84,8 +86,23 @@ try {
         "device-over-limit",
         timestamp,
         timestamp,
-        timestamp,
+        liveLease,
       ),
+    "attention account device limit reached",
+  );
+
+  // A renewal of an expired row takes a live slot; two at the cap cannot both renew.
+  for (let index = 0; index < 31; index += 1) {
+    insertDevice.run("user-renew", `live-${index}`, timestamp, timestamp, liveLease);
+  }
+  insertDevice.run("user-renew", "expired-a", timestamp, timestamp, timestamp);
+  insertDevice.run("user-renew", "expired-b", timestamp, timestamp, timestamp);
+  const renewDevice = database.prepare(
+    "update attention_devices set lease_expires_at = ? where user_id = ? and device_id = ?",
+  );
+  renewDevice.run(liveLease, "user-renew", "expired-a");
+  expectSqliteError(
+    () => renewDevice.run(liveLease, "user-renew", "expired-b"),
     "attention account device limit reached",
   );
 

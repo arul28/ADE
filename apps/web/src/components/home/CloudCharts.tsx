@@ -1,5 +1,5 @@
 import { Fragment, useState, type ReactNode } from "react";
-import { ADE_MACHINE, CHECKED_ON, NO_CLOUD, RIVALS, adeMonthlyUsd } from "../../lib/cloudCompetitors";
+import { ADE_MACHINE, CAPY_CHECKED_ON, CHECKED_ON, NO_CLOUD, RIVALS, adeMonthlyUsd } from "../../lib/cloudCompetitors";
 import { FREE_PLAN, PRICING_PLANS, formatCount, formatUsd, planCostsFor } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
 
@@ -30,9 +30,10 @@ export function CloudCharts() {
 export function CloudSources() {
   return (
     <p className="mt-6 max-w-[82ch] text-[13px] leading-relaxed text-white/45">
-      Prices from each vendor's own pricing page on {CHECKED_ON}, for the computer only; model use is extra, except that Capy's
-      credits also pay for tokens. Values marked ≈ are our arithmetic from that page. Free hours count only hours that come back every
-      month, so one-time credits (Replicas, Superconductor) count as none. Apps with a cloud but no published price are left out. Apps from{" "}
+      Prices from each vendor's own pricing page on {CHECKED_ON}, except Capy's on {CAPY_CHECKED_ON}, for the computer only;
+      model use is extra, except that Capy's plans include some model usage and its credits pay for tokens. Values marked ≈ are our
+      arithmetic from that page. Free hours count only hours that come back every month, so one-time credits (Replicas, Superconductor)
+      count as none. Apps with a cloud but no published price are left out. Apps from{" "}
       <a href="https://ademark.dev" target="_blank" rel="noreferrer" className="underline decoration-white/25 underline-offset-2 hover:text-white/75">
         ademark.dev
       </a>

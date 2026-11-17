@@ -1,5 +1,6 @@
 import { authenticate } from "../callerToken";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
+import { readBoundedJson } from "../sinkUtils";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
 import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours, webReturnUrl, type BillingReturnUrlFor } from "./billing";
 import { parseSustainedCpuReport, recordSustainedCpu } from "./abuseSignals";
@@ -1347,8 +1348,7 @@ async function routeInstance(request: Request, env: CloudEnv, provider: CloudPro
 }
 
 /** A timed wake must name the caller's own computer and that computer's own wake address. */
-async function refuseForeignWake(request: { text(): Promise<string> }, env: CloudEnv, userId: string): Promise<Response | null> {
-  const body = await readJson(request);
+async function refuseForeignWake(body: Record<string, unknown> | null, env: CloudEnv, userId: string): Promise<Response | null> {
   // A malformed body is the wake route's to answer.
   if (typeof body?.instanceId !== "string" || typeof body.url !== "string") return null;
   const instanceId = body.instanceId.trim();
@@ -1690,8 +1690,12 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
       if (accountBlock) return accountBlock;
       const { blocked } = await wakeBlocker(env, caller.userId, Date.now());
       if (blocked) return blocked.response;
-      const refused = await refuseForeignWake(request.clone(), env, caller.userId);
+      // Read once: the ownership check and the wake handler share this body.
+      // Reading a clone with the bounded reader can wait on the other branch.
+      const body = await readBoundedJson(request, 4096);
+      const refused = await refuseForeignWake(body, env, caller.userId);
       if (refused) return refused;
+      return handleCloudWakeRequest(request, env, Date.now(), body);
     }
     return handleCloudWakeRequest(request, env);
   }
