@@ -237,19 +237,26 @@ export function createTerminalTypeAhead(deps: {
       // scan is only worth it while a guess may be waiting.
       if (!wanted) return;
       for (const match of data.matchAll(CURSOR_VISIBILITY)) cursorHidden = match[1] === "l";
+      // Output that starts a new line ends the line a guess was confirmed on.
+      // A program asking for a password writes its prompt there and never
+      // echoes, so nothing on the next line may be guessed.
+      if (/[\r\n]/.test(data)) {
+        clear();
+        return;
+      }
       if (pending.length === 0) return;
       const text = terminalPrintableText(data);
-      let index = 0;
-      for (const ch of text) {
-        if (pending.length === 0) break;
-        if (pending[0]!.ch === ch) {
-          pending.shift();
-          // A line shows guesses only once an echo came back where the
-          // program writes first: plain shell echo, not other output.
-          if (index === 0) lineConfirmed = true;
-        }
-        index += 1;
-      }
+      // Only a chunk shaped like the echo itself confirms the line: what was
+      // typed, in order, and nothing else. A prompt that happens to start with
+      // the same letters ("P", then "Password: ") is other output, and a
+      // password never shows.
+      const shown = text.length > 0 && text.length <= pending.length
+        && pending.slice(0, text.length).every((entry, index) => entry.ch === text[index]);
+      if (!shown) return;
+      pending = pending.slice(text.length);
+      // A line shows guesses only once an echo came back where the program
+      // writes first: plain shell echo, not other output.
+      lineConfirmed = true;
       if (expiryTimer) {
         clearTimeout(expiryTimer);
         expiryTimer = null;

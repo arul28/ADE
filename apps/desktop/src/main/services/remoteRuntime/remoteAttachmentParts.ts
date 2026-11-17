@@ -91,28 +91,35 @@ export async function sendAttachmentInParts(args: {
   /** What the machine last said it holds from the start. */
   let held = 0;
 
-  /** Sends one part, again after a lost or slow connection. */
+  /** Sends one part, again after a lost or slow connection; a retry carries what the meter now allows. */
   const sendPart = async (offset: number, length: number): Promise<void> => {
-    for (let attempt = 0; ; attempt += 1) {
+    const end = offset + length;
+    let at = offset;
+    let attempt = 0;
+    while (at < end && !path) {
+      // Sized afresh each try: after a drop the meter asks for less, and the
+      // rest of this part follows as more parts.
+      const size = Math.max(1, Math.min(end - at, meter.chunkBytes()));
       const stamp = meter.stamp();
       try {
         const answer = readPartAnswer(await args.call({
           uploadId,
-          offset,
+          offset: at,
           totalBytes,
-          data: args.bytes.subarray(offset, offset + length).toString("base64"),
+          data: args.bytes.subarray(at, at + size).toString("base64"),
           filename: args.filename,
         }), totalBytes);
         // The latest answer: the machine's count only grows, unless it lost
         // the upload (it restarted), and then the latest is the truth.
         held = answer.received;
         if (answer.path) path = answer.path;
-        meter.delivered(length, stamp);
-        return;
+        meter.delivered(size, stamp);
+        at += size;
       } catch (error) {
         if (!isTransientPartError(error) || attempt >= PART_RETRY_DELAYS_MS.length) throw error;
         meter.slowDown();
         await sleep(PART_RETRY_DELAYS_MS[attempt]!);
+        attempt += 1;
       }
     }
   };
@@ -141,8 +148,10 @@ export async function sendAttachmentInParts(args: {
       running.add(part);
     }
     await Promise.all([...running]);
-    if (failure) throw (failure as { error: unknown }).error;
+    // A part answers with the staged file only once every byte arrived: the
+    // paste succeeded, whatever a redundant part of it did.
     if (path) return { path };
+    if (failure) throw (failure as { error: unknown }).error;
     if (held >= totalBytes) throw new Error("The machine took every part but staged no file.");
     // Every part went out, and the machine holds less: it lost some (it
     // restarted). Send again from what it holds.

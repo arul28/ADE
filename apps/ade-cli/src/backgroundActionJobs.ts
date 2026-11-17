@@ -51,15 +51,14 @@ export function createBackgroundActionJobs(now: () => number = Date.now): Backgr
 
   const sweep = () => {
     const at = now();
-    let finished = 0;
-    for (const job of jobs.values()) if (job.settled) finished += 1;
-    for (const [key, job] of jobs) {
-      if (!job.settled) continue;
-      if (at - job.settledAt > FINISHED_KEEP_MS || finished > FINISHED_KEEP_MAX) {
-        jobs.delete(key);
-        finished -= 1;
-      }
-    }
+    // Newest finished first: the oldest outcomes go, whatever order the jobs
+    // were created in. A job that started early and ran long keeps its answer.
+    const finished = [...jobs.entries()]
+      .filter(([, job]) => job.settled)
+      .sort((left, right) => right[1].settledAt - left[1].settledAt);
+    finished.forEach(([key, job], index) => {
+      if (index >= FINISHED_KEEP_MAX || at - job.settledAt > FINISHED_KEEP_MS) jobs.delete(key);
+    });
   };
 
   return {

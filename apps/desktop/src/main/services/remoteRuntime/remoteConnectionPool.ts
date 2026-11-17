@@ -1072,6 +1072,10 @@ export class RemoteConnectionPool {
     if (!runsJobs) return null;
     const jobId = randomUUID();
     const deadline = Date.now() + (LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS.get(key) ?? FOLLOW_DEFAULT_BUDGET_MS);
+    // The person's disconnection (or a removed machine) ends the follow: it
+    // must not dial again behind their back.
+    const disconnectGeneration = this.disconnectGenerationByTargetId.get(target.id) ?? 0;
+    const cancelled = () => (this.disconnectGenerationByTargetId.get(target.id) ?? 0) !== disconnectGeneration;
     let failures = 0;
     for (;;) {
       try {
@@ -1085,6 +1089,7 @@ export class RemoteConnectionPool {
           { retryOnConnectionError: true },
         );
       } catch (error) {
+        if (cancelled()) throw error;
         if (error instanceof BackgroundJobStillRunning) {
           failures = 0;
           if (Date.now() > deadline) throw new RemoteActionOutcomeUnknownError(true);
@@ -1093,8 +1098,11 @@ export class RemoteConnectionPool {
         const lostLink = isRemoteRuntimeConnectionError(error)
           || isRuntimeTransportTimeoutError(error)
           || error instanceof RemoteActionOutcomeUnknownError;
-        if (!lostLink || Date.now() > deadline || failures >= FOLLOW_RETRY_DELAYS_MS.length) throw error;
-        await new Promise<void>((resolve) => setTimeout(resolve, FOLLOW_RETRY_DELAYS_MS[failures]!));
+        // The action may still be running there: keep asking until its own
+        // budget runs out, so a long outage does not send the person back with
+        // a new job id and a second run.
+        if (!lostLink || Date.now() > deadline) throw error;
+        await new Promise<void>((resolve) => setTimeout(resolve, FOLLOW_RETRY_DELAYS_MS[Math.min(failures, FOLLOW_RETRY_DELAYS_MS.length - 1)]!));
         failures += 1;
       }
     }
@@ -1136,6 +1144,9 @@ export class RemoteConnectionPool {
         domain: "chat",
         action: "saveTempAttachmentPart",
         args: part,
+        // The same route the whole paste asked for; a part must not slip onto
+        // another one.
+        requiredRouteKind: request.requiredRouteKind,
       })).result,
     });
     return { domain: "chat", action: "saveTempAttachment", result: saved, statusHints: {} };

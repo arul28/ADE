@@ -376,8 +376,10 @@ async function pullWholeImage(
   };
   stopIfAbandoned();
   const first = await read(0, REMOTE_ARTIFACT_CHUNK_BYTES);
-  // A display copy too big to keep is not worth showing over the original.
-  if (first.totalSize > REMOTE_IMAGE_CACHE_ENTRY_MAX_BYTES && !first.display) return { kind: "large", first };
+  // Too big to keep: streamed in ranges, never held whole. A display copy
+  // counts too: the other machine names its size, and one answer must not be
+  // able to make this desktop allocate all of it.
+  if (first.totalSize > REMOTE_IMAGE_CACHE_ENTRY_MAX_BYTES) return { kind: "large", first };
   // One buffer of the final size: no list of chunks and second copy to join them.
   const whole = Buffer.alloc(first.totalSize);
   const total = first.totalSize;

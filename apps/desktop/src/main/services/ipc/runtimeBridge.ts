@@ -730,11 +730,13 @@ export function registerRuntimeBridge({
   // The media server's `/remote/...` route reads a proof video from a paired
   // computer through this, one bounded chunk per call. The broker on that
   // machine resolves the path inside its own `.ade/artifacts` and refuses the rest.
-  const readRemoteArtifactRange: RemoteArtifactRangeReader = async ({ targetId, projectId, relativePath, offset, length }) => {
+  const readRemoteArtifactRange: RemoteArtifactRangeReader = async ({ targetId, projectId, relativePath, offset, length, variant }) => {
     const response = await remoteConnectionService.callAction(targetId, projectId, {
       domain: "computer_use_artifacts",
       action: "readArtifactRange",
-      args: { uri: relativePath, offset, length },
+      // `variant` asks for the picture's display copy; a machine without one
+      // answers with the original.
+      args: { uri: relativePath, offset, length, ...(variant ? { variant } : {}) },
     });
     return response.result;
   };

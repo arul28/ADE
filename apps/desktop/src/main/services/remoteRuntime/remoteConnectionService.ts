@@ -513,11 +513,16 @@ export class RemoteConnectionService {
         hostStorageWait: result.hostStorageWait ?? null,
         connectedAt: result.target.lastConnectedAt ?? Date.now(),
       });
-      // The dial's round trip is the first sample: a far machine is known slow at once.
-      const dialLatencyMs = result.route?.latencyMs;
-      if (typeof dialLatencyMs === "number" && Number.isFinite(dialLatencyMs)) {
-        this.noteSlowLink(targetId, (measure) => noteSlowLinkRtt(measure, dialLatencyMs, Date.now()), { rttMs: dialLatencyMs });
-      }
+      // The dial's round trip is the first sample: a far machine is known slow
+      // at once. Without one, the person's own setting still applies now.
+      const dialLatencyMs = typeof result.route?.latencyMs === "number" && Number.isFinite(result.route.latencyMs)
+        ? result.route.latencyMs
+        : null;
+      this.noteSlowLink(
+        targetId,
+        (measure) => (dialLatencyMs === null ? measure : noteSlowLinkRtt(measure, dialLatencyMs, Date.now())),
+        dialLatencyMs === null ? {} : { rttMs: dialLatencyMs },
+      );
     });
     // A project folder there stopped (or started again) answering while the
     // connection stayed up: the machine row says so at once.

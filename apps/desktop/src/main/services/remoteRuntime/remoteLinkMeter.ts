@@ -121,7 +121,9 @@ export function createLinkMeter(config: LinkMeterConfig): LinkMeter {
       // the round trip), and the window it opens corrects that.
       const interval = Math.max(1, at - Math.max(sentAt, lastDeliveryAt));
       lastDeliveryAt = at;
-      if (bytes > 0) {
+      // A piece below the minimum is a probe (a HEAD asking one byte), not a
+      // transfer: its latency is the round trip, but its "rate" is not the link.
+      if (bytes >= config.minBytes) {
         const sample = bytes / interval;
         rateBytesPerMs = rateBytesPerMs === null ? sample : rateBytesPerMs * 0.7 + sample * 0.3;
       }
