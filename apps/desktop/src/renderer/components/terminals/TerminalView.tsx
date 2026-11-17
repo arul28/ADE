@@ -19,7 +19,7 @@ import {
   type TerminalPreferences,
   type ThemeId,
 } from "../../state/appStore";
-import { useRemoteTargetState, useRemoteTypesLocalLine, useSlowLinkActive, useTypeAheadRoundTripMs } from "../../state/projectMachines";
+import { useFarLinkActive, useRemoteTargetState, useRemoteTypesLocalLine, useTypeAheadRoundTripMs } from "../../state/projectMachines";
 import { sendAgentCliText } from "./agentCliTypeSend";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
@@ -3784,20 +3784,20 @@ export function TerminalView({
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   // A terminal on screen keeps its computer's ADE Web connection slot.
   useMachineSlotHold(runtimePin, isVisible);
-  // On a slow link to the terminal's machine, typed characters show before the
+  // On a far link to the terminal's machine, typed characters show before the
   // echo. Plain shells only: an agent CLI (any provider) draws its own input
   // box, so it keeps the fast key path and gets no guesses.
   const linkRttMs = useTypeAheadRoundTripMs(runtimePin?.kind === "remote" ? runtimePin.targetId : null);
   const typeAheadRttMs = toolType == null || toolType === "shell" ? linkRttMs : null;
-  // On a slow link an agent CLI gets the local line instead: typed text stays
+  // On a far link an agent CLI gets the local line instead: typed text stays
   // here until Enter (`terminalLocalLine.ts`). Per provider (`cliLaunch.ts`),
   // only where the client can send a line and the machine types one, not
   // while the session types through the input box, and off for a session the
   // person turned it off for.
   const remoteTargetId = runtimePin?.kind === "remote" ? runtimePin.targetId : null;
-  const slowLink = useSlowLinkActive(remoteTargetId);
+  const farLink = useFarLinkActive(remoteTargetId);
   const machineTypesLocalLine = useRemoteTypesLocalLine(remoteTargetId);
-  const localLineOffered = slowLink
+  const localLineOffered = farLink
     && machineTypesLocalLine
     && localLineAllowed
     // ADE Web's adapter types every text at a free prompt and refuses

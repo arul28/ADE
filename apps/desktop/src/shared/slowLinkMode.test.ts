@@ -11,10 +11,11 @@ import {
 type Step = number | "drop" | { wait: number };
 
 /** Plays measurements in order, one round trip each 30 s (the maintenance ping). */
-function play(steps: Step[]): { measure: SlowLinkMeasure; trail: boolean[] } {
+function play(steps: Step[]): { measure: SlowLinkMeasure; trail: boolean[]; farTrail: boolean[] } {
   let measure = emptySlowLinkMeasure();
   let now = 1_000_000;
   const trail: boolean[] = [];
+  const farTrail: boolean[] = [];
   for (const step of steps) {
     if (typeof step === "object") {
       now += step.wait;
@@ -23,8 +24,9 @@ function play(steps: Step[]): { measure: SlowLinkMeasure; trail: boolean[] } {
     now += 30_000;
     measure = step === "drop" ? noteSlowLinkDrop(measure, now) : noteSlowLinkRtt(measure, step, now);
     trail.push(measure.slow);
+    farTrail.push(measure.far);
   }
-  return { measure, trail };
+  return { measure, trail, farTrail };
 }
 
 describe("slow-connection mode for one machine", () => {
@@ -69,13 +71,35 @@ describe("slow-connection mode for one machine", () => {
     expect(play(steps).trail).toEqual(trail);
   });
 
-  it.each<{ preference: SlowLinkPreference; slow: boolean; active: boolean; reason: string | null }>([
-    { preference: "auto", slow: true, active: true, reason: "latency" },
-    { preference: "auto", slow: false, active: false, reason: null },
-    { preference: "on", slow: false, active: true, reason: "setting" },
-    { preference: "off", slow: true, active: false, reason: null },
-  ])("the machine's setting $preference wins over the measure (slow: $slow)", ({ preference, slow, active, reason }) => {
+  it.each<{ name: string; steps: Step[]; farTrail: boolean[] }>([
+    {
+      name: "a far link (two of three at 150 ms or more) shows typing at once without slow-connection mode",
+      steps: [40, 185, 120, 180, 190],
+      farTrail: [false, false, false, true, true],
+    },
+    {
+      name: "it stays far near the line, and goes off after five round trips under 110 ms",
+      steps: [180, 180, 130, 100, 100, 100, 100, 100],
+      farTrail: [false, true, true, true, true, true, true, false],
+    },
+    {
+      name: "slow-connection mode from drops alone also counts as far",
+      steps: [30, "drop", 30, "drop"],
+      farTrail: [false, false, false, true],
+    },
+  ])("$name", ({ steps, farTrail }) => {
+    const played = play(steps);
+    expect(played.farTrail).toEqual(farTrail);
+    if (steps.every((step) => typeof step === "number" && step < 400)) expect(played.trail.every((slow) => !slow)).toBe(true);
+  });
+
+  it.each<{ preference: SlowLinkPreference; slow: boolean; active: boolean; reason: string | null; far: boolean }>([
+    { preference: "auto", slow: true, active: true, reason: "latency", far: true },
+    { preference: "auto", slow: false, active: false, reason: null, far: false },
+    { preference: "on", slow: false, active: true, reason: "setting", far: true },
+    { preference: "off", slow: true, active: false, reason: null, far: false },
+  ])("the machine's setting $preference wins over the measure (slow: $slow)", ({ preference, slow, active, reason, far }) => {
     const { measure } = play(slow ? [700, 700] : [40, 40]);
-    expect(slowLinkStatus(measure, preference)).toEqual({ active, reason, rttMs: slow ? 700 : 40 });
+    expect(slowLinkStatus(measure, preference)).toEqual({ active, reason, rttMs: slow ? 700 : 40, far });
   });
 });

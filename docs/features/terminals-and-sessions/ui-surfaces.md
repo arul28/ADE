@@ -794,18 +794,18 @@ claims a text before typing it, so the other does not send it too.
 Typing into a CLI clears its prompt line first (the same as scheduled work), so
 a half-typed line in the terminal itself is replaced by the box's text.
 
-### The terminal's local line on a slow link
+### The terminal's local line on a far link
 
 `TerminalLocalLineBar.tsx` and `terminalLocalLine.ts` are the other way to type
-into a running agent CLI. On a slow-connection link (see
-[A slow or dropping link](../remote-runtime/README.md#a-slow-or-dropping-link))
+into a running agent CLI. On a far link (150 ms or more, or slow-connection
+mode; see [A slow or dropping link](../remote-runtime/README.md#a-slow-or-dropping-link))
 `TerminalView` keeps plain text on this computer instead of writing each key to
 the machine: the overlay draws the line in the terminal's own font, and Enter
 sends it through `agentChat.typeIntoCli` with `when: "now"`, which the host
 types and submits as one line (`typeLineIntoAgentCli`). The host's answer is
 the same shape as the box's; `agentCliTypeSend.ts` classifies it for both.
 
-- **Offered only when** the terminal's machine is in slow-connection mode and
+- **Offered only when** the terminal's machine is on a far link (`useFarLinkActive`) and
   announces `agentCliTypeNow`, the session's tool type takes a line
   (`toolTypeTakesLocalLine` in `shared/cliLaunch.ts`: not Cursor or Devin),
   the terminal is interactive, the program has bracketed paste on, and the

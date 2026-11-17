@@ -17,7 +17,8 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { LaneSummary, OpenProjectBinding, RemoteRuntimeConnectionSnapshot } from "../../shared/types";
-import { isPersonFixConnectionFailure } from "../../shared/types/remoteRuntime";
+import { isPersonFixConnectionFailure, type RemoteRuntimeConnectionStatus } from "../../shared/types/remoteRuntime";
+import { FAR_RTT_ON_MS } from "../../shared/slowLinkMode";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { readLocalSyncStatus } from "../lib/localSyncStatusReader";
 import { useAppStore, useRootAppStore } from "./appStore";
@@ -308,14 +309,33 @@ export function useLinkRoundTripMs(targetId: string | null): number | null {
   );
 }
 
-/** Round trip from which a terminal shows typed characters before the echo. */
-export const TYPE_AHEAD_RTT_MS = 200;
+/** A connected link on which typing shows at once (`SlowLinkStatus.far`; an older desktop sends only `active`). */
+function connectionLinkFar(connection: RemoteRuntimeConnectionStatus | undefined): boolean {
+  if (connection?.state !== "connected" || !connection.slowLink) return false;
+  return connection.slowLink.far ?? connection.slowLink.active;
+}
+
+/**
+ * Whether typed text in this machine's terminals shows at once: a far link
+ * (`FAR_RTT_ON_MS`, with its own hysteresis) or slow-connection mode. The
+ * machine's "Off" setting turns it off. Same shared feed; null target: false.
+ */
+export function useFarLinkActive(targetId: string | null): boolean {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => (targetId ? connectionLinkFar(sharedSnapshot?.connections.find((entry) => entry.target.id === targetId)) : false),
+    () => false,
+  );
+}
 
 /**
  * The round trip to this machine when its terminals should guess typed
- * characters (`terminalTypeAhead.ts`), else null: slow-connection mode on, or
- * a round trip of `TYPE_AHEAD_RTT_MS` or more. The machine's "Off" setting
- * turns it off. Same shared feed; null target: null.
+ * characters (`terminalTypeAhead.ts`), else null: the link is far
+ * (`useFarLinkActive`). Same shared feed; null target: null.
  */
 export function useTypeAheadRoundTripMs(targetId: string | null): number | null {
   const subscribe = useMemo(
@@ -327,10 +347,9 @@ export function useTypeAheadRoundTripMs(targetId: string | null): number | null 
     () => {
       if (!targetId) return null;
       const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
-      if (connection?.state !== "connected" || connection.target.slowLinkMode === "off") return null;
-      const rtt = connection.slowLink?.rttMs ?? connection.route?.latencyMs ?? null;
-      if (connection.slowLink?.active) return typeof rtt === "number" ? rtt : TYPE_AHEAD_RTT_MS;
-      return typeof rtt === "number" && rtt >= TYPE_AHEAD_RTT_MS ? rtt : null;
+      if (!connectionLinkFar(connection)) return null;
+      const rtt = connection?.slowLink?.rttMs ?? connection?.route?.latencyMs ?? null;
+      return typeof rtt === "number" ? rtt : FAR_RTT_ON_MS;
     },
     () => null,
   );

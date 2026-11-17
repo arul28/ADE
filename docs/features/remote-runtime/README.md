@@ -1900,7 +1900,7 @@ within five minutes. It turns off only after five round trips under 250 ms with
 no drop in five minutes, so a link near the line does not flicker. The samples
 are the dial's latency and the 30 s maintenance ping; the drops are connection
 evictions that are not a hand-over to another ADE. The result rides the
-existing connection snapshot as `slowLink: { active, reason, rttMs }` — no new
+existing connection snapshot as `slowLink: { active, reason, rttMs, far }` — no new
 poll, timer or IPC call. The person's own setting for the machine wins: **Slow
 connection mode** in the machine's **Edit** panel is **Automatic** (default),
 **Always on** or **Off**, saved on this computer's target record
@@ -1913,7 +1913,14 @@ What the mode changes is only what would be hidden or delayed: a transcript
 picture from that machine waits as a `Show picture · <size>` tile until it is
 clicked (a picture already shown stays), a plain-shell terminal types ahead,
 and an agent CLI's terminal gets a local line (below) so a typed letter shows in
-one frame instead of most of a second later. Pictures in the proof drawer and
+one frame instead of most of a second later.
+
+Typing has a lower line of its own, `far`: two of the last three round trips at
+150 ms or more turn it on, and the last five under 110 ms turn it off
+(`FAR_RTT_ON_MS`, `FAR_RTT_OFF_MS`). At 150 ms each key already lags enough to
+feel, so a far link gets the type-ahead and the local line without the rest of
+the mode. Slow-connection mode always counts as far; **Always on** and **Off**
+set both. Pictures in the proof drawer and
 the lightbox load as before. The always-on transport work below runs in every
 mode.
 
@@ -1957,7 +1964,7 @@ that announces `agentCliTypeNow` answers a repeated `clientMessageId` once for
 both modes; the pool sends the text again after a reconnect only to such a
 brain, and a send refused before it dialled comes back to the caller as not
 sent. See
-[Terminal and Session UI Surfaces](../terminals-and-sessions/ui-surfaces.md#the-terminals-local-line-on-a-slow-link).
+[Terminal and Session UI Surfaces](../terminals-and-sessions/ui-surfaces.md#the-terminals-local-line-on-a-far-link).
 
 **A drop that is a blip.** A link that was up and dropped redials every 2 s for
 3 minutes (`FAST_REDIAL_WINDOW_MS`, cleared by the ordinary bounded backoff

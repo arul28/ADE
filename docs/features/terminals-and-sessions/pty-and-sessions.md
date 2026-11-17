@@ -889,7 +889,7 @@ command argument whenever structured resume metadata is available.
 
 `typeLineIntoAgentCli({ sessionId, text, inputOrigin })` is the host half of a
 terminal's local line (`chat.typeIntoCli` with `when: "now"`; see
-[Terminal and Session UI Surfaces](ui-surfaces.md#the-terminals-local-line-on-a-slow-link)).
+[Terminal and Session UI Surfaces](ui-surfaces.md#the-terminals-local-line-on-a-far-link)).
 It writes the line into the CLI's input and then presses Enter, with no line
 clear, no readiness wait and no `@` expansion, because it stands in for the
 person's own keys:

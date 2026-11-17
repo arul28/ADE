@@ -2147,7 +2147,7 @@ describe("RemoteConnectionService", () => {
       await probe();
       expect(slowLink()?.active ?? false).toBe(false);
       await probe();
-      expect(slowLink()).toEqual({ active: true, reason: "latency", rttMs: 700 });
+      expect(slowLink()).toEqual({ active: true, reason: "latency", rttMs: 700, far: true });
       // The desktop tells the machine what it measured.
       expect(vi.mocked(pool.callMachineForTarget).mock.calls[1]?.[2]).toMatchObject({ link: { rttP50Ms: 700 } });
 

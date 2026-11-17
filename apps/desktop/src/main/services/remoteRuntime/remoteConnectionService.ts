@@ -819,7 +819,13 @@ export class RemoteConnectionService {
     if (sample.drop) summary.drops += 1;
     const next = slowLinkStatus(measure, normalizeSlowLinkPreference(target.slowLinkMode));
     const current = this.statusById.get(targetId)?.slowLink;
-    if (current && current.active === next.active && current.reason === next.reason && current.rttMs === next.rttMs) return;
+    if (
+      current
+      && current.active === next.active
+      && current.reason === next.reason
+      && current.rttMs === next.rttMs
+      && current.far === next.far
+    ) return;
     if ((current?.active ?? false) !== next.active) {
       // Rare by design (hysteresis): one line per switch.
       summary.switches += 1;
