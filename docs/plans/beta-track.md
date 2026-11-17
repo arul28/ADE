@@ -1,10 +1,9 @@
 # Beta update track
 
-Working plan for the Beta track. It records the decisions, the shared
-contracts, and every lesson from T3 Code's Stable/Nightly history with the
-guard that covers it. Keep it current while the work runs.
+The Beta track: its decisions, its shared contracts, and the guard for each
+known failure of a Stable/Nightly split. Code cites this file; keep it current.
 
-## Decisions (owner-approved, 2026-10-29)
+## Decisions
 
 - Beta is an **update track** of the normal ADE install, not a package
   channel. It uses the same app id (`com.ade.desktop`), the same `~/.ade`, the
@@ -240,7 +239,9 @@ Open:
   to skip the normal startup on the next launch, and a false positive (a
   force-quit while starting) would then keep ADE from starting. Left out.
 
-## Work list
+## Parts
+
+The parts are built, except item 11. Code comments cite these numbers.
 
 1. Track model, `update-track.json`, beta feed client, offer filter.
 2. Remove the old Beta channel.
@@ -436,13 +437,3 @@ Open (updated 2026-10-30):
   "Startup recovery" below. Not yet tried on a packaged build or on Windows.
 - Tests broken on purpose by the channel removal: fixed in `/test`
   (`packagedSyncHostLaunchGate.test.ts` passes, checked 2026-10-30).
-
-## Status (2026-10-30)
-
-Built on `ade/beta-track`: work items 1, 2, 3 (compat level, records,
-copies), 4 (switch + guard + remote guard), 5 (header label, About, orange
-icon via CI, Sentry `beta` environment), 6 (`brain update` follows the
-track), 7 (CI), 9 (resume cap of 3), 10 (release skill). Built on
-`ios/beta-track-followups`: 8 (column replay, Beta chip, TestFlight CI; the
-CI has not run on GitHub yet). Not built: 11 (real-machine tests), and the
-open items above.
