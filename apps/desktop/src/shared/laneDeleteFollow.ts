@@ -78,7 +78,6 @@ export async function deleteLaneAndFollow(deps: LaneDeleteFollowDeps): Promise<D
   /** "follow" when the delete runs there; a result when it is over. */
   const sendStart = async (): Promise<DeleteLaneResult | "follow"> => {
     const startedAt = now();
-    let resent = false;
     for (;;) {
       try {
         const answer = await deps.start();
@@ -87,9 +86,11 @@ export async function deleteLaneAndFollow(deps: LaneDeleteFollowDeps): Promise<D
         return done(answer || null);
       } catch (error) {
         const message = errorText(error);
-        // An older ADE answers a re-sent start the old way.
+        // An older ADE answers a start the old way: a running delete is
+        // followed, and a lane that is gone counts as deleted (a current ADE
+        // answers `alreadyDeleted` instead).
         if (/Lane delete is already running/i.test(message)) return "follow";
-        if (resent && /^Lane not found/i.test(message)) return done(null);
+        if (/^Lane not found/i.test(message)) return done(null);
         // A refusal (unsaved work, a lock) is the answer, and is not sent again.
         if (!isTransientStartError(error)) throw error;
         if (now() - startedAt >= LANE_DELETE_START_RETRY_BUDGET_MS) {
@@ -98,7 +99,6 @@ export async function deleteLaneAndFollow(deps: LaneDeleteFollowDeps): Promise<D
           // which the UI already handles by re-reading the machine.
           throw new Error(`${OUTCOME_UNKNOWN_MESSAGE} (${message})`);
         }
-        resent = true;
         await deps.wait(LANE_DELETE_FOLLOW_POLL_MS);
       }
     }
