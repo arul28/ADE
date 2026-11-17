@@ -4532,6 +4532,7 @@ export async function createAdeRuntime(args: {
         usageTrackingService,
         jevService,
         getProxyService: () => getProxyService(),
+        getSearchService: () => searchServiceHolder.current,
         accountSettingsStore,
         productAnalyticsService,
         logger,

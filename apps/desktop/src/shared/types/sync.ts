@@ -2967,6 +2967,8 @@ export type SyncRemoteCommandAction =
   | "usage.getModelPriceOverrides"
   | "usage.setModelPriceOverride"
   | "proxy.status"
+  | "search.query"
+  | "search.indexStatus"
   | PersonalChatRemoteCommandAction
   | "lanes.list"
   | "lanes.listDeleteProgress"
