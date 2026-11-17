@@ -15,7 +15,6 @@ import {
 import { SAVED_CHATS_MACHINE_PREFIX } from "../../../shared/cloudSavedChats";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
-import { wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { useCloudViewOnScreen } from "../../state/crossMachineLanes";
@@ -239,14 +238,13 @@ export function useLanesPageMachines({
     : movedForeignKey ?? storeSelectedLaneId;
   /**
    * Select a row key: foreign rows stay in page state, local ids go to the
-   * store. Opening a lane of an ADE Cloud computer that is asleep or not
-   * connected here reaches that computer by its key, which wakes it.
+   * store. Opening a lane of an ADE Cloud computer that is asleep reads it
+   * from the account and wakes nothing (`RestingCloudLaneDetail`).
    */
   const selectLane = useCallback((key: string | null) => {
     const foreignRow = key ? foreignRowByKeyRef.current.get(key) : undefined;
     if (key && foreignRow) {
       setForeignSelectedKey(key);
-      if (!foreignRow.online) wakeRestingCloudMachine(foreignRow);
       return;
     }
     setForeignSelectedKey(null);

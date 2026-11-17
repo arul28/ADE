@@ -28,7 +28,6 @@ import { isAdeCloudComputer, useAdeCloudLaneComputers, useMachineLabelForBinding
 import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME, isAdeCloudBinding } from "../../../shared/adeCloud/binding";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import { machineShowsConnected, rowShowsConnected } from "../../state/cloudRestingRows";
-import { wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
 import {
   MACHINE_READ_FAILURE_NOTICE_THRESHOLD,
   requestCrossMachineLanesForMachine,
@@ -1432,6 +1431,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     [adeCloudIndex],
   );
   const activeFilterMachineId = filterMachineIdOf(activeMachineId, projectBinding);
+  const selectedFilterMachineIds = workSessionFilters.machine;
   const machineFilterOptions = useMemo<WorkFilterMachineOption[]>(() => {
     // A computer with two checkouts has two slices; the filter lists the computer once.
     const byMachine = new Map<string, WorkFilterMachineOption>();
@@ -1454,7 +1454,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         online: machineId === ADE_CLOUD_MACHINE_ID ? true : online,
       });
     }
-    const others = [...byMachine.values()].sort((a, b) => a.name.localeCompare(b.name));
+    // An own computer that is offline is not a choice: its work cannot open
+    // from here. It stays while the filter still picks it, so it can be cleared.
+    const others = [...byMachine.values()]
+      .filter((option) => option.online || selectedFilterMachineIds.includes(option.id))
+      .sort((a, b) => a.name.localeCompare(b.name));
     return [
       {
         id: activeFilterMachineId,
@@ -1463,7 +1467,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       },
       ...others,
     ];
-  }, [activeFilterMachineId, activeMachineId, activeMachineLabel, crossMachineEntries, filterMachineIdOf, machineLabelOf]);
+  }, [activeFilterMachineId, activeMachineId, activeMachineLabel, crossMachineEntries, filterMachineIdOf, machineLabelOf, selectedFilterMachineIds]);
   // A machine that answers the connection but refuses the chat read would
   // otherwise just contribute nothing, which reads as "no chats there". Only
   // when it has nothing retained to show: a blip on a machine whose chats are
@@ -2780,8 +2784,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     const laneDeleteProgress = deleteProgressByLaneId[
       foreignRow ? foreignLaneKey(foreignRow.machineId, session.laneId) : session.laneId
     ] ?? null;
-    // Work of an ADE Cloud computer that is only asleep opens normally, and
-    // opening it wakes the computer; a saved chat reads meanwhile.
+    // Work of an ADE Cloud computer that is only asleep opens normally and
+    // reads its saved copy; only an action in it wakes the computer.
     const cloudResting = foreignRow != null && !foreignRow.online && foreignRow.cloudResting === true;
     const savedCopyReadable = session.cloudSavedCopy === true && foreignRow != null && !foreignRow.online;
     const disabledReason = (foreignRow && !savedCopyReadable && !cloudResting
@@ -2816,15 +2820,8 @@ export const SessionListPane = React.memo(function SessionListPane({
           if (!foreignRow) {
             return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds);
           }
-          // Shift, Cmd and Ctrl only change the selection; only an open wakes.
-          const selectsOnly = event?.shiftKey === true || event?.metaKey === true || event?.ctrlKey === true;
-          if (cloudResting && !selectsOnly) {
-            wakeRestingCloudMachine({
-              machineId: foreignRow.machineId,
-              machineName: foreignRow.machineName,
-              hostname: foreignRow.binding?.kind === "remote" ? foreignRow.binding.hostname ?? null : null,
-            });
-          }
+          // Reading never wakes: a resting cloud row opens its saved copy, and
+          // only an action in it (a send, a terminal) wakes the computer.
           if (isChatToolType(session.toolType)) {
             return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds, foreignRow.binding);
           }
