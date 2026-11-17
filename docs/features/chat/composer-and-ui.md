@@ -1854,12 +1854,21 @@ drop; each part says where it starts, so the machine stages the file once
 confirmed, keyed by chat and by the whole payload (words, file paths, issue
 context, review-comment selections), and reuses it if the same payload is sent
 to the same chat again, so a message the machine already took is not written
-twice. The id is forgotten when the answer or the transcript confirms it, so
-the same words sent later are a message of their own. A send whose call lost
-its answer shows "Sending is taking longer than expected" and keeps the words
-out of the composer for up to two minutes while it checks the chat, instead of
-handing them straight back with an error. An older machine keeps the previous
-paths: one upload request, and a new id per send.
+twice. The brain writes that id on the message it wrote for the send
+(`AgentChatEvent.user_message.clientSendId`), and a pane that sees it — here or
+in the transcript after a reconnect — treats the send as delivered whatever
+words the message ended up holding: its words, files and context never go back
+in a composer or saved draft, and anything the person changed since stays. An
+older brain writes no id, and only its id-less rows are counted by words; a row
+that names another send is that send, never delivery evidence for this one.
+A send whose call lost its answer shows "Sending is taking longer than
+expected" and keeps the words out of the composer while it checks the chat, for
+up to two minutes; a send to another machine then waits for that machine's link
+to settle (at most ten minutes, then it puts the text back) because its message
+and client id only show once the chat's history does. The id is forgotten when
+the answer or the transcript confirms it, so the same words sent later are a
+message of their own. An older machine keeps the previous paths: one upload
+request, and a new id per send.
 
 ## Voice conversations
 

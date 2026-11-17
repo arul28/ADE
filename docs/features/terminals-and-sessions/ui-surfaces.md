@@ -452,8 +452,14 @@ Rows never name their machine: no machine chip, glyph or lane-header marker.
 The machine shows in the row's hover card, in the composer of an open chat, and
 in the Start on picker for new work. A machine that drops keeps its rows through
 the short reconnect window (`applyReachability` in `crossMachineLanes.ts`, 45 s
-to 2 min). After that its rows are not listed at all, and they come back when it
-reconnects. An ADE Cloud computer that is asleep is the exception
+to 2 min), and the open chat stays on screen while its machine is unreachable
+(`WorkViewArea` holds it, and `AgentChatPane` keeps it selected through a list
+read) instead of the view jumping to another chat. After that its rows are not
+listed at all, and they come back when it reconnects. A machine that stopped
+redialing because only the person can fix it — a rejected pairing or identity,
+or a sign-in the account refused — shows that failure and its action
+(`Pair again`, or the machine's row) in place of "Reconnecting to …". An ADE
+Cloud computer that is asleep is the exception
 (`machineIsCloudResting` in `cloudRestingRows.ts`): its work stays listed as
 normal rows, and opening one wakes the computer (`wakeRestingCloudMachine` in
 `lib/cloudMachineWake.ts`). The opened chat shows "Waking <machine>…"
