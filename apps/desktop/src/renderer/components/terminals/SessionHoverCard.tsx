@@ -85,8 +85,13 @@ function holdCardsUntilPointerMoves(from: { x: number; y: number } | null): void
   let origin = from;
   pointerMoveListener = (event: PointerEvent) => {
     if (!origin) {
-      origin = { x: event.clientX, y: event.clientY };
-      return;
+      // A key press has no press position to measure from, but this event's
+      // own delta still says how far the pointer came to reach it — so a
+      // single move that crossed onto a row counts, instead of only seeding
+      // the origin and leaving every card shut until a second move.
+      const dx = Number.isFinite(event.movementX) ? event.movementX : 0;
+      const dy = Number.isFinite(event.movementY) ? event.movementY : 0;
+      origin = { x: event.clientX - dx, y: event.clientY - dy };
     }
     const moved = Math.abs(event.clientX - origin.x) + Math.abs(event.clientY - origin.y);
     if (moved < POINTER_MOVE_THRESHOLD_PX) return;
