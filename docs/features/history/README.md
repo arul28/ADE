@@ -47,6 +47,26 @@ slow runtime does not hold back the other machines' results. Mutating git
 actions are disabled for a foreign lane; the timeline can still show its
 commits and events with the owning machine identified.
 
+### With no computer awake
+
+An ADE Cloud lane whose computer is at rest has an account-answered pin
+(`isAccountAnsweredPin`, `shared/adeCloud/binding.ts`). History reads it with
+no computer awake:
+
+- The Commits view reads the lane branch's pushed commits from GitHub through
+  the account reader (`git.listRecentCommits`, `shared/adeCloud/accountReader.ts`),
+  with the account's GitHub App sign-in. Unpushed commits show when the
+  computer is on.
+- A read that GitHub cannot answer shows the reader's sentence, for example
+  "Connect GitHub to your ADE account to see this repository's files with no
+  computer on." It is an expected state, not a failure to report.
+- `CloudGitAsOf` (`renderer/components/adeCloud/CloudGitAsOf.tsx`) shows above
+  the commits when the pin is account-answered: "As of 3:12 PM, saved by its
+  computer at rest." It reads `adeCloud.projectOverview({origin})` once when
+  the view opens. It does not show while the computer is awake.
+- Git actions that change the lane are "do" actions: they wake the lane's
+  computer first.
+
 ## Source file map
 
 Main process / runtime services:
@@ -56,11 +76,13 @@ Main process / runtime services:
 | `apps/desktop/src/main/services/history/operationService.ts` | CRUD for `operations` rows; the canonical entry point for `record`, `start`, `finish`, `list`, `get`, `listHeadChanges`, and `pruneOld`. Same source backs the ADE runtime and the desktop fallback path. |
 | `apps/desktop/src/main/services/state/kvDb.ts` | Schema for `operations`, `checkpoints`, `pack_events`, `pack_versions`, `pack_heads`, `terminal_sessions`, and related tables. |
 | `apps/desktop/src/main/services/git/gitOperationsService.ts` | Brackets every git operation with `operationService.start` / `finish`, captures pre/post HEAD SHAs, and owns the per-lane undo/redo head-change pipeline (`undoLastHeadChange`, `redoLastHeadChange`, `createTag`, `resetToCommit`, `pull` with `ff-only` / `rebase` / `merge` modes). Before lane git mutations or lane git reads, it verifies that the saved `worktreePath` is still the Git top-level for that lane; stale paths that resolve to the primary checkout are rejected as missing lane worktrees so History and Git Actions do not read or mutate the wrong branch. Undo selection is branch-aware: it ignores checkout/undo rows, requires the recorded operation's `metadata.branchRef` to match the lane's current branch, and rechecks the branch before running `reset --hard`. |
-| `apps/desktop/src/main/services/lanes/laneService.ts` | Lane CRUD now accepts `CreateLaneArgs.startPoint`, used by the Commits view's "Create lane here" affordance to fork a new lane from a specific commit. |
+| `apps/desktop/src/main/services/lanes/laneService.ts` | Lane CRUD accepts `CreateLaneArgs.startPoint`, used by "Create lane here" to fork a lane from a commit. |
+| `apps/desktop/src/shared/adeCloud/accountReader.ts` | Answers `git.listRecentCommits` and the commit reads for an account-answered pin from GitHub. |
+| `apps/desktop/src/renderer/components/adeCloud/CloudGitAsOf.tsx` | The "As of …, saved by its computer at rest" line, from the project overview. Mounted in `CommitHistoryView.tsx` and `LaneGitActionsPane.tsx`. |
 | `apps/desktop/src/main/services/prs/prService.ts` | Records PR creation as an operation. |
 | `apps/desktop/src/main/services/conflicts/conflictService.ts` | Records rebase operations. |
 | `apps/desktop/src/main/services/sessions/sessionService.ts` | Terminal session lifecycle (separate `terminal_sessions` table). |
-| `apps/desktop/src/main/services/ipc/registerIpc.ts` | `ade.history.listOperations`, `ade.history.exportOperations`, plus the new git IPC channels surfaced by the History toolbar (`ade.git.createTag`, `ade.git.resetToCommit`, `ade.git.undoLastHeadChange`, `ade.git.redoLastHeadChange`, the `ff-only`/`rebase`/`merge` variants of `ade.git.pull`). |
+| `apps/desktop/src/main/services/ipc/registerIpc.ts` | `ade.history.listOperations`, `ade.history.exportOperations`, plus the git IPC channels the History toolbar uses (`ade.git.createTag`, `ade.git.resetToCommit`, `ade.git.undoLastHeadChange`, `ade.git.redoLastHeadChange`, the `ff-only`/`rebase`/`merge` variants of `ade.git.pull`). |
 
 Renderer components (`apps/desktop/src/renderer/components/history/`):
 
@@ -340,7 +362,7 @@ Sessions are owned by `sessionService.ts`; their full transcript is on
 disk at `transcript_path`. Terminal sessions do **not** synthesize
 rows into the activity feed yet — chat sessions do.
 
-### Checkpoints (Phase 8)
+### Checkpoints
 
 `checkpoints` (schema in `kvDb.ts`):
 
@@ -349,7 +371,7 @@ rows into the activity feed yet — chat sessions do.
 - Surfaced internally via `packService` compatibility paths but not
   through a public `ade.packs.*` IPC.
 
-### Pack events (Phase 8)
+### Pack events
 
 `pack_events`:
 
@@ -357,7 +379,7 @@ rows into the activity feed yet — chat sessions do.
   updated, conflict detected, etc.).
 - Event-specific payload stored as JSON.
 
-### Pack versions (Phase 8)
+### Pack versions
 
 `pack_versions`, `pack_heads`:
 
@@ -518,8 +540,8 @@ these are surfaced on the Activity surface as synthesized rows:
   `Start point not found for new lane: …` synchronously; callers in
   `historyGitActions.create_lane` rely on that error to surface a
   notice.
-- **Pack/checkpoint data exists but is hidden.** Phase 8 tables are
-  populated but the History UI does not surface them. Any new IPC
+- **Pack/checkpoint data exists but is hidden.** The pack and checkpoint
+  tables are populated, but the History UI does not surface them. Any new IPC
   that exposes them must also respect the visibility/focus polling
   guards already in place for operations.
 
@@ -535,11 +557,11 @@ these are surfaced on the Activity surface as synthesized rows:
 - [Lanes README](../lanes/README.md) -- `CreateLaneArgs.startPoint` is
   documented there alongside the rest of the lane creation flow.
 - [Sync remote commands](../sync-and-multi-device/remote-commands.md)
-  -- the new git head-change / tag / reset actions are exposed to iOS
+  -- the git head-change, tag and reset actions are exposed to iOS
   and peer desktops through `SyncRemoteCommandAction`.
 - [Chat README](../chat/README.md) -- chat transcript persistence is
   separate from the operations timeline but parallel in intent, and
   chat sessions also synthesize Activity feed rows.
 - [Agents README](../agents/README.md) -- the CTO keeps no session log; its
-  conversation lives in the chat transcripts and `readHistory` reads them,
-  and `cto.getState` no longer sends a list of past sessions.
+  conversation lives in the chat transcripts, and `readHistory` reads them.
+  `cto.getState` sends no list of past sessions.
