@@ -24,6 +24,7 @@ import {
   type CloudCreateInstanceInput,
   type CloudExecResult,
   type CloudInstance,
+  type CloudAccessAnswer,
   type CloudProvider,
   type CloudUpdateChannel,
   type CloudUpdateCheck,
@@ -202,6 +203,14 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
   return {
     async accessEnabled(): Promise<boolean> {
       return record(await request("GET", "/cloud/access"))?.enabled === true;
+    },
+
+    async accessAnswer(): Promise<CloudAccessAnswer> {
+      const body = record(await request("GET", "/cloud/access"));
+      const enabled = body?.enabled === true;
+      const reason = typeof body?.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 500) : null;
+      // An old server sends only `enabled`: no is read-only (blocked).
+      return { enabled, readOnly: enabled ? body?.readOnly === true : true, reason };
     },
 
     async getAccount(): Promise<CloudAccountState> {

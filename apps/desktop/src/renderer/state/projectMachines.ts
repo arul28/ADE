@@ -20,7 +20,8 @@ import type { LaneSummary, OpenProjectBinding, RemoteRuntimeConnectionSnapshot }
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { readLocalSyncStatus } from "../lib/localSyncStatusReader";
 import { useAppStore, useRootAppStore } from "./appStore";
-import { useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
+import { isAdeCloudComputer, useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
+import { ADE_CLOUD_NAME } from "../../shared/adeCloudMachine";
 import { useCrossMachineLaneSync } from "./crossMachineLanes";
 import { buildAllMachineLanes, connectionOnline, type LaneMachine } from "./laneMachineRouting";
 
@@ -293,14 +294,29 @@ function useThisMachineIdentity(active: boolean): {
 
 const NO_LANES: readonly LaneSummary[] = [];
 
-/** The machine list for the active project tab. */
-export function useProjectMachines(active = true): ProjectMachinesState {
+/** Whether a machine of the list is one of the account's ADE Cloud computers (a lane's, a CTO home, any). */
+export function isAdeCloudProjectMachine(
+  machine: Pick<ProjectMachine, "hostname" | "machineId" | "isThisMachine">,
+  index?: Parameters<typeof isAdeCloudComputer>[1],
+): boolean {
+  return !machine.isThisMachine && isAdeCloudComputer({ hostname: machine.hostname, machineKey: machine.machineId }, index);
+}
+
+/**
+ * The machine list for the active project tab. Every ADE Cloud computer in it
+ * reads "ADE Cloud", never its own name. `ownOnly` leaves ADE Cloud computers
+ * out: for a list of the person's own computers (machine-level settings, the
+ * `.env` tip), where ADE Cloud has its own place.
+ */
+export function useProjectMachines(active = true, options: { ownOnly?: boolean } = {}): ProjectMachinesState {
+  const ownOnly = options.ownOnly === true;
   useCrossMachineLaneSync(active);
   const projectBinding = useAppStore((state) => state.projectBinding);
   const unionMachines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
   const { snapshot, loaded: snapshotLoaded } = useRemoteConnectionSnapshot(active);
   const local = useThisMachineIdentity(active);
-  const { computers: laneComputers } = useAdeCloudLaneComputers();
+  const cloudIndex = useAdeCloudLaneComputers();
+  const laneComputers = cloudIndex.computers;
 
   const machines = useMemo<ProjectMachine[]>(() => {
     const all = buildAllMachineLanes({
@@ -310,7 +326,7 @@ export function useProjectMachines(active = true): ProjectMachinesState {
       machines: unionMachines ?? {},
       connections: snapshot?.connections ?? [],
       thisMachineDeviceId: local.deviceId,
-      // A cloud lane's computer reads "Cloud · <lane>".
+      // A cloud lane's computer reads "ADE Cloud".
       adeCloud: { computers: laneComputers },
     });
     const withRepo = [...all.machines];
@@ -319,12 +335,18 @@ export function useProjectMachines(active = true): ProjectMachinesState {
     if (thisIndex > 0) withRepo.unshift(...withRepo.splice(thisIndex, 1));
     const withoutRepo = all.machinesWithoutRepo;
     const thisWithoutRepo = withoutRepo.filter((machine) => machine.isThisMachine);
-    return [
+    const ordered = [
       ...thisWithoutRepo,
       ...withRepo,
       ...withoutRepo.filter((machine) => !machine.isThisMachine),
     ];
-  }, [laneComputers, local.deviceId, projectBinding, snapshot, unionMachines]);
+    // ADE Cloud is one machine: no cloud computer shows its own name.
+    return ordered.flatMap((machine) => {
+      if (!isAdeCloudProjectMachine(machine, cloudIndex)) return [machine];
+      if (ownOnly) return [];
+      return [machine.machineName === ADE_CLOUD_NAME ? machine : { ...machine, machineName: ADE_CLOUD_NAME }];
+    });
+  }, [cloudIndex, laneComputers, local.deviceId, ownOnly, projectBinding, snapshot, unionMachines]);
 
   const connectedRemoteCount = useMemo(
     () => (snapshot?.connections ?? []).filter(connectionOnline).length,

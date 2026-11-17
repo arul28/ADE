@@ -5,7 +5,7 @@ import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import { accountMachinePresence, machineIsAwake } from "../../../shared/machinePresence";
 import type { AdeAccountMachine, RemoteRuntimeTarget } from "../../../shared/types";
 import { useActivityStore } from "../../state/activityStore";
-import { CloudBoxOnlyRow, CloudBoxStrip, CloudGroupBanners, CloudGroupHead, cloudDeletedRow, cloudParkedRow } from "./CloudMachineGroup";
+import { AdeCloudMachineRow, CloudBoxStrip, CloudGroupBanners, CloudGroupHead, cloudDeletedRow, cloudParkedRow } from "./CloudMachineGroup";
 import { isDeletedCloudRow, matchCloudBoxes } from "./cloudMachineModel";
 import type { MachineAction } from "./MachineActionsMenu";
 import type { MachineRow, MachineSection, MachineSections } from "./remoteMachineModel";
@@ -13,8 +13,6 @@ import { cloudBoxContext, useCloudBoxActions, type CloudBoxContext } from "./use
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useCloudMachines } from "./useCloudMachines";
-import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
-import { CloudLaneConnectionRow } from "../cloudLane/CloudLaneConnectionRow";
 
 /** While a box's row lags, how often the account list is read again. */
 const CLOUD_ROW_CATCH_UP_REFRESH_MS = 15_000;
@@ -212,17 +210,21 @@ export function useCloudMachineGroup(args: {
     }
   }
   // Boxes ADE made that no row stands for: joining, removed from ADE, or
-  // never signed in. They still use hours, so they stay visible.
+  // never signed in. They still use hours; the ADE Cloud dashboard lists them.
   const looseBoxes = cloudBoxes.filter((box) => !matchedBoxIds.has(box.instanceId));
   const cloudGroupBoxes = [...cloudRows.map(({ box }) => box), ...looseBoxes];
-  const showCloudGroup = cloudResult != null && cloudResult.state !== "not_connected"
-    && (cloudGroupBoxes.length > 0 || cloudResult.state !== "ok");
+  // ADE Cloud is one machine every account has: always one row, also with no
+  // lanes yet. Only a window with no ADE account (not connected) leaves it out.
+  const showCloudGroup = args.enabled && cloudEnabled && cloudResult?.state !== "not_connected";
 
   const cloudAccount = cloudResult?.state === "ok" ? cloudResult.account : null;
-  const laneOfBox = (box: CloudMachine): box is CloudLaneMachine => Boolean((box as CloudLaneMachine).lane);
 
-  /** The group, with each matched row drawn by the list's own row renderer. */
-  function renderGroup(renderRow: (row: MachineRow, section: MachineSection) => ReactNode): ReactNode {
+  /**
+   * The group: one "ADE Cloud" machine row, never a row per computer. Each
+   * lane's computer is ADE's business; the lanes, their sizes and their
+   * actions live in Settings › ADE Cloud, named by lane.
+   */
+  function renderGroup(_renderRow: (row: MachineRow, section: MachineSection) => ReactNode): ReactNode {
     if (!showCloudGroup) return null;
     return (
       <div className="ade-cx-section" data-machine-group="cloud">
@@ -233,30 +235,14 @@ export function useCloudMachineGroup(args: {
           onRetry={cloudMachines.refresh}
           onOpenSettings={onOpenSettings}
         />
-        {cloudGroupBoxes.length > 0 ? (
-          <div className="ade-cx-list">
-            {/* A lane's computer is one small row named for its lane; ADE connects to it by itself.
-                Its full machine row stays one click away, under Details. */}
-            {cloudRows.map(({ row, section, box }) => (laneOfBox(box)
-              ? <CloudLaneConnectionRow key={`cloud-lane:${box.instanceId}`} box={box} account={cloudAccount} details={renderRow(row, section)} />
-              : renderRow(row, section)))}
-            {looseBoxes.map((box) => {
-              const ctx = boxContext(box, null);
-              const row = (
-                <CloudBoxOnlyRow
-                  key={`cloud:${box.instanceId}`}
-                  box={box}
-                  accountKnown={accountKnown}
-                  actions={cloudActions.actionsFor(ctx, () => undefined)}
-                  strip={boxStrip(ctx, true)}
-                />
-              );
-              return laneOfBox(box)
-                ? <CloudLaneConnectionRow key={`cloud-lane:${box.instanceId}`} box={box} account={cloudAccount} details={row} />
-                : row;
-            })}
-          </div>
-        ) : null}
+        <div className="ade-cx-list">
+          <AdeCloudMachineRow
+            boxes={cloudGroupBoxes}
+            account={cloudAccount}
+            known={cloudResult?.state === "ok"}
+            onOpenSettings={onOpenSettings}
+          />
+        </div>
         {cloudActions.dialog}
       </div>
     );

@@ -12,7 +12,7 @@ import type { AgentChatFileRef, AgentChatProvider, ChatLaunchChatArgs, ChatLaunc
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
 import { cloudTierHoursAt, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
-import { useAdeCloudEnabled } from "../../state/cloudAccess";
+import { adeCloudDoBlock, useAdeCloudAccess, useAdeCloudEnabled } from "../../state/cloudAccess";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { accountCloudLaunchesAvailable } from "../../state/accountCloudLaunches";
 import { cloudRemoteSignInOf, cloudRemoteSignInRefusal } from "../../../shared/accountCloudLaunches";
@@ -93,7 +93,10 @@ export function useAdeCloudDraft({
   originUrl: string | null;
 }) {
   const cloudEnabled = useAdeCloudEnabled();
-  const active = enabled && cloudEnabled;
+  const access = useAdeCloudAccess();
+  // Reading the account's computers needs the account to be allowed in; a
+  // blocked account still sees the entry, read-only, with the server's sentence.
+  const active = enabled && cloudEnabled && access.state !== "blocked";
   // No settle re-reads from here: the menu needs the list in memory, not a timer.
   const machines = useCloudMachines(active, { settle: false });
   const index = useAdeCloudLaneComputers();
@@ -136,11 +139,18 @@ export function useAdeCloudDraft({
 
   return {
     /**
-     * ADE Cloud access is on for this account: the Run on menu lists it. ADE
-     * Web starts the lane through the account server (`POST /cloud/launches`),
-     * so it needs this browser's account sign-in.
+     * ADE Cloud is one machine every account has: the Run on menu always
+     * lists it (also before the server answers). ADE Web starts the lane
+     * through the account server (`POST /cloud/launches`).
      */
-    available: cloudEnabled && (!isWebClientMode() || accountCloudLaunchesAvailable()),
+    available: true,
+    /**
+     * Why ADE Cloud can't start or wake anything from here, or null: the
+     * account is blocked (the server's sentence), ADE is signed out, or ADE
+     * Web has no account sign-in in this browser. The entry still shows, off.
+     */
+    doBlock: adeCloudDoBlock(access)
+      ?? (isWebClientMode() && !accountCloudLaunchesAvailable() ? "Sign in to ADE in this browser to use ADE Cloud." : null),
     account,
     /** The account's computers from the shared read (empty until it answers). */
     machines: result?.machines ?? NO_MACHINES,
@@ -149,6 +159,8 @@ export function useAdeCloudDraft({
     projectLanes,
     /** The account's lane computers: the Run on menu lists them under ADE Cloud, not as computers. */
     computers,
+    /** Every ADE Cloud computer of the account (`isAdeCloudComputer`), a lane's or not. */
+    index,
     tiers,
     tierId,
     /** The size picked for this draft, or null while it follows the default (what a saved pick keeps). */
@@ -305,6 +317,10 @@ export function useAdeCloudComposer(input: {
         actions: [],
       };
     }
+    // Blocked or signed out: nothing can start or wake; reading still works.
+    if (draft.doBlock) {
+      return { tone: "blocked", message: draft.doBlock, short: "ADE Cloud can't start work now.", actions: [] };
+    }
     const accountBlock = adeCloudAccountBlock(draft.account, { newLane });
     if (accountBlock) return accountBlock;
     if (!newLane) return null;
@@ -363,6 +379,7 @@ export function useAdeCloudComposer(input: {
     return null;
   }, [
     draft.account,
+    draft.doBlock,
     gitRefusal,
     draft.tierId,
     mode,

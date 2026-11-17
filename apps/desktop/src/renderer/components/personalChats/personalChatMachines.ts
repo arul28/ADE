@@ -22,6 +22,7 @@ import type {
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type { MachineBoundAgentChatApi } from "../chat/agentChatApi";
 import { useAppStore } from "../../state/appStore";
+import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { machineScopedId } from "../../state/foreignMachineReads";
 import { connectionOnline } from "../../state/laneMachineRouting";
 import { useRemoteConnectionSnapshot, withMachineTimeout } from "../../state/projectMachines";
@@ -124,11 +125,15 @@ export function usePersonalChatMachines(): PersonalChatMachinesState {
   const projectBinding = useAppStore((state) => state.projectBinding);
   const { snapshot, loaded } = useRemoteConnectionSnapshot(!webMachines);
   const [storedDraft, setStoredDraft] = useState(readStoredDraftMachine);
+  const cloudIndex = useAdeCloudLaneComputers();
 
+  // Personal chats run on the person's own computers only: an ADE Cloud
+  // computer belongs to one lane (or a CTO), never to a chat with no project.
   const desktopMachines = useMemo<PersonalChatMachine[]>(() => {
     const machines: PersonalChatMachine[] = [{ id: THIS_MACHINE_ID, name: THIS_MACHINE_NAME, isThisMachine: true }];
     for (const connection of snapshot?.connections ?? []) {
       if (!connectionOnline(connection) || machines.some((machine) => machine.id === connection.target.id)) continue;
+      if (isAdeCloudComputer({ hostname: connection.target.hostname, machineKey: connection.target.pairedMachine?.machineKey ?? null }, cloudIndex)) continue;
       machines.push({
         id: connection.target.id,
         name: connection.target.name || connection.target.hostname,
@@ -136,7 +141,7 @@ export function usePersonalChatMachines(): PersonalChatMachinesState {
       });
     }
     return machines;
-  }, [snapshot]);
+  }, [cloudIndex, snapshot]);
 
   const selectDesktopDraft = useCallback(async (machineId: string) => {
     storeDraftMachine(machineId);

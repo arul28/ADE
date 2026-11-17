@@ -14,6 +14,7 @@ import type {
 } from "../shared/projectRemoval";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudAccessIpcAnswer } from "../shared/adeCloudMachine";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
@@ -5047,7 +5048,7 @@ declare global {
        */
       cloudAccess?: {
         /** `signInEnd`: the sign-in the end warning names (a Claude pass or a key), only while ADE Cloud is on (desktop only). */
-        read: () => Promise<{ enabled: boolean; signInEnd?: CloudSignInEnd | null }>;
+        read: () => Promise<CloudAccessIpcAnswer>;
         onChanged: (cb: () => void) => () => void;
       };
       /**

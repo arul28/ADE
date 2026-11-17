@@ -293,6 +293,8 @@ function CopyRow({
     const state = (machine.targetId == null && !machine.isLocal) || machine.userDisconnected || machine.waitingForSlot
       ? "not connected"
       : "offline";
+    // An offline own computer is hidden, as in every tab; it shows again when it is on.
+    if (state === "offline") return null;
     return copy
       ? disabledRow(
         <CircleDashed size={12} aria-hidden className="shrink-0 opacity-60" />,

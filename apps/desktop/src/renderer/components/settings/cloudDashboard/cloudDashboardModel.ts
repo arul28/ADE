@@ -144,7 +144,8 @@ export function dashLanes(input: {
 /** A computer with no lane: its own name when ADE gave it one, else its short id. */
 function noLaneName(machine: CloudMachine): string {
   const name = machine.name?.trim();
-  return name && name !== CLOUD_MACHINE_DEFAULT_NAME ? name : `Computer ${machine.instanceId.slice(0, 6)}`;
+  // Never the computer's id: ADE Cloud names lanes, not computers.
+  return name && name !== CLOUD_MACHINE_DEFAULT_NAME ? name : "Computer without a lane";
 }
 
 /** The plan's name, for the header tag. */

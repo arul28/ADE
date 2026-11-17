@@ -154,7 +154,7 @@ function useContainerWidth(): [React.RefCallback<HTMLDivElement>, number] {
 
 export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const ctoHome = useCtoHome(active);
-  const { computers: laneComputers } = useAdeCloudLaneComputers();
+  const cloudIndex = useAdeCloudLaneComputers();
   /** Every CTO call carries this. Null until the home is reachable: call nothing then. */
   // Held by its key, so a rebuilt pin for the same machine restarts nothing.
   const ctoPin = useStableBinding(ctoHome.status === "ready" ? ctoHome.pin : null);
@@ -611,9 +611,9 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   // second ADE Cloud row would only find the same computer.
   const chooserCloud = cloudHome.job || !(ctoHome.cloudInstanceId && ctoHome.home) ? cloudHome : null;
   const otherMachineCount = useMemo(
-    () => ctoHomeCandidates(ctoHome.machines, ctoHome.home?.machineId ?? null, laneComputers)
+    () => ctoHomeCandidates(ctoHome.machines, ctoHome.home?.machineId ?? null, cloudIndex)
       .filter((machine) => !machine.isThisMachine).length,
-    [ctoHome.home?.machineId, ctoHome.machines, laneComputers],
+    [ctoHome.home?.machineId, ctoHome.machines, cloudIndex],
   );
   // Settings offers "Change" when the chooser has somewhere else to go:
   // another machine, or ADE Cloud (a free plan is sent to the upgrade there).

@@ -227,7 +227,7 @@ function ChatPrPaneAsleep({ laneId, branchName, runtimePin, box }: ChatPrPanePro
     : saved.map((pr) => ({ key: pr.githubUrl ?? pr.id, title: pr.title, number: pr.githubPrNumber, url: pr.githubUrl, state: pr.state }));
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 px-3 py-3 text-[13px]">
-      <Banner layout="inline" model={{ id: "chat-pr-asleep", tone: "info", title: `${box.name ?? "This computer"} is asleep`, detail: "Actions on its branch need it awake." }} />
+      <Banner layout="inline" model={{ id: "chat-pr-asleep", tone: "info", title: "This lane's computer is asleep", detail: "Actions on its branch need it awake." }} />
       {rows.map((row) => (
         <a key={row.key} href={row.url ?? undefined} target="_blank" rel="noreferrer" className="truncate text-fg underline">
           #{row.number} {row.title} ({row.state})

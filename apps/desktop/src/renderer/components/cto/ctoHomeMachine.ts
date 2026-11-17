@@ -24,11 +24,10 @@
  * a fallback join.
  */
 
-import type { AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
-import type { ProjectMachine } from "../../state/projectMachines";
+import type { AdeCloudIndexState } from "../../state/adeCloudLaneIndex";
+import { isAdeCloudProjectMachine, type ProjectMachine } from "../../state/projectMachines";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
-import { isAdeCloudLaneComputer } from "../lanes/laneMachines";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
@@ -46,18 +45,17 @@ export { CTO_HOME_SETTING_KEY, isCtoHomeMachineRecord, type CtoHomeMachineRecord
  * stays listed):
  * - a cloud computer's saved chats (`cloud-saved:<key>`), a stand-in that
  *   answers only for those chats;
- * - a lane's own ADE Cloud computer, which goes when its lane does.
- * ADE Cloud as a home is its own row, not one of these.
+ * - any ADE Cloud computer (a lane's, or one made for a CTO): ADE Cloud as a
+ *   home is its own row, never a computer by name.
  */
 export function ctoHomeCandidates(
   machines: readonly ProjectMachine[],
   currentMachineId: string | null,
-  laneComputers: readonly AdeCloudLaneComputer[],
+  cloudIndex: Pick<AdeCloudIndexState, "computers" | "cloudComputers">,
 ): ProjectMachine[] {
   return machines.filter((machine) => (machine.hasRepo || machine.isThisMachine)
     && (machine.machineId === currentMachineId
-      || (savedChatsMachineKey(machine.machineId) == null
-        && !isAdeCloudLaneComputer({ hostname: machine.hostname, machineKey: machine.machineId }, laneComputers))));
+      || (savedChatsMachineKey(machine.machineId) == null && !isAdeCloudProjectMachine(machine, cloudIndex))));
 }
 
 /** Shown while This computer's account device id is still being read. */

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { isAdeCloudComputer } from "../../state/adeCloudLaneIndex";
+import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { ArrowRight, type Icon } from "@phosphor-icons/react";
 import {
   attentionDestinationDeepLink,
@@ -378,9 +380,25 @@ function sortMachines(rows: MachineRow[]): MachineRow[] {
     || a.name.localeCompare(b.name));
 }
 
-export function desktopMachineRows(snapshot: RemoteRuntimeConnectionSnapshot | null): MachineRow[] {
-  const connections = snapshot?.connections ?? [];
-  if (connections.length === 0) return [];
+/** ADE Cloud as one machine on the welcome card: every account has it, also with no lanes yet. */
+const ADE_CLOUD_ROW: MachineRow = { key: ADE_CLOUD_MACHINE_ID, name: ADE_CLOUD_NAME, dot: "available", detail: "Wakes when you start work" };
+
+type CloudIndex = Parameters<typeof isAdeCloudComputer>[1];
+
+/**
+ * The welcome card's machines on the desktop: this machine, the person's own
+ * computers that are connected (an offline one is hidden, as in every tab),
+ * then ADE Cloud as one row. No ADE Cloud computer shows by its own name.
+ */
+export function desktopMachineRows(
+  snapshot: RemoteRuntimeConnectionSnapshot | null,
+  cloud: { shown: boolean; index?: CloudIndex } = { shown: false },
+): MachineRow[] {
+  const connections = (snapshot?.connections ?? []).filter((connection) => connection.state !== "idle"
+    && connection.state !== "error"
+    && !isAdeCloudComputer({ hostname: connection.target.hostname, machineKey: connection.target.pairedMachine?.machineKey ?? null }, cloud.index));
+  const cloudRow = cloud.shown ? [ADE_CLOUD_ROW] : [];
+  if (connections.length === 0) return cloudRow.length ? [{ key: "this-machine", name: "This machine", dot: "online", detail: "Running ADE" }, ...cloudRow] : [];
   // Free disk only when the connection snapshot already carries it.
   const freeById = new Map(
     deriveLaneMachineOptions({ connections, boundTargetId: null })
@@ -402,12 +420,16 @@ export function desktopMachineRows(snapshot: RemoteRuntimeConnectionSnapshot | n
   return [
     { key: "this-machine", name: "This machine", dot: "online", detail: "Running ADE" },
     ...sortMachines(remotes),
+    ...cloudRow,
   ];
 }
 
-export function webMachineRows(machines: readonly WebMachineEntry[]): MachineRow[] {
-  return sortMachines(machines
-    .filter((machine) => !machine.rememberedOnly)
+/** The welcome card's machines on the web: the person's own computers that are reachable, then ADE Cloud. */
+export function webMachineRows(machines: readonly WebMachineEntry[], cloud: { shown: boolean; index?: CloudIndex } = { shown: false }): MachineRow[] {
+  return [...sortMachines(machines
+    .filter((machine) => !machine.rememberedOnly
+      && machine.status !== "offline"
+      && !isAdeCloudComputer({ machineKey: machine.accountMachine?.machineKey ?? machine.key }, cloud.index))
     .map((machine): MachineRow => {
       const dot: MachineRow["dot"] = machine.status === "live"
         ? "online"
@@ -425,7 +447,7 @@ export function webMachineRows(machines: readonly WebMachineEntry[]): MachineRow
           ? `${machine.statusLabel} · ${projectCount} project${projectCount === 1 ? "" : "s"}`
           : machine.statusLabel,
       };
-    }));
+    })), ...(cloud.shown ? [ADE_CLOUD_ROW] : [])];
 }
 
 export function openMachines(webMode: boolean): void {

@@ -436,7 +436,7 @@ import {
 } from "../lanes/CreateLaneDialogHost";
 import { peekNewLaneDefaultsCached, useNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { describeAutoCreateStart } from "../lanes/laneStartOptions";
-import { autoLaneMachine, isAdeCloudLaneComputer, originUrlForBinding } from "../lanes/laneMachines";
+import { autoLaneMachine, originUrlForBinding } from "../lanes/laneMachines";
 import { draftCloneRowTargetId, useDraftMachineSetup } from "./useDraftMachineSetup";
 import { ADE_CLOUD_MACHINE_ID, useAdeCloudComposer, useAdeCloudDraft, type AdeCloudSend } from "./useAdeCloudDraft";
 import { WebCloudSetupCards } from "./launch/WebCloudSetupCards";
@@ -480,7 +480,7 @@ import {
 } from "./draftAttachmentTransfer";
 import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
 import { savedChatComputerGone } from "../../state/cloudSavedChats";
-import { useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
+import { isAdeCloudComputer, useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
@@ -17736,7 +17736,6 @@ export function AgentChatPane({
     machineOrder: draftMachineOrder,
     machineKeyByTargetId: draftMachineKeyByTargetId,
     connections: draftConnections,
-    offlineMachines: draftOfflineMachines,
     refreshMachineProjects: refreshDraftMachineProjects,
     selectorLanes: draftRoutedSelectorLanes,
     boundMachineId: boundLaneMachineId,
@@ -17789,23 +17788,26 @@ export function AgentChatPane({
   adeCloudModeRef.current = adeCloudMode;
   adeCloudAccountRef.current = adeCloud.account;
   const adeCloudLaneComputers = adeCloud.computers;
-  // A lane computer is a lane on ADE Cloud, not a computer to pick: it is
-  // listed under ADE Cloud (by host name or machine key, as every other
-  // picker matches it). The tab's own machine and the current pick stay.
-  const isHiddenLaneComputer = useCallback((option: { id: string; targetId: string | null; hostname: string | null; isBound?: boolean }) => {
+  const adeCloudIndex = adeCloud.index;
+  // Every ADE Cloud computer (a lane's, a CTO home, one made without a lane)
+  // is part of ADE Cloud, not a computer to pick: ADE Cloud is one Run on
+  // entry (matched by host name or machine key, as every other picker does).
+  // The tab's own machine and the current pick stay.
+  const isHiddenCloudComputer = useCallback((option: { id: string; targetId: string | null; hostname: string | null; isBound?: boolean }) => {
     if (!option.targetId || option.isBound || option.id === selectedDraftMachineId) return false;
-    return isAdeCloudLaneComputer(
+    return isAdeCloudComputer(
       { hostname: option.hostname, machineKey: draftMachineKeyByTargetId.get(option.targetId) ?? null },
-      adeCloudLaneComputers,
+      adeCloudIndex,
     );
-  }, [adeCloudLaneComputers, draftMachineKeyByTargetId, selectedDraftMachineId]);
+  }, [adeCloudIndex, draftMachineKeyByTargetId, selectedDraftMachineId]);
+  const hasCloudComputers = adeCloudIndex.computers.length > 0 || adeCloudIndex.cloudComputers.length > 0;
   const laneMachineOptions = useMemo(
-    () => (adeCloudLaneComputers.length ? routedLaneMachineOptions.filter((option) => !isHiddenLaneComputer(option)) : routedLaneMachineOptions),
-    [adeCloudLaneComputers, isHiddenLaneComputer, routedLaneMachineOptions],
+    () => (hasCloudComputers ? routedLaneMachineOptions.filter((option) => !isHiddenCloudComputer(option)) : routedLaneMachineOptions),
+    [hasCloudComputers, isHiddenCloudComputer, routedLaneMachineOptions],
   );
   const draftCloneMachineOptions = useMemo(
-    () => (adeCloudLaneComputers.length ? routedCloneMachineOptions.filter((option) => !isHiddenLaneComputer(option)) : routedCloneMachineOptions),
-    [adeCloudLaneComputers, isHiddenLaneComputer, routedCloneMachineOptions],
+    () => (hasCloudComputers ? routedCloneMachineOptions.filter((option) => !isHiddenCloudComputer(option)) : routedCloneMachineOptions),
+    [hasCloudComputers, isHiddenCloudComputer, routedCloneMachineOptions],
   );
   // The auto-create row says where a new lane would start ("from origin/main"),
   // read from the saved new-lane defaults of the machine the draft launches on.
@@ -18000,10 +18002,7 @@ export function AgentChatPane({
   const draftMachineSetup = useDraftMachineSetup({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
-    cloudMachines: adeCloud.machines,
-    laneComputers: adeCloudLaneComputers,
     cloneCandidates: draftCloneMachineOptions,
-    offlineMachines: draftOfflineMachines,
     selectableMachineIds: laneMachineOptionIds,
     connections: draftConnections,
     onMachineReady: selectReadyMachine,
@@ -18030,9 +18029,12 @@ export function AgentChatPane({
     // Picked already: the label above the box says why it can't run now, and
     // the row stays the pick (a disabled pick reads as "unavailable, fallback").
     ? null
-    : parallelChatMode
-      ? PARALLEL_MODELS_HERE_ONLY
-      : null;
+    : adeCloud.doBlock
+      // Blocked or signed out: the row shows, off, with the server's sentence.
+      ? adeCloud.doBlock
+      : parallelChatMode
+        ? PARALLEL_MODELS_HERE_ONLY
+        : null;
   /**
    * The Run on menu. Its rows keep one order whatever loads when: the
    * connected computers in connection order (a computer that gains the

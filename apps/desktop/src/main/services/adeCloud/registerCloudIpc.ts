@@ -27,6 +27,7 @@ import { createCloudApiClient } from "../../../shared/cloudApiClient";
 import type { CloudRemoteSignInStatus } from "../../../shared/accountCloudLaunches";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
 import type { CloudSignInEnd } from "../../../shared/cloudSignIns";
+import type { CloudAccessIpcAnswer } from "../../../shared/adeCloudMachine";
 import type { AdeAccountMachinesResult } from "../../../shared/types/account";
 import { getSignedInAccountAccessToken } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import {
@@ -41,6 +42,7 @@ import {
   cloudAccessEnabled,
   cloudNoProviderSentence,
   cloudVaultFromBridge,
+  readCloudAccessView,
   getCloudProvider,
   knownCloudProvider,
   readCloudStatus,
@@ -422,12 +424,15 @@ export function registerCloudIpc(args: {
   };
 
   // Account-level, so no pin: every computer answers the same for this account.
-  ipcMain.handle(IPC.cloudGetAccess, async (event): Promise<{ enabled: boolean; signInEnd?: CloudSignInEnd | null }> => {
+  ipcMain.handle(IPC.cloudGetAccess, async (event): Promise<CloudAccessIpcAnswer> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetAccess)) return { enabled: false };
     const enabled = await readAccess();
+    // The same cached ask: the state and the server's sentence for a blocked account.
+    const view = await readCloudAccessView(credentials).catch(() => null);
+    const state = view ? { state: view.state, reason: view.reason, account: view.account } : {};
     // Off: no pass read at all.
-    if (!enabled) return { enabled };
-    return { enabled, signInEnd: await readSignInEnd() };
+    if (!enabled) return { enabled, ...state };
+    return { enabled, ...state, signInEnd: await readSignInEnd() };
   });
 
   ipcMain.handle(IPC.cloudGetStatus, async (event): Promise<CloudStatus | null> => {

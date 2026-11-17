@@ -17,7 +17,7 @@ import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
 import { wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
-import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { useCloudViewOnScreen } from "../../state/crossMachineLanes";
 import { isCloudConnectionTarget, isSavedChatsMachineId } from "../../state/cloudSavedChats";
 
@@ -28,6 +28,8 @@ import { isCloudConnectionTarget, isSavedChatsMachineId } from "../../state/clou
  * not leak into them. Kept per project across remounts of the route, and
  * shared with History, which shows the lane the Lanes list has selected.
  */
+const NO_LANES: LaneSummary[] = [];
+
 const useForeignLaneSelectionStore = create<{ byProject: Record<string, string | null> }>(() => ({ byProject: {} }));
 
 /** The foreign row key (`machineId:laneId`) the Lanes list has selected, or null. */
@@ -108,7 +110,8 @@ export function useLanesPageMachines({
   // ADE Cloud computers that are only asleep: their lanes are listed as normal
   // rows, and opening one wakes the computer. Any other machine that is
   // offline after its short reconnect window is not listed at all.
-  const { computers: cloudLaneComputers } = useAdeCloudLaneComputers();
+  const cloudIndex = useAdeCloudLaneComputers();
+  const cloudLaneComputers = cloudIndex.computers;
   const restingMachineKey = useMemo(
     () => Object.values(crossMachineEntries ?? {})
       .filter((entry) => machineIsCloudResting(entry, cloudLaneComputers))
@@ -186,17 +189,30 @@ export function useLanesPageMachines({
     return { ok: true, laneId: key, pin: route.pin, machineId: null, name: local.lane.name };
   }, []);
   // The tab's own machine has no union slice, so `online` stays true after it
-  // drops; its copy pin is null then, and the filter chip shows it offline.
-  const tabMachineOffline = activeMachine?.binding?.kind === "remote" && tabCopyPin == null;
-  // The machines whose lanes are listed: the tab's own, the online ones, and
-  // ADE Cloud computers that are only asleep.
-  const liveMachines = useMemo(() => {
-    const live = allMachineLanes.machines.filter((machine) => !goneMachineIds.has(machine.machineId)
-      && (machine.isActiveBinding || machine.online || restingMachineIds.has(machine.machineId)));
-    if (!tabMachineOffline) return live;
-    return live.map((machine) => (machine.isActiveBinding ? { ...machine, online: false } : machine));
-  }, [allMachineLanes.machines, goneMachineIds, restingMachineIds, tabMachineOffline]);
-  const multiMachine = shouldShowMachineChips(liveMachines.length);
+  // drops; its copy pin is null then. An offline own computer is hidden, as
+  // in Work: its lanes leave the list and the page says so in one line. An
+  // ADE Cloud computer that is asleep is not offline.
+  const isCloudMachine = useCallback(
+    (machine: { hostname: string | null; machineId: string }) => isAdeCloudComputer({ hostname: machine.hostname, machineKey: machine.machineId }, cloudIndex),
+    [cloudIndex],
+  );
+  const tabMachineOffline = activeMachine?.binding?.kind === "remote" && tabCopyPin == null
+    && !isCloudMachine(activeMachine);
+  // The machines whose lanes are listed: the tab's own while it is on, the
+  // online ones, and ADE Cloud computers that are only asleep.
+  const liveMachines = useMemo(
+    () => allMachineLanes.machines.filter((machine) => !goneMachineIds.has(machine.machineId)
+      && (machine.isActiveBinding ? !tabMachineOffline : machine.online || restingMachineIds.has(machine.machineId))),
+    [allMachineLanes.machines, goneMachineIds, restingMachineIds, tabMachineOffline],
+  );
+  // ADE Cloud is one machine: its computers count once for the chips.
+  const machineCount = useMemo(() => {
+    const own = liveMachines.filter((machine) => !isCloudMachine(machine)).length;
+    return own + (own < liveMachines.length ? 1 : 0);
+  }, [isCloudMachine, liveMachines]);
+  const multiMachine = shouldShowMachineChips(machineCount);
+  /** The tab's own computer while it is offline (its lanes are hidden), for the page's one line. */
+  const offlineTabMachineName = tabMachineOffline ? activeMachine?.machineName ?? null : null;
 
   /* ---- Selection ---- */
 
@@ -250,15 +266,17 @@ export function useLanesPageMachines({
 
   /* ---- Rows ---- */
 
+  // The tab machine's own lanes leave the list while it is offline.
+  const shownLocalLanes = tabMachineOffline ? NO_LANES : localLanes;
   const allViewLanes = useMemo(
-    () => (foreignLanes.viewLanes.length === 0 ? localLanes : [...localLanes, ...foreignLanes.viewLanes]),
-    [foreignLanes.viewLanes, localLanes],
+    () => (foreignLanes.viewLanes.length === 0 ? shownLocalLanes : [...shownLocalLanes, ...foreignLanes.viewLanes]),
+    [foreignLanes.viewLanes, shownLocalLanes],
   );
   /* ---- Machines ---- */
 
   // The machine of each row, for its hover card. Rows show no machine; the
   // hover card names it while the project has lanes on more than one machine.
-  // An ADE Cloud lane's computer reads "Cloud · <lane>".
+  // An ADE Cloud lane's computer reads "ADE Cloud".
   const cloudMachineLabel = useMachineLabelForMachine();
   const machineByLaneId = useMemo(() => {
     if (!multiMachine) return undefined;
@@ -313,5 +331,6 @@ export function useLanesPageMachines({
     disabledReasonByLaneId,
     foreignLaneIdSet,
     restingMachineIds,
+    offlineTabMachineName,
   };
 }
