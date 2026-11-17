@@ -33,6 +33,7 @@ import {
   type ProviderKeySpec,
 } from "./providerKeySpecs";
 import { providerActionMessage } from "../providerErrorMessage";
+import { accountKeyNameOf, useAccountProviderKeyNames } from "./useAccountProviderKeyNames";
 
 export type ProviderApiKeysPanelProps = {
   provider: SettingsProviderId;
@@ -49,11 +50,14 @@ export type ProviderApiKeysPanelProps = {
 };
 
 const READ_ONLY_LINE = "Managed outside ADE — clear the env/config value to remove.";
+const COMPUTER_ONLY_HINT = "Your ADE account doesn't hold this key, so other computers and ADE Cloud can't use it. Save it again while signed in to keep it in your account.";
 
 function KeyRow({
   credential,
   spec,
   verifyState,
+  computerOnly,
+  computerOnlyLabel,
   onReplace,
   onDelete,
   onVerify,
@@ -61,6 +65,10 @@ function KeyRow({
   credential: ApiCredentialSummary;
   spec: ProviderKeySpec;
   verifyState: { busy: boolean; message: string | null; ok: boolean | null };
+  /** A stored key your ADE account does not hold: only this computer has it. */
+  computerOnly: boolean;
+  /** "This computer only" here, "That computer only" for another machine's settings. */
+  computerOnlyLabel: string;
   onReplace: () => void;
   onDelete: () => void;
   onVerify: () => void;
@@ -100,6 +108,24 @@ function KeyRow({
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
         <SourceBadge source={credential.source} />
+        {computerOnly ? (
+          <span
+            title={COMPUTER_ONLY_HINT}
+            data-testid="api-key-computer-only"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              padding: "2px 8px",
+              fontSize: 10,
+              fontWeight: 600,
+              fontFamily: SANS_FONT,
+              color: COLORS.textSecondary,
+              border: `1px solid ${COLORS.borderMuted}`,
+            }}
+          >
+            {computerOnlyLabel}
+          </span>
+        ) : null}
         {host ? (
           <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>{host}</span>
         ) : null}
@@ -169,7 +195,7 @@ export function ProviderApiKeysPanel({
   onAfterRemove,
 }: ProviderApiKeysPanelProps) {
   // Runtime-backed key calls (legacy default slot, verify) go to the page's machine.
-  const { pin } = useSettingsMachineScope();
+  const { pin, isThisMachine } = useSettingsMachineScope();
   const spec = providerKeySpec(provider);
   const extraKey = (additionalProviders ?? []).join(",");
   const providers = useMemo(
@@ -177,6 +203,9 @@ export function ProviderApiKeysPanel({
     [extraKey, spec.credentialProvider],
   );
   const { credentials, loading, bridgeMissing, error, reload, store, remove } = useApiCredentials(providers);
+  // Which stored keys the account holds too: a save or a delete changes it.
+  const accountKeys = useAccountProviderKeyNames();
+  const refreshAccountKeys = accountKeys.refresh;
   const [sheet, setSheet] = useState<{ existing: ApiCredentialSummary | null } | null>(null);
   const [writeError, setWriteError] = useState<string | null>(null);
   const [verify, setVerify] = useState<Record<string, { busy: boolean; message: string | null; ok: boolean | null }>>({});
@@ -215,9 +244,10 @@ export function ProviderApiKeysPanel({
     }
     await onAfterSave?.(draft);
     await reload();
+    refreshAccountKeys();
     setSheet(null);
     setWriteError(null);
-  }, [hasDefaultStoreRow, onAfterSave, pin, reload, sheet, spec, store]);
+  }, [hasDefaultStoreRow, onAfterSave, pin, refreshAccountKeys, reload, sheet, spec, store]);
 
   const onDelete = useCallback(async (credential: ApiCredentialSummary) => {
     const ok = await confirmDialog({
@@ -235,11 +265,12 @@ export function ProviderApiKeysPanel({
       }
       await onAfterRemove?.(credential);
       await reload();
+      refreshAccountKeys();
       setWriteError(null);
     } catch (err) {
       setWriteError(providerActionMessage(err, "That key change did not go through."));
     }
-  }, [onAfterRemove, pin, reload, remove, spec.legacyDefaultSlot]);
+  }, [onAfterRemove, pin, refreshAccountKeys, reload, remove, spec.legacyDefaultSlot]);
 
   const onVerify = useCallback(async (credential: ApiCredentialSummary) => {
     const id = `${credential.provider}#${credential.credentialId}`;
@@ -296,6 +327,10 @@ export function ProviderApiKeysPanel({
               verify[`${credential.provider}#${credential.credentialId}`]
               ?? { busy: false, message: null, ok: null }
             }
+            computerOnly={credential.source === "store"
+              && accountKeys.names != null
+              && !accountKeys.names.has(accountKeyNameOf(credential))}
+            computerOnlyLabel={isThisMachine ? "This computer only" : "That computer only"}
             onReplace={() => {
               setWriteError(null);
               setSheet({ existing: credential });
