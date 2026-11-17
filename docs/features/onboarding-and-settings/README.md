@@ -1,3587 +1,2350 @@
 # Onboarding and Settings
 
-Two related but distinct flows:
+- **Onboarding** is the fastest path to a usable install and project. It
+  registers the project with the runtime so every client sees it. Opening or
+  creating a project lands on Work; AI runtimes, GitHub and Linear live in
+  Settings. No setup dashboard blocks the project.
+- **Settings** is long-lived configuration by tab. Project configuration saves
+  to `.ade/local.yaml` through `projectConfigService`; machine-level desktop
+  preferences (such as automatic update installs) save in the Electron
+  user-data `ade-state.json`.
 
-- **Onboarding** — the fastest path to a usable installation and a usable
-  project. Covers registering the project with the runtime so every client
-  (desktop, iOS) sees it. Opening or creating a project lands on
-  Work immediately; AI runtimes, GitHub, and Linear live in Settings. There is
-  no blocking project setup dashboard.
-- **Settings** — long-lived configuration organized by tab. Project
-  configuration persists to `.ade/local.yaml` through `projectConfigService`
-  (the committed `.ade/ade.yaml` is retired); machine-level desktop preferences
-  such as automatic update installation persist in the Electron user-data
-  `ade-state.json`.
-
-ADE account identity is required for a fresh launch on every client. The
-desktop, CLI, hosted web client, and iOS gate account-backed
-surfaces on the signed-in account; a lost or unreadable session is reported as
-its actual state rather than being treated as an optional guest account.
-
-The runtime does not hydrate every service at first run. Project open favors a cheap first pass; secondary hydration
-(full lane status and provider modes) happens after the app is
-interactive.
+Every client (desktop, CLI, hosted web, iOS) requires an ADE account on a fresh
+launch and gates account-backed surfaces on it; a lost or unreadable session is
+reported as its real state, never as a guest. Project open runs a cheap first
+pass; full lane status and provider modes load after the app is interactive.
 
 ## Where state lives
 
-ADE state is split between the per-machine runtime root and per-project
-directories. Onboarding writes to both.
-
 | Scope | Location | Owner | Contents |
 |---|---|---|---|
-| Machine | `~/.ade/` (`ADE_HOME` overrides; the Alpha channel build uses `~/.ade-alpha/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), provider-account registry (`provider-instances.json`) and the config homes it names (`provider-homes/<provider>/<id>/`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
-| Desktop installation | `<Electron userData>/ade-state.json` | Desktop main process | Recent projects, update handoff/reconciliation state, and machine-local automatic-install preferences. |
-| Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored overrides for ports, env vars, and machine-specific paths. |
-| Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets. The shared `.ade/.gitignore` whitelists only authored files. |
+| Machine | `~/.ade/` (`ADE_HOME` overrides; Alpha uses `~/.ade-alpha/`) | ADE runtime (`ade serve`) | Endpoint (`sock/ade.sock`), project registry (`projects.json`), provider-account registry (`provider-instances.json`) and its homes (`provider-homes/<provider>/<id>/`), encrypted credential store (`secrets/`), binary (`bin/ade`), natives (`runtime/<arch>/`), service logs. |
+| Desktop installation | `<Electron userData>/ade-state.json` | Desktop main process | Recent projects, update handoff and reconcile state, automatic-install preferences. |
+| Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored overrides: ports, env vars, machine paths. |
+| Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets; `.ade/.gitignore` whitelists only authored files. |
 
-The ADE runtime is the seam that ties machine and project scope
-together: it owns `~/.ade/projects.json`, lazily builds an `AdeRuntime`
-per project root on first project-scoped JSON-RPC call, and is the
-single runtime through which desktop and SSH-attached
-desktops see live lanes, agent chats, and work sessions.
-
-The desktop app, the brain, the `ade` CLI and a project move all write
-`projects.json`. Each write (`ProjectRegistry.mutate`) holds
-`projects.json.lock`, reads the file fresh, and appends one line to
-`projects.journal.jsonl` (`projectRegistryJournal.ts`), so two writers that
-overlap no longer erase each other's projects. A project id is the hash of its
-folder as this machine resolves it on each read; when that differs from the
-stored id, the stored id becomes an alias in `project-aliases.json`, as after a
-move, and the change is reported to Sentry.
-
-Each local project this machine has opened gets an identity file at
-`~/.ade/project-data/<projectId>.json` holding its database file's device and
-inode. The desktop, the brain's project scope and the CLI record it when they
-open the database. It lives outside `projects.json` because an
-older ADE that rewrites that file drops fields it does not know. If a
-registered project's folder or its `.ade` folder disappears, or a database the
-identity file records is missing, registration and open stop with
-`project_data_missing` before creating replacement state, and the desktop shows
-the project recovery screen (`data_missing`): Restore from Trash (when the
-folder is there), steps to put it back by hand (the screen reopens the project
-when it returns), or Start fresh. When the project folder itself is gone it
-offers neither, and says to plug the drive in or move the folder back. Start
-fresh and removing a project from recents forget the identity. Fresh project
-registration still creates its first database normally.
+- **The runtime ties the scopes together.** It owns `~/.ade/projects.json`,
+  builds an `AdeRuntime` per project root on the first project-scoped JSON-RPC
+  call, and is the one runtime through which desktop and SSH-attached desktops
+  see lanes, chats and sessions.
+- **Registry writes are serialized.** The desktop, the brain, the CLI and a
+  project move all write `projects.json`. Each write
+  (`ProjectRegistry.mutate`) holds `projects.json.lock`, reads the file fresh
+  and appends a line to `projects.journal.jsonl` (`projectRegistryJournal.ts`),
+  so overlapping writers keep each other's projects.
+- **Project ids.** An id is the hash of the folder as this machine resolves it
+  on each read. When it differs from the stored id, the stored id becomes an
+  alias in `project-aliases.json` (as after a move) and Sentry gets a report.
+- **Project identity files.** Each opened local project has
+  `~/.ade/project-data/<projectId>.json` with its database's device and inode,
+  recorded by the desktop, the brain's project scope and the CLI on open. It
+  sits outside `projects.json` because an older ADE drops unknown fields there.
+- **Missing data stops open.** If a registered project's folder or `.ade`
+  folder, or a recorded database, is missing, registration and open stop with
+  `project_data_missing` before creating new state. The desktop shows the
+  recovery screen (`data_missing`): Restore from Trash (when the folder exists),
+  steps to put it back (it reopens when it returns), or Start fresh. With the
+  project folder gone it says to plug the drive in or move the folder back.
+  Start fresh and removing from recents forget the identity; a new project
+  still creates its first database normally.
 
 ## Source file map
 
-Main process:
+Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
 
-- `apps/desktop/src/main/main.ts`,
-  `apps/desktop/src/main/services/ipc/registerIpc.ts` — packaged-launch machine
-  trust reset plus the process-local account launch-gate state exposed through
-  `ade.app.getLaunchGateState` / `ade.app.resolveLaunchGate`. Resolving the gate
-  applies to every window and renderer reload in that desktop process; a fresh
-  signed-out launch requires account sign-in again.
-- `apps/desktop/src/main/services/runtime/machineTrustResetMigration.ts` —
-  one-release, packaged-build reset of saved machine connection grants. It
-  clears only remote targets, desktop paired-machine credentials, mobile/web
-  pairing records, and runtime-host grants, then forces the background service
-  to restart before committing the migration marker.
-- `apps/desktop/src/renderer/components/settings/SettingsMachinesNav.tsx` and
-  `SettingsMachineScope.tsx` — the per-machine Settings navigation and its
-  explicit current/pinned runtime target. `projectMachines.ts` supplies the
-  shared machine list; local-only and bound-runtime sections are gated to the
-  machine that can reach them. `useSettingsMachinePage` keeps each page's `pin`
-  identity stable until the machine's binding key changes, so a section's
-  effects do not re-run (and cancel an in-flight provider sign-in) on every
-  cross-machine sync tick — the scope's `pin` is the machine identity a section
-  keys its runtime effects on, not a value to rebuild per render.
-- `apps/desktop/src/renderer/components/settings/general/GeneralPage.tsx`,
-  `general/NeedsAttentionStrip.tsx`, `general/MachineUpdateRows.tsx` and
-  `overview/useNeedsAttention.ts` — General, where Settings opens: one
-  Needs attention row that opens in place (a failed source read adds a
-  "couldn't check" row with Check again; a capability missing on an older
-  build is simply absent), the You and This machine cards, and the ADE card
-  (version, the one restart action, update track, automatic installs, and an
-  update row for every machine, each offered the newest build on its own
-  track).
-- `apps/desktop/src/renderer/components/settings/machines/MachinesPage.tsx`,
-  `machines/MachineSettings.tsx`, `machines/machineFacts.ts` and
-  `machines/machineSeams.tsx` — System → Machines: every machine on one page,
-  and a page per machine (`?machine=<id>`) that lists what Settings knows or
-  can change about it, each row acting through that machine's pin or saying
-  where it is changed. `machines/MachineWorkCopies.tsx` is its "Work from
-  other machines" group: the work copies this machine keeps for chats
-  elsewhere, read with `remote_work.list` and deleted with
-  `remote_work.delete` (see `docs/features/sync-and-multi-device/cross-machine-agents.md`).
-  `machineSeams.tsx` holds typed, empty slots for the rest of the
-  personal-mesh work (capabilities, work preference) that render nothing
-  until a real source feeds them.
-- `apps/desktop/src/renderer/components/settings/ContinueAfterRestartSection.tsx`
-  — Settings › Chat › Restarts: **Continue chats after restarts**, one value
-  per machine (`~/.ade/continue-after-restart.json`, read by that machine's
-  brain), with a machine picker when more than one is reachable.
-- `apps/desktop/src/renderer/components/settings/lanes/LanesSettingsPage.tsx`
-  and `lanes/LaneList.tsx` — Project → Lanes (Your lanes, Rules) and Project →
-  Storage & cleanup (Space, Archive, Rules), one view at a time; the web client
-  shows only the Rules and Archive views, and a page left with one view drops
-  its tab strip. Hash links and Settings search switch to the view containing
-  a card. Project → Agents (PR chat transcripts) is a plain
-  section list in `settingsTabContent.tsx`.
-- `apps/desktop/src/main/services/ipc/registerIpc.ts` — project-move start
-  forwards `copyDependencies`; disk pressure falls back to this computer's ADE
-  storage root when no local project monitor is available.
-- `apps/desktop/src/main/services/account/accountBridge.ts`,
-  `apps/ade-cli/src/services/account/accountAuthService.ts`, and
-  `accountMachineDirectoryService.ts` — machine-scoped Clerk session and
-  directory ownership. Account adoption captures the current owner before
-  network work and verifies it again before saving; logout/account switch
-  removes only that owner's remote targets and paired credentials. Direct
-  PIN/link/Nearby/address/SSH trust is explicitly local and is never adopted
-  merely because the user later signs in. When product analytics is enabled,
-  the account boundary identifies a known user only through a one-way account
-  hash with closed enrichment fields; explicit logout rotates the anonymous
-  analytics identity. `accountAuthService` also owns the four-value
-  `sessionState`, the mark-dead-not-delete rejection markers, the attributed
-  `account.session_mutation` audit line, and
-  `accountSessionRetainsMachineOwnership` — see
-  [Account session state](#account-session-state-is-a-four-state-not-a-boolean).
-  `accountBridge.ts` mirrors `sessionState` onto `AdeAccountStatus` for the
-  renderer, deriving it from the older `sessionReadState` when the runtime does
-  not report one.
+**Main process**
+
+- `main/main.ts`, `main/services/ipc/registerIpc.ts`: the packaged-launch
+  machine-trust reset and the process-wide account launch gate
+  (`ade.app.getLaunchGateState` / `resolveLaunchGate`; one resolve covers every
+  window and reload; a fresh signed-out launch asks again). `registerIpc.ts`
+  also forwards `copyDependencies` on project-move start, and disk pressure
+  falls back to this computer's ADE storage root without a local project
+  monitor.
+- `main/services/runtime/machineTrustResetMigration.ts`: a one-release
+  packaged reset of saved connection grants (remote targets, desktop paired
+  credentials, mobile/web pairing records, runtime-host grants); it restarts
+  the background service before writing its marker.
+- `renderer/components/settings/SettingsMachinesNav.tsx`,
+  `SettingsMachineScope.tsx`: per-machine Settings navigation and its
+  current/pinned target (`projectMachines.ts` lists machines; local-only and
+  bound-runtime sections show only on a machine that reaches them).
+  `useSettingsMachinePage` keeps each page's `pin` stable until the binding key
+  changes, so sync ticks do not restart effects (or cancel a provider
+  sign-in).
+- `settings/general/GeneralPage.tsx`, `general/NeedsAttentionStrip.tsx`,
+  `general/MachineUpdateRows.tsx`, `overview/useNeedsAttention.ts`: General,
+  where Settings opens. One Needs attention row that opens in place (a failed
+  read adds "couldn't check" with Check again; a capability an older build
+  lacks is absent), the You and This machine cards, and the ADE card (version,
+  the one restart action, update track, automatic installs, an update row per
+  machine offered its own track's newest build).
+- `settings/machines/MachinesPage.tsx`, `MachineSettings.tsx`,
+  `machineFacts.ts`, `machineSeams.tsx`: System → Machines, every machine on
+  one page and a page per machine (`?machine=<id>`); each row acts through
+  that machine's pin or says where it changes. `MachineWorkCopies.tsx` is
+  "Work from other machines" (`remote_work.list` / `remote_work.delete`, see
+  [cross-machine agents](../sync-and-multi-device/cross-machine-agents.md)).
+  `machineSeams.tsx` holds empty typed slots that render nothing until a real
+  source feeds them.
+- `settings/ContinueAfterRestartSection.tsx`: Chat › Restarts › **Continue
+  chats after restarts**, one value per machine
+  (`~/.ade/continue-after-restart.json`, read by that brain), with a machine
+  picker when several are reachable.
+- `settings/lanes/LanesSettingsPage.tsx`, `lanes/LaneList.tsx`: Project →
+  Lanes (Your lanes, Rules) and Project → Storage & cleanup (Space, Archive,
+  Rules), one view at a time. The web shows only Rules and Archive; a page
+  with one view has no tab strip; hash links and search switch views. Project
+  → Agents is a section list in `settingsTabContent.tsx`.
+- `main/services/account/accountBridge.ts`,
+  `apps/ade-cli/src/services/account/accountAuthService.ts`,
+  `accountMachineDirectoryService.ts`: machine-scoped Clerk session and
+  directory ownership.
+  - Adoption captures the owner before network work and checks it again before
+    saving; logout or an account switch removes only that owner's remote
+    targets and paired credentials. Direct trust (PIN, link, Nearby, address,
+    SSH) stays local and is never adopted by a later sign-in.
+  - With analytics on, a known user is identified only by a one-way account
+    hash with closed fields; logout rotates the anonymous id.
+  - `accountAuthService` owns `sessionState`, the mark-dead-not-delete markers,
+    the `account.session_mutation` audit line and
+    `accountSessionRetainsMachineOwnership`; see
+    [Account session state](#account-session-state-is-a-four-state-not-a-boolean).
+    `accountBridge.ts` mirrors `sessionState` onto `AdeAccountStatus`, deriving
+    it from `sessionReadState` when the runtime omits it.
 - `apps/ade-cli/src/services/account/accountSettingsStore.ts`,
-  `accountVaultStore.ts`, and `accountCacheStore.ts` — the four-scope,
-  owner-tagged account settings cache and encrypted account-vault cache.
-  Settings are non-secret and survive sign-out; vault credentials are encrypted,
-  purged at deliberate sign-out or account switch, and never exposed through
-  the renderer settings bridge. Both stores keep local reads immediate while
-  the brain and Worker remain the account authority. A sync pulls every
-  truncated page before it reports ready, and it drops uploaded write seqs
-  even when a later delete cannot be sent. A cache write that cannot hit
-  disk rolls the in-memory mutation back and reports failure rather than
-  pretending the value is saved. Renderer preferences that already exist
-  locally are uploaded after a successful Worker sync when the account still
-  has no row for them. A cold empty cache does not seed, because that cache
-  has not merged the Worker yet. Vault writes that fail while the brain is
-  down retry a few times on an unref'd timer.
-  One item the Worker refuses never blocks the queue: the store asks for
-  per-item answers (and, against an older Worker that refuses whole batches,
-  splits the batch until the bad item stands alone), parks that item locally
-  with its reason, sends the rest, and still pulls. Parked items retry hourly
-  or when written again. Each queued write carries the time it was made; the
-  Worker refuses one older than the stored row (corrected for the computer's
-  clock, and never for the device that wrote that row), and the store adopts
-  the newer row instead, so a computer whose queue was stuck for days cannot
-  overwrite newer values (a rotated Linear token) when it unjams. Both stores
-  expose `health()` (ok / failing / unavailable, last sync, pending, parked,
-  a plain error sentence), which Settings › ADE MCP shows, and log failures,
-  rate-limited, to `<ade home>/runtime/brain.jsonl` whoever created the store.
-  An ADE from before this check uploads its queue unchecked once the Worker
-  accepts it.
-- `apps/desktop/src/main/services/account/accountMigrationRunner.ts` and
-  `apps/ade-cli/src/services/account/accountMigrationReceipt.ts` — silent,
-  receipt-backed sign-in migration and hydration for provider API keys and
-  Linear OAuth refresh credentials; its `project_secrets` source moves a
-  project's old secrets into Passwords & Secrets. A source is
-  marked complete only after the account confirms the write; crashes and
-  unavailable contexts leave it pending, and a later vault-ready tick retries
-  those pending sources.
+  `accountVaultStore.ts`, `accountCacheStore.ts`: the four-scope, owner-tagged
+  settings cache and the encrypted vault cache.
+  - Settings are non-secret and survive sign-out. Vault credentials are
+    encrypted, purged on sign-out or account switch, and never reach the
+    renderer settings bridge. Local reads are immediate; the brain and Worker
+    stay the authority.
+  - A sync pulls every truncated page before ready, and drops uploaded write
+    seqs even when a later delete fails. A cache write that cannot reach disk
+    rolls back and reports failure.
+  - Local renderer preferences upload after a successful sync when the account
+    has no row; a cold empty cache does not seed. Vault writes made while the
+    brain is down retry a few times on an unref'd timer.
+  - **One refused item never blocks the queue.** The store asks for per-item
+    answers (splitting batches against an older Worker), parks the refused
+    item with its reason, sends the rest and still pulls. Parked items retry
+    hourly or when rewritten.
+  - **Older writes lose.** Each queued write carries its time; the Worker
+    refuses one older than the stored row (clock-corrected for this computer,
+    never for the row's device), and the store adopts the newer row, so an
+    unjammed queue cannot overwrite a rotated token.
+  - `health()` (ok / failing / unavailable, last sync, pending, parked, an
+    error sentence) shows in Settings › ADE MCP; failures log, rate-limited,
+    to `<ade home>/runtime/brain.jsonl`.
+- `main/services/account/accountMigrationRunner.ts`,
+  `apps/ade-cli/src/services/account/accountMigrationReceipt.ts`: silent,
+  receipt-backed sign-in migration of provider API keys and Linear OAuth
+  refresh credentials; the `project_secrets` source moves old project secrets
+  into Passwords & Secrets. A source completes only after the account confirms
+  the write; others stay pending and retry on a later vault-ready tick.
 - `apps/ade-cli/src/services/account/sharedAccountAuthService.ts`,
-  `cliRefreshBroker.ts`, and `apps/desktop/src/main/services/account/accountBridge.ts` —
-  the brain-owned refresh broker used by desktop and CLI; a
-  non-brain local exchange is only the explicit unavailable-brain fallback.
-- `apps/ade-cli/src/services/account/accountSessionRotationJournal.ts` — the
-  crash-safe refresh-rotation journal (`account.session.rotation.v1`), kept in
-  the same file-backed credential bucket as the session it describes so the
-  brain, the CLI, and the desktop all see an interrupted rotation. `tryBegin`
-  compare-and-swaps that entry so a live peer's in-flight Clerk refresh is a
-  mutex, not a race.
-- `apps/ade-cli/src/services/power/brainKeepAwakeService.ts` — the brain-owned
-  keep-awake preference and turn-following lock. The desktop helper in
-  `apps/desktop/src/main/services/power/keepAwakeService.ts` handles the local
-  macOS authorization prompt and is an in-process fallback only when an older
-  brain does not expose the new action; `systemSleepConfig.ts` reads and fixes
-  the OS's idle-sleep timer. See [Keeping the machine awake](#keeping-the-machine-awake).
-- `apps/desktop/src/shared/types/keepAwake.ts` — `KeepAwakeLevel`,
-  `KeepAwakeSnapshot`, `normalizeKeepAwakePreferences` (anything unrecognized
-  degrades to `never` — an unreadable preference must never be read as "hold the
-  lock"), `systemSleepStopsAgents`, and the frozen `INERT_KEEP_AWAKE_SNAPSHOT`
-  shared by every surface that holds no lock.
-- `apps/desktop/src/renderer/components/settings/KeepAwakeSection.tsx` — the
-  radiogroup, the "This Mac can still sleep" recovery alert, and the
-  system-sleep fix card.
-- `apps/desktop/src/renderer/components/settings/BackgroundServiceSection.tsx`
-  — General → ADE → Background service: whether the service or the desktop is
-  running agents, the working chats in open projects (and a "may also be
-  running" note when the service reports busy projects that are not open),
-  "Stop and quit ADE", and the "Ask before quitting" toggle that undoes the quit
-  prompt's "Don't ask again". Stop confirms with the chat list and fails
-  closed in `services/runtime/backgroundServiceControls.ts`: it refuses when
-  ADE cannot read what is running, when an agent started after the
-  confirmation, during a lane delete, and during any Repair. Packaged builds
-  only; a dev build shows the status without the button.
-- `apps/desktop/src/main/services/runtime/quitPrompt.ts` +
-  `apps/desktop/src/renderer/components/app/QuitPromptHost.tsx` +
-  `apps/desktop/src/shared/quitPromptModel.ts` — the quit and restart
-  confirmation, in ADE's own dialog with a native fallback built from the same
-  model. See `docs/ARCHITECTURE.md` (shutdown pipeline).
-- `apps/desktop/src/main/services/archive/archiveService.ts` — the archive:
-  `list`/`summary` read archived lanes (from `laneService.list`) and archived
-  chats/shells (from `terminal_sessions.archived_at`), and `restore`/`delete`
-  run one item at a time so a bad ref reports its own failure. Delete keeps a
-  lane's branch (`deleteBranch: false`) and forwards `force` only when the
-  caller sent it; a dirty lane is refused, not discarded, without it. Delete is
-  user-only and restore CTO-only (`ADE_ACTION_USER_ONLY` / `ADE_ACTION_CTO_ONLY`
-  in `adeActions/actionPolicy.ts`), so no agent or automation can reach them.
-- `apps/desktop/src/shared/archive.ts` and `shared/types/archive.ts` — the one
-  archive vocabulary (kinds, stale threshold, labels, `isArchiveStale`) shared
-  by the service, the Settings page, the reminder, and `ade archive`.
-- `apps/desktop/src/renderer/components/settings/ArchiveSection.tsx` — the
-  Project → Storage & cleanup → Archive page: the list split at the host's
-  `staleAfterDays` (the "Free up space after" setting, 14 when off), the
-  selection bar, restore, Free up space (a lane's Archive & reclaim confirm,
-  through `useLaneReclaim` on the settings machine's pin), and delete. Deleting batches non-lane items together
-  and at most five lanes per request, then offers a single forced retry by name
-  for lanes with uncommitted changes.
-- `apps/desktop/src/renderer/components/app/useArchiveReminderBanner.tsx` — the
-  weekly docked reminder. It asks at most once per project per
-  `ARCHIVE_REMINDER_INTERVAL_MS` (a week) when something is older than the
-  host's line (`archive.summary` without a number uses the "Free up space
-  after" setting, 14 days by default), and a summary read that lands
-  after the person snoozed is dropped rather than re-shown.
-- `apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts` — this
-  machine's provider accounts (Claude and Codex only): the plain-JSON registry,
-  the always-present base account whose `configHome` is recomputed on every read,
-  default selection, `resolve(provider, requestedId)` used by every launch path,
-  and the per-provider settings (smart balance, auto-start windows). Backs the
-  `provider_instances.*` action domain and `ade providers accounts`.
-- `apps/desktop/src/main/services/providerAccounts/` — the in-app sign-in.
-  `providerLoginRunner.ts` runs a provider's own login command for one
-  account's config home in a private node-pty, reads the sign-in link and any
-  code prompt from its output, and verifies the saved login when the CLI exits;
-  it is the only place that reads a login's raw output, and it never creates a
-  terminal session or Work row. `machineProviderLoginRunner.ts` is the one
-  runner per machine, shared by local IPC and the pinned `provider_instances`
-  actions. `refreshProviderAccounts.ts` re-reads a provider's accounts (and one
-  named account's saved login) after a sign-in.
-- `apps/desktop/src/main/services/ai/agentCliLoginRunner.ts` — the same
-  terminal-free sign-in for the agent CLIs ADE runs from its pinned copy
-  (Grok, Devin, Muse, GitHub Copilot, Droid, Kimi), behind
+  `cliRefreshBroker.ts`, `accountBridge.ts`: the brain-owned refresh broker
+  for desktop and CLI; a local exchange is only the unavailable-brain
+  fallback.
+- `apps/ade-cli/src/services/account/accountSessionRotationJournal.ts`: the
+  crash-safe rotation journal (`account.session.rotation.v1`) in the session's
+  own credential bucket, seen by brain, CLI and desktop. `tryBegin`
+  compare-and-swaps it, so a peer's in-flight Clerk refresh is a mutex.
+- Keep-awake ([Keeping the machine awake](#keeping-the-machine-awake)):
+  `apps/ade-cli/src/services/power/brainKeepAwakeService.ts` (brain-owned
+  preference and turn-following lock); `main/services/power/keepAwakeService.ts`
+  (the macOS authorization prompt, and an in-process fallback only for a brain
+  without the action); `systemSleepConfig.ts` (reads and fixes the idle-sleep
+  timer); `shared/types/keepAwake.ts` (`KeepAwakeLevel`, `KeepAwakeSnapshot`,
+  `normalizeKeepAwakePreferences` — anything unknown is `never`,
+  `systemSleepStopsAgents`, `INERT_KEEP_AWAKE_SNAPSHOT`);
+  `settings/KeepAwakeSection.tsx` (radiogroup, "This Mac can still sleep"
+  alert, system-sleep fix card).
+- `settings/BackgroundServiceSection.tsx`: General → ADE → Background service:
+  who runs agents, working chats in open projects (plus "may also be running"
+  for busy projects not open), "Stop and quit ADE", and "Ask before quitting"
+  (undoes the quit prompt's "Don't ask again"). Stop confirms with the chat
+  list and fails closed (`services/runtime/backgroundServiceControls.ts`): it
+  refuses when ADE cannot read what runs, when an agent started after the
+  confirm, during a lane delete and during any Repair. Packaged builds only.
+- `main/services/runtime/quitPrompt.ts`, `app/QuitPromptHost.tsx`,
+  `shared/quitPromptModel.ts`: the quit and restart confirmation in ADE's
+  dialog, with a native fallback from the same model (see
+  `docs/ARCHITECTURE.md`, shutdown pipeline).
+- Archive: `main/services/archive/archiveService.ts` (`list` / `summary` from
+  `laneService.list` and `terminal_sessions.archived_at`; `restore` / `delete`
+  one item at a time). Delete keeps the branch (`deleteBranch: false`),
+  forwards `force` only when sent, and refuses a dirty lane without it. Delete
+  is user-only, restore CTO-only (`ADE_ACTION_USER_ONLY` /
+  `ADE_ACTION_CTO_ONLY`, `adeActions/actionPolicy.ts`). `shared/archive.ts`,
+  `shared/types/archive.ts`: one vocabulary (`isArchiveStale`).
+  `settings/ArchiveSection.tsx`: the list split at `staleAfterDays` ("Free up
+  space after", 14 when off), selection bar, restore, Free up space (Archive &
+  reclaim through `useLaneReclaim` on the settings machine's pin), and delete
+  (non-lane items together, at most five lanes a request, then one forced
+  retry by name for dirty lanes). `app/useArchiveReminderBanner.tsx`: at most
+  once per project per `ARCHIVE_REMINDER_INTERVAL_MS` (a week) when something
+  passes the host's line; a summary that lands after a snooze is dropped.
+- `apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts`: this
+  machine's Claude and Codex accounts: the JSON registry, the base account
+  (its `configHome` recomputed each read), default selection,
+  `resolve(provider, requestedId)` for every launch, and per-provider settings
+  (smart balance, auto-start windows). Backs `provider_instances.*` and `ade
+  providers accounts`.
+- `main/services/providerAccounts/`: in-app sign-in. `providerLoginRunner.ts`
+  runs the provider's login for one config home in a private node-pty, reads
+  the link and code prompt, and checks the saved login on exit; it is the only
+  reader of raw login output and creates no terminal or Work row.
+  `machineProviderLoginRunner.ts` is the one runner per machine (local IPC and
+  pinned `provider_instances`). `refreshProviderAccounts.ts` re-reads accounts
+  after a sign-in.
+- `main/services/ai/agentCliLoginRunner.ts`: the same sign-in for the pinned
+  agent CLIs (Grok, Devin, Muse, GitHub Copilot, Droid, Kimi) behind
   `ai.cliLoginStart` / `cliLoginStatus` / `cliLoginSubmitCode` /
-  `cliLoginCancel`. Each CLI's own login runs in a private PTY on the machine
-  that owns it; the result is that CLI's saved login read back from disk
-  (`readAgentCliSavedLogin` in `authDetector.ts`, by file fingerprint), never
-  its text. A login counts only once it differs from the one there at the
-  start. When a login was already there (Sign in again), or the CLI rewrites
-  its file before approval (Copilot), only a clean exit with a changed login
-  counts. Muse on macOS keeps its login in the Keychain, so there a clean
-  exit counts unless Muse printed a failure. Droid, already signed in, ends
-  at once as signed in instead of opening its normal session.
-  `machineAgentCliLoginRunner.ts` is the one runner per machine.
-  `main/services/shared/cliLoginPty.ts` holds what both runners share: the
-  PTY spawn and Windows tree kill, output cleaning (a ConPTY cursor move
-  reads as a line break or a space), the link, device-code and paste-prompt
-  reading, and the pasted code.
-- `apps/desktop/src/shared/types/providerInstances.ts` — the shared provider,
-  account, environment-key, and per-provider-settings contracts used by the
-  registry, IPC, renderer, and CLI action surface. It also carries the
-  `ProviderLoginStatus` shape the sign-in sheet polls.
-- `apps/desktop/src/shared/types/apiCredentials.ts` — secret-free credential
-  summaries for the stored-key panel and harness launch catalog; values are
-  represented by provider, id, label, source, and masked tail rather than the
-  secret itself.
-- `apps/desktop/src/shared/types/subscriptionProxy.ts` — the public proxy
-  status and provider-route contracts shared by the desktop and CLI surfaces;
-  they intentionally contain no proxy credentials.
-- `apps/desktop/src/shared/types/machineInventory.ts` — token-free account and
-  harness summaries published to paired machines, with detail expansion kept
-  behind the already-connected peer path.
-- `apps/desktop/src/shared/safeIdentifier.ts` — the containment rule every
-  ADE-owned id must pass before it becomes a path or storage-key segment, so an
-  account, preset or credential id cannot escape the directory ADE owns.
-- `apps/desktop/src/shared/providerColors.ts` — the one provider colour table
-  (usage light/dark pairs, picker badge tokens), so a second hex map cannot
-  drift from it.
-- `apps/desktop/src/main/services/account/accountMachineInventoryLiveRefresh.ts`
-  — live detail for one account-directory machine row. Asks only machines
-  already online and already connected in the paired pool, so expanding a row
-  never creates a pairing or spends a reconnect attempt; the durable directory
-  summary stays the floor.
-- `apps/desktop/src/renderer/components/settings/providers/accounts/` — the
-  Accounts panel: the routing strip, account cards with name, badges and the
-  usage popover's `UsageAccountRow`, the ⋯ menu, the copy and replaced-login
-  states, the three-step Add-account sheet driven by the host's login runner,
-  and `useProviderInstances`.
-- `apps/desktop/src/renderer/components/settings/providers/ProviderDetailPage.tsx`,
-  `ProviderHero.tsx`, `providerBrand.tsx`, `providerPage.css`, `banners/` — one
-  provider's page: the branded banner (the provider's art or gradient, its logo
-  in 3D, status, version, and this machine's 30-day usage from
-  `usage.getAdeStats`), the Accounts panel under it, then two columns.
-  `providerBrand.tsx` is the one table of each provider's accent, banner and
-  logo (`solid` for a shaped mark, `tile` for a square one).
-- `apps/desktop/src/renderer/components/settings/providers/ProviderContextPanel.tsx`
-  — the **Initial context window** card (see below).
-- `apps/desktop/src/main/services/ai/providerContextInventory.ts` and
-  `ai/providerContext/` — the read-only `ai.getProviderContextInventory`
-  action: one table of providers (`PROVIDER_CONTEXT_SPECS`), the generic
-  scanners (`items.ts`, `fsScan.ts`), one file per provider under
-  `providers/`, ADE's own parts (`adeItems.ts`, from
+  `cliLoginCancel`, in a private PTY on the owning machine. The result is the
+  saved login read back by file fingerprint (`readAgentCliSavedLogin`,
+  `authDetector.ts`), never output text, and counts only when it differs from
+  the starting one. With a login already there (Sign in again) or a file
+  rewritten before approval (Copilot), only a clean exit with a changed login
+  counts. Muse on macOS (Keychain) counts a clean exit unless it printed a
+  failure. A signed-in Droid ends at once as signed in.
+  `machineAgentCliLoginRunner.ts` is one per machine;
+  `main/services/shared/cliLoginPty.ts` holds the shared PTY spawn, Windows
+  tree kill, output cleaning (a ConPTY cursor move reads as a break or space),
+  link, device-code and paste-prompt reading.
+- Shared contracts: `shared/types/providerInstances.ts` (providers, accounts,
+  env keys, per-provider settings, `ProviderLoginStatus`);
+  `shared/types/apiCredentials.ts` (secret-free key summaries: provider, id,
+  label, source, masked tail); `shared/types/subscriptionProxy.ts` (proxy
+  status and routes, no credentials); `shared/types/machineInventory.ts`
+  (token-free account and harness summaries for paired machines);
+  `shared/safeIdentifier.ts` (an ADE-owned id must pass it before it becomes a
+  path or key segment); `shared/providerColors.ts` (the one provider colour
+  table).
+- `main/services/account/accountMachineInventoryLiveRefresh.ts`: live detail
+  for one directory machine row, asked only of machines already online and
+  connected, so expanding a row never pairs or spends a reconnect.
+- `settings/providers/accounts/`: the Accounts panel (routing strip, account
+  cards, `UsageAccountRow`, ⋯ menu, copy and replaced-login states, the
+  three-step Add-account sheet, `useProviderInstances`).
+- `settings/providers/ProviderDetailPage.tsx`, `ProviderHero.tsx`,
+  `providerBrand.tsx`, `providerPage.css`, `banners/`: one provider's page
+  (banner art or gradient, 3D logo, status, version, this machine's 30-day
+  usage from `usage.getAdeStats`, then Accounts and two columns).
+  `providerBrand.tsx` is the one table of accent, banner and logo (`solid` or
+  `tile`).
+- `settings/providers/ProviderContextPanel.tsx`: the
+  [Initial context window](#initial-context-window) card.
+  `main/services/ai/providerContextInventory.ts` and `ai/providerContext/`:
+  the read-only `ai.getProviderContextInventory` (`PROVIDER_CONTEXT_SPECS`,
+  scanners `items.ts` / `fsScan.ts`, one file per provider, `adeItems.ts` from
   `agentChatService.previewNewChatAdeContext` and
-  `chat/adeChatContextPreview.ts`), and the measured first turn
-  (`firstTurnMeasurement.ts`). `ai/providerContextReveal.ts` is the allowlist
-  of its "Show in Finder" button.
-- `apps/desktop/src/renderer/components/settings/providers/keys/` — the stored
-  API keys panel, the add-key sheet (only the fields a harness actually has),
-  the OpenCode custom-provider panel, `useApiCredentials`, and
-  `useAccountProviderKeyNames` (the account's key names for the "This
-  computer only" tag).
-- `apps/desktop/src/renderer/components/settings/CloudAgentLimitsCard.tsx` —
-  Settings › ADE Cloud › What agents may do alone. The desktop asks its main
-  process (`cloud.getAgentLimits` / `setAgentLimits`, server first, a local
-  copy on a 404). The web app reads and saves through the account
-  (`accountCall` `limits` / `saveLimits` with the revision it read). A save
-  over another device's newer limits loads them and says "Your limits changed
+  `chat/adeChatContextPreview.ts`, `firstTurnMeasurement.ts`);
+  `ai/providerContextReveal.ts` allowlists "Show in Finder".
+- `settings/providers/keys/`: the stored API keys panel, the add-key sheet
+  (only fields a harness has), the OpenCode custom-provider panel,
+  `useApiCredentials`, `useAccountProviderKeyNames` (for "This computer
+  only").
+- `settings/CloudAgentLimitsCard.tsx`: ADE Cloud › What agents may do alone.
+  Desktop: `cloud.getAgentLimits` / `setAgentLimits` (server first, a local
+  copy on 404). Web: `accountCall` `limits` / `saveLimits` with the read
+  revision; a stale save loads the newer limits and says "Your limits changed
   on another device. ADE loaded the new ones."
-- `apps/ade-cli/src/services/proxy/` — the local subscription proxy behind
-  `ade proxy` and the `proxy.*` actions: hash-verified release download,
-  install/config management (config written 0600, state carries no secrets),
-  the start/stop/health supervisor, and the shared provider vocabulary.
-- `apps/desktop/src/renderer/components/settings/CaptureGestureSection.tsx` —
-  the capture-gesture switch plus the native helper's health line and its
-  retry. Reads `supportsCaptureGesturePlatform()` / `captureGestureBlocker()`
-  from `renderer/lib/platform.ts`, which wrap the shared
-  `captureGesturePlatformSupport` rules.
-- `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
-  status, stack detection, existing lane detection, and suggested config
-  application. The active renderer
-  no longer mounts guided tours.
-- `apps/desktop/src/main/services/tools/agentToolsCacheService.ts` — the
-  desktop half of the pinned agent-tools cache. Kicks a coalesced ensure of the
-  tools this machine uses (`agentToolDemand.ts`) on packaged launch, one
-  `ensureTools` call per tool so a single failure cannot abandon the rest, GCs
-  superseded versions only after a fully clean pass, and keeps an
-  `AgentToolsCacheSnapshot` (per-tool status, percent, typed `errorKind`) over
-  IPC. Resolution failures are per tool, never per pass. Other tools download on
-  demand (`onDemand.ts`). See
-  [agent-tools-cache.md](./agent-tools-cache.md).
-- `apps/desktop/src/main/services/onboarding/onboardingSuggestedConfig.ts` —
-  pure GitHub Actions workflow parsing and suggested test/automation/provider
-  config generation for `.ade/local.yaml`.
-- `apps/desktop/src/main/services/github/githubService.ts`,
-  `githubCredentialHealth.ts`, and `githubRateLimit.ts` — GitHub App,
-  environment, PAT, and GitHub CLI credential discovery; `/user` and repository
-  probes; REST and GraphQL failure/quota classification; per-resource credential
-  cooldowns; and the shared-account primary-quota circuit breaker. Reads use
-  environment → ADE GitHub App → GitHub CLI → stored PAT. Writes use environment
-  → GitHub CLI → stored PAT because the App user credential is intentionally
-  read-only. Request-level 401/403/429 responses, GraphQL rate/permission errors,
-  and 403/404 repository-probe denials advance to the next compatible source.
-  Invalid or permission-denied credentials cool down for five minutes; rate
-  limits wait at least one minute and honor GitHub's reset. ADE then retries the
-  preferred source automatically. GitHub's primary user quota is shared by App
-  user, OAuth, and PAT credentials for the same account, so an exhausted primary
-  bucket pauses known credentials for that account instead of cycling tokens.
-  `GitHubStatus.authFailure` distinguishes rate limiting, invalid credentials,
-  permission denial, GitHub's own 5xx (`service_unavailable`), network failures,
-  and unknown validation errors so clients do not flatten every failed probe
-  into missing permissions. `service_unavailable` gets no credential cooldown,
-  because the credential is not the problem and must stay usable the instant
-  GitHub recovers.
-  Publishing a project (`createRepository`, identical in the background
-  service's twin) picks its route with `resolveGithubCreateRepositoryRoute` in
-  `shared/githubApiPath.ts`: `/user/repos` with no owner or the write
-  credential's own login, `/orgs/{owner}/repos` otherwise, and, when `GET /user`
-  fails, the owner's account `type` from `GET /users/{owner}`: an organization
-  takes the org route, and a user owner that can't be confirmed as the
-  signed-in account (or an owner lookup that can't answer either) fails with
-  the retryable `github_owner_unverified` instead of guessing, so a publish
-  never lands on the wrong account. The personal route
-  is the one write that does not fall back: it stays on the write credential
-  whose login chose it (`credentialSource`), because another credential can be
-  another account. An owner GitHub won't create under answers
-  `github_owner_not_found`. A same-name leftover from a failed attempt is reused
-  only when it is empty and has the requested visibility, so a private project
-  never goes into a public repository. Before `git remote add`, a created or
-  reused repository whose owner isn't the requested one is refused
-  (`repo_owner_mismatch`, `assertGithubRepositoryOwner`) and nothing is pushed.
-  `GitHubStatus.credentialStoreUnreadable` is carried on the credential
-  inventory (cached with it for 30 s) rather than re-read at status time, so the
-  readability verdict always belongs to the read that produced that inventory's
-  candidates. The service holds it sticky across reads and warns
-  `github.credential_store_unreadable` — with the store's own failure reason —
-  once per transition into unreadable rather than on every cached refresh; a
-  successful token write clears it, because a write that landed re-sealed the
-  store under a key this process holds.
-- `apps/desktop/src/main/services/github/credentialReadState.ts` — returns a
-  credential *and* whether the store was readable in one call
-  (`readCredentialWithState` / `readCredentialWithStateAsync`). An undecryptable
-  store returns an empty view instead of throwing, so "no token" and "a token
-  ADE cannot read" are the same answer, and only the store's
-  `getLastReadState()` separates them — and that method describes the store's
-  most recent read, so it has to be consulted immediately after the `getSync` it
-  is being asked about. Pairing the two in one helper is what makes that
-  ordering impossible to get wrong. A store that throws counts as unreadable
-  too: the Electron `safeStorage` store reports decrypt failures that way rather
-  than by returning `{}`.
-- `apps/desktop/src/shared/githubServiceHealth.ts` and
-  `apps/desktop/src/main/services/github/githubStatusPage.ts` — telling a GitHub
-  outage apart from a broken credential. The shared module parses
-  githubstatus.com's Statuspage `summary.json` into `GitHubServiceHealth` and
-  exposes `isGithubServiceUnavailable`; it counts only components ADE actually
-  uses (API Requests, Pull Requests, Issues, Actions, Webhooks, Git Operations),
-  so a Copilot or Codespaces outage never becomes an ADE claim. The main-process
-  module is failure-triggered and never polls: it runs only after a GitHub
-  request already failed, caches results (including negative ones) for 60 s,
-  times out at 2 s, and fails silent. `attachGitHubServiceHealth` populates
-  `GitHubStatus.serviceHealth` and is applied in both `getStatus` owners.
-  Attribution is one-directional — a corroborated incident clears the user of
-  blame, while a healthy status page never implies the opposite, because the
-  page lags real incidents by 10-20 minutes. See
+- `apps/ade-cli/src/services/proxy/`: the local subscription proxy (`ade
+  proxy`, `proxy.*`): hash-verified download, config written 0600, state
+  without secrets, start/stop/health supervisor.
+- `settings/CaptureGestureSection.tsx`: the capture-gesture switch, helper
+  health and retry, via `supportsCaptureGesturePlatform()` /
+  `captureGestureBlocker()` (`renderer/lib/platform.ts`).
+- `main/services/onboarding/onboardingService.ts`: status, stack detection,
+  existing lanes, suggested config. `onboardingSuggestedConfig.ts`: pure
+  GitHub Actions parsing into suggested `.ade/local.yaml` config.
+- `main/services/tools/agentToolsCacheService.ts`: the desktop half of the
+  pinned agent-tools cache: a coalesced ensure of this machine's tools
+  (`agentToolDemand.ts`) on packaged launch, one `ensureTools` per tool, GC
+  only after a clean pass, and an `AgentToolsCacheSnapshot` (status, percent,
+  `errorKind`) over IPC; failures are per tool; others download on demand
+  (`onDemand.ts`). See [agent-tools-cache.md](./agent-tools-cache.md).
+
+- **GitHub** — `main/services/github/githubService.ts`,
+  `githubCredentialHealth.ts`, `githubRateLimit.ts`: App, environment, PAT and
+  `gh` discovery, `/user` and repository probes, failure and quota
+  classification, per-resource cooldowns, and the shared-account quota breaker.
+  - Order (`shared/githubOperationCredential.ts`): env > app > gh > pat >
+    account_app > account_gh for reads; writes skip `app` (read-only).
+    `account_app` writes only where the owner's installation grants it;
+    `account_gh` comes last. Duplicate tokens are removed.
+  - 401/403/429, GraphQL rate/permission errors and 403/404 probe denials move
+    to the next source. Invalid or denied credentials cool down five minutes;
+    rate limits wait at least a minute and honour GitHub's reset; then ADE
+    retries the preferred source. An exhausted primary user quota pauses every
+    known credential of that account instead of cycling tokens.
+  - `GitHubStatus.authFailure` separates rate limit, invalid, permission,
+    `service_unavailable` (GitHub 5xx), network and unknown. A
+    `service_unavailable` probe gets no cooldown and stops the walk.
+  - **Publishing** (`createRepository`, same in the service's twin) routes with
+    `resolveGithubCreateRepositoryRoute` (`shared/githubApiPath.ts`):
+    `/user/repos` for no owner or the write credential's own login,
+    `/orgs/{owner}/repos` otherwise; when `GET /user` fails, `GET
+    /users/{owner}` decides, and an unconfirmed user owner fails with the
+    retryable `github_owner_unverified`. The personal route never falls back
+    to another credential (`credentialSource`). An unknown owner answers
+    `github_owner_not_found`. A leftover same-name repository is reused only
+    when empty and of the requested visibility. A repository whose owner is not
+    the requested one is refused before `git remote add`
+    (`repo_owner_mismatch`, `assertGithubRepositoryOwner`).
+  - `GitHubStatus.credentialStoreUnreadable` rides the credential inventory
+    (cached 30 s), is sticky across reads, warns
+    `github.credential_store_unreadable` once per transition, and clears on a
+    successful token write.
+- `main/services/github/credentialReadState.ts`: `readCredentialWithState` /
+  `readCredentialWithStateAsync` return a credential and readability in one
+  call. An undecryptable store returns an empty view, and `getLastReadState()`
+  describes only the latest read, so it must follow the `getSync` it judges; a
+  throwing store (Electron `safeStorage`) also counts as unreadable.
+- `shared/githubServiceHealth.ts`, `main/services/github/githubStatusPage.ts`:
+  outage versus broken credential. Parses githubstatus.com `summary.json` into
+  `GitHubServiceHealth` (`isGithubServiceUnavailable`), counting only API
+  Requests, Pull Requests, Issues, Actions, Webhooks and Git Operations. It
+  runs only after a failed request, caches 60 s (negative too), times out at 2
+  s and fails silent; `attachGitHubServiceHealth` fills
+  `GitHubStatus.serviceHealth` in both `getStatus` owners. A corroborated
+  incident clears the user; a healthy page never blames them (it lags 10–20
+  minutes). See
   [pull requests](../pull-requests/README.md#telling-a-github-outage-apart-from-a-broken-credential).
-- `apps/desktop/src/shared/githubOperationCredential.ts` — the capability-aware
-  read/write credential order, App read-only rule, and duplicate-token removal
-  used by desktop and runtime-side GitHub services. The order is env > app >
-  gh > pat > account_app > account_gh: the account's ADE GitHub App sign-in
-  (`account_app`, from the account directory) writes only where the owner's
-  installation grants the right, and an adopted `gh` copy from the account
-  (`account_gh`) comes last. A `service_unavailable`
-  probe stops the credential walk instead of retrying every candidate against a
-  service that is already failing.
-- `apps/ade-cli/src/headlessLinearServices.ts` — runtime-owned mirror of the
-  GitHub request/status path. It applies the same candidate order, cooldowns,
-  GraphQL classification, conditional-request cache isolation, read/write
-  status fields, and githubstatus.com corroboration when a packaged or
-  remote-bound window uses `ade serve`. It reads its stored tokens through the
-  same `credentialReadState.ts` helpers the desktop service uses and reports
-  `credentialStoreUnreadable` on its own status and inventory, because an
-  undecryptable store returns an empty view rather than throwing — without it a
-  remote runtime describes a corrupted store exactly as it describes a fresh
-  install. The renderer reaches GitHub through whichever service owns the
-  project, so anything applied to only one of the two `getStatus`
-  implementations is dead in the shipping runtime-backed build.
-- `apps/desktop/src/main/services/config/projectConfigService.ts` —
-  YAML config read/merge/save, AI mode migration, lane env init,
-  Linear sync resolver. ~3,150 lines, the largest service. The parsed
-  `local.yaml` is cached keyed by the file's identity (inode, size, mtime and
-  ctime of `local.yaml` and the legacy `ade.yaml`), because a chat list asks
-  for a snapshot per session row. Validation still runs on every read — it
-  checks paths the config names, which change without the file — and the
-  `test_suites` snapshot is rewritten only when the file changed or validation
-  first passes.
-- `apps/desktop/src/main/services/config/laneOverlayMatcher.ts` —
-  matches lanes against `LaneOverlayPolicy[]` to produce the effective
-  overlay.
-- `apps/desktop/src/main/services/secrets/projectSecretService.ts` — one
-  project's view of Passwords & Secrets (`ade secrets`, process env, webhook
-  checks) and the one-time move of the old per-project store;
-  `projectSecretEnv.ts` — bounded dotenv parsing and the mode-`0600` export
-  file.
+- `apps/ade-cli/src/headlessLinearServices.ts`: the runtime's mirror of the
+  GitHub path (order, cooldowns, GraphQL classification, cache isolation,
+  read/write fields, status-page corroboration, `credentialReadState.ts`,
+  `credentialStoreUnreadable`). The renderer uses whichever service owns the
+  project, so a change to one `getStatus` only is dead in the runtime-backed
+  build.
+- `main/services/config/projectConfigService.ts`: YAML read/merge/save, AI
+  mode migration, lane env init, Linear sync resolver (the largest service).
+  The parsed `local.yaml` is cached by file identity (inode, size, mtime, ctime
+  of `local.yaml` and the legacy `ade.yaml`). Validation still runs every read
+  (it checks named paths); the `test_suites` snapshot is rewritten only when
+  the file changed or validation first passes. `laneOverlayMatcher.ts`
+  matches lanes against `LaneOverlayPolicy[]`.
+- `main/services/secrets/projectSecretService.ts`: one project's view of
+  Passwords & Secrets (`ade secrets`, process env, webhook checks) and the
+  one-time move of the old store; `projectSecretEnv.ts`: bounded dotenv parsing
+  and the `0600` export file.
 
-Shared types and IPC:
+**Shared types, IPC and preload**
 
-- `apps/desktop/src/shared/types/config.ts` — central type module for
-  the configuration schema (tests, overlays, automations, lane
-  templates, port allocation, proxy, OAuth, integrations, AI).
-- `apps/desktop/src/shared/types/projectSecrets.ts` — the project view's
-  list, value, set and delete contracts.
-- `apps/desktop/src/shared/types/core.ts` — `AutoUpdatePreferences` and
-  `DEFAULT_AUTO_UPDATE_PREFERENCES` (`automaticInstall: false`,
-  `onlyWhenIdle: true`) plus the renderer-visible update snapshot contract.
-- `apps/desktop/src/shared/types/git.ts` — `GitHubStatus`,
-  `GitHubAuthFailure`, `GitHubRateLimitState`, and the credential source,
-  capability, state, and fallback contracts. `writeAuthSource`,
+- `shared/types/config.ts`: the config schema types.
+  `shared/types/projectSecrets.ts`: list, value, set and delete contracts.
+- `shared/types/core.ts`: `AutoUpdatePreferences`,
+  `DEFAULT_AUTO_UPDATE_PREFERENCES` (`automaticInstall: false`, `onlyWhenIdle:
+  true`) and the update snapshot.
+- `shared/types/git.ts`: `GitHubStatus`, `GitHubAuthFailure`,
+  `GitHubRateLimitState` and the credential contracts. `writeAuthSource`,
   `credentialStates`, `credentialFallback`, `credentialStoreUnreadable`,
-  `backgroundRefreshPausedUntil`, and `serviceHealth` are optional so a newer
-  client remains compatible with an older remote runtime, which simply omits
-  them. The same module owns `GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY` — the
-  single wording for the unreadable case, shared by the Settings card, the
-  integration banner, the PR tab's main-process empty state, and the
-  Publish-to-GitHub dialog — which, in this state, drops the token field
-  entirely and offers only **Open connections**, because saving a token would
-  overwrite a sign-in that repair can still recover. It lives beside
-  the field rather than in a renderer helper because the main process needs it
-  too, and two hand-kept copies of one sentence is how the "not connected"
-  masking survived in more than one place.
-- `apps/desktop/src/shared/ipc.ts` — channels:
-  - `ade.onboarding.*` (status, detectDefaults, applySuggestedConfig,
-    complete, setDismissed)
-  - `ade.projectConfig.*` (get, validate, save, diffAgainstDisk, export)
-  - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
-    getSnapshot, initializeOrRepair, runIntegrityCheck, inspectRemoval,
-    removeCopy)
-  - `ade.passwords.*` (call, reveal, chooseEnvFile, projects)
-  - `ade.ai.*` and settings-specific channels per integration
-  - `ade.agentChat.setScheduledWorkPaused` for the per-chat scheduler control;
-    the global pause is written through `ade.ai.updateConfig`
-  - `ade.update.getPreferences` / `ade.update.setPreferences` for the
-    machine-local automatic-install policy
-- `apps/desktop/src/main/services/ipc/registerIpc.ts` — handler
-  registrations.
+  `backgroundRefreshPausedUntil` and `serviceHealth` are optional so an older
+  runtime can omit them. `GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY` is the one
+  wording for Settings, the integration banner, the PR tab's empty state and
+  Publish to GitHub, which then hides the token field and offers only **Open
+  connections** (a saved token would overwrite a recoverable sign-in).
+- `shared/ipc.ts`: `ade.onboarding.*` (status, detectDefaults,
+  applySuggestedConfig, complete, setDismissed); `ade.projectConfig.*` (get,
+  validate, save, diffAgainstDisk, export); `ade.project.*` (listRecent,
+  openRepo, switchProjectToPath, getSnapshot, initializeOrRepair,
+  runIntegrityCheck, inspectRemoval, removeCopy); `ade.passwords.*` (call,
+  reveal, chooseEnvFile, projects); `ade.ai.*` and per-integration channels;
+  `ade.agentChat.setScheduledWorkPaused` (the global pause goes through
+  `ade.ai.updateConfig`); `ade.update.getPreferences` / `setPreferences`.
+  Handlers: `main/services/ipc/registerIpc.ts`.
+- `preload/preload.ts`: `window.ade.onboarding`, `.projectConfig`,
+  `.project`, `.passwords`, `.projectSecrets` (list and set on the pinned
+  machine, for chat and webhook cards), `.updateGetPreferences`,
+  `.updateSetPreferences`, `.github` and other integrations.
 
-Preload bridge:
+**Renderer — projects and home**
 
-- `apps/desktop/src/preload/preload.ts` — `window.ade.onboarding`,
-  `window.ade.projectConfig`, `window.ade.project`,
-  `window.ade.passwords`, `window.ade.projectSecrets` (a project's list and
-  set on the pinned machine, for chat and webhook cards),
-  `window.ade.updateGetPreferences`,
-  `window.ade.updateSetPreferences`, plus the integration-specific surfaces
-  (`window.ade.github`, etc.).
-
-Renderer — onboarding:
-
-- `apps/desktop/src/renderer/components/projects/ProjectWelcomePage.tsx`
-  — projectless home and project-picker surface. The page is a fixed dashboard
-  over the window backdrop: a hero line (`ProjectWelcomeHome.tsx`) with a
-  greeting, the date, a one-line headline (`home/homeHeadline.ts`) and running /
-  needs-you counts, over a row of actions (**Add project**, **Chat without a
-  project**, **Browser**, and the recents side panel), above the widget grid.
-  The Projects card lists the account's projects, one row per project, and
-  its count is the account's count (`ade projects list --account`), on every
-  client, with or without a computer connected (`homeProjectRows.ts`,
-  `useHomeAccountProjects.ts`). Folders on no account project follow under
-  "Only on <computer>" and do not count: this computer's from its brain's
-  catalog (`project.listThisComputer`, a this-computer IPC with no pin; it
-  reads again when the local brain connects), each connected computer's from
-  its connection catalog. An account row's computers chip opens the copies
-  menu. Its X opens the remove window with **From this list** first: Home on
-  this computer hides the row (`homeHiddenProjects.ts`, localStorage, by
-  account project id), it still counts, and "N hidden" shows it again; opening
-  the project lists it again. A local folder's X forgets it with Undo. The
-  card renders at most 40 rows inline; "N more" shows every row. Each row carries the same right-click project menu as a
-  project tab — change icon, pin or unpin, and copy path — and a project with
-  no checkout on this machine offers **Add a copy on this computer…**, which
-  opens the Add project form with this computer ticked.
-  `projectMenuEntries.ts` holds the rows both surfaces share. A **Settings**
-  button sets the app-store flag `standaloneSettingsOpen` and navigates to
-  `/settings`, so a person with no project can still reach the settings that
-  need none (see "Settings with no project" below).
-- `apps/desktop/src/renderer/components/projects/ProjectWelcomeSidePanels.tsx`
-  — the welcome page's machine list: this machine, the person's own computers
-  that are connected, then one **ADE Cloud** row ("Wakes when you start
-  work"). An offline own computer is hidden. No ADE Cloud computer shows by
-  its own name. The header's "N of M computers connected" counts the
-  account's computers, offline ones included.
-- Opening a project with no own computer online opens its tab bound to ADE
-  Cloud (`openAdeCloudProject`, `renderer/state/adeCloudTabs.ts`): the normal
-  project pages, with its ADE Cloud lanes. There is no separate no-computer
-  page.
-- `apps/desktop/src/renderer/components/projects/AddProjectForm.tsx` — **Add
-  project** from GitHub (the palette's clone flow and the start page). Add
-  project opens on this form; **Open a folder…** and **New empty project…** sit
-  under it (`AddProjectMoreActions.tsx`), with a computer picker when other
-  computers are connected. The repository comes first, then one row per machine: this computer (not on
-  hosted web) and every saved machine. An offline machine cannot be ticked, and
-  the form never connects to or wakes one. A machine that already has a copy
-  says "already here". Each ticked machine clones on its own
-  (`projectCopyJobs.ts`, one job per repository and machine; a retry goes to
-  the same machine). **Opens on** picks where the project opens once its copy
-  is there. If the form was closed first, a notice "<repo> is ready on
-  <machine>" offers **Open** instead, and a failure shows a toast that names
-  the machine.
-- `apps/desktop/src/renderer/components/projects/ProjectCopiesMenu.tsx` — the
-  copies menu of a project, opened from a Home row's computers chip or the
-  project sidebar's computers tag; the tab's right-click menu has a **Copies**
-  submenu with the same rows. One row per machine: the copy in use, another
-  copy (picking it moves the tab there with that copy's own binding), "not
-  here" with **Add a copy**, "Not connected" for a computer known only from the
-  account list, or offline. Every surface counts computers with one rule
-  (`copyComputers`). A project with no
-  git origin says "This machine only" and offers Publish.
-  `useProjectCopiesMenu.ts` owns the menu, the remove dialog's target and their
-  models for the top bar; `projectCopies.ts` holds the pure rules every copy
-  surface shares (which machine has a copy). `ConnectGithubPrompt.tsx` asks for
-  GitHub access (`gh auth login` or a token) when the repository list cannot
-  load.
-- `apps/desktop/src/renderer/components/projects/RemoveProjectDialog.tsx` —
-  **Remove project…** from a project tab's menu. It removes the project from
-  the machine the tab is on, or with **Remove from all my machines** from
-  every machine that has a copy (hidden for a project with no git origin). By
-  default only the entries go and every folder stays. With **Also delete the
-  folders**, each machine first reports its own copy
-  (`projects.inspectRemoval`): a clean copy is ticked, a copy with work no
-  remote has is ticked only by name, and a copy with something running cannot
-  be ticked. Each machine checks its copy again right before it deletes and
-  refuses when it changed. Folders on this computer move to the Trash; folders
-  on other machines are deleted for good, and the dialog says so. Every call
-  goes to the copy's machine, and an offline machine is never called or woken.
-- `apps/desktop/src/renderer/lib/useProjectRecords.ts` — the shared project
-  record for the project tabs: the shared name of each repository, and a
-  signal to ask for the icon again when another machine changed it. It reads
-  the account settings store through `accountSettings`, once per set of
-  repositories and on each `accountSettings.onChanged`, with no timer.
-- `apps/desktop/src/shared/projectRecord.ts` — the shared project record: one
-  display name and icon per repository for every machine of the account,
-  stored as rows in the account settings store under `repo:<origin>` (last
-  writer wins per key). A project with no usable origin keeps its name and icon
-  on its machine only. `apps/ade-cli/src/services/projects/projectRecords.ts`
-  is the brain's reader and writer (one in-memory snapshot of the rows, read at
-  most once a second, or `.ade/project-record.json` with sync off), and
-  `apps/desktop/src/main/services/projects/desktopProjectRecords.ts` is the
-  desktop main process's, through the `account_settings` bridge.
-  `projectRecordHost.ts` holds what both share: the stand-in file, the value a
-  reader shows for each state, and the icon shrink. A choice the store cannot
-  take (signed out, brain down) stays pending in the stand-in file, and the
-  next read or write that reaches the store sends it first. See
-  [remote runtime](../remote-runtime/README.md) for `projects.setIcon` and
-  `projects.removeIcon`.
-- `apps/desktop/src/shared/projectRemoval.ts` — the shapes of removing a
-  project from one machine: the copy's state report, the request (entry only,
-  or with the folder), the answer, and the plain summary of a copy's work.
+- `projects/ProjectWelcomePage.tsx`: the projectless home. A hero
+  (`ProjectWelcomeHome.tsx`: greeting, date, headline from
+  `home/homeHeadline.ts`, running / needs-you counts), actions (**Add
+  project**, **Chat without a project**, **Browser**, recents panel) and the
+  widget grid.
+  - **The Projects card** lists the account's projects, one row each, and
+    counts them (`ade projects list --account`) on every client, with or
+    without a computer (`homeProjectRows.ts`, `useHomeAccountProjects.ts`).
+    Folders on no account project follow under "Only on <computer>" and do not
+    count: this computer's from `project.listThisComputer` (no pin; reread
+    when the brain connects), others from their connection catalogs.
+  - A row's computers chip opens the copies menu. X opens the remove window
+    with **From this list** first (hides the row on this computer,
+    `homeHiddenProjects.ts`, by account project id; it still counts; "N
+    hidden" restores; opening the project restores it). A local folder's X
+    forgets it with Undo. At most 40 rows inline, then "N more".
+  - Rows share the project tab's right-click menu (`projectMenuEntries.ts`:
+    icon, pin, copy path); with no checkout here, **Add a copy on this
+    computer…** opens Add project with this computer ticked.
+  - **Settings** sets `standaloneSettingsOpen` and opens `/settings` (see
+    [Settings with no project](#settings-with-no-project)).
+- `projects/ProjectWelcomeSidePanels.tsx`: the machine list: this machine,
+  connected own computers, then one **ADE Cloud** row ("Wakes when you start
+  work"). Offline computers hide; no ADE Cloud computer shows by name. "N of M
+  computers connected" counts all the account's computers.
+- Opening a project with no own computer online binds the tab to ADE Cloud
+  (`openAdeCloudProject`, `renderer/state/adeCloudTabs.ts`): the normal pages
+  with its ADE Cloud lanes.
+- `projects/AddProjectForm.tsx`: **Add project** from GitHub. **Open a
+  folder…** and **New empty project…** sit under it
+  (`AddProjectMoreActions.tsx`), with a computer picker when others are
+  connected. The repository, then one row per machine (this computer except on
+  hosted web, and every saved machine). Offline machines cannot be ticked; the
+  form never connects or wakes one; a machine with a copy says "already here".
+  Each ticked machine clones on its own (`projectCopyJobs.ts`; a retry goes to
+  the same machine). **Opens on** picks where it opens; a closed form gets
+  "<repo> is ready on <machine>" with **Open**, or a toast naming the machine.
+- `projects/ProjectCopiesMenu.tsx`: a project's copies (Home chip, sidebar
+  computers tag, the tab's **Copies** submenu). One row per machine: the copy
+  in use, another copy (moves the tab with that copy's binding), "not here"
+  with **Add a copy**, "Not connected", or offline; every surface counts with
+  `copyComputers`. No git origin: "This machine only" with Publish.
+  `useProjectCopiesMenu.ts` owns menu and remove-dialog state;
+  `projectCopies.ts` holds the shared rules; `ConnectGithubPrompt.tsx` asks
+  for GitHub access when repositories cannot load.
+- `projects/RemoveProjectDialog.tsx`: **Remove project…** removes the entry
+  from the tab's machine, or with **Remove from all my machines** from every
+  copy (hidden without a git origin). Folders stay by default. With **Also
+  delete the folders**, each machine reports its copy
+  (`projects.inspectRemoval`): clean copies are ticked, copies with work no
+  remote has need ticking by name, copies with something running cannot be
+  ticked. Each machine re-checks right before deleting and refuses on a
+  change. This computer's folders go to the Trash; others are deleted for good,
+  and the dialog says so. Offline machines are never called.
+- `shared/projectRemoval.ts`: the removal shapes.
   `apps/ade-cli/src/services/projects/projectCopyRemoval.ts` runs
-  `projects.inspectRemoval` and `projects.removeCopy` on any machine, in a
-  fixed order: read the state again, refuse on a mismatch, check the folder,
-  stop the project, delete, then drop the entry. A brain has no trash, so its
-  delete is permanent. `desktopProjectRemoval.ts` serves this computer: it adds
-  its own folder check and moves the folder to the Trash
-  (`folderMode: "caller"`). `projectRemovalState.ts` reads what a delete would
-  lose from git (every checkout, changed files, commits no remote has,
-  stashes, unpushed branches), only when the dialog asks and right before a
-  delete. `projectRemovalGuard.ts` holds the two pure decisions: whether a
-  folder may be deleted at all (only an exact registered root, never one that
-  holds the home folder, ADE's home, another project or ADE itself), and
-  whether the copy still matches what the person accepted.
-  `projectCopyCheck.ts` holds the checks both hosts share. The renderer
-  reaches them through `ade.project.inspectRemoval` / `ade.project.removeCopy`
-  for this computer and `ade.remoteRuntime.inspectProjectRemoval` /
-  `ade.remoteRuntime.removeProjectCopy` for another machine.
-- `apps/desktop/src/renderer/components/home/` — the widget home. The user
-  picks widgets (Projects, Working now, Activity, Limits, PRs, Clock & weather,
-  Focus timer, Clipboard, Machine, Contributions, Shipped, Feed, Now Playing),
-  a size class for each and an order; `homeGridPack.ts` fits them to the window
-  with no scrolling and no gaps (smaller classes before hiding), and
-  `homeLayout.ts` keeps named layouts per computer in localStorage (a second
-  window follows the first's saves). The shipped stack is Pull requests with
-  Contributions under it, then Projects with Working now under it, and Clock &
-  weather beside them; a build that changes it carries a new
-  `HOME_DEFAULT_STACK_VERSION`, and the next launch puts the new stack in as
-  the "Default" layout and shows it once, for every computer, keeping the
-  layouts the user saved themselves in the switcher (the version is written
-  down then, so it never happens twice). `HomeWidgetPicker.tsx` is the Add
-  widget gallery (live, inert previews that read nothing), `HomeEditTools.tsx`
-  the edit chrome, `homeFeed.ts` the feed and "while you were away", and
-  `widgets/` one file per widget. The main-process half is
-  `apps/desktop/src/main/services/home/` (clipboard history, machine health and
-  ports, weather, Now Playing, share images) behind `ade.home.*`. Design and
-  rules: `docs/plans/ade-dev-home.md` section 4.
-- `apps/desktop/src/renderer/components/projects/ProjectWelcomeHome.tsx` —
-  the home dashboard's hero, and the card bodies the default widgets render
+  `projects.inspectRemoval` / `removeCopy` in a fixed order (re-read, refuse on
+  mismatch, check the folder, stop the project, delete, drop the entry); a
+  brain deletes permanently. `desktopProjectRemoval.ts` adds this computer's
+  folder check and the Trash (`folderMode: "caller"`).
+  `projectRemovalState.ts` reads what would be lost from git (checkouts,
+  changed files, unpushed commits, stashes, unpushed branches) only on request.
+  `projectRemovalGuard.ts`: a folder may be deleted only when it is an exact
+  registered root that holds no home folder, ADE home, other project or ADE
+  itself, and the copy still matches what was accepted. `projectCopyCheck.ts`
+  holds the shared checks. IPC: `ade.project.inspectRemoval` / `removeCopy`
+  (this computer), `ade.remoteRuntime.inspectProjectRemoval` /
+  `removeProjectCopy` (others).
+- `shared/projectRecord.ts`: one display name and icon per repository for all
+  the account's machines, as `repo:<origin>` rows in the account settings store
+  (last writer wins); no origin keeps them on its machine. Readers:
+  `apps/ade-cli/src/services/projects/projectRecords.ts` (brain; one snapshot,
+  read at most once a second, or `.ade/project-record.json` with sync off) and
+  `main/services/projects/desktopProjectRecords.ts`. `projectRecordHost.ts`
+  holds the stand-in file, per-state values and the icon shrink; a choice the
+  store cannot take stays pending in the stand-in and goes first on the next
+  access. `renderer/lib/useProjectRecords.ts` reads it per set of repositories
+  and on `accountSettings.onChanged`, with no timer. See
+  [remote runtime](../remote-runtime/README.md) for `projects.setIcon` /
+  `removeIcon`.
+- `components/home/`: the widget home (Projects, Working now, Activity,
+  Limits, PRs, Clock & weather, Focus timer, Clipboard, Machine,
+  Contributions, Shipped, Feed, Now Playing), each with a size class and
+  order. `homeGridPack.ts` fits them with no scroll or gaps (smaller classes
+  before hiding); `homeLayout.ts` keeps named layouts per computer in
+  localStorage (a second window follows). The default stack is Pull requests
+  over Contributions, Projects over Working now, Clock & weather beside; a new
+  `HOME_DEFAULT_STACK_VERSION` installs the new stack as "Default" once and
+  keeps saved layouts. `HomeWidgetPicker.tsx` (inert previews),
+  `HomeEditTools.tsx`, `homeFeed.ts`, `widgets/`; main side
+  `main/services/home/` behind `ade.home.*`. Rules:
+  `docs/plans/ade-dev-home.md` section 4.
+- `projects/ProjectWelcomeHome.tsx`: the hero and default card bodies
   (`RunningCard`, `ActivityUsageCard`, `LimitsMachinesCard`,
-  `PullRequestsCard`). Each answers one question at a glance and links to the
-  full surface instead of listing everything. The PR card reads the same GitHub
-  snapshot the PRs tab reads (through `prReadCache`) and joins it to ADE's
-  tracked PRs for checks and review state, reloading on PR events and window
-  focus, never on a timer of its own.
-- `apps/desktop/src/renderer/components/projects/CreateProjectForm.tsx`
-  — name plus a first-class location row (default parent, Change folder,
-  editable path). Create opens Work; it does not show a success interstitial
-  or the removed project-setup dashboard.
-- `apps/desktop/src/renderer/components/onboarding/OnboardingBootstrap.tsx`
-  — top-level passive help mount. It renders the one-time ADE welcome
-  video gate; guided per-tab tours, the old welcome wizard, and the
-  `DidYouKnow` hint toast were removed with their renderer surfaces.
-- `apps/desktop/src/renderer/components/onboarding/LaunchGate.tsx`
-  — process-launch gate. New installations show the welcome card before
-  sign-in; returning signed-out launches show sign-in directly. ADE requires
-  an account, so what the gate offers beside sign-in depends on
-  `accountGateMode`: a machine that has never held a session is `required`
-  and gets no pass-through, while a session that expired or became unreadable
-  is `recoverable` and always offers **Continue to your work**. Local work is
-  never blocked; `AccountSignedOutBanner` carries the nagging instead. The
-  signed-out surface also keeps a short ADE Relay requirement link. Its
-  top strip is draggable even though the normal shell header is not mounted.
-  Renderer reloads or extra windows in the same desktop process do not repeat
-  the gate. Directly paired machines stay saved across account sign-out;
-  account-directory targets and their paired credentials are owner-tagged and
-  removed with that account.
-- `apps/desktop/src/renderer/components/onboarding/GlassSignInCard.tsx` and
-  `components/account/useSignInFlow.ts` — the launch gate's sign-in. The card is
-  a frosted glass panel floating over the window backdrop (styled by
-  `onboarding/launchGateGlass.css`, which needs an `.ade-gate` ancestor for its
-  tokens), with the mark, one heading, the sign-in button, the **Sign in with
-  your phone or another device** link, the awaiting/cancel line, and the ADE
-  Relay help affordance. That link starts a device-authorization sign-in that
-  opens no browser on this computer: `AnotherDeviceSignInPanel` draws the
-  verification link as a QR code and shows the user code, so a phone or another
-  computer completes the sign-in and the password is never typed here (a VM, a
-  shared machine). It is absent in the hosted web client, which is a browser
-  already. `useSignInFlow` owns the shared sign-in state — the browser login,
-  the sign-in from another device (`useAccountDeviceLogin` in
-  `lib/accountLogin.ts`), the four
-  session-state words, and the brain repair offered when a stored session
-  cannot be read — and the Account page's
-  `SignInCard` draws that same state its own way, so the two surfaces cannot
-  drift on what "expired" or "unreadable" means.
-- `apps/desktop/src/renderer/components/account/AccountSignedOutBanner.tsx` —
-  the permanent bar ADE shows while the account is not usable. It registers a
-  model with `AppBannerHost`, which renders it through the shared `Banner`
-  primitive with `dismiss: false`, because `bannerDismiss.ts` is for banners a
-  user may reasonably live with and this is not one of them: the only way to
-  clear it is to sign in, or to repair a store ADE could not read. The global
-  host is mounted in `AppShell` outside every project condition, so this bar
-  reaches welcome and projectless windows too. `IntegrationBanners` registers
-  project-dependent integration states with that same host.
-  It hides itself on `/account`, where its own action would lead. All four
-  states' copy lives in one record in `renderer/lib/account.ts`, so a new
-  state is a type error rather than a missing case. The same bar carries the
-  one account problem a signed-in person can have: the directory refuses THIS
-  computer (`machine_revoked` or `pairing_authentication_required`, read from
-  the local sync snapshot by `hooks/useThisComputerRefusal.ts`). It names the
-  removal date from the brain's `revokedAt` ("This computer was removed from
-  your account on 14 August"), says "ADE stopped trying to reconnect it on its
-  own." once the brain's automatic repair gave up, and offers **Reconnect this
-  computer** — or **Confirm it's you** for `pairing_authentication_required`.
-  The button runs `hooks/useReconnectThisComputer.ts`, the same flow as the
-  Account page card, and the browser step shows its code in the bar. The hook
-  only subscribes: the flow is one per window, in
-  `renderer/lib/reconnectThisComputer.ts`, so a press on a second surface joins
-  the attempt that is already running instead of starting a second device
-  login. It is not
-  dismissable either: the automatic repair used to give up with only a
-  diagnostic toast, and one install stayed removed for a month. The copy lives
-  in `renderer/lib/thisComputerRefusal.ts`, which the Account card, the
-  Connections pane's This computer card, and the Machines list also read. The desktop raises no OS notification for a give-up:
-  the only notification code in main is inline in `main.ts`, with no helper that
-  brain events reach.
-- `apps/desktop/src/renderer/components/account/AccountPage.tsx` — account
-  status/sign-in/out shell. The signed-out page receives an explicit
-  in-app return route from the sidebar or Connections and falls back safely to
-  `/work` when opened directly. It routes pairing work back to the
-  beginner-facing Connections panel rather than owning a second
-  machine-connection flow. "Not signed in" is not one state:
-  `AdeAccountStatus.sessionState` carries the daemon's
-  `active | signed_out | expired | unreadable` tri-state (older runtimes are
-  derived from `sessionReadState`), and `accountSessionState` /
-  `accountSessionNotice` in `renderer/lib/account.ts` are the single place the
-  UI branches on it. `SignInCard`, the Connections account header, and the
-  sidebar avatar label each render the three states distinctly. `expired` says
-  the sign-in expired and keeps a Sign in button; `unreadable` must NOT lead
-  with sign-in — a new session overwrites the stored one — so it leads with the
-  shared `BrainRepairButton` (or a plain retry where no brain can be restarted)
-  and demotes sign-in to "Sign in anyway".
-- `apps/desktop/src/renderer/components/account/YourMacsCard.tsx` — signed-in
-  **Your computers** directory card extracted from `AccountPage`. It lists
-  account machines (this computer pinned first), rename/clear custom name,
-  remove, and the missing-directory recovery row. Custom names are account-wide
-  and win for display without replacing the hostname the machine continues to
-  report; list refreshes propagate the new display name through Connections,
-  desktop pairing, hosted web, and iOS. Absence from the directory is
-  not proof of removal: a publish gap, a split sync listener, or an expired
-  sign-in all produce the same empty row. `describeThisComputerMissing`
-  therefore claims removal only when the directory's own refusal says so (then
-  it uses the shared refusal copy with the date); otherwise it branches on
-  `sessionState` — expired points at Reconnect this computer; unreadable asks
-  to Repair the stored sign-in then Reconnect; active/signed_out names both
-  causes and offers both actions. No machine-repair copy says "Sign in again":
-  the person is signed in, and the browser step is called "Confirm it's you".
-  Rows show the name alone (`accountMachineRowName`) and name the install
-  separately beside it only when it is not the regular app
-  (`accountMachineInstallLabel`, "MacBook Pro" then "ADE Alpha"), with the ADE
-  home on hover, so two installs on one Mac do not look like a duplicate. The
-  Remove sheet starts with a warning for a machine
-  seen in the last five minutes ("It was active 2 minutes ago. Removing it
-  disconnects it from your account until someone confirms it on that
-  computer.") from `accountMachineRemovalConfirmBody`, the same body the web
-  client's confirm uses. **Reconnect this computer** and
-  **Repair** sit side by side: Reconnect calls `repairMachinePairing` on the
-  brain (and runs the *device* login flow when the directory demands proof of a
-  fresh interactive sign-in — the only flow that ends with the single-use
-  pairing grant a re-pair needs); Repair restarts this Mac's background service
-  via the shared `BrainRepairButton` (`disabled` while Reconnect is in flight).
-  Removing a machine is terminal — heartbeats never re-register it — so
-  Reconnect is the only way back onto the roster. Outcome copy stays honest
-  about the in-between case where the machine rejoined but push delivery has
-  not resumed. `ConfirmSheet` and `describeThisComputerMissing` live here. The
-  reconnect flow lives in `renderer/lib/reconnectThisComputer.ts` (one attempt
-  per window) behind `hooks/useReconnectThisComputer.ts`. The refusal words live
-  in `renderer/lib/thisComputerRefusal.ts`. The outcome words
-  (`describeReconnectOutcome`, `reconnectNeedsFreshSignIn`, `readReconnectResult`
-  and the `ReconnectOutcome` type) live in `shared/reconnectOutcome.ts`, which
-  has no renderer or Node globals. `ade machines reconnect --text` reads that module too, so the desktop and the CLI say the same thing. The shell bar, the Connections pane and the
-  Machines list share the flow and both copy modules. `AccountPage` re-exports
-  `describeThisComputerMissing` for existing tests.
-- `apps/desktop/src/renderer/components/onboarding/FirstRunFlow.tsx` +
-  `firstRun.css` (shared frame and motion) with one stylesheet per step
+  `PullRequestsCard`), each linking to its full surface. The PR card reads the
+  PRs tab's snapshot (`prReadCache`) joined with tracked PRs, reloading on PR
+  events and focus, never on its own timer.
+- `projects/CreateProjectForm.tsx`: name and a location row (default parent,
+  Change folder, editable path). Create opens Work.
+
+**Renderer — launch and sign-in**
+
+- `onboarding/OnboardingBootstrap.tsx`: the passive help mount; it renders the
+  one-time welcome video gate.
+- `onboarding/LaunchGate.tsx`: the launch gate. New installs see the welcome
+  card before sign-in; returning signed-out launches see sign-in. By
+  `accountGateMode`: `required` (never held a session) has no pass-through;
+  `recoverable` (expired or unreadable session) always offers **Continue to
+  your work**. Local work is never blocked; `AccountSignedOutBanner` nags
+  instead. It keeps a short ADE Relay link and a draggable top strip, and does
+  not repeat for reloads or extra windows. Directly paired machines survive
+  sign-out; owner-tagged directory targets go with the account.
+
+- `onboarding/GlassSignInCard.tsx`, `account/useSignInFlow.ts`: the gate's
+  sign-in, a frosted panel (`onboarding/launchGateGlass.css`, needs an
+  `.ade-gate` ancestor) with the mark, a heading, sign-in, **Sign in with your
+  phone or another device**, the awaiting/cancel line and ADE Relay help. The
+  other-device link starts device authorization with no browser here:
+  `AnotherDeviceSignInPanel` shows the link as a QR code and the user code
+  (absent on the hosted web). `useSignInFlow` owns browser login, device login
+  (`useAccountDeviceLogin`, `lib/accountLogin.ts`), the four session words and
+  the brain repair; the Account page's `SignInCard` draws the same state.
+- `account/AccountSignedOutBanner.tsx`: the permanent bar while the account is
+  not usable, through `AppBannerHost` and `Banner` with `dismiss: false` (only
+  sign-in or a repair clears it). The host is mounted in `AppShell` outside
+  project conditions, so it reaches projectless windows; `IntegrationBanners`
+  uses the same host. It hides on `/account`. The four states' copy is one
+  record in `renderer/lib/account.ts` (a new state is a type error).
+  - It also carries the one signed-in problem: the directory refuses THIS
+    computer (`machine_revoked` or `pairing_authentication_required`, from the
+    sync snapshot via `hooks/useThisComputerRefusal.ts`). It names the date
+    from `revokedAt` ("This computer was removed from your account on 14
+    August"), adds "ADE stopped trying to reconnect it on its own." once the
+    brain's repair gave up, and offers **Reconnect this computer** (or
+    **Confirm it's you**), showing the browser step's code in the bar. Not
+    dismissable.
+  - `hooks/useReconnectThisComputer.ts` only subscribes; the one flow per
+    window is `renderer/lib/reconnectThisComputer.ts`, so a second surface
+    joins the running attempt. Refusal copy: `renderer/lib/thisComputerRefusal.ts`
+    (also read by the Account card, Connections' This computer card and the
+    Machines list). Main raises no OS notification for a give-up.
+- `account/AccountPage.tsx`: account status and sign-in/out. The signed-out
+  page takes a return route from the sidebar or Connections (else `/work`) and
+  sends pairing work to Connections. `AdeAccountStatus.sessionState` is
+  `active | signed_out | expired | unreadable` (derived from
+  `sessionReadState` for older runtimes); `accountSessionState` /
+  `accountSessionNotice` (`renderer/lib/account.ts`) are the only branch
+  point. `expired` keeps Sign in; `unreadable` must not lead with sign-in (a
+  new session overwrites the stored one): it leads with `BrainRepairButton`
+  (or a retry) and demotes sign-in to "Sign in anyway".
+- `account/YourMacsCard.tsx`: **Your computers** (this computer first;
+  rename, clear name, remove; the missing-directory row). Custom names are
+  account-wide and win for display without replacing the reported hostname.
+  - **Absence is not removal** (a publish gap, a split listener or an expired
+    sign-in look the same). `describeThisComputerMissing` claims removal only
+    on the directory's own refusal; otherwise expired → Reconnect, unreadable
+    → Repair then Reconnect, active/signed_out names both causes and actions.
+    Machine repair never says "Sign in again"; the browser step is "Confirm
+    it's you".
+  - Rows show the name (`accountMachineRowName`) and, when not the regular
+    app, the install (`accountMachineInstallLabel`: "MacBook Pro" then "ADE
+    Alpha"), with the ADE home on hover.
+  - Remove warns for a machine seen in the last five minutes
+    (`accountMachineRemovalConfirmBody`, shared with the web). Removal is
+    terminal; heartbeats never re-register.
+  - **Reconnect this computer** calls `repairMachinePairing` (running the
+    device login when the directory wants a fresh interactive sign-in, the
+    only flow ending in the single-use pairing grant); **Repair** restarts the
+    background service (`BrainRepairButton`, disabled during Reconnect).
+    Outcome copy covers a rejoin before push resumes.
+  - Outcome words (`describeReconnectOutcome`, `reconnectNeedsFreshSignIn`,
+    `readReconnectResult`, `ReconnectOutcome`) live in
+    `shared/reconnectOutcome.ts` (no renderer or Node globals), also read by
+    `ade machines reconnect --text`.
+- `onboarding/FirstRunFlow.tsx`, `firstRun.css` and one stylesheet per step
   (`firstRunWelcome.css`, `firstRunAgentRail.css`, `firstRunProjects.css`,
-  `firstRunDevices.css`) — first-run setup on a computer: the welcome card (the
-  website's "Every AI coding tool" promise, one button, Skip setup) and "Bring
-  your projects in" (the git projects found on this computer, the phone QR and
-  the "another computer" line). `FirstRunSteps.tsx` holds the step machine
-  (`useFirstRunSteps`) and the card renderer both hosts share:
-  `LaunchGate.tsx` runs it around sign-in; `OnboardingBootstrap.tsx` shows it
-  again over the app for "Show me around again" or a reload during setup, and
-  leaves out "Connect your agents" when the front tab is a project on another
-  machine (that card reads and signs in on the tab's machine). See
+  `firstRunDevices.css`): first-run setup. `FirstRunSteps.tsx` holds the step
+  machine (`useFirstRunSteps`) and the card renderer; `LaunchGate.tsx` runs it
+  around sign-in and `OnboardingBootstrap.tsx` shows it over the app ("Show
+  me around again" or a reload mid-setup), leaving out "Connect your agents"
+  when the front tab is on another machine. See
   [First run on a computer](#first-run-on-a-computer).
-- `apps/desktop/src/main/services/onboarding/onboardingProjectDiscovery.ts`
-  — finds the projects for that card from every importable provider's
-  history, without spawning git (`app.discoverOnboardingProjects`), and lists
-  one project's importable chats for the import picker
-  (`app.listOnboardingProjectChats`). Both read in a child process
-  (`onboardingDiscoveryClient.ts`, `ELECTRON_RUN_AS_NODE`), because the
-  providers' discoverers read synchronously and held Electron main for up to
-  2.7 s; the chat lists come back with each answer and are kept in main for
-  the setup session. `app.resolveOnboardingFolder` turns a folder picked with
-  "Add another folder" into the project it belongs to (a subfolder into its
-  checkout, a lane or worktree into its project), or refuses one outside a git
-  checkout. `app.addOnboardingProjects` adds the chosen ones to the front of
-  recent projects without evicting any (the list may pass its cap of 24 until
-  later opens trim it). All four run only on this computer. The 30-day window
-  is `shared/onboardingChatWindow.ts`.
-- `apps/desktop/src/renderer/components/onboarding/FirstRunChatPicker.tsx` —
-  the per-chat picker behind an import pill's count.
-- `apps/desktop/src/renderer/components/onboarding/useOnboardingChatImport.ts`
-  + `renderer/onboarding/pendingChatImports.ts` — the first open of each added
-  project whose import pill was on imports its chats from the last 30 days as
-  ADE chats, minus the ones left out in the picker.
-- `apps/desktop/src/renderer/components/onboarding/tour/` — the guided tour:
-  `onboardingTourSteps.ts` (the steps and the `data-onboarding-anchor` each
-  points at), `OnboardingTourHost.tsx` (cursor, ring, card, paused pill) and
-  `anchorGeometry.ts` (shared with the contextual hints).
-- `apps/desktop/src/renderer/onboarding/onboardingProgress.ts` — per-computer
-  onboarding progress (started, skipped, the tour's step, each hint's state).
-- `apps/desktop/src/renderer/onboarding/situationalSuggestions.ts` +
-  `renderer/components/app/suggestions/` — situational suggestions (tier 3):
-  the shared rules, the card hook, the signal hooks and the send-time checks
-  (see [Situational suggestions](#situational-suggestions)).
-- `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
-  — persistent help menu in the top bar: docs link, "Show me around again",
-  and one help preference (the detailed hover-tooltip toggle). Glossary,
-  help chips, and did-you-know hints were removed; `SmartTooltip`
-  hover detail is the single surviving help surface.
-- `apps/desktop/src/renderer/onboarding/docsLinks.ts` — typed registry
-  of internal/public doc URLs that `SmartTooltip`, `HelpMenu`, welcome,
-  and account surfaces link to, including the public ADE Relay explainer used by
-  account sign-in surfaces.
-- `apps/desktop/src/renderer/components/cto/...` — CTO first-run is the
-  model picker. There is no setup wizard: a project with no stored model
-  preference opens on `CtoWelcome` (test id `cto-model-pick`), and picking a
-  model is the whole of first run. Linear and the rest live on the CTO
-  settings page.
+- `main/services/onboarding/onboardingProjectDiscovery.ts`: finds projects
+  from every importable provider's history without git
+  (`app.discoverOnboardingProjects`) and lists one project's importable chats
+  (`app.listOnboardingProjectChats`), both in a child process
+  (`onboardingDiscoveryClient.ts`, `ELECTRON_RUN_AS_NODE`) because the
+  discoverers read synchronously; chat lists stay in main for the session.
+  `app.resolveOnboardingFolder` maps a picked folder to its project (a
+  subfolder to its checkout, a lane or worktree to its project) or refuses one
+  outside git. `app.addOnboardingProjects` adds to the front of recents
+  without evicting (the cap of 24 may be passed until later opens trim). All
+  four run on this computer only; the 30-day window is
+  `shared/onboardingChatWindow.ts`.
+- `onboarding/FirstRunChatPicker.tsx`: the per-chat picker behind an import
+  pill's count. `onboarding/useOnboardingChatImport.ts` and
+  `renderer/onboarding/pendingChatImports.ts`: the first open of each added
+  project with its pill on imports the last 30 days of chats, minus those left
+  out.
+- `onboarding/tour/`: the guided tour (`onboardingTourSteps.ts` with each
+  step's `data-onboarding-anchor`; `OnboardingTourHost.tsx`: cursor, ring,
+  card, paused pill; `anchorGeometry.ts`, shared with hints).
+  `renderer/onboarding/onboardingProgress.ts`: per-computer progress.
+- `renderer/onboarding/situationalSuggestions.ts`,
+  `app/suggestions/`: [Situational suggestions](#situational-suggestions).
+- `onboarding/HelpMenu.tsx`: the top-bar help menu (docs link, "Show me
+  around again", the detailed-tooltip toggle); `SmartTooltip` hover detail is
+  the one help surface. `renderer/onboarding/docsLinks.ts`: the typed registry
+  of doc URLs, including the ADE Relay explainer.
+- `components/cto/…`: CTO first run is the model picker. A project with no
+  stored model opens on `CtoWelcome` (`cto-model-pick`); Linear and the rest
+  live on the CTO settings page.
 
-Renderer — settings:
+**Renderer — settings**
 
-- `apps/desktop/src/renderer/components/app/SettingsPage.tsx` — tab
-  container and page layout (each section page is one column, with the
-  section rail beside it when there is room; the section layer lives in
-  `settings/settingsTabContent.tsx`). It renders; it does not decide. Tabs, ordering, deep-link
-  resolution, and search all resolve through
-  `settings/settingsManifest.ts`, which is also what generates the Cmd-K
-  entries. The tabs are General, Appearance, Chat, Apple devices, Notifications,
-  Agents & Models, Lanes, Integrations, Secrets, Storage, Diagnostics,
-  Archive, and Usage. Notifications and Activity are one page: the event policies,
-  per-machine mute, privacy, sounds, and scheduled work all read and
-  write through one `useActivitySettings()` model, so a change on one control
-  can no longer be overwritten by a save from another copy. The retired
-  `activity` tab id and the `attention` alias resolve to `notifications`.
-  Every tab id ADE has ever shipped in a URL still resolves via
-  `LEGACY_TAB_ALIASES` (`settingsManifest.test.ts` asserts this); the one
-  exception is `keybindings`, dropped because it pointed at a tab with no
-  keybindings UI. Welcome video replay and help preferences live under the
-  Help menu in the top bar, not as a Settings tab.
-  The manifest assigns each setting to one of four persistence scopes:
-  `account`, `account-repo`, `machine`, or `machine-repo`.
-- `apps/desktop/src/renderer/components/settings/BrowserLinksSection.tsx`
-  — the General tab's **Links** group (`general.link-open-mode`, scope
-  `machine`, `web: "hidden"` because a hosted tab has no Electron browser
-  and its own browser already owns link handling). Writes
-  `browser.linkOpenMode` and `browser.autoOpenDevServer` into the
-  project's `.ade/local.yaml`; see
-  [Configuration schema](configuration-schema.md).
-- `apps/desktop/src/shared/settingsManifest.ts` — the registry's data and
-  pure helpers, in `shared/` so the CLI (`ade settings find`) and chat chips
-  read the same entries. `renderer/components/settings/settingsManifest.ts`
-  re-exports it and adds what depends on the renderer (platform, web client,
-  standalone Settings).
-- `apps/desktop/src/shared/settingsAgentAccess.ts` — the two lists: settings
-  an agent may change (the setup of the work: lanes, lane templates, agent
-  notes, secrets) and settings only the user changes (publishing, sign-ins,
-  money, agent reach, the computer, deleting data, preferences). A setting
-  not listed is the user's. The refusals live in the brain:
-  `ADE_ACTION_CTO_ONLY` for the writes (`USER_SETTING_WRITES` in
-  `actionPolicy.ts` lists them with the card each refusal links to), and
-  `ownerOnlyProjectConfigChange`, which refuses an agent's
-  `project_config.save` whose `local` layer would change or drop any config key
-  outside the work setup (`AGENT_EDITABLE_PROJECT_CONFIG_KEYS`). Automation
-  steps may not run `project_config.save` at all. The user's own terminal keeps
-  these commands (`ade settings …`, `ade providers accounts add|remove|default`
-  connect as the operator role; an agent's shell is clamped back to agent). An
-  agent can still hand-edit `.ade/local.yaml`; that gap is known.
-- `apps/desktop/src/renderer/components/settings/settingsManifest.ts` —
-  the registry. One `SettingEntry` per setting (`id`, `label`,
-  `keywords`, `tab`, `anchor`, `scope`, `web`, `group`, and an optional
-  `webOnly`). Add a setting here and
-  it becomes navigable, searchable, and deep-linkable at once.
-  `webOnly: true` marks a card only the hosted browser draws (currently
-  `agents.accounts`, "AI accounts"): the desktop reaches the same controls on
-  each provider's page, so its nav, search, and palette must not offer an
-  anchor it never renders.
-  `scope` answers *who does this affect*; `web` (`SettingWebScope`) answers
-  *does it work at all from a browser, and what do we tell the user about where
-  it went*. A hosted browser has no Electron shell and reaches its machine only
-  through the actions the sync host registers, so a setting either travels to
-  that machine, syncs through the ADE account, never leaves the browser tab, or
-  is `hidden`. `hidden` is why Secrets, providers, GitHub credentials,
-  dictation, the CLI installer, auto-updates, storage, session lifecycle, and
-  lane templates stay off the web nav: their reads would land, but their writes
-  would resolve against a missing descriptor and silently vanish.
-  `sectionWebScope` resolves a section's scope, and `WebScopePill.tsx` prints
-  it as the section's opening line — so a toggle that will not follow you to
-  another browser says so before you flip it. Desktop renders sections exactly
-  as before, with no banner.
-- `apps/desktop/src/shared/theme/library.ts`, `resolve.ts`, and
-  `renderer/theme/applyTheme.ts` — the theme engine. Shipped themes are
-  `ADE_THEME_FAMILIES` (each family has a dark and a light variant); `dark`
-  and `light` keep the stylesheet's own palettes and emit no inline vars,
-  while every other theme paints its palette as inline `--color-*` properties
-  on `<html>`. Only `<html>` carries `data-theme` / `data-theme-id`: the
-  stylesheet re-declares every `--color-*` under `[data-theme]`, so the same
-  attribute on `<body>` or the app root reset the palette one level below the
-  inline overrides and made every theme look like plain dark or light.
-  `LEGACY_THEME_ID_ALIASES` maps a retired id (obsidian, high-contrast,
-  midnight, evergreen, parchment, blush) to the variant that replaced it. The
-  per-computer `themeFollowsSystem` flag makes the painted theme follow the
-  OS colour scheme: `effectiveThemeId` paints the chosen family's variant for
-  the current `systemColorScheme`. **Appearance is per computer**: the theme
-  id, the custom theme list, `themeFollowsSystem`, `interfacePreferences` and
-  `terminalPreferences` are not in `ACCOUNT_SYNCED_SETTINGS`, so they live in
-  this machine's localStorage and never reach the account. That includes
-  `interfacePreferences.focusGridMaxChats`, the Focus grid's **Chats per
-  page** (null for Automatic), which `useWorkFocusGrid` reads: it follows the
-  screen. The families are
-  built in `family.ts` and written in three files: `library.ts` (the ADE
-  families), `libraryOriginals.ts` (themes with their own shape, type and
-  backdrop) and `libraryClassics.ts` (editor colour schemes). A theme may also
-  carry `syntax` (ten code colours, derived from its terminal palette when
-  omitted) and `flair` (corners, depth, interface face, backdrop);
-  `renderer/theme/codeTheme.ts` turns the resolved theme into a Monaco theme
-  for the file editor and a Shiki theme for chat code blocks, and
-  `applyTheme.ts` sets `data-theme-backdrop`, `data-theme-radius` and
-  `data-theme-shadow` for the rules in `index.css` that custom properties alone
-  cannot express.
-  `renderer/theme/applyInterface.ts` applies the per-computer
-  `interfacePreferences` (`sansFont`, `monoFont`, `reduceMotion`) as
-  `--font-sans` / `--font-mono` overrides plus `html[data-motion="reduced"]`,
-  and `App` drives `MotionConfig` from the same flag so the preference reaches
-  JS animations, not only CSS.
-- `apps/desktop/src/shared/accountSettingsScope.ts`,
-  `apps/desktop/src/renderer/lib/accountSettingsSync.ts`, and
-  `useAccountSettingsSync.ts` — the renderer's account-settings half. It turns
-  the four-value setting scope into the key the account store files a row under
-  (`accountSettingScopeKey`), and it makes the "Stored in your ADE account" chip
-  true for the preferences that claim it: a local-first write-through engine
-  hydrates newer remote rows and pushes local edits back, per key, with a
-  strictly-newer stamp so one machine's change cannot revert another's, and a
-  dirty queue that retries signed-out or offline edits. Only `account` and
-  `account-repo` scopes ever reach the store; machine-scoped values (paths,
-  ports, hardware facts) never leave this computer. A preference that is
-  account-scoped but one-value-per-computer — the Apple device options — keeps
-  the account-wide scope and carries the device in the key
-  (`accountDeviceSettingKey`, `device.<syncDeviceId>.<key>`) so another machine
-  skips it while this brain can read it. An `account-repo` key is
-  `repo:<host>/<owner>/<repo>` from the canonical origin
-  (`readGitOriginUrl`): the machine that owns the checkout resolves an SSH
-  alias of GitHub (`git@github.com-work:org/repo`) through `ssh -G`
-  (`github/githubSshAlias.ts`), so every checkout of one repository shares a
-  key. The `repo_scope_alias` account migration copies a project's secrets and
-  settings from the alias key an older ADE used, once per project; a row
-  already under the new key wins, and the old rows stay. Automation rules use
-  the same store under the repository key, a rule row and a home row per
-  rule (`automations.rule.<id>`, `automations.home.<id>`), each run only by its
-  home computer; see
-  [Rules follow the account](../automations/README.md#rules-follow-the-account).
-  See [Sync and multi-device](../sync-and-multi-device/README.md).
-- `apps/desktop/src/renderer/scene/` and `renderer/styles/scene.css` — the
-  window backdrop, configured under Settings → This computer → Appearance →
-  **Background**. Modes are `plain` (the theme's flat background, no picture
-  and no mesh; the web client's default), `gradient` (the theme's animated
-  mesh), `image` (one picture), and `shuffle` (a picture from the library,
-  changed on launch, wake, hourly, or daily; the desktop default, drawing from
-  the pictures sized for the screen in use). Pictures are bundled (`public/scenes/*.jpg` through
-  `sceneLibrary.ts`, with a 2560×1600 copy for 1080p and 1440p screens) or the user's own — re-encoded to at most 5120 px JPEG and
-  kept in IndexedDB by `userScenes.ts`, never on disk or in sync.
-  `scenePalette.ts` extracts the picture's palette, `sceneTheme.ts`
-  (`themeTintedByScene`) tints the theme from it when App colours is **From
-  picture**, and `SceneImageLayer` draws one window-aligned slice per surface so
-  the top bar, home page and new chat page read as one picture.
-  `BackgroundContextMenu.tsx` is the background right-click menu (**Next
-  picture**, light/dark, **Change background…**). Scene preferences live in
-  `interfacePreferences.scene` in `ade.userPreferences.v1` and are per computer,
-  like the theme; `SCENE_DEFAULTS_REVISION` in `scenePreferences.ts` is a
-  one-time shipped-default reset. Full behavior:
-  [`docs/design/visual-language.md`](../../design/visual-language.md).
-- `apps/desktop/src/renderer/components/settings/primitives/` — the
-  control vocabulary (`SettingsCard`, `SettingsGroup`, `ScopeChip`,
-  `SettingsToggle` / `Segmented` / `Number` / `Select` / `Slider`,
-  `SettingsDisclosure`, `useSavedFlash`). `primitives/SettingsRows.tsx` adds
-  the grouped-rows page vocabulary — `SettingsSection`, `SettingsPanel`,
-  `SettingsRow` (with `icon`/`tone`), `SettingsColumn`, `SettingsSplit`, and
-  `SettingsSectionAction`. `primitives/SettingsModern.tsx` is the modern page
-  vocabulary every redesigned settings page now uses — `ModernPage` (the
-  section column), `ModernSection` (heading, one-line hint, optional actions,
-  carrying `data-settings-anchor` for search and deep links), and
-  `ModernRows` / `ModernRow` (a grouped panel with title, hint and control) —
-  and it is the settings counterpart of the surface kit in
-  `renderer/styles/surfaceKit.css`. `SettingsDisclosure` is a
-  native `<details>` in a recessed card for rarely-needed fields —
-  native markup keeps keyboard and find-in-page behaviour — and its
-  `defaultOpen` is uncontrolled on purpose, so a caller passes `true`
-  when the block already holds a value and an existing config never
-  hides itself. There is **no Save button anywhere in settings**:
-  every control persists on change and reports via `SavedFlash`.
-  `ScopeChip` uses the shared four-scope copy and is shown only where the
-  backing store would surprise — clicking it names the file and who it
-  affects. `SettingsCard`, `SettingsManagerPage`, and
-  `SettingsDashboardPage` are the three page templates; section files choose
-  one instead of drawing their own page layout.
-- Legacy deep links:
-  `#github-connection`, `#linear-connection`, `#voice-input`,
-  `#chat-launch-clipboard`, `#agent-completion-sound`,
-  `#auto-updates`, `#pr-chat-transcripts`.
-- `apps/desktop/src/renderer/components/settings/AutoUpdatesSection.tsx`
-  — the automatic-install rows on General's ADE card. Automatic installation is off by
-  default, leaving installation under the top-right control. Enabling it
-  reveals the default-on **Wait until active work finishes** safety option,
-  which delays the restart countdown until no agent turn or work session is
-  active.
-- Product analytics has no Settings section. It is on by default, and
-  `DO_NOT_TRACK=1` or an opt-out a previous build stored turns it off silently.
-  See [logging and product analytics](../../logging.md).
-- `apps/desktop/src/renderer/components/settings/DiagnosticsSharingSection.tsx`
-  — the one report control in Settings (`general.diagnostics-sharing`, anchored
-  `#diagnostics-sharing`, titled **"Send a report to ADE"**). It has no toggle.
-  Automatic reports are on by default and stop under `DO_NOT_TRACK=1` or an
-  earlier stored opt-out. The card's **Send a report to ADE** button is the only
-  report control that does not require something to have already visibly broken,
-  which is what makes the report's copy true for a user whose app merely feels
-  wrong. It has its own daily cap (5 per install per 24h, counted apart from the
-  automatic 3). `web: "hidden"` in the manifest, because the report is built on
-  this machine by the desktop app. See
-  [storage and recovery → Auto-send](../storage-and-recovery/README.md#auto-send).
-- `apps/desktop/src/renderer/components/settings/integrations/` — the
-  Integrations tab's frame (under **App**), built like the provider pages. It
-  took in the MCP servers tab; `?tab=mcp`, `github`, `linear` and `jira`
-  all alias to it. With nothing open the tab is the
-  Integrations home (`IntegrationsHome.tsx`): a **Connected** row (GitHub,
-  Linear and Jira when they work, read with the Settings machine's pin, and
-  every MCP server in the account), then **Add** with a search box: the three
-  integrations as banner tiles, each with where it is saved (your account for
-  GitHub, this project for Linear and Jira), then **MCP servers**. That
-  section says any MCP server works and leads with **Add any MCP server**
-  (the same dialog as the MCP servers page) and, when other tools have
-  servers, **Import**. Below it, the catalogue's quick setups as logo tiles
-  (`McpCatalogueAddDialog.tsx` adds one, and signs it in when it uses a
-  browser sign-in), and a last **Not listed?** tile. `mcpCatalogueBrand.tsx`
-  gives each quick setup its logo and accent, and `McpRunsLine.tsx` shows the
-  command a server runs, or the URL it reaches, on one line.
-  `?integration=<github|linear|jira|mcp>` opens one page, and a `#hash`
-  naming any of its settings (`#github-connection`, `#jira-projects`,
-  `#mcp-servers`) opens it too; the hash wins over the param, because a search
-  result keeps the query string (`openIntegrationFromUrl` in
-  `settingsTabContent.tsx`).
-  Only one integration's page is mounted at a time, so Settings search lists a
-  match on another connection's page (or every match while the home is open)
-  as an "On other pages" result that opens it. Each page (`IntegrationChrome.tsx`)
-  starts with a banner in the maker's colors: the logo standing in 3D
-  (`SolidLogo` from the provider hero), the state, a panel naming what this
-  machine is signed in to with the main actions, and a strip of facts that
-  also holds the top-bar switch. Below it sit two cards of equal size, or one
-  across. `integrationBrand.tsx` holds each brand's accent, banner art and logo.
-- `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
-  and `GitHubSection.tsx` — ADE GitHub App / environment / GitHub CLI / PAT
-  auth, credential-specific permission diagnostics, structured validation
-  failures, and automatic fallback state. The GitHub page of Integrations: its "Your sign-in"
-  card lists every credential in the order ADE tries them, with the token form
-  (and the permissions a token needs) opening inline in the token row. Classic
-  PATs and CLI OAuth tokens show their detected scopes; fine-grained PATs show
-  repository-permission guidance; App user tokens show installation-backed
-  repository metadata access and never report missing classic `repo` /
-  `workflow` scopes, because GitHub Apps do not use those OAuth scopes. The App
-  panel states that the App is intentionally read-only and documents the
-  environment → App → GitHub CLI → PAT read order plus the write-capable
-  subset. Healthy connections do not expose quota bookkeeping. When ADE is
-  compensating for a problem, Settings names the paused source and temporary
-  replacement, plus the retry time when GitHub supplied one. The App row in that
-  connection ladder is a special case: the App credential's own state outranks
-  the generic ladder states, because it is the only place that can tell a paused
-  renewal from a dead authorization, and only the dead one may ask the user to
-  re-authorize. The row reads the shared account status through
-  `useGithubAppUserAuth` and badges itself through
-  `describeGithubAppCredentialBadge`. Its retry time also comes from there: the
-  App's pause lives in the credential's refresh ledger rather than in the
-  request budget, so the ladder's own `retryAt` is usually absent and the
-  sentence would otherwise end open. An exhausted shared
-  account bucket renders the reset time and explains that background refresh is
-  paused automatically; it never asks the user to re-authenticate. When no
-  fallback remains, a missing, invalid, or genuinely under-scoped credential
-  shows login/refresh instructions. An unreadable credential store outranks all
-  of that: the card reads **Can't read sign-in** instead of "Not connected",
-  renders the shared unreadable notice with an **Open connections** button that
-  opens the Connections panel's Machines tab, and suppresses the `gh auth login`
-  setup steps — those steps would answer a question ADE has not actually asked,
-  and following them writes a new credential over one that is probably intact.
-  The App-installation card also classifies relay
-  rate-limit responses as a concise cooldown state instead of displaying
-  GitHub's raw request-id / scraping-policy error. Raw network/unknown
-  validation errors stay in Settings rather than the global banner. The shared
-  `renderer/lib/githubIntegrationStatus.ts` presentation helper keeps banner
-  and Settings classification aligned. When githubstatus.com corroborates an
-  outage the whole card goes neutral instead of reading as "your setup is
-  broken": the status chip says "GitHub outage", the failure box drops its
-  warning tint and grows a link to the live incident, `READS WITH` / `WRITES
-  WITH` say "Unknown" rather than the false-negative "Not connected",
-  connection-order badges read "Waiting on GitHub" instead of "Reconnect
-  needed", and the `gh auth login` instructions are hidden so nobody replaces a
-  credential that was working. A missing token still shows its instruction —
-  that is a local fact an outage cannot explain away. This section also hosts
-  the `GitHubAppInstallPanel` (below) for installing "ADE for GitHub".
-- `apps/desktop/src/renderer/components/github/GitHubAppInstallPanel.tsx`
-  — install / status card for the hosted ADE GitHub App that backs
-  webhook-relay PR updates. Reads per-repo installation + webhook state via
-  `window.ade.github.getAppInstallationStatus` (which the desktop resolves
-  against the hosted relay's `/github/repos/:owner/:repo/status` route using
-  a locally stored GitHub App user token from device flow), and links out to the
-  App install / manage pages. The card is split into **two honest blocks**, one
-  per independent prerequisite for real-time PR updates, both derived through the
-  shared `renderer/lib/githubIntegrationStatus.ts` helper so their status pills
-  reflect actual state instead of the old always-green permission chips:
-  - **Account · ADE for GitHub** — the account-scoped App user token. Hosts the
-    "Authorize ADE" device-flow UI: `startAppUserDeviceAuth` shows the user
-    code as a copyable chip plus a waiting state and the verification URL, and
-    `pollAppUserDeviceAuth` drives the poll loop and auto-renews an expired code
-    up to 3 times. `deriveGithubAccountAuthState` reads the service's
-    `credentialState` and classifies the account as `valid` / `blocked` /
-    `needs_reauth` / `missing`. **Never judge the account by `expiresAt`.** The
-    App access token lives 8 hours and is renewed from the refresh token on
-    every use, so a lapsed `expiresAt` is ordinary operation; reading it as
-    "authorization expired" sent working accounts back through a device flow
-    against the same OAuth endpoint the renewals were already failing on, which
-    is the one thing guaranteed to keep the account locked out. The whole row is
-    built by `describeGithubAccountAxis`, and its rule is that every state ADE
-    recovers from on its own returns `cta: null`:
-    - `valid` renders "Authorized" plus *"<login> · renews automatically"*. It
-      is deliberately silent about the 8-hour token, because showing that expiry
-      taught users to read a normal renewal cycle as a countdown to breakage.
-    - `blocked` with no recorded failure is ADE's own lease — one process on the
-      machine is renewing and the rest wait a moment — so it reads "Renewing…".
-      `blocked` with a recorded failure reads "Paused" (or "Paused until 3:40
-      PM" when the ledger carries a deadline), with copy from
-      `githubRefreshPauseCopy` naming what GitHub did, and a note that
-      re-authorizing is unavailable while GitHub has those requests paused.
-      Neither offers a button.
-    - `needs_reauth` is the **only** state that offers "Re-authorize", and
-      `missing` the only one that offers "Authorize ADE".
-  - **This repo · `owner/name`** — whether the App is installed on the active
-    repo. `deriveGithubRepoConnectionState` takes the account state as well as
-    the installation status and maps them to `connected` / `not_installed` /
-    `access_pending` / `waiting_on_account` / `no_repo` / `unknown`.
-    `waiting_on_account` is the axis refusing to report a reading it could not
-    take: an install check that ran without a working account credential proves
-    nothing about the installation, so saying "not installed" reports an
-    uninstall that never happened. It is chosen from the typed
-    `appUserAuthFailure` on the installation status first, then from the
-    message-matching compatibility shim for older hosts, and finally from any
-    non-`valid` account state. A rate limit or a GitHub 5xx is exempt, because
-    those are corroborated reasons that hold whichever credential the check ran
-    with. In `waiting_on_account` the panel offers only **Recheck** — Install and
-    Manage would both be guesses. After device authorization succeeds, the panel
-    force-refreshes the hosted relay status with a short retry window and treats
-    GitHub repo-access 404s as a temporary "Checking access" (`access_pending`)
-    state so App installation propagation does not look like failed
-    authorization. A GitHub server error renders as "Waiting on GitHub" rather
-    than "Couldn't verify": the install state is unknown, not broken.
+- `app/SettingsPage.tsx`: the tab container (one column per section page, a
+  section rail when there is room; sections in
+  `settings/settingsTabContent.tsx`). It renders only. Tabs, order, deep
+  links, search and Cmd-K resolve through `settings/settingsManifest.ts`.
+  - Tabs: General, Appearance, Chat, Apple devices, Notifications, Agents &
+    Models, Lanes, Integrations, Secrets, Storage, Diagnostics, Archive,
+    Usage.
+  - Notifications and Activity are one page on one `useActivitySettings()`
+    model (event policies, per-machine mute, privacy, sounds, scheduled
+    work); `activity` and `attention` resolve to `notifications`.
+  - Every shipped tab id resolves through `LEGACY_TAB_ALIASES`
+    (`settingsManifest.test.ts`), except `keybindings`.
+  - Welcome video and help preferences live in the Help menu.
+- `settings/BrowserLinksSection.tsx`: General → **Links**
+  (`general.link-open-mode`, scope `machine`, `web: "hidden"`), writing
+  `browser.linkOpenMode` and `browser.autoOpenDevServer` to `.ade/local.yaml`
+  ([Configuration schema](configuration-schema.md)).
+- `shared/settingsManifest.ts`: the registry data and pure helpers, shared
+  with `ade settings find` and chat chips;
+  `renderer/components/settings/settingsManifest.ts` re-exports it and adds
+  platform, web and standalone rules.
+  - One `SettingEntry` per setting (`id`, `label`, `keywords`, `tab`,
+    `anchor`, `scope`, `web`, `group`, optional `webOnly`); adding one makes it
+    navigable, searchable and deep-linkable. `webOnly: true` marks a card only
+    the hosted browser draws (`agents.accounts`).
+  - `scope` (`account`, `account-repo`, `machine`, `machine-repo`) says who it
+    affects. `web` (`SettingWebScope`) says whether it works from a browser:
+    it travels to the machine, syncs through the account, stays in the tab, or
+    is `hidden`. Secrets, providers, GitHub credentials, dictation, the CLI
+    installer, auto-updates, storage, session lifecycle and lane templates are
+    `hidden` (their writes would have no descriptor and vanish).
+    `sectionWebScope` and `WebScopePill.tsx` print the scope as the section's
+    first line on the web.
+- `shared/settingsAgentAccess.ts`: settings an agent may change (lanes, lane
+  templates, agent notes, secrets) and settings only the user changes
+  (publishing, sign-ins, money, agent reach, the computer, deleting data,
+  preferences); unlisted means the user's.
+  - The brain refuses: `ADE_ACTION_CTO_ONLY` for the writes
+    (`USER_SETTING_WRITES` in `actionPolicy.ts`, each with its card), and
+    `ownerOnlyProjectConfigChange` for an agent `project_config.save` whose
+    `local` layer changes a key outside `AGENT_EDITABLE_PROJECT_CONFIG_KEYS`.
+    Automation steps may not run `project_config.save`.
+  - The user's terminal keeps `ade settings …` and `ade providers accounts
+    add|remove|default` (operator role; an agent shell is clamped to agent).
+    An agent can still hand-edit `.ade/local.yaml` (a known gap).
+- **Themes** — `shared/theme/library.ts`, `resolve.ts`,
+  `renderer/theme/applyTheme.ts`.
+  - `ADE_THEME_FAMILIES` each have a dark and light variant. `dark` and
+    `light` use the stylesheet palettes; others set inline `--color-*` on
+    `<html>`.
+  - **Only `<html>` carries `data-theme` / `data-theme-id`**; the stylesheet
+    re-declares `--color-*` under `[data-theme]`, so the attribute lower down
+    resets the palette.
+  - `LEGACY_THEME_ID_ALIASES` maps retired ids (obsidian, high-contrast,
+    midnight, evergreen, parchment, blush). `themeFollowsSystem` paints the
+    family's variant for `systemColorScheme` (`effectiveThemeId`).
+  - **Appearance is per computer**: theme id, custom themes,
+    `themeFollowsSystem`, `interfacePreferences` (including
+    `focusGridMaxChats`, the Focus grid's **Chats per page**, read by
+    `useWorkFocusGrid`) and `terminalPreferences` are not in
+    `ACCOUNT_SYNCED_SETTINGS`.
+  - Families are built in `family.ts` and written in `library.ts`,
+    `libraryOriginals.ts` and `libraryClassics.ts`. Optional `syntax` (ten
+    code colours, else from the terminal palette) and `flair` (corners, depth,
+    face, backdrop). `renderer/theme/codeTheme.ts` makes the Monaco and Shiki
+    themes; `applyTheme.ts` sets `data-theme-backdrop`, `data-theme-radius`,
+    `data-theme-shadow`.
+  - `renderer/theme/applyInterface.ts` applies `sansFont`, `monoFont` and
+    `reduceMotion` (`--font-sans`, `--font-mono`,
+    `html[data-motion="reduced"]`); `App` drives `MotionConfig` from the same
+    flag.
+- `shared/accountSettingsScope.ts`, `renderer/lib/accountSettingsSync.ts`,
+  `useAccountSettingsSync.ts`: the renderer's account-settings half.
+  `accountSettingScopeKey` files a row by scope. A local-first write-through
+  engine hydrates newer remote rows and pushes local edits per key with a
+  strictly newer stamp, and a dirty queue retries offline edits. Only
+  `account` and `account-repo` reach the store.
+  - A per-computer account preference (Apple device options) keys by device
+    (`accountDeviceSettingKey`, `device.<syncDeviceId>.<key>`).
+  - An `account-repo` key is `repo:<host>/<owner>/<repo>` from the canonical
+    origin (`readGitOriginUrl`); the checkout's machine resolves a GitHub SSH
+    alias through `ssh -G` (`github/githubSshAlias.ts`). The
+    `repo_scope_alias` migration copies secrets and settings from the old
+    alias key once per project; an existing new-key row wins.
+  - Automation rules use the repository key (`automations.rule.<id>`,
+    `automations.home.<id>`), each run only by its home computer; see
+    [Rules follow the account](../automations/README.md#rules-follow-the-account)
+    and [Sync and multi-device](../sync-and-multi-device/README.md).
 
-  A quiet **Disconnect** control sits next to the account row whenever there is
-  something to disconnect. It is two clicks — the confirm step explains that
-  real-time pull request updates stop until the user authorizes again — and it
-  calls `clearAppUserAuth`. It is hidden on hosts that do not implement the call
-  and on the standalone web client, which implements it but has no credential to
-  clear; both are judged by `isGithubAppUserAuthSupported` so a new stub cannot
-  pass half the check. Offers a Refresh. Rendered in Settings and, in a compact
-  `onboarding` variant, during setup.
+- `renderer/scene/`, `renderer/styles/scene.css`: the window backdrop (This
+  computer → Appearance → **Background**). Modes: `plain` (flat, the web
+  default), `gradient` (animated mesh), `image`, and `shuffle` (a library
+  picture changed on launch, wake, hourly or daily; the desktop default, sized
+  for the screen). Pictures are bundled (`public/scenes/*.jpg` via
+  `sceneLibrary.ts`, plus a 2560×1600 copy for 1080p/1440p) or the user's own
+  (re-encoded to at most 5120 px JPEG in IndexedDB by `userScenes.ts`, never on
+  disk or in sync). `scenePalette.ts` extracts a palette; `sceneTheme.ts`
+  (`themeTintedByScene`) tints the theme when App colours is **From picture**;
+  `SceneImageLayer` draws one window-aligned slice per surface.
+  `BackgroundContextMenu.tsx`: **Next picture**, light/dark, **Change
+  background…**. Preferences are per computer
+  (`interfacePreferences.scene` in `ade.userPreferences.v1`);
+  `SCENE_DEFAULTS_REVISION` (`scenePreferences.ts`) is a one-time default
+  reset. See [visual language](../../design/visual-language.md).
+- `settings/primitives/`: the control vocabulary (`SettingsCard`,
+  `SettingsGroup`, `ScopeChip`, `SettingsToggle` / `Segmented` / `Number` /
+  `Select` / `Slider`, `SettingsDisclosure`, `useSavedFlash`).
+  `SettingsRows.tsx` adds `SettingsSection`, `SettingsPanel`, `SettingsRow`
+  (`icon` / `tone`), `SettingsColumn`, `SettingsSplit`,
+  `SettingsSectionAction`. `SettingsModern.tsx` is the page vocabulary
+  (`ModernPage`, `ModernSection` with `data-settings-anchor`, `ModernRows` /
+  `ModernRow`), the settings side of `renderer/styles/surfaceKit.css`.
+  - **No Save button anywhere**: controls persist on change and report through
+    `SavedFlash`.
+  - `SettingsDisclosure` is a native `<details>` (keyboard and find-in-page);
+    its `defaultOpen` is uncontrolled, so pass `true` when the block holds a
+    value.
+  - `ScopeChip` shows only where the store would surprise; a click names the
+    file and who it affects.
+  - Page templates: `SettingsCard`, `SettingsManagerPage`,
+    `SettingsDashboardPage`.
+- Legacy deep links that still resolve: `#github-connection`,
+  `#linear-connection`, `#voice-input`, `#chat-launch-clipboard`,
+  `#agent-completion-sound`, `#auto-updates`, `#pr-chat-transcripts`.
+- `settings/AutoUpdatesSection.tsx`: automatic install on General's ADE card,
+  off by default; turning it on shows **Wait until active work finishes**
+  (on by default), which delays the restart countdown until no turn or work
+  session is active.
+- Product analytics has no Settings section: on by default, off under
+  `DO_NOT_TRACK=1` or a stored opt-out ([logging](../../logging.md)).
+- `settings/DiagnosticsSharingSection.tsx`: **Send a report to ADE**
+  (`general.diagnostics-sharing`, `#diagnostics-sharing`, `web: "hidden"`), the
+  only report control that needs nothing visibly broken. No toggle; automatic
+  reports are on unless `DO_NOT_TRACK=1` or a stored opt-out. Its own cap: 5
+  per install per 24 h, apart from the automatic 3. See
+  [Auto-send](../storage-and-recovery/README.md#auto-send).
+- `settings/integrations/`: the Integrations tab (under **App**); `?tab=mcp`,
+  `github`, `linear` and `jira` alias to it.
+  - **Home** (`IntegrationsHome.tsx`): **Connected** (GitHub, Linear, Jira when
+    working, read with the Settings machine's pin, and every account MCP
+    server), then **Add** with search: the three integrations as banner tiles
+    with where each is saved (account for GitHub, project for Linear and Jira),
+    then **MCP servers** (**Add any MCP server**, **Import** when other tools
+    have servers, the catalogue's quick setups via `McpCatalogueAddDialog.tsx`,
+    which signs in a browser-auth server, and **Not listed?**).
+    `mcpCatalogueBrand.tsx` gives logos and accents; `McpRunsLine.tsx` shows
+    the command or URL.
+  - `?integration=<github|linear|jira|mcp>` or a settings `#hash` opens one
+    page; the hash wins (`openIntegrationFromUrl`, `settingsTabContent.tsx`).
+    Only one page mounts, so search lists matches elsewhere as "On other
+    pages".
+  - Each page (`IntegrationChrome.tsx`) has a banner in the maker's colours
+    (`SolidLogo`, state, a sign-in panel with main actions, a facts strip with
+    the top-bar switch), then two equal cards or one.
+    `integrationBrand.tsx` holds accent, art and logo.
+- `settings/GitHubIntegrationSection.tsx`, `GitHubSection.tsx`: the GitHub
+  page. "Your sign-in" lists every credential in try order, with the token form
+  (and needed permissions) inline in the token row.
+  - Classic PATs and CLI tokens show scopes; fine-grained PATs show
+    repository-permission guidance; App tokens show installation access and
+    never report missing `repo` / `workflow` scopes. The App panel says the App
+    is read-only and states the read order and the write subset.
+  - Healthy connections hide quota. When ADE compensates, Settings names the
+    paused source, the replacement and the retry time. The App row's own state
+    outranks the ladder (`useGithubAppUserAuth`,
+    `describeGithubAppCredentialBadge`), because only it separates a paused
+    renewal from a dead authorization; its retry time comes from the refresh
+    ledger. An exhausted shared bucket shows the reset time and never asks to
+    re-authenticate. With no fallback left, a missing, invalid or under-scoped
+    credential gets instructions.
+  - **An unreadable store outranks all of that**: **Can't read sign-in**, the
+    shared notice with **Open connections** (Connections → Machines), and no
+    `gh auth login` steps (they would overwrite a probably intact credential).
+  - Relay rate limits read as a short cooldown, not GitHub's raw error; raw
+    network/unknown errors stay in Settings, not the global banner.
+  - **A corroborated outage turns the card neutral**: "GitHub outage" chip,
+    untinted failure box with an incident link, `READS WITH` / `WRITES WITH`
+    "Unknown", badges "Waiting on GitHub", no `gh auth login` steps. A missing
+    token still shows its instruction.
+- `github/GitHubAppInstallPanel.tsx`: the hosted ADE GitHub App card for
+  webhook-relay PR updates. `window.ade.github.getAppInstallationStatus`
+  resolves against the relay's `/github/repos/:owner/:repo/status` with the
+  local App user token. Two blocks, both from
+  `renderer/lib/githubIntegrationStatus.ts`:
+  - **Account · ADE for GitHub.** Device flow: `startAppUserDeviceAuth` (a
+    copyable code, waiting state, verification URL) and
+    `pollAppUserDeviceAuth` (renews an expired code up to 3 times).
+    `deriveGithubAccountAuthState` reads `credentialState` as `valid` /
+    `blocked` / `needs_reauth` / `missing`. **Never judge the account by
+    `expiresAt`**: the token lives 8 hours and renews on every use.
+    `describeGithubAccountAxis` returns `cta: null` for every state ADE
+    recovers from.
 
-  Both this panel and the Settings connection ladder above it read one shared
-  account status through `renderer/lib/useGithubAppUserAuth.ts` — a module-level
-  value with a listener set, not context, because the two consumers are not
-  siblings under a common provider and the panel is also mounted alone during
-  onboarding. There is exactly one such credential per machine, and with a fetch
-  and a piece of state per component, disconnecting in the panel left the ladder
-  badge one card away still reporting the authorization that had just been
-  removed. `refreshGithubAppUserAuth({ force: true })` starts a read even when
-  one is in flight, which a caller reading *after* an action it just performed
-  needs: joining the running read answers with the state from before the action.
+    | State | Shows | Action |
+    |---|---|---|
+    | `valid` | "Authorized", "<login> · renews automatically" (no expiry) | none |
+    | `blocked`, no recorded failure | "Renewing…" (another process holds the lease) | none |
+    | `blocked`, recorded failure | "Paused" / "Paused until 3:40 PM" (`githubRefreshPauseCopy`), re-authorizing unavailable | none |
+    | `needs_reauth` | the problem | "Re-authorize" |
+    | `missing` | not authorized | "Authorize ADE" |
 
-  The device-flow, token store, refresh lease, and backoff ledger are backed by
-  `githubAppUserAuthService` in the main process (see the automations feature
-  doc's [Source file map](../automations/README.md#github-relay-and-app) and
-  [How ADE stops a GitHub App refresh storm](../automations/README.md#how-ade-stops-a-github-app-refresh-storm)).
-  The matching per-repo "GitHub App not connected" banner — distinct from the
-  gh-CLI banner — is registered by `IntegrationBanners` and rendered by the
-  app-shell `AppBannerHost` from the
-  same `githubIntegrationStatus.ts` derivation (see
-  [ARCHITECTURE §7.6](../../ARCHITECTURE.md)), so the panel and the banner never
-  disagree.
-- `apps/desktop/src/renderer/lib/githubIntegrationStatus.ts`
-  — pure, two-axis derivation of GitHub App integration health (account
-  user-token axis vs. per-repo install axis), the `deriveGithubRealtimeBlock`
-  top-blocker picker (account problems outrank repo problems),
-  `githubStatusHasWriteCredential` for capability-gating mutations, and the
-  shared banner/Settings copy for the account, repo, and gh-CLI/token
-  sub-states. Imported by `GitHubAppInstallPanel`, `GitHubSection`,
-  and `IntegrationBanners`;
-  App-only read connectivity therefore keeps PR data live while still prompting
-  for GitHub CLI or a PAT before a mutation. This module only translates the
-  service's `credentialState` into copy — it does not re-derive the account's
-  health from token expiry. `deriveGithubRealtimeBlock` returns `null` for a
-  `blocked` account: ADE retries on its own, so a banner there would be one
-  nobody can act on. `describeGithubAccountAxis` and
-  `describeGithubAppCredentialBadge` render the same fact in the panel and in
-  the Settings ladder, and share `githubPausedLabel` so the two read
-  identically — a user who sees "Paused" in one card and "Paused until 3:40 PM"
-  in the other reads them as two different problems.
-  `isGithubAppUserAuthSupported` separates "this host has no GitHub App
-  credential" from "this machine is not authorized": the standalone web-client
-  adapter declares itself with `appUserAuthSupported: false`, and older hosts
-  are still recognised by `configured`, which no stub has ever carried. Reading
-  a stub as a real answer flashed a false "not authorized" banner on every
-  hosted-web project. `deviceAuthMessageCopy` / `deviceAuthErrorCopy` replace
-  GitHub's raw transport error (*"GitHub OAuth request failed (429)"*) with what
-  it means, because that string reads as ADE breaking rather than GitHub
-  throttling. `GITHUB_ACCOUNT_AUTH_ERROR_MATCHES` is a **compatibility shim**
-  and marked as one: the typed `appUserAuthFailure` is the real signal, and this
-  enumerated list only catches a host older than that field or a raw 401 body
-  from the relay. Do not add new ADE phrasings to it — a loose substring here is
-  worse than a missing one, because "not authorized" also appears in messages
-  about the repository, and matching those reported a real install problem as an
-  account problem the user could not act on. `describeGithubOutage(status)` is the one presentation
-  entry point for a corroborated GitHub outage — it answers "is there an
-  outage", "what do we say", and "where does the button go" together, and every
-  GitHub-blaming surface gates on it. When it returns null ADE says nothing
-  about GitHub's health and keeps its existing copy.
-  `describeGithubCliBanner` resolves three states in a fixed order, and the
-  order is the whole point:
-  1. `credentialStoreUnreadable` — first, ahead of everything. An unreadable
-     store returns an EMPTY view, so every conclusion below it would be drawn
-     from credentials ADE could not read. It is also a local, repairable fact
-     that outlives any incident, so an outage must not mask the one thing the
-     user can actually fix.
-  2. `!tokenStored` — ahead of the outage. A missing token is a purely local
-     fact and stays true regardless of GitHub's health, so the genuine "connect
-     GitHub" instruction survives an incident.
-  3. the outage — ahead of every remaining state, all of which are inferred
-     from GitHub's own answers and are therefore unreliable while GitHub is
-     failing. `describeGithubAuthFailure` consults the outage first for the same
-     reason.
+  - **This repo · `owner/name`.** `deriveGithubRepoConnectionState` combines
+    account and installation: `connected` / `not_installed` / `access_pending`
+    / `waiting_on_account` / `no_repo` / `unknown`. `waiting_on_account`
+    (from typed `appUserAuthFailure`, then the older-host shim, then any
+    non-`valid` account) refuses to report an install check made without a
+    working account, and offers only **Recheck**; a rate limit or GitHub 5xx is
+    exempt. After authorization the panel force-refreshes with a short retry
+    and treats 404s as "Checking access" (`access_pending`). A GitHub 5xx reads
+    "Waiting on GitHub".
+  - **Disconnect** (two clicks; the confirm says real-time PR updates stop)
+    calls `clearAppUserAuth`; it is hidden where `isGithubAppUserAuthSupported`
+    is false (hosts without the call, the standalone web). Refresh is offered.
+    A compact `onboarding` variant shows during setup.
+  - `renderer/lib/useGithubAppUserAuth.ts` is one module-level value with
+    listeners (the panel and the ladder are not siblings, and the panel mounts
+    alone in onboarding). `refreshGithubAppUserAuth({ force: true })` starts a
+    new read even with one in flight, for reads after an action.
+  - The device flow, token store, refresh lease and backoff ledger live in
+    `githubAppUserAuthService` (see
+    [automations](../automations/README.md#github-relay-and-app) and
+    [refresh storm](../automations/README.md#how-ade-stops-a-github-app-refresh-storm)).
+    The per-repo "GitHub App not connected" banner comes from the same
+    derivation through `IntegrationBanners` and `AppBannerHost`
+    ([ARCHITECTURE §7.6](../../ARCHITECTURE.md)).
+- `renderer/lib/githubIntegrationStatus.ts`: the pure two-axis derivation
+  (account token vs. repo install), `deriveGithubRealtimeBlock` (account beats
+  repo; `null` for `blocked`, which nobody can act on),
+  `githubStatusHasWriteCredential` (App-only read keeps PR data live but asks
+  for `gh` or a PAT before a mutation), and shared copy. It never re-derives
+  health from expiry.
+  - `describeGithubAccountAxis` and `describeGithubAppCredentialBadge` share
+    `githubPausedLabel`, so both cards read the same.
+  - `isGithubAppUserAuthSupported`: the standalone web adapter declares
+    `appUserAuthSupported: false`; older hosts are recognised by `configured`.
+  - `deviceAuthMessageCopy` / `deviceAuthErrorCopy` replace raw transport
+    errors ("GitHub OAuth request failed (429)").
+  - `GITHUB_ACCOUNT_AUTH_ERROR_MATCHES` is a **compatibility shim** for hosts
+    without `appUserAuthFailure`. Do not add phrasings: "not authorized" also
+    appears in repository messages.
+  - `describeGithubOutage(status)` is the one outage entry point (is there one,
+    what to say, where the button goes); null means say nothing about
+    GitHub's health.
+  - `describeGithubCliBanner` resolves in this order, and the order is the
+    rule:
+    1. `credentialStoreUnreadable` (every later conclusion would come from an
+       empty view, and it is fixable locally).
+    2. `!tokenStored` (local; survives an outage).
+    3. The outage (every remaining state comes from GitHub's own answers).
+       `describeGithubAuthFailure` checks the outage first too.
 
-  Every branch also returns a `target` (`github-settings` | `connections`)
-  rather than leaving the destination implicit: an unreadable store is not a
-  GitHub problem and is not fixed on the GitHub card, whereas an outage and
-  every auth failure are — there the credential ADE holds is readable and it is
-  the account behind it, or GitHub itself, that has the objection.
-- `apps/desktop/src/renderer/components/app/IntegrationBanners.tsx` — consumes
-  the shared read/write distinction. The app shell raises a write-access
-  banner for an otherwise connected App-only status. The gh-CLI/token banner routes
-  its single action by the `target` the derivation supplies — the GitHub
-  connection settings route, or the same Connections panel the relay banner
-  opens — and keys its dismissal fingerprint on the sub-state, so a store that
-  becomes unreadable re-raises a banner the user had dismissed for a different
-  reason.
-- `apps/desktop/src/renderer/components/settings/LinearIntegrationSection.tsx`
-  and `LinearSection.tsx` — Linear OAuth / API key, workspace status,
-  and GitHub autolink setup. Embedded inside General.
-- `apps/desktop/src/renderer/components/settings/PrChatTranscriptsSection.tsx`
-  — toggles `prTranscriptGists.enabled` in project local config under Project
-  → Agents.
-- `apps/desktop/src/renderer/components/settings/ResetAdeSection.tsx`
-  — **Reset ADE** as its own section, last on General (local machine only;
-  anchor `reset-ade`, legacy `#about.reset` still resolves). It mounts
-  `ResetAdeButton` from `app/ResetAdeDialog.tsx`.
-- `apps/desktop/src/renderer/components/settings/settingsTabContent.tsx`
-  — the tab-section layer: `TAB_SECTIONS`, the named blocks each section-list
-  page is organised into (`TAB_GROUPS`), `TabContent`, and the Providers
-  sub-view. `SettingsPage.tsx` only lays out the page around it.
-- `apps/desktop/src/renderer/components/settings/primitives/SettingsSectionRail.tsx`
-  — the sticky in-page rail of a page's blocks, with their icons. Rendered when
-  a page has two or more blocks; a CSS container query shows it only at 900px
-  or wider. At the end of the page it marks the last block.
-  `AdeCliSection.tsx` is rendered in General too, in the ADE block —
-  CLI availability is app basics, not an integration.
-- `apps/desktop/src/renderer/components/settings/settingsSectionUi.tsx`
-  — shared section headers (`SettingsSectionShell`), toggle styling, and
-  `SettingsToggle`: a labelled on/off switch that callers feed the persisted
-  value, which renders disabled rather than pretending to work when a preload
-  predates the setting. The product-analytics and diagnostics consent controls
-  that used it are gone; other settings still use it.
-- `apps/desktop/src/renderer/components/settings/AppearanceSection.tsx`
-  — theme, interface faces, and terminal text, all per computer. (The chat
-  appearance controls moved to `ChatSection.tsx`, which renders
-  `ChatAppearancePreview`.) The **Schedule** card
-  (`components/settings/AppearanceScheduleSettings.tsx`) lists up to eight
-  start times; each slot saves a whole look (theme, mode, background, fonts).
-  The rules live in `renderer/theme/appearanceSchedule.ts`: the day is cut at
-  each start, yesterday's last slot runs until the first start, and a slot
-  applies once per start, so a change made by hand holds until the next start.
-  `components/app/AppearanceScheduleHost.tsx` runs the check; the store applies
-  a due slot at launch (`withDueScheduledLook`) and while running
-  (`applyScheduleSlot`), writing only the look into the stored preferences
-  (`patchStoredLook`). The schedule is per computer, stored under
-  `ade.appearanceSchedule.v1`, and never synced. The Theme card renders the `ThemeGallery` picker
-  (`components/settings/ThemeGallery.tsx` + `ThemePreview.tsx`): a search field
-  over shelves of families (ADE, Originals, Editor classics, then the user's own
-  themes), with the active theme's corners, depth, type and backdrop named on
-  the stage. A `ThemeImportExport` toolbar
-  (`components/settings/ThemeImportExport.tsx`) exports the active theme or
-  imports an ADE / VS Code theme file (comments and trailing commas allowed),
-  and `ThemeFilesHelp` under the gallery says what both do and where to find
-  themes. A `ThemeCustomizer` dialog
-  (`components/settings/ThemeCustomizer.tsx` + `themeCustomizerModel.ts`)
-  overrides individual tokens, code colours and shape settings and saves custom
-  themes; the theme format, engine
-  and shipped library live in `apps/desktop/src/shared/theme/` and are applied
-  by `apps/desktop/src/renderer/theme/applyTheme.ts`. See
-  [design/theming.md](../../design/theming.md).
-- `apps/desktop/src/renderer/components/settings/DictationSection.tsx`
-  — voice input settings. Persists `voiceInputEnabled`, shows whether
-  the bundled on-device transcription model is installed, and gates the
-  chat composer mic affordance.
-- `apps/desktop/src/renderer/components/settings/ProjectSection.tsx`
-  — project `.ade` structure snapshot, shared/local/secret config paths,
-  health warnings, structure repair, and integrity-check controls.
-- `apps/desktop/src/renderer/components/settings/AdeCliSection.tsx`
-  — surfaces `window.ade.adeCli.getStatus()` / `installForUser()`.
-  Status carries `terminalInstalled`, `agentPathReady`,
-  `bundledAvailable`, and the resolved `installTargetPath` for the
-  bundled `ade` binary. It shows the current install
-  path, an Install / Repair button that runs the platform
-  install-path helper, and an "Add to PATH" hint when the install
-  target isn't on the user's `$PATH`. Agents launched by ADE always
-  get the bundled CLI automatically; this surface is what makes
-  `ade` available to the user's own terminals.
-- `apps/desktop/src/renderer/components/settings/AiFeaturesSection.tsx`
-  — Pause all scheduled work and the active durable-job list. Naming,
-  idle status lines, and similar background helpers run on one model
-  from the ADE provider that owns the session (Haiku 5.5 at `low` effort
-  for Claude, GPT-6 Luna at `low` for Codex, Composer 2.5 for Cursor;
-  every other provider uses the session's own model). There is no
-  Settings picker for those helpers. The section owns **Pause all scheduled
-  work**, persisted as `ai.chat.scheduledWorkPaused`. This pauses Claude
-  wakeups, cron tasks, and `/loop` schedules across the project runtime
-  without disarming them; overdue work catches up once after resume. Its
-  **Active scheduled work** recovery manager reads the runtime's KV-backed
-  durable list across every chat and can cancel one exact job. Provider-owned
-  jobs remain visible in their returned paused/pending state until Claude
-  confirms deletion, and a load/cancel failure renders explicitly rather than
-  being mistaken for an empty list.
-- `apps/desktop/src/renderer/components/settings/ProvidersSection.tsx`
-  — AI Connections settings lists coding providers and opens a dedicated page
-  for each one. The Cursor page offers browser sign-in while disconnected and
-  keeps Sign out available after connecting; API keys live in the shared keys
-  panel. **OpenCode —
-  Universal Model Access** is the managed universal-model surface with a
-  models.dev "catalog synced … · refresh" freshness control (backed by
-  `modelsDevLastFetchedAt` + `refreshModelsDev`) and five sub-sections:
-  **Subscriptions** (one card per OpenCode provider whose auth methods
-  include an `oauth` entry — Connect opens `OAuthConnectModal` — plus an
-  always-present **Kimi for Coding** membership-key row that opens
-  `KimiKeyDialog`); **API Provider Keys** (a fixed grid of Anthropic, OpenAI,
-  Google AI, Mistral, DeepSeek, xAI, Groq, Together AI, OpenRouter, and
-  Moonshot AI, each saved with `alsoOpenCode: true` so the key is registered
-  with OpenCode via `setOpencodeProviderKey`); **More Providers** (a
-  searchable ~160-provider chip cloud sourced from the OpenCode inventory,
-  first 30 shown until the user searches; a keyless chip seeds a provider key
-  inline); **Local Model Servers** (LM Studio and Ollama endpoints/preferred
-  model, written through `updateConfig({ localProviders })`); and **Advanced —
-  custom providers & model slugs** (a collapsed `<details>` that adds
-  OpenAI-/Anthropic-compatible custom providers — id, name, baseURL, `npm`
-  select, models, optional key — writing `ai.customProviders`, and extra
-  `provider/model` slugs writing `ai.customModelSlugs`, both via
-  `updateConfig`). When the OpenCode provider inventory is served from the
-  persisted disk cache on a cold start, `opencodeProvidersStale` renders an
-  italic "updating…" hint until the first live probe. When ADE's OpenCode
-  copy is not downloaded yet the group collapses to a card with the pinned-copy
-  line and Download/Retry. The **Pi** card is a
-  `CollapsibleProviderCard` (readiness tone, version, CLI path, and Open
-  `settings.json` / `auth.json` / `models.json` shortcuts) whose body is
-  `PiProvidersPanel.tsx`.
-- `apps/desktop/src/renderer/components/settings/providers/cliTools.ts` — the
-  provider card's status and credential phrasing. The detail page's left rail
-  prints `describeProviderCredentialLine`, which leads with the account when the
-  provider records one locally ("Authenticated as dev@example.com · ChatGPT
-  Pro", from `AiProviderConnectionStatus.accountEmail` / `accountPlan`) and
-  falls back to `describeCredentialSource` — the file or environment variable
-  the credential was detected in — when it does not. The two stay separate
-  functions so a diagnostics view can still ask for the *file*.
-  `shortCredentialSource` is the two-or-three-word tile form. The account fields
-  come from `providerAccountIdentity.ts`, the same reader the usage poller uses,
-  so Providers and the Limits cards cannot disagree about who is signed in.
-- `apps/desktop/src/shared/providerRemediation.ts` — the single source of the
-  login command, display name, and docs URL for every CLI-backed provider. It
-  has no install commands any more: ADE downloads its own pinned copy of every
-  agent ([agent tools cache](agent-tools-cache.md)), and `installCommand` is
-  always `null`. Four surfaces read it and none keeps its own copy: the
-  Settings CLI-tools cards (`settings/providers/cliTools.ts`), the model
-  picker's empty states (`shared/ModelPicker/providerEmptyState.tsx`), the CLI
-  agent registry (`apps/ade-cli/src/services/agentRegistry.ts`), and the
-  `providers.status` RPC that reports the same strings to SDK embedders. Edit a
-  changed vendor command here; copying it into a screen is how the four drift.
-  Each string is the vendor's own documented one, and two are not the obvious
-  guess: Droid has no non-interactive login, so the honest `loginCommand` is the
-  bare `droid`, and Pi signs in through the interactive CLI's `/login`, so its
-  `loginCommand` is the bare `pi`.
-- `apps/desktop/src/renderer/components/settings/PiProvidersPanel.tsx`
-  — Pi's half of Settings → Providers: the sign-in flow and the provider
-  catalog. Its own module because Pi's catalog is the size of OpenCode's and the
-  two together made `ProvidersSection.tsx` unreadable. A running sign-in owns
-  the surface — `PiSignInFlowCard` renders whatever Pi asks for live off
-  `onPiAuthStatus` (an auth URL, which is opened automatically and left on
-  screen for a blocked browser; a device code with a Copy control; a free-text
-  or password field; a labelled choice group), and the catalog steps aside while
-  it runs, because starting a second sign-in supersedes the first. Auth URLs and
-  device codes stay pinned while plain progress lines replace each other. Cancel
-  is a distinct outcome from failure, and only a failure offers **Try again**
-  (retrying with the method the user actually pressed); leaving Settings no
-  longer cancels anything. With no flow on screen, `PiProviderBrowser` shows
-  **Connected** first, then **All providers** behind a search field (a "Popular"
-  grid — everything with an interactive sign-in, most models first — until the
-  user types), then **Local Model Servers**. A tile opens
-  `PiProviderDetailModal.tsx`, the provider's own page: the models it
-  contributes and how it can be signed into; starting a sign-in closes the
-  dialog so the device code and prompts survive it. Local servers are a separate
-  section with **no sign-in at all** — their login options are dropped rather
-  than hidden, which is what put an API-key prompt in front of LM Studio — and
-  their status comes from ADE's live endpoint probe (Running / Load a model /
-  Not detected), never from the presence of a `models.json` entry; ADE probes
-  only Ollama and LM Studio, so any other loopback server falls back to
-  "Configured in Pi". When `sdkAvailable` is false the panel collapses to a
-  stated instruction to run `pi` and use its `/login` — ADE does not automate
-  it. Row shape and the questions asked of it live in `piProviderRow.ts`; the
-  grid/tile/search/dialog primitives shared with the OpenCode half live in
-  `providerSectionPrimitives.tsx`. Nothing typed into a Pi prompt is stored by
-  ADE — see
-  [Agent Routing › Pi sign-in](../chat/agent-routing.md#pi-sign-in).
-- `apps/desktop/src/renderer/components/settings/OAuthConnectModal.tsx`
-  — subscription OAuth connect dialog for OpenCode providers. Runs a
-  `form → starting → waiting → error` phase machine: it renders the
-  provider's `oauth` auth-method selection and any typed `text`/`select`
-  prompts (respecting a prompt's `when` conditional), calls
-  `opencodeOAuthStart({ providerId, methodIndex, inputs })` to open the
-  browser, extracts and displays a device code from the returned
-  instructions when present, and subscribes to `onOpencodeOAuthStatus` to
-  settle on `connected` / `failed` / `timeout` / `cancelled` without polling.
-  Cancel, Escape, backdrop click, and unmount-while-active all call
-  `opencodeOAuthCancel`. Success force-refreshes status, reloads auth
-  methods, and toasts the added-model count. The status subscription and the
-  unmount cancel key only on the machine's stable `pin` and the provider id
-  (parent callbacks are read through refs), so a re-render cannot re-anchor a
-  pinned status feed past a `connected` event or cancel a running sign-in.
-  OpenCode Go has no sign-in of its own and opens this dialog against the
-  `opencode` provider it borrows; `useOpenCodeProviderDetail` in
-  `OpenCodeProviderDetailModal.tsx` latches the open row and snapshots the
-  sign-in target when the dialog opens, so a catalog refresh can neither
-  unmount the dialog nor retarget a running flow.
-- `apps/desktop/src/renderer/components/settings/passwords/PasswordsSection.tsx`
-  — Settings › Passwords & Secrets (it replaced Settings › Secrets; old
-  `?tab=secrets` links open its Secrets view). One account vault, read on this
-  computer, so the page has no machine picker: a slim status bar (counts, Import,
-  New, and a ⋯ menu holding the ADE Cloud switch, "Turn off on this computer"
-  and Reset), then Logins · Secrets · Activity, each with a page-sized empty
-  state. Secrets are grouped by project (for every project first), each group
-  with **Export .env**; a secret kept on this computer only wears a "This
-  computer" tag. Action results are toasts. See
-  [Passwords & Secrets](../passwords/README.md).
-- Chats can also add project secrets without the value entering the
-  transcript: an agent's `ade secrets request NAME --reason "…"` raises the
-  private secret card, and the composer's "Add secret…" item opens the same
-  form. Both save to Passwords & Secrets through `projectSecretService`; see
-  [Private secret card](../chat/composer-and-ui.md#private-secret-card).
-- Chats can connect GitHub, Linear and Jira the same way: an agent's
-  `ade integrations connect <provider> --reason "…"` raises the connect card,
-  which saves through each integration's own service on the chat's machine;
-  see [Connect card](../chat/composer-and-ui.md#connect-card).
-- `apps/desktop/src/renderer/components/settings/passwords/PasswordDialogs.tsx`
-  — its dialogs: new login, new secret (project picker, and under "More
-  options" the rarely wanted "Keep on this computer only"), the `.env` import
-  (pick names and a project; values shown only as lengths), change value, and
-  Reset.
-- `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
-  and `NewLaneSettingsSection.tsx` — lane initialization recipes and start
-  defaults. The template editor is written for someone who has
-  never read the config schema: fields are named for what they do
-  ("Files to copy into new lanes", "Env files to fill in", "Install
-  command", "Setup script", "Use for new lanes") rather than for the
-  YAML keys behind them, each with a one-line hint. Docker services,
-  `.ade`-folder mounts, and extra variables sit behind an **Advanced**
-  `SettingsDisclosure`, and per-platform setup commands behind a
-  "Different commands on Windows" one; both open by default when the
-  template already has a value there. There is no port-range control —
-  lane creation leases a port range and the lease always outranks a
-  template's `portRange`, so the field could only mislead. An existing
-  `portRange` in YAML is preserved across edits rather than dropped.
-- `apps/desktop/src/renderer/components/settings/health/HealthSpace.tsx` and
-  `HealthCleanups.tsx`, plus `settings/storage/StorageCleanupDialog.tsx`,
-  `ReclaimConfirmDialog.tsx`, `storageView.ts`, and `storageUiConstants.ts`
-  — Project → Storage & cleanup. Uses plain language to explain lane cleanup rules,
-  automatic safety checks, and the difference between Archive (files stay),
-  Archive & Reclaim (lane/branch/chat stay; managed files are removed), and
-  Delete. Its review table lists archived lanes, orphaned worktrees,
-  DerivedData, and build output with size, age, ownership, blocked reasons, and
-  reclaim estimates. Destructive actions are previewed and confirmed. The page
-  also renders the current volume-pressure state, category breakdown and policy
-  chips; a storage-doctor action; a project-database breakdown card with
-  per-row prune/compact actions; the "Health & diagnostics" strip
-  (`StorageDiagnostics`, anchored `#diagnostics`); and the collapsible recent-cleanups
-  journal (`StorageMaintenanceJournal`). `storageView.ts` holds the pure
-  snapshot→cleanup-target mapping (including the explicit `review_first`
-  `proof_attachments` target) plus the diagnostics/maintenance view-model
-  (unit-tested without a DOM); the dashboard reads `window.ade.storage.*` and
-  `window.ade.app.getRuntimeHealth`. The domain lives in
-  [Storage and recovery](../storage-and-recovery/README.md), which owns the
-  disk-pressure monitor, `storageInsightsService`, and the storage doctor behind
-  those IPCs.
-- `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx`
-  — shared multi-device sync management used by the focused
-  **Connections > Phone** and **Connections > Web** tabs beneath a shared
-  **This Mac** card. The card owns the phone-pairing PIN (set / clear / reveal,
-  or generate a new six-digit PIN when only the at-rest hash remains) and the
-  internal phone QR encoding the v3 smart pairing URL with LAN / Tailscale /
-  loopback / relay candidates. The Phone tab explains QR + PIN and Nearby + PIN,
-  while the Web tab is account-sign-in only. It also surfaces the bootstrap
-  token for desktop peers, relay/discovery status, and the per-device panels
-  used to forget paired phones or revoke web clients. When the account-directory
-  state is the brain-side unreadable session (`isBrainAccountSessionFailure`),
-  the card adds a **Repair** button that restarts this Mac's background service
-  and re-reads the snapshot once it settles. When the account directory refuses
-  this computer, the card's directory line says so ("This computer was removed
-  from your account on 14 August") and a **Reconnect this computer** (or
-  **Confirm it's you**) button sits beside it. The card reads that refusal only
-  from this computer's own snapshot, so a remote-bound pane and the hosted web
-  client never show it — see
+    Each branch returns a `target` (`github-settings` | `connections`); an
+    unreadable store is fixed in Connections.
+- `app/IntegrationBanners.tsx`: raises a write-access banner for an App-only
+  status; routes the gh-CLI/token banner by `target`; keys dismissal on the
+  sub-state, so a newly unreadable store re-raises it.
+- `settings/LinearIntegrationSection.tsx`, `LinearSection.tsx`: Linear OAuth or
+  API key, workspace status, GitHub autolink setup.
+- `settings/PrChatTranscriptsSection.tsx`: `prTranscriptGists.enabled` under
+  Project → Agents.
+- `settings/ResetAdeSection.tsx`: **Reset ADE**, last on General (this machine
+  only; anchor `reset-ade`, legacy `#about.reset`), mounting `ResetAdeButton`
+  from `app/ResetAdeDialog.tsx`.
+
+- `settings/settingsTabContent.tsx`: the section layer (`TAB_SECTIONS`, the
+  named blocks `TAB_GROUPS`, `TabContent`, the Providers sub-view).
+  `primitives/SettingsSectionRail.tsx`: the sticky rail of a page's blocks,
+  shown for two or more blocks at 900 px or wider (a container query), marking
+  the last block at the page end. `AdeCliSection.tsx` sits in General's ADE
+  block.
+- `settings/settingsSectionUi.tsx`: `SettingsSectionShell`, toggle styling and
+  `SettingsToggle` (fed the persisted value; disabled when the preload lacks
+  the setting).
+- `settings/AppearanceSection.tsx`: theme, interface faces and terminal text,
+  per computer (chat appearance is in `ChatSection.tsx` with
+  `ChatAppearancePreview`).
+  - **Schedule** (`AppearanceScheduleSettings.tsx`): up to eight start times,
+    each saving a whole look (theme, mode, background, fonts). Rules in
+    `renderer/theme/appearanceSchedule.ts`: the day is cut at each start,
+    yesterday's last slot runs until the first, and a slot applies once per
+    start, so a manual change holds until the next. `app/AppearanceScheduleHost.tsx`
+    checks; the store applies a due slot at launch (`withDueScheduledLook`)
+    and while running (`applyScheduleSlot`), writing only the look
+    (`patchStoredLook`). Stored per computer in `ade.appearanceSchedule.v1`,
+    never synced.
+  - **Theme**: `ThemeGallery.tsx` + `ThemePreview.tsx` (search over ADE,
+    Originals, Editor classics and the user's themes, naming the active
+    theme's corners, depth, type and backdrop); `ThemeImportExport.tsx`
+    (export, or import an ADE / VS Code theme with comments and trailing
+    commas); `ThemeFilesHelp`; `ThemeCustomizer.tsx` + `themeCustomizerModel.ts`
+    (tokens, code colours, shape; saves custom themes). See
+    [design/theming.md](../../design/theming.md).
+- `settings/DictationSection.tsx`: `voiceInputEnabled`, whether the bundled
+  on-device model is installed; gates the composer mic.
+- `settings/ProjectSection.tsx`: the `.ade` structure snapshot,
+  shared/local/secret config paths, health warnings, structure repair and
+  integrity checks.
+- `settings/AdeCliSection.tsx`: `window.ade.adeCli.getStatus()` /
+  `installForUser()` (`terminalInstalled`, `agentPathReady`,
+  `bundledAvailable`, `installTargetPath`): the install path, Install / Repair,
+  and an "Add to PATH" hint. ADE-launched agents always get the bundled CLI;
+  this makes `ade` available to the user's own terminals.
+- `settings/AiFeaturesSection.tsx`: **Pause all scheduled work**
+  (`ai.chat.scheduledWorkPaused`: pauses Claude wakeups, cron and `/loop`
+  without disarming; overdue work catches up once) and **Active scheduled
+  work** (the runtime's KV-backed durable list across chats; cancels one exact
+  job; provider jobs stay in their returned state until Claude confirms; a
+  failed load says so instead of showing an empty list). Background helpers
+  (naming, idle status lines) use one model from the session's provider: Haiku
+  5.5 `low` for Claude, GPT-6 Luna `low` for Codex, Composer 2.5 for Cursor,
+  else the session's model; there is no picker.
+- `settings/ProvidersSection.tsx`: AI Connections, one page per provider.
+  Cursor offers browser sign-in when disconnected and Sign out when connected;
+  keys live in the shared panel.
+  - **OpenCode — Universal Model Access**, with a models.dev "catalog synced …
+    · refresh" control (`modelsDevLastFetchedAt`, `refreshModelsDev`):
+    - **Subscriptions**: one card per OpenCode provider with an `oauth` method
+      (`OAuthConnectModal`), plus **Kimi for Coding** (`KimiKeyDialog`).
+    - **API Provider Keys**: Anthropic, OpenAI, Google AI, Mistral, DeepSeek,
+      xAI, Groq, Together AI, OpenRouter, Moonshot AI, saved with
+      `alsoOpenCode: true` (`setOpencodeProviderKey`).
+    - **More Providers**: a searchable chip cloud of about 160 providers (30
+      until a search); a keyless chip seeds a key inline.
+    - **Local Model Servers**: LM Studio and Ollama
+      (`updateConfig({ localProviders })`).
+    - **Advanced**: OpenAI-/Anthropic-compatible custom providers (id, name,
+      baseURL, `npm`, models, key) in `ai.customProviders`, and extra slugs in
+      `ai.customModelSlugs`.
+    - A cold start from the disk cache shows "updating…"
+      (`opencodeProvidersStale`) until the first live probe; without ADE's
+      OpenCode copy the group is a card with Download/Retry.
+  - **Pi**: a `CollapsibleProviderCard` (readiness, version, CLI path, Open
+    `settings.json` / `auth.json` / `models.json`) around `PiProvidersPanel.tsx`.
+- `settings/providers/cliTools.ts`: status and credential phrasing.
+  `describeProviderCredentialLine` leads with the account when known
+  ("Authenticated as dev@example.com · ChatGPT Pro", from
+  `AiProviderConnectionStatus.accountEmail` / `accountPlan`), else
+  `describeCredentialSource` (the file or variable); `shortCredentialSource`
+  is the tile form. Account fields come from `providerAccountIdentity.ts`, the
+  usage poller's reader.
+- `shared/providerRemediation.ts`: the one source of each CLI provider's login
+  command, name and docs URL; `installCommand` is always `null` (ADE downloads
+  its own copies, see [agent tools cache](agent-tools-cache.md)). Read by the
+  CLI-tools cards, `ModelPicker/providerEmptyState.tsx`,
+  `apps/ade-cli/src/services/agentRegistry.ts` and the `providers.status` RPC;
+  edit vendor commands only here. Droid's `loginCommand` is bare `droid` (no
+  non-interactive login); Pi's is bare `pi` (it signs in with `/login`).
+- `settings/PiProvidersPanel.tsx`: Pi's sign-in and catalog.
+  - A running sign-in owns the surface: `PiSignInFlowCard` renders what Pi
+    asks live (`onPiAuthStatus`: an auth URL opened and kept on screen, a
+    device code with Copy, a text or password field, a choice group); a second
+    sign-in supersedes the first. URLs and codes stay pinned; progress lines
+    replace each other. Cancel is not failure; only a failure offers **Try
+    again** with the method used. Leaving Settings cancels nothing.
+  - Otherwise `PiProviderBrowser`: **Connected**, **All providers** with search
+    (a "Popular" grid until typing), **Local Model Servers**. A tile opens
+    `PiProviderDetailModal.tsx`; starting a sign-in closes it.
+  - Local servers have **no sign-in** (login options dropped) and take status
+    from ADE's live probe (Running / Load a model / Not detected), never from
+    `models.json`; only Ollama and LM Studio are probed, others read
+    "Configured in Pi".
+  - With `sdkAvailable` false, the panel says to run `pi` and use `/login`.
+    Rows: `piProviderRow.ts`; shared primitives:
+    `providerSectionPrimitives.tsx`. ADE stores nothing typed into a Pi prompt
+    ([Pi sign-in](../chat/agent-routing.md#pi-sign-in)).
+- `settings/OAuthConnectModal.tsx`: the OpenCode subscription dialog, `form →
+  starting → waiting → error`. It renders the `oauth` method choice and typed
+  `text` / `select` prompts (with `when`), calls `opencodeOAuthStart({
+  providerId, methodIndex, inputs })`, shows a device code when present, and
+  settles on `onOpencodeOAuthStatus` (`connected` / `failed` / `timeout` /
+  `cancelled`) without polling. Cancel, Escape, backdrop and unmount call
+  `opencodeOAuthCancel`. Success refreshes status and methods and toasts the
+  model count. The subscription and unmount cancel key only on the stable
+  `pin` and provider id. OpenCode Go borrows the `opencode` sign-in;
+  `useOpenCodeProviderDetail` (`OpenCodeProviderDetailModal.tsx`) latches the
+  row and target so a catalog refresh cannot unmount or retarget the flow.
+- `settings/passwords/PasswordsSection.tsx`: Passwords & Secrets
+  (`?tab=secrets` opens its Secrets view). One account vault read on this
+  computer, so no machine picker: a status bar (counts, Import, New, ⋯ with the
+  ADE Cloud switch, "Turn off on this computer", Reset), then Logins · Secrets
+  · Activity. Secrets group by project (all-projects first), each with
+  **Export .env**; computer-only secrets wear "This computer". Results are
+  toasts. `PasswordDialogs.tsx`: new login, new secret (project picker; "Keep
+  on this computer only" under More options), `.env` import (values shown as
+  lengths), change value, Reset. See [Passwords & Secrets](../passwords/README.md).
+- Chats add secrets without the value entering the transcript
+  ([Private secret card](../chat/composer-and-ui.md#private-secret-card)) and
+  connect GitHub, Linear and Jira the same way
+  ([Connect card](../chat/composer-and-ui.md#connect-card)).
+- `settings/LaneTemplatesSection.tsx`, `NewLaneSettingsSection.tsx`: lane
+  recipes and start defaults. Fields are named for what they do ("Files to
+  copy into new lanes", "Env files to fill in", "Install command", "Setup
+  script", "Use for new lanes") with a hint each. Docker services, `.ade`
+  mounts and extra variables sit under **Advanced**; per-platform commands
+  under "Different commands on Windows"; both open when they hold a value.
+  There is no port-range control (the lane's leased range always wins); an
+  existing `portRange` is kept.
+- `settings/health/HealthSpace.tsx`, `HealthCleanups.tsx`,
+  `settings/storage/StorageCleanupDialog.tsx`, `ReclaimConfirmDialog.tsx`,
+  `storageView.ts`, `storageUiConstants.ts`: Project → Storage & cleanup. Plain
+  copy on Archive (files stay), Archive & Reclaim (lane, branch and chat stay;
+  managed files go) and Delete; a review table of archived lanes, orphaned
+  worktrees, DerivedData and build output (size, age, owner, blocked reasons,
+  estimates); previewed, confirmed destructive actions; volume pressure,
+  categories, policy chips, storage doctor, a project-database card with
+  prune/compact, "Health & diagnostics" (`StorageDiagnostics`, `#diagnostics`)
+  and the cleanup journal (`StorageMaintenanceJournal`). `storageView.ts`
+  holds the pure snapshot→target mapping (including `review_first`
+  `proof_attachments`). Reads `window.ade.storage.*` and
+  `window.ade.app.getRuntimeHealth`; see
+  [Storage and recovery](../storage-and-recovery/README.md).
+- `settings/SyncDevicesSection.tsx`: Connections > Phone and > Web under a
+  **This Mac** card: the pairing PIN (set, clear, reveal, or a new six-digit
+  PIN when only the hash remains), the phone QR (v3 smart pairing URL with
+  LAN / Tailscale / loopback / relay candidates), the desktop bootstrap token,
+  relay and discovery status, and per-device forget/revoke. Phone explains QR
+  + PIN and Nearby + PIN; Web is account sign-in only. A brain-side unreadable
+  session (`isBrainAccountSessionFailure`) adds **Repair**; a directory refusal
+  of this computer shows its date and **Reconnect this computer** (or
+  **Confirm it's you**), read only from this computer's snapshot. See
   [Sync and multi-device](../sync-and-multi-device/README.md).
-- `apps/desktop/src/renderer/components/app/TopBar.tsx` and
-  `ConnectionsPanel.tsx` — the single top-bar Connections control and its
-  Machines, Phone, and Web tabs. The Web tab reports connected browser peers
-  and directs signed-out users to account sign-in. A saved machine's **Edit**
-  panel also carries this computer's **Slow connection mode** (Automatic,
-  Always on, Off) beside **Reconnect automatically**; see
-  [Remote runtime](../remote-runtime/README.md#a-slow-or-dropping-link).
-- `apps/desktop/src/renderer/components/usage/HeaderUsageControl.tsx`
-  and `UsageLimitsBand.tsx` — header usage popup. Live provider quotas
-  for Claude and Codex (tracked providers) and the automation budget
-  guardrails are consolidated here. The header renders one compact
-  chip per detected tracked provider with the 5-hour window and the
-  plan window (`wk` when a
-  weekly window is present, otherwise `mo`). Percent values are clamped
-  to 0-100, color through the green/amber/red thresholds at 75% /
-  100%, and show an ellipsis while missing. On mount, the button reads
-  the cached `ade.usage.getSnapshot` and records quota demand; it does not
-  force a provider request. Explicit refresh calls `ade.usage.refresh`, while
-  adaptive polling tightens to 60 s under demand and backs off when idle.
-  Provider detection comes from `ade.ai.getStatus` on mount and every
-  5 min; CLIs not detected on the machine are hidden from the header,
-  while installed-but-unauthenticated providers stay visible in the
-  panel as "Not signed in". The header and panel subscribe to usage `onUpdate`,
-  order snapshots by `revision.producerId`/`seq` (accepting a different
-  producer outright), and clear then
-  reload both quota and provider-connection state when the binding changes.
-  This keeps the compact percentages and the open panel on the same live
-  machine-brain snapshot even across fast project or machine switches.
-  `UsageLimitsBand` renders one row per ACCOUNT (`UsageAccountRow.tsx`): the
-  provider mark, the provider, `email · plan`, and that account's windows side
-  by side as meters (5-hour first, then weekly, then monthly, then anything else
-  the provider reports). Inline provider errors, stale state, and the source and
-  updated time stay on the row. The external-link target comes from
-  `status.accountUrl` falling back to the shared `usageProviderAccountUrl`,
-  never from a second URL map in the component.
-  Claude background polling never prompts Keychain and explicit local refresh
-  can fall back from OAuth to a bounded CLI probe. When a non-interactive
-  caller cannot authoritatively read Claude credentials, the service preserves
-  the previous unexpired windows, provider state, and extra-usage values rather
-  than replacing them with a false authentication error. Codex returns
-  directly when HTTP supplies complete windows and uses a bounded app-server
-  RPC only for auth recovery or a successful but unrecognized response schema.
-  Cursor usage polling was removed (it required a team-admin API key that
-  desktop users almost never have); only `claude` and `codex` are tracked
-  in `TRACKED_PROVIDERS`. Budget
-  caps round-trip through `ade.usage.getBudgetConfig` /
-  `saveBudgetConfig`. Threshold crossings (25 / 50 / 75 / 100 %) emit
-  `UsageThresholdEvent`s for local usage handling.
-- `apps/desktop/src/renderer/components/usage/usageSnapshotOrdering.ts` —
-  shared ordering guard for the compact header and full quota panel. It orders
-  by `revision.seq` within one `producerId` and always accepts a snapshot from
-  a different producer, so unrelated wall clocks cannot latch the meters.
-  Unstamped on-disk cache snapshots stay on the legacy `lastPolledAt` path.
-  Each component resets the guard when the project binding changes.
-- `apps/desktop/src/renderer/components/settings/AdeUsageSection.tsx`
-  — Settings > Usage. One scrolling page, deliberately not split by where a
-  number comes from: dividing live limits from history means "am I spending a
-  lot, and am I about to be cut off" takes two screens held in your head.
-  Reading order is the headline totals, then whether you can keep going, then
-  the shape of the spend: a totals card (Estimated cost, Tokens, Sessions,
-  Active days — each with a 14-day
-  sparkline and a change, plus a small strip of Cached input / Output / Lines
-  changed / Pull requests), a **Rate limits** card of
-  radial gauges (`UsageLimitGauges`) shown for the This machine and This project
-  scopes, the daily chart (`UsageDailyChart`), **Week over week**
-  (`UsageWeekCompare`), **By provider** and **Where the cost went**, the
-  Breakdown panel (per-provider and per-model totals with estimation notes, plus
-  GitHub and ADE-local activity as separate labeled columns, never max-merged),
-  a **Machines** list, `ActivityModule`, and — on the account scope only — a
-  pooled **Live limits** card (`UsagePooledLimits`). The toolbar carries a
-  three-way **scope** control (All machines / This machine / This project,
-  persisted to `ade.stats.scope.v1`), a **range** control (Today / 7d / 30d /
-  year / all, `ade.stats.range.v1`), and Refresh. A meta line reports freshness
-  ("refreshing"), estimation caveats, and the scope the provider totals were
-  computed at. It reads `window.ade.usage.getAdeStats({ preset, scope })` and
-  calls `window.ade.usage.refreshHistory()` for explicit refresh; the first
-  render is stale-while-revalidate (cached provider/GitHub data plus live
-  project-DB aggregates return immediately while expensive provider-ledger and
-  `gh` scans refresh in the background). Provider colors come from
-  `providerColor`.
-- `apps/desktop/src/renderer/components/usage/UsageLimitGauges.tsx` — the
-  This machine / This project **Rate limits**: one radial gauge per provider
-  window (5-hour, weekly, monthly…), pooled across that provider's accounts. A
-  gauge reads in **% left**, marks where a perfectly steady burn would be with a
-  tick on the arc, tags itself on track / watch / low, and draws a thin cycle
-  bar ("Day 3 of 7") under the dial. `usageLeftLevel` / `usageLeftLevelColor` in
-  `usageDesign.ts` give the neutral-meter rule — amber at 20 % left, red at 5 %
-  — shared by every kit meter, gauge and home ring.
-- `apps/desktop/src/renderer/components/usage/UsageSparks.tsx` and
-  `UsageWeekCompare.tsx` — the small trend marks and the week-over-week chart.
-  `UsageSparks` draws a 14-day sparkline (area, line, a dot on today), an on/off
-  day strip, and the `periodDelta` / `DeltaTag` change, all from the same daily
-  series as the big chart so a trend cannot disagree with its number.
-  `UsageWeekCompare` pairs each of the last seven days with the same weekday a
-  week earlier as grouped bars and states both totals; below a 30-day range it
-  says so instead of drawing a misleading pair.
-- `apps/desktop/src/renderer/components/usage/usageProviderNames.ts` — the one
-  provider-name table (`humanizeProvider`), so `lmstudio` reads "LM Studio" on
-  every usage surface.
-- `apps/desktop/src/renderer/components/usage/UsageDailyChart.tsx` — the
-  layered daily chart, plotting one series per provider from
-  `AdeUsageDailyPoint.byProvider` for either cost or tokens. Top-N providers by
-  volume get their own series and the tail merges into a neutral **Other**; a
-  host that reports no per-provider split falls back to one combined series
-  rather than rendering empty. `buildDayColumns` / `selectTopSeries` do the
-  bucketing and series selection outside render.
-- `apps/desktop/src/renderer/components/usage/usageDailyChartModel.ts` — that
-  chart's React-free half: day-column reduction, series selection, scale, curve
-  maths, and SVG path geometry, with the component left to measure a box and
-  render what comes back. Being React-free is load-bearing rather than tidy:
-  `usageTrackingService.test.ts` asserts the main process's daily split against
-  this reducer instead of a re-implementation, and importing the component to do
-  that dragged React and the whole icon graph into a main-process test.
-  Everything is re-exported from `UsageDailyChart.tsx`, so no call site needs to
-  know about the split.
-- `apps/desktop/src/renderer/components/usage/useUsageSnapshot.ts` — the single
-  subscription to the host's live usage snapshot (`getSnapshot` / `onUpdate` /
-  `onProjectBindingChanged`, the binding-generation guard, and
-  `shouldApplyUsageSnapshot` revision ordering), owned by the popover and passed
-  down. Preload publishes its own rebinds, so this hook sees a binding change
-  even when main does not push one.
-  The popover and the quota band each used to keep a private copy with its own
-  guard and then hand it back up through a callback — two readers and two guards
-  over one number, which is the arrangement where a late response is discarded
-  by one and accepted by the other.
-- `apps/desktop/src/renderer/components/usage/usageDesign.ts` — the shared
-  visual vocabulary for every usage surface: five type steps and no more, card
-  and section rhythm, pressure colors, and the chart's top-N/Other rule.
-  Everything resolves to the app's Tailwind theme variables, which is what
-  makes the usage surfaces follow light and dark instead of the dark-only
-  `rgba()` literals they used to bake in.
-- `apps/desktop/src/renderer/components/usage/usageWindowFormat.ts` — window
-  labels, reset countdowns, percentages, and pace/trend phrasing, shared so the
-  header chip and the Live limits band describe one window with the same words.
-  `formatCountdown` is the bare "6d 7h" form for a segment chip whose glyph
-  already says "resets"; `formatResetClock` is the absolute time beside it.
-- `apps/desktop/src/renderer/components/usage/usageLimitModel.ts` and
-  `UsageAccountRow.tsx` — the headroom reading of a live window. The model is
-  pure and clock-injected: `poolAccounts` merges the same login reported by two
-  machines into one `UsageAccountView` with a `machines` list (freshest first);
-  `buildLimitCards` groups a provider's windows into one card per window label
-  with one segment per account, computes pooled headroom, and computes what each
-  account's reset restores to that pool; `buildAccountRows` transposes those
-  cards into one row per account, so both shapes read one set of numbers. A
-  window with no `accountId` (a host predating account attribution) falls back
-  to the provider's single account, and a provider with no account directory at
-  all falls back to `status.accountEmail`, then to "This machine". Each meter
-  fills to the HEADROOM in the provider's brand colour — the same quantity its
-  number names — with the spent remainder hatched, and takes its pressure
-  colour from consumption so a nearly-dry window still reads hot; hover, focus,
-  or click opens that window's detail panel (plan,
-  machines, headroom, absolute reset, pace, model split, restore, and the
-  provider limits link), edge-anchored so it cannot overhang the 420px popover.
-  A row carrying a banked reset credit also offers **Use reset**
-  (`ade.usage.consumeResetCredit`, sent to the machine that produced the row).
-  A login signed in only elsewhere reads **Not signed in here**. When only
-  another machine can read a login's banked resets, the row shows them and
-  **Use reset** spends one on that machine. Full behaviour in
-  [usage-tracking.md](usage-tracking.md).
-- `apps/desktop/src/main/services/usage/accountBalance.ts` — the pure smart-
-  balance selector for new Claude/Codex chats. It picks the signed-in account
-  with the most weekly room left relative to its reset, after subtracting the
-  burn already committed there (measured, pending and reserved) on each
-  login's freshest reading from any machine, gates on the
-  projected five-hour room, skips a login that is gone, and reports why it
-  skipped when no account was a real choice.
-- `apps/desktop/src/main/services/usage/windowAutoStart.ts` — schedules one
-  best-effort lightweight request per enabled Claude/Codex account shortly
-  after a five-hour reset, or right after the provider ends the window early
-  (including a reset credit spent in ADE), through a per-provider opener table
-  and no persisted timer state. `AUTOSTART_WINDOW_TYPE` in
-  `shared/types/providerInstances.ts` names the eligible providers and gates
-  the settings toggle.
-- `apps/desktop/src/shared/usageResetCredit.ts` — the shared reset-credit
-  outcome and copy contract used by desktop, CLI, and paired action callers.
-- `apps/desktop/src/main/services/usage/providerAccountIdentity.ts` — which
-  account the live numbers belong to. Reads Codex's `auth.json` `id_token`
-  payload (`email`, `chatgpt_plan_type`) and Claude's `.claude.json`
-  `oauthAccount.emailAddress` (`subscriptionType` / `rateLimitTier`) from
-  `os.homedir()` or the provider's own env override — never the Keychain, so
-  Windows and Linux behave identically — caches for 5 minutes, and returns
-  `undefined` rather than guessing. No token reaches a snapshot, a log, or
-  disk. Both the usage poller and `providerConnectionStatus.ts` call it, so
-  Settings > Providers and the Limits cards cannot name two different accounts
-  for one provider.
-- `apps/desktop/src/renderer/components/usage/UsagePaceBar.tsx` and
-  `UsageSegmented.tsx` — the quota pace bar and the segmented control used by
-  both usage surfaces.
-- `apps/desktop/src/main/services/usage/sharedUsageTracking.ts` — one usage
-  tracker per ADE home. Every project scope in the brain attaches to it
-  (`attachSharedUsageTrackingScope`); the last detach disposes the poller.
-- `apps/desktop/src/main/services/usage/bootedUsageScope.ts` — picks any
-  already-booted local project root so unbound usage IPC and the main-process
-  usage-event relay borrow the same brain scope.
-- `apps/desktop/src/main/services/usage/usageTrackingService.ts` — owns the
-  live quota snapshot plus the retrospective `getAdeUsageStats(args)`
-  projection. `args.scope` selects `account` (every machine on the ADE account,
-  merged from published rollups), `machine` (every session in the provider's
-  local ledgers, codeburn-comparable), or `project` (only sessions attributable
-  to the current project root by cwd match); GitHub and ADE-DB metrics are
-  always project/repo scoped regardless of scope. The three are one control
-  rather than two axes — a project normally lives on one machine. `account`
-  merges historical cost, tokens, and code movement only; it deliberately does
-  not change the live quota windows, because provider rate limits are tied to
-  the provider account rather than the machine, so every machine already
-  reports the same window. Provider token totals are
-  deduplicated from the local provider ledgers, all daily buckets and range
-  boundaries key on machine-local calendar days (`localDay.ts`), and GitHub vs
-  local activity are reported as separate labeled groups (never max-merged).
-  Live quota polling is adaptive and coalesced, retains unexpired last-good
-  provider windows with source/freshness metadata, and stays independent from
-  the expensive provider-ledger and GitHub history scans. Each published
-  snapshot carries `revision`. Runtime-backed projects use the machine brain as
-  the single quota owner; production desktop does not create a second
-  project-context tracker that could race the runtime event stream. Unbound
-  windows proxy usage IPC to a booted brain scope and receive the brain's
-  snapshots via main's `ade.usage.event` relay.
-  It returns cached provider/GitHub results and current DB aggregates without
-  awaiting expensive scans, exposes freshness metadata (`fresh` / `refreshing`),
-  and coalesces stale provider/GitHub revalidation in the background
-  (`refreshStatsInBackground`, single-flight per range + source).
-- `apps/desktop/src/main/services/usage/accountUsageRollup.ts` — folds one
-  machine's cost snapshots into day × provider × model rows and merges the
-  machines' rollups into an `account`-scoped `AdeUsageStats`, including the
-  `machines` contribution list (`live` / `rollup` / `stale` / `deduped` /
-  `failed`). Aggregates only: no transcript record, session id, or path crosses
-  the machine boundary. GitHub metrics are deliberately excluded from the merge
-  because they are repo-scoped, not machine-scoped — three machines with the
-  same clone would triple one PR count — so the account page shows the local
-  machine's GitHub numbers and says so in `sourceNotes`.
-- `apps/desktop/src/main/services/usage/accountUsageRollupStore.ts` — durable,
-  CRR-replicated storage for those rollups in `usage_machine_rollups` /
-  `usage_machine_rollup_meta`, retaining `ROLLUP_RETAINED_DAYS` (400) so the
-  longest `year` preset is never short a day at its far edge. Uniqueness is the
-  composite primary key `(machine_key, day, provider, model)`, because a
-  CRR-converted table may not carry any UNIQUE index besides its primary key.
-  Writers skip no-op upserts so republishing unchanged history does not churn
-  the CRR clock. The store never throws at its caller: a Usage page that cannot
-  read its own cache shows one machine's numbers, not an error.
-- `apps/desktop/src/main/services/usage/accountUsageSource.ts` — dedupe of two
-  machines that read the *same* transcript files (a synced home, an SMB/NFS
-  share, a roaming profile), which would otherwise double every token. Identity
-  travels with the files: a `.ade-usage-source` marker id written once into the
-  transcript home, so whoever mounts that directory reads that id wherever it is
-  mounted. `isSameTranscriptSource` is marker-then-roots and nothing else — when
-  both sides carry a marker, equal ids are the same source and different ids are
-  not; when either side has none, the folded root digests must match exactly.
-  Roots are sha256 digests of `pathKey`-normalized paths, so no absolute path
-  leaves the machine that scanned it. The known trade: two machines cloned from
-  one disk image share a marker and merge, under-counting — visible in the
-  Machines list as `deduped`, and the opposite direction from silent
-  double-counting. Deleting the marker on one of them mints a fresh id.
-- `apps/desktop/src/main/services/usage/accountUsageLiveRefresh.ts` — the
-  opportunistic half: ask whichever machines are reachable right now for a fresh
-  rollup over the paired remote-connection pool
-  (`usage.getUsageRollup`), capped at `MAX_LIVE_MACHINES` (12) so a large fleet
-  cannot turn one page open into a fan-out storm. Best effort by design — the
-  durable rollups are the floor the page renders from and this only raises it,
-  so an unreachable machine becomes a `failure` entry, never a rejected promise
-  that takes the other machines' numbers down with it. A peer that genuinely
-  does not know the method is reported as too old to share usage; the guard
-  explicitly excludes authorization denials, which ADE also dresses in
-  `methodNotFound`. It also builds the quota-only fan-out
-  (`usage.getLiveQuota`, `createAccountLiveQuotaFetcher`); the brain installs
-  both fetchers from `cli.ts` over its agents' already-open paired connections.
-- `apps/desktop/src/main/services/usage/peerLiveQuota.ts` — the other machines'
-  live quota, held in memory only and pulled at most once a minute while limits
-  are on screen. `views()` returns the pooled picking and display views built by
-  `poolPeerQuota` in `shared/usageLiveQuota.ts`: each login shows its freshest
-  reading from any machine, and a login signed in only elsewhere is
-  `notSignedInHere` (displayed, never picked by smart balance or budget caps).
-- `apps/desktop/src/main/services/usage/usagePricing.ts` — per-model token
-  rates, all from models.dev (vendor row for a bare model id, the provider's
-  row for a `provider/model` name; fetched with a 10 s timeout, cached to
-  `~/.ade/models-dev-pricing.json`, refreshed daily, dropped after 30 days). A
-  model models.dev has not listed yet takes its registry / model-manifest
-  price. There is no hand-maintained rate table.
-  `tokenPriceSource(model)` reports `list` or `fallback` so a cost headline can
-  say where its rates came from. See
-  [Usage tracking strategy](./usage-tracking.md#where-a-token-price-comes-from).
-- `apps/desktop/src/main/services/usage/githubActivityStats.ts` — commits, pull
-  requests, and the code movement inside them, lifted out of
-  `usageTrackingService.ts` because it is the one part of it that talks to
-  something off the machine. It shells out to `gh` under a 60 s command timeout
-  and fails soft: no `gh`, no auth, and no remote are the common case, not an
-  error state, so every path returns an empty stats object carrying a sentence
-  about why instead of throwing into the page. The service consumes it through
-  `scanGithubActivityStats` and merges the result into the daily series itself.
-- `apps/desktop/src/main/services/usage/usageLedgerWorkerClient.ts` — spawns and
-  folds the isolated ledger scan. The worker streams NDJSON (a roster header,
-  then one line per provider as it finishes) so a timeout returns the providers
-  that landed instead of discarding every finished scan along with the running
-  one. `incompleteProviders` — providers reached but not fully readable, plus
-  providers whose root yielded nothing — becomes `publishLocalRollup`'s
-  `skipReconcileProviders` so a partial round is never read as a deletion, and
-  carries the previous round's snapshots forward so it cannot lower a totals
-  figure. Its `LEDGER_WORKER_TIMEOUT_MS` is the origin of every budget above it:
-  `USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS` (remote JSON-RPC leg) and
-  `USAGE_REFRESH_HISTORY_TIMEOUT_MS` (renderer IPC and the runtime-backed
-  `usage.refreshHistory` action) are derived from it so the chain increases
-  monotonically outward rather than racing.
-- `apps/desktop/src/main/services/account/localMachineIdentity.ts` — the single
-  answer to "which machine is this?" for the account directory: the key peers
-  stamp onto incoming usage rollups and the directory files this computer's data
-  under. It depends on nothing from Electron, so the rollup publisher and the
-  CLI-hosted brain resolve the same identity without importing the IPC bridge —
-  publishing under a different key would mint a phantom machine no peer ever
-  reconciles with the real one.
-- `apps/desktop/src/main/services/usage/providerQuotaParsers.ts` — normalizes
-  the live-quota responses of Claude, Codex, Cursor, Copilot, Grok, OpenCode
-  Go, and Kimi, and the Factory session credits. Codex buckets use their
-  advertised duration (minute- or second-based fields) to determine whether a
-  window is five-hour, weekly, or monthly; primary/secondary position is only a
-  fallback for older payloads that omit duration metadata.
-- `apps/desktop/src/main/services/usage/ledgers/localUsageLedgers.ts` —
-  read-only provider-history adapters. The Codex path selects recent JSONL
-  files within per-file and aggregate byte budgets, discards oversized physical
-  records with a bounded byte-stream reader, caps detailed entries, and shares
-  one production scan across callers. It reconciles the available JSONL history
-  with the newest Codex `state_*.sqlite` thread index under bounded row and
-  lookup budgets; a zero-cost all-time-only remainder preserves the exact union
-  token headline without fabricating day, project, or cost attribution.
-- `apps/desktop/src/main/services/usage/ledgers/ledgerScanCore.ts` — the
-  plumbing that all history scanners share: `TokenEntry`, scan completeness,
-  file discovery, line-streamed JSONL reads, and the read-only SQLite opener.
-- `apps/desktop/src/main/services/usage/ledgers/acpProviderLedgers.ts` — the
-  history scanners for the ledgers that Pi, Qwen, Grok, and Copilot CLI keep
-  on disk.
-- `apps/desktop/src/main/services/usage/usageLedgerScanners.ts` — the one list
-  of history scanners. The ledger worker and the in-process scan both walk it.
-- `apps/desktop/src/main/services/usage/providerLedgerFormats.ts` and
-  `tokenSplit.ts` — the provider record constants and token-split rules that
-  the live chat path and the history scanners share.
-- `apps/desktop/src/main/services/usage/cursorBilledUsageStore.ts` — the
-  Cursor `getUsage` billed rows of API-key turns, one row per run. The worker
-  scan does not read them.
-- `apps/desktop/src/main/services/usage/cursorDashboardUsage.ts` — reads
-  Cursor's dashboard usage events for the per-turn ledger. It writes no Usage
-  rows.
-- `apps/desktop/src/main/services/usage/usageAccountId.ts` — the one rule for
-  a usage account id, shared by the quota poller and the per-turn ledger.
-- `apps/desktop/src/main/services/usage/turnUsageLedger.ts` — the per-turn
-  usage ledger: one JSON line per finished chat turn under
-  `<adeHome>/usage/`. `usage.getTurnUsageSummary` reads it asynchronously.
-- `apps/desktop/src/main/services/usage/quotaBurnRate.ts` — what one percent
-  of a subscription window costs, from the ledger's quota readings and rows.
-- `apps/desktop/src/main/services/router/` — the model router in shadow mode.
-  `routeCatalog` rates every route (harness × model × effort) from the daily
-  model registry; `routerCore` classifies the task and picks the cheapest route
-  that keeps quality; `modelRegistryStore` caches the registry at
-  `<adeHome>/router/registry.json`; `modelRouterService` logs decisions and
-  outcomes to `<adeHome>/usage/router-shadow-*.jsonl` and changes no turn;
-  `routerEfficiency` replays every ledger thread at its free switch points and
-  sums the shadow log's subagents for `ade router efficiency`; `modelCatalog`
-  joins the runnable models with their full registry profiles for
-  `ade models catalog`; `modelSheet` scores those models per task kind and
-  adds curated words for `ade models sheet`. The wire contract is
-  `apps/desktop/src/shared/routerRegistry.ts`.
-- `apps/desktop/src/main/services/usage/turnUsageReconcilers.ts` — amends a
-  ledger row after the turn, from Cursor's dashboard events and Factory
-  session credits.
-- `apps/desktop/src/main/services/usage/usageStatsStore.ts` — aggregates the
-  project database and owns the low-volume `usage_events` ledger. Only
-  successful, meaningful user mutations are recorded; read/poll IPC is
-  ignored. Desktop IPC, CLI/terminal RPC, paired mobile commands, paired web
-  commands, and API callers are attributed as `desktop`, `tui` (terminal/CLI), `mobile`,
-  `web`, and `api`. `usage_events` is local-only (excluded from CRR
-  replication) because every controller action is recorded once on the runtime
-  that executes it.
-- `apps/desktop/src/main/services/usage/localDay.ts` — machine-local calendar
-  day helpers (`localDayKey`, `localDayStart`, `localDayOffset`,
-  `localDayOrdinal`) so daily points and range boundaries follow the user's
-  timezone instead of UTC.
-- `apps/desktop/src/shared/types/usage.ts` — shared range, scope, daily-point,
-  freshness, estimation, GitHub-vs-local activity, aggregate, and
-  client-attribution contracts. Supported presets are today, 7d, 30d, year,
-  and all time; scopes are `machine` and `project`; `AdeUsageEstimationKind`
-  (`exact` / `chars` / `distribution` / `mixed`) records how a provider's token
-  counts were obtained.
-- `apps/desktop/src/renderer/components/usage/ActivityModule.tsx` — the
-  tabbed activity/tokens/code/clients module that replaced the old carousel.
-  `ActivityModule` renders `full` and `compact` variants (optional range
-  control) and persists the selected tab and day/week/month/year range to
-  `ade.activity.module.v1` (migrating the retired `ade.stats.carousel.v1`
-  key). `WorkActivityModule` is the self-fetching compact wrapper that reads
-  `usage.getAdeStats` and renders directly below the empty Work composer on
-  desktop and web. On that surface the card is an opaque plate using
-  `--work-popover-bg` over `--color-bg`, matching the machine/lane submenu.
-- `apps/desktop/src/renderer/components/usage/providerColors.ts` — theme-aware
-  brand color palette for usage bars and legends. `providerColor(provider,
-  theme)` returns a per-provider brand color (Claude's rust family, distinct
-  hues for the other providers) with a deterministic hashed fallback for
-  unknown providers. **This table is the product's source of truth for a
-  provider's colour**: `shared/modelCatalog.ts`'s `PROVIDER_GROUP_COLORS` and
-  both iOS tables (`ADESharedTheme`, `ADEDesignSystem`) mirror its dark values.
-  Accounts deliberately have no colour of their own — the per-account hash that
-  used to tint a chip could draw a Claude account in Gemini's blue, and the
-  email on every row is what tells accounts apart.
+- `app/TopBar.tsx`, `ConnectionsPanel.tsx`: the one Connections control with
+  Machines, Phone and Web. A saved machine's **Edit** has **Slow connection
+  mode** (Automatic, Always on, Off) beside **Reconnect automatically**
+  ([Remote runtime](../remote-runtime/README.md#a-slow-or-dropping-link)).
 
-Auto-update (General preference, top-bar control, and exceptional recovery
-banner):
+**Usage** (full behaviour: [usage-tracking.md](usage-tracking.md))
 
-- `apps/desktop/src/main/services/updates/appBundleOwnership.ts`,
-  `registerAppBundleOwnershipIpc.ts`,
-  `apps/desktop/src/shared/types/appBundleOwnership.ts` and
-  `apps/desktop/src/renderer/components/app/AppBundleOwnershipBanner.tsx` —
-  macOS root-owned `/Applications/ADE.app` detection and the docked "ADE will
-  ask for your password on every update" banner (Fix it runs an `osascript`
-  admin `chown -R`; local-only, no pin). See
-  [Desktop auto-update](./desktop-auto-update.md#app-bundle-ownership).
-- `apps/ade-cli/src/commands/windowsDesktopRescue.ts` — Windows
-  `brain update --apply-staged` installs the desktop app itself when one is
-  installed. See [Desktop auto-update](./desktop-auto-update.md).
-- `apps/desktop/src/main/services/updates/autoUpdateService.ts` —
-  electron-updater wrapper that owns the renderer-visible
-  `AutoUpdateSnapshot` (`status: "idle" | "checking" | "downloading"
-  | "ready" | "installing" | "error"`, version, progress, recently
-  installed notice, plus the `parked` / `lastInstallFailed` /
-  `autoApplyPending` / `autoApplySuppressedUntil` fields and `currentVersion` /
-  `latestKnownVersion` for the truthful-version surfaces). Tracks superseded
-  downloads against the current ready version via `compareUpdateVersions`
-  (the SemVer-aware comparator in `autoUpdateVersions.ts` that handles
-  `v` prefixes, missing patch, and prerelease ordering) so a same-or-older
-  `update-available` while a
-  newer build is already staged is logged and ignored instead of
-  clobbering the staged installer; packaged builds schedule startup and
-  periodic update checks, while dev/source launches leave those timers off
-  to avoid surfacing missing-updater-config errors; if the new build is strictly
-  newer, the cached installer dir is wiped and the snapshot
-  transitions back through `downloading`. A staged update never stops a check;
-  see
-  [Checking while an update is staged](./desktop-auto-update.md#checking-while-an-update-is-staged)
-  for what each entry point does with a same, newer, or failed feed answer.
-  `userInitiated` only labels `autoUpdate.check_requested`; it does not
-  change whether the check runs. `quitAndInstall()` is
-  transactional and asynchronous: it gates on the current snapshot being `ready`,
-  re-runs `updater.checkForUpdates()` to
-  confirm the staged installer is still the latest, and only then
-  flips the snapshot to `installing`, persists the
-  `pendingInstallUpdate` global-state row, and calls
-  `updater.quitAndInstall(false, true)`. If the refresh check fails, it parks as `refresh_failed`, returns
-  the snapshot to `ready` on the staged version, and keeps the
-  archive. A consent that aborts before the native updater takes over sets
-  `snapshot.parked` with a typed `AutoUpdateInstallAbortReason`
-  (`refresh_failed`, `install_preflight_failed`, `prepare_failed`,
-  `prepare_timeout`, `handoff_failed`) so the shell banner can offer a retry.
-  Once the native handoff starts, a staged quit deadline bounds it: a
-  never-fatal slow mark, then either the post-staging bound (armed when
-  Electron's own `autoUpdater` reports the OS installer finished staging) or the
-  hard bound. Escalation logs `autoUpdate.quit_escalated` with its
-  `hard_deadline` / `post_staging` reason, drains the log with
-  `logger.flushSync()`, and force-quits. See
-  [desktop-auto-update.md](./desktop-auto-update.md) for the numbers.
-  Installation remains manual by default even though packaged builds continue
-  checking and downloading in the background. The machine-local
-  `AutoUpdatePreferences` object enables automatic installation and chooses
-  whether it must wait for `RuntimeActivitySummary.idle` (no active agent turns
-  or work sessions). Idle-only mode waits through the idle grace period;
-  immediate mode starts the same renderer-visible countdown
-  (`autoApplyPending`) as soon as the update is ready. An explicit cancel
-  suppresses the next countdown (`autoApplySuppressedUntil`), and
-  `ADE_DISABLE_AUTO_UPDATE_APPLY=1` remains a process-level kill switch. On the
-  next launch, `reconcilePersistedUpdateState`
-  matches the running version against `pendingInstallUpdate` using
-  the same SemVer comparator (so `>=` target counts as installed,
-  even if the running build is one ahead), populates
-  `recentlyInstalledUpdate` with the actual running version, and
-  cleans up the updater cache directory. A launch that comes back on the *old*
-  version instead records `failedInstallAttempts` (target version + consecutive
-  count), logs `autoUpdate.install_did_not_land`, captures
-  `ade_update_install_did_not_land`, and surfaces `lastInstallFailed`. The
-  first such failure keeps the verified download so the retry is a click, not
-  another full release download; a second consecutive failure on the same
-  version clears the cache. On packaged launches with a
-  recently installed update, the desktop refreshes the per-user runtime
-  service so `ade serve` re-execs the updated bundled CLI and clients
-  do not fall back to an isolated build-mismatch runtime — now as one explicit
-  four-step transaction rather than a silent side effect of a build-hash
-  mismatch (see `updateTransaction.ts` below). On Windows,
-  electron-builder generates the installed `app-update.yml` from the build's
-  GitHub publish authority; package smoke requires it to match
-  `ADE_RELEASE_REPOSITORY`. The source default remains upstream
-  `arul28/ADE`; fork CI overrides it with the repository performing the build.
-  The NSIS handoff uses the non-macOS 60-second quit deadline. Signed/public
-  Windows release assets remain behind the independent repository-variable
-  gates described in
-  [desktop-auto-update.md](./desktop-auto-update.md#windows-update-path).
-- `apps/desktop/src/main/services/updates/updateTransaction.ts` —
-  `runUpdateTransaction`, the dependency-injected `swap` → `service` →
-  `restart` → `health` sequence that runs once after a relaunch whose snapshot
-  carries `recentlyInstalled`. Pure: no Electron, no timers. Replacing the app
-  bundle does not touch the background service, so without this the machine
-  keeps running old code until something reinstalls and restarts it — and a
-  failure in that repair was invisible. The first failure stops the sequence and
-  later steps record `skipped`; a dependency that throws becomes a `failed`
-  step, never an unhandled rejection. The typed `UpdateTransactionResult` rides
-  the existing `AutoUpdateSnapshot` over `IPC.updateEvent` / `updateGetState` as
-  `updateTransaction` — no new channel — and `AutoUpdateBanner` renders its
-  one-line `failureMessage` beside the shared **Repair** control. `main.ts` owns
-  the single `ProjectRecoveryService` instance it shares with `registerIpc`, so
-  repair and this restart stay mutually exclusive. Step-by-step copy and the
-  bound dependencies are in
-  [desktop-auto-update.md](./desktop-auto-update.md#applying-an-update-is-one-transaction).
-- `apps/desktop/src/main/services/updates/runtimeRestartVerification.ts` —
-  what the transaction's `restart` and `health` steps actually bind to.
-  `verifyRuntimeIdentity` is the pure verdict (`matches`, or one of
-  `unreachable` / `incompatible` / `version` / `build` / `stale_runtime`);
-  `checkRuntimeIdentity` is the shared probe-and-judge both steps call, so they
-  cannot drift; `runVerifiedRuntimeRestart` restarts and re-verifies up to
-  `maxRestarts` (2) and returns a **failed** step when it still cannot prove the
-  installed brain is the one answering. The old step asked the endpoint whether
-  it was `ok`, which a surviving pre-update brain answers just as well as the
-  new one — so a machine could report a green update while running yesterday's
-  code and holding the sync-host lease. Its log events are
-  `autoUpdate.restart_not_needed` / `_required` / `_attempt_failed` /
-  `_verified` / `_verification_failed`. See
-  [desktop-auto-update.md](./desktop-auto-update.md#the-restart-step-has-to-be-told-the-truth).
-- `apps/desktop/src/main/services/processes/processStartTime.ts` —
-  `readProcessStartTimeMs(pid)`, one bounded `/bin/ps -o lstart=` under a pinned
-  `LC_ALL=C`, `null` on Windows. It is what makes a recorded pid an identity
-  rather than a number the OS may already have handed to somebody else; the
-  update path uses it to recognise a stale pre-update brain, and the external
-  brain watchdog uses it before killing anything.
-- `apps/desktop/src/shared/updateVersions.ts` — the one ADE version comparator,
-  shared by main and renderer. Update prompts, "is this machine behind?", and
-  the auto-update state machine all have to agree on what "newer" means, so
-  SemVer-ish ordering (numeric core segments, then prerelease precedence, with a
-  release outranking any prerelease of the same core, and unparseable segments
-  read as `0` rather than throwing) lives here instead of being re-derived per
-  surface. `autoUpdateVersions.ts` re-exports `compareUpdateVersions` (every
-  main-process caller imports it from there) and remains the home for the
-  changelog / GitHub release link builders.
-- `apps/desktop/src/renderer/components/app/AutoUpdateControl.tsx` —
-  the primary update control: a small badge in the app shell top bar. Shows
-  "Checking for updates" / "Downloading vX.Y.Z (NN%)" / "Install update
-  vX.Y.Z" / "ADE will quit and reopen" depending on the snapshot. When
-  `lastInstallFailed` names the staged version, the ready label reads "Retry
-  install vX.Y.Z" and the tooltip says whether the download is still on the
-  machine. Clicking the
-  install affordance prompts the user (`autoUpdateInstallAction.tsx`). The
-  prompt always says what the restart stops on this computer: "2 agent
-  chats running, 1 terminal open" with the chats by name, "Nothing is
-  running", or "Couldn't check what's running" when the brain did not
-  answer within 3 seconds. The answer is the brain's
-  `runtime.updateImpact` (read by `main/services/runtime/updateImpactProbe.ts`),
-  which covers every project it has open and personal chats, not only the
-  projects with a tab. A brain from before that method is asked for chats
-  project by project, plus `runtime.activitySummary`; when that says more
-  is running than the chats it found, the prompt says more work is
-  running rather than claim nothing else is. The quit prompt reads the
-  same probe and, when it could not check (or only knows that something
-  unnamed is running), says so instead of counting zero. Each probe logs
-  `autoUpdate.impact_probe` or `autoUpdate.impact_probe_unknown` to
-  `ade-update.jsonl`. "Resume this computer's chats" is offered when a listed chat
-  can be queued to continue (personal chats cannot). Connected machines on
-  an older ADE are listed too, and update first when their checkbox stays
-  on (see remote runtime, `machine.updateAndRestart`). The prompt then sets a local
-  `installRequested` flag, and calls
-  `window.ade.updateQuitAndInstall()`; if the IPC returns `false`
-  (refresh check failed, no longer ready, etc.) the flag is cleared
-  so the badge falls back to the underlying snapshot. While
-  `installing` (or after the user clicks install but before the main
-  process flips status), the badge animates in fuchsia and is
-  disabled.   The post-install dialog is a centered card titled
-  "Updated to vX.Y.Z" (the running version) with an X close button
-  and click-outside dismiss. When this build bundled
-  `changelog/vX.Y.Z.mdx`, the card shows that page's summary and section
-  bullets. It offers a "Changelog" button that opens
-  `recentlyInstalled.releaseNotesUrl` (the docs changelog) and a "View
-  on GitHub" button that opens `recentlyInstalled.githubReleaseUrl`
-  (the GitHub release page). Each button is shown only when its URL is
-  present; opening either link also dismisses the notice.   The update quit marks one relaunch to reopen the local project tabs
-  that were open, and each project comes back on the route and chat it
-  already remembered. That mark is consumed on the relaunch, so a later
-  ordinary launch still opens on the welcome surface. Closing a window
-  drops its tabs from the saved set. The first update into this version
-  has no saved set yet, because the previous build did not write one.
-- `apps/desktop/src/renderer/components/app/useAutoUpdateSnapshot.ts` — the
-  shared subscription hook (initial `updateGetState()` read + live
-  `onUpdateEvent`). Every truthful-version surface — the top-bar pill, the
-  app-shell banner, and the About panel — consumes it so they never disagree
-  about what is running versus what is staged.
-- `apps/desktop/src/renderer/components/app/AutoUpdateBanner.tsx` — the
-  floating prompt for a normally staged `ready` update, the exceptional
-  app-shell recovery banner, and the automatic-install countdown toast,
-  colocated so they read one snapshot subscription. The ready prompt names the
-  version and offers **Restart and install**, sharing its impact confirmation
-  and install handler with the flashing top-right control. Dismissing it hides
-  that version's prompt for the current app session; the top-right control
-  remains available. The banner renders a `parked` state as "ADE update didn't
-  finish — Restart to retry" and a failed handoff as "ADE update did not
-  install — Restart to retry", each with a **Restart now** action. Recovery
-  dismissal is keyed on a stable failure signature so a fresh abort or failed
-  attempt can reappear. The toast reads "ADE will update in Ns", is driven off
-  `autoApplyPending`, and has a **Cancel** action wired to
-  `updateCancelAutoApply()`.
-- `apps/desktop/src/renderer/components/app/autoUpdateInstallAction.tsx` — the
-  shared install-impact confirmation, decision capture, and
-  `updateQuitAndInstall()` action used by the top-right control and floating
-  ready prompt.
-- `apps/desktop/src/renderer/components/app/BrainRecoveryNotice.tsx` — the
-  app-shell notice shown once per distinct machine-brain event-loop recovery.
-  It reads the one-shot `localRuntime.lastWedge` from `app.getInfo()` and words
-  the notice from `formatRecoveryMessage`, which has two cases because the two
-  recoveries are not the same event. A wedge attributed to a running command
-  reads "ADE recovered from a background issue … a stuck task (…) was
-  restarted". A wedge whose `lastCommand` is `external-watchdog` had no stuck
-  task — the whole brain stopped answering and something outside it restarted
-  the service — so naming a command there would invent one, and it reads "ADE
-  restarted its background service at … after it stopped responding." It
-  acknowledges by persisting the wedge `ts` to `localStorage`
-  so the same event never nags twice while a fresh recovery (new `ts`)
-  reappears. The wedge itself is produced by the brain event-loop watchdog
-  (see [ARCHITECTURE.md §2.1](../../ARCHITECTURE.md) and
-  [Storage and recovery](../storage-and-recovery/README.md)).
-- `apps/desktop/src/main/services/updates/autoUpdateVersions.ts` — the pure
-  SemVer helpers shared by the service and the `ade doctor` CLI:
-  `compareUpdateVersions` (core + prerelease ordering, `v`-prefix and
-  missing-patch tolerant), `buildReleaseNotesUrl` (the docs changelog link),
-  and `buildGithubReleaseUrl` (the tagged GitHub release page).
+- `usage/HeaderUsageControl.tsx`, `UsageLimitsBand.tsx`: the header usage
+  popup for Claude and Codex (`TRACKED_PROVIDERS`) and the automation budget.
+  - One chip per detected tracked provider: the 5-hour window and the plan
+    window (`wk` with a weekly window, else `mo`); percents clamp to 0–100,
+    green/amber/red at 75 % / 100 %, ellipsis while missing.
+  - Mount reads the cached `ade.usage.getSnapshot` and records demand, never
+    forcing a provider request; Refresh calls `ade.usage.refresh`; polling
+    tightens to 60 s under demand and backs off idle. Detection is
+    `ade.ai.getStatus` on mount and every 5 min; undetected CLIs hide,
+    signed-out installed ones show "Not signed in".
+  - Header and panel order snapshots with the shared guard and clear and
+    reload quota and connection state on a binding change.
+  - `UsageLimitsBand` draws one row per account (`UsageAccountRow.tsx`): mark,
+    provider, `email · plan`, windows as meters (5-hour, weekly, monthly,
+    then others), inline errors, staleness, source and time. The link is
+    `status.accountUrl`, else `usageProviderAccountUrl`.
+  - Claude background polls never prompt the Keychain; an explicit refresh may
+    fall back from OAuth to a bounded CLI probe. A non-interactive caller that
+    cannot read Claude credentials keeps the previous unexpired windows, state
+    and extra usage instead of a false auth error. Codex uses HTTP windows when
+    complete and a bounded app-server RPC only for auth recovery or an unknown
+    schema.
+  - Budget caps: `ade.usage.getBudgetConfig` / `saveBudgetConfig`. Crossing 25
+    / 50 / 75 / 100 % emits `UsageThresholdEvent`.
+- `usage/usageSnapshotOrdering.ts`: orders by `revision.seq` within one
+  `producerId` and always accepts another producer; unstamped disk snapshots
+  use `lastPolledAt`. Reset on a binding change.
+- `usage/useUsageSnapshot.ts`: the one subscription (`getSnapshot` /
+  `onUpdate` / `onProjectBindingChanged`, the binding-generation guard,
+  `shouldApplyUsageSnapshot`), owned by the popover and passed down. Preload
+  publishes its own rebinds.
+- `settings/AdeUsageSection.tsx`: Settings › Usage, one page in reading order:
+  totals (Estimated cost, Tokens, Sessions, Active days, each with a 14-day
+  sparkline and change, plus Cached input / Output / Lines changed / Pull
+  requests), **Rate limits** gauges (This machine and This project), the daily
+  chart, **Week over week**, **By provider**, **Where the cost went**, the
+  Breakdown (per provider and model with estimation notes; GitHub and ADE-local
+  activity as separate columns, never max-merged), **Machines**,
+  `ActivityModule`, and on the account scope a pooled **Live limits**
+  (`UsagePooledLimits`). Toolbar: **scope** (All machines / This machine / This
+  project, `ade.stats.scope.v1`), **range** (Today / 7d / 30d / year / all,
+  `ade.stats.range.v1`), Refresh. A meta line gives freshness, caveats and the
+  computed scope. Reads `window.ade.usage.getAdeStats({ preset, scope })`;
+  Refresh calls `refreshHistory()`; the first render is stale-while-revalidate.
+- `usage/UsageLimitGauges.tsx`: one radial gauge per provider window, pooled
+  across accounts, in **% left**, with a steady-burn tick, on track / watch /
+  low, and a cycle bar ("Day 3 of 7"). `usageLeftLevel` /
+  `usageLeftLevelColor` (`usageDesign.ts`): amber at 20 % left, red at 5 %,
+  for every meter, gauge and home ring.
+- `usage/UsageSparks.tsx` (14-day sparkline, day strip, `periodDelta` /
+  `DeltaTag`, from the chart's series), `UsageWeekCompare.tsx` (each of the
+  last seven days beside the same weekday a week earlier; below a 30-day range
+  it says so), `usageProviderNames.ts` (`humanizeProvider`).
+- `usage/UsageDailyChart.tsx`: one series per provider from
+  `AdeUsageDailyPoint.byProvider` (cost or tokens); top-N get series, the rest
+  is **Other**; no split falls back to one series. `usageDailyChartModel.ts` is
+  its React-free half (bucketing, selection, scale, paths), re-exported by the
+  component; it stays React-free because `usageTrackingService.test.ts`
+  checks main's daily split against it.
+- `usage/usageDesign.ts`: the visual vocabulary (five type steps, rhythm,
+  pressure colours, top-N/Other), all on theme variables.
+  `usageWindowFormat.ts`: labels, countdowns (`formatCountdown` "6d 7h",
+  `formatResetClock`), percents, pace.
+- `usage/usageLimitModel.ts`, `UsageAccountRow.tsx`: the headroom model, pure
+  and clock-injected. `poolAccounts` merges one login seen by two machines
+  (`machines`, freshest first); `buildLimitCards` makes one card per window
+  label with a segment per account, pooled headroom and what each reset
+  restores; `buildAccountRows` transposes them. No `accountId` falls back to
+  the provider's single account, then `status.accountEmail`, then "This
+  machine". Meters fill to headroom in brand colour, the spent part hatched,
+  pressure colour from consumption. Hover, focus or click opens the window
+  detail (plan, machines, headroom, reset, pace, model split, restore, limits
+  link), edge-anchored in the 420 px popover. **Use reset**
+  (`ade.usage.consumeResetCredit`) goes to the machine that produced the row,
+  also for credits only another machine can read. A login signed in elsewhere
+  reads **Not signed in here**.
+- `main/services/usage/accountBalance.ts`: the pure smart-balance selector for
+  new Claude/Codex chats: the signed-in account with the most weekly room
+  relative to its reset, after the committed burn (measured, pending,
+  reserved) on each login's freshest reading, gated on projected five-hour
+  room; it skips gone logins and says why when nothing was a real choice.
+- `usage/windowAutoStart.ts`: one best-effort small request per enabled
+  account just after a five-hour reset or an early window end (including a
+  credit spent in ADE), via a per-provider opener table with no persisted
+  timers. `AUTOSTART_WINDOW_TYPE` (`shared/types/providerInstances.ts`) gates
+  providers and the toggle.
+- `shared/usageResetCredit.ts`: the reset-credit outcome and copy for desktop,
+  CLI and paired callers.
+- `usage/providerAccountIdentity.ts`: which account the numbers belong to:
+  Codex `auth.json` `id_token` (`email`, `chatgpt_plan_type`), Claude
+  `.claude.json` `oauthAccount.emailAddress` (`subscriptionType` /
+  `rateLimitTier`), from the home dir or the provider's env override, never the
+  Keychain; cached 5 minutes; `undefined` rather than a guess; no token reaches
+  a snapshot, log or disk. Used by the poller and
+  `providerConnectionStatus.ts`.
+- `usage/UsagePaceBar.tsx`, `UsageSegmented.tsx`: shared pace bar and segmented
+  control.
+- `usage/sharedUsageTracking.ts`: one tracker per ADE home; project scopes
+  attach (`attachSharedUsageTrackingScope`) and the last detach disposes it.
+  `bootedUsageScope.ts`: unbound usage IPC and the event relay borrow a booted
+  brain scope.
+- `usage/usageTrackingService.ts`: the live quota snapshot and
+  `getAdeUsageStats(args)`.
+  - `args.scope`: `account` (all machines, merged rollups), `machine` (this
+    machine's provider ledgers), `project` (sessions matched by cwd). GitHub
+    and ADE-DB metrics are always repo-scoped. `account` merges history only,
+    never live windows (rate limits belong to the provider account).
+  - Token totals dedupe across ledgers; days are machine-local (`localDay.ts`).
+  - Live polling is adaptive and coalesced, keeps unexpired last-good windows
+    with freshness, and is separate from the ledger and GitHub scans. Each
+    snapshot has a `revision`. The machine brain is the one quota owner;
+    production desktop creates no second tracker.
+  - Stats return cached provider/GitHub results and live DB aggregates at once
+    (`fresh` / `refreshing`) and revalidate in the background
+    (`refreshStatsInBackground`, single-flight per range and source).
+- `usage/accountUsageRollup.ts`: one machine's costs as day × provider × model
+  rows, merged into `account` stats with the `machines` list (`live` /
+  `rollup` / `stale` / `deduped` / `failed`). Aggregates only; no transcript,
+  session id or path crosses machines. GitHub is excluded (repo-scoped; three
+  clones would triple a PR count), and `sourceNotes` says so.
+- `usage/accountUsageRollupStore.ts`: CRR tables `usage_machine_rollups` /
+  `usage_machine_rollup_meta`, `ROLLUP_RETAINED_DAYS` 400, primary key
+  `(machine_key, day, provider, model)` (a CRR table allows no other UNIQUE
+  index). No-op upserts are skipped. It never throws; an unreadable cache
+  shows one machine's numbers.
+- `usage/accountUsageSource.ts`: dedupe of machines reading the same
+  transcripts (synced home, network share). A `.ade-usage-source` marker id in
+  the transcript home travels with the files. `isSameTranscriptSource`: both
+  markers → compare ids; else folded root digests (sha256 of `pathKey` paths)
+  must match. Machines cloned from one image share a marker and show as
+  `deduped`; deleting the marker mints a new id.
+- `usage/accountUsageLiveRefresh.ts`: asks reachable machines for a fresh
+  rollup (`usage.getUsageRollup`) over the paired pool, at most
+  `MAX_LIVE_MACHINES` (12); an unreachable machine is a `failure` entry, never a
+  rejection. A peer without the method is "too old to share usage"
+  (authorization denials, also `methodNotFound`, are excluded). It also builds
+  the quota fan-out (`usage.getLiveQuota`, `createAccountLiveQuotaFetcher`);
+  the brain installs both in `cli.ts`.
+- `usage/peerLiveQuota.ts`: other machines' live quota in memory, pulled at
+  most once a minute while limits show. `views()` returns `poolPeerQuota`
+  (`shared/usageLiveQuota.ts`): each login's freshest reading; a login signed
+  in only elsewhere is `notSignedInHere` (shown, never picked by smart balance
+  or budget caps).
+- `usage/usagePricing.ts`: token rates from models.dev only (vendor row for a
+  bare id, provider row for `provider/model`; 10 s timeout, cached in
+  `~/.ade/models-dev-pricing.json`, refreshed daily, dropped after 30 days); an
+  unlisted model uses its registry price. `tokenPriceSource(model)` is `list`
+  or `fallback`. See
+  [where a token price comes from](./usage-tracking.md#where-a-token-price-comes-from).
+- `usage/githubActivityStats.ts`: commits, PRs and code movement via `gh` (60
+  s timeout), failing soft with a reason sentence (no `gh`, auth or remote is
+  normal); consumed through `scanGithubActivityStats`.
+- `usage/usageLedgerWorkerClient.ts`: the isolated ledger scan streams NDJSON
+  (a roster, then one line per provider), so a timeout keeps finished
+  providers. `incompleteProviders` become `publishLocalRollup`'s
+  `skipReconcileProviders` and carry the previous snapshots forward, so a
+  partial round never deletes or lowers totals. `LEDGER_WORKER_TIMEOUT_MS`
+  sets every outer budget: `USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS`
+  and `USAGE_REFRESH_HISTORY_TIMEOUT_MS` derive from it and grow outward.
+- `main/services/account/localMachineIdentity.ts`: the one "which machine is
+  this?" key for the directory and rollups, free of Electron so the publisher
+  and the CLI brain agree (another key would mint a phantom machine).
+
+- `usage/providerQuotaParsers.ts`: normalizes the live quota of Claude, Codex,
+  Cursor, Copilot, Grok, OpenCode Go and Kimi, and Factory session credits.
+  Codex windows are classed by their advertised duration; primary/secondary
+  position is only the fallback for payloads without it.
+- `usage/ledgers/localUsageLedgers.ts`: read-only history adapters. Codex reads
+  recent JSONL within per-file and total byte budgets, drops oversized records
+  with a bounded reader, caps detail, shares one scan, and reconciles with the
+  newest `state_*.sqlite` thread index under row and lookup budgets; a
+  zero-cost all-time-only remainder keeps the exact token headline without
+  inventing day, project or cost attribution. `ledgerScanCore.ts`: shared
+  plumbing (`TokenEntry`, completeness, discovery, streamed JSONL, read-only
+  SQLite). `acpProviderLedgers.ts`: Pi, Qwen, Grok and Copilot CLI ledgers.
+  `usageLedgerScanners.ts`: the one scanner list for the worker and in-process
+  scan. `providerLedgerFormats.ts`, `tokenSplit.ts`: record constants and
+  token-split rules shared with the live chat path.
+- Per-turn ledger: `usage/turnUsageLedger.ts` (one JSON line per finished turn
+  under `<adeHome>/usage/`, read by `usage.getTurnUsageSummary`);
+  `turnUsageReconcilers.ts` (amends rows from Cursor dashboard events and
+  Factory credits); `cursorBilledUsageStore.ts` (Cursor `getUsage` billed rows
+  per API-key run; the worker does not read them); `cursorDashboardUsage.ts`
+  (reads dashboard events; writes no Usage rows); `usageAccountId.ts` (the one
+  account-id rule for poller and ledger); `quotaBurnRate.ts` (what one percent
+  of a window costs).
+- `main/services/router/`: the model router in shadow mode. `routeCatalog`
+  rates every route (harness × model × effort) from the daily registry;
+  `routerCore` picks the cheapest route that keeps quality;
+  `modelRegistryStore` caches `<adeHome>/router/registry.json`;
+  `modelRouterService` logs to `<adeHome>/usage/router-shadow-*.jsonl` and
+  changes no turn; `routerEfficiency` backs `ade router efficiency`;
+  `modelCatalog` backs `ade models catalog`; `modelSheet` backs `ade models
+  sheet`. Contract: `shared/routerRegistry.ts`.
+- `usage/usageStatsStore.ts`: project DB aggregates and the `usage_events`
+  ledger: only successful, meaningful user mutations, attributed `desktop`,
+  `tui`, `mobile`, `web` or `api`. Local-only (not CRR), because each action is
+  recorded once on the runtime that runs it.
+- `usage/localDay.ts`: `localDayKey`, `localDayStart`, `localDayOffset`,
+  `localDayOrdinal` (the user's timezone, not UTC).
+- `shared/types/usage.ts`: range, scope, daily point, freshness, estimation,
+  GitHub-vs-local, aggregate and client-attribution contracts; presets today,
+  7d, 30d, year, all; `AdeUsageEstimationKind` `exact` / `chars` /
+  `distribution` / `mixed`.
+- `usage/ActivityModule.tsx`: the activity/tokens/code/clients module (`full`
+  and `compact`), saving tab and range in `ade.activity.module.v1` (migrating
+  `ade.stats.carousel.v1`). `WorkActivityModule` fetches `usage.getAdeStats`
+  and sits under the empty Work composer on desktop and web as an opaque plate
+  (`--work-popover-bg` over `--color-bg`).
+- `usage/providerColors.ts`: `providerColor(provider, theme)`, **the source of
+  truth for provider colour** (hashed fallback for unknown providers);
+  `shared/modelCatalog.ts` `PROVIDER_GROUP_COLORS` and iOS `ADESharedTheme` /
+  `ADEDesignSystem` mirror its dark values. Accounts have no colour; the email
+  tells them apart.
+
+**Auto-update** (mechanics and numbers:
+[desktop-auto-update.md](./desktop-auto-update.md))
+
+- `main/services/updates/appBundleOwnership.ts`,
+  `registerAppBundleOwnershipIpc.ts`, `shared/types/appBundleOwnership.ts`,
+  `app/AppBundleOwnershipBanner.tsx`: a root-owned `/Applications/ADE.app` on
+  macOS and the "ADE will ask for your password on every update" banner (Fix
+  it runs an admin `chown -R` via `osascript`; local only).
+- `apps/ade-cli/src/commands/windowsDesktopRescue.ts`: Windows `brain update
+  --apply-staged` also installs the desktop app when one is installed.
+- `updates/autoUpdateService.ts`: the electron-updater wrapper and
+  `AutoUpdateSnapshot` (`idle` / `checking` / `downloading` / `ready` /
+  `installing` / `error`, version, progress, `recentlyInstalled`, `parked`,
+  `lastInstallFailed`, `autoApplyPending`, `autoApplySuppressedUntil`,
+  `currentVersion`, `latestKnownVersion`).
+  - A same-or-older `update-available` never replaces a staged newer build; a
+    strictly newer one wipes the cache and downloads. Packaged builds check at
+    start and periodically; dev launches do not. A staged update never stops a
+    check. `userInitiated` only labels `autoUpdate.check_requested`.
+  - `quitAndInstall()` needs `ready`, re-checks the feed, then sets
+    `installing`, saves `pendingInstallUpdate` and calls
+    `updater.quitAndInstall(false, true)`. An abort before the native handoff
+    sets `parked` with an `AutoUpdateInstallAbortReason` (`refresh_failed`,
+    `install_preflight_failed`, `prepare_failed`, `prepare_timeout`,
+    `handoff_failed`); after the handoff a staged quit deadline force-quits
+    (`autoUpdate.quit_escalated`, `logger.flushSync()`).
+  - Install is manual by default. `AutoUpdatePreferences` turns on automatic
+    install and whether it waits for `RuntimeActivitySummary.idle`; both start
+    the `autoApplyPending` countdown; a cancel sets
+    `autoApplySuppressedUntil`; `ADE_DISABLE_AUTO_UPDATE_APPLY=1` is the kill
+    switch.
+  - Next launch, `reconcilePersistedUpdateState` treats a running version `>=`
+    the target as installed (filling `recentlyInstalledUpdate`, cleaning the
+    cache). A launch on the old version records `failedInstallAttempts`, logs
+    `autoUpdate.install_did_not_land` and `ade_update_install_did_not_land`,
+    and sets `lastInstallFailed`; the first failure keeps the download, a
+    second on the same version clears it.
+  - Windows: `app-update.yml` comes from the build's publish authority and
+    must match `ADE_RELEASE_REPOSITORY` (default `arul28/ADE`; forks
+    override); NSIS uses the 60-second quit deadline.
+- `updates/updateTransaction.ts`: `runUpdateTransaction`, the injected `swap`
+  → `service` → `restart` → `health` sequence run once after a relaunch with
+  `recentlyInstalled` (a new bundle does not restart the background service).
+  Pure. The first failure stops it; later steps are `skipped`; a throw becomes
+  `failed`. `UpdateTransactionResult` rides `AutoUpdateSnapshot` as
+  `updateTransaction`; `AutoUpdateBanner` shows its `failureMessage` beside
+  **Repair**. `main.ts` shares one `ProjectRecoveryService` with
+  `registerIpc`, so repair and this restart exclude each other.
+- `updates/runtimeRestartVerification.ts`: `verifyRuntimeIdentity` (`matches`
+  or `unreachable` / `incompatible` / `version` / `build` / `stale_runtime`),
+  `checkRuntimeIdentity` (shared by restart and health), and
+  `runVerifiedRuntimeRestart` (up to `maxRestarts` 2, then a **failed** step
+  when it cannot prove the new brain answers; an `ok` alone could be the old
+  brain). Events: `autoUpdate.restart_not_needed` / `_required` /
+  `_attempt_failed` / `_verified` / `_verification_failed`.
+- `main/services/processes/processStartTime.ts`: `readProcessStartTimeMs(pid)`
+  (one bounded `/bin/ps -o lstart=` with `LC_ALL=C`; `null` on Windows) makes a
+  pid an identity; used to spot a stale brain and by the external watchdog
+  before a kill.
+- `shared/updateVersions.ts`: the one version comparator (numeric core, then
+  prerelease; a release beats its prereleases; unparseable segments are `0`).
+  `updates/autoUpdateVersions.ts` re-exports `compareUpdateVersions` for main
+  and builds `buildReleaseNotesUrl` and `buildGithubReleaseUrl` (also used by
+  `ade doctor`).
+- `app/AutoUpdateControl.tsx`: the top-bar badge ("Checking for updates",
+  "Downloading vX.Y.Z (NN%)", "Install update vX.Y.Z", "ADE will quit and
+  reopen"; "Retry install vX.Y.Z" when `lastInstallFailed` names the staged
+  version, with whether the download is still here).
+  - The install prompt (`autoUpdateInstallAction.tsx`, shared with the ready
+    prompt) says what the restart stops: "2 agent chats running, 1 terminal
+    open" with chat names, "Nothing is running", or "Couldn't check what's
+    running" after 3 s. It reads the brain's `runtime.updateImpact`
+    (`main/services/runtime/updateImpactProbe.ts`: every open project and
+    personal chats). An older brain is asked per project plus
+    `runtime.activitySummary`; if that shows more running than the chats found,
+    the prompt says so. The quit prompt uses the same probe. Each probe logs
+    `autoUpdate.impact_probe` or `_unknown` to `ade-update.jsonl`.
+  - "Resume this computer's chats" is offered when a listed chat can be queued
+    (not personal chats). Connected machines on an older ADE are listed and
+    update first when left ticked (`machine.updateAndRestart`).
+  - The prompt sets `installRequested` and calls
+    `window.ade.updateQuitAndInstall()`; `false` clears the flag. While
+    installing the badge pulses fuchsia and is disabled.
+  - After an update, an "Updated to vX.Y.Z" card (X and click-outside close)
+    shows the bundled `changelog/vX.Y.Z.mdx` summary and bullets, with
+    **Changelog** (`releaseNotesUrl`) and **View on GitHub**
+    (`githubReleaseUrl`), each only when present; either dismisses.
+  - The update quit marks one relaunch to reopen the open local project tabs on
+    their remembered route and chat; the mark is consumed, and closing a
+    window drops its tabs.
+- `app/useAutoUpdateSnapshot.ts`: the one subscription (`updateGetState()` +
+  `onUpdateEvent`) for the top-bar pill, the banner and About.
+- `app/AutoUpdateBanner.tsx`: the ready prompt (**Restart and install**;
+  dismissal hides that version for the session), the recovery banner (`parked`
+  → "ADE update didn't finish — Restart to retry"; failed handoff → "ADE update
+  did not install — Restart to retry"; **Restart now**; dismissal keyed on a
+  failure signature) and the countdown toast ("ADE will update in Ns",
+  **Cancel** → `updateCancelAutoApply()`).
+- `app/BrainRecoveryNotice.tsx`: one notice per brain event-loop recovery,
+  from `localRuntime.lastWedge` (`app.getInfo()`) via `formatRecoveryMessage`.
+  A wedge with a command reads "ADE recovered from a background issue … a stuck
+  task (…) was restarted"; `lastCommand` `external-watchdog` reads "ADE
+  restarted its background service at … after it stopped responding." The
+  wedge `ts` is stored in `localStorage` so one event shows once. See
+  [ARCHITECTURE.md §2.1](../../ARCHITECTURE.md) and
+  [Storage and recovery](../storage-and-recovery/README.md).
 
 ## Detail docs
 
-- [configuration-schema.md](./configuration-schema.md) — shape of
-  `.ade/local.yaml` and the one-time legacy carry-over as consumed by
-  `projectConfigService`; types in `shared/types/config.ts`.
-- [first-run.md](./first-run.md) — first launch lands on Work. There is
-  no blocking project-setup dashboard; optional integrations live in Settings.
-- [harness-presets.md](./harness-presets.md) — saved pairings of a harness
-  (the program ADE runs) and a model provider (the account, key, or
-  subscription that answers for it), managed in Settings › Providers › Custom
-  and selectable from the Custom tab of every model picker.
-- [mcp-servers.md](./mcp-servers.md) — Settings › Integrations › MCP servers: servers
-  defined once in the account and handed to every agent, switched off per
-  computer or per project, with secret values in the account vault and an
-  import from the provider CLIs' own configs.
+- [configuration-schema.md](./configuration-schema.md): `.ade/local.yaml` and
+  the one-time legacy carry-over (`shared/types/config.ts`).
+- [first-run.md](./first-run.md): first launch lands on Work; integrations
+  live in Settings.
+- [harness-presets.md](./harness-presets.md): saved harness + model-provider
+  pairings (Settings › Providers › Custom, the Custom tab of every picker).
+- [mcp-servers.md](./mcp-servers.md): account MCP servers given to every
+  agent, off per computer or project, secrets in the vault, imports from
+  provider CLI configs.
 
 ## Onboarding responsibilities
 
-Onboarding covers two layers.
+Onboarding has a machine layer and a project layer, plus the first-run
+screens and the three help tiers below.
 
 ### First run on a computer
 
-What a person sees the first time ADE opens on a computer. It runs once per
-computer (not per project) and is stored in that computer's global app state
-(`welcomeVideo.completedAt` / `dismissedAt`, the key kept from the welcome
-video it replaced), so a computer set up before it existed never sees it.
+It runs once per computer and is stored in global app state
+(`welcomeVideo.completedAt` / `dismissedAt`), so a computer set up before it
+existed never sees it. It runs on, and reads, the computer ADE opens on; the
+hosted web client has no first run.
 
-1. **Welcome.** One card on the launch gate's glass: the landing page's
-   headline, one sentence, the provider marks, **Get started** and **Skip
-   setup**. Skip marks onboarding skipped, so no hint shows later either.
-2. **Sign in**, if this computer has no ADE session (the account is required).
+1. **Welcome.** One card on the gate's glass: headline, one sentence, provider
+   marks, **Get started** and **Skip setup** (skip also stops every later
+   hint).
+2. **Sign in**, if this computer has no ADE session.
 3. **Connect your agents** (`FirstRunAgents.tsx`, `FirstRunAgentRail.tsx`).
-   Every agent's 3D logo (`providerBrand`, the marks on its Settings page)
-   hangs from a rail on a cord, the agents that can sign in here first and the
-   rest past a divider. Moving along the rail swings the logos and turns the
-   nearest one to face you; the banner under the rail wears that agent's
-   Settings banner with its name, where it stands ("Signed in as … · plan",
-   "Not signed in on this computer", or "Set this one up later, in Settings ›
-   Agents & Models") and its **Sign in** button. A logo spins once when its
-   agent connects. Status comes from the same `ai.getStatus` Settings › Agents
-   & Models reads (it answers before any project is open). Sign-in uses the
-   same flows as Settings, on this computer:
-   - Claude Code and Codex use the account sheet.
-   - Cursor uses its browser login.
-   - Antigravity uses its Google sign-in.
-   - Grok, Devin, Muse, Copilot, Droid and Kimi use the agent CLI sheet (`CliSignInSheet.tsx`).
+   Each agent's 3D logo (`providerBrand`) hangs from a rail, sign-in-capable
+   agents first. Moving along the rail swings the logos and turns the nearest
+   one; the banner below shows its Settings banner, name, standing ("Signed in
+   as … · plan", "Not signed in on this computer", or "Set this one up later,
+   in Settings › Agents & Models") and **Sign in**. A logo spins once on
+   connect. Status is `ai.getStatus` (works before a project opens). Sign-in
+   uses Settings' flows on this computer: the account sheet (Claude Code,
+   Codex), browser login (Cursor), Google sign-in (Antigravity), and
+   `CliSignInSheet.tsx` (Grok, Devin, Muse, Copilot, Droid, Kimi).
+   - A sheet stays mounted when status turns connected, so a refresh never
+     cancels it.
+   - The swing runs on animation frames only until it settles (none under
+     reduced motion).
+   - Status is re-read on open, after a sign-in (a re-read requested during
+     one runs after it) and on focus; never polled.
+   - Project discovery starts in the background meanwhile.
+4. **Bring your projects in.** `discoverOnboardingProjects` reads Claude Code
+   transcripts (one listing plus the newest transcript head per folder),
+   Codex's thread index (one grouped query) and the other importers'
+   discoverers (newest 300 sessions each, 2.5 s per provider). Folders map to
+   their git project (a lane or worktree counts toward its checkout); scratch,
+   temp, Downloads and existing projects drop; newest first. A failed
+   discovery offers a retry, not an empty list.
+   - A project with two or more chats in 30 days starts ticked. Rows show
+     worktrees (they open as lanes) and last activity.
+   - Recent chats add an **Import N chats** pill (off by default). Its box
+     (and marks) turns all on or off; its count opens `FirstRunChatPicker`
+     (read once via `app.listOnboardingProjectChats`): provider, title or
+     opening prompt, lane folder, last active, prompt count, a box each,
+     Select all / none, "5 of 7 chats". Unticking narrows the import
+     (**Importing 5 of 7 chats**, a dash in the box); unticking the last turns
+     it off; ticking one while off turns it on with that chat; the box always
+     means all or nothing. Claude and Codex are read for the project's folders
+     (Claude stops at the window edge by file time); others filter discovery's
+     read under the same 2.5 s budget. Escape closes only the picker.
+   - Below: an iPhone QR and a line about other computers.
+5. **Into ADE.** Chosen projects join recents and open as tabs; the first opens;
+   worktrees become lanes through normal adoption. For each project with its
+   pill on, `useOnboardingChatImport` imports up to 25 chats from the last 30
+   days (newest first, any provider) into the lane each ran in (or the main
+   checkout's) on first open, skipping sessions that may still be open in
+   their CLI. Left-out chats are stored as `provider:sessionId`
+   (`excludedKeys`); it is an exclusion list, so chats started after setup
+   still come in.
+6. **The tour** (`components/onboarding/tour/`). A violet ADE cursor glides to a
+   real control, a ring settles and a card explains it: the lane chip (the
+   checkout is the primary lane), the prompt box, its permission/model/effort
+   controls, the lane menu, importing chats, the chats list, opening a chat,
+   the Tools pane, a new chat, a new project tab, Home and its edit tools,
+   Connections.
+   - With no chats, the step is **Send your first chat**: a new chat in the
+     primary lane with "In one sentence, what is this project?" on a cheap
+     runnable model (Haiku, Luna or Composer when connected, else the cheapest
+     the registry knows). The user sends it. That model is not saved as
+     last-used; a model the user picks there is.
+   - Some steps ask for the click; every card has Next and Back; nothing is
+     dimmed. Leaving shows a **Tour paused** pill with **Show me**; the step
+     returns when its control is on screen, across reloads. A step with
+     nothing to point at is skipped.
+   - **Skip tour** ends it and every hint; "Show me around again" (help menu,
+     palette) restarts it. Contextual hints (`hints/`, "This chat needs you")
+     wait for the tour to finish.
 
-   A sheet's item stays mounted when the status turns connected, so a refresh
-   never cancels the sign-in it is finishing. The swing runs on animation
-   frames only until it settles (none under reduced motion). Status is re-read
-   on open, after a sign-in (a re-read asked for during one in flight runs
-   after it) and on window focus, never polled. While this card is up,
-   project discovery starts in the background so the next card opens with its
-   list.
-4. **Bring your projects in.** `discoverOnboardingProjects` reads the history
-   of every provider ADE imports chats from: Claude Code's transcripts (one
-   listing, plus the head of the newest transcript per folder for its cwd),
-   Codex's thread index (one grouped query), and the rest (Cursor, Droid,
-   OpenCode, Pi, Copilot…) through the importer's own discoverers, capped at
-   the newest 300 sessions each with a 2.5s budget per provider. It maps each
-   folder to its git project (an ADE lane or linked worktree counts toward
-   its main checkout), drops scratch, temp, Downloads and projects already in
-   ADE, and returns them newest first. If discovery fails, setup reports that
-   it couldn't load the projects and offers a retry instead of showing an
-   empty result. A project with at least two chats in the last 30 days starts
-   ticked. Each row shows its worktrees (they open as
-   lanes) and when it was last active; a row with recent chats also has an
-   **Import N chats** pill with its providers' marks (the draft page's import
-   pill, per project), off by default. The pill has two targets. Its box (and
-   the marks) turns the import on for every chat or off. Its count opens a
-   picker of those chats (`FirstRunChatPicker`), read on first open through
-   `app.listOnboardingProjectChats` and kept for the card's life: each chat
-   with its provider, title or opening prompt, the lane folder it ran in,
-   when it was last active and its prompt count, each with its own box, plus
-   Select all / none and "5 of 7 chats". Unticking chats narrows the import
-   and the pill reads **Importing 5 of 7 chats** (its box shows a dash).
-   Unticking the last one turns the import off; ticking one while it is off
-   turns it on with just that chat. The box always means all or nothing, so
-   turning it on again brings every chat back. The list reads Claude and
-   Codex for that project's folders (Claude stops at the window's edge by
-   file time) and filters discovery's own read of the other providers, one
-   provider at a time under the same 2.5s budget. Escape closes the picker,
-   never setup. Below the list: a QR for ADE on iPhone and a line about
-   signing in on another computer, shown to everyone.
-5. **Into ADE.** The chosen projects are added to recent projects and opened
-   as tabs, and the first one opens. Its worktrees become lanes through the
-   normal adoption on open. For each project whose pill was on,
-   `useOnboardingChatImport` imports its chats from the last 30 days (up to
-   25, newest first, any provider) into the lane each one ran in, or the main
-   checkout's lane, the first time it opens; a session that may still be open
-   in its CLI is skipped. Chats left out in the picker are stored with the
-   queued entry as `provider:sessionId` keys (`excludedKeys`, the importer's
-   own ids) and skipped; an entry without the list imports everything. It is
-   a list of what to leave out, so a chat that starts after setup still comes
-   in.
-6. **The tour** (`components/onboarding/tour/`). An ADE cursor (violet, a
-   size up from the system arrow) glides to a real control, a ring settles on
-   it and a card beside it says what it is. In order: the lane chip (ADE works
-   in lanes; the checkout is the primary lane), the prompt box, its
-   permission/model/effort controls, the lane menu, importing chats, the chats
-   list, opening a chat (or, with no chats yet, **Send your first chat**: a
-   new chat in the primary lane with "In one sentence, what is this
-   project?" in the composer, on a cheap model the computer can run — Haiku,
-   Luna or Composer when their provider is connected, else the lowest-priced
-   runnable model the registry knows — which the user sends themselves; ADE
-   set that model, so it is not saved as the machine's or the composer's
-   last-used model, while a model the user picks there is), the
-   Tools pane, back to a new chat, a new project
-   tab, the Home page and its edit tools, and Connections. Some steps ask for
-   the click (the card says so, and the click moves the tour on); every card
-   also has Next and Back. Nothing is dimmed or blocked. When the user goes
-   elsewhere the card steps aside and a **Tour paused** pill offers **Show
-   me**; the step comes back when its control is on screen again, across
-   reloads. A step with nothing to point at (no chats to open, the Tools pane
-   already open) is passed over. **Skip tour** ends it and every hint;
-   "Show me around again" in the help menu or the command palette starts it
-   over. Contextual hints (`hints/`, today only "This chat needs you") wait
-   until the tour is finished.
-
-Everything here runs on, and reads, the computer ADE is opening on. The
-hosted web client has no first run; it controls other computers.
-
-To walk all of it as a new user without touching your own ADE, run
-`npm run dev:desktop -- --first-run` (see
+Run `npm run dev:desktop -- --first-run` to walk it as a new user (see
 [local development](../../development/local-development.md#walk-first-run-setup-as-a-new-user)).
 
 ### What's new pages
 
-Free-form announcements the owner writes as features land
-(`renderer/components/announcements/`). A page is any React component in
-`pages/`, with one entry in `announcementPages.ts`
-(`{ id, revision, title, Page }`); nothing about its layout is fixed. The
-modal (`AnnouncementsHost`) adds only a close button and, when several are
-due, a pager.
+Free-form announcements (`renderer/components/announcements/`): any React
+component in `pages/` with one entry in `announcementPages.ts` (`{ id,
+revision, title, Page }`). `AnnouncementsHost` adds only a close button and a
+pager.
 
-- **Once per page per account**, keyed by `id` + `revision`. This renderer
-  keeps a copy in localStorage (`ade.announcements.seen.v1`), and the account
-  setting `announcements.seen` (scope all) holds the union across the account's
-  devices and ADE Web (`announcementSeenSync.ts`; the merge is
-  `shared/announcementsSeen.ts`: a page never becomes unseen, the earlier time
-  wins, at most 500 pages). ADE Web reads and grows the setting through the
-  connected computer with `announcements.getSeen` / `announcements.markSeen`,
-  which a lane-share guest cannot run. Pages seen here before a different
-  account signed in stay local and do not go to that account. Bump `revision`
-  to show an edited page again; remove the entry to retire it. Not tied to
-  releases.
-- **When:** inside a project (never on Home), a few seconds after it opens,
-  with no dialog, setup screen or tour up, and only once onboarding finished
-  or was skipped before this launch, so a new user meets them on a later
-  visit. It also waits for 8 s with no key press or click, and never opens
-  while a focused text field (a prompt box) holds text or a terminal has
-  focus, so it cannot take the keyboard in the middle of a sentence. A page counts as seen once it is on
-  screen. A page added before the signed-in account was created never shows by
-  itself (`accountCreatedAtFromUserId` reads the creation time from the
-  account id); Help › What's new still lists every page.
-- **After an update** this computer installed: on the first launch of the new
-  version, after the boot splash. Up to three unseen pages, then the release
-  notes since the version it came from. This one arrives: the logo flies from
-  where the splash left it into the window's header while the window opens
-  around it (`WhatsNewArrival.tsx`; `BootSplashReveal.tsx` records the splash's
-  last logo box and says when the splash is gone). The window mounts one frame
-  after the logo, so the frame in which the splash goes stays light. Reduce
-  motion (ADE's or the system's) skips the flight. If the person typed or
-  clicked since launch, or is writing, it waits for the same quiet moment as
-  the in-project showing and then rises in the middle of the window instead.
-  A showing that opened by itself takes focus in its panel, not on a button, so
-  a stray Enter does nothing.
-- **Reopen:** Help › What's new and the command palette ("What's new") show
-  every page, with the plain dialog fade.
-
-To add one: create `pages/<Name>.tsx` exporting a default component that
-takes `{ close }` (call it before navigating from a "Try it" button), then add
-its entry at the top of `ANNOUNCEMENT_PAGES`. Most pages are a
-`WhatsNewFeature` (`pages/WhatsNewFeature.tsx`): a place, a headline, one
-short sentence that says where to try it, and an `action` that runs an ADE
-Tips entry, beside a looping recording (muted, autoplays), a crossfade of
-screenshots (`holdMs` per slide, and an optional step `caption` under each)
-or phones.
-
-The account management page introduces provider accounts, usage, settings and
-the initial context inventory, and links to AI connections.
+- **Once per page per account**, keyed by `id` + `revision`: a local copy
+  (`ade.announcements.seen.v1`) and the account setting `announcements.seen`
+  hold the union across devices and ADE Web (`announcementSeenSync.ts`; merge
+  in `shared/announcementsSeen.ts`: never unseen, earliest time wins, at most
+  500). ADE Web uses `announcements.getSeen` / `markSeen` through the computer
+  (not for lane-share guests). Pages seen before another account signed in
+  stay local. Bump `revision` to reshow; remove the entry to retire.
+- **When:** inside a project (never Home), a few seconds after it opens, with
+  no dialog, setup or tour, only once onboarding finished or was skipped
+  before this launch; after 8 s with no key or click, and never while a
+  focused text field holds text or a terminal has focus. On screen counts as
+  seen. A page older than the account (`accountCreatedAtFromUserId`) never
+  shows by itself.
+- **After an update** this computer installed: on the new version's first
+  launch, after the splash, up to three unseen pages then the release notes
+  since the old version. The logo flies from the splash's last box into the
+  header as the window opens (`WhatsNewArrival.tsx`; `BootSplashReveal.tsx`
+  records the box); the window mounts one frame after the logo. Reduced motion
+  skips the flight; recent input waits for the quiet moment and rises
+  centred. A self-opened showing focuses its panel, not a button.
+- **Reopen:** Help › What's new and the palette show every page.
+- **To add one:** create `pages/<Name>.tsx` with a default component taking
+  `{ close }` (call it before navigating), and add its entry at the top of
+  `ANNOUNCEMENT_PAGES`. Most pages are a `WhatsNewFeature`: a place, a
+  headline, one sentence on where to try it, an `action` running an ADE Tips
+  entry, beside a looping muted recording, a screenshot crossfade (`holdMs`,
+  optional `caption`) or phones.
 
 ### Boot splash and the ADE logo
 
-While a window starts, "Starting ADE" plays a liquid glass reveal of the logo
-(`components/ui/LiquidGlassLogoReveal.tsx`, a WebGL2 pass; its texture,
-renderer, timeline and settings live in `components/ui/liquidGlass/`). The
-splash stays for the boot or the reveal (about 3.5 s), whichever ends later,
-never longer, and plays once per window (`app/BootSplashReveal.tsx`). Reduce
-motion, no WebGL or a logo that fails to load show the still logo and hold
-nothing. The hosted web client never plays it: its own start screens cover the
-boot, and a route that is still loading shows the plain loading view.
-
-The logo everywhere in the app is `<AdeWordmark>` (`components/ui/AdeWordmark.tsx`):
-`logo.png` on dark themes, `logo-light.png` (purple and white swapped) on light
-ones.
+"Starting ADE" plays a WebGL2 liquid glass reveal
+(`components/ui/LiquidGlassLogoReveal.tsx`, parts in `components/ui/liquidGlass/`)
+for the boot or the reveal (about 3.5 s), whichever ends later, once per window
+(`app/BootSplashReveal.tsx`). Reduced motion, no WebGL or a failed logo load
+show the still logo. The hosted web never plays it. The logo everywhere is
+`<AdeWordmark>` (`logo.png` dark, `logo-light.png` light).
 
 ### ADE Tips
 
-Onboarding's second tier: every feature worth knowing, browsed from Help ›
-ADE Tips, the command palette, the home screen's ADE Tips widget or the
-tour's last card (`renderer/onboarding/adeTips.ts` holds the tips;
-`components/onboarding/tips/` draws them). One group at a time, as a wall of
-tiles: the group's own tile, screenshot tiles for its headline features
-(each tip's `size` and `shot` in `adeTips.ts`, listed in wall order, pack each
-group with no holes in four columns and in two) and icon tiles for the rest. Suggestions the user
-postponed sit first, under **For you**.
+The second tier: every feature worth knowing, from Help › ADE Tips, the
+palette, the Home widget or the tour's last card (`renderer/onboarding/adeTips.ts`;
+`components/onboarding/tips/`). One group at a time as a tile wall: the group
+tile, screenshot tiles (`size`, `shot`, packed without holes in four and two
+columns) and icon tiles; postponed suggestions first under **For you**. The
+startup-context tip points at the provider's initial context inventory.
 
-The startup context tip points to provider settings, where the initial context
-inventory shows what a new chat receives and where each item is configured.
-
-Every tip has **Try it**. It goes where the feature lives (a page of the open
-project, a Settings card, a new chat, Home in a new tab, the Connections
-panel, Music) and then the spotlight (`components/onboarding/spotlight/`)
-rings the control there with one line on what to do, using the tour's
-geometry, page watch and layer. It waits up to a few seconds for the control
-to appear, fades after six seconds or on any click or Escape, and leaves the
-user where they landed if the control never shows. A tip that lives inside a
-chat (rewind, comments, PR watch) rings the open chat's control when there is
-one, else a chat row with "Open a chat and…". With no project open, a project
-tip goes Home and rings the projects ("Open a project first"). All of it is
-navigation in the front window: no call reaches a machine.
-
-Tips also come to the user now and then (`useFeatureTipCard`): a while into a
-project session, one tip they have not tried shows as the corner card (its icon and
-title on one row, Try it, Not now, and its screenshot: a full-width one for a
-tip that is a large tile in ADE Tips), in this computer's own random order. It shares the corner
-with situational suggestions (one card at a time, never during onboarding,
-and not within half an hour of a suggestion) but keeps its own pace: up to
-three a day, two hours apart, each tip once, and trying a tip from ADE Tips or
-the Home widget counts too. It never uses up a suggestion's once-per-launch
-slot. ADE Tips' header turns them off.
-
-To test tiers 2 and 3 without waiting days: `npm run dev:desktop -- --first-run
---keep` reopens the isolated app as a returning user, and in dev builds the
-command palette has **Dev: Suggestions test mode** (no cooldown, no
-once-per-launch or per-day, no snooze; answer a card and the next can show)
-and **Dev: Reset Tips, suggestions and What's new** (`resetOnboardingTiers`).
+- **Try it** goes where the feature lives (a project page, a Settings card, a
+  new chat, Home in a new tab, Connections, Music); the spotlight
+  (`components/onboarding/spotlight/`) rings the control with one line. It
+  waits a few seconds for the control, fades after six seconds or a click or
+  Escape. A chat tip rings the open chat's control, else a chat row ("Open a
+  chat and…"); with no project, "Open a project first" on Home. It is
+  navigation only; no machine call.
+- **Tip cards** (`useFeatureTipCard`): a while into a session, one untried tip
+  in the corner (icon, title, Try it, Not now, screenshot), in a per-computer
+  random order. One corner card at a time with suggestions, never during
+  onboarding, not within 30 minutes of a suggestion; up to three a day, two
+  hours apart, each once (trying it elsewhere counts); it never uses a
+  suggestion's per-launch slot. ADE Tips' header turns them off.
+- **Testing**: `npm run dev:desktop -- --first-run --keep` reopens as a
+  returning user; dev palette **Dev: Suggestions test mode** (no limits) and
+  **Dev: Reset Tips, suggestions and What's new** (`resetOnboardingTiers`).
 
 ### Situational suggestions
 
-Onboarding's third tier: a small card in the bottom-right corner (the
-`suggestion` placement, see `docs/design/notices.md`) that shows a feature only
-when ADE sees a signal that it would help now. Each card says what the feature
-is, why now, one action, and **Not now**, which files it into ADE Tips under
-"Suggested for you" (start it from there, or **Don't suggest again**).
+The third tier: a bottom-right card (`suggestion` placement,
+`docs/design/notices.md`) shown only on a signal: what, why now, one action,
+**Not now** (files it under "Suggested for you" in ADE Tips, with **Don't
+suggest again**).
 
-The shared rules live in `renderer/onboarding/situationalSuggestions.ts`
-(`ade.suggestions.v1`, per computer): one card per signal (again only after a
-suggestion's own repeat time), at most one new card per launch and none for
-four hours after the last, nothing while the tour runs or until onboarding
-finished (or was skipped) on an earlier launch. "Not now" snoozes the kind for
-two weeks. `components/app/suggestions/useSituationalSuggestion.tsx` draws the
-card and does the Tips plumbing; `SituationalSuggestions.tsx` (mounted in
-`AppShell`) holds one small hook per signal. The lane-template suggestion
-(`useLaneDependencyBanners`) goes through the same helper, with two
-differences: it comes back for a project after two weeks while it still
-applies, and "Don't suggest again" turns it off for that project only
-(`neverPerScope`). Its answers from before the shared rules
-(`ade.laneTemplateSuggestion.v1`) are folded into `ade.suggestions.v1` on
-first read.
+- Rules (`renderer/onboarding/situationalSuggestions.ts`,
+  `ade.suggestions.v1`, per computer): one card per signal (again only after
+  its repeat time), at most one new card per launch, none for four hours after
+  the last, none during the tour or before onboarding ended on an earlier
+  launch. "Not now" snoozes the kind two weeks.
+- `app/suggestions/useSituationalSuggestion.tsx` draws the card;
+  `SituationalSuggestions.tsx` (in `AppShell`) holds one hook per signal.
+- The lane-template suggestion (`useLaneDependencyBanners`) uses the same
+  helper but returns per project after two weeks while it applies, and
+  "Don't suggest again" is per project (`neverPerScope`);
+  `ade.laneTemplateSuggestion.v1` folds into `ade.suggestions.v1` on first
+  read.
 
 | Suggestion | Signal | Action |
 | --- | --- | --- |
-| Plan running low | A Claude or Codex limit at 20% left or less with one account signed in (the tab machine's usage snapshot); once per provider per reset window | Settings › AI accounts |
-| `@` sends work to another machine | Another machine of the project is online, and no sent message has ever had an `@machine` mention | A new chat in the primary lane |
-| ADE secrets | A sent message looks like it holds a key or password (`shared/secretText.ts`, the clipboard history's check); again only after 30 days | Settings › Passwords & Secrets |
-| Connect the tracker | A sent message links a Linear, Jira or GitHub issue (or PR) and the tab's machine is not connected to it; the status is read only then | Settings › Integrations › that tracker |
-| The Work grid | Activity shows three or more chats working and the grid is off | Turns on Focus with the grid in the open project, opens Work |
-| Automations | The same prompt (normalized, 20+ characters, not a slash command) sent three times in a week in this project; only hashes are kept | Automations |
-| ADE on iPhone | A week after first run, still no other machine and no paired phone (paired devices are read once, then) | Connections › Phone |
-| Stacked PRs | A lane built on another lane (not the main checkout) whose pull request is open, per Activity's PR items, while it has none | PRs |
-| Import your .env | The main checkout of the open project has a `.env` file that git ignores, on a connected computer of the person's own; once per set of files (`useEnvImportSuggestion.ts`) | Settings › Passwords & Secrets with the import dialog (see [The `.env` tip](../passwords/README.md#the-env-tip)) |
+| Plan running low | A Claude or Codex limit at 20% left or less with one account signed in (the tab machine's snapshot); once per provider per reset window | Settings › AI accounts |
+| `@` sends work to another machine | Another machine of the project is online and no sent message ever had an `@machine` mention | A new chat in the primary lane |
+| ADE secrets | A sent message looks like it holds a key or password (`shared/secretText.ts`); again after 30 days | Settings › Passwords & Secrets |
+| Connect the tracker | A sent message links a Linear, Jira or GitHub issue or PR and the tab's machine is not connected (read only then) | Settings › Integrations › that tracker |
+| The Work grid | Three or more chats working and the grid off | Turns on Focus with the grid, opens Work |
+| Automations | The same prompt (normalized, 20+ characters, not a slash command) sent three times in a week here; only hashes kept | Automations |
+| ADE on iPhone | A week after first run, no other machine and no paired phone (read once then) | Connections › Phone |
+| Stacked PRs | A lane on another lane (not the main checkout) with an open PR, while it has none | PRs |
+| Import your .env | The open project's main checkout has a git-ignored `.env` on the person's own connected computer; once per set of files (`useEnvImportSuggestion.ts`) | Passwords & Secrets with the import dialog ([The `.env` tip](../passwords/README.md#the-env-tip)) |
 
-The send-time checks (`chatSendSignals.ts`, called from `AgentChatPane`'s
-submit) read only the typed text, in one O(text) pass, so they work for a chat
-on any machine; tracker connections are checked only for chats on the tab's
-machine, the one Settings connects. Nothing polls: the other signals read push
-feeds the shell already holds. Preview each one in the browser mock with
-`?mockSuggestion=<id>` and the flags documented in `browserMock.ts`.
+Send-time checks (`chatSendSignals.ts`, from `AgentChatPane`'s submit) read
+only the typed text in one pass, so they work for a chat on any machine;
+tracker status is checked only for chats on the tab's machine. Nothing polls.
+Preview with `?mockSuggestion=<id>` (flags in `browserMock.ts`).
 
 ### Machine layer (one-time per machine)
 
-Driven by `LocalRuntimeConnectionPool` on desktop launch and surfaced in
-the General settings tab via `AdeCliSection`:
+`LocalRuntimeConnectionPool` drives it at desktop launch; General shows it
+through `AdeCliSection`.
 
-1. Reset pre-account machine trust once in the next packaged release. Before
-   attaching to the background runtime, ADE removes only
-   `remote-machines.json`, `desktop-paired-machines.json`,
-   `sync-paired-devices.json`, and its runtime-host grants sidecar from the
-   channel's machine secrets directory. Account sessions, machine/device
-   identity, the pairing PIN, bootstrap token, projects, and the user's SSH
-   files are preserved. A pending marker is written before the service is
-   forcibly restarted and becomes complete only after installation/restart is
-   confirmed; if ADE exits early, the next launch retries the restart without
-   erasing pairings created after the first attempt. Development launches do
-   not run this reset.
-2. Bring up the ADE runtime. The pool tries to attach to
-   `~/.ade/sock/ade.sock`; if that fails it spawns
-   `ade serve --socket <path>` from the bundled CLI and waits for the
-   endpoint. Compatibility is checked at `initialize` time using both the
-   reported version and a SHA-256 build hash of the CLI script
-   (`ADE_RUNTIME_BUILD_HASH` is set by `apps/ade-cli/src/cli.ts` before
-   spawning the runtime, and `LocalRuntimeConnectionPool.connectClient`
-   compares the runtime's `buildHash` against the desktop's expected
-   value). A dev build that reports the placeholder version `0.0.0` is
-   accepted when its build hash matches the bundled CLI. Mismatches
-   are surfaced as a `LocalRuntimeCompatibilityError`; the pool
-   terminates the stale runtime process when the handshake reported a
-   pid, unlinks the stale endpoint, and then lets the normal spawn path
-   start a compatible runtime.
-3. Register the runtime as a per-user login service so it survives
-   reboots. `installServiceBestEffort()` runs `ade serve --install-service`
-   once per session; the implementation lives in
-   `apps/ade-cli/src/serviceManager/` (launchd / systemd / Windows per-user startup).
-   The result is exposed as `LocalRuntimeStatus.serviceInstall` and
-   `serviceHealth` (`unsupported | not_installed | installed | running |
-   error | unknown`). On macOS both launch agents (the brain and its
-   watchdog) carry `AssociatedBundleIdentifiers` naming the channel's ADE
-   app, so the system's "can run in the background" notice and Login Items
-   show ADE's name and icon instead of the signing developer's name.
-4. Install the `ade` command on `PATH`. The `AdeCliSection` "ADE
-   command" card calls `window.ade.adeCli.installForUser()`, which
-   delegates to the platform helper script bundled with the desktop
-   (`/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh`
-   on macOS, equivalents on other platforms). Settings → System → Advanced shows the
-   current install path, an Install / Repair button, and an "Add to
-   PATH" hint when the install target is not on the user's `$PATH`.
-5. Register projects with the runtime. Opening a project on desktop
-   calls `LocalRuntimeConnectionPool.ensureProject(rootPath)`, which
-   issues `projects.add { rootPath }` against the daemon. The project
-   then appears in `projects.list` to every other client (iOS,
-   SSH-attached desktops) without an extra step.
+1. **Reset pre-account machine trust** once, in packaged builds only. Before
+   attaching, ADE removes only `remote-machines.json`,
+   `desktop-paired-machines.json`, `sync-paired-devices.json` and the
+   runtime-host grants sidecar from the channel's machine secrets directory;
+   sessions, identity, the PIN, the bootstrap token, projects and SSH files
+   stay. A pending marker is written before the forced service restart and
+   completes only after the restart is confirmed; an early exit retries the
+   restart without erasing newer pairings.
+2. **Bring up the runtime.** The pool attaches to `~/.ade/sock/ade.sock`, else
+   spawns `ade serve --socket <path>` from the bundled CLI. `initialize`
+   checks the version and a SHA-256 build hash of the CLI script
+   (`ADE_RUNTIME_BUILD_HASH`, set by `apps/ade-cli/src/cli.ts`; compared in
+   `LocalRuntimeConnectionPool.connectClient`). A dev `0.0.0` with a matching
+   hash is accepted. A mismatch raises `LocalRuntimeCompatibilityError`; the
+   pool kills the stale runtime when it reported a pid, unlinks the endpoint
+   and spawns a compatible one.
+3. **Register a per-user login service.** `installServiceBestEffort()` runs `ade
+   serve --install-service` once per session (`apps/ade-cli/src/serviceManager/`:
+   launchd, systemd, Windows startup), exposed as
+   `LocalRuntimeStatus.serviceInstall` and `serviceHealth` (`unsupported |
+   not_installed | installed | running | error | unknown`). On macOS both
+   launch agents (brain and watchdog) carry `AssociatedBundleIdentifiers`, so
+   Login Items show ADE's name and icon.
+4. **Install `ade` on `PATH`** through `window.ade.adeCli.installForUser()`
+   and the bundled helper (`…/Resources/ade-cli/install-path.sh` on macOS);
+   Settings → System → Advanced shows the path, Install / Repair and the PATH
+   hint.
+5. **Register projects.** Opening a project calls
+   `LocalRuntimeConnectionPool.ensureProject(rootPath)` → `projects.add {
+   rootPath }`, so every client sees it in `projects.list`.
 
 ### Project layer (per project)
 
-Repository onboarding covers five things:
+Repository onboarding:
 
-1. detect dev tools (git, gh CLI) and report availability
-2. detect stack signals (node, rust, go, python, docker, make)
-3. suggest test, automation, and provider config defaults
-4. optionally import existing git branches as lanes
-5. prepare initial deterministic workspace state
+1. Detects dev tools (git, `gh`).
+2. Detects stack signals (node, rust, go, python, docker, make).
+3. Suggests test, automation and provider config.
+4. Optionally imports git branches as lanes.
+5. Prepares the initial workspace state.
 
-Timing: project open runs a cheap first pass and defers heavy work.
-Current behavior:
-
-- lanes load without expensive per-lane status first
-- keybindings load immediately (they are tiny)
-- provider mode and full lane status warm later
-- expensive background work is no longer gated on "must finish before
-  the app feels usable"
+Project open runs a cheap first pass: lanes load without per-lane status,
+keybindings load at once, provider modes and full lane status warm later, and
+heavy background work does not block use.
 
 ### Headless install
 
-For machines without a desktop install (CI workers, remote
-SSH-attached runtimes, Linux servers), the ADE runtime and `ade` CLI
-install via one command:
+For machines without the desktop app (CI, SSH-attached runtimes, Linux
+servers):
 
 ```bash
 curl -fsSL https://ade-app.dev/install.sh | sh     # macOS, Linux
 irm https://ade-app.dev/install.ps1 | iex          # Windows PowerShell
 ```
 
-The script downloads the static `ade-<platform-arch>` binary plus its
-native dependency archive, drops the binary in `$ADE_INSTALL_DIR` (or
-`~/.ade/bin`), extracts native modules under `~/.ade/runtime/<arch>/`,
-and best-effort registers the login service. No Node or npm is required —
-the binary is a Node SEA.
-
-Both installers then put `ade` on `PATH` before anything else prompts:
-Windows updates the per-user `PATH` unless `-NoPath`; POSIX writes
-`~/.ade/env` and, with consent on a tty, appends one marker-commented
-`. "$HOME/.ade/env"` block to the shell profile (`~/.zshrc`,
-`~/.bash_profile` on macOS bash, `~/.bashrc` on Linux bash). The block is
-grep-guarded so re-running the installer never duplicates it; fish and
-unrecognized shells get printed instructions instead, as do
-non-interactive runs and `ADE_INSTALL_NO_PATH=1`.
-
-The shell scripts own only what must happen before the `ade` binary
-exists: downloading and verifying the runtime, and registering the brain
-service. They register it through `ade brain start`, which pins the
-runtime's default role to `cto` — the role `ade connect` and the desktop
-app both require. Registering through `serve --install-service` instead
-inherits an unset `ADE_DEFAULT_ROLE`, which lands on `agent` and makes
-sign-in fail on every clean install.
-
-Everything after that is `ade setup`, one implementation both platforms
-hand off to, so Windows and macOS cannot drift. It runs the remaining
-steps — pinned agent CLIs, account, desktop app — then verifies the
-install end to end (brain running, machine linked) and prints a summary
-recapping all five steps. A step that fails names the command that fixes
-it, inline and again under "What's left"; a clean run prints neither.
-
-Between the tools step and the account step, setup waits for the brain's
-endpoint. Everything after it needs a brain that answers, and a brain that is
-still coming up is not a broken one: `awaitRuntimeService` probes the socket,
-installs the service only if nothing answers, and then keeps dialling for
-`SETUP_SERVICE_START_BUDGET_MS` (`RUNTIME_SERVICE_START_WAIT_MS`, 90 s),
-printing "Starting ADE's background service..." only if it actually has to
-wait. The wait is a courtesy, not a gate — its own failure never costs the user
-the account and desktop steps. If the brain is still starting when the account
-step fails, that step is reported as *skipped* with "ADE's background service
-is still starting" rather than as a failed sign-in, and the summary ends with
-"Give it a moment, then run `ade connect`." Reporting a slow start as a broken
-install is what used to send people hunting a fault that did not exist.
-
-The account step checks first: an already-linked machine is offered
-keep / switch / skip rather than being asked to sign in blind. The
-desktop step skips its ~1 GB download when that exact version is already
-installed, resumes an interrupted download via a Range request, and
-launches the app detached so a Windows console is never inherited.
-Use `ade connect --headless` when there is no browser. Non-interactive
-contexts skip the prompts and print the follow-up commands;
-`ADE_INSTALL_NO_PROMPT=1` (or `-NoPrompt`) opts out explicitly. Running
-`ade setup` later re-runs the same flow on its own.
-
-See [`apps/ade-cli/README.md`](../../../apps/ade-cli/README.md)
-for the full flow and environment overrides.
+- The script downloads the static `ade-<platform-arch>` binary (a Node SEA; no
+  Node or npm needed) and its native archive, puts the binary in
+  `$ADE_INSTALL_DIR` (or `~/.ade/bin`), extracts natives under
+  `~/.ade/runtime/<arch>/`, and registers the service.
+- **PATH first.** Windows updates the per-user `PATH` unless `-NoPath`. POSIX
+  writes `~/.ade/env` and, with consent on a tty, appends one grep-guarded
+  `. "$HOME/.ade/env"` block to `~/.zshrc`, `~/.bash_profile` (macOS bash) or
+  `~/.bashrc` (Linux bash). Fish, unknown shells, non-interactive runs and
+  `ADE_INSTALL_NO_PATH=1` get printed instructions.
+- **Register through `ade brain start`**, which pins the default role to `cto`
+  (needed by `ade connect` and the desktop). `serve --install-service` would
+  leave `ADE_DEFAULT_ROLE` unset, land on `agent` and break sign-in.
+- **Then `ade setup`**, shared by both platforms: pinned agent CLIs, account,
+  desktop app, an end-to-end check (brain running, machine linked) and a
+  five-step summary. A failed step names its fix inline and under "What's
+  left".
+  - Before the account step, `awaitRuntimeService` probes the socket, installs
+    the service only if nothing answers, and dials for
+    `SETUP_SERVICE_START_BUDGET_MS` (`RUNTIME_SERVICE_START_WAIT_MS`, 90 s),
+    printing "Starting ADE's background service..." only when it waits. The
+    wait never blocks later steps. A still-starting brain makes the account
+    step *skipped* ("ADE's background service is still starting"), ending with
+    "Give it a moment, then run `ade connect`."
+  - An already-linked machine is offered keep / switch / skip. The desktop step
+    skips its ~1 GB download for the same version, resumes with a Range
+    request, and launches detached (no inherited Windows console).
+  - `ade connect --headless` for no browser. Non-interactive runs skip prompts
+    and print commands; `ADE_INSTALL_NO_PROMPT=1` / `-NoPrompt` opts out.
+    `ade setup` can be re-run.
+- See [`apps/ade-cli/README.md`](../../../apps/ade-cli/README.md) for the flow
+  and overrides.
 
 ### CTO first-run setup
 
-The CTO has no wizard. A project whose `modelPreferences` is null opens
-on the CTO welcome (`CtoWelcome`) instead of the thread: the avatar is
-asleep, and the picker offers only models that can steer a live turn. That
-pick is the entire setup — there is no personality question, no
-project-context step, and nothing to re-run. Reasoning effort, Fast mode,
-backup models, the look and the personality all layer in afterward from the
-CTO's own settings page. `CtoOnboardingState` survives only as an internal
-marker list (`intro`) that is never shown.
-See [CTO › Welcome](../cto/README.md#welcome).
+A project whose `modelPreferences` is null opens on `CtoWelcome` (avatar
+asleep), offering only models that can steer a live turn. That pick is the
+whole setup; effort, Fast, backups, look and personality come later from the
+CTO settings page. `CtoOnboardingState` is an internal marker list (`intro`),
+never shown. See [CTO › Welcome](../cto/README.md#welcome).
 
 ## Settings responsibilities
 
-Settings is organised by **scope**. The sidebar group is the answer to "where
-does this save, and who does it affect", said once at the top of a group instead
-of repeated as a badge on every row:
-
-Settings opens on **General**: one **Needs attention** row (every problem from
-the project, this computer, other machines, providers, MCP servers,
-integrations and Apple; it opens in place to the list, each item with its Fix
-button where there is one, and "Ask an agent" for the whole list), then a
-**You** and a **This machine** card, then **ADE**: the running version and
-track, the one restart action when a build is downloaded ("Restart and
-update", or "Restart and switch to Stable" for a track switch, the same name
-the top bar, the floating prompt and the restart dialog use), the update
-track, automatic installs, and one update row per machine. A failed read
-appears as a "couldn't check" row with Check again instead of claiming nothing
-needs attention. The header counts problems and warnings, with notes beside it
-("3 things need attention · 2 notes"); notes sit under "Good to know".
-
-The list only names real problems. A provider shows only when you use it
-(signed in here, or a Claude or Codex account on this machine that names an
-email or plan, that usage found signed out, or whose saved login broke; usage
-lists every default account, so an unnamed one does not count) and it can't start chats;
-never for a provider you never set up, one you switched off, one whose
-runtime is still downloading (`runtimeDownloadPending` on its connection), or
-one that runs with a side note such as a Codex token too old for usage
-polling. "Background service calls failed" counts a call once after its last
-retry, skips refusals the brain marks expected, and lists the calls that
-failed most (`RuntimeHealthSnapshot.failedActionsTop`). An unreachable ADE Cloud
-box that is asleep, stopped, or on its way to or from that is dropped once the
-box list answers. The problems are gathered in the renderer
-(`settings/overview/useNeedsAttention.ts`); the project part is
-`projectHealth.getReport` ([`project-health.md`](./project-health.md)).
+Settings is organised by **scope**: the sidebar group says where a setting
+saves and who it affects, once per group.
 
 | Group | Saves to | Pages |
 |---|---|---|
 | **General** | — | Needs attention, You and this machine, ADE version and updates on every machine |
 | **You** | Your ADE account, everywhere | Account, Usage, Sharing (desktop only) |
-| **App** | How ADE behaves for you | Chat, Providers (one list, with a machine picker in its title), MCP servers, ADE MCP, Notifications, Appearance, Behaviour, Apple devices and Keyboard (these four on this computer) |
-| **Project** | The open project (routed to the machine that owns it) | Lanes (Your lanes, Rules), Agents (PR chat transcripts), Storage & cleanup (Space, Archive, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
-| **System** | This computer, or the machine picked | Machines (every machine, and a page per machine), Advanced (the background service, the `ade` command, Send a report, Database copies, Reset) |
+| **App** | How ADE behaves for you | Chat, Providers (with a machine picker in its title), MCP servers, ADE MCP, Notifications, Appearance, Behaviour, Apple devices and Keyboard (these four on this computer) |
+| **Project** | The open project (routed to its machine) | Lanes (Your lanes, Rules), Agents (PR chat transcripts), Storage & cleanup (Space, Archive, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
+| **System** | This computer, or the picked machine | Machines (all, and a page each), Advanced (background service, the `ade` command, Send a report, Database copies, Reset) |
 
-Overview, the ADE service page and the per-machine copies of each page are
-gone; every entry kept its id and anchor, and old tab links (`overview`,
+**General** opens first:
+
+- **Needs attention**: every problem (project, this computer, other machines,
+  providers, MCP servers, integrations, Apple), opening in place with Fix
+  buttons and "Ask an agent". A failed read is a "couldn't check" row with
+  Check again. The header counts problems and warnings ("3 things need
+  attention · 2 notes"); notes sit under "Good to know".
+- **You** and **This machine** cards.
+- **ADE**: version and track, the one restart action ("Restart and update", or
+  "Restart and switch to Stable", the same words as the top bar, floating
+  prompt and restart dialog), the track, automatic installs, an update row per
+  machine.
+
+**Only real problems.** A provider counts only when used (signed in here, or a
+Claude/Codex account here naming an email or plan, found signed out by usage,
+or with a broken saved login; an unnamed default account does not count) and
+unable to start chats; never one never set up, switched off, still
+downloading (`runtimeDownloadPending`) or running with a side note (an old
+Codex token for usage). "Background service calls failed" counts a call once
+after its last retry, skips refusals the brain marks expected, and lists the
+worst (`RuntimeHealthSnapshot.failedActionsTop`). An ADE Cloud box that is
+asleep, stopped or changing state is dropped once the box list answers. The
+renderer gathers problems (`settings/overview/useNeedsAttention.ts`); the
+project part is `projectHealth.getReport` ([project-health.md](./project-health.md)).
+
+**Old links.** Every entry keeps its id and anchor; old tab links (`overview`,
 `service`, `computer`, `diagnostics`, `general`, `storage`, `health`,
-`archive`, …) and hashes (`#continue-after-restart`, `#about.reset`) land on
-the page that holds them now.
+`archive`, …) and hashes (`#continue-after-restart`, `#about.reset`) land on the
+page holding them. `DEFAULT_SETTINGS_TAB` names the landing page (not
+`tabs[0]`, so reordering the sidebar cannot move it).
 
-Another machine is reached from Machines (its own page) or from the Providers
-picker, never from a copy of every page per machine. A machine's page reads
-and writes through that machine's pin (keep awake, terminal shell, Continue
-chats after restarts, its saved update track through
-`ai.getMachineUpdateTrack`); a row that only that machine's own ADE can change
-shows its value and "Change on that machine". Offline machines stay listed and
-show what Settings last knew. The Project group is named after the repository
-and disappears when Settings is opened outside a project.
+**Other machines** are reached from Machines or the Providers picker, never a
+copy of every page. A machine's page reads and writes through its pin (keep
+awake, terminal shell, Continue chats after restarts, its update track via
+`ai.getMachineUpdateTrack`); a row only that machine's ADE can change shows
+its value and "Change on that machine". Offline machines show what was last
+known. The Project group is named after the repository and disappears outside
+a project.
 
-`SettingsMachinesNav.tsx` derives the machine pages from the shared project
-machine snapshot. `SettingsMachineScope` carries either the current-machine
-target or an explicit `OpenProjectBinding`; `machineSectionAvailable()` keeps
-local-only and bound-runtime sections on the machine they can actually reach.
-GitHub and Linear are `routed`: every call they make, including the per-machine
-GitHub App account status in `useGithubAppUserAuth`, carries the page's pin, so
-each machine's Integrations page shows and changes that machine's own
-credentials. Browser steps (the GitHub device code, Linear sign-in) open on
-This computer; Linear browser sign-in is not offered for another machine
-because its callback cannot reach it, and the API key path is shown instead.
-Their `linksToTabMachine` flag keeps a settings link with no `?machine=` (an
-integration banner, a PR's GitHub notice) landing on the tab's machine.
+- `SettingsMachinesNav.tsx` derives machine pages from the project machine
+  snapshot; `SettingsMachineScope` carries the current target or an explicit
+  `OpenProjectBinding`; `machineSectionAvailable()` keeps local-only and
+  bound-runtime sections on reachable machines.
+- GitHub and Linear are `routed`: every call (including the per-machine App
+  status in `useGithubAppUserAuth`) carries the page's pin. Browser steps (the
+  GitHub device code, Linear sign-in) open on this computer; Linear browser
+  sign-in is not offered for another machine (its callback cannot reach it),
+  so the API key path shows. `linksToTabMachine` sends a link without
+  `?machine=` to the tab's machine.
 
-Section pages use one-column blocks. Project → Lanes has two views: **Your
-lanes** lists active lanes with All, Stale, Has changes and Running count
-tiles, and **New lanes** holds start defaults and lane templates.
-Project → Storage & cleanup has three: **Space** shows lane and ADE storage and
-the cleanup history, **Archive** manages archived lanes, chats and shells, and
-**Rules** holds archiving idle lanes, session lifecycle and project files.
-Project → Agents holds PR chat transcripts. The hosted web
-client shows only the Rules and Archive views. Links and Settings search
-switch to the page and view containing the destination; legacy `?tab=storage`,
-`?tab=archive`, `?tab=disk` and `?tab=session-lifecycle` open Storage &
-cleanup. Bulk archive re-reads git state
-before applying the merged-PR exception, then skips dirty, active or unpushed
-lanes. A machine change clears the previous machine's lane, storage and health
-data before loading the new machine. Disk pressure remains available in
-Settings with no project open by reading this computer's ADE storage root.
+**Project pages.** One-column blocks. Lanes: **Your lanes** (All, Stale, Has
+changes, Running tiles) and **New lanes** (start defaults, templates). Storage
+& cleanup: **Space** (lane and ADE storage, cleanup history), **Archive**
+(lanes, chats, shells), **Rules** (idle archiving, session lifecycle, project
+files). Agents: PR chat transcripts. The web shows only Rules and Archive.
+Links and search switch to the right view; `?tab=storage`, `archive`, `disk`
+and `session-lifecycle` open Storage & cleanup.
+
+- Bulk archive re-reads git before the merged-PR exception, then skips dirty,
+  active or unpushed lanes.
+- A machine change clears the previous machine's lane, storage and health data
+  first.
+- Disk pressure stays available with no project by reading this computer's ADE
+  storage root.
 
 ### Settings with no project
 
-The new-project screen has a **Settings** button. It sets the app-store flag
-`standaloneSettingsOpen` and navigates to `/settings`, and `App` renders
-`SettingsPage` with `standalone`: a Back button returns to the new-project
-screen and the top bar shows a "Settings" tab. Only settings that need no
-project are shown. The manifest's standalone resolver hides `account-repo` and
-`machine-repo` entries, and a tab whose sections all need a project binding is
-left out. Integrations shows only the account's pages (ADE Cloud and the MCP
-servers); GitHub, Linear and Jira live in a project's machine, so their tiles
-and status reads are left out. A page that mixes this computer's settings with ones saved in a
-project (Chat, Notifications) reads `isStandaloneSettings()` and shows one
-"Open a project to change these." notice (`ProjectSettingsNotice`) in place of
-the project cards (prompt suggestions, Smart decisions, Claude mods, scheduled
-work), so no card asks for a project config that is not there. Standalone mode ends on a new tab ("+"), Back, closing the Settings
-tab, or opening a project. A project closed while on `/settings` falls back to
-the new-project screen.
+The new-project screen's **Settings** button sets `standaloneSettingsOpen` and
+opens `/settings`; `App` renders `SettingsPage` with `standalone` (Back
+returns; the top bar shows a "Settings" tab).
 
-`DEFAULT_SETTINGS_TAB` names where Settings opens. It used to be `tabs[0]`, so
-reordering the sidebar silently moved the landing page.
+- Only project-free settings show: the standalone resolver hides
+  `account-repo` and `machine-repo` entries and tabs whose sections all need a
+  project.
+- Integrations shows only account pages (ADE Cloud, MCP servers); GitHub,
+  Linear and Jira tiles and status reads are left out.
+- Mixed pages (Chat, Notifications) check `isStandaloneSettings()` and show one
+  "Open a project to change these." (`ProjectSettingsNotice`) instead of the
+  project cards (prompt suggestions, Smart decisions, Claude mods, scheduled
+  work).
+- It ends on a new tab ("+"), Back, closing the tab, or opening a project. A
+  project closed on `/settings` falls back to the new-project screen.
 
 ### Settings holds the project sidebar open
 
-On any Settings page the project sidebar is shown: its toggle is disabled (the
-tooltip says why) and Mod+B does nothing. The saved show/hide preference is not
-changed, so leaving Settings restores the sidebar the way you had it. While the
-sidebar is collapsed, its toggle is drawn in the accent colour with a dot.
+On any Settings page the project sidebar shows: its toggle is disabled (the
+tooltip says why) and Mod+B does nothing. The saved preference is untouched, so
+leaving Settings restores it. While collapsed, the toggle is accent-coloured
+with a dot.
 
 A Machines page (General, Appearance, Apple devices, Providers, Lanes,
 Integrations, Diagnostics, Archive) describes one computer, so a project never
-remembers one as its start page. The project returns to its last page that is
-not a Machines page, and a stored Machines page from before this rule restores
-to Work. The cog reopens the project's last Account or Project section, or
-Settings' default page. `isMachineScopedSettingsRoute` in `settingsManifest.ts`
-decides which routes count.
-
-The pages themselves:
+keeps one as its start page: it returns to its last other page (a stored
+Machines page restores to Work). The cog reopens the project's last Account or
+Project section, or the default page. `isMachineScopedSettingsRoute`
+(`settingsManifest.ts`) decides.
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `general/GeneralPage.tsx`, `general/NeedsAttentionStrip.tsx`, `general/MachineUpdateRows.tsx`, `UpdateTrackControls.tsx`, `AutoUpdatesSection.tsx` | Where Settings opens: Needs attention, the You and This machine cards, and the ADE card (running version and track, the one restart action, update track, automatic installs, and one update row per machine, each offered the newest build on its own track). Legacy `?tab=overview`, `?tab=health`, `?tab=about`, `?tab=updates`, `?tab=onboarding`, `?tab=help`, `?tab=tours` and `?tab=home` land here. |
-| Machines (System) | `machines/MachinesPage.tsx`, `machines/MachineSettings.tsx` | Every machine on one page (tile, status, OS, version and track, free disk on this computer), and a page per machine with its updates, providers link, Continue chats after restarts, terminal shell, keep awake, service, `ade` command, system and projects. Legacy `?tab=computer`, `?tab=computers` and `?tab=this-computer` land here. |
-| Advanced (System) | `health/HealthService.tsx`, `BackgroundServiceSection.tsx`, `AdeCliSection.tsx`, `DiagnosticsSharingSection.tsx`, `DatabaseCopiesSection.tsx`, `ResetAdeSection.tsx` | This computer's service status, the background service and quit question, the `ade` command line (`#ade-cli`), **Send a report to ADE** (`#diagnostics-sharing`, hidden on hosted web; there is no analytics or diagnostics consent switch), **Database copies** (`#database-copies`, This computer only: one copy per database from the last update, deleted once the update has worked for a day, with Reveal and Delete; restoring is the "ADE could not start" window's Go back) and **Reset ADE** (`#reset-ade`, local machine only, last on the page; the old `#about.reset` hash still lands on it). Legacy `?tab=service`, `?tab=ade-service`, `?tab=diagnostics` and `?tab=context` land here. |
-| Appearance (App, this computer) | `AppearanceSection.tsx`, `AppearanceTerminal.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx`, `AppearanceScheduleSettings.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, the Focus grid's chats per page, terminal text, and the **Background** (`#background`) scene picker — plain, gradient, one picture, or a shuffled library, with the shuffle cadence and App colours from the picture. The **Schedule** switches the whole look at set times of day. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
-| Apple devices (App, this computer) | `AppleDevicesSection.tsx` | This computer's own simulator and preview choices — the 3D device body, recording overlays (tap rings, typed-text badges), the remote streaming bitrate cap, and the recordings storage warning — drawn in the Appearance language. Per computer, because every Mac has its own simulators, and it sits beside Appearance under This computer rather than on the Account group. It still files through the account store so the brain on this computer can read the remote streaming cap and the recording overlays: each computer's copy lives under the account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey`). |
-| Keyboard (App, this computer) | `keyboard/KeyboardPage.tsx`, `keyboard/ShortcutsCard.tsx`, `keyboard/QuickSlotsCards.tsx` | Laid out like ADE MCP: a banner (status, the Quick slots leader, how many shortcuts and how many you changed, the main modifier, where it saves), then cards. The shortcut editor for ADE's keybinding store (`#keyboard-shortcuts`): every action in `shared/keybindings.ts`, a key recorder, conflict marks against other shortcuts, Quick slot chords and OS-reserved chords, and reset per shortcut or all; the shortcuts save on this computer (`lib/keybindingStore.ts`, `ade.keybindings.v1`) for every project and window, and the hosted client keeps them in the browser; overrides in a project's older brain store are copied once. Quick slots: nine actions on a leader chord plus a digit (`Option+Command` on macOS, `Ctrl+Shift` on Windows), a 3×3 assignment grid, the leader and sticky-mode choices, and saved model profiles (model + thinking level). The model-profile rule is focus-sensitive: with the caret in the composer a slot inserts an `@model` chip, elsewhere it sets the chat's model. The chords are read by this window, so the page is This computer only. See [Quick slots](../chat/quick-slots.md). |
-| Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`), `SmartDecisionsSection.tsx` | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, drafts button, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. Smart decisions (OpenCode Jev) and the composer's model hint sit beside Next prompt: they act on chats and the composer, and save to the project's `.ade/local.yaml` like it. With no OpenCode Zen sign-in the Smart decisions row offers **Sign in to OpenCode** instead of its switch. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
-| Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming uses the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
-| Lanes | `NewLaneSettingsSection.tsx` | **Your lanes** manages lanes; **New lanes** contains Where new lanes start and Lane templates. |
-| Sharing (You, desktop only) | `laneShare/SharingSettingsPage.tsx`, `laneShare/laneShareDefaults.tsx` | Lane sharing at the account level, three sections on one page (each with its own anchor: `#sharing-by-me`, `#sharing-with-me`, `#sharing-defaults`). **Lanes you shared**: every share the account gave, on any machine, grouped by project, one row per person; rows of the machine and project this window is bound to show rights and usage and can be changed, and a share on another computer can be stopped from here. **Lanes shared with you**: shares given to this account, with Accept, Open, Decline and Leave (an account call, no project needed). **Default access**: the start value of the share sheet for a new person, one value per account (account settings key `laneShare.defaultRights`, scope `all`). It is in `ACCOUNT_ONLY_TAB_IDS` and hidden on the web client, which has no channel for the owner's `lane_share` actions. See [lane sharing](../lanes/lane-sharing.md). |
-| Agents (Project) | `PrChatTranscriptsSection.tsx` | What agents keep about the project: PR transcript gists. The PR transcripts entry keeps its `lanes-git.pr-chat-transcripts` id. |
-| Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
-| Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | Everything ADE tells you about running work. Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound — the per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this page. Then the surfaces Activity paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle. All of it reads and writes through one `useActivitySettings()` model, so a change on one control can no longer be overwritten by a save from another copy; `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the entry points cannot drift. Legacy `?tab=attention`, `?tab=activity`, and the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
-| Passwords & Secrets (This computer) | `passwords/PasswordsSection.tsx`, `passwords/PasswordDialogs.tsx`, `passwords/passwordsFormat.ts` | One end-to-end encrypted vault for logins, passkeys and secrets, on by default on every computer. Secrets for every project or one project, saved to the account or to this computer only, with `.env` import and export. Legacy `?tab=secrets` and `?tab=secret` open its Secrets view. See [Passwords & Secrets](../passwords/README.md). |
-| Storage & cleanup (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `ArchiveSection.tsx`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk-usage and lane-storage dashboard, cleanup history, the archive, rules for archiving idle lanes, session lifecycle, and project files. Rule fields show the value actually in force with an explicit "Inherited" marker. Legacy `?tab=storage`, `?tab=disk`, `?tab=space`, `?tab=archive` and `?tab=session-lifecycle` land here; `?tab=diagnostics` opens System → Advanced. See [Storage and recovery](../storage-and-recovery/README.md). |
-| Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives where spend lives), `UsageDailyChart.tsx`, `UsageLimitGauges.tsx`, `UsageSparks.tsx`, `UsageWeekCompare.tsx`, `UsagePooledLimits.tsx`, `UsageCostSplit.tsx`, `UsageLimitsBand.tsx`, `UsageAccountRow.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageProviderNames.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: headline totals with trends, this machine's Rate limits as radial gauges, the layered daily chart, Week over week, per-provider split, breakdown, Activity, contributing machines, and (account scope) pooled Live limits. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
+| General | `general/GeneralPage.tsx`, `NeedsAttentionStrip.tsx`, `MachineUpdateRows.tsx`, `UpdateTrackControls.tsx`, `AutoUpdatesSection.tsx` | Needs attention, You and This machine, the ADE card. Legacy `?tab=overview`, `health`, `about`, `updates`, `onboarding`, `help`, `tours`, `home`. |
+| Machines (System) | `machines/MachinesPage.tsx`, `MachineSettings.tsx` | Every machine (tile, status, OS, version and track, free disk here) and a page each: updates, providers link, Continue chats after restarts, terminal shell, keep awake, service, `ade` command, system, projects. Legacy `?tab=computer`, `computers`, `this-computer`. |
+| Advanced (System) | `health/HealthService.tsx`, `BackgroundServiceSection.tsx`, `AdeCliSection.tsx`, `DiagnosticsSharingSection.tsx`, `DatabaseCopiesSection.tsx`, `ResetAdeSection.tsx` | Service status, background service and quit question, the `ade` command (`#ade-cli`), **Send a report to ADE** (`#diagnostics-sharing`, not on hosted web; no consent switch), **Database copies** (`#database-copies`, this computer: one copy per database from the last update, deleted after a day of the update working, Reveal and Delete; restore is the "ADE could not start" window's Go back), **Reset ADE** (`#reset-ade`, last; `#about.reset` lands here). Legacy `?tab=service`, `ade-service`, `diagnostics`, `context`. |
+| Appearance (App, this computer) | `AppearanceSection.tsx`, `AppearanceTerminal.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx`, `AppearanceScheduleSettings.tsx` | Per computer, never synced: theme families with search, Auto / Light / Dark, import/export, interface and code faces, reduce motion, Focus grid chats per page, terminal text, **Background** (`#background`: plain, gradient, picture, shuffle with cadence and App colours from the picture), **Schedule**. One page, under This computer. Chat looks are on Chat. |
+| Apple devices (App, this computer) | `AppleDevicesSection.tsx` | This computer's simulator and preview choices: 3D body, recording overlays (tap rings, typed-text badges), remote streaming bitrate cap, recordings storage warning. Filed in the account store per device (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey`) so this brain can read the cap and overlays. |
+| Keyboard (App, this computer) | `keyboard/KeyboardPage.tsx`, `ShortcutsCard.tsx`, `QuickSlotsCards.tsx` | A banner (status, Quick slots leader, shortcut and change counts, main modifier, where it saves), then cards. **Shortcuts** (`#keyboard-shortcuts`): every action in `shared/keybindings.ts`, a recorder, conflict marks against shortcuts, Quick slot chords and OS-reserved chords, reset per shortcut or all; saved on this computer (`lib/keybindingStore.ts`, `ade.keybindings.v1`) for every project and window (the hosted client keeps them in the browser); older per-project overrides are copied once. **Quick slots**: nine actions on a leader + digit (`Option+Command` macOS, `Ctrl+Shift` Windows), a 3×3 grid, leader and sticky choices, saved model profiles (model + thinking). With the caret in the composer a profile inserts an `@model` chip; elsewhere it sets the chat's model. See [Quick slots](../chat/quick-slots.md). |
+| Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (with `ChatAppearancePreview`), `SmartDecisionsSection.tsx` | Typography and density, surface (tint, corners), details (copy-button position, minimap, drafts button, launch-prompt clipboard, live preview), voice input. Smart decisions (OpenCode Jev) and the model hint sit beside Next prompt and save to `.ade/local.yaml`; without an OpenCode Zen sign-in the row offers **Sign in to OpenCode**. Label maps are imported from `AppearanceSection.tsx`, not copied. |
+| Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Connections, model routing, spend cap, voice input. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi with in-app sign-in) and **OpenCode — Universal Model Access**. Background helpers here are scheduled-work pause/recovery only. Legacy `?tab=ai`, `providers`, `background-jobs`, `automations`. On hosted web every provider page is hidden and the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) shows the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
+| Lanes | `NewLaneSettingsSection.tsx` | **Your lanes**; **New lanes** (Where new lanes start, Lane templates). |
+| Sharing (You, desktop only) | `laneShare/SharingSettingsPage.tsx`, `laneShare/laneShareDefaults.tsx` | **Lanes you shared** (`#sharing-by-me`: every share on any machine, by project, a row per person; rows for this window's machine and project show and change rights and usage; a share elsewhere can be stopped), **Lanes shared with you** (`#sharing-with-me`: Accept, Open, Decline, Leave; no project needed), **Default access** (`#sharing-defaults`, account key `laneShare.defaultRights`, scope `all`). In `ACCOUNT_ONLY_TAB_IDS`; hidden on the web (no channel for `lane_share`). See [lane sharing](../lanes/lane-sharing.md). |
+| Agents (Project) | `PrChatTranscriptsSection.tsx` | PR transcript gists (id `lanes-git.pr-chat-transcripts`). |
+| Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear. Legacy `?tab=integrations`, `github`, `linear`, and `?integration=github|linear`; `?integration=cli` follows the `ade-cli` anchor to General. |
+| Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | `AttentionPreferences` delivery: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, the completion sound. Then Activity's surfaces: the notch (enabled; reveal `always` or `hover`, the same strip either way; expanded panel), celebrations, sounds, hide-previews, per-machine mute. The notch always flashes for work that needs you, and the strip shows state-group counts. One `useActivitySettings()` model; `ActivitySettingsControls` also mounts in the Activity popover and pane. Legacy `?tab=attention`, `activity`, and `#attention-notch`, `#celebrations`, `#attention-sounds`, `#hide-previews`. |
+| Passwords & Secrets (This computer) | `passwords/PasswordsSection.tsx`, `PasswordDialogs.tsx`, `passwordsFormat.ts` | One end-to-end encrypted vault (logins, passkeys, secrets), on by default; secrets for every or one project, in the account or this computer only, `.env` import and export. `?tab=secrets` / `secret` open Secrets. See [Passwords & Secrets](../passwords/README.md). |
+| Storage & cleanup (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `ArchiveSection.tsx`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk and lane storage, cleanup history, archive, idle-archive rules, session lifecycle, project files. Rule fields show the value in force with "Inherited". Legacy `?tab=storage`, `disk`, `space`, `archive`, `session-lifecycle`; `?tab=diagnostics` opens Advanced. See [Storage and recovery](../storage-and-recovery/README.md). |
+| Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives with spend) and the `usage/` components | The one-page usage dashboard (see the source map); scope `account` / `machine` / `project`. Legacy `?tab=usage`, `ade-usage`. |
 
-> Live provider quota windows render in two shapes: the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageLimitsBand.tsx` → `UsageAccountRow.tsx`, which also hosts the collapsible `BudgetCapEditor` for automation guardrails) keeps one meter row per account, while Settings > Usage's This machine / This project scope draws the same snapshot as radial `UsageLimitGauges`. The rest of that page is the retrospective cross-client dashboard.
+Live quota windows render twice from one snapshot: the top-bar popup
+(`HeaderUsageControl.tsx` → `UsageLimitsBand.tsx` → `UsageAccountRow.tsx`, with
+the collapsible `BudgetCapEditor`) as one meter row per account, and Settings ›
+Usage's machine and project scopes as `UsageLimitGauges`.
 
-
-Legacy deep links are forwarded by `LEGACY_TAB_ALIASES` /
-`LEGACY_HASH_ALIASES` in `settingsManifest.ts` (previously `TAB_ALIASES`
-and `HASH_TARGET_SECTIONS` in `SettingsPage.tsx`). A legacy route that
-silently resolves to the wrong page is invisible in review, so
-`settingsManifest.test.ts` asserts that every tab id ADE has shipped
-still resolves and that every hash alias points at a live entry.
-
-Settings search lives in the content header and filters cards in place
-via the `data-settings-anchor` each card carries; a group whose cards all
-filter out hides its heading too. Cmd-K entries are generated from the
-same manifest — one per tab plus one per setting — so searching "rebase"
-surfaces the matching Lanes setting.
+- `LEGACY_TAB_ALIASES` / `LEGACY_HASH_ALIASES` (`settingsManifest.ts`) forward
+  old links; `settingsManifest.test.ts` asserts every shipped tab id resolves
+  and every hash alias reaches a live entry.
+- Search in the content header filters cards by `data-settings-anchor`; a
+  group whose cards all filter out hides its heading. Cmd-K has one entry per
+  tab and per setting from the same manifest.
 
 ### Keeping the machine awake
 
-**Keep this Mac awake while agents work** (Settings → Behaviour, anchor
-`keep-awake`) is one radiogroup with three levels. The selected machine's brain
-stores the preference in `<ADE_HOME>/keep-awake.json`, so the rule remains in
-effect after the desktop quits and the brain serves a phone. On first use, the
-desktop migrates `keepAwakePreferences` from `GlobalState` and removes the old
-value only after the brain confirms the migration:
+**Keep this Mac awake while agents work** (Settings → Behaviour, `keep-awake`)
+is one radiogroup. The selected machine's brain stores it in
+`<ADE_HOME>/keep-awake.json`, so it holds after the desktop quits. The desktop
+migrates `keepAwakePreferences` from `GlobalState` on first use and removes
+the old value only after the brain confirms.
 
 | Level | What it does | Where it works |
 |---|---|---|
-| `never` (default) | ADE holds nothing. Turns pause when the machine sleeps, and the chat says so. | everywhere |
-| `while-away` | The brain holds one OS wake lock **only while work is running**. macOS runs `caffeinate -i -w <brain pid>`; Windows runs a helper using `SetThreadExecutionState` that exits with the brain; Linux runs `systemd-inhibit --what=idle:sleep` around a `tail --pid=<brain pid>`. Stops idle sleep. Not the lid. | macOS, Windows, Linux with systemd |
-| `lid-closed` | `pmset -a disablesleep 1` through the system authorization dialog. Machine-wide, and it outlives ADE. | macOS only |
+| `never` (default) | Holds nothing. Turns pause when the machine sleeps, and the chat says so. | everywhere |
+| `while-away` | The brain holds one OS wake lock **only while work runs**: macOS `caffeinate -i -w <brain pid>`; Windows a `SetThreadExecutionState` helper that exits with the brain; Linux `systemd-inhibit --what=idle:sleep` around `tail --pid=<brain pid>`. Stops idle sleep, not the lid. | macOS, Windows, Linux with systemd |
+| `lid-closed` | `pmset -a disablesleep 1` through the authorization dialog. Machine-wide; outlives ADE. | macOS only |
 
-The distinction between the middle and top levels is the whole point of the
-setting, and it was measured rather than assumed: **a wake lock stops idle sleep
-only.** An `IOPMAssertion` held continuously for 35 days sat through two
-clamshell sleeps. Nothing in this feature's code or copy may imply otherwise.
-Only `pmset -a disablesleep` survives a closed lid, and it is root-only and
-machine-wide — which is why the top level asks for a password and warns that it
-stays on after you quit. The password prompt runs in the selected Mac's desktop;
-for a remote Mac, open Settings on that Mac to authorize the change. Windows has
-no equivalent, so the third level is **absent** on Windows rather than disabled.
-The selected brain reports its platform, so the settings pane describes the
-machine it is showing.
-
-Two behaviors follow from the level being an arming switch, not a pin:
-
-- The lock follows the **work**, not the setting. A 5-second brain poll counts
-  active agent turns plus tracked agent CLI sessions whose PTY state is
-  `running`; idle shells and merely-open sessions do not count. One helper runs
-  for the full active period, and a failed activity read releases the lock.
-  `never` releases synchronously. macOS's `-w` and the Windows process-handle
-  wait also release the lock when the brain exits.
-- The snapshot reports what the **machine** says, not what the stored level
-  says. A `lid-closed` level whose assertion was released behind ADE's back
-  renders a "This Mac can still sleep." alert with a **Turn on again** action,
-  rather than silently claiming a lock it does not hold. `pmset -a disablesleep`
-  is deliberately left engaged at quit — reverting would either prompt for a
-  password on the way out or re-prompt on every launch to put it back.
-
-Separately, the section reads the OS's own idle-sleep timer (`pmset -g custom`
-on macOS, `powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE` on Windows,
-nothing on Linux) and, when a non-zero timer would stop agents anyway, offers a
-one-click fix. The macOS fix writes system power settings and is labelled
-**Fix — needs your password**; the Windows fix edits the signed-in user's active
-scheme and needs no elevation.
-
-Reads and writes go to the selected machine: a pinned machine through the
-remote-capable `keep_awake` runtime action, this computer through the brain's
-machine method `keepAwake.call` (no project needed, cto role only). A brain
-that does not manage keep-awake answers `action_not_callable`; a brain from
-before the machine method is reached through any project it has. The local desktop handles the macOS admin prompt because
-the brain has no GUI. Fixing the local Mac's system sleep timer still uses that
-prompt; a remote Mac is directed to its own Settings, while Windows uses the
-selected brain action. The desktop starts its old in-process blocker only when
-the connected local brain reports that it lacks the new action; successful
-brain reads stop that fallback before it can duplicate the brain's lock. Hosted
-web and the browser mock report the frozen inert snapshot and direct the user
-to change power settings on the computer.
-
-For what happens when the machine sleeps anyway, see
-[chat → When the host machine sleeps](../chat/README.md#when-the-host-machine-sleeps)
-and [machine power and sleep in the account directory](../sync-and-multi-device/README.md#account-directory-and-connection-leases).
+- **A wake lock stops idle sleep only** (measured: an `IOPMAssertion` held 35
+  days slept through two lid closes). No code or copy may imply otherwise.
+  Only `pmset -a disablesleep` survives a closed lid; it is root-only and
+  machine-wide, so the level asks for a password and warns it stays on. The
+  prompt runs in the selected Mac's desktop (open Settings on a remote Mac).
+  Windows has no equivalent, so the level is **absent** there. The brain
+  reports its platform, so the pane describes the machine it shows.
+- **The lock follows the work.** A 5-second brain poll counts active agent
+  turns and tracked agent CLI sessions with PTY state `running` (idle shells
+  and open sessions do not count). One helper runs for the whole active
+  period; a failed read releases it; `never` releases synchronously; macOS
+  `-w` and the Windows handle wait release it when the brain exits.
+- **The snapshot reports the machine.** A `lid-closed` level whose assertion
+  was released elsewhere shows "This Mac can still sleep." with **Turn on
+  again**. `pmset -a disablesleep` stays engaged at quit (reverting would
+  prompt on exit or on every launch).
+- **The OS idle timer.** The section reads it (`pmset -g custom` on macOS,
+  `powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE` on Windows, nothing on
+  Linux) and offers a fix when a non-zero timer would stop agents: **Fix —
+  needs your password** on macOS (system settings); the Windows fix edits the
+  user's active scheme without elevation.
+- **Routing.** A pinned machine uses the remote-capable `keep_awake` action;
+  this computer uses the brain's machine method `keepAwake.call` (no project,
+  cto role). A brain without keep-awake answers `action_not_callable`; a brain
+  without the machine method is reached through any project. The local desktop
+  shows macOS admin prompts (the brain has no GUI); a remote Mac is sent to its
+  own Settings; Windows uses the brain action. The desktop's in-process blocker
+  starts only when the local brain lacks the action, and successful brain reads
+  stop it. Hosted web and the mock show the inert snapshot.
+- When the machine sleeps anyway, see
+  [chat → When the host machine sleeps](../chat/README.md#when-the-host-machine-sleeps)
+  and [machine power in the account directory](../sync-and-multi-device/README.md#account-directory-and-connection-leases).
 
 ### Capturing a window with a key gesture
 
-**Settings → Behaviour → "Capture with a key gesture"**
-(anchor `capture-gesture`, `CaptureGestureSection.tsx`) arms the global
-screenshot chord — both ⌘ on macOS, both Ctrl on Windows — described in
-[Capture gesture](../capture-gesture/README.md).
+**Settings → Behaviour → "Capture with a key gesture"** (`capture-gesture`,
+`CaptureGestureSection.tsx`) arms the global chord (both ⌘ on macOS, both Ctrl
+on Windows); see [Capture gesture](../capture-gesture/README.md).
 
-The switch is `scope: "machine"`, `showScopeChip: true`, `web: "hidden"`,
-and it is stored in this renderer's `localStorage` under
-`ade:capture-gesture:enabled` (defaulting **on**) rather than in synced
-settings, because what a native
-helper does on *this* computer is not a preference that should travel to
-another machine through the account. A second Mac has its own Screen
-Recording grant and its own opinion about whether a global key gesture is
-welcome. `GlobalCaptureGestureHost` pushes the stored value down through
-`captureGesture.updateSettings` on mount, because the setting lives in the
-renderer and the main process cannot know whether to run the helper until
-a window tells it.
-
-The card shows helper **health**, not just a toggle, because the
-interesting failures are all things only the user can fix: macOS has not
-been told ADE may record the screen (`permission_denied`, recovery
-`grant_permission`), macOS 27 has not been told ADE may watch the keyboard
-(`permission_denied` with an Input Monitoring message, recovery `retry`,
-because the helper installs its tap again in place), the key monitor could
-not start (`monitor_unavailable`, recovery `retry`), or the helper is
-missing from the install (`missing`, recovery `reinstall_or_update`). A
-bare switch that is on while the gesture does nothing is the exact state
-this card exists to prevent. On Linux the card renders `CAPTURE_GESTURE_UNSUPPORTED_BLOCKER`
-rather than a toggle, and `captureGestureBridgeAvailable()` is an `in`
-probe rather than a property read — the hosted web adapter's fallback
-proxy fabricates callable namespaces for missing properties, so
-`window.ade.captureGesture` is truthy there even with no helper behind it.
+- `scope: "machine"`, `showScopeChip: true`, `web: "hidden"`, stored in
+  `localStorage` `ade:capture-gesture:enabled` (default **on**), not synced:
+  each Mac has its own Screen Recording grant. `GlobalCaptureGestureHost`
+  pushes it to main through `captureGesture.updateSettings` on mount.
+- The card shows helper **health**, because every failure is the user's to
+  fix: `permission_denied` (Screen Recording; recovery `grant_permission`),
+  `permission_denied` with an Input Monitoring message on macOS 27 (recovery
+  `retry`; the tap reinstalls in place), `monitor_unavailable` (`retry`),
+  `missing` (`reinstall_or_update`).
+- Linux shows `CAPTURE_GESTURE_UNSUPPORTED_BLOCKER`.
+  `captureGestureBridgeAvailable()` uses an `in` probe, because the hosted web
+  adapter's proxy fabricates `window.ade.captureGesture`.
 
 ### Where durable data lives
 
 | What | Location | Notes |
 |---|---|---|
 | Project config (local) | `.ade/local.yaml` | gitignored |
-| Onboarding status | `AdeDb` via `STATUS_KEY = "onboarding:status"` | `completedAt`, `dismissedAt`, `freshProject` |
-| Context doc prefs | `AdeDb` via `context:docs:preferences.v1` | provider, model, reasoning effort, event triggers |
-| Terminal preferences | `localStorage` under `ade.terminalPreferences.v1` | font size, line height, scrollback, font family |
-| Work view state | `localStorage` under `ade.workViewState.v1` | per-project and per-lane-project slices |
-| Keep-awake level | `<ADE_HOME>/keep-awake.json` | brain-owned and machine-scoped; old `GlobalState.keepAwakePreferences` migrates once; unreadable state fails toward `never` |
-| GitHub credentials | Keychain via `safeStorage` | tokens encrypted; a store ADE cannot decrypt reports `credentialStoreUnreadable` rather than "not connected" |
-| Account settings cache | `~/.ade/account-settings.json` | Plaintext, owner-tagged cache; settings survive sign-out and stamps are namespaced by account |
-| Account vault cache | `~/.ade/account-vault.json.enc` | Encrypted with the machine credential-store key, written atomically with `0600`; legacy plaintext is removed after a successful encrypted write |
-| AI provider API keys | Machine credential store plus account vault | Every local value records device/account provenance; account-hydrated keys are purged on sign-out or account switch, while device-origin keys remain |
-| Linear credentials | Encrypted machine credential store or active project's `.ade/secrets`, plus account vault | The OAuth refresh token is the `linear_refresh_token` account item, stamped with a `refreshOwner` device id. Only that owner hydrates or refreshes the grant; provenance purges account-origin values on sign-out or account switch, while device-origin API keys and custom OAuth-client settings remain local |
-| Secrets | Passwords & Secrets (sealed items on the relay, a machine-key-encrypted cache per computer) | A secret is for every project or for one repository (keyed by normalized Git origin, or the folder with no remote) and follows the account; a "this computer only" secret never leaves the computer |
-| Capture-gesture switch | `localStorage` under `ade:capture-gesture:enabled` | machine-local, defaults on; pushed to the main process by `GlobalCaptureGestureHost` on mount |
+| Onboarding status | `AdeDb`, `STATUS_KEY = "onboarding:status"` | `completedAt`, `dismissedAt`, `freshProject` |
+| Context doc prefs | `AdeDb`, `context:docs:preferences.v1` | provider, model, effort, event triggers |
+| Terminal preferences | `localStorage` `ade.terminalPreferences.v1` | font size, line height, scrollback, family |
+| Work view state | `localStorage` `ade.workViewState.v1` | per-project and per-lane-project slices |
+| Keep-awake level | `<ADE_HOME>/keep-awake.json` | brain-owned, per machine; `GlobalState.keepAwakePreferences` migrates once; unreadable means `never` |
+| GitHub credentials | Keychain via `safeStorage` | encrypted; an undecryptable store reports `credentialStoreUnreadable`, not "not connected" |
+| Account settings cache | `~/.ade/account-settings.json` | plaintext, owner-tagged; survives sign-out; stamps namespaced by account |
+| Account vault cache | `~/.ade/account-vault.json.enc` | machine-key encrypted, atomic `0600` writes; a plaintext copy is removed after an encrypted write |
+| AI provider API keys | Machine credential store plus account vault | each value records device/account provenance; account-hydrated keys go on sign-out or switch; device-origin keys stay |
+| Linear credentials | Machine credential store or the project's `.ade/secrets`, plus account vault | the refresh token is the `linear_refresh_token` item with a `refreshOwner` device id; only that owner hydrates or refreshes; account-origin values go on sign-out; device API keys and custom OAuth settings stay |
+| Secrets | Passwords & Secrets (sealed on the relay, a machine-key-encrypted cache per computer) | for every project or one repository (normalized origin, or the folder without a remote); follows the account; "this computer only" never leaves |
+| Capture-gesture switch | `localStorage` `ade:capture-gesture:enabled` | per machine, default on |
 
 ## AI mode and provider behavior
 
-`effective.ai.mode` is the source of truth for guest vs subscription
-behavior. Current behavior:
+`effective.ai.mode` decides guest versus subscription behaviour:
 
-- **guest mode** — deterministic features remain usable; AI-backed
-  features degrade cleanly (no narrative generation, no summaries).
-- **subscription mode** — unlocks chat, narratives, and summaries.
+- **guest**: deterministic features work; AI features (narratives, summaries)
+  degrade cleanly.
+- **subscription**: chat, narratives and summaries.
 
-Legacy `providers.mode` migration ran during earlier releases and is
-no longer part of the contract; `projectConfigService` still contains
-the migration path but it is idempotent for current configs.
+`projectConfigService` keeps an idempotent `providers.mode` migration path.
 
 ## Provider accounts
 
-A machine can hold several Claude logins and several Codex logins. Each one is a
-provider config directory plus a label, selected at launch by a single
-environment variable — `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. Only those two
-providers participate; the rest have no config-home override or no local account
-file, so they have exactly one identity per machine.
+A machine can hold several Claude and several Codex logins. Each is a provider
+config directory selected at launch by one variable, `CLAUDE_CONFIG_DIR` or
+`CODEX_HOME`. Other providers have one identity per machine (no config-home
+override or no local account file).
 
-- **The registry is a brain-owned JSON file**, `provider-instances.json`, in the
-  machine ADE home beside `projects.json`. It is deliberately not a SQLite
-  table: every table with a primary key in this repo auto-becomes a cr-sqlite
-  CRR and replicates to every paired device, and a list of directory paths on
-  this laptop is meaningless on the phone. Accounts created through ADE get a
-  config home at `<adeHome>/provider-homes/<provider>/<instanceId>/`, created
-  `0700` because the provider CLI writes its own credentials there. ADE never
-  reads, copies, or revokes those credentials.
-- **The default account is synthesized on read.** The login the machine already
-  had is the default account: its id IS the provider slug (`claude`, `codex`)
-  and its config home is whatever `providerConfigHomes.ts` resolves right now,
-  recomputed every read rather than frozen. There is no migration step and no
-  first-boot write — a machine that has never used this feature and one that has
-  both describe the same state, and deleting the registry file is a complete
-  reset. The default account's identity is also read WITHOUT a scoped home,
-  because the Claude CLI records `oauthAccount` in `~/.claude.json`, beside the
-  config directory rather than inside it.
-- **Exactly one account per provider is the default**, stored as a pointer. A
-  pointer at an account that no longer exists resolves to the base identity
-  rather than erroring — the same silent fallback a chat takes.
-- **Removing an account deletes nothing on disk.** It is forgotten from the
-  registry and the config home is returned so the user can be told what is still
-  there. The machine's own login and the current default both refuse removal.
-- **Accounts have no names.** Every surface shows an account as its signed-in
-  email, else its id (`ProviderInstance.label` is that value, set by the host:
-  `providerInstanceDisplayLabel`). The id is what `--instance` takes and never
-  changes; a new account gets the next free `<provider>-<n>`. `create` takes no
-  label (an optional one from an older phone or script only shapes the id), and
-  desktop, web, iOS and the CLI no longer offer Rename. The `rename` action stays
-  for older phones; what it stores is not shown.
-- **Action domain `provider_instances`** carries `list`, `create`, `remove`,
-  `rename` (older phones only), `setDefault`, `setAccent`, `getSettings`,
-  `setSettings`, `loginCommand`, and `refresh` — on the agent tier for reads
-  *and* mutations, with no CTO gate, because an account is a directory path,
-  never a token. Reachable from the desktop IPC surface, the preload three-way
-  route (pinned runtime → project runtime → local IPC), the daemon action bus,
-  and `ade providers accounts list|add|remove|default`. `setAccent` and the
-  stored `accentColor` field are retained for compatibility only: no desktop,
-  web, or iOS surface offers or shows a per-account colour any more.
-- **Per-provider settings** (`smartBalance`, `autoStartWindows`) live in the
-  same file under `settings.<provider>` and default to off.
-- **Compaction.** Each provider page shows the compaction settings ADE can
-  apply for that harness (`CompactionSettings.tsx`): **Compact at** (Auto by
-  default) and, for Claude, **Subagents compact at** and **After the cache
-  expires**. There is no on/off switch: every chat compacts when it fills; the provider-level values
-  live in project config `ai.compaction.<provider>` in `.ade/local.yaml`. With
-  more than one account, the actions menu of each account card has an
-  **Auto-compact** page ("Same as provider default" or Custom), stored as
-  `compaction` on that account
-  record; it overrides the provider value field by field. See
-  [Compaction per provider](../chat/agent-routing.md#compaction-per-provider).
-- **Claude sign-in end date.** A Claude account card shows one dim line, "Sign-in
-  ends around Nov 17", once a chat on that account has reported the date
-  (`credential_expires_at`, kept as `claudeLoginEndsAt` on the account record).
-  It says "around" because the date can be an estimate, and it goes away when
-  the account is replaced by a different login. It appears only on this page.
-- **Subagent prompt cache (Claude).** The actions menu of each Claude account
-  card has a **Subagent cache** page (`AccountCard.tsx`) that explains the two
-  choices: 5 minutes, the Claude Code default, or 1 hour. With 1 hour, the card
-  header shows a **1h cache** tag. Account settings live in the menu, never in
-  the card body, so the cards stay a quick view. ADE has no
-  default of its own here: 1-hour
-  cache writes cost more, and they pay off only when subagents often wait more
-  than 5 minutes between requests. "1 hour" is stored as
-  `subagentPromptCacheTtl` on the account record; the default stores nothing.
-  `claudeAccountPromptCacheEnv` (`providerInstanceStore.ts`) turns the choice
-  into `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` for SDK chats and terminal
-  `claude` sessions on that account. It adds nothing when the environment
-  already states a TTL, and a launch on a preset or a stored credential never
-  gets it, because that endpoint bills separately.
-- **Main chat prompt cache (Claude).** The same menu has a **Main chat cache**
-  page: Automatic (the default, Claude Code decides: 1 hour on a subscription
-  within its limits, 5 minutes otherwise), 5 minutes, or 1 hour. A choice is
-  stored as `mainPromptCacheTtl` on the account record and travels the same
-  path as `CLAUDE_CODE_PROMPT_CACHE_TTL`; Automatic stores nothing. The chat's
-  cache countdown and the Compact first offer do not read this setting. They
-  read the lifetime Claude really wrote
-  ([composer and UI](../chat/composer-and-ui.md)), so they follow it on the next
-  turn.
-- **Extra usage (Claude).** The same menu has an **Extra usage** page with two
-  choices: **Continue**, which is what Claude Code does by itself, or **Stop
-  the turn**. Extra usage is usage that Claude bills after the plan limit, on
-  an account that allows it. "Stop the turn" is stored as `onExtraUsage: "stop"`
-  on the account record; the default stores nothing. When a `rate_limit_event`
-  says the request drew on extra usage (`isUsingOverage` or `overageInUse`),
-  the Claude chat runtime interrupts the turn, cancels its queued messages,
-  and ends it as a usage limit: the quota card shows, and the chat then does
-  what it does at a plan limit (it resumes at the reset when Claude sends a
-  reset time and the chat continues at limits, or it moves to another account
-  under Smart balance). Claude reports extra usage after the response, so one
-  request is billed before the stop. The setting lives in this machine's
-  account registry, so another machine with the same account does not apply
-  it, and iOS and the hosted web client show no control for it. It covers ADE
-  chats that run on the account's own login: a chat that runs on a preset or a
-  stored credential, and a terminal `claude` session, are not stopped. A chat
-  whose preset cannot be resolved runs on the account's own login, so the
-  setting applies to it.
+- **Registry.** The brain owns `provider-instances.json` in the machine ADE
+  home beside `projects.json`. It is not a SQLite table, because every table
+  with a primary key becomes a cr-sqlite CRR and replicates to devices where
+  these paths mean nothing. ADE-made accounts get
+  `<adeHome>/provider-homes/<provider>/<instanceId>/` (`0700`; the CLI writes
+  its credentials there). ADE never reads, copies or revokes those credentials.
+- **The default account is synthesized on read.** The machine's existing login
+  has the provider slug as its id (`claude`, `codex`) and its home is whatever
+  `providerConfigHomes.ts` resolves on each read. No migration or first-boot
+  write; deleting the file is a full reset. Its identity is read without a
+  scoped home, because the Claude CLI keeps `oauthAccount` in `~/.claude.json`
+  beside the config directory.
+- **One default per provider**, stored as a pointer. A pointer at a missing
+  account resolves to the base identity, as a chat does.
+- **Removing forgets only.** The config home stays on disk and is returned so
+  the user can be told. The machine's own login and the current default refuse
+  removal.
+- **Accounts have no names.** Surfaces show the signed-in email, else the id
+  (`ProviderInstance.label`, set by `providerInstanceDisplayLabel`). The id is
+  what `--instance` takes and never changes; new accounts get the next free
+  `<provider>-<n>`. `create` takes no label (an optional one only shapes the
+  id). No surface offers Rename; the `rename` action stays for older phones and
+  what it stores is not shown.
+- **Action domain `provider_instances`**: `list`, `create`, `remove`, `rename`,
+  `setDefault`, `setAccent`, `getSettings`, `setSettings`, `loginCommand`,
+  `refresh`, all on the agent tier with no CTO gate (an account is a path, not
+  a token). Reachable from IPC, the preload three-way route (pinned runtime →
+  project runtime → local IPC), the daemon action bus and `ade providers
+  accounts list|add|remove|default`. `setAccent` and `accentColor` exist only
+  for compatibility; no surface shows an account colour.
+- **Per-provider settings** (`smartBalance`, `autoStartWindows`) live under
+  `settings.<provider>` in the same file, default off.
+- **Signing in is a command, not a flow.** `loginCommand` returns the provider
+  binary, its argv and the one env var for the account's home; `ade providers
+  accounts add` prints it.
 - **AI settings save to `.ade/local.yaml`.** `ai.updateConfig` (IPC, the `ai`
-  action domain, and the brain's remote command) merges its partial config into
-  the local layer through `projectConfigService.updateAiConfig`. The shared
-  `.ade/ade.yaml` layer is never written.
-- **Signing in is a command ADE returns, not a flow it drives.**
-  `loginCommand` gives back the resolved provider binary, its argv, and the one
-  env var pointing at that account's config home. `ade providers accounts add`
-  prints it so a shell user can run it directly.
+  domain, the brain's remote command) merges into the local layer through
+  `projectConfigService.updateAiConfig`; `.ade/ade.yaml` is never written.
+
+**Per-account settings** live in each account card's actions menu, never in
+the card body.
+
+| Setting | Providers | Choices and storage | Effect |
+|---|---|---|---|
+| Auto-compact (only with more than one account) | Claude, Codex | "Same as provider default" or Custom; `compaction` on the record | Overrides the provider's `ai.compaction.<provider>` field by field ([Compaction per provider](../chat/agent-routing.md#compaction-per-provider)) |
+| Subagent cache | Claude | 5 minutes (Claude Code default, stores nothing) or 1 hour (`subagentPromptCacheTtl`; a **1h cache** tag on the card) | `claudeAccountPromptCacheEnv` (`providerInstanceStore.ts`) sets `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` for SDK chats and terminal `claude` on the account |
+| Main chat cache | Claude | Automatic (stores nothing; Claude Code picks 1 h on a subscription within limits, else 5 min), 5 minutes, 1 hour (`mainPromptCacheTtl`) | Sets `CLAUDE_CODE_PROMPT_CACHE_TTL` the same way |
+| Extra usage | Claude | **Continue** (stores nothing) or **Stop the turn** (`onExtraUsage: "stop"`) | See below |
+
+- **Provider compaction** (`CompactionSettings.tsx`): **Compact at** (Auto by
+  default) and, for Claude, **Subagents compact at** and **After the cache
+  expires**, in `ai.compaction.<provider>` in `.ade/local.yaml`. No on/off:
+  every chat compacts when full.
+- **Cache env rules.** Nothing is added when the environment already states a
+  TTL, and a launch on a preset or stored credential never gets it (that
+  endpoint bills separately). ADE has no default: 1-hour writes cost more and
+  pay off only when subagents wait over 5 minutes. The chat's cache countdown
+  and Compact first read the lifetime Claude really wrote
+  ([composer and UI](../chat/composer-and-ui.md)), not this setting.
+- **Stop on extra usage.** When a `rate_limit_event` reports extra usage
+  (`isUsingOverage` or `overageInUse`), the Claude runtime interrupts the
+  turn, cancels its queue and ends it as a usage limit: the quota card shows,
+  then the chat acts as at a plan limit (resume at reset, or move account under
+  Smart balance). One request is billed first, because Claude reports after
+  the response. It is this machine's registry only (not iOS or hosted web) and
+  covers chats on the account's own login, including a chat whose preset
+  cannot resolve; preset or stored-credential chats and terminal `claude` are
+  not stopped.
+- **Claude sign-in end date.** A Claude card shows "Sign-in ends around Nov 17"
+  once a chat reported `credential_expires_at` (kept as `claudeLoginEndsAt`);
+  "around" because it can be an estimate. It goes when another login replaces
+  the account. Only on this page.
 
 ### Accounts panel
 
-Settings → Agents & Models → Claude Code (or Codex CLI) opens the provider page,
-and **Accounts** sits directly under the banner, across the full width, so the
-account cards stand side by side. It is the only surface that shows the whole
-set of local logins for that provider. No
-other provider page has the panel, because no other provider can hold more than
-one identity per machine. Sign-in for Claude and Codex lives on each account
-row and on **Add account**. The left column does not repeat a Sign in section.
-A copy that is not downloaded yet shows the pinned-copy row (Download/Retry)
-under the status chip instead.
+Settings → Agents & Models → Claude Code (or Codex CLI) shows **Accounts**
+under the banner across the full width. It is the only surface with every
+local login of a provider, and only these two providers have it. Sign-in lives
+on each row and on **Add account** (no separate Sign in section). A copy that
+is not downloaded shows the pinned-copy row (Download/Retry) under the status
+chip.
 
-- **Routing strip** above the cards, shown only when it has a switch: *Smart
-  balance* (two or more accounts) and *Auto-start 5-hour windows* (while the
-  provider reports a five-hour window), each a `SettingsToggle` with a (?) hint,
-  and one line saying where new chats go. Smart balance sends new chats to the
-  account that needs the most weekly room spent before its reset, after
-  subtracting the burn already committed there: measured quota movement,
-  chats just placed, and reservations for open-but-idle chats. The five-hour
-  window is a gate, not a ranking; a chat is never refused when every account
-  is blocked. **Next chat** previews that pick. A
-  running chat stays on its account; one that hits a usage limit moves to
-  another account with room (with the switch off, the limit offers that move
-  instead). Auto-start sends one tiny request on the cheapest model when a
-  window ends, each logged with its cost. Both read and write
-  `provider_instances` `getSettings`/`setSettings`.
-- **One card per account**, in a grid that fits as many 290px columns as the
-  width allows, then evens them out over the rows (`balancedColumns`): two cards
-  never leave an empty column, and four go two by two, not three and one. Cards
-  in a row share a height.
-  A card has the account's name, one status
-  badge and the ⋯ menu; under it, the top-bar usage popover's own
-  `UsageAccountRow` (email, pace pill, Use reset, one meter per window), built by
-  `accountLimitRow` with `buildAccountRows` and matched by
-  `UsageAccountRow.instanceId`, never by email — so Settings and the popover draw
-  one account the same way. There is no cap on accounts.
-- **Badges say where new chats go.** With smart balance off the default carries
-  `New chats` and an accent border; another card shows **Use** while pointed at
-  or focused, and clicking a card does the same. With smart balance on,
-  `Next chat` marks the account the host would pick now, from
-  `UsageSnapshot.balanceNext` (the same pure `pickInstanceForNewChat` chat
-  creation runs); clicking a card turns balance off and selects it.
-- **Signed out**: a `Signed out` pill (the usage row's own when the poller saw
-  it, else a header badge), dimmed meters, and **Sign in**.
-- **Same login twice**: when two config homes hold one email, one card owns it
-  (`sameLoginOwner`): the default account when it holds that email and its
-  login works, else the first working login in list order. Every other card
-  (`ProviderInstance.sameLoginAs`, computed by the store) is badged `Copy` and
-  says which account it copies, with **Sign in to another account**; it adds no
-  quota and smart balance skips it. The usage snapshot keeps only the owner's
-  reading by the same rule, so the account that balance counts is the one
-  with numbers.
-- **Machine scope**: the panel reads accounts and usage from the machine the
-  Settings page names (`useUsageSnapshot({ pin })`), never usage from the tab's
-  own machine under another machine's accounts.
-- **Replaced login**: when a config home's email changes to another email — a
-  `claude /login` in a shell for the default account — the store records the old
-  one as `replacedAccount`. The card says "<old email> is signed out on this
-  computer": a sign-in to the new email took its place, for example `/login` in
-  a terminal, and a running CLI changes account from its actions pane. A login
-  that several cards lost shows one notice, on the card that lost it last, and
-  **Dismiss** forgets it on every card. The notice offers **Sign it back in** (into a `Copy` slot when there is one, so the accounts
-  shift instead of doubling; otherwise, or when the only copy is the machine's
-  own login, a new account named after the email) and
-  **Dismiss** (`provider_instances.dismissReplaced`). It disappears on its own
-  once any account holds that email again.
-- **The card menu (⋯)** carries Rename, Sign in / Sign in again, Sign out, and
-  Remove. Every card but the default offers **Sign out**
-  (`provider_instances.signOut` → `signOutProviderAccount`), which runs the
-  provider CLI's own `claude auth logout` / `codex logout` in that account's
-  config home and keeps the card; on the machine's own login the confirm says
-  the terminal's CLI is signed out too. **Remove** is not offered on the default
-  or the machine's own login, which the store refuses; it signs a signed-in
-  account out first (`removeProviderAccount`, shared by every surface), so
-  adding it again starts from a fresh sign-in. A sign-out that fails does not
-  block the removal; the card's error says the login was left in place. Both
-  ask for confirmation in Settings, and any refusal shows the store's own
-  sentence. Agents may call both too (account management is theirs by design);
-  the default account is refused either way.
-- **Panels fold.** `ProviderPanel` takes `autoCollapsed` and `summary`: a panel
-  with nothing to show folds to its header (API keys with none saved reads
-  `API keys · 0 None saved`), and a click on the title flips any panel. Sheets
-  render outside the panel body, so a folded panel still opens its Add sheet.
-- **Add account** opens a three-step sheet (Name it → Sign in → Done): a name
-  and a note that the provider opens its sign-in page and the login
-  is saved for this account only. **Continue to sign-in** creates the account
-  and calls `provider_instances.loginStart`. There is no terminal: the host's
-  login runner (`main/services/providerAccounts/providerLoginRunner.ts`, one per
-  machine) runs the provider's own login command for that account's config home
-  in a private node-pty, reads its output for the sign-in link and a code
-  prompt, and verifies the saved login when the CLI exits (re-reading a stale
-  signed-out mark and the config home's identity). The sheet polls
-  `loginStatus` every second — the subscription proxy's sign-in shape, so it
-  works the same for a Settings page pinned to another machine — and shows a
-  "finish with your browser" card with **Open sign-in page** / **Copy link**, a
-  code field when the CLI asks for one (`loginSubmitCode`), and the CLI's output
-  behind a closed **Sign-in output** disclosure. For a machine other than the
-  one holding the browser, and for the hosted web client, a Codex sign-in passes
-  `deviceAuth`, which appends
-  `--device-auth` so the CLI prints a one-time code instead of returning to a
-  localhost port the other computer (or a browser) cannot reach; the sheet shows that code to
-  type into the sign-in page. It ends on a Done state with the
-  email, or "Sign-in did not complete." with the runner's reason, **Try again**
-  and **Close**. Closing a running sign-in cancels it (`loginCancel`); a sign-in
-  times out after ten minutes. No terminal session or Work row is created.
-  The embedded terminal it replaces drew nothing once the CLI exited (an
-  untracked shell has no transcript) and left an Ended row per attempt.
-  The left card's **Sign in to Claude Code** / **Sign in to Codex** opens the
-  same sheet for the default account. `providers accounts refresh` (and the IPC
-  refresh) also re-reads the saved login of every account marked signed out.
-- **The provider list row** shows `N accounts` in its Details column once a
-  provider has more than one.
-- **The model picker** adds one muted line under the provider header —
-  "Smart balance is on for Claude Code" — while that provider is balancing.
-  Nothing else about the picker changes: every model is still listed and an
-  explicit pick is still honoured.
-
-The hosted web client hides every provider page (sign-in, keys, and permissions
-run on the machine itself), but the machine's Claude and Codex logins are
-managed over sync, so it gets them as one web-only **AI accounts** card
-(`agents.accounts`, `webOnly: true`, anchor `#ai-accounts`) on the Agents tab,
-showing the same `ProviderAccountsPanel` for Claude and Codex. The manifest's
-`webOnly` flag keeps the anchor out of the desktop nav, search, and command
-palette, which never draw it.
+- **Routing strip**, only when it has a switch: *Smart balance* (two or more
+  accounts) and *Auto-start 5-hour windows* (while the provider reports a
+  five-hour window), each a `SettingsToggle` with a (?) hint, plus one line on
+  where new chats go. Both use `provider_instances` `getSettings` /
+  `setSettings`.
+  - Smart balance sends a new chat to the account that needs the most weekly
+    room spent before its reset, net of committed burn (measured quota
+    movement, chats just placed, reservations for open idle chats). The
+    five-hour window is a gate, not a ranking; a chat is never refused when
+    every account is blocked. **Next chat** previews the pick.
+  - A running chat stays on its account; at a usage limit it moves to an
+    account with room (with the switch off, the limit offers the move).
+  - Auto-start sends one tiny request on the cheapest model when a window ends,
+    logging its cost.
+- **Cards.** A grid of as many 290px columns as fit, evened over rows
+  (`balancedColumns`: two cards never leave an empty column; four go two by
+  two); a row shares a height; no account cap. A card has the name, one badge,
+  the ⋯ menu, and the usage popover's own `UsageAccountRow` (email, pace pill,
+  Use reset, a meter per window) from `accountLimitRow` / `buildAccountRows`,
+  matched by `UsageAccountRow.instanceId`, never by email.
+- **Badges say where new chats go.** Balance off: the default shows `New chats`
+  and an accent border; another card shows **Use** on hover or focus, and a
+  click selects it. Balance on: `Next chat` marks
+  `UsageSnapshot.balanceNext` (the same `pickInstanceForNewChat` chat creation
+  runs); a click turns balance off and selects the card.
+- **Signed out**: a `Signed out` pill (the usage row's, else a header badge),
+  dimmed meters, **Sign in**.
+- **Same login twice.** One card owns an email (`sameLoginOwner`): the default
+  when it holds the email and works, else the first working login. Others
+  (`ProviderInstance.sameLoginAs`) show `Copy`, name the owner, offer **Sign in
+  to another account**, add no quota and are skipped by balance. The usage
+  snapshot keeps only the owner's reading.
+- **Machine scope**: accounts and usage come from the page's machine
+  (`useUsageSnapshot({ pin })`).
+- **Replaced login.** When a home's email changes (for example `claude /login`
+  in a terminal), the store records `replacedAccount` and the card says "<old
+  email> is signed out on this computer" (a running CLI changes account from
+  its actions pane). A login several cards lost shows once, on the last.
+  **Sign it back in** uses a `Copy` slot when there is one, else a new account
+  named after the email; **Dismiss** (`provider_instances.dismissReplaced`)
+  clears it everywhere. It clears itself once any account holds the email.
+- **The ⋯ menu**: Sign in / Sign in again, Sign out, Remove, and the
+  per-account settings above.
+  - **Sign out** (every card but the default; `provider_instances.signOut` →
+    `signOutProviderAccount`) runs `claude auth logout` / `codex logout` in the
+    account's home and keeps the card; on the machine's own login the confirm
+    says the terminal's CLI signs out too.
+  - **Remove** (not on the default or the machine's login) signs the account
+    out first (`removeProviderAccount`, shared by every surface), so re-adding
+    starts fresh. A failed sign-out does not block removal; the card says the
+    login stayed.
+  - Both confirm in Settings and show the store's refusal sentence. Agents may
+    call both; the default is always refused.
+- **Panels fold.** `ProviderPanel` takes `autoCollapsed` and `summary`; an
+  empty panel folds to its header (`API keys · 0 None saved`), the title
+  toggles any panel, and sheets render outside the body so a folded panel still
+  opens Add.
+- **Add account**: a sheet (Name it → Sign in → Done). **Continue to sign-in**
+  creates the account and calls `provider_instances.loginStart`.
+  - The machine's login runner
+    (`main/services/providerAccounts/providerLoginRunner.ts`) runs the
+    provider's login command for the account's home in a private node-pty,
+    reads the sign-in link and any code prompt, and verifies the login when the
+    CLI exits (re-reading a stale signed-out mark and the home's identity). No
+    terminal session or Work row is created.
+  - The sheet polls `loginStatus` every second (the subscription proxy's shape,
+    so it works for a page pinned to another machine) and shows **Open sign-in
+    page** / **Copy link**, a code field (`loginSubmitCode`) and the output
+    behind a closed **Sign-in output** disclosure.
+  - For another machine and for hosted web, Codex passes `deviceAuth`
+    (`--device-auth`), so the CLI prints a one-time code instead of using a
+    localhost port the browser cannot reach; the sheet shows the code.
+  - It ends on Done with the email, or "Sign-in did not complete." with the
+    reason, **Try again** and **Close**. Closing cancels (`loginCancel`); it
+    times out after ten minutes.
+  - **Sign in to Claude Code** / **Sign in to Codex** on the left card opens it
+    for the default account. `providers accounts refresh` (and IPC refresh)
+    re-reads every account marked signed out.
+- **Elsewhere**: the provider list row shows `N accounts` when there is more
+  than one; the model picker adds "Smart balance is on for Claude Code" under
+  the provider header while balancing (every model still listed, an explicit
+  pick still honoured).
+- **Hosted web** hides provider pages but gets one web-only **AI accounts**
+  card (`agents.accounts`, `webOnly: true`, `#ai-accounts`) on the Agents tab
+  with the same `ProviderAccountsPanel` for Claude and Codex; `webOnly` keeps it
+  out of desktop nav, search and the palette.
 
 ### API credentials
 
-Provider API credentials support multiple non-secret entries per provider. The
-default entry keeps the legacy provider slot; additional entries use a
-provider-and-credential id, while `ai.api_credentials.index.v1` stores labels,
-endpoints, protocols, models, timestamps, and masked tails without storing
-secrets. Environment variables appear only as the provider's default,
-read-only credential. Account-vault mirrors use the provider name for the
-default and `provider#credentialId` for additional entries, so legacy callers
-continue to read only default credentials.
+A provider can hold several non-secret credential entries. The default keeps
+the provider's single slot; others use a provider-and-credential id.
+`ai.api_credentials.index.v1` stores labels, endpoints, protocols, models,
+timestamps and masked tails, never secrets. Environment variables appear only
+as the read-only default. Account-vault mirrors use `<provider>` for the
+default and `provider#credentialId` for others, so single-key callers read the
+default.
 
 ### Initial context window
 
-Every provider page has an **Initial context window** card: what a new chat on
-that provider receives before the user's first message, on the page's machine.
-It is read-only. ADE lists the items so a person can see them and change their
-own setup; it does not switch them off.
+Every provider page has a read-only **Initial context window** card: what a new
+chat on that provider receives before the first message, on the page's
+machine. ADE lists items; it does not switch them off.
 
-- **Four parts**, one color each: the provider itself (its own prompt and
-  tools, in the provider's color), ADE (teal), the user's setup (pink) and this
-  project (amber). A bar shows each part's share, and each part lists its items
-  with a size, the file they come from, and, for config entries, where they are
-  set (`Set in ~/.codex/config.toml`).
-- **Sizes.** ADE's items are counted from the exact text a real launch builds
-  (the same builders, dry-run). The user's and the project's items are counted
-  from their files, by the provider's documented discovery rules. Both are
-  token estimates (about 4 characters each) and show `≈`. The total is the
-  median first request of real chats that made one request (the turn ledger),
-  from at least 3 chats, this project's when it has enough, else the machine's;
-  with fewer chats the card shows the listed sum instead. The provider's own
-  part is that median minus the listed items.
-- **Row buttons.** A gear opens the ADE settings page that manages the item
-  (MCP servers). A folder button shows the file in Finder (Explorer
-  on Windows). It appears only when the page shows This computer and not in the
-  hosted web client, and it goes through its own IPC channel
-  (`ai.revealProviderContextPath`), whose allowlist holds the providers' config
-  homes, the project, the instruction files in the folders above it, and ADE's
-  own folders. A symlinked skill whose target is outside those is shown as the
+- **Four parts**: the provider (its prompt and tools, in its colour), ADE
+  (teal), the user's setup (pink), this project (amber). A bar shows shares;
+  each item lists a size, its file and, for config entries, where it is set
+  (`Set in ~/.codex/config.toml`).
+- **Sizes.** ADE items are counted from the text a real launch builds (the same
+  builders, dry-run); user and project items from their files by the
+  provider's discovery rules; both are estimates (about 4 characters per
+  token, `≈`). The total is the median first request of one-request chats in
+  the turn ledger (at least 3; this project's when enough, else the
+  machine's); with fewer, the listed sum. The provider part is the median
+  minus the listed items.
+- **Row buttons.** A gear opens the managing ADE page (MCP servers). A folder
+  button reveals the file (Finder or Explorer), only for This computer and not
+  on hosted web, through `ai.revealProviderContextPath`, whose allowlist holds
+  the providers' config homes, the project, instruction files in parent
+  folders and ADE's folders. A symlinked skill pointing outside shows as the
   link.
-- **Machines.** The list is built on the machine the Settings page shows; both
-  renderer calls take that machine's pin. A failed read shows an error with
+- **Machines.** Both renderer calls take the page's pin. A failed read shows
   **Try again**; a failed **Check again** keeps the last list and says so. An
   older ADE without the action hides the card.
 
 ### API keys panel
 
-Every provider page carries an **API keys** panel, last in the right column.
-It lists one row per key ADE can see for that provider: the label, the variable
-the key is exported as, the masked tail, a source badge (Local store,
-Environment, Project config), the endpoint host when one is set, and how many
-models the key declares.
+Every provider page ends its right column with **API keys**: one row per key
+ADE sees, with label, exported variable, masked tail, source (Local store,
+Environment, Project config), endpoint host and declared model count.
 
-- **Local store** rows offer **Replace** and **Delete**. Delete confirms first.
-- **Environment** and **Project config** rows are read-only and say
-  "Managed outside ADE — clear the env/config value to remove." ADE did not
-  write them, so it does not offer to delete them.
-- **This computer only.** A Local store key that the account does not hold
-  wears a "This computer only" tag ("That computer only" when Settings shows
-  another computer). Other computers and ADE Cloud can't use it. Saving it
-  again while signed in puts it in the account. The panel reads the account's
-  key names once (`useAccountProviderKeyNames.ts`, `accountSecrets` with kind
-  `provider_api_key`, names only) and again after a save or a delete. When
-  the account can't answer (signed out, or a server without the route), no
-  tag shows.
-- **Verify** appears only on the default key of a provider that has a live
-  probe — Claude Code, Codex, Cursor, Grok and Kimi. The verification path reads
-  one key per provider, so a second key gets no button rather than a button that
-  would verify a different key than the row it sits on.
+- **Local store** rows offer **Replace** and **Delete** (confirmed).
+- **Environment** and **Project config** rows are read-only: "Managed outside
+  ADE — clear the env/config value to remove."
+- **This computer only.** A Local store key the account lacks shows "This
+  computer only" ("That computer only" for another computer); other computers
+  and ADE Cloud cannot use it, and saving it again while signed in moves it to
+  the account. Key names are read once (`useAccountProviderKeyNames.ts`,
+  `accountSecrets` kind `provider_api_key`, names only) and after a save or
+  delete; when the account cannot answer, no tag shows.
+- **Verify** only on the default key of a provider with a live probe (Claude
+  Code, Codex, Cursor, Grok, Kimi), because the probe reads one key per
+  provider.
 
-**+ Add** opens a sheet that asks only what that provider's harness reads. Every
-field carries a one-line description, there is one Save, and no field is shown
-that would do nothing:
+**+ Add** asks only what the harness reads, one line per field, one Save:
 
 | Provider | Stored under | Key variable | Endpoint | Protocol | Models | Provider id |
 | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | `anthropic` | `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` when an endpoint is set | `ANTHROPIC_BASE_URL` | — | yes | — |
+| Claude Code | `anthropic` | `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` with an endpoint | `ANTHROPIC_BASE_URL` | — | yes | — |
 | Codex | `openai` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | — | yes | — |
 | Cursor | `cursor` | `CURSOR_API_KEY` | — | — | — | — |
 | Droid | `droid` | `FACTORY_API_KEY` | base URL | yes | yes | — |
-| Pi | `pi` | — | — | — | — | — |
+| Pi | `pi` | — | — (Pi reads its own `models.json`; the sheet says so) | — | — | — |
 | OpenCode | per custom provider id | — | base URL | yes | yes | yes |
 | Qwen Code | `qwen` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | — | — | — |
 | Kimi | `moonshotai` | `MOONSHOT_API_KEY` | — | — | — | — |
 | Grok | `xai` | `XAI_API_KEY` | — | — | — | — |
 | GitHub Copilot | `copilot` | `GITHUB_TOKEN` | — | — | — | — |
 
-A key is filed under the vendor's id rather than the page's id where the two
-differ, which is what makes an `ANTHROPIC_API_KEY` that is already set show up
-as an Environment row on the Claude page, and what lets Verify reach a probe
-that exists. The first key a provider holds takes the default slot, so every
-single-key reader in the app finds it. Cursor writes through the legacy single
-slot, because that is the slot its SDK signs in from.
+- Keys are filed under the vendor's id, so an existing `ANTHROPIC_API_KEY`
+  shows as an Environment row on the Claude page and Verify finds its probe.
+- The first key takes the default slot, so single-key readers find it. Cursor
+  writes the single slot its SDK signs in from.
 
-Pi is the one provider with no endpoint field: it reads its own `models.json`
-for endpoints and model ids, and the sheet says so.
+**One key store**: the account vault kind `provider_api_key` holds every key for
+every computer and ADE Cloud.
 
-**One key store.** The account vault kind `provider_api_key` holds every
-provider key for every computer and ADE Cloud:
-
-- The vault name is `<provider>` for the default key and
-  `<provider>#<credentialId>` for the others (`credentialStorageKey` in
-  `main/services/ai/apiKeyStore.ts`).
-- A key saved for ADE Cloud goes to the `<provider>` row, or to
-  `<provider>#ade-cloud` when that row already holds a different key. Cloud
-  computers read `<provider>#ade-cloud` first.
-- On ADE Cloud, Qwen Code signs in with a DashScope API key (the `qwen`
-  sign-in in `shared/cloudSignIns.ts`). The cloud computer writes it into
-  Qwen's own settings, never into the brain's environment.
-- Two one-time moves run per computer after sign-in
-  (`main/services/account/accountMigrationRunner.ts`): this computer's device
-  keys into the account (`provider_api_keys`), and ADE Cloud's older saved
-  keys (`integration/cloud-key-<id>`) into `provider_api_key`
-  (`cloud_keys_api_store`). Both are safe to run again and delete nothing.
+- Names: `<provider>` for the default, `<provider>#<credentialId>` for others
+  (`credentialStorageKey`, `main/services/ai/apiKeyStore.ts`).
+- An ADE Cloud key goes to `<provider>`, or `<provider>#ade-cloud` when that row
+  holds a different key; cloud computers read `<provider>#ade-cloud` first.
+- On ADE Cloud, Qwen Code signs in with a DashScope key (`qwen` in
+  `shared/cloudSignIns.ts`), written into Qwen's own settings, never the
+  brain's environment.
+- Two idempotent one-time moves per computer after sign-in
+  (`main/services/account/accountMigrationRunner.ts`): device keys into the
+  account (`provider_api_keys`), and ADE Cloud's `integration/cloud-key-<id>`
+  keys into `provider_api_key` (`cloud_keys_api_store`). Neither deletes.
 
 ### OpenCode custom providers
 
-The OpenCode page's **Advanced** section lists the custom providers OpenCode is
-configured with — name, id, base URL, model count — with **Edit** and **Delete**
-on each. Add and Edit open the same key sheet, with a **Provider id** field and
-a **Protocol** select in place of the npm package name (each package is one wire
-protocol). An edit may leave the key empty to keep the saved one.
-
-Every write sends the whole provider list: `ai.updateConfig` merges arrays with
-replace semantics, so a write that carried only the entry being changed would
-drop every other custom provider. **Custom model slugs** stays a separate field
-with its own Save.
+The OpenCode page's **Advanced** section lists custom providers (name, id, base
+URL, model count) with **Edit** and **Delete**. Add and Edit use the key sheet
+with **Provider id** and a **Protocol** select (one per npm package). An empty
+key on edit keeps the saved one. Every write sends the whole list, because
+`ai.updateConfig` replaces arrays. **Custom model slugs** has its own Save.
 
 ## UX contract
 
-Onboarding and settings follow a simple rule:
-
-- require account sign-in for a fresh launch, while preserving explicit
-  recovery for an existing paired/local session
-- do not block on optional integrations
-- keep setup responsive
-- show the fastest path first
-- defer advanced or heavy configuration to the feature surface that
-  owns it
+- Require an account sign-in on a fresh launch; keep explicit recovery for an
+  existing paired or local session.
+- Never block on optional integrations.
+- Keep setup responsive and show the fastest path first.
+- Leave advanced or heavy configuration to the feature that owns it.
 
 ## Account session state is a four-state, not a boolean
 
-"Not signed in" was one word for three different situations, and treating them
-alike is how a perfectly good session gets destroyed. `AccountAuthStatus`
-therefore carries `sessionState`, mirrored onto the desktop as
-`AdeAccountStatus.sessionState`:
+`AccountAuthStatus.sessionState` (mirrored as `AdeAccountStatus.sessionState`)
+separates three ways of not being signed in, because treating them alike
+destroys good sessions:
 
-| State | What actually happened | What the surface must say |
+| State | What happened | What the surface says |
 | --- | --- | --- |
 | `active` | Signed in. | — |
 | `signed_out` | No session on this machine. | Offer sign-in. |
-| `expired` | A session exists and the issuer definitively rejected its grant. | Say the sign-in expired, and offer sign-in. |
-| `unreadable` | The credential store could not be read on this attempt. | Say nothing changed and offer **repair/retry**. Sign-in must be demoted. |
+| `expired` | A session exists and the issuer definitively rejected its grant. | Say the sign-in expired; offer sign-in. |
+| `unreadable` | The credential store could not be read this time. | Say nothing changed; offer **repair/retry**; demote sign-in. |
 
-The `unreadable` row is the whole point. A new sign-in **overwrites** the stored
-session, so inviting one over a session that is merely unreadable is how the
-user destroys something valid. The desktop's `SignInCard`, the Connections
-account header, and the sidebar avatar label each render the three
-not-signed-in states distinctly; the branch logic lives once in
-`accountSessionState` / `accountSessionNotice`
-(`apps/desktop/src/renderer/lib/account.ts`), and the `unreadable` copy leads
-with the shared `BrainRepairButton` (or a plain retry where there is no brain to
-restart) with sign-in demoted to "Sign in anyway".
-
-Repair has to actually repair. Restarting the background service — all this
-control used to do — cannot fix any credential-store condition, which is the
-only condition this surface appears for: the replacement process reads the same
-unreadable file. `account.repairSession` therefore repairs the shared credential
-store first (converge its key binding, merge back anything a peer process had to
-set aside) and restarts the brain after, then reports which of three things
-happened: the store is readable again, the store is readable but nothing on this
-computer can open what was set aside so a fresh sign-in is required, or the
-repair itself failed. The store mechanics are in
-[ARCHITECTURE](../../ARCHITECTURE.md) under the machine credential stores. The CLI's `account-auth` text
-formatter makes the same three distinctions rather than printing one
-"Not signed in — run `ade login`." for all of them.
-
-Older runtimes that predate `sessionState` are derived from the existing
-`sessionReadState`, so a mixed-version pair degrades to the old behaviour
-instead of mis-labelling.
-
-**A rejected grant is marked dead, not deleted.** The stored record keeps
-`rejectedAt` / `needsReauth` / `rejectedReason` in place. Deleting it makes
-every process on the machine silently forget an account the user never signed
-out of — and takes the host's relay tunnel and its account-directory row down
-with it, which is what removed every remote route to a still-owned machine.
-`needsReauth` alone condemns a record, so a marker written by an older or newer
-peer without a parsable timestamp is still honoured; the next successful sign-in
-overwrites it.
-
-**Ownership and usability are different questions.**
-`accountSessionRetainsMachineOwnership(status)` answers "is this still their
-machine" — true for `active`, `expired`, and `unreadable`; false only for a
-deliberate `signed_out`. Reachability a paired device already has must survive a
-token accident; anything that needs a live token still gates on `signedIn`. See
-[remote runtime → Account state and reachability](../remote-runtime/README.md#account-state-and-reachability).
-
-**Every mutation is logged.** The incident this came from had an empty
-`account.*` log: the deletion that erased the session for every process on the
-machine left no trace. Each write, rotation, rejection, and sign-out now emits
-one attributed `account.session_mutation` line naming its `action`
-(`persist`, `rotate`, `delete`, `mark_dead`, `sign_out`, and the three
-`rotation_journal_*` actions), `reason`, `pid`, `source`
-(`brain` | `cli` | `desktop`, derived by `deriveAccountSessionMutationSource`
-and overridable with `ADE_ACCOUNT_SESSION_SOURCE`), and the
-`tokenGeneration` it acted on — a truncated SHA-256 of the refresh token, so a
-grant can be followed across processes with no token material in any log file
-or journal entry.
-
-**Only the brain exchanges the refresh credential.** The journal below made
-rotation crash-safe and made a live peer a mutex, but it could not remove the
-race, because two processes were still both entitled to exchange a single-use
-token. `accountAuthService` therefore takes a `getRefreshBroker`, and every
-process that is not the brain installs one through
-`setSharedAccountRefreshBroker`. A brokered process never POSTs the credential:
-it asks the brain for an access token over `account.call` -> `getToken`, and the
-desktop's broker is `createBrainRefreshBroker` in `accountBridge.ts`. The
-brokered path deliberately does **not** forward `forceRefresh` — a caller able
-to force an exchange would be a second refresher wearing a different hat.
-
-The broker is read at call time rather than at construction, because
-`getSharedAccountAuthService` caches one service per secrets directory and on
-desktop the first caller can run before the runtime pool exists; installing the
-broker separately means startup order cannot decide whether a process refreshes
-locally.
-
-**The broker probes dynamically.** The CLI installs it unconditionally on
-their non-brain paths, then probe the brain socket for each refresh. A missing
-brain returns null so the service safely uses its local exchange; a brain that
-was reachable but fails still raises transient
-`AccountRefreshUnavailableError` and leaves the stored record untouched. Only
-a definitive `invalid_grant` marks a session dead.
-
-**An unreadable store repairs itself once before the user sees it.**
-`accountBridge.status()` runs `repairCredentialStore()` on the first
-`unreadable` read in a desktop process, then reports whatever is true
-afterwards. The flag is set before the attempt, so a repair that throws cannot
-turn every later status read into another attempt at the same broken file. The
-brain is not restarted on this path: that half is disruptive, needs the user's
-intent, and cannot fix a credential-store condition anyway. The manual
-**Repair** control still does both. The motivation is in the numbers — 1,148
-`account.session_read_failed` entries in a single day on one machine, every one
-`ENOSPC` on `credentials.json.enc.lock` — a condition that resolves itself and
-should never have raised a question the user had to answer.
-
-**Rotation is crash-safe, and a live peer's journal is a mutex.**
-`accountSessionRotationJournal.ts` records that a refresh exchange *started*
-against a specific token generation and clears it once the replacement is
-durable. A surviving entry means the stored token may already have been
-consumed by a process that died before it could persist the replacement, so
-the `invalid_grant` that follows is not definitive. `tryBegin` compare-and-swaps
-that same entry: a live peer already exchanging the grant is waited out, not
-raced at Clerk — two POSTs against a single-use refresh token is what produced
-the daily `invalid_grant` / mark_dead sign-outs. A dead peer's journal is taken
-over and treated as interrupted. The waits around this are ordered
-deliberately: the peer-rotation wait (`DEFAULT_REFRESH_ROTATION_WAIT_MS`) is
-the credential store's own `CREDENTIAL_STORE_LOCK_TIMEOUT_MS` plus a 5 s
-margin, because a wait shorter than the lock timeout could expire while the
-winning peer is still legitimately queued behind the lock — and the loser
-would then declare a live session dead.
+- **Why `unreadable` matters.** A new sign-in overwrites the stored session, so
+  offering one over a merely unreadable session destroys a valid one.
+  `SignInCard`, the Connections account header and the sidebar avatar label
+  render the three states distinctly from one branch
+  (`accountSessionState` / `accountSessionNotice`,
+  `apps/desktop/src/renderer/lib/account.ts`); `unreadable` leads with the
+  shared `BrainRepairButton` (or a plain retry with no brain) and demotes
+  sign-in to "Sign in anyway". The CLI's `account-auth` formatter makes the
+  same three distinctions.
+- **Repair repairs the store.** A brain restart alone cannot fix it (the new
+  process reads the same file). `account.repairSession` converges the shared
+  store's key binding, merges back anything a peer set aside, then restarts the
+  brain, and reports one of: readable again; readable but what was set aside
+  cannot be opened here, so a fresh sign-in is needed; repair failed. Store
+  mechanics: [ARCHITECTURE](../../ARCHITECTURE.md), machine credential stores.
+- **Older runtimes** without `sessionState` derive it from `sessionReadState`.
+- **A rejected grant is marked dead, not deleted.** The record keeps
+  `rejectedAt` / `needsReauth` / `rejectedReason`. Deleting would make every
+  process forget an account the user never left and drop the relay tunnel and
+  account-directory row, cutting every remote route. `needsReauth` alone
+  condemns a record (a marker without a parsable time still counts); the next
+  sign-in overwrites it.
+- **Ownership is not usability.** `accountSessionRetainsMachineOwnership(status)`
+  is true for `active`, `expired` and `unreadable`, false only for a deliberate
+  `signed_out`. Existing paired reachability survives a token accident; live-token
+  work still gates on `signedIn`. See
+  [remote runtime → Account state and reachability](../remote-runtime/README.md#account-state-and-reachability).
+- **Every mutation is logged** as one `account.session_mutation` line: `action`
+  (`persist`, `rotate`, `delete`, `mark_dead`, `sign_out`, three
+  `rotation_journal_*`), `reason`, `pid`, `source` (`brain` | `cli` |
+  `desktop`, from `deriveAccountSessionMutationSource`, overridable with
+  `ADE_ACCOUNT_SESSION_SOURCE`) and `tokenGeneration` (a truncated SHA-256 of
+  the refresh token, so no token material is logged).
+- **Only the brain exchanges the refresh credential.** `accountAuthService`
+  takes a `getRefreshBroker`; every non-brain process installs one with
+  `setSharedAccountRefreshBroker` and asks the brain for an access token
+  (`account.call` → `getToken`; desktop: `createBrainRefreshBroker` in
+  `accountBridge.ts`). The broker never forwards `forceRefresh`. It is read at
+  call time, because `getSharedAccountAuthService` caches one service per
+  secrets directory and desktop's first caller can run before the runtime pool
+  exists.
+- **The broker probes per refresh.** The CLI installs it on non-brain paths. A
+  missing brain returns null and the local exchange runs; a reachable brain
+  that fails raises transient `AccountRefreshUnavailableError` and leaves the
+  record. Only a definitive `invalid_grant` marks a session dead.
+- **Unreadable repairs itself once.** `accountBridge.status()` runs
+  `repairCredentialStore()` on the first `unreadable` read per desktop process
+  (the flag is set before the attempt, so a throw cannot loop), then reports
+  the result. It does not restart the brain; the manual **Repair** does both.
+  Transient faults such as `ENOSPC` on `credentials.json.enc.lock` should never
+  ask the user anything.
+- **Rotation is crash-safe; a live peer's journal is a mutex.**
+  `accountSessionRotationJournal.ts` records an exchange start against a token
+  generation and clears it once the replacement is durable. A surviving entry
+  means the token may be consumed, so the following `invalid_grant` is not
+  definitive. `tryBegin` compare-and-swaps the entry: a live peer is waited
+  out, never raced (two POSTs on a single-use token sign the user out); a dead
+  peer's entry is taken over as interrupted.
+  `DEFAULT_REFRESH_ROTATION_WAIT_MS` is `CREDENTIAL_STORE_LOCK_TIMEOUT_MS` plus
+  5 s, so the loser never declares a live session dead while the winner waits
+  on the lock.
 
 ## GitHub connection status has the same third state
 
-The account session is not the only thing the credential store can hide.
 `github.token.v1` and `github.appUserToken.v1` fail the same way: an
-undecryptable store returns an **empty view** rather than an error, so a GitHub
-status built from it is indistinguishable from a fresh install. That is the
-whole hazard — "not connected" invites a reconnect, and a reconnect overwrites
-credentials that were only unreadable, turning a recoverable read failure into
-real credential loss.
+undecryptable store returns an **empty view**, which looks like a fresh
+install. "Not connected" invites a reconnect, and a reconnect overwrites
+credentials that were only unreadable.
 
-The two keys do not live in the same file. `github.appUserToken.v1` is
-file-backed and shared with the brain and the CLI, while `github.token.v1` stays
-in the desktop's Electron-only store, and the routed credential store sends each
-read to its own file. So a readability verdict has to belong to the key it was
-asked about: the router tracks which store served the most recent read, and
-`getWithReadState` answers per call rather than through that shared state.
-Answering from the wrong file is how a perfectly readable credential gets
-reported as "can't read your sign-in". It also means a locked OS keychain no
-longer hides the shared credentials — those need no keychain, so they stay
-reachable while only the Electron-only half refuses. See
-[ARCHITECTURE §8.1](../../ARCHITECTURE.md#81-electron-safestorage-for-secrets).
+- **Per-key verdicts.** `github.appUserToken.v1` is file-backed and shared with
+  the brain and CLI; `github.token.v1` is in the Electron-only store. The routed
+  store sends each read to its file, and `getWithReadState` answers per call,
+  not from the router's last-read state. A locked OS keychain therefore hides
+  only the Electron-only half. See
+  [ARCHITECTURE §8.1](../../ARCHITECTURE.md#81-electron-safestorage-for-secrets).
+- **Waiting is not unreadable.** Until the OS store answers its first check
+  (macOS prompts for an unrecognized build), reads are **waiting**. The check
+  runs off the main thread, so the window stays usable;
+  `isSecureStorageCheckPending()` lets a surface say "ADE is waiting for the
+  system keychain" (Settings → Providers shows an info banner and re-reads on
+  answer). Nothing is cached meanwhile (key reads, legacy-token migrations and
+  file-backed adoption re-run), so a granted prompt shows keys without a
+  restart. A quit during the prompt does not wait: shutdown finishes, web
+  storage flushes, the process ends.
 
-While the OS credential store has not answered its first check — macOS shows a
-keychain prompt on a build it does not recognize — a read is not unreadable yet,
-it is **waiting**. That check runs off the main thread once the app is ready, so
-the window opens and stays usable while the prompt is up;
-`isSecureStorageCheckPending()` is what a surface reads to say "ADE is waiting
-for the system keychain" (Settings → Providers shows that as an info banner and
-re-reads the status when the prompt is answered) instead of the unreadable
-warning. Nothing is cached in that state — the key reads, the legacy-token
-migrations and the file-backed adoption all run again once it answers — so a
-granted prompt shows the saved keys without a restart. A quit during the prompt
-does not wait for it either: the shutdown work finishes, the web storage is
-flushed, and the process ends.
-
-`GitHubStatus` therefore separates three answers, not two:
-
-| Answer | What is actually true | What the surface offers |
+| `GitHubStatus` answer | What is true | What the surface offers |
 | --- | --- | --- |
-| connected | A credential validated against `GET /user` and, where required, the repo probe. | Nothing; `writeAuthSource` still gates mutations separately. |
-| not connected | ADE read the store successfully and there is no usable credential. | `gh auth login` steps, or a PAT field. |
-| `credentialStoreUnreadable` | ADE could not open the store on this read. Saved credentials may be entirely intact. | Say so, and offer **repair** — never a reconnect as the primary path. |
+| connected | A credential validated by `GET /user` and, where needed, the repo probe. | Nothing; `writeAuthSource` still gates mutations. |
+| not connected | The store read fine and holds no usable credential. | `gh auth login` steps or a PAT field. |
+| `credentialStoreUnreadable` | The store could not be opened on this read; credentials may be intact. | Say so and offer **repair**, never a reconnect first. |
 
-Every surface that would otherwise conclude "not connected" resolves the third
-state *first*, ahead of `!tokenStored`, because everything downstream of an
-unreadable read is a guess:
+Every surface resolves the third state before `!tokenStored`:
 
-- **Settings → Integrations → GitHub** (`GitHubSection.tsx`) shows **Can't read
-  sign-in** in warning tone with the shared notice and an **Open connections**
-  button, and hides the gh-CLI setup steps.
-- **The app-shell integration banner** (registered by `IntegrationBanners.tsx`
-  and rendered by `AppBannerHost`) points its
-  action at the Connections panel rather than the GitHub settings route, since
-  no GitHub-side action repairs a store ADE cannot open.
-- **The PR tab's empty state** — the message is built in the main process by
-  `prService.buildGithubSnapshotAuthError`, which is why the wording is a shared
-  constant in `shared/types/git.ts` rather than renderer copy.
-- **Publish to GitHub** (`PublishToGitHubDialog.tsx`) reads the flag once when
-  the dialog opens and replaces "GitHub is not connected" with the unreadable
-  wording. The token field stays, because pasting a token there is a deliberate
-  act by a user who already came to connect — the dialog only stops asserting a
-  disconnection it cannot actually observe.
+- **Settings → Integrations → GitHub** (`GitHubSection.tsx`): **Can't read
+  sign-in** in warning tone, the shared notice, **Open connections**, no gh-CLI
+  steps.
+- **The app-shell banner** (`IntegrationBanners.tsx`, `AppBannerHost`) points
+  at the Connections panel, since no GitHub action repairs the store.
+- **The PR tab's empty state**: built in main by
+  `prService.buildGithubSnapshotAuthError`, with the wording a shared constant
+  in `shared/types/git.ts`.
+- **Publish to GitHub** (`PublishToGitHubDialog.tsx`) reads the flag on open and
+  uses the unreadable wording; the token field stays.
 
-The Settings button and the banner action both land on the Connections panel's
-**Machines** tab, where the account header already carries the sign-in repair
-path — the same
-`account.repairSession` the account tri-state uses, which converges the shared
-credential store's key binding before restarting the brain. One store, one
-repair: a GitHub-specific fix-it control would be a second button for the same
-file. Writing a new GitHub token also clears the flag, because a successful
-write re-seals the store under a key this process holds.
-
-Because the field is optional, an older remote runtime that omits it degrades to
-the previous two-way behaviour instead of reporting a state it cannot compute.
+The Settings button and the banner open the Connections panel's **Machines**
+tab, whose account header runs the same `account.repairSession` (one store, one
+repair). Writing a new GitHub token clears the flag. An older runtime that
+omits the field keeps the two-way behaviour.
 
 ## Gotchas
 
-- **A provider account is a path, not a credential.** The registry stores config
-  home paths and labels; the tokens inside those directories belong to the
-  provider CLI that wrote them. That is why the registry is plain JSON rather
-  than the encrypted credential store, why `remove` deletes nothing, and why the
-  action domain is not CTO-gated. Do not add a field to this file that a
-  credential would fit in.
-- **The default account's config home is resolved, never stored.** Freezing it
-  would make ADE read one directory and launch the provider against another the
-  moment a user sets `CLAUDE_CONFIG_DIR` in a shell profile. The stored record
-  for the base identity carries a label (and a legacy `accentColor` field no
-  surface sets or shows); its `configHome` is
-  recomputed on every read and any persisted copy is ignored.
-- **Scope is two axes, not one.** Who owns a setting — your account or this
-  computer — and how much it covers — everything, or one repository. The
-  placement rule is mechanical so it can be checked: a value holding a path, a
-  port, or a fact about hardware is machine scope, because it means nothing on
-  another computer. Everything else is account scope and follows the user.
-  `SettingScope` is the four combinations, and the sidebar group IS the scope.
-- **No trust gate, and no committed config.** `.ade/ade.yaml` is no longer read
-  at all — it is carried over into `local.yaml` once (non-executable keys only)
-  and deleted. The gate went with the file it guarded;
-  see [configuration-schema.md](./configuration-schema.md#no-trust-gate).
-  `getExecutableConfig` is gone too — it had become `getEffective` with an extra
-  throw.
-- **Phone-sync port 8787.** Bind order always tries 8787 first, even when
-  `lastPort` is 8788. A replacement brain that lands on 8788 keeps retrying
-  8787 at runtime so phones that saved 8787 reconnect without a restart.
-  The "ADE is already running with phone sync" dialog is the cross-channel
-  case (ADE vs ADE Alpha) and is intentional. Full bind/reap/migrate contract:
+- **A provider account is a path, not a credential.** The registry holds config
+  home paths; the tokens inside belong to the provider CLI. So the registry is
+  plain JSON, `remove` deletes nothing, and the domain is not CTO-gated. Never
+  add a field a credential would fit in.
+- **The default account's config home is resolved, never stored.** A frozen
+  path would make ADE read one directory and launch against another once a
+  user sets `CLAUDE_CONFIG_DIR`. Any persisted `configHome` for the base
+  identity is ignored (its `accentColor` field is never set or shown).
+- **Scope has two axes**: owner (your account or this computer) and coverage
+  (everything or one repository). A value holding a path, a port or a hardware
+  fact is machine scope; everything else is account scope. `SettingScope` is
+  the four combinations, and the sidebar group is the scope.
+- **No trust gate, no committed config.** `.ade/ade.yaml` is not read: it is
+  carried into `local.yaml` once (non-executable keys only) and deleted
+  ([configuration-schema.md](./configuration-schema.md#no-trust-gate)). There is
+  no `getExecutableConfig`; use `getEffective`.
+- **Phone-sync port 8787.** Binding always tries 8787 first, even when
+  `lastPort` is 8788; a brain on 8788 keeps retrying 8787 so phones that saved
+  it reconnect. The "ADE is already running with phone sync" dialog is the
+  intended cross-channel case (ADE vs ADE Alpha). Contract:
   [sync and multi-device](../sync-and-multi-device/README.md).
-- **Config reload.** On save, dependent services receive reload
-  callbacks (the config service iterates listeners). A hot reload is
-  best-effort — some changes only take full effect on app restart
-  (e.g. proxy port changes).
-- **New `ai.*` config fields need both `coerceAiConfig` and
-  `mergeAiConfig`.** A field added to only one of `projectConfigService`'s
-  two functions is silently dropped (it fails to load off disk, or fails
-  to survive the shared+local merge). This bit `ai.customProviders` /
-  `ai.customModelSlugs` written by the AI Connections **Advanced** block.
-  Both use replace semantics rather than the id-matched merges used
-  elsewhere — the UI writes the full authoritative list. See
+- **Config reload** calls each listener on save; hot reload is best-effort,
+  and some changes (the proxy port) need a restart.
+- **New `ai.*` fields need both `coerceAiConfig` and `mergeAiConfig`**, or they
+  fail to load or to survive the shared+local merge (as `ai.customProviders` /
+  `ai.customModelSlugs` did). Both lists use replace semantics; the UI writes
+  the full list. See
   [configuration-schema.md](./configuration-schema.md#custom-providers-and-model-slugs).
-- **Onboarding status.** `freshProject` is computed at
-  `createOnboardingService` construction and does not update at
-  runtime. Passing the wrong boolean flips the "first-run" surface on
-  a well-used project.
-- **Deep links.** Settings tabs accept `?tab=<id>` via
-  `useSearchParams`; legacy ids `onboarding`, `help`, `tours`,
-  `context`, `providers`, `github`, `linear`, `computer-use`, and
-  `keybindings` resolve to their canonical tab through `TAB_ALIASES`
-  (most route to **General**; provider/GitHub/Linear/computer-use
-  route to **Integrations**). The dedicated Onboarding tab no longer
-  exists — its settings moved into General + the top-bar Help menu.
-- **Auto-update install must refresh before quitting.**
-  `quitAndInstall()` deliberately re-runs `updater.checkForUpdates()`
-  before flipping to `installing`. Skipping
-  that step (e.g. a synchronous quitAndInstall) reintroduces the bug
-  where ADE quits to install a stale download while a strictly newer
-  build is available. Comparison goes through `compareUpdateVersions`
-  — never `===` on the version string — because `v1.2.3` /
-  `1.2.3-rc.1` / `1.2.3` all need consistent ordering on both the
-  pending-install reconcile path and the supersede check.
-- **`installing` is a sticky status; `ready` is not.** While the snapshot is
-  `installing` the service ignores `update-not-available`,
-  `checking-for-update`, and `error`, because the main process is in
-  the middle of quitAndInstall. Checks keep running while status is `ready`
-  (same-or-older ignored, strictly newer supersedes, failed check leaves the
-  archive). Do not skip a check just because an update is staged. The one
-  window that *does* block a check is an already-running `quitAndInstall()`:
-  status stays `ready` until the native handoff, and a supersede in that
-  window would delete the archive about to be handed to Squirrel or NSIS. See
+- **`freshProject`** is computed when `createOnboardingService` is built and
+  never updates; a wrong boolean shows first-run surfaces on a used project.
+- **Deep links.** `?tab=<id>` is read through `useSearchParams`; old ids resolve
+  through `LEGACY_TAB_ALIASES` (see the pages table).
+- **Install refreshes before quitting.** `quitAndInstall()` re-runs
+  `updater.checkForUpdates()` before `installing`, or ADE could install a stale
+  download while a newer build exists. Compare with `compareUpdateVersions`,
+  never `===` (`v1.2.3`, `1.2.3-rc.1`, `1.2.3` must order consistently in the
+  reconcile and supersede paths).
+- **`installing` is sticky; `ready` is not.** While `installing`, the service
+  ignores `update-not-available`, `checking-for-update` and `error`. Checks
+  keep running while `ready` (same-or-older ignored, newer supersedes, a failed
+  check keeps the archive). Only a running `quitAndInstall()` blocks a check:
+  status stays `ready` until the handoff, and a supersede then would delete the
+  archive being handed to Squirrel or NSIS. See
   [Checking while an update is staged](./desktop-auto-update.md#checking-while-an-update-is-staged).
-- **A parked install is not a failure.** An aborted consent lands in
-  `snapshot.parked`, not `error` — the download is still staged and the shell
-  banner offers a **Restart now** retry. Keep parked distinct from the disk /
-  network / verification error classification, and let a parked state win over a
-  plain `ready` state when both describe the same version.
-- **Idle auto-apply needs the runtime activity summary.** Auto-apply only arms
-  when the service can read `RuntimeActivitySummary.idle` and the machine has
-  been continuously idle for the grace period; renewed activity clears the
-  countdown, and an explicit cancel sets `autoApplySuppressedUntil`. It is off
-  under `ADE_DISABLE_AUTO_UPDATE_APPLY=1` and on dev/source launches that have no
-  auto-check timers.
+- **Parked is not failed.** An aborted consent goes to `snapshot.parked`, not
+  `error`; the download stays and the banner offers **Restart now**. Keep it
+  apart from the disk / network / verification errors, and let parked win over
+  `ready` for the same version.
+- **Idle auto-apply needs `RuntimeActivitySummary.idle`** and continuous idle
+  for the grace period; activity clears the countdown and a cancel sets
+  `autoApplySuppressedUntil`. It is off under
+  `ADE_DISABLE_AUTO_UPDATE_APPLY=1` and on dev launches.
 
 ## Archive
 
-Archiving **hides** a lane, chat, or shell; ADE never deletes an archived item
-on its own. The one thing ADE deletes by itself is a dead App Control shell
-(below), which it removes instead of archiving.
-The archive is the one place the three kinds are listed together, so it has a
-Project → Storage & cleanup → Archive page, an `ade archive` CLI, and a weekly desktop banner that both read the same
-`archive.list` / `archive.summary` result.
+Archiving **hides** a lane, chat or shell; ADE never deletes an archived item
+by itself. The only thing ADE deletes on its own is a dead App Control shell.
+Project → Storage & cleanup → Archive, `ade archive` and a weekly desktop banner
+all read `archive.list` / `archive.summary`.
 
-- **Dead App Control shells are deleted.** A shell App Control started
-  (`launchedBy: "agent"`) that nobody typed into is deleted, with its
-  transcript, once dead: at once when a launch in a new shell replaces it, after
-  a 10-minute grace on a clean exit or an ADE stop, and only once its chat
-  settles after a crash. A relaunch by the same chat reuses the shell instead.
-  Typing into it (`terminal.write { fromUser }` from a user client, or a hand
-  resume) makes it the person's, and it is never deleted. See
+- **Dead App Control shells are deleted.** An agent-launched shell
+  (`launchedBy: "agent"`) nobody typed into is deleted with its transcript once
+  dead: at once when a new shell replaces it, after 10 minutes on a clean exit
+  or ADE stop, and after its chat settles following a crash. A relaunch by the
+  same chat reuses it. Typing into it (`terminal.write { fromUser }` or a hand
+  resume) makes it the person's, never deleted. See
   [terminals and sessions](../terminals-and-sessions/README.md#dead-agent-shells).
 - **Delete is the person's alone.** `archive.delete` is `ADE_ACTION_USER_ONLY`
-  and `archive.restore` is `ADE_ACTION_CTO_ONLY`, so an agent or automation can
-  read the archive and a CTO can restore, but only a user client may delete. The
-  CLI refuses `ade archive delete` and points at Settings. Deleting a lane keeps
-  its branch; a dirty worktree is refused unless the person confirms a forced
-  delete.
-- **The reminder asks, never acts.** The desktop banner
-  appears at most once per project per week when something has been archived
-  longer than the "Free up space after" setting (14 days by default), and every answer (review, snooze, dismiss) pushes the next
-  ask a week out.
-
-iOS reads archived lanes, chats, and shells from the same shared model, but the
-iOS archive screen and banner are not built yet; that is a follow-up.
+  and `archive.restore` is `ADE_ACTION_CTO_ONLY`. The CLI refuses `ade archive
+  delete` and points at Settings. Deleting a lane keeps its branch; a dirty
+  worktree needs a confirmed forced delete.
+- **The reminder asks, never acts.** At most once per project per week, when
+  something is older than "Free up space after" (14 days by default); every
+  answer (review, snooze, dismiss) pushes the next ask a week out.
+- iOS reads the same archive model but has no archive screen or banner.
 
 ## Cross-links
 
