@@ -1,6 +1,7 @@
 import { authenticate, type CallerTokenEnv } from "./callerToken";
 import { AWAKE_COMPUTER_CAP } from "./cloud/plans";
 import { AWAKE_CAP_COUNT_SQL, PENDING_TIMEOUT_MS, logCloud, reportCloudFailure } from "./cloud/store";
+import { readBoundedBody } from "./sinkUtils";
 
 /**
  * Timed wakes for cloud machines (README, "the provider timed wakes").
@@ -46,9 +47,9 @@ const json = (body: unknown, status: number): Response =>
 
 async function readBody(request: Request): Promise<Record<string, unknown> | null> {
   try {
-    const text = await request.text();
-    if (text.length > 4096) return null;
-    const value = JSON.parse(text) as unknown;
+    const read = await readBoundedBody(request, 4096);
+    if (!read.ok) return null;
+    const value = JSON.parse(read.text) as unknown;
     return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
   } catch {
     return null;

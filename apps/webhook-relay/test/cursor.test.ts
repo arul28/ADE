@@ -53,6 +53,7 @@ class FakeD1Statement {
 class FakeCursorD1Database {
   secrets: StoredCursorSecret[] = [];
   events: StoredCursorEvent[] = [];
+  dailyCounts = new Map<string, number>();
   nextEventSeq = 1;
 
   prepare(sql: string): FakeD1Statement {
@@ -60,6 +61,10 @@ class FakeCursorD1Database {
   }
 
   first<T>(sql: string, values: unknown[]): T | null {
+    if (sql.includes("select count from relay_daily_counts")) {
+      const key = `${String(values[0])}|${String(values[1])}`;
+      return ({ count: this.dailyCounts.get(key) ?? 0 } as T);
+    }
     if (sql.includes("from cursor_webhook_secrets where webhook_secret = ?")) {
       const row = this.secrets.find((entry) => entry.webhook_secret === values[0]);
       return row
@@ -124,6 +129,31 @@ class FakeCursorD1Database {
   }
 
   run(sql: string, values: unknown[]): void {
+    if (sql.includes("insert into relay_daily_counts")) {
+      const key = `${String(values[0])}|${String(values[1])}`;
+      this.dailyCounts.set(key, (this.dailyCounts.get(key) ?? 0) + 1);
+      return;
+    }
+    if (sql.includes("delete from relay_daily_counts")) {
+      const cutoff = String(values[0]);
+      for (const key of [...this.dailyCounts.keys()]) {
+        if (key.split("|")[1]! < cutoff) this.dailyCounts.delete(key);
+      }
+      return;
+    }
+    if (sql.includes("delete from cursor_events") && sql.includes("event_id not in")) {
+      const secretId = String(values[0]);
+      const limit = Number(values[values.length - 1]);
+      const kept = new Set(
+        this.events
+          .filter((entry) => entry.secret_id === secretId)
+          .sort((left, right) => right.received_at.localeCompare(left.received_at) || right.event_seq - left.event_seq)
+          .slice(0, limit)
+          .map((entry) => entry.event_id),
+      );
+      this.events = this.events.filter((entry) => entry.secret_id !== secretId || kept.has(entry.event_id));
+      return;
+    }
     if (sql.includes("update cursor_webhook_secrets set last_polled_at")) {
       const row = this.secrets.find((entry) => entry.id === String(values[1]));
       if (row) row.last_polled_at = String(values[0]);

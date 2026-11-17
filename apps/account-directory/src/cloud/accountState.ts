@@ -46,12 +46,16 @@ function billingNotice(account: AccountRow, now: number): "past_due" | "restored
 
 /** How long a deleted computer's id is still reported, so its leftover ADE row can be explained. */
 const DELETED_REPORTED_MS = 90 * 24 * 60 * 60_000;
+/** The most deleted ids one account read returns; a heavier churn keeps its newest rows only. */
+const DELETED_IDS_LIMIT = 200;
 
 async function recentlyDeletedInstanceIds(env: CloudEnv, userId: string, now: number): Promise<string[]> {
   const rows = await env.DB.prepare(`
     select c.instance_id from cloud_computers c
     where c.user_id = ? and c.deleted_at is not null and c.deleted_at >= ?
-  `).bind(userId, now - DELETED_REPORTED_MS).all<{ instance_id: string }>();
+    order by c.deleted_at desc
+    limit ?
+  `).bind(userId, now - DELETED_REPORTED_MS, DELETED_IDS_LIMIT).all<{ instance_id: string }>();
   return (rows.results ?? []).map((row) => row.instance_id);
 }
 

@@ -12,6 +12,7 @@ import {
   json,
   parseLimit,
   parseSequenceCursor,
+  readBodyWithinLimit,
   readString,
   type RelayEnv,
   sha256Hex,
@@ -38,12 +39,18 @@ type CursorWebhookSecretRow = {
   account_id: string | null;
 };
 
-const MAX_CURSOR_WEBHOOK_BODY_BYTES = 1024 * 1024;
+const MAX_CURSOR_WEBHOOK_BODY_BYTES = 64 * 1024;
 const MAX_CURSOR_REGISTRATION_BODY_BYTES = 16 * 1024;
 const MAX_CURSOR_WEBHOOK_SECRET_LENGTH = 512;
 const MIN_CURSOR_WEBHOOK_SECRET_LENGTH = 32;
 const CURSOR_WEBHOOK_REPLAY_WINDOW_MS = 5 * 60_000;
 const CURSOR_ENV_SECRET_ID = "env";
+/** Stored events one secret keeps; older ones go first. */
+const MAX_CURSOR_STORED_EVENTS_PER_SECRET = 500;
+/** Anonymous registrations and events one UTC day accepts, so the shared D1 cannot be filled. */
+const MAX_ANONYMOUS_CURSOR_REGISTRATIONS_PER_DAY = 2_000;
+const MAX_ANONYMOUS_CURSOR_REGISTRATIONS_PER_IP_PER_DAY = 20;
+const MAX_ANONYMOUS_CURSOR_EVENTS_PER_DAY = 50_000;
 
 export async function signCursorWebhookBody(secret: string, body: string | ArrayBuffer): Promise<string> {
   return signGitHubWebhookBody(secret, body);
@@ -129,7 +136,7 @@ async function listLegacyCursorWebhookSecrets(env: RelayEnv): Promise<CursorWebh
  */
 async function matchCursorWebhookSecret(
   env: RelayEnv,
-  body: ArrayBuffer,
+  body: ArrayBuffer | Uint8Array<ArrayBuffer>,
   signature: string,
   secretId: string | null,
 ): Promise<CursorWebhookSecretRow | null> {
@@ -238,6 +245,36 @@ async function sweepIdleCursorWebhookSecrets(env: RelayEnv): Promise<void> {
     `)
     .bind(cutoff)
     .run();
+  // Daily counters are only read for today; keep yesterday for a late request.
+  const dayCutoff = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  await env.DB.prepare("delete from relay_daily_counts where day < ?").bind(dayCutoff).run();
+}
+
+/** The UTC day the relay's daily counters are keyed by. */
+function utcDay(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** Count one use of `scope` today and answer whether it is still inside `limit`. */
+async function bumpDailyCount(env: RelayEnv, scope: string, limit: number): Promise<boolean> {
+  const day = utcDay();
+  await env.DB
+    .prepare(`
+      insert into relay_daily_counts(scope, day, count) values (?, ?, 1)
+      on conflict(scope, day) do update set count = count + 1
+    `)
+    .bind(scope, day)
+    .run();
+  const row = await env.DB
+    .prepare("select count from relay_daily_counts where scope = ? and day = ?")
+    .bind(scope, day)
+    .first<{ count: number }>();
+  return Number(row?.count ?? 0) <= limit;
+}
+
+/** The caller's address, as Cloudflare reports it; a local or service-binding call shares one bucket. */
+function clientIp(request: Request): string {
+  return request.headers.get("cf-connecting-ip")?.trim() || "unknown";
 }
 
 export async function handleCursorRegister(request: Request, env: RelayEnv): Promise<Response> {
@@ -245,8 +282,8 @@ export async function handleCursorRegister(request: Request, env: RelayEnv): Pro
   if (contentLengthExceedsLimit(request.headers, MAX_CURSOR_REGISTRATION_BODY_BYTES)) {
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
-  const body = await request.arrayBuffer();
-  if (body.byteLength > MAX_CURSOR_REGISTRATION_BODY_BYTES) {
+  const body = await readBodyWithinLimit(request, MAX_CURSOR_REGISTRATION_BODY_BYTES);
+  if (!body) {
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
   let payload: Record<string, unknown>;
@@ -284,6 +321,26 @@ export async function handleCursorRegister(request: Request, env: RelayEnv): Pro
     .prepare("select id from cursor_webhook_secrets where webhook_secret = ? limit 1")
     .bind(secret)
     .first<{ id: string }>();
+  // Anonymous callers get a daily registration ceiling, per address and
+  // overall. A repeat registration of a known secret is not a new row and
+  // does not count; account-owned secrets are not capped here.
+  if (!accountId && !existing) {
+    const salt = env.CURSOR_WEBHOOK_SECRET?.trim() || env.GITHUB_WEBHOOK_SECRET?.trim() || "";
+    const ipKey = (await sha256Hex(`cursor-register:${salt}:${clientIp(request)}`)).slice(0, 24);
+    const ipAllowed = await bumpDailyCount(
+      env,
+      `cursor-register-ip:${ipKey}`,
+      MAX_ANONYMOUS_CURSOR_REGISTRATIONS_PER_IP_PER_DAY,
+    );
+    const globalAllowed = await bumpDailyCount(
+      env,
+      "cursor-register",
+      MAX_ANONYMOUS_CURSOR_REGISTRATIONS_PER_DAY,
+    );
+    if (!ipAllowed || !globalAllowed) {
+      return json({ ok: false, error: "too many registrations; try again tomorrow" }, { status: 429 });
+    }
+  }
   const id = existing?.id ?? `secret:${await sha256Hex(secret)}`;
   await env.DB
     .prepare(`
@@ -355,8 +412,8 @@ export async function handleCursorWebhook(request: Request, env: RelayEnv): Prom
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
 
-  const body = await request.arrayBuffer();
-  if (body.byteLength > MAX_CURSOR_WEBHOOK_BODY_BYTES) {
+  const body = await readBodyWithinLimit(request, MAX_CURSOR_WEBHOOK_BODY_BYTES);
+  if (!body) {
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
 
@@ -404,6 +461,14 @@ export async function handleCursorWebhook(request: Request, env: RelayEnv): Prom
     .bind(matchedSecret.id, eventId)
     .first<{ event_id: string }>();
   if (existing) return json({ ok: true, duplicate: true, eventId });
+  // Anonymous secrets share one daily ceiling, so one caller cannot fill the
+  // database the other relays also write to. Account-owned secrets are exempt.
+  if (matchedSecret.account_id == null) {
+    const allowed = await bumpDailyCount(env, "cursor-events-anonymous", MAX_ANONYMOUS_CURSOR_EVENTS_PER_DAY);
+    if (!allowed) {
+      return json({ ok: false, error: "relay busy; try again later" }, { status: 429, headers: { "retry-after": "3600" } });
+    }
+  }
 
   const receivedAt = new Date().toISOString();
   await env.DB
@@ -421,6 +486,20 @@ export async function handleCursorWebhook(request: Request, env: RelayEnv): Prom
       matchedSecret.account_id,
       matchedSecret.id,
     )
+    .run();
+  // One secret keeps its newest events only, so a single key cannot grow without bound.
+  await env.DB
+    .prepare(`
+      delete from cursor_events
+       where secret_id = ?
+         and event_id not in (
+           select event_id from cursor_events
+            where secret_id = ?
+            order by received_at desc, event_id desc
+            limit ?
+         )
+    `)
+    .bind(matchedSecret.id, matchedSecret.id, MAX_CURSOR_STORED_EVENTS_PER_SECRET)
     .run();
   await pruneOldCursorEvents(env);
   return json({ ok: true, duplicate: false, eventId });

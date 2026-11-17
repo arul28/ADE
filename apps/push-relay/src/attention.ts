@@ -3958,7 +3958,7 @@ async function handleAccountMachinePairingRestore(
  * from deleting an account's data.
  *
  * Hard deletes, not tombstones: no machine of a deleted account syncs again,
- * and a tombstone would keep the account's item names. Both deletes run in one
+ * and a tombstone would keep the account's item names. Every delete runs in one
  * batch, so they land together or not at all. Safe to repeat: a second call
  * finds nothing and answers the same `ok`.
  */
@@ -3987,11 +3987,21 @@ export async function handleDirectoryAccountPurge(
   const results = await env.DB.batch(accountKeys.flatMap((accountKey) => [
     env.DB.prepare("delete from account_vault_items where user_id = ?").bind(accountKey),
     env.DB.prepare("delete from account_settings where user_id = ?").bind(accountKey),
+    env.DB.prepare("delete from password_items where user_id = ?").bind(accountKey),
+    env.DB.prepare("delete from password_keys where user_id = ?").bind(accountKey),
+    env.DB.prepare("delete from password_key_releases where user_id = ?").bind(accountKey),
   ]));
   const changes = (offset: number) => results
-    .filter((_, index) => index % 2 === offset)
+    .filter((_, index) => index % 5 === offset)
     .reduce((sum, result) => sum + (result?.meta?.changes ?? 0), 0);
-  return json({ ok: true, vaultItems: changes(0), settings: changes(1) });
+  return json({
+    ok: true,
+    vaultItems: changes(0),
+    settings: changes(1),
+    passwordItems: changes(2),
+    passwordKeys: changes(3),
+    passwordKeyReleases: changes(4),
+  });
 }
 
 /**
@@ -4785,9 +4795,20 @@ async function sweepOrphanedMachineActivity(
  * backlog. Neither sweep is latency-sensitive: retention is measured in days.
  */
 export async function sweepAttentionState(env: AttentionRelayEnv): Promise<void> {
-  const now = new Date().toISOString();
-  await sweepExpiredAttentionItems(env, now);
-  await sweepOrphanedMachineActivity(env, now);
+  const now = new Date();
+  const nowIso = now.toISOString();
+  await sweepExpiredAttentionItems(env, nowIso);
+  await sweepOrphanedMachineActivity(env, nowIso);
+  // Expired device leases fan out into six statements per device, so they are
+  // cron work, never request work. A device can wait up to an hour.
+  const expiredDevices = await env.DB.prepare(`
+    select user_id, device_id
+    from attention_devices
+    where lease_expires_at <= ?
+  `).bind(nowIso).all<{ user_id: string; device_id: string }>();
+  for (const device of expiredDevices.results) {
+    await deleteAttentionDeviceOwnership(env, device.user_id, device.device_id);
+  }
 }
 
 /**
@@ -4805,14 +4826,6 @@ export async function pruneAttentionState(env: AttentionRelayEnv): Promise<void>
   const alertLogCutoff = new Date(
     now.getTime() - ATTENTION_ALERT_LOG_RETENTION_MS,
   ).toISOString();
-  const expiredDevices = await env.DB.prepare(`
-    select user_id, device_id
-    from attention_devices
-    where lease_expires_at <= ?
-  `).bind(now.toISOString()).all<{ user_id: string; device_id: string }>();
-  for (const device of expiredDevices.results) {
-    await deleteAttentionDeviceOwnership(env, device.user_id, device.device_id);
-  }
   await Promise.all([
     env.DB.batch([
       env.DB.prepare(`

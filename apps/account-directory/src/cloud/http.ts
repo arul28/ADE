@@ -1,3 +1,5 @@
+import { readBoundedBody } from "../sinkUtils";
+
 /** The JSON answers every ADE Cloud route gives. */
 
 export const json = (body: unknown, status = 200): Response =>
@@ -33,10 +35,11 @@ export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 const MAX_BODY_BYTES = 256_000;
 
 /** A JSON object body; `{}` for an empty body, null when it is too big or isn't an object. */
-export async function readJson(request: { text(): Promise<string> }): Promise<Record<string, unknown> | null> {
-  const text = await request.text();
+export async function readJson(request: Request): Promise<Record<string, unknown> | null> {
+  const read = await readBoundedBody(request, MAX_BODY_BYTES);
+  if (!read.ok) return null;
+  const { text } = read;
   if (!text) return {};
-  if (text.length > MAX_BODY_BYTES) return null;
   try {
     const value = JSON.parse(text) as unknown;
     return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;

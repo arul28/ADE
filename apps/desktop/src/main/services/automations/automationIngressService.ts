@@ -30,6 +30,9 @@ import {
 import { lowerCaseHeaders, queryRecord } from "./webhookRequest";
 import { WEBHOOK_MAX_BODY_BYTES } from "../../../shared/automationWebhooks";
 
+/** GitHub's own webhook payload limit; the hosted relay enforces the same 25 MB. */
+const MAX_GITHUB_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
+
 export type AutomationIngressCursorStore = {
   get(source: AutomationIngressSource): string | null;
   set(args: { source: AutomationIngressSource; cursor: string | null }): void;
@@ -809,10 +812,36 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       response.writeHead(404).end("not found");
       return;
     }
-    const automationId = match?.[1] ? decodeURIComponent(match[1]) : null;
+    let automationId: string | null = null;
+    if (match?.[1]) {
+      try {
+        automationId = decodeURIComponent(match[1]);
+      } catch {
+        response.writeHead(404).end("not found");
+        return;
+      }
+    }
     const chunks: Buffer[] = [];
-    request.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    let size = 0;
+    let tooLarge = false;
+    const bodyLimit = isGithubWebhook ? MAX_GITHUB_WEBHOOK_BODY_BYTES : WEBHOOK_MAX_BODY_BYTES;
+    request.on("data", (chunk) => {
+      if (tooLarge) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.length;
+      // Bounded like the custom-hook route: an unsigned request must not grow the heap.
+      if (size > bodyLimit) {
+        tooLarge = true;
+        chunks.length = 0;
+        return;
+      }
+      chunks.push(buffer);
+    });
     request.on("end", async () => {
+      if (tooLarge) {
+        response.writeHead(413, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, error: "payload too large" }));
+        return;
+      }
       const body = Buffer.concat(chunks);
       try {
         const payload = JSON.parse(body.toString("utf8")) as Record<string, unknown>;

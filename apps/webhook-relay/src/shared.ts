@@ -131,6 +131,37 @@ export function contentLengthExceedsLimit(headers: Headers, limit: number): bool
   }
 }
 
+/**
+ * Reads the request body, stopping as soon as it would exceed `maxBytes` and
+ * returning null so the caller can answer 413. A chunked body carries no
+ * content-length to trust, so the cap is enforced on the bytes as they arrive
+ * instead of buffering the whole body first. GET stays an empty body.
+ */
+export async function readBodyWithinLimit(request: Request, maxBytes: number): Promise<Uint8Array<ArrayBuffer> | null> {
+  if (request.method === "GET" || !request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 export function readString(source: Record<string, unknown> | null | undefined, key: string): string {
   const value = source?.[key];
   return typeof value === "string" ? value.trim() : "";
@@ -181,7 +212,7 @@ export function constantTimeEqual(left: string, right: string): boolean {
   return diff === 0;
 }
 
-export async function sha256Hex(value: string | ArrayBuffer): Promise<string> {
+export async function sha256Hex(value: string | ArrayBuffer | Uint8Array<ArrayBuffer>): Promise<string> {
   return toHex(await crypto.subtle.digest("SHA-256", typeof value === "string" ? encoder.encode(value) : value));
 }
 
@@ -216,7 +247,7 @@ export function hasValidGitHubSignatureShape(signature: string): boolean {
   return /^sha256=[0-9a-f]{64}$/i.test(signature);
 }
 
-export async function signGitHubWebhookBody(secret: string, body: string | ArrayBuffer): Promise<string> {
+export async function signGitHubWebhookBody(secret: string, body: string | ArrayBuffer | Uint8Array<ArrayBuffer>): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     encoder.encode(secret),
@@ -230,7 +261,7 @@ export async function signGitHubWebhookBody(secret: string, body: string | Array
 }
 
 
-export async function verifyGitHubSignature(secret: string, body: ArrayBuffer, signature: string): Promise<boolean> {
+export async function verifyGitHubSignature(secret: string, body: ArrayBuffer | Uint8Array<ArrayBuffer>, signature: string): Promise<boolean> {
   if (!secret.trim()) return false;
   if (!signature.startsWith("sha256=")) return false;
   const expected = await signGitHubWebhookBody(secret, body);

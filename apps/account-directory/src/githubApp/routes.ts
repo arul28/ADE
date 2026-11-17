@@ -533,7 +533,13 @@ async function handleConfirm(request: Request, env: GithubAppEnv, waitUntil?: Wa
   if (!rt) return failurePage("not_configured");
   let form: FormData;
   try {
-    form = await request.formData();
+    // Bounded like every other GitHub App body: request.formData() would buffer
+    // an anonymous public form body of any size before the token check.
+    const read = await readBoundedBody(request, GITHUB_APP_MAX_BODY_BYTES);
+    if (!read.ok) return failurePage("unknown");
+    const headers = new Headers(request.headers);
+    headers.delete("content-length");
+    form = await new Request(request.url, { method: "POST", headers, body: read.text }).formData();
   } catch {
     return failurePage("unknown");
   }

@@ -490,8 +490,16 @@ async function handleDeviceApproval(
 
   let rawUserCode: string | null = null;
   try {
-    const value = (await request.formData()).get("user_code");
-    rawUserCode = typeof value === "string" ? value : null;
+    // The same 8 KB streamed cap as the JSON device routes: request.formData()
+    // would buffer and parse an anonymous body of any size before this check.
+    const read = await readBoundedBody(request, MAX_DEVICE_FLOW_BODY_BYTES);
+    if (read.ok) {
+      const headers = new Headers(request.headers);
+      headers.delete("content-length");
+      const form = await new Request(url, { method: "POST", headers, body: read.text }).formData();
+      const value = form.get("user_code");
+      rawUserCode = typeof value === "string" ? value : null;
+    }
   } catch {
     // Invalid form submissions fall through to the blank confirmation form.
   }

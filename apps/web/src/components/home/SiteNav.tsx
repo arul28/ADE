@@ -34,8 +34,13 @@ function formatStars(count: number): string {
  */
 function useGithubStars(): number | null {
   const [stars, setStars] = useState<number | null>(() => {
-    const cached = typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(STARS_CACHE_KEY);
-    return cached ? Number(cached) : null;
+    try {
+      const cached = sessionStorage.getItem(STARS_CACHE_KEY);
+      return cached ? Number(cached) : null;
+    } catch {
+      // A browser that denies site data throws on the property access itself.
+      return null;
+    }
   });
   useEffect(() => {
     if (stars !== null) return;

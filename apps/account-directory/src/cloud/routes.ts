@@ -1274,7 +1274,7 @@ async function routeInstance(request: Request, env: CloudEnv, provider: CloudPro
 }
 
 /** A timed wake must name the caller's own computer and that computer's own wake address. */
-async function refuseForeignWake(request: { text(): Promise<string> }, env: CloudEnv, userId: string): Promise<Response | null> {
+async function refuseForeignWake(request: Request, env: CloudEnv, userId: string): Promise<Response | null> {
   const body = await readJson(request);
   // A malformed body is the wake route's to answer.
   if (typeof body?.instanceId !== "string" || typeof body.url !== "string") return null;
@@ -1495,7 +1495,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
       if (accountBlock) return accountBlock;
       const { blocked } = await wakeBlocker(env, caller.userId, Date.now());
       if (blocked) return blocked.response;
-      const refused = await refuseForeignWake(request.clone(), env, caller.userId);
+      const refused = await refuseForeignWake(request.clone() as Request, env, caller.userId);
       if (refused) return refused;
     }
     return handleCloudWakeRequest(request, env);
