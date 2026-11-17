@@ -21857,6 +21857,10 @@ function buildCloudPlan(args: string[]): CliPlan {
       const disk = readValue(args, ["--disk"]);
       if (free != null || disk != null) {
         if (!reason) throw new CliUsageError("ade cloud resize --free <GB> | --disk <GB> --reason \"why\"");
+        // It grows only the computer it runs on: a machine named here would be ignored, and the wrong one would grow.
+        if (firstPositional(args)) {
+          throw new CliUsageError("ade cloud resize --free|--disk grows the disk of the ADE Cloud computer this runs on. Leave out the machine name, and run it on that computer.");
+        }
         return cloudStep("disk grow", "grow_disk", {
           ...(free != null ? { needFreeGb: Number(free) } : {}),
           ...(disk != null ? { toGb: Number(disk) } : {}),

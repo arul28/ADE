@@ -543,15 +543,8 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       instanceId: record.job.instanceId,
       shape: record.shape,
       ...(diskGb ? { disk: diskGb, computerIdle: true } : {}),
-    }).catch((error: unknown) => ({ ok: false as const, message: getErrorMessage(error) }));
-    if (!result.ok) {
-      if (cloudLaneJobGrowsDiskOnly(record.job)) {
-        await deps.client().then((client) => client.exec(record.job.instanceId, CLEAR_GROW_NOTE_COMMAND, { timeoutMs: 20_000 })).catch((error: unknown) => {
-          logger.warn?.("cloud.lane_job_grow_note_left", { jobId: record.job.jobId, error: getErrorMessage(error) });
-        });
-      }
-      throw new Error(result.message);
-    }
+    });
+    if (!result.ok) throw new Error(result.message);
     setStage(record, "resize", "done");
     deps.changed();
   };
@@ -652,6 +645,20 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     deps.changed();
   };
 
+  /**
+   * A disk-only job that stopped after its save (a failed resize, a cancel)
+   * leaves the computer's grow note, which would read the next restart as a
+   * disk grow. The save's exec has ended by then (it's awaited), so the note
+   * is there to remove.
+   */
+  const clearGrowNote = async (record: JobRecord): Promise<void> => {
+    const job = record.job;
+    if (!cloudLaneJobGrowsDiskOnly(job) || finished(stageOf(record, "resize")) || stageOf(record, "save")?.status === "pending") return;
+    await deps.client().then((client) => client.exec(job.instanceId, CLEAR_GROW_NOTE_COMMAND, { timeoutMs: 20_000 })).catch((error: unknown) => {
+      logger.warn?.("cloud.lane_job_grow_note_left", { jobId: job.jobId, error: getErrorMessage(error) });
+    });
+  };
+
   const runJob = async (record: JobRecord): Promise<void> => {
     const job = record.job;
     if (running.has(job.jobId)) return;
@@ -681,6 +688,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       publish(record);
       logger.info?.("cloud.lane_job_online", { jobId: job.jobId, kind: job.kind, toSizeId: job.toSizeId });
     } catch (error) {
+      await clearGrowNote(record);
       if (error instanceof JobStopped || disposed) return;
       // A move's failing step: the copy, unless the new computer never came.
       if (job.kind === "move" && active === "computer" && stageOf(record, "copy")?.status === "running") active = "copy";

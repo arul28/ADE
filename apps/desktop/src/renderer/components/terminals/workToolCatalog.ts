@@ -107,6 +107,8 @@ export function machinesForKind(
     .map((machine, index) => ({ machine, index }))
     .sort((a, b) => rank(a.machine) - rank(b.machine)
       || compareTextInsensitive(a.machine.name, b.machine.name)
+      // Two machines with one name: their keys keep them in one order.
+      || (a.machine.key < b.machine.key ? -1 : a.machine.key > b.machine.key ? 1 : 0)
       || a.index - b.index)
     .map(({ machine }) => machine);
 }

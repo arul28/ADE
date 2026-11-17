@@ -469,7 +469,8 @@ export function createCloudDiskGrower(deps: {
   };
 
   /** Resolves true once the filesystem reads bigger than `fromBytes`, false at the wait's end or on abort. */
-  const waitForGrowth = (fromBytes: number, signal: AbortSignal): Promise<boolean> => new Promise((resolve) => {
+  /** `stillAsked`: false once the grow waited on is gone (cancelled or refused before its resize), which ends the wait. */
+  const waitForGrowth = (fromBytes: number, signal: AbortSignal, stillAsked?: () => boolean): Promise<boolean> => new Promise((resolve) => {
     const startedAt = now();
     let timer: ReturnType<typeof setTimeout> | null = null;
     const finish = (grew: boolean) => {
@@ -481,7 +482,7 @@ export function createCloudDiskGrower(deps: {
     const check = () => {
       const space = readDiskSpace(deps.path);
       if (space && space.totalBytes > fromBytes + GREW_MARGIN_BYTES) return finish(true);
-      if (now() - startedAt >= SETUP_GROW_WAIT_MS) return finish(false);
+      if (now() - startedAt >= SETUP_GROW_WAIT_MS || (stillAsked && !stillAsked())) return finish(false);
       timer = setTimeout(check, SETUP_GROW_POLL_MS);
       timer.unref?.();
     };
@@ -613,11 +614,15 @@ export function createCloudDiskGrower(deps: {
         return { state: "fits", diskGb: totalGb, freeGb: gbOneDecimal(disk.space.freeBytes), message: `This computer's disk already has ${gb(disk.space.freeBytes)} free, so nothing grew.` };
       }
       /** Once a grow is asked for: waits for the bigger disk (the restart ends this brain first, as a rule). */
-      const awaitGrowth = async (fromBytes: number, fromGb: number, toGb: number, already: boolean): Promise<CloudDiskGrowAnswer> => {
-        const grew = await waitForGrowth(fromBytes, signal);
+      const awaitGrowth = async (fromBytes: number, fromGb: number, toGb: number, already: boolean, stillAsked?: () => boolean): Promise<CloudDiskGrowAnswer> => {
+        const grew = await waitForGrowth(fromBytes, signal, stillAsked);
         const after = readDiskSpace(deps.path);
+        // Grown, yet less free than this ask needs (other work wrote meanwhile): say so.
+        const short = after && ask.needFreeBytes != null && after.freeBytes < ask.needFreeBytes
+          ? ` That's less than the ${gb(ask.needFreeBytes)} asked for: free some space, or ask again.`
+          : "";
         return grew && after
-          ? { state: "grown", fromGb, toGb, message: `This computer's disk grew to ${toGb} GB; ${gb(after.freeBytes)} is free now.` }
+          ? { state: "grown", fromGb, toGb, message: `This computer's disk grew to ${toGb} GB; ${gb(after.freeBytes)} is free now.${short}` }
           : { state: "growing", fromGb, toGb, message: `ADE ${already ? "already " : ""}asked to grow this disk to ${toGb} GB, and the computer hasn't restarted yet. Try again in a few minutes.` };
       };
       // A grow already asked for whose disk hasn't grown yet: wait for it, never ask twice.
@@ -628,8 +633,13 @@ export function createCloudDiskGrower(deps: {
         && disk.space.totalBytes <= asked.fromBytes + GREW_MARGIN_BYTES
         && now() - asked.at < CLOUD_DISK_GROW_STARTED_COOLDOWN_MS
       ) {
-        const earlier = await awaitGrowth(asked.fromBytes, asked.fromGb ?? totalGb, asked.toGb, true);
-        if (earlier.state !== "grown") return earlier;
+        const sameAsk = () => {
+          const current = readCloudDiskGrowState(stateFile, deps.instanceId);
+          return current?.state === "growing" && current.at === asked.at;
+        };
+        const earlier = await awaitGrowth(asked.fromBytes, asked.fromGb ?? totalGb, asked.toGb, true, sameAsk);
+        // The grow waited on was cancelled or refused before it resized: this ask goes on by itself.
+        if (earlier.state !== "grown") return sameAsk() ? earlier : await grower.growToFit(ask);
         // That grow was someone else's size: when this caller needs more, ask again from the new disk.
         const after = measure();
         const met = !after
@@ -648,8 +658,12 @@ export function createCloudDiskGrower(deps: {
           return { state: "fits", diskGb: fromGb, freeGb: gbOneDecimal(disk.space.freeBytes), message: `This computer's disk is already ${fromGb} GB, so nothing grew.` };
         }
         const computer = { type: instance.type, cpu: instance.resources.cpu, memoryGb: instance.resources.memory, diskGb: fromGb };
-        const shortMb = Math.max(1, Math.ceil(((ask.needFreeBytes ?? 0) - disk.space.freeBytes) / 2 ** 20));
-        const want = ask.toGb != null ? { toGb: ask.toGb } : { shortMb };
+        /** What to grow for, from a fresh reading of the free space: other work writes while an approval waits. */
+        const want = (): { toGb: number } | { shortMb: number } => {
+          if (ask.toGb != null) return { toGb: ask.toGb };
+          const free = (measure() ?? disk).space.freeBytes;
+          return { shortMb: Math.max(1, Math.ceil(((ask.needFreeBytes ?? 0) - free) / 2 ** 20)) };
+        };
         const readAccount = (): Promise<CloudAccountState | null> => client.getAccount().catch((error: unknown) => {
           deps.logger?.warn("cloud.disk_catalog_read_failed", { error: error instanceof Error ? error.message : String(error) });
           return null;
@@ -672,7 +686,7 @@ export function createCloudDiskGrower(deps: {
         const settle = async (): Promise<CloudDiskGrowAnswer | GrowFit> => {
           let lastToGb = fromGb;
           for (let round = 0; round < 3; round += 1) {
-            const fit = cloudDiskGrowFit(computer, await readAccount(), want);
+            const fit = cloudDiskGrowFit(computer, await readAccount(), want());
             lastToGb = fit.toGb;
             if (fit.kind === "limit") return await limitAnswer(fit.toGb, fit.reason, fit.sentence);
             if (fit.kind === "plan" || (approvedCents != null && fit.monthCents <= approvedCents)) return fit;

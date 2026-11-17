@@ -49,6 +49,8 @@ export type CloudLaneLaunchRecord = {
    * (`cloudLaunchFileCopies.ts`). Every read of a launch file goes through it.
    */
   localCopies?: Record<string, string>;
+  /** The same for a message queued before the hand-off, by message id. */
+  messageCopies?: Record<string, Record<string, string>>;
   /**
    * The local sequence at the hand-off. The brain counts its own sequence from
    * 1, so every brain snapshot is served above this to stay newer for clients.

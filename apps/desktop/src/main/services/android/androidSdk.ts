@@ -325,7 +325,7 @@ function runAccelCheck(emulatorPath: string): Promise<AccelCheckResult> {
 }
 
 /** Runs `emulator -accel-check`, cached per emulator binary (path + mtime). */
-async function readAndroidAcceleration(emulatorPath: string, options: { force?: boolean } = {}): Promise<AndroidAcceleration> {
+async function readAndroidAcceleration(emulatorPath: string, options: { force?: boolean; recheckUnusableAfterMs?: number } = {}): Promise<AndroidAcceleration> {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(emulatorPath);
@@ -335,7 +335,8 @@ async function readAndroidAcceleration(emulatorPath: string, options: { force?: 
   const key = `${stat.mtimeMs}:${stat.size}`;
   const cached = accelCache.get(emulatorPath);
   if (!options.force && cached && cached.key === key) {
-    const ttl = cached.transient ? ACCEL_TRANSIENT_TTL_MS : cached.value.usable ? ACCEL_OK_TTL_MS : ACCEL_FAIL_TTL_MS;
+    const failTtl = options.recheckUnusableAfterMs != null ? Math.min(ACCEL_FAIL_TTL_MS, options.recheckUnusableAfterMs) : ACCEL_FAIL_TTL_MS;
+    const ttl = cached.transient ? ACCEL_TRANSIENT_TTL_MS : cached.value.usable ? ACCEL_OK_TTL_MS : failTtl;
     if (Date.now() - cached.at < ttl) return cached.value;
   }
   const running = accelInFlight.get(emulatorPath);
@@ -380,6 +381,8 @@ export function requireAndroidSdkTools(
 export type AndroidSdkStatusOptions = AndroidSdkLocateOptions & {
   /** Re-run `emulator -accel-check` even when a cached answer is fresh. */
   forceAccelCheck?: boolean;
+  /** Re-run it when the cached answer says "not usable" and is older than this (a fixed `/dev/kvm` works now). */
+  recheckUnusableAccelAfterMs?: number;
 };
 
 /** The SDK as the panel and `ade android status` read it. */
@@ -444,7 +447,7 @@ export async function readAndroidSdkStatus(options: AndroidSdkStatusOptions = {}
     },
   ];
   const acceleration = emulatorFound
-    ? await readAndroidAcceleration(paths.emulator, { force: options.forceAccelCheck })
+    ? await readAndroidAcceleration(paths.emulator, { force: options.forceAccelCheck, recheckUnusableAfterMs: options.recheckUnusableAccelAfterMs })
     : { kind: null, usable: false, detail: "The Android emulator is not installed." };
   return {
     found: true,
