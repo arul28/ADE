@@ -1155,6 +1155,8 @@ describe("sessionService resume metadata", () => {
   });
 
   it("leaves no row running after a clean stop, and closes rows an earlier clean stop stranded but never a synced machine's", async () => {
+    // The next start runs at noon: the restart resume window reaches back to 06:00.
+    const NEXT_START_MS = Date.parse("2026-03-17T12:00:00.000Z");
     const { createProcessRegistryService } = await import("../runtime/processRegistryService");
     const logger = createLogger() as any;
     const projectRoot = makeProjectRoot("ade-session-service-");
@@ -1193,10 +1195,13 @@ describe("sessionService resume metadata", () => {
       ownerProcessStartedAt: owner.startedAt,
     });
 
-    // A brain from before this fix stopped cleanly: its registry row is gone, its chat still reads running.
+    // A brain from before this fix stopped cleanly: its registry row is gone, its chats still read running.
+    // One chat went quiet long before the resume window; the other printed at 11:00, inside it.
     const oldBrain = registryFor(OLD_BRAIN);
     oldBrain.start();
-    createChat(service, "stranded-chat", { pid: OLD_BRAIN, startedAt: oldBrain.startedAt });
+    createChat(service, "stranded-old-chat", { pid: OLD_BRAIN, startedAt: oldBrain.startedAt });
+    createChat(service, "stranded-recent-chat", { pid: OLD_BRAIN, startedAt: oldBrain.startedAt });
+    db.run("update terminal_sessions set last_output_at = ? where id = ?", ["2026-03-17T11:00:00.000Z", "stranded-recent-chat"]);
     oldBrain.stop();
     // Another machine's chat arrives by sync. Its owner pid is not running here, and that proves nothing.
     createChat(otherMachine, "other-machine-chat", { pid: OLD_BRAIN, startedAt: "2026-03-17T00:01:00.000Z" });
@@ -1207,19 +1212,32 @@ describe("sessionService resume metadata", () => {
 
     const newBrain = registryFor(NEW_BRAIN);
     newBrain.start();
-    service.reconcileStaleRunningSessions({
-      status: "detached",
-      ...newBrain.staleSessionOwnerScope(service.listRunningOwnersWrittenHere()),
-    });
+    service.closeStrandedLocalSessions(newBrain, NEXT_START_MS);
+    service.reconcileStaleRunningSessions({ status: "detached", ...newBrain.staleSessionOwnerScope() });
 
-    expect(service.get("stranded-chat")?.status).toBe("detached");
+    // Idle for longer than the window: restart recovery skips it, and its end is its last output.
+    expect(service.get("stranded-old-chat")).toEqual(expect.objectContaining({
+      status: "completed",
+      endedAt: "2026-03-17T00:10:00.000Z",
+    }));
+    // Inside the window: a turn may have been cut off, so restart recovery still sees it.
+    expect(service.get("stranded-recent-chat")).toEqual(expect.objectContaining({
+      status: "detached",
+      endedAt: "2026-03-17T11:00:00.000Z",
+    }));
     expect(service.get("other-machine-chat")?.status).toBe("running");
     expect(service.get("sibling-chat")?.status).toBe("running");
 
-    // The new brain picks a chat up, then stops cleanly the way both hosts do.
+    // The new brain holds a chat at rest and a chat with a turn in flight, then stops cleanly:
+    // its chat service ends the resting one, and the host's last step detaches the rest.
+    createChat(service, "new-brain-resting-chat", { pid: NEW_BRAIN, startedAt: newBrain.startedAt });
     createChat(service, "new-brain-chat", { pid: NEW_BRAIN, startedAt: newBrain.startedAt });
-    service.detachRunningSessionsOwnedBy({ pid: newBrain.pid, startedAt: newBrain.startedAt });
+    const newBrainIdentity = { pid: newBrain.pid, startedAt: newBrain.startedAt };
+    service.endRunningSessionsOwnedBy([newBrainIdentity], { sessionIds: ["new-brain-resting-chat"], isRestingChat: () => true });
+    service.endRunningSessionsOwnedBy([newBrainIdentity]);
     newBrain.stop();
+
+    expect(service.get("new-brain-resting-chat")?.status).toBe("completed");
 
     expect(service.get("new-brain-chat")).toEqual(expect.objectContaining({ status: "detached", ptyId: null }));
     expect(service.get("new-brain-chat")?.endedAt).toEqual(expect.any(String));

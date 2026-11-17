@@ -258,7 +258,7 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
      * `candidates` replaces the registry's own list with identities the
      * caller already proved are from this computer, such as the owners of
      * rows a clean stop left `running` before it removed its registry row
-     * (`listRunningOwnersWrittenHere`). The same rule applies to them.
+     * (`closeStrandedLocalSessions`). The same rule applies to them.
      */
     listDeadProcessIdentities(candidates?: readonly RuntimeProcessIdentity[]): RuntimeProcessIdentity[] {
       return (candidates ?? this.listKnownProcessIdentities()).filter((identity) => (
@@ -268,24 +268,14 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
       ));
     },
 
-    /**
-     * The owner scope a host passes to `reconcileStaleRunningSessions`.
-     *
-     * `localOwners` are owners of `running` rows that this computer wrote
-     * (`listRunningOwnersWrittenHere`). Those whose process is gone count as
-     * known and dead even when no registry row names them any more: a clean
-     * stop removed its row while its rows stayed `running`. Every other owner
-     * the registry does not know stays out, because a synced row from another
-     * machine carries that machine's pid.
-     */
-    staleSessionOwnerScope(localOwners: readonly RuntimeProcessIdentity[] = []) {
-      const strandedOwners = this.listDeadProcessIdentities(localOwners);
+    /** The owner scope both hosts pass to `reconcileStaleRunningSessions`. */
+    staleSessionOwnerScope() {
       return {
         liveOwnerPids: this.listLivePids(),
         liveOwnerIdentities: this.listLiveProcessIdentities(),
         knownOwnerPids: this.listKnownPids(),
-        knownOwnerIdentities: [...this.listKnownProcessIdentities(), ...strandedOwners],
-        deadOwnerIdentities: [...this.listDeadProcessIdentities(), ...strandedOwners],
+        knownOwnerIdentities: this.listKnownProcessIdentities(),
+        deadOwnerIdentities: this.listDeadProcessIdentities(),
       };
     },
 

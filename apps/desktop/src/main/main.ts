@@ -4776,9 +4776,14 @@ app.whenReady().then(async () => {
     });
     processRegistry.start();
     const reconcileStaleRunningSessions = (reason: "startup" | "owner-liveness-expired") => {
+      // Rows an earlier clean stop left `running` on this computer.
+      const stranded = sessionService.closeStrandedLocalSessions(processRegistry);
+      if (stranded.detached + stranded.completed > 0) {
+        logger.warn("sessions.closed_stranded_running", { ...stranded, reason });
+      }
       const reconciledSessions = sessionService.reconcileStaleRunningSessions({
         status: "detached",
-        ...processRegistry.staleSessionOwnerScope(sessionService.listRunningOwnersWrittenHere()),
+        ...processRegistry.staleSessionOwnerScope(),
       });
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {
@@ -8084,12 +8089,12 @@ app.whenReady().then(async () => {
     }
     try {
       // The rows this process still holds `running` become `detached` before
-      // it leaves the registry (`detachRunningSessionsOwnedBy`).
+      // it leaves the registry (`endRunningSessionsOwnedBy`).
       if (ctx.processRegistry) {
-        ctx.sessionService?.detachRunningSessionsOwnedBy({
+        ctx.sessionService?.endRunningSessionsOwnedBy([{
           pid: ctx.processRegistry.pid,
           startedAt: ctx.processRegistry.startedAt,
-        });
+        }]);
       }
     } catch {
       // ignore
