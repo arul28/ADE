@@ -968,6 +968,13 @@ the one API key store that failed (never the key). The account server's
 `/cloud/sign-ins` route logs `cloud.cloud_key_mirror_failed` and
 `cloud.cloud_key_unmirror_failed` {id} too, and then answers 503. The ignored `.env` list logs
 `projects.dotenv_list_failed` (warn) {reason, exitCode or error class name}.
+The agent limits store (`adeCloud/cloudSleep.ts`), used by the desktop IPC and
+the `cloud.write set_limits` action, logs `cloud.agent_limits_server_write_failed`
+(warn) {error} when the account server's `PUT /cloud/limits` fails without a
+refusal (a refusal shows the server's sentence and is not logged), and
+`cloud.agent_limits_local_write_failed` (warn) {error} when this computer's copy
+can't be written. `cloud.agent_limits_set` {unattendedSpend, machinesPerDay,
+onServer} records a desktop save.
 The Linear quick view of a tab with no computer logs
 `ade_cloud.linear_quick_view_part_failed` {part, code} to the console when
 one of its parts fails. The renderer logs
