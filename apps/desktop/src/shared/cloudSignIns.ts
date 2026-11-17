@@ -214,17 +214,17 @@ export type CloudKeyApiStore = {
 /**
  * Puts a saved ADE Cloud key into the one API key store, so computers and
  * cloud computers read one key. The provider's row takes it when the row is
- * empty, holds this key, or holds the key ADE Cloud had before (`held`). Any
- * other key there is a computer's own: it stays, and this one goes beside it
- * as `<provider>#ade-cloud`, which cloud computers read first. False when the
+ * empty or holds this key. Any other key there may be a person's own (even
+ * one ADE Cloud also had): it stays, and this one goes beside it as
+ * `<provider>#ade-cloud`, which cloud computers read first. False when the
  * store didn't answer or a write failed.
  */
-export async function mirrorCloudKeyToApiStore(store: CloudKeyApiStore, id: string, token: string, held: string | null): Promise<boolean> {
+export async function mirrorCloudKeyToApiStore(store: CloudKeyApiStore, id: string, token: string): Promise<boolean> {
   const rows = cloudKeyApiStoreRows(id);
   if (!rows) return true;
   const own = await store.read(rows.own);
   if (own === undefined) return false;
-  if (own !== null && own !== token && own !== held) return await store.write(rows.cloud, token);
+  if (own !== null && own !== token) return await store.write(rows.cloud, token);
   if (own !== token && !(await store.write(rows.own, token))) return false;
   // The provider's row holds this key now: an older copy beside it would shadow it on cloud computers.
   const beside = await store.read(rows.cloud);

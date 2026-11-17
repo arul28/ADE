@@ -276,11 +276,9 @@ export async function routeAccountSignIns(request: Request, path: string, env: R
       const value = JSON.stringify(claudePassPayload({ token: cleaned.key, createdAt: now }));
       landed = await writeItem(env, authorization, { kind: PASS_KIND, key: `${CLAUDE_PASS_KEY_PREFIX}${randomHex(6)}`, value });
     } else {
-      const held = await heldKeyOf(env, authorization, id);
-      if (held === undefined) return unavailable();
       landed = await writeItem(env, authorization, { kind: KEY_KIND, key: cloudSignInVaultKey(id), value: encodeCloudSignIn(cleaned.key, now) });
       // Saved but not in the one store: cloud computers would keep the older key, so the person is told to try again.
-      if (landed && !(await mirrorCloudKeyToApiStore(apiStoreOf(env, authorization), id, cleaned.key, held))) {
+      if (landed && !(await mirrorCloudKeyToApiStore(apiStoreOf(env, authorization), id, cleaned.key))) {
         logCloud("cloud.cloud_key_mirror_failed", { id });
         return unavailable();
       }

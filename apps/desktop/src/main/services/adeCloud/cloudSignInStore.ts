@@ -62,7 +62,7 @@ function apiStoreOf(vaults: CloudSignInVaults, id: CloudSignInId, logger?: Logge
   };
 }
 
-/** The key a sign-in's item holds now; null when none or unreadable (the mirror then keeps a computer's own key). */
+/** The key a sign-in's item holds now; null when none or unreadable (the removal then keeps a computer's own key). */
 async function heldToken(vault: CloudVault, id: CloudSignInId): Promise<string | null> {
   return await vault.get().then((read) => (read.ok ? parseStored(id, read.value)?.token ?? null : null), () => null);
 }
@@ -83,15 +83,13 @@ export async function saveCloudSignIn(
 ): Promise<boolean> {
   const vault = vaults(cloudSignInVaultKey(id));
   if (!vault) return false;
-  // The key it replaces: the provider's row that holds it is ADE Cloud's copy, not a computer's own.
-  const held = id === "claude" ? null : await heldToken(vault, id);
   const ok = await vault.set(encodeCloudSignIn(token, Date.now())).catch(() => {
     logger?.warn?.("cloud.cloud_sign_in_save_threw", { id, reason: "vault_write_threw" });
     return false;
   });
   if (!ok) logger?.warn?.("cloud.cloud_sign_in_save_failed", { id });
   // Best effort: the `cloud-key-<id>` item stays the copy older cloud computers read, so a failed mirror loses nothing.
-  else if (id !== "claude" && !(await mirrorCloudKeyToApiStore(apiStoreOf(vaults, id, logger), id, token, held))) {
+  else if (id !== "claude" && !(await mirrorCloudKeyToApiStore(apiStoreOf(vaults, id, logger), id, token))) {
     logger?.warn?.("cloud.cloud_key_mirror_failed", { id });
   }
   return ok;
