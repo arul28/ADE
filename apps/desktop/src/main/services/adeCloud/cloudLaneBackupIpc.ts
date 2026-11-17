@@ -6,6 +6,7 @@ import type { CloudLaneBackup } from "../../../../../account-directory/src/cloud
 import type { CloudApiClient } from "../../../shared/cloudApiClient";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { ensureBundleBase } from "../chat/handoffGitBundle";
 import { IPC } from "../../../shared/ipc";
 import { runGit } from "../git/git";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
@@ -18,6 +19,8 @@ import { readGitOriginUrl } from "../projects/recentProjectSummary";
  *
  * - `cloudLaneBackups` lists them.
  * - `cloudLaneBackupSavePatch` saves the patch where the person picks.
+ * - `cloudLaneBackupForget` deletes one for good (the server refuses while a
+ *   computer still holds its machine key).
  * - `cloudLaneBackupToBranch` puts the work on a NEW branch in a clone of
  *   the repository on THIS computer (the snapshot of the uncommitted work is
  *   its last commit). It never moves a branch that exists, never touches a
@@ -76,21 +79,20 @@ export async function laneBackupToBranch(api: CloudApiClient, args: { machineKey
   try {
     const bundlePath = path.join(tempDir, "lane.bundle");
     fs.writeFileSync(bundlePath, bundle);
+    // A hook-free git (an empty hooks folder, on every OS) for every call that takes in the saved work.
+    const noHooks = path.join(tempDir, "no-hooks");
+    fs.mkdirSync(noHooks);
+    const hardening = ["-c", `core.hooksPath=${noHooks}`, "-c", "submodule.recurse=false", "-c", "fetch.recurseSubmodules=false"];
     // The work builds on commits GitHub has; fetch them when they are missing here.
-    if ((await runGit(["bundle", "verify", "--quiet", bundlePath], { cwd: root, timeoutMs: 60_000 })).exitCode !== 0) {
-      await runGit(["fetch", "--quiet", "--no-recurse-submodules", "origin"], { cwd: root, timeoutMs: 120_000 });
-      if ((await runGit(["bundle", "verify", "--quiet", bundlePath], { cwd: root, timeoutMs: 60_000 })).exitCode !== 0) {
-        throw new AdeExpectedError("This clone lacks the commits the saved work builds on, even after a fetch.", "user");
-      }
+    if (!(await ensureBundleBase({ cwd: root, bundlePath, content: bundle, gitPrefix: hardening }))) {
+      throw new AdeExpectedError("This clone lacks the commits the saved work builds on, even after a fetch from GitHub.", "user");
     }
     const listed = await runGit(["bundle", "list-heads", bundlePath], { cwd: root, timeoutMs: 30_000 });
     const heads = listed.stdout.split(/\r?\n/).map((line) => line.trim().split(/\s+/)).filter((parts) => parts.length === 2);
     if (heads.length !== 1 || heads[0]![0] !== head) throw new Error("This lane's saved work doesn't match its record.");
     const branch = await freeBranchName(root, backup);
-    // A hook-free fetch (an empty hooks folder, on every OS) into a new branch only: nothing that exists moves, no working tree changes.
-    const noHooks = path.join(tempDir, "no-hooks");
-    fs.mkdirSync(noHooks);
-    const fetched = await runGit(["-c", `core.hooksPath=${noHooks}`, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", bundlePath, `${heads[0]![1]}:refs/heads/${branch}`], { cwd: root, timeoutMs: 120_000 });
+    // Into a new branch only: nothing that exists moves, no working tree changes.
+    const fetched = await runGit([...hardening, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", bundlePath, `${heads[0]![1]}:refs/heads/${branch}`], { cwd: root, timeoutMs: 120_000 });
     if (fetched.exitCode !== 0) throw new Error(fetched.stderr.trim() || "ADE couldn't put the saved work on a branch.");
     return { branch };
   } finally {
@@ -127,5 +129,11 @@ export function registerCloudLaneBackupIpc(args: { accountApi: () => CloudApiCli
     const made = await laneBackupToBranch(args.accountApi(), { machineKey: idArg(arg?.machineKey, "computer"), laneId: idArg(arg?.laneId, "lane"), projectRoot });
     logger.info("cloud.lane_backup_to_branch", {});
     return made;
+  });
+  ipcMain.handle(IPC.cloudLaneBackupForget, async (event, arg?: { machineKey?: unknown; laneId?: unknown }): Promise<{ deleted: number }> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneBackupForget)) throw new Error("ADE can't do that from here.");
+    const deleted = await args.accountApi().forgetLaneBackup(idArg(arg?.machineKey, "computer"), idArg(arg?.laneId, "lane"));
+    logger.info("cloud.lane_backup_forgot", {});
+    return deleted;
   });
 }

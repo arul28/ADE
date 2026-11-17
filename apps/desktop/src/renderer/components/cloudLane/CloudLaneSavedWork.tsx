@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import { DownloadSimple, GitBranch } from "@phosphor-icons/react";
+import { ClockCounterClockwise, DownloadSimple, GitBranch, Trash } from "@phosphor-icons/react";
 import type { CloudLaneBackup } from "../../../../../account-directory/src/cloud/contract";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { ipcErrorMessage } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
+import { MachineActionsMenu } from "../remoteTargets/MachineActionsMenu";
 import { cn } from "../ui/cn";
+import { confirmDialog } from "../ui/dialog";
 import "./cloudLane.css";
 
 /**
@@ -19,22 +21,112 @@ import "./cloudLane.css";
  *   (`ade-saved/...`), the uncommitted part as its last commit, in a new
  *   lane; nothing is pushed and no other branch moves.
  *
- * One read when it shows, never a poll. Nothing shows when there is no
- * saved work.
+ * `CloudLaneSavedWork` shows one lane's (a lane without a computer, a
+ * computer that can't wake). `CloudSavedLaneWorkCard` (Settings › ADE Cloud)
+ * shows the saved work no lane row on that page shows, such as a deleted
+ * project's, with Delete in its ⋯ menu. One read when either shows, never a
+ * poll. Nothing shows when there is no saved work.
  */
 
-function savedWorkSentence(backup: CloudLaneBackup): string {
+export function savedWorkSentence(backup: CloudLaneBackup): string {
   const parts: string[] = [];
   if (backup.commits > 0) parts.push(`${backup.commits} ${backup.commits === 1 ? "commit" : "commits"}`);
   if (backup.snapshotSha) parts.push(backup.files > 0 ? `${backup.files} uncommitted ${backup.files === 1 ? "file" : "files"}` : "uncommitted changes");
-  const when = new Date(backup.savedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  return `ADE Cloud saved this lane's work that isn't on GitHub (${parts.join(" and ") || "its changes"}) on ${when}.`;
+  return parts.join(" and ") || "its changes";
+}
+
+function savedWhen(backup: CloudLaneBackup): string {
+  return new Date(backup.savedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+type SavedWorkBusy = "patch" | "lane" | "delete" | null;
+
+/** The actions on one saved work, shared by the lane row and the account card. */
+function useSavedWorkActions(backup: CloudLaneBackup, name: string) {
+  const [busy, setBusy] = useState<SavedWorkBusy>(null);
+  const binding = useAppStore((state) => state.projectBinding);
+  const cloud = window.ade?.cloud;
+  // Only a clone of the same repository on this computer can take the work as a lane.
+  const here = binding?.kind === "local" ? normalizeGitRemoteIdentity(binding.gitOriginUrl ?? null) : null;
+  const canOpenHere = Boolean(cloud?.laneBackupToBranch && binding?.kind === "local" && (!backup.projectKey || here === backup.projectKey));
+  const canDownload = Boolean(cloud?.saveLaneBackupPatch && backup.patchParts > 0);
+
+  const run = async (what: Exclude<SavedWorkBusy, null>, work: () => Promise<void>, failTitle: string) => {
+    setBusy(what);
+    try {
+      await work();
+    } catch (error) {
+      showToast({ tone: "error", title: failTitle, message: ipcErrorMessage(error) || "Try again in a moment." });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const download = () => run("patch", async () => {
+    const saved = await cloud!.saveLaneBackupPatch!(backup.machineKey, backup.laneId);
+    if (saved.savedTo) showToast({ tone: "success", title: `Saved ${name}'s work`, message: "Apply it in a clone of the repository with git apply." });
+  }, `Couldn't download ${name}'s work`);
+
+  const openHere = () => run("lane", async () => {
+    if (binding?.kind !== "local") return;
+    const { branch } = await cloud!.laneBackupToBranch!(backup.machineKey, backup.laneId, binding.rootPath);
+    await window.ade.lanes.importBranch({ branchRef: branch, name: `${name} (saved work)`, publishUpstream: false }, binding);
+    showToast({ tone: "success", title: `Opened ${name}'s work in a new lane`, message: `It is on the branch ${branch}, on this computer only. Its uncommitted changes are its last commit.` });
+  }, `Couldn't open ${name}'s work here`);
+
+  /** True when it was deleted. */
+  const forget = async (): Promise<boolean> => {
+    if (!cloud?.forgetLaneBackup) return false;
+    const ok = await confirmDialog({
+      title: `Delete ${name}'s saved work?`,
+      message: "ADE Cloud deletes its only copy of this lane's work that isn't on GitHub. Download the patch first if you might need it.",
+      confirmLabel: "Delete saved work",
+      destructive: true,
+    });
+    if (!ok) return false;
+    let deleted = false;
+    await run("delete", async () => {
+      await cloud.forgetLaneBackup!(backup.machineKey, backup.laneId);
+      deleted = true;
+      showToast({ tone: "success", title: `Deleted ${name}'s saved work` });
+    }, `Couldn't delete ${name}'s saved work`);
+    return deleted;
+  };
+
+  return { busy, canOpenHere, canDownload, canForget: Boolean(cloud?.forgetLaneBackup), download, openHere, forget };
+}
+
+function SavedWorkButtons({ actions }: { actions: ReturnType<typeof useSavedWorkActions> }) {
+  return (
+    <>
+      {actions.canDownload ? (
+        <button type="button" className="kit-btn kit-btn-ghost" data-size="xs" disabled={actions.busy != null} onClick={() => void actions.download()}>
+          <DownloadSimple size={11} />
+          {actions.busy === "patch" ? "Downloading…" : "Download patch"}
+        </button>
+      ) : null}
+      {actions.canOpenHere ? (
+        <button type="button" className="kit-btn kit-btn-ghost" data-size="xs" disabled={actions.busy != null} onClick={() => void actions.openHere()}>
+          <GitBranch size={11} />
+          {actions.busy === "lane" ? "Opening…" : "Open in a new lane here"}
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+/** The newest backup of each lane, newest first. */
+function newestPerLane(list: readonly CloudLaneBackup[]): CloudLaneBackup[] {
+  const byLane = new Map<string, CloudLaneBackup>();
+  for (const entry of list) {
+    const held = byLane.get(entry.laneId);
+    if (!held || entry.savedAt > held.savedAt) byLane.set(entry.laneId, entry);
+  }
+  return [...byLane.values()].sort((a, b) => b.savedAt - a.savedAt);
 }
 
 export function CloudLaneSavedWork({ laneId, laneName, className }: { laneId: string; laneName?: string | null; className?: string }) {
   const [backup, setBackup] = useState<CloudLaneBackup | null>(null);
-  const [busy, setBusy] = useState<"patch" | "lane" | null>(null);
-  const binding = useAppStore((state) => state.projectBinding);
   const cloud = window.ade?.cloud;
 
   useEffect(() => {
@@ -43,7 +135,7 @@ export function CloudLaneSavedWork({ laneId, laneName, className }: { laneId: st
     if (!read) return;
     void read(laneId).then(
       (list) => {
-        if (live) setBackup([...list].filter((entry) => entry.laneId === laneId).sort((a, b) => b.savedAt - a.savedAt)[0] ?? null);
+        if (live) setBackup(newestPerLane(list.filter((entry) => entry.laneId === laneId))[0] ?? null);
       },
       () => {
         if (live) setBackup(null);
@@ -55,53 +147,93 @@ export function CloudLaneSavedWork({ laneId, laneName, className }: { laneId: st
   }, [cloud, laneId]);
 
   if (!backup) return null;
-  const name = laneName ?? backup.laneName ?? "this lane";
-  // Only a clone of the same repository on this computer can take the work as a lane.
-  const here = binding?.kind === "local" ? normalizeGitRemoteIdentity(binding.gitOriginUrl ?? null) : null;
-  const canOpenHere = Boolean(cloud?.laneBackupToBranch && binding?.kind === "local" && (!backup.projectKey || here === backup.projectKey));
+  return <LaneSavedWorkLine backup={backup} name={laneName ?? backup.laneName ?? "this lane"} className={className} />;
+}
 
-  const download = async () => {
-    if (!cloud?.saveLaneBackupPatch) return;
-    setBusy("patch");
-    try {
-      const saved = await cloud.saveLaneBackupPatch(backup.machineKey, backup.laneId);
-      if (saved.savedTo) showToast({ tone: "success", title: `Saved ${name}'s work`, message: "Apply it in a clone of the repository with git apply." });
-    } catch (error) {
-      showToast({ tone: "error", title: `Couldn't download ${name}'s work`, message: ipcErrorMessage(error) || "Try again in a moment." });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const openHere = async () => {
-    if (!cloud?.laneBackupToBranch || binding?.kind !== "local") return;
-    setBusy("lane");
-    try {
-      const { branch } = await cloud.laneBackupToBranch(backup.machineKey, backup.laneId, binding.rootPath);
-      await window.ade.lanes.importBranch({ branchRef: branch, name: `${name} (saved work)`, publishUpstream: false }, binding);
-      showToast({ tone: "success", title: `Opened ${name}'s work in a new lane`, message: `It is on the branch ${branch}, on this computer only. Its uncommitted changes are its last commit.` });
-    } catch (error) {
-      showToast({ tone: "error", title: `Couldn't open ${name}'s work here`, message: ipcErrorMessage(error) || "Try again in a moment." });
-    } finally {
-      setBusy(null);
-    }
-  };
-
+function LaneSavedWorkLine({ backup, name, className }: { backup: CloudLaneBackup; name: string; className?: string }) {
+  const actions = useSavedWorkActions(backup, name);
   return (
-    <div className={cn("adecl-saved-work", className)} data-cloud-lane-saved-work={laneId}>
-      <span className="adecl-muted">{savedWorkSentence(backup)}</span>
+    <div className={cn("adecl-saved-work", className)} data-cloud-lane-saved-work={backup.laneId}>
+      <span className="adecl-muted">ADE Cloud saved this lane's work that isn't on GitHub ({savedWorkSentence(backup)}) on {savedWhen(backup)}.</span>
       <div className="adecl-nocomp-actions">
-        {cloud?.saveLaneBackupPatch && backup.patchParts > 0 ? (
-          <button type="button" className="kit-btn kit-btn-ghost" data-size="xs" disabled={busy != null} onClick={() => void download()}>
-            <DownloadSimple size={11} />
-            {busy === "patch" ? "Downloading…" : "Download patch"}
-          </button>
-        ) : null}
-        {canOpenHere ? (
-          <button type="button" className="kit-btn kit-btn-ghost" data-size="xs" disabled={busy != null} onClick={() => void openHere()}>
-            <GitBranch size={11} />
-            {busy === "lane" ? "Opening…" : "Open in a new lane here"}
-          </button>
+        <SavedWorkButtons actions={actions} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Settings › ADE Cloud: saved lane work that no lane row on the page shows
+ * (`shownLaneIds`), such as the lanes of a project whose computers were
+ * deleted. Hidden when there is none.
+ */
+export function CloudSavedLaneWorkCard({ shownLaneIds }: { shownLaneIds: ReadonlySet<string> }) {
+  const [backups, setBackups] = useState<CloudLaneBackup[]>([]);
+  const cloud = window.ade?.cloud;
+
+  useEffect(() => {
+    let live = true;
+    const read = cloud?.laneBackups;
+    if (!read) return;
+    void read(null).then(
+      (list) => {
+        if (live) setBackups(newestPerLane(list));
+      },
+      () => {
+        if (live) setBackups([]);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [cloud]);
+
+  const rows = backups.filter((backup) => !shownLaneIds.has(backup.laneId));
+  if (rows.length === 0) return null;
+  return (
+    <section className="kit-card adecd-card" aria-label="Saved lane work" data-cloud-saved-lane-work>
+      <header className="kit-card-head">
+        <ClockCounterClockwise size={14} />
+        Saved lane work
+        <span className="kit-card-head-count">{rows.length}</span>
+        <span className="adecd-head-note">Work that wasn't on GitHub when ADE deleted its computer</span>
+      </header>
+      <div className="kit-card-body" data-flush="true">
+        {rows.map((backup) => (
+          <SavedWorkRow key={`${backup.machineKey}/${backup.laneId}`} backup={backup} onGone={() => setBackups((list) => list.filter((entry) => entry !== backup))} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SavedWorkRow({ backup, onGone }: { backup: CloudLaneBackup; onGone: () => void }) {
+  const name = backup.laneName ?? backup.branchRef ?? "Lane";
+  const actions = useSavedWorkActions(backup, name);
+  return (
+    <div className="adecl-saved-row" data-cloud-lane-saved-work={backup.laneId}>
+      <div className="adecl-saved-row-text">
+        <span className="adecl-saved-row-name">{name}</span>
+        <span className="adecl-muted">
+          {[backup.projectKey, backup.branchRef && backup.branchRef !== name ? backup.branchRef : null].filter(Boolean).join(" · ")}
+          {backup.projectKey || (backup.branchRef && backup.branchRef !== name) ? " · " : ""}
+          {savedWorkSentence(backup)}, saved {savedWhen(backup)}
+        </span>
+      </div>
+      <div className="adecl-nocomp-actions">
+        <SavedWorkButtons actions={actions} />
+        {actions.canForget ? (
+          <MachineActionsMenu
+            label={`More for ${name}'s saved work`}
+            actions={[{
+              key: "delete",
+              label: "Delete saved work",
+              icon: <Trash size={14} />,
+              danger: true,
+              disabled: actions.busy != null,
+              onSelect: () => void actions.forget().then((deleted) => { if (deleted) onGone(); }),
+            }]}
+          />
         ) : null}
       </div>
     </div>

@@ -14351,6 +14351,9 @@ const adeBridge = {
     /** Puts a lane backup on a new branch of the clone at `projectRoot` on this computer; never pushes. */
     laneBackupToBranch: (machineKey: string, laneId: string, projectRoot: string): Promise<{ branch: string }> =>
       ipcRenderer.invoke(IPC.cloudLaneBackupToBranch, { machineKey, laneId, projectRoot }),
+    /** Deletes a lane backup for good (only once no computer holds its machine key). */
+    forgetLaneBackup: (machineKey: string, laneId: string): Promise<{ deleted: number }> =>
+      ipcRenderer.invoke(IPC.cloudLaneBackupForget, { machineKey, laneId }),
     /** "Keep it" on an idle cleanup warning: restarts the computer's idle clock, no wake. Account level, by its ADE Cloud id. */
     keepIdleComputer: (instanceId: string): Promise<{ ok: boolean; message?: string }> =>
       ipcRenderer.invoke(IPC.cloudKeepIdleComputer, { instanceId }),

@@ -5196,6 +5196,8 @@ declare global {
         saveLaneBackupPatch?: (machineKey: string, laneId: string) => Promise<{ savedTo: string | null }>;
         /** The desktop only: the work on a new branch of a clone on this computer. */
         laneBackupToBranch?: (machineKey: string, laneId: string, projectRoot: string) => Promise<{ branch: string }>;
+        /** Deletes a lane backup for good; refused while a computer still holds its machine key. */
+        forgetLaneBackup?: (machineKey: string, laneId: string) => Promise<{ deleted: number }>;
         /** "Keep it" on an idle cleanup warning: the server restarts the computer's idle clock with no wake. Account level, no pin. */
         keepIdleComputer?: (instanceId: string) => Promise<{ ok: boolean; message?: string }>;
         /**

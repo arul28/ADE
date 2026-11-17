@@ -471,11 +471,19 @@ work that is not on GitHub before it rests, and a cleanup deletes it later
 with no wake.
 
 - **What.** For each lane on the computer (archived ones and the main
-  checkout too): the commits no `origin` branch has, and a snapshot commit of
-  the uncommitted work (staged, unstaged, untracked files git does not
+  checkout too): the commits GitHub has in no branch, and a snapshot commit
+  of the uncommitted work (staged, unstaged, untracked files git does not
   ignore), made in a private copy of the index. It is one `git bundle` (the
   exact restore) and one `git diff --binary` patch (the download). Nothing is
   pushed, the snapshot is on no branch, and the temporary ref goes at once.
+- **What GitHub has** (`readGithubBase`): the branch heads `git ls-remote`
+  reads from GitHub at the save, not this clone's `origin/*` refs. A branch
+  GitHub deleted (a squash merge) leaves its ref here, and a backup that
+  left its commits out could not be restored. The set is in the
+  fingerprint, so a change on GitHub makes the next save upload. When GitHub
+  can't be reached, only its default branch counts. A restore that lacks a
+  commit the backup builds on fetches `origin`, then that commit by id
+  (`ensureBundleBase`).
 - **When.** In every rest save (`cloudRestSave.ts`, before the copies): the
   idle step (90 s budget), `prepare-stop` (so the 0-hours stop too) and
   `save-for-rest`. Same work as the last backup (HEAD and the working-tree
@@ -502,17 +510,26 @@ with no wake.
   the newest backup of the lane from another machine is applied
   (`applyHandoffGitBundle`) if the lane lacks it. A lane with its own
   uncommitted work, commits past the backup, or a branch that went another
-  way is left as it is; the launch card says so and the backup stays.
+  way is left as it is; the launch card says so and the backup stays. The
+  uncommitted work comes back as unstaged changes: the backup does not keep
+  which files were staged.
 - **Lifetime.** A backup goes when a newer one of the lane replaces it, when
   the lane's work is on GitHub (the computer that restored it deletes it),
-  with the lane (a delete with no `keepLane`, or Forget lane), and with the
-  account.
+  with the lane (a delete with no `keepLane`, or Forget lane), with the
+  account, and when the person deletes it (`POST .../forget`, any app, the
+  web too; refused while a computer still holds that machine key). A
+  project delete keeps it: it is the lane's only copy. "Restored" names the
+  backup by fingerprint, so a newer one is never marked by mistake. An
+  upload nobody commits in 30 minutes loses its parts (the minute cron's
+  sweep), and each part must fit the size the upload declared for its kind.
 - **Get this lane's work** (`CloudLaneSavedWork.tsx`, iPhone
   `CloudSavedWorkRow`): on a lane without a computer and on a computer that
   can't wake (0 hours, over the plan's disk). Download patch everywhere; on
   the desktop, "Open in a new lane here" puts the work on a new
   `ade-saved/...` branch of a clone on this computer (the uncommitted part as
-  its last commit) and makes a lane of it, with no push.
+  its last commit) and makes a lane of it, with no push. Settings › ADE
+  Cloud lists, under "Saved lane work", the saved work no lane row shows
+  (a deleted project's lanes), with Delete in its ⋯ menu.
 - **Security.** Sealed with the account's key, the additional data naming
   user, machine key, lane, upload, kind and part. Encryption at rest, not
   end-to-end: the server can open it to give it back. Only a computer with

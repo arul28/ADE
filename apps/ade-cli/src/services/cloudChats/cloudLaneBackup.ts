@@ -49,9 +49,11 @@ import {
 } from "../../../../account-directory/src/cloud/contract";
 import { CloudApiError, type CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
 import { runGit } from "../../../../desktop/src/main/services/git/git";
+import { runGitWithGithubAuthFallback } from "../../../../desktop/src/main/services/git/gitTransportAuth";
 import {
   HANDOFF_GIT_BUNDLE_TOO_LARGE_MESSAGE,
   applyHandoffGitBundle,
+  ensureBundleBase,
   precheckUntrackedSize,
   readHandoffWorkingTreeSha,
   refuseUnportablePaths,
@@ -94,6 +96,7 @@ export type LaneWorkRead = {
   tipTree: string;
   branch: string | null;
   ahead: number;
+  base: GithubBase;
 };
 
 export class LaneBackupRefused extends Error {
@@ -103,14 +106,10 @@ export class LaneBackupRefused extends Error {
   }
 }
 
-async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv, maxOutputBytes?: number): Promise<string> {
-  const result = await runGit(args, { cwd, timeoutMs: GIT_TIMEOUT_MS, env: { ...READ_ENV, ...(env ?? {}) }, ...(maxOutputBytes ? { maxOutputBytes } : {}) });
+async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv, maxOutputBytes?: number, stdin?: string): Promise<string> {
+  const result = await runGit(args, { cwd, timeoutMs: GIT_TIMEOUT_MS, env: { ...READ_ENV, ...(env ?? {}) }, ...(maxOutputBytes ? { maxOutputBytes } : {}), ...(stdin != null ? { stdin } : {}) });
   if (result.exitCode !== 0 || result.timedOut) throw new Error((result.stderr || result.stdout || `git ${args[0]} failed`).trim().slice(0, 300));
   return result.stdout.trim();
-}
-
-async function gitOk(cwd: string, args: string[]): Promise<boolean> {
-  return (await runGit(args, { cwd, timeoutMs: GIT_TIMEOUT_MS, env: READ_ENV })).exitCode === 0;
 }
 
 async function resolveCommit(cwd: string, ref: string): Promise<string | null> {
@@ -129,12 +128,47 @@ async function isAncestor(cwd: string, ancestor: string, descendant: string): Pr
 const refKey = (id: string): string => createHash("sha256").update(id, "utf8").digest("hex").slice(0, 32);
 
 /**
- * The lane's state for the backup: HEAD, the tree its working tree would
- * commit as (ignored files out), and the commits no `origin` branch has.
- * `clean` when nothing of it is off GitHub. Throws when git can't read it.
+ * What GitHub has now, as the base the backup leaves out: the commits its
+ * branch heads point at (`ls-remote`), those this clone holds. Local
+ * `origin/*` refs are not trusted: a branch deleted on GitHub (a squash
+ * merge) leaves its ref here, and a backup built on it could not be restored.
+ * When GitHub can't be reached, only its default branch counts. `key` goes
+ * into the fingerprint, so a change on GitHub makes the next save upload.
  */
-export async function readLaneWork(worktreePath: string): Promise<LaneWorkRead> {
+export type GithubBase = { shas: string[]; key: string };
+
+export async function readGithubBase(cwd: string): Promise<GithubBase> {
+  const listed = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin"], { cwd, timeoutMs: 30_000, env: READ_ENV });
+  let candidates: string[];
+  if (listed.exitCode === 0 && !listed.timedOut) {
+    candidates = listed.stdout.split(/\r?\n/).map((line) => line.split(/\s+/)[0] ?? "").filter((sha) => SHA.test(sha));
+  } else {
+    const fallback = (await resolveCommit(cwd, "refs/remotes/origin/HEAD"))
+      ?? (await resolveCommit(cwd, "refs/remotes/origin/main"))
+      ?? (await resolveCommit(cwd, "refs/remotes/origin/master"));
+    candidates = fallback ? [fallback] : [];
+  }
+  const unique = [...new Set(candidates)].sort();
+  let held: string[] = [];
+  if (unique.length) {
+    const checked = await runGit(["cat-file", "--batch-check"], { cwd, timeoutMs: 30_000, env: READ_ENV, stdin: `${unique.join("\n")}\n` });
+    held = checked.stdout.split("\n").map((line) => line.split(" ")).filter((parts) => parts[1] === "commit" && SHA.test(parts[0] ?? "")).map((parts) => parts[0]!);
+  }
+  return { shas: held, key: createHash("sha256").update(held.join("\n")).digest("hex") };
+}
+
+/** `head` and the exclusions, for `rev-list --stdin`. */
+const revsNotOnGithub = (head: string, base: GithubBase): string => `${[head, ...base.shas.map((sha) => `^${sha}`)].join("\n")}\n`;
+
+/**
+ * The lane's state for the backup: HEAD, the tree its working tree would
+ * commit as (ignored files out), and the commits GitHub has in no branch
+ * (`base`, from `readGithubBase`). `clean` when nothing of it is off GitHub.
+ * Throws when git can't read it.
+ */
+export async function readLaneWork(worktreePath: string, base?: GithubBase): Promise<LaneWorkRead> {
   const cwd = await git(worktreePath, ["rev-parse", "--show-toplevel"]);
+  const githubBase = base ?? await readGithubBase(cwd);
   const tip = await resolveCommit(cwd, "HEAD");
   if (!tip) throw new LaneBackupRefused("This lane has no commit yet, so ADE can't save it. Commit once, then it saves.", "failed");
   const branchRead = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd, timeoutMs: 15_000, env: READ_ENV });
@@ -142,12 +176,12 @@ export async function readLaneWork(worktreePath: string): Promise<LaneWorkRead> 
   const [workingTree, tipTree, aheadText] = await Promise.all([
     readHandoffWorkingTreeSha({ worktreePath: cwd }),
     git(cwd, ["rev-parse", `${tip}^{tree}`]),
-    git(cwd, ["rev-list", "--count", tip, "--not", "--remotes=origin"]),
+    git(cwd, ["rev-list", "--count", "--stdin"], undefined, undefined, revsNotOnGithub(tip, githubBase)),
   ]);
   const ahead = Number.parseInt(aheadText, 10);
   if (!Number.isSafeInteger(ahead) || ahead < 0) throw new Error("ADE couldn't count this lane's commits.");
-  const fingerprint = createHash("sha256").update(`ade.lane-backup.v1\0${tip}\0${workingTree}\0${branch ?? ""}`).digest("hex");
-  return { fingerprint, clean: ahead === 0 && workingTree === tipTree, cwd, tip, workingTree, tipTree, branch, ahead };
+  const fingerprint = createHash("sha256").update(`ade.lane-backup.v2\0${tip}\0${workingTree}\0${branch ?? ""}\0${githubBase.key}`).digest("hex");
+  return { fingerprint, clean: ahead === 0 && workingTree === tipTree, cwd, tip, workingTree, tipTree, branch, ahead, base: githubBase };
 }
 
 export type LaneBackupPack = { bundle: Buffer; patch: Buffer; facts: CloudLaneBackupFacts };
@@ -175,8 +209,11 @@ export async function packLaneBackup(lane: BackupLane, read: LaneWorkRead): Prom
     throw new LaneBackupRefused(`${error instanceof Error ? error.message : String(error)} ADE can't save this lane's work until then.`, "failed");
   }
   const head = snapshot ?? tip;
+  // The commits only this lane has, and the GitHub commits they build on (the bundle's prerequisites).
+  const listed = (await git(cwd, ["rev-list", "--topo-order", "--reverse", "--boundary", "--stdin"], undefined, 64 * 1024 * 1024, revsNotOnGithub(head, read.base))).split("\n").filter(Boolean);
+  const unpushed = listed.filter((line) => !line.startsWith("-"));
+  const prerequisites = listed.filter((line) => line.startsWith("-")).map((line) => line.slice(1));
   // The patch starts at the last commit GitHub has: the parent of the oldest commit only this lane has.
-  const unpushed = (await git(cwd, ["rev-list", "--topo-order", "--reverse", head, "--not", "--remotes=origin"], undefined, 64 * 1024 * 1024)).split("\n").filter(Boolean);
   const oldest = unpushed[0];
   if (!oldest) throw new Error("ADE found nothing to save after all.");
   const baseSha = (await resolveCommit(cwd, `${oldest}^`)) ?? EMPTY_TREE_SHA;
@@ -186,7 +223,8 @@ export async function packLaneBackup(lane: BackupLane, read: LaneWorkRead): Prom
     await git(cwd, ["update-ref", ref, head]);
     const bundlePath = path.join(tempDir, "lane.bundle");
     const patchPath = path.join(tempDir, "lane.patch");
-    await git(cwd, ["bundle", "create", "--quiet", bundlePath, ref, "--not", "--remotes=origin"]);
+    // Leaving out what the prerequisites reach is leaving out all GitHub has: every path from the lane's work into it passes one of them.
+    await git(cwd, ["bundle", "create", "--quiet", bundlePath, ref, ...(prerequisites.length ? ["--not", ...prerequisites] : [])]);
     // To a file: a text file that isn't UTF-8 must keep its bytes.
     await git(cwd, ["-c", "core.quotePath=false", "diff", "--binary", "--full-index", "--no-color", "--no-ext-diff", `--output=${patchPath}`, baseSha, head]);
     const bundleBytes = fs.statSync(bundlePath).size;
@@ -277,6 +315,17 @@ export async function runLaneBackups(deps: LaneBackupRunDeps): Promise<CloudBack
   const restoredHere = new Set(held.filter((entry) => entry.restoredByMachineKey === machineKey).map((entry) => entry.laneId));
   const reports: CloudBackupLaneReport[] = [];
   let complete = listed.complete;
+  // One look at GitHub per repository: lanes that are worktrees of one clone share it.
+  const bases = new Map<string, Promise<GithubBase>>();
+  const baseOf = async (worktreePath: string): Promise<GithubBase> => {
+    const common = path.resolve(worktreePath, await git(worktreePath, ["rev-parse", "--git-common-dir"]));
+    let base = bases.get(common);
+    if (!base) {
+      base = readGithubBase(worktreePath);
+      bases.set(common, base);
+    }
+    return await base;
+  };
   for (const lane of listed.lanes) {
     const report: CloudBackupLaneReport = { laneId: lane.laneId, laneName: lane.laneName, state: "failed" };
     reports.push(report);
@@ -286,7 +335,7 @@ export async function runLaneBackups(deps: LaneBackupRunDeps): Promise<CloudBack
       continue;
     }
     try {
-      const read = await readLaneWork(lane.worktreePath);
+      const read = await readLaneWork(lane.worktreePath, await baseOf(lane.worktreePath));
       if (read.clean) {
         // All on GitHub: its backup, and any backup of the lane it restored, go.
         if (own.has(lane.laneId) || restoredHere.has(lane.laneId)) await api.deleteLaneBackup(machineKey, lane.laneId, instanceId);
@@ -374,7 +423,7 @@ export async function restoreLaneBackupIfNeeded(args: {
   const snapshot = backup.snapshotSha;
   const head = snapshot ?? tip;
   const markRestored = async () => {
-    await api.markLaneBackupRestored(backup.machineKey, laneId, args.instanceId).catch((error: unknown) => {
+    await api.markLaneBackupRestored(backup.machineKey, laneId, args.instanceId, backup.fingerprint).catch((error: unknown) => {
       logger.warn("cloud.lane_restore_mark_failed", { laneId, error: errorText(error) });
     });
   };
@@ -399,8 +448,8 @@ export async function restoreLaneBackupIfNeeded(args: {
   try {
     const bundlePath = path.join(tempDir, "lane.bundle");
     fs.writeFileSync(bundlePath, content);
-    if (!(await gitOk(cwd, ["bundle", "verify", "--quiet", bundlePath]))) {
-      await runGit(["fetch", "--quiet", "--no-recurse-submodules", "origin"], { cwd, timeoutMs: GIT_TIMEOUT_MS });
+    if (!(await ensureBundleBase({ cwd, bundlePath, content }))) {
+      throw new Error("This computer can't get the commits the lane's saved work builds on from GitHub.");
     }
     const heads = (await git(cwd, ["bundle", "list-heads", bundlePath])).split("\n").map((line) => line.trim().split(/\s+/)).filter((parts) => parts.length === 2);
     if (heads.length !== 1 || heads[0]![0] !== head) throw new Error("This lane's saved work doesn't match its record.");
@@ -561,8 +610,11 @@ export async function prepareLaneBranchFromBackup(args: {
   try {
     const bundlePath = path.join(tempDir, "lane.bundle");
     fs.writeFileSync(bundlePath, content);
+    if (!(await ensureBundleBase({ cwd, bundlePath, content }))) {
+      throw new Error("This computer can't get the commits the lane's saved work builds on from GitHub.");
+    }
     const heads = (await git(cwd, ["bundle", "list-heads", bundlePath])).split("\n").map((line) => line.trim().split(/\s+/)).filter((parts) => parts.length === 2);
-    if (heads.length !== 1) throw new Error("This lane's saved work doesn't match its record.");
+    if (heads.length !== 1 || heads[0]![0] !== (backup.snapshotSha ?? backup.headSha)) throw new Error("This lane's saved work doesn't match its record.");
     await git(cwd, ["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", bundlePath, `+${heads[0]![1]}:${tempRef}`]);
     // Create only: an empty old value never moves a branch that appeared meanwhile.
     await git(cwd, ["update-ref", `refs/heads/${branch}`, backup.headSha, ""]);

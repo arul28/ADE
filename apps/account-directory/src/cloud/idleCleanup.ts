@@ -631,7 +631,7 @@ async function claimDelete(env: CloudEnv, fresh: Fresh, now: number): Promise<bo
     where instance_id = ? and deleted_at is null and idle_claimed_at = ? and ${NOT_DELETING_SQL}
       and last_awake_at is ? and idle_kept_at is ?
       and (last_active_at is null or last_active_at <= idle_claimed_at)
-      and backup_rest_at is not null
+      and backup_rest_at is not null and backup_report_state = 'current'
       and not exists (select 1 from cloud_wakes w where w.user_id = cloud_computers.user_id and w.instance_id = cloud_computers.instance_id)
       and exists (select 1 from cloud_accounts a where a.user_id = cloud_computers.user_id and a.deleted_at is null and a.hours_restored_at is ?)
   `).bind(now, computer.instance_id, now, now - CLAIM_STALE_MS, computer.last_awake_at ?? null, computer.idle_kept_at ?? null, account.hours_restored_at ?? null).run();

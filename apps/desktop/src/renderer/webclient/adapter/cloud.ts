@@ -340,6 +340,11 @@ export function createWebCloudNamespace(
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
       return { savedTo: name };
     },
+    forgetLaneBackup: async (machineKey: string, laneId: string) => {
+      const api = accountClient.cloudApi();
+      if (!api) throw new Error("Sign in to ADE to delete your lane's work.");
+      return await api.forgetLaneBackup(machineKey, laneId);
+    },
     carriedSignIns: async () => {
       const answer = await accountClient.cloudApi()?.accountSignIns().catch(() => null);
       return answer?.carried ?? null;

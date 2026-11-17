@@ -22,9 +22,12 @@ create table if not exists cloud_lane_backups (
   bundle_parts integer not null default 0,
   patch_parts integer not null default 0,
   saved_at integer,
-  -- An upload in progress: its id, its declared sizes and when it started.
+  -- An upload in progress: its id, its declared sizes (in all, and of the
+  -- bundle and the patch, which cap its parts) and when it started.
   pending_upload_id text,
   pending_bytes integer,
+  pending_bundle_bytes integer,
+  pending_patch_bytes integer,
   pending_fingerprint text,
   pending_facts_sealed text,
   pending_at integer,
@@ -36,6 +39,8 @@ create table if not exists cloud_lane_backups (
 );
 -- A new computer finds the backups of its lane; a lane delete removes them.
 create index if not exists cloud_lane_backups_lane on cloud_lane_backups (user_id, lane_id);
+-- The minute cron's sweep of uploads nobody committed.
+create index if not exists cloud_lane_backups_pending on cloud_lane_backups (pending_at) where pending_upload_id is not null;
 
 -- The computer's last backup report (`POST /cloud/backups/report`) and
 -- whether it rests with it. `backup_rest_at` is set only when the computer

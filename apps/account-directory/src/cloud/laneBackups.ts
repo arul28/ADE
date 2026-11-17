@@ -50,7 +50,7 @@ import { logCloud, type CloudDb, type CloudEnv, type ComputerRow } from "./store
 
 /** The seal's own bytes on each part: the IV and the tag. */
 const SEAL_OVERHEAD = 28;
-/** An upload not committed by then is dropped by the next upload. */
+/** An upload not committed by then is dropped (the next upload, or the minute cron's sweep). */
 const UPLOAD_STALE_MS = 30 * 60_000;
 const UPLOAD_ID = /^[0-9a-f]{32}$/;
 const FINGERPRINT = /^[0-9a-f]{64}$/;
@@ -78,6 +78,8 @@ type BackupRow = {
   saved_at: number | null;
   pending_upload_id: string | null;
   pending_bytes: number | null;
+  pending_bundle_bytes: number | null;
+  pending_patch_bytes: number | null;
   pending_fingerprint: string | null;
   pending_facts_sealed: string | null;
   pending_at: number | null;
@@ -221,13 +223,14 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, mach
   const uploadId = [...crypto.getRandomValues(new Uint8Array(16))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   const sealedFacts = await sealJson(keys, factsAad(userId, machineKey, laneId), facts);
   await env.DB.prepare(`
-    insert into cloud_lane_backups (user_id, machine_key, lane_id, instance_id, pending_upload_id, pending_bytes, pending_fingerprint, pending_facts_sealed, pending_at, updated_at)
-    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    insert into cloud_lane_backups (user_id, machine_key, lane_id, instance_id, pending_upload_id, pending_bytes, pending_bundle_bytes, pending_patch_bytes, pending_fingerprint, pending_facts_sealed, pending_at, updated_at)
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     on conflict (user_id, machine_key, lane_id) do update set
       pending_upload_id = excluded.pending_upload_id, pending_bytes = excluded.pending_bytes,
+      pending_bundle_bytes = excluded.pending_bundle_bytes, pending_patch_bytes = excluded.pending_patch_bytes,
       pending_fingerprint = excluded.pending_fingerprint, pending_facts_sealed = excluded.pending_facts_sealed,
       pending_at = excluded.pending_at, updated_at = excluded.updated_at
-  `).bind(userId, machineKey, laneId, computer.instance_id, uploadId, total, fingerprint, sealedFacts, now, now).run();
+  `).bind(userId, machineKey, laneId, computer.instance_id, uploadId, total, bundleBytes, patchBytes, fingerprint, sealedFacts, now, now).run();
   return json({ uploadId, partBytes: CLOUD_BACKUP_MAX_PART_BYTES });
 }
 
@@ -243,8 +246,9 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
   const plain = new Uint8Array(await request.arrayBuffer());
   if (plain.byteLength === 0) return fail("bad_request", "That part is empty.", 400);
   if (plain.byteLength > CLOUD_BACKUP_MAX_PART_BYTES) return tooLarge();
-  // Every part of an upload counts against the size it declared: a computer can't send more than it said.
-  if (part * CLOUD_BACKUP_MAX_PART_BYTES > (row.pending_bytes ?? 0) + 2 * CLOUD_BACKUP_MAX_PART_BYTES) return tooLarge();
+  // Each part fits inside the size the upload declared for its kind: a computer can't store more than it said.
+  const declaredKind = (kind === "bundle" ? row.pending_bundle_bytes : row.pending_patch_bytes) ?? 0;
+  if (plain.byteLength > Math.min(CLOUD_BACKUP_MAX_PART_BYTES, declaredKind - (part - 1) * CLOUD_BACKUP_MAX_PART_BYTES)) return tooLarge();
   const keys = await userKeys(env, userId, now);
   const bucket = bucketOf(env);
   if (!keys || !bucket) return unavailable();
@@ -299,7 +303,8 @@ async function handleCommit(request: Request, env: CloudEnv, userId: string, mac
       instance_id = ?, upload_id = pending_upload_id, r2_prefix = ?, fingerprint = pending_fingerprint, facts_sealed = pending_facts_sealed,
       bundle_bytes = ?, patch_bytes = ?, bundle_parts = ?, patch_parts = ?, saved_at = ?,
       restored_at = null, restored_by_machine_key = null,
-      pending_upload_id = null, pending_bytes = null, pending_fingerprint = null, pending_facts_sealed = null, pending_at = null,
+      pending_upload_id = null, pending_bytes = null, pending_bundle_bytes = null, pending_patch_bytes = null,
+      pending_fingerprint = null, pending_facts_sealed = null, pending_at = null,
       updated_at = ?
     where user_id = ? and machine_key = ? and lane_id = ? and pending_upload_id = ?
   `).bind(computer.instance_id, prefix, bundleBytes, patchBytes, bundleParts, patchParts, now, now, userId, machineKey, laneId, uploadId).run();
@@ -359,17 +364,71 @@ async function handleDelete(request: Request, env: CloudEnv, userId: string, mac
   return json({ deleted: rows.length });
 }
 
-/** From the computer that applied another machine's backup of this lane to its own lane. */
+/**
+ * From the computer that applied another machine's backup of this lane to its
+ * own lane. It names the backup by fingerprint: a newer backup committed
+ * since is not the one it applied, so it is not marked (the computer's next
+ * save would delete it as covered).
+ */
 async function handleRestored(request: Request, env: CloudEnv, userId: string, machineKey: string, laneId: string, now: number): Promise<Response> {
   const body = await readJson(request);
   if (!body) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const computer = await callingComputer(env, request, userId, body.instanceId);
-  if (!computer?.machine_key) return noComputer();
-  const done = await env.DB.prepare("update cloud_lane_backups set restored_at = ?, restored_by_machine_key = ?, updated_at = ? where user_id = ? and machine_key = ? and lane_id = ? and upload_id is not null")
-    .bind(now, computer.machine_key, now, userId, machineKey, laneId).run();
+  if (!computer?.machine_key || computer.deleted_at != null) return noComputer();
+  const fingerprint = typeof body.fingerprint === "string" && FINGERPRINT.test(body.fingerprint) ? body.fingerprint : null;
+  if (!fingerprint) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
+  const done = await env.DB.prepare("update cloud_lane_backups set restored_at = ?, restored_by_machine_key = ?, updated_at = ? where user_id = ? and machine_key = ? and lane_id = ? and upload_id is not null and fingerprint = ?")
+    .bind(now, computer.machine_key, now, userId, machineKey, laneId, fingerprint).run();
   if ((done.meta?.changes ?? 0) !== 1) return notFound();
   logCloud("cloud.backup_restored", { userId, instanceId: computer.instance_id });
   return json({ ok: true });
+}
+
+/**
+ * From the person (any app of the account, the web too): one lane's saved
+ * work goes for good. Only once no computer of the account holds that
+ * machine key: while one does, the computer still has the work, and a
+ * cleanup may count on this backup to delete it without a wake.
+ */
+async function handleForget(env: CloudEnv, userId: string, machineKey: string, laneId: string): Promise<Response> {
+  const row = await readRow(env, userId, machineKey, laneId);
+  if (!row) return notFound();
+  const live = await env.DB.prepare("select 1 as n from cloud_computers where user_id = ? and machine_key = ? and deleted_at is null limit 1")
+    .bind(userId, machineKey).first<{ n: number }>();
+  if (live) return fail("backup_computer_live", "This lane's computer still has its work. Delete the lane or its computer instead.", 409);
+  await deleteBackup(env, row);
+  logCloud("cloud.backup_deleted", { userId, reason: "forgot", count: 1 });
+  return json({ deleted: 1 });
+}
+
+/**
+ * From the minute cron: uploads nobody committed in `UPLOAD_STALE_MS` (a
+ * computer that went to sleep or away mid-upload) lose their parts; a row
+ * with no committed backup goes with them. A few a tick.
+ */
+export async function sweepStaleBackupUploads(env: CloudEnv, now: number): Promise<number> {
+  const rows = (await env.DB.prepare(`
+    select user_id, machine_key, lane_id, upload_id, pending_upload_id from cloud_lane_backups
+    where pending_upload_id is not null and pending_at < ? limit 25
+  `).bind(now - UPLOAD_STALE_MS).all<Pick<BackupRow, "user_id" | "machine_key" | "lane_id" | "upload_id" | "pending_upload_id">>()).results ?? [];
+  const bucket = bucketOf(env);
+  for (const row of rows) {
+    if (bucket && row.pending_upload_id && row.pending_upload_id !== row.upload_id) {
+      await deleteUnder(bucket, uploadPrefix(row.user_id, row.machine_key, row.lane_id, row.pending_upload_id));
+    }
+    const ids = [row.user_id, row.machine_key, row.lane_id, row.pending_upload_id];
+    if (row.upload_id) {
+      await env.DB.prepare(`
+        update cloud_lane_backups set pending_upload_id = null, pending_bytes = null, pending_bundle_bytes = null, pending_patch_bytes = null,
+          pending_fingerprint = null, pending_facts_sealed = null, pending_at = null, updated_at = ?
+        where user_id = ? and machine_key = ? and lane_id = ? and pending_upload_id = ?
+      `).bind(now, ...ids).run();
+    } else {
+      await env.DB.prepare("delete from cloud_lane_backups where user_id = ? and machine_key = ? and lane_id = ? and pending_upload_id = ? and upload_id is null").bind(...ids).run();
+    }
+  }
+  if (rows.length) logCloud("cloud.backup_uploads_swept", { count: rows.length });
+  return rows.length;
 }
 
 const LANE_STATES: ReadonlySet<CloudBackupLaneState> = new Set(["clean", "saved", "unchanged", "failed", "too_large"]);
@@ -426,8 +485,9 @@ async function handleReport(request: Request, env: CloudEnv, userId: string, now
   if (!body.complete && problems.length === 0) {
     problems.push({ laneId: "", laneName: null, reason: "ADE couldn't read every project on this computer, so it couldn't save every lane." });
   }
+  // A report comes from a computer that is awake: it no longer rests with any earlier report.
   await env.DB.prepare(`
-    update cloud_computers set backup_report_id = ?, backup_report_state = ?, backup_report_at = ?, backup_problems_json = ?
+    update cloud_computers set backup_report_id = ?, backup_report_state = ?, backup_report_at = ?, backup_problems_json = ?, backup_rest_at = null
     where instance_id = ? and deleted_at is null
   `).bind(reportId, state, now, problems.length ? JSON.stringify(problems.slice(0, MAX_PROBLEMS)) : null, computer.instance_id).run();
   logCloud("cloud.backup_report", { userId, instanceId: computer.instance_id, state, lanes: lanes.length, problems: problems.length });
@@ -485,11 +545,12 @@ async function handleList(url: URL, env: CloudEnv, userId: string, now: number):
 export async function routeLaneBackups(request: Request, url: URL, path: string, env: CloudEnv, userId: string, now: number): Promise<Response> {
   const segments = segmentsAfter(path, CLOUD_PATHS.backups);
   if (segments.length === 0) return request.method === "GET" ? handleList(url, env, userId, now) : notFound();
-  // Every write comes from a computer, never from a browser page.
-  if (request.method !== "GET" && fromBrowser(request)) return notFound();
+  // Every write comes from a computer, never from a browser page; the person's own delete (`forget`) may.
+  if (request.method !== "GET" && fromBrowser(request) && !(segments.length === 3 && segments[2] === "forget")) return notFound();
   if (segments.length === 1 && segments[0] === "report" && request.method === "POST") return handleReport(request, env, userId, now);
   const [machineKey, laneId, action, ...rest] = segments;
   if (!machineKey || !laneId || !ROW_ID.test(machineKey) || !ROW_ID.test(laneId)) return notFound();
+  if (segments.length === 3 && action === "forget" && request.method === "POST") return handleForget(env, userId, machineKey, laneId);
   if (segments.length === 2) {
     if (request.method === "GET") {
       const row = await readRow(env, userId, machineKey, laneId);
@@ -522,10 +583,13 @@ export async function routeLaneBackups(request: Request, url: URL, path: string,
 export async function deleteBackupsForMachines(env: CloudEnv, userId: string, machineKeys: ReadonlyArray<string | null | undefined>): Promise<number> {
   let removed = 0;
   for (const machineKey of new Set(machineKeys.filter((key): key is string => Boolean(key)))) {
-    const rows = (await env.DB.prepare("select user_id, machine_key, lane_id from cloud_lane_backups where user_id = ? and machine_key = ? limit 500")
-      .bind(userId, machineKey).all<BackupRow>()).results ?? [];
-    for (const row of rows) await deleteBackup(env, row);
-    removed += rows.length;
+    for (;;) {
+      const rows = (await env.DB.prepare("select user_id, machine_key, lane_id from cloud_lane_backups where user_id = ? and machine_key = ? limit 500")
+        .bind(userId, machineKey).all<BackupRow>()).results ?? [];
+      for (const row of rows) await deleteBackup(env, row);
+      removed += rows.length;
+      if (rows.length < 500) break;
+    }
   }
   if (removed) logCloud("cloud.backup_deleted", { userId, reason: "lane_deleted", count: removed });
   return removed;
@@ -533,9 +597,14 @@ export async function deleteBackupsForMachines(env: CloudEnv, userId: string, ma
 
 /** Every backup of one lane, on every machine key, goes (the person deleted the lane). */
 export async function deleteBackupsForLane(env: CloudEnv, userId: string, laneId: string): Promise<number> {
-  const rows = (await env.DB.prepare("select user_id, machine_key, lane_id from cloud_lane_backups where user_id = ? and lane_id = ? limit 500")
-    .bind(userId, laneId).all<BackupRow>()).results ?? [];
-  for (const row of rows) await deleteBackup(env, row);
-  if (rows.length) logCloud("cloud.backup_deleted", { userId, reason: "lane_deleted", count: rows.length });
-  return rows.length;
+  let removed = 0;
+  for (;;) {
+    const rows = (await env.DB.prepare("select user_id, machine_key, lane_id from cloud_lane_backups where user_id = ? and lane_id = ? limit 500")
+      .bind(userId, laneId).all<BackupRow>()).results ?? [];
+    for (const row of rows) await deleteBackup(env, row);
+    removed += rows.length;
+    if (rows.length < 500) break;
+  }
+  if (removed) logCloud("cloud.backup_deleted", { userId, reason: "lane_deleted", count: removed });
+  return removed;
 }

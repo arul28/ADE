@@ -465,9 +465,12 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** From a cloud computer: the lane's work is on GitHub, so its backup (and the ones it restored) go. */
     deleteLaneBackup: (machineKey: string, laneId: string, instanceId: string) =>
       request<{ deleted: number }>("DELETE", cloudBackupPath(machineKey, laneId), { body: { instanceId } }),
-    /** From a cloud computer: it applied this backup to its own lane. */
-    markLaneBackupRestored: (machineKey: string, laneId: string, instanceId: string) =>
-      request<{ ok: true }>("POST", cloudBackupPath(machineKey, laneId, "restored"), { body: { instanceId } }),
+    /** From a cloud computer: it applied this backup (the one with `fingerprint`) to its own lane. */
+    markLaneBackupRestored: (machineKey: string, laneId: string, instanceId: string, fingerprint: string) =>
+      request<{ ok: true }>("POST", cloudBackupPath(machineKey, laneId, "restored"), { body: { instanceId, fingerprint } }),
+    /** From the person: deletes one lane's saved work for good. */
+    forgetLaneBackup: (machineKey: string, laneId: string) =>
+      request<{ deleted: number }>("POST", cloudBackupPath(machineKey, laneId, "forget"), { body: {} }),
     /** From a cloud computer: the state of every lane after a save. Null from an older server. */
     reportLaneBackups: (report: CloudBackupReport) =>
       orNullOn404(() => request<{ state: CloudBackupReportState }>("POST", `${CLOUD_PATHS.backups}/report`, { body: report })),

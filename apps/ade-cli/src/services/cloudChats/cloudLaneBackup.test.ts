@@ -71,8 +71,10 @@ function fakeServer() {
       }
       return { deleted: gone.length };
     },
-    markLaneBackupRestored: async (machineKey: string, laneId: string) => {
+    markLaneBackupRestored: async (machineKey: string, laneId: string, _instanceId: string, fingerprint: string) => {
       const row = rows.get(key(machineKey, laneId))!;
+      // As the server: only the backup the computer applied.
+      if (row.fingerprint !== fingerprint) throw new Error("not found");
       row.restoredAt = Date.now();
       row.restoredByMachineKey = "key-new";
       return { ok: true };
@@ -253,6 +255,32 @@ describe("lane backups", () => {
     delete expected["secret.env"];
     expect(treeOf(project)).toEqual(expected);
     expect(git(origin, "for-each-ref")).toBe(originBefore);
+  });
+
+  it("a branch GitHub deleted after its push (a squash merge) is saved again with its pushed commits, and a new computer gets them all back", async () => {
+    const { origin, source } = seedOrigin();
+    write(source, "pushed.ts", "export const pushed = 1;\n");
+    git(source, "add", "-A");
+    git(source, "commit", "-q", "-m", "pushed");
+    git(source, "push", "-q", "origin", BRANCH);
+    write(source, "local.ts", "export const local = 1;\n");
+    git(source, "add", "-A");
+    git(source, "commit", "-q", "-m", "local only");
+    const server = fakeServer();
+    expect(await save(server, source)).toMatchObject({ state: "current", saved: 1 });
+
+    // GitHub deletes the branch; this clone's `origin/` ref for it stays.
+    git(origin, "branch", "-D", BRANCH);
+    expect(await save(server, source)).toMatchObject({ state: "current", saved: 1, unchanged: 0 });
+
+    const target = path.join(root, "target");
+    git(root, "clone", "-q", origin, target);
+    git(target, "checkout", "-q", "-b", BRANCH);
+    const outcome = await restoreLaneBackupIfNeeded({ api: server.api, instanceId: "box2", machineKey: "key-new", laneId: LANE, worktreePath: target, projectRoot: target, logger });
+
+    expect(outcome).toBe("applied");
+    expect(git(target, "log", "--format=%s", "-3")).toBe("local only\npushed\nbase");
+    expect(treeOf(target)).toEqual(treeOf(source));
   });
 
   it("a lane too large to save keeps the report from being current", async () => {

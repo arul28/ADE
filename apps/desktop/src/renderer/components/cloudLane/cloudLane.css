@@ -135,6 +135,13 @@
 .adecl-nocomp-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 /* A lane's saved work at rest: one quiet line and its two downloads, under its notice. */
 .adecl-saved-work { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; line-height: 1.4; }
+/* Settings › ADE Cloud, "Saved lane work": a name, one quiet line, the actions. */
+.adecl-saved-row { display: flex; align-items: center; gap: 12px; padding: 10px 16px; min-width: 0; }
+.adecl-saved-row + .adecl-saved-row { border-top: 1px solid var(--kit-rule); }
+.adecl-saved-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.adecl-saved-row-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adecl-saved-row .adecl-nocomp-actions { flex-shrink: 0; }
+@media (max-width: 640px) { .adecl-saved-row { flex-direction: column; align-items: stretch; } }
 
 
 /*

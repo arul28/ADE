@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, type CloudAccountState } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
+import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
 import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
 import { createCloudProvider } from "../src/cloud/provider";
@@ -2095,7 +2096,7 @@ describe("ADE Cloud idle cleanup", () => {
       expect([deletes(), wakes(), execs()]).toEqual([[], [], []]);
       expect(emails()).toHaveLength(1);
       // Once it rests with its lanes saved (its next real use), the next read deletes it, still with no wake.
-      harness.exec("update cloud_computers set backup_rest_at = ?, last_awake_at = last_awake_at where instance_id = ?", clock, INSTANCE);
+      harness.exec("update cloud_computers set backup_rest_at = ?, backup_report_state = 'current', backup_problems_json = null where instance_id = ?", clock, INSTANCE);
       clock = NOW + 3 * DAY + HOUR;
       await run();
       expect(wakes()).toEqual([]);
@@ -3168,6 +3169,13 @@ describe("ADE Cloud lane backups", () => {
     expect((await harness.send(OWNER, "POST", `${base}/uploads/${uploadId}/commit`, { instanceId: INSTANCE, bundleParts: 1, patchParts: 0 })).status).toBe(200);
     expect(await readPart(OWNER, "bundle")).toBe("BNDL2");
     expect((await objects()).filter((entry) => entry.includes(`/${LANE}/`)).every((entry) => entry.includes(uploadId) && !entry.includes(first))).toBe(true);
+
+    // An upload nobody commits: the minute sweep drops its parts after half an hour; the committed backup stays.
+    const { uploadId: stale } = (await (await start(OWNER, 5, 0)).json()) as { uploadId: string };
+    expect((await putPart(OWNER, `${base}/uploads/${stale}/bundle/1`, new TextEncoder().encode("BNDL3"))).status).toBe(200);
+    expect(await sweepStaleBackupUploads(harness.env, clock + 29 * 60_000)).toBe(0);
+    expect(await sweepStaleBackupUploads(harness.env, clock + 31 * 60_000)).toBe(1);
+    expect([(await objects()).some((entry) => entry.includes(stale)), await readPart(OWNER, "bundle")]).toEqual([false, "BNDL2"]);
   });
 
   it.each<[string, () => Promise<Response>, string]>([
@@ -3179,6 +3187,14 @@ describe("ADE Cloud lane backups", () => {
     ["a part past the size the upload said", async () => {
       const { uploadId } = (await (await start(OWNER, 5, 0)).json()) as { uploadId: string };
       return putPart(OWNER, `${base}/uploads/${uploadId}/bundle/9`, new TextEncoder().encode("extra"));
+    }, "backup_too_large"],
+    ["a part bigger than its kind's declared size", async () => {
+      const { uploadId } = (await (await start(OWNER, 5, 0)).json()) as { uploadId: string };
+      return putPart(OWNER, `${base}/uploads/${uploadId}/bundle/1`, new TextEncoder().encode("toolong"));
+    }, "backup_too_large"],
+    ["a patch part when the upload declared no patch", async () => {
+      const { uploadId } = (await (await start(OWNER, 5, 0)).json()) as { uploadId: string };
+      return putPart(OWNER, `${base}/uploads/${uploadId}/patch/1`, new TextEncoder().encode("x"));
     }, "backup_too_large"],
   ])("refused with a sentence: %s", async (_label, run, code) => {
     const response = await run();
@@ -3202,6 +3218,9 @@ describe("ADE Cloud lane backups", () => {
     harness.exec("update cloud_computers set status = 'running', awake_since = ? where instance_id = ?", NOW, INSTANCE);
     expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/idle`, { backupReportId: REPORT })).status).toBe(200);
     expect(restAt()).toBe(NOW);
+    // A later report means the computer is awake again: the rest ends, whatever the report says.
+    expect(await (await report([{ laneId: LANE, state: "failed" }], "e".repeat(32))).json()).toEqual({ state: "failed" });
+    expect(restAt()).toBeNull();
     // Any wake: its lanes can change, so the report and the rest go.
     expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/start`, {})).status).toBe(200);
     expect([restAt(), computer(harness).backup_report_state]).toEqual([null, null]);
@@ -3226,6 +3245,9 @@ describe("ADE Cloud lane backups", () => {
     await saveBackup();
     seedComputer(harness, { instance_id: SECOND, machine_key: "key-b", lane_id: LANE, lane_name: "pricing" });
     provide(harness, SECOND);
+    // The lane's other computer marks the backup it applied by fingerprint: a backup it didn't apply is not marked.
+    const restored = (fingerprint: string) => harness.send(OWNER, "POST", `${base}/restored`, { instanceId: SECOND, fingerprint });
+    expect([(await restored("e".repeat(64))).status, (await restored(FINGERPRINT)).status]).toEqual([404, 200]);
     // Freeing the other computer and keeping the lane: the backup stays for the lane's next computer.
     expect((await harness.send(OWNER, "DELETE", `/cloud/instances/${SECOND}`, { keepLane: { branchRef: "ade/pricing" } })).status).toBe(200);
     expect(harness.rows("select lane_id from cloud_lane_backups")).toEqual([{ lane_id: LANE }]);
@@ -3235,6 +3257,16 @@ describe("ADE Cloud lane backups", () => {
 
     // The account's delete: every object under backups/<user>/ and every row.
     // A computer of the account saves again, then the account goes.
+    harness.exec("update cloud_computers set deleted_at = null where instance_id = ?", INSTANCE);
+    await saveBackup();
+    // The person's own delete: refused while a computer holds that work, then from any app (the web too) once it is gone.
+    const forget = (headers: Record<string, string> = {}) => harness.send(OWNER, "POST", `${base}/forget`, {}, headers);
+    expect((await forget()).status).toBe(409);
+    harness.exec("update cloud_computers set deleted_at = ? where instance_id = ?", NOW, INSTANCE);
+    harness.env.WEB_CLIENT_ORIGIN = "https://app.ade.test";
+    expect((await forget({ origin: "https://app.ade.test" })).status).toBe(200);
+    delete harness.env.WEB_CLIENT_ORIGIN;
+    expect([harness.rows("select lane_id from cloud_lane_backups"), await objects()]).toEqual([[], []]);
     harness.exec("update cloud_computers set deleted_at = null where instance_id = ?", INSTANCE);
     await saveBackup();
     expect((await objects()).length).toBeGreaterThan(0);

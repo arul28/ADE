@@ -569,10 +569,13 @@ export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: 
   const statements = settleStatements(env, computer, now, statusGuard(computer));
   computer.awake_since = null;
   computer.deleted_at = now;
-  // The disk breakdown, the lane's work (branch names, pull request state) and the lane's facts go with the computer.
+  // The disk breakdown, the lane's work (branch names, pull request state), the lane's facts, the
+  // ignored file names and the backup report (lane names) go with the computer.
   statements.push(env.DB.prepare(`
     update cloud_computers set deleted_at = ?, awake_since = null, status = 'deleted', status_changed_at = ?, disk_usage_json = null, lane_work_json = null,
-      lane_id = null, lane_name = null, lane_project_origin = null, lane_branch = null, lane_keep_reason = null
+      lane_id = null, lane_name = null, lane_project_origin = null, lane_branch = null, lane_keep_reason = null,
+      idle_held_reason = null, ignored_files_json = null,
+      backup_report_id = null, backup_report_state = null, backup_report_at = null, backup_problems_json = null, backup_rest_at = null
     where instance_id = ?
   `).bind(now, now, computer.instance_id));
   // Its unfinished launch ends too, or the web and phone list it as running for good.

@@ -64,6 +64,7 @@ import { cloudLaneJobFor, cloudLaneJobVisible, refreshCloudLanesWithoutComputer,
 import { CloudLaneJobCard, cloudLaneJobPresentation } from "../../cloudLane/CloudLaneJobCard";
 import type { CloudLaneJobSnapshot } from "../../../../shared/cloudLaneLife";
 import { CloudLaneWithoutComputerNotice } from "../../cloudLane/CloudLaneWithoutComputer";
+import { CloudSavedLaneWorkCard } from "../../cloudLane/CloudLaneSavedWork";
 import { CloudTierChangeDialog } from "../../cloudLane/CloudTierChangeDialog";
 
 /** The dashboard's element id. */
@@ -159,6 +160,11 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
     return job ? jobRowStatus(job, account) : null;
   }, [account, deletes, jobs]);
   const selected = lanes.find((lane) => lane.key === selectedKey) ?? null;
+  // The lanes the table lists show their own saved work; the saved-work card shows the rest.
+  const shownLaneIds = useMemo(
+    () => new Set(lanes.flatMap((lane) => [lane.machine?.lane?.laneId, lane.without?.laneId]).filter((id): id is string => Boolean(id))),
+    [lanes],
+  );
   const selectedJob = selected?.instanceId ? cloudLaneJobFor(jobs, { instanceId: selected.instanceId, laneId: selected.machine?.lane?.laneId ?? null }) : null;
   const otherJobs = useMemo(() => [...jobs.values()].filter((job) => cloudLaneJobVisible(job) && job.phase !== "online"
     && job.jobId !== selectedJob?.jobId), [jobs, selectedJob?.jobId]);
@@ -351,6 +357,8 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
           )}
         </div>
       </section>
+
+      <CloudSavedLaneWorkCard shownLaneIds={shownLaneIds} />
 
       <CloudPlans account={account} onChanged={refresh} newPlanId={moment?.planId ?? null} />
       <CloudSizes account={account} />

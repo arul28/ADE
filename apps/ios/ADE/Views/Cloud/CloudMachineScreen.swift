@@ -223,6 +223,11 @@ struct CloudSavedWorkRow: View {
       }
     }
     .task(id: laneId) { await load() }
+    // The downloaded patch is a copy of the person's code: it leaves the phone with the row.
+    .onDisappear {
+      if let file { try? FileManager.default.removeItem(at: file) }
+      file = nil
+    }
   }
 
   private func load() async {
