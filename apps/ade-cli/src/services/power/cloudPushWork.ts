@@ -5,6 +5,8 @@
  */
 
 import type { AdeRuntime } from "../../bootstrap";
+import { runGitOrThrow } from "../../../../desktop/src/main/services/git/git";
+import type { CloudGitIdentity } from "../github/cloudGitIdentity";
 
 const COMMIT_MESSAGE = "Work saved from ADE Cloud";
 /**
@@ -41,11 +43,33 @@ export type CloudPushWorkResult = { readsRemotes: true; pushed: number; failed: 
 
 type Logger = { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
 
-async function pushLane(runtime: Pick<AdeRuntime, "gitService">, laneId: string, dirty: boolean, message: string): Promise<void> {
+/** Git's refusal when no `user.name` / `user.email` is set anywhere. */
+const MISSING_IDENTITY = /author identity unknown|unable to auto-detect email|empty ident name|please tell me who you are/i;
+
+async function pushLane(
+  runtime: Pick<AdeRuntime, "gitService" | "laneService">,
+  laneId: string,
+  dirty: boolean,
+  message: string,
+  commitIdentity: (() => CloudGitIdentity) | undefined,
+): Promise<void> {
   if (dirty) {
     // `git add -A` honours .gitignore: files git ignores are never committed or pushed.
     await runtime.gitService.stageAll({ laneId, paths: [] });
-    await runtime.gitService.commit({ laneId, message });
+    try {
+      await runtime.gitService.commit({ laneId, message });
+    } catch (error) {
+      // A computer whose global identity could not be written still saves its
+      // work: this one commit passes ADE's identity with `-c`, and the config
+      // stays as it is.
+      if (!commitIdentity || !MISSING_IDENTITY.test(error instanceof Error ? error.message : String(error))) throw error;
+      const identity = commitIdentity();
+      const lane = runtime.laneService.getLaneBaseAndBranch(laneId);
+      await runGitOrThrow(
+        ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, "commit", "-m", message],
+        { cwd: lane.worktreePath, timeoutMs: 30_000 },
+      );
+    }
   }
   await runtime.gitService.push({ laneId });
 }
@@ -61,9 +85,18 @@ export async function pushCloudComputerWork(args: {
   check?: boolean;
   /** The commit message for uncommitted work (the server's idle cleanup sends its own); ADE's default otherwise. */
   message?: string | null;
+  /** Sets the computer's git identity when nobody did (`ensureCloudGitIdentity`), before any commit. */
+  ensureIdentity?: () => Promise<unknown>;
+  /** The identity a commit passes with `-c` when git still has none. */
+  commitIdentity?: () => CloudGitIdentity;
   logger?: Logger;
 }): Promise<CloudPushWorkResult> {
   const message = args.message?.trim() || COMMIT_MESSAGE;
+  if (!args.check && args.ensureIdentity) {
+    await args.ensureIdentity().catch((error: unknown) => {
+      args.logger?.warn("cloud.push_work_identity_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }
   const tally: CloudPushWorkResult = { readsRemotes: true, pushed: 0, failed: 0, skipped: 0, lanes: [] };
   for (const load of args.projects) {
     try {
@@ -119,7 +152,7 @@ export async function pushCloudComputerWork(args: {
           continue;
         }
         try {
-          await pushLane(runtime, lane.id, dirty, message);
+          await pushLane(runtime, lane.id, dirty, message, args.commitIdentity);
           entry.state = "pushed";
           tally.pushed += 1;
         } catch (error) {

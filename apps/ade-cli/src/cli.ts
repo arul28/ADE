@@ -30550,6 +30550,36 @@ async function runServe(
     }, 60_000);
     cleanup.unref?.();
   }
+  // ADE Cloud: the computer's git identity (cloudGitIdentity.ts). Set once the
+  // account is known: off the start path, again at each account sign-in, and
+  // before the cleanup's commits (push-work).
+  const cloudGitIdentity = isAdeCloudComputer()
+    ? (await import("./services/github/cloudGitIdentity")).createBrainCloudGitIdentity({
+        adeHome: layout.adeDir,
+        directoryBaseUrl: () => {
+          try {
+            return getSharedAccountDirectoryBaseUrl() || null;
+          } catch {
+            return null;
+          }
+        },
+        accountAccessToken: async () => (brainAccountAuthService.getStatus().signedIn ? await brainAccountAuthService.getAccessToken() : null),
+        readGithubToken: async () => {
+          const quiet: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+          return await createHeadlessGitHubService(process.cwd(), quiet).getGitTransportTokenOrThrowAsync().catch(() => null);
+        },
+        logger: headlessProjectLogger,
+      })
+    : null;
+  if (cloudGitIdentity) {
+    const ensureIdentity = () => {
+      if (!brainAccountAuthService.getStatus().signedIn) return;
+      void cloudGitIdentity.ensure();
+    };
+    const identityTimer = setTimeout(ensureIdentity, 20_000);
+    identityTimer.unref?.();
+    brainAccountAuthService.onSignedIn(ensureIdentity);
+  }
   // Hours near full CPU with no chat turn or agent working: reported for the owner's daily report.
   const cloudCpuWatch = cloudComputerReports
     ? (await import("./services/power/cloudSustainedCpu")).createSustainedCpuWatch({
@@ -32306,6 +32336,7 @@ async function runServe(
             return await holdCloudWork("push_work", 10 * 60_000, () => pushCloudComputerWork({
               check,
               message,
+              ...(cloudGitIdentity ? { ensureIdentity: cloudGitIdentity.ensure, commitIdentity: cloudGitIdentity.commitIdentity } : {}),
               projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
               logger: headlessProjectLogger,
             }));
