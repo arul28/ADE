@@ -71,6 +71,39 @@ const POINTER_MOVE_THRESHOLD_PX = 3;
  * open a card for a pointer that has moved on.
  */
 let hoveredRow: { element: HTMLElement; reopen: () => void } | null = null;
+/**
+ * While the pointer rests on a row, a key press or a press anywhere arms the
+ * hold even when no card is open or waiting (a scroll may have just closed
+ * one). Otherwise typing with the pointer parked on the list leaves the hold
+ * off, and a re-sort that slides another row under the pointer opens a card
+ * over the composer one second after the typing pauses. One listener pair,
+ * present only while a row is hovered.
+ */
+let restingActionListener: ((event: Event) => void) | null = null;
+
+function setHoveredRow(next: { element: HTMLElement; reopen: () => void } | null): void {
+  hoveredRow = next;
+  if (typeof window === "undefined") return;
+  if (next && !restingActionListener) {
+    restingActionListener = (event: Event) => {
+      if (!hoveredRow?.element.isConnected) {
+        setHoveredRow(null);
+        return;
+      }
+      if (belongsToHoverCard(event)) return;
+      holdCardsUntilPointerMoves(
+        event instanceof MouseEvent ? { x: event.clientX, y: event.clientY } : null,
+      );
+      activeHoverCard?.dismiss();
+    };
+    window.addEventListener("keydown", restingActionListener, true);
+    window.addEventListener("pointerdown", restingActionListener, true);
+  } else if (!next && restingActionListener) {
+    window.removeEventListener("keydown", restingActionListener, true);
+    window.removeEventListener("pointerdown", restingActionListener, true);
+    restingActionListener = null;
+  }
+}
 
 /**
  * `from` is where the press that armed the hold happened, when it was a
@@ -254,7 +287,7 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
     (event: React.MouseEvent<HTMLElement>) => {
       if (disabled) return;
       const element = event.currentTarget;
-      hoveredRow = { element, reopen: () => scheduleOpen(element, false) };
+      setHoveredRow({ element, reopen: () => scheduleOpen(element, false) });
       const related = event.relatedTarget;
       const sourceRow = related instanceof Element
         ? related.closest<HTMLElement>("[data-session-row]")
@@ -291,7 +324,7 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
   );
 
   const onMouseLeave = React.useCallback((event: React.MouseEvent<HTMLElement>) => {
-    if (hoveredRow?.element === event.currentTarget) hoveredRow = null;
+    if (hoveredRow?.element === event.currentTarget) setHoveredRow(null);
     pointerOnNestedControlRef.current = false;
     if (openTimerRef.current != null) {
       // Still waiting: a leave cancels outright, with no close grace.
@@ -316,8 +349,9 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
   // mid-scroll would make it chase the row. Cancel instead — the pointer has
   // not "rested" on anything while the list is moving. A key press or a press
   // outside the card cancels too, and holds every card until the pointer moves
-  // again; `releasePointerHold` resumes the row the pointer never left. The
-  // listeners exist only while a card is open or waiting to open.
+  // again; `releasePointerHold` resumes the row the pointer never left. These
+  // listeners exist only while a card is open or waiting to open; while the
+  // pointer only rests on a row, `setHoveredRow`'s listener arms the hold.
   React.useEffect(() => {
     if (!anchor && !pendingOpen) return undefined;
     const cancel = () => close();
@@ -353,7 +387,7 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
 /** Test seam: the active cross-row handoff is module state. */
 export function resetSessionHoverCardGroupForTests(): void {
   activeHoverCard = null;
-  hoveredRow = null;
+  setHoveredRow(null);
   releasePointerHold();
 }
 
