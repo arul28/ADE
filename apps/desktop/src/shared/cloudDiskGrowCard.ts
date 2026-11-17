@@ -123,7 +123,12 @@ export function buildCloudDiskLimitCard(input: {
     title,
     subtitle: input.sentence,
     ...(lanes.length ? { metrics: [{ label: "Used by your computers", value: `${usedGb} GB` }] } : {}),
-    rows: lanes.map((lane, index) => ({ key: `lane_${index}`, icon: "info" as const, text: lane.laneName, detail: `${lane.diskGb} GB` })),
+    // A refusal reads as one (amber), never as a passed card; the computers
+    // carry the same tone so the card lists them.
+    rows: [
+      { key: "ask", icon: "fail", text: `Asked ADE Cloud for a ${input.toGb} GB disk` },
+      ...lanes.map((lane, index): AdeCardRow => ({ key: `lane_${index}`, icon: "info", tone: "warning", text: lane.laneName, detail: `${lane.diskGb} GB` })),
+    ],
     fallbackText: `${title}: ${input.sentence}${lanes.length ? ` Disk by computer: ${lanes.map((lane) => `${lane.laneName} ${lane.diskGb} GB`).join(", ")}.` : ""}`,
   };
 }

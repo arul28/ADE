@@ -1,6 +1,6 @@
 ---
 name: ade-cloud
-description: "Before any ADE Cloud work via `ade cloud`: the account (plan, hours, disk, computers, lanes, sizes, agent limits, whether a new lane can start and why not), start a lane on its own cloud computer, follow, retry or cancel that launch, explain a refusal, propose a cleanup, sleep, wake, resize, copy, move, delete, clear caches."
+description: "Before any ADE Cloud work via `ade cloud`, and when this computer needs more free disk (grow it with `ade cloud resize --free`): the account (plan, hours, disk, computers, lanes, sizes, agent limits, whether a new lane can start), start, follow, retry or cancel a cloud lane, explain a refusal, propose a cleanup, sleep, wake, resize, copy, move, delete, clear caches."
 ---
 
 # ADE Cloud

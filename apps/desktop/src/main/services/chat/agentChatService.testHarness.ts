@@ -1715,7 +1715,16 @@ function createMockSessionService() {
         manuallyNamed: false,
         headShaStart: null,
         headShaEnd: null,
+        ownerPid: args.ownerPid ?? null,
+        ownerProcessStartedAt: args.ownerProcessStartedAt ?? null,
       });
+    }),
+    setOwnerPid: vi.fn((sessionId: string, ownerPid: number | null, ownerProcessStartedAt?: string | null) => {
+      const row = sessions.get(sessionId);
+      if (row) {
+        row.ownerPid = ownerPid;
+        row.ownerProcessStartedAt = ownerProcessStartedAt ?? null;
+      }
     }),
     get: vi.fn((sessionId: string) => sessions.get(sessionId) ?? null),
     list: vi.fn((opts?: any) => {

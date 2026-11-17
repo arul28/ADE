@@ -1432,8 +1432,11 @@ describe("createAgentChatService", () => {
       claimedAt: "2026-10-09T03:00:00.000Z",
     };
 
-    const secondBrainOnChat = async (ownerAlive: boolean) => {
-      const first = createService();
+    const secondBrainOnChat = async (ownerAlive: boolean, options: { ownerMadeTheRow?: boolean } = {}) => {
+      // The row then names the owner too, as one made by that brain does.
+      const first = options.ownerMadeTheRow
+        ? createService({ processRegistry: { pid: OWNER.pid, startedAt: OWNER.startedAt, isProcessIdentityLive: () => true } })
+        : createService();
       const session = await first.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
       first.service.forceDisposeAll();
       writePersistedChatState(session.id, {
@@ -1446,7 +1449,7 @@ describe("createAgentChatService", () => {
         isProcessIdentityLive: (pid: number) => ownerAlive && pid === OWNER.pid,
       };
       const second = createService({ processRegistry, runtimeSocketPath: "/tmp/second-brain.sock" });
-      return { service: second.service, sessionId: session.id };
+      return { service: second.service, sessionService: second.sessionService, sessionId: session.id };
     };
 
     it.each([
@@ -1539,8 +1542,12 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("adopts the chat once its owner is gone", async () => {
-      const { service, sessionId } = await secondBrainOnChat(false);
+    it("adopts the chat once its owner is gone, and takes over its session row", async () => {
+      const { service, sessionService, sessionId } = await secondBrainOnChat(false, { ownerMadeTheRow: true });
+      // The restart's rescan closed the dead owner's row; the restart sweep
+      // loads the chat (its recovery reopens the row), then a message arrives.
+      sessionService.end({ sessionId, status: "detached" });
+      await service.getChatTranscript({ sessionId });
 
       await service.sendMessage({ sessionId, text: "continue" }, { awaitDispatch: true });
 
@@ -1550,6 +1557,14 @@ describe("createAgentChatService", () => {
         const owner = readPersistedChatState(sessionId).runtimeOwner;
         expect(owner?.brainId).not.toBe(OWNER.brainId);
         expect(owner?.socketPath).toBe("/tmp/second-brain.sock");
+      });
+      // If this brain dies mid-turn (a restart), the next brain's registry
+      // knows it, not the brain before it: the row must name this brain, or the
+      // stale-row rescan keeps it `running` and the restart never continues it.
+      expect(sessionService.get(sessionId)).toMatchObject({
+        status: "running",
+        ownerPid: process.pid,
+        ownerProcessStartedAt: "2026-10-09T03:30:00.000Z",
       });
       service.forceDisposeAll();
     });

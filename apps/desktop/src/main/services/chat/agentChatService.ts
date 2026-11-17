@@ -23646,6 +23646,24 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Reopen a chat's row for a turn this process is about to run, and stamp
+   * this process as its owner. The owner is stamped at creation, so after a
+   * restart the row still named the brain before it; once the registry forgot
+   * that brain, the next restart's stale-row rescan (which closes only rows of
+   * owners it knows are dead) left the row `running`, the restart sweep never
+   * loaded the chat, and its cut turn was never resumed.
+   */
+  const reopenSessionRowForThisProcess = (sessionId: string): void => {
+    sessionService.reopen(sessionId);
+    const startedAt = processRegistry?.startedAt ?? null;
+    if (!processRegistry || !startedAt) return;
+    const row = sessionService.get(sessionId);
+    if (row && (row.ownerPid !== processRegistry.pid || row.ownerProcessStartedAt !== startedAt)) {
+      sessionService.setOwnerPid(sessionId, processRegistry.pid, startedAt);
+    }
+  };
+
+  /**
    * Repair a chat a restart cut off: close its orphaned turn, tell it what
    * background work the dead process took with it (notice + restart note), and
    * say what should be armed for it. The caller arms it
@@ -23770,7 +23788,7 @@ export function createAgentChatService(args: {
     markSessionIdleWithFreshCache(managed);
     managed.closed = false;
     managed.endedNotified = false;
-    sessionService.reopen(managed.session.id);
+    reopenSessionRowForThisProcess(managed.session.id);
     persistChatState(managed);
     // The same decision the notice above told the user.
     if (unsettled) return resumeHold === null ? "resume" : null;
@@ -59022,8 +59040,9 @@ export function createAgentChatService(args: {
     // in-memory status is active/idle, so the `=== "ended"` reset below never
     // fires for a row a liveness reconcile wrongly marked `detached`, and the
     // session shows "Ended" while the chat keeps streaming. Idempotent, so it
-    // is called unconditionally; the in-memory reset stays separate.
-    sessionService.reopen(sessionId);
+    // is called unconditionally; the in-memory reset stays separate. This
+    // process runs the turn, so it owns the row from here.
+    reopenSessionRowForThisProcess(sessionId);
 
     if (managed.session.status === "ended") {
       setSessionIdle(managed);
