@@ -45,13 +45,18 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
   const openingMachine = opening ? machineOf(opening) : null;
   const openingListed = openingMachine != null;
   const startedRef = useRef<string | null>(null);
+  // The open the person chose last; an older connect that ends later, or one that ends after the cards unmount, opens nothing.
+  const currentOpenRef = useRef<string | null>(null);
+  useEffect(() => () => {
+    currentOpenRef.current = null;
+  }, []);
   useEffect(() => {
     if (!opening || !openingMachine || !workspace || startedRef.current === opening.launchId) return;
     startedRef.current = opening.launchId;
     const record = opening;
     void workspace.connectMachineEntry(openingMachine).then(
       () => {
-        if (record.sessionId) navigateToAppTarget({ kind: "chat", sessionId: record.sessionId, laneId: record.laneId ?? null });
+        if (record.sessionId && currentOpenRef.current === record.launchId) navigateToAppTarget({ kind: "chat", sessionId: record.sessionId, laneId: record.laneId ?? null });
       },
       (error: unknown) => showToast({ tone: "error", title: `Couldn't connect to ${openingMachine.name}`, message: extractError(error) }),
     ).finally(() => {
@@ -82,6 +87,7 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
       navigateToAppTarget({ kind: "chat", sessionId: record.sessionId, laneId: record.laneId ?? null });
       return;
     }
+    currentOpenRef.current = record.launchId;
     setOpening(record);
   };
   if (shown.length === 0) return null;
