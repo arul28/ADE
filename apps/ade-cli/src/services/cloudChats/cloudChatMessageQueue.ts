@@ -24,7 +24,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { CloudChatMessageAttachment, CloudComputerQueuedMessage } from "../../../../account-directory/src/cloud/contract";
+import {
+  cloudChatMessageSettingsOf,
+  type CloudChatMessageAttachment,
+  type CloudChatMessageSettings,
+  type CloudComputerQueuedMessage,
+} from "../../../../account-directory/src/cloud/contract";
 import type { CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
 import {
   CHAT_QUEUE_JOURNAL_KEY,
@@ -62,6 +67,12 @@ export type CloudChatQueueDeps = {
   /** Resolves when the chat has no running turn (an event wait, never a poll); false at the wait's limit. */
   waitForChatIdle: (projectId: string, sessionId: string) => Promise<boolean>;
   sendChatMessage: (projectId: string, sessionId: string, message: { text: string; clientSendId: string; attachments?: QueuedFile[] }) => Promise<void>;
+  /**
+   * Applies the model and the settings picked with a message to the chat
+   * (its `updateSession`) before the message goes. Chats only: a CLI ignores
+   * them. Left out, nothing is applied.
+   */
+  applyChatSettings?: (projectId: string, sessionId: string, settings: CloudChatMessageSettings & { modelId?: string | null }) => Promise<void>;
   /** `cli`: a tracked agent CLI whose process runs here; `cli_ended`: its process is gone; else a chat. */
   sessionKind?: (projectId: string, sessionId: string) => Promise<"chat" | "cli" | "cli_ended">;
   /** Types the text at the CLI's prompt (`typeIntoAgentCliWhenFree` with `holdUntilFree`). */
@@ -242,6 +253,14 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
             // Another runtime runs the CLI now: not typed, so a later round types it.
             if (outcome === "deferred") throw Object.assign(new Error("The CLI is busy."), { code: "turn_in_flight" });
             return;
+          }
+          // Older servers send no settings; the same checks as the server's.
+          const settings = cloudChatMessageSettingsOf(message.settings);
+          if (deps.applyChatSettings && (settings || message.modelId)) {
+            // A setting the chat refuses must not lose the message: it goes on the chat's current settings.
+            await deps.applyChatSettings(where.projectId, sessionId, { ...settings, modelId: message.modelId }).catch((error: unknown) => {
+              logger.warn("cloud.chat_queue_settings_failed", { ...logMeta, error: errorText(error) });
+            });
           }
           await deps.sendChatMessage(where.projectId, sessionId, {
             text: message.text,

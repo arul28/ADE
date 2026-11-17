@@ -1214,6 +1214,43 @@ export type CloudChatMessageState = "queued" | "sending" | "waiting_for_sign_in"
 /** A file sent with a message: uploaded first to a draft launch (`PUT /cloud/launches/:launch/files/:file`). */
 export type CloudChatMessageAttachment = CloudLaunchAttachment & { launchId: string };
 
+/**
+ * A chat's settings the person picked before a queued message: the computer
+ * applies them to the chat (its `updateSession`) before it sends the message.
+ * Each key is left out when not picked. A CLI ignores them. Older servers and
+ * computers ignore the whole field.
+ */
+export type CloudChatMessageSettings = {
+  /** A saved preset (its harness and its model), or null to leave the preset the chat runs on. */
+  presetId?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean;
+  fastTier?: "ultrafast" | null;
+};
+
+const SETTING_TEXT = /^[A-Za-z0-9._:/-]{1,120}$/;
+
+/**
+ * The settings of a queued message, checked: known keys only, short plain
+ * strings and booleans. Anything else is left out. Null when nothing is left.
+ */
+export function cloudChatMessageSettingsOf(value: unknown): CloudChatMessageSettings | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const settings: CloudChatMessageSettings = {};
+  const text = (entry: unknown, max: number): string | null | undefined => {
+    if (entry === null) return null;
+    return typeof entry === "string" && entry.length <= max && SETTING_TEXT.test(entry) ? entry : undefined;
+  };
+  const presetId = text(record.presetId, 120);
+  if (presetId !== undefined) settings.presetId = presetId;
+  const reasoningEffort = text(record.reasoningEffort, 40);
+  if (reasoningEffort !== undefined) settings.reasoningEffort = reasoningEffort;
+  if (typeof record.fastMode === "boolean") settings.fastMode = record.fastMode;
+  if (record.fastTier === "ultrafast" || record.fastTier === null) settings.fastTier = record.fastTier;
+  return Object.keys(settings).length > 0 ? settings : null;
+}
+
 /** `POST /cloud/chats/:m/:c/messages`. `messageId` is the client's `clientSendId` (1 to 64 of `A-Za-z0-9_-`). */
 export type CloudChatMessageRequest = {
   messageId: string;
@@ -1221,6 +1258,8 @@ export type CloudChatMessageRequest = {
   attachments?: CloudChatMessageAttachment[];
   provider?: string | null;
   modelId?: string | null;
+  /** Kept sealed with the text; given back only to the chat's computer. */
+  settings?: CloudChatMessageSettings | null;
 };
 
 export type CloudChatQueuedMessage = {
@@ -1254,6 +1293,8 @@ export type CloudComputerQueuedMessage = CloudChatQueuedMessage & {
   clientSendId: string;
   /** What the message goes to: a chat, or a CLI session (send it as typed input). Older servers leave it out (a chat). */
   targetKind?: "chat" | "cli";
+  /** The chat settings picked with the message, applied before it is sent. Older servers leave it out. */
+  settings?: CloudChatMessageSettings | null;
 };
 
 /** `PUT /cloud/instances/:id/messages/:msg`, from the computer that claimed it. */

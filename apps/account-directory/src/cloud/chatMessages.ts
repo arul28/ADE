@@ -6,8 +6,10 @@ import {
   CLOUD_CHAT_MESSAGES_OPEN_PER_ACCOUNT,
   CLOUD_CHAT_MESSAGES_OPEN_PER_CHAT,
   CLOUD_CHAT_MESSAGES_PER_MINUTE,
+  cloudChatMessageSettingsOf,
   type CloudChatMessageAddResult,
   type CloudChatMessageAttachment,
+  type CloudChatMessageSettings,
   type CloudChatMessageState,
   type CloudChatQueuedMessage,
   type CloudComputerQueuedMessage,
@@ -78,7 +80,8 @@ const bodyAad = (row: Pick<ChatMessageRow, "user_id" | "message_id">): string =>
   // The machine key and chat id are left out on purpose: a chat move re-keys the row, and the body must still open.
   `ade.cloud.chat.message.v1\0${row.user_id}\0${row.message_id}`;
 
-type MessageBody = { text: string; attachments: CloudChatMessageAttachment[] };
+/** The sealed body: the text, its files, and the chat settings picked with it (only the chat's computer reads them). */
+type MessageBody = { text: string; attachments: CloudChatMessageAttachment[]; settings: CloudChatMessageSettings | null };
 
 async function openBody(keys: UserKeys, row: ChatMessageRow): Promise<MessageBody> {
   const value = await openJson(keys, bodyAad(row), row.body_sealed);
@@ -87,6 +90,7 @@ async function openBody(keys: UserKeys, row: ChatMessageRow): Promise<MessageBod
   return {
     text: typeof record?.text === "string" ? record.text : "",
     attachments: Array.isArray(record?.attachments) ? record.attachments as CloudChatMessageAttachment[] : [],
+    settings: cloudChatMessageSettingsOf(record?.settings),
   };
 }
 
@@ -109,8 +113,8 @@ function stateFromLaunch(message: CloudLaunchMessage): CloudChatMessageState {
   return message.state;
 }
 
-async function messageOf(env: CloudEnv, keys: UserKeys, row: ChatMessageRow): Promise<CloudChatQueuedMessage> {
-  const body = await openBody(keys, row);
+async function messageOf(env: CloudEnv, keys: UserKeys, row: ChatMessageRow, opened?: MessageBody): Promise<CloudChatQueuedMessage> {
+  const body = opened ?? await openBody(keys, row);
   let state = row.state;
   let error = row.error;
   let signIn = signInOf(row);
@@ -369,7 +373,14 @@ async function capsRefusal(env: CloudEnv, userId: string, chat: QueueTarget, now
   return null;
 }
 
-type SendInput = { messageId: string; text: string; attachments: CloudChatMessageAttachment[]; provider: string | null; modelId: string | null };
+type SendInput = {
+  messageId: string;
+  text: string;
+  attachments: CloudChatMessageAttachment[];
+  provider: string | null;
+  modelId: string | null;
+  settings: CloudChatMessageSettings | null;
+};
 
 async function insertRow(
   env: CloudEnv,
@@ -380,7 +391,11 @@ async function insertRow(
   where: { instanceId: string | null; launchId: string | null; viaLaunch: boolean },
   now: number,
 ): Promise<{ row: ChatMessageRow; created: boolean }> {
-  const sealed = await sealJson(keys, bodyAad({ user_id: userId, message_id: input.messageId }), { text: input.text, attachments: input.attachments });
+  const sealed = await sealJson(keys, bodyAad({ user_id: userId, message_id: input.messageId }), {
+    text: input.text,
+    attachments: input.attachments,
+    ...(input.settings ? { settings: input.settings } : {}),
+  });
   const insert = () => env.DB.prepare(`
     insert into cloud_chat_messages (user_id, machine_key, chat_id, message_id, instance_id, launch_id, via_launch, seq, body_sealed, provider, model_id, state, created_at, updated_at)
     select ?, ?, ?, ?, ?, ?, ?, coalesce((select max(seq) from cloud_chat_messages where user_id = ? and machine_key = ? and chat_id = ?), 0) + 1, ?, ?, ?, 'queued', ?, ?
@@ -415,6 +430,8 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
   if (!text.trim() && attachments.length === 0) return badRequest("The message is empty.");
   const provider = body.provider == null ? null : shortString(body.provider, 40);
   const modelId = body.modelId == null ? null : shortString(body.modelId, 300);
+  // Known keys and short values only; anything else is left out.
+  const settings = cloudChatMessageSettingsOf(body.settings);
 
   const chat = await resolveTarget(env, userId, machineKey, chatId);
   if (!chat) return notFound();
@@ -437,7 +454,7 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
   if (missingFile) return badRequest(missingFile);
   if (!deps.wake) return fail("unavailable", "ADE Cloud can't wake computers right now. Try again soon.", 503);
 
-  const input: SendInput = { messageId, text, attachments, provider, modelId };
+  const input: SendInput = { messageId, text, attachments, provider, modelId, settings };
   const computer = await liveComputerOf(env, userId, chat);
   if (computer) {
     // Every refusal runs before the row is written: a refused send stores nothing.
@@ -563,8 +580,10 @@ async function handleCancel(env: CloudEnv, userId: string, machineKey: string, c
 async function computerMessageOf(env: CloudEnv, keys: UserKeys, row: ChatMessageRow): Promise<CloudComputerQueuedMessage> {
   const target = await resolveTarget(env, row.user_id, row.machine_key, row.chat_id);
   const facts = target ? await target.facts(keys) : null;
+  const body = await openBody(keys, row);
   return {
-    ...(await messageOf(env, keys, row)),
+    ...(await messageOf(env, keys, row, body)),
+    ...(body.settings ? { settings: body.settings } : {}),
     projectId: facts?.projectId ?? null,
     laneId: target?.lane_id ?? null,
     clientSendId: row.message_id,

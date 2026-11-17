@@ -2879,7 +2879,7 @@ describe("ADE Cloud without a computer", () => {
     instanceId, text, row: { lastSeq: seq, laneId: LANE, projectKey: "github.com/acme/widgets", provider: "claude", model: "claude-sonnet" },
   });
 
-  it("a message to a resting chat is kept once and sent once: a refused send stores nothing, two claims race and one wins, only it finishes the message", async () => {
+  it("a message to a resting chat is kept once and sent once: a refused send stores nothing, two claims race and one wins, only it finishes the message, its checked settings go sealed to the computer only", async () => {
     seedAccount(harness, OWNER, { used_milli: 100_000 });
     seedComputer(harness, { machine_key: "key-a", status: "sleeping", awake_since: null });
     provide(harness, INSTANCE, "sleeping");
@@ -2894,7 +2894,9 @@ describe("ADE Cloud without a computer", () => {
     expect(providerCalls(harness, /POST .*\/start$/)).toHaveLength(0);
 
     harness.exec("update cloud_accounts set used_milli = 0 where user_id = ?", OWNER);
-    const sent = await harness.send(OWNER, "POST", messages, { messageId: "m1", text: "Fix the footer." });
+    // Settings keep known keys with short plain values only.
+    const settings = { reasoningEffort: "xhigh", fastMode: true, fastTier: "turbo", presetId: "<b>p</b>", runtimeActor: "cto" };
+    const sent = await harness.send(OWNER, "POST", messages, { messageId: "m1", text: "Fix the footer.", settings });
     expect(sent.status).toBe(201);
     expect(((await sent.json()) as { wake: unknown }).wake).toEqual({ state: "waking" });
     // The same id again is the same message, with no second wake.
@@ -2903,6 +2905,11 @@ describe("ADE Cloud without a computer", () => {
     expect(providerCalls(harness, /POST .*\/exec$/).map((call) => call.body?.command)).toEqual(["ade cloud messages drain --json"]);
     // The text is sealed at rest; another account sees no such chat or computer.
     expect(JSON.stringify(harness.rows("select * from cloud_chat_messages"))).not.toContain("footer");
+    expect(JSON.stringify(harness.rows("select * from cloud_chat_messages"))).not.toContain("xhigh");
+    // The person's own list shows no settings; the computer's list carries them, checked.
+    expect(JSON.stringify(await (await harness.send(OWNER, "GET", messages)).json())).not.toContain("xhigh");
+    const forComputer = (await (await harness.send(OWNER, "GET", `/cloud/instances/${INSTANCE}/messages`)).json()) as { messages: Array<{ settings?: unknown }> };
+    expect(forComputer.messages.map((message) => message.settings)).toEqual([{ reasoningEffort: "xhigh", fastMode: true }]);
     expect((await harness.send(OTHER, "GET", messages)).status).toBe(404);
     expect((await harness.send(OTHER, "GET", `/cloud/instances/${INSTANCE}/messages`)).status).toBe(404);
 

@@ -226,36 +226,68 @@ export function savedChatSummary(location: SavedChatLocation): AgentChatSessionS
   };
 }
 
-/**
- * The model a person picked for a resting ADE Cloud chat just before a send,
- * by chat id. The next queued send carries it (`takeQueuedChatModel`), so the
- * pick never reaches (and so never wakes) the computer before the send.
- */
-const queuedChatModels = new Map<string, string>();
+/** The settings a person picked for a resting ADE Cloud chat; each key only when picked. */
+export type QueuedChatPicks = Pick<AgentChatUpdateSessionArgs, "modelId" | "presetId" | "reasoningEffort" | "fastMode" | "fastTier">;
 
-/** The model picked for this chat's next queued send, once; null when none was picked. */
-export function takeQueuedChatModel(chatId: string): string | null {
-  const modelId = queuedChatModels.get(chatId) ?? null;
-  queuedChatModels.delete(chatId);
-  return modelId;
+/**
+ * The settings a person picked for a resting ADE Cloud chat, by chat id,
+ * until its next send. A queued send carries them to the computer, which
+ * applies them before the message (`peekQueuedChatPicks`, then
+ * `clearQueuedChatPicks`). A direct send applies them first
+ * (`takeQueuedChatPicks`). So a pick never wakes the computer on its own.
+ */
+const queuedChatPicks = new Map<string, QueuedChatPicks>();
+
+/** This chat's picks since its last send, or null. They stay until a send carries them. */
+export function peekQueuedChatPicks(chatId: string): QueuedChatPicks | null {
+  return queuedChatPicks.get(chatId) ?? null;
 }
 
-/** A send's settings that the account's queue carries (the model), and nothing a computer must store now. */
+/** A send carried the picks: drop them. */
+export function clearQueuedChatPicks(chatId: string): void {
+  queuedChatPicks.delete(chatId);
+}
+
+/** This chat's picks, once (a direct send applies them); null when none. */
+export function takeQueuedChatPicks(chatId: string): QueuedChatPicks | null {
+  const picks = peekQueuedChatPicks(chatId);
+  clearQueuedChatPicks(chatId);
+  return picks;
+}
+
+/** A send's settings that the account's queue carries, and nothing a computer must store now. */
 const QUEUE_CARRIED_UPDATE_KEYS = new Set(["sessionId", "modelId", "presetId", "reasoningEffort", "fastMode", "fastTier"]);
 
 function updateCarriedByQueue(args: AgentChatUpdateSessionArgs): boolean {
   return Object.entries(args).every(([key, value]) => QUEUE_CARRIED_UPDATE_KEYS.has(key) || value === undefined);
 }
 
-/** The chat as its saved copy knows it, after a pick the queue carries. */
-function savedChatSessionAfterPick(location: SavedChatLocation, modelId: string | null): AgentChatSession {
+/** Adds the picked keys of one update to the chat's picks. */
+function notePicks(chatId: string, args: AgentChatUpdateSessionArgs): QueuedChatPicks {
+  const next: QueuedChatPicks = { ...queuedChatPicks.get(chatId) };
+  const modelId = typeof args.modelId === "string" ? args.modelId.trim() : "";
+  if (modelId) next.modelId = modelId;
+  if (args.presetId !== undefined) next.presetId = args.presetId;
+  if (args.reasoningEffort !== undefined) next.reasoningEffort = args.reasoningEffort;
+  if (args.fastMode !== undefined) next.fastMode = args.fastMode;
+  if (args.fastTier !== undefined) next.fastTier = args.fastTier;
+  if (Object.keys(next).length > 0) queuedChatPicks.set(chatId, next);
+  return next;
+}
+
+/** The chat as its saved copy knows it, with the picks the next send carries. */
+function savedChatSessionAfterPick(location: SavedChatLocation, picks: QueuedChatPicks): AgentChatSession {
   const summary = savedChatSummary(location);
   return {
     id: summary.sessionId,
     laneId: summary.laneId,
     provider: summary.provider,
-    model: modelId ?? summary.model,
-    ...(modelId ? { modelId } : {}),
+    model: picks.modelId ?? summary.model,
+    ...(picks.modelId ? { modelId: picks.modelId } : {}),
+    ...(typeof picks.presetId === "string" ? { presetId: picks.presetId } : {}),
+    ...(picks.reasoningEffort !== undefined ? { reasoningEffort: picks.reasoningEffort } : {}),
+    ...(picks.fastMode !== undefined ? { fastMode: picks.fastMode } : {}),
+    ...(picks.fastTier !== undefined ? { fastTier: picks.fastTier } : {}),
     status: "idle",
     createdAt: summary.startedAt,
     lastActivityAt: summary.lastActivityAt,
@@ -391,7 +423,12 @@ export function withSavedChatReads(
       // The account's queue keeps the message and wakes the computer; the
       // send never waits for the computer to come up.
       if (reach.queueSend && await reach.queueSend(location, args) === "sent") return;
+      // A direct send (files, an older server): the picks the queue would
+      // have carried reach the chat first.
       const reachedPin = await reach.pinFor(location);
+      const sendPin = reachedPin ?? pin;
+      const picks = takeQueuedChatPicks(location.chatId);
+      if (picks) await api.updateSession({ sessionId: args.sessionId, ...picks }, sendPin);
       if (!reachedPin) return api.send(args, pin);
       const result = await api.send(args, reachedPin);
       reach.reached(location);
@@ -404,14 +441,13 @@ export function withSavedChatReads(
     updateSession: async (args, pin) => {
       const location = locate(args.sessionId, pin);
       if (location?.computerGone) throw new Error(SAVED_CHAT_COMPUTER_GONE_MESSAGE);
-      // A model pick that goes with a send to a resting ADE Cloud chat: the
-      // queued send carries it, so this call never wakes the computer and the
-      // send never waits for it. Other changes still reach the computer.
+      // Settings that go with a send to a resting ADE Cloud chat (the model,
+      // the effort, Fast, a preset): the next send carries them, so this call
+      // never wakes the computer and the send never waits for it. Other
+      // changes still reach the computer.
       if (location && reach?.queueSend && updateCarriedByQueue(args)
         && (isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
-        const modelId = typeof args.modelId === "string" && args.modelId.trim() ? args.modelId.trim() : null;
-        if (modelId) queuedChatModels.set(location.chatId, modelId);
-        return savedChatSessionAfterPick(location, modelId);
+        return savedChatSessionAfterPick(location, notePicks(location.chatId, args));
       }
       if (location && reach && isSavedChatsMachineId(location.machineId)) {
         const reachedPin = await reach.pinFor(location);

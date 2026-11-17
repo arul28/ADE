@@ -24,7 +24,7 @@ import { newClientSendId, queuedMessageOpen } from "../../shared/adeCloud/chatQu
 import type { CloudChatSendAnswer } from "../../shared/adeCloudMachine";
 import type { AgentChatSendArgs } from "../../shared/types/chat";
 import type { OpenProjectBinding } from "../../shared/types/core";
-import { savedChatLocation, savedChatLocationForSession, takeQueuedChatModel, type SavedChatLocation } from "./cloudSavedChats";
+import { clearQueuedChatPicks, peekQueuedChatPicks, savedChatLocation, savedChatLocationForSession, type SavedChatLocation } from "./cloudSavedChats";
 
 export type AdeCloudChatQueueState = {
   /** Messages the chat shows as its own rows: queued, sending, or waiting for a sign-in. Oldest first. */
@@ -207,8 +207,8 @@ export type SavedChatQueueSend = (location: SavedChatLocation, args: AgentChatSe
 /**
  * Sends through the account's queue. `unsupported` (an older server or
  * computer, files with the message, a message longer than the queue takes,
- * no queue in this ADE): the caller wakes
- * the computer and sends, as before. A refusal throws the server's sentence.
+ * no queue in this ADE): the caller wakes the computer and sends, as before.
+ * A refusal throws the server's sentence.
  */
 export const sendThroughAdeCloudQueue: SavedChatQueueSend = async (location, args) => {
   const send = window.ade?.cloud?.sendChatMessage;
@@ -221,11 +221,23 @@ export const sendThroughAdeCloudQueue: SavedChatQueueSend = async (location, arg
   if (text.length > CLOUD_CHAT_MESSAGE_MAX_CHARS) return "unsupported";
   const messageId = args.clientSendId && /^[A-Za-z0-9_-]{1,64}$/.test(args.clientSendId) ? args.clientSendId : newClientSendId();
   const provider = location.row.provider ?? null;
-  // A model picked just before this send (`updateSession` kept it for the queue).
-  const modelId = takeQueuedChatModel(location.chatId) ?? location.row.model ?? null;
-  const answer = await send({ machineKey: location.machineKey, chatId: location.chatId, messageId, text, provider, modelId });
+  // Settings picked since the last send (`updateSession` kept them): the
+  // computer applies them before the message. They stay for a direct send
+  // until the queue took this one.
+  const { modelId: pickedModel, ...settings } = peekQueuedChatPicks(location.chatId) ?? {};
+  const modelId = pickedModel ?? location.row.model ?? null;
+  const answer = await send({
+    machineKey: location.machineKey,
+    chatId: location.chatId,
+    messageId,
+    text,
+    provider,
+    modelId,
+    ...(Object.keys(settings).length > 0 ? { settings } : {}),
+  });
   if (answer.state === "unsupported") return "unsupported";
   if (answer.state === "refused") throw new Error(answer.message);
+  clearQueuedChatPicks(location.chatId);
   noteAdeCloudQueuedSend({ machineKey: location.machineKey, chatId: location.chatId }, answer, { text, provider, modelId });
   return "sent";
 };

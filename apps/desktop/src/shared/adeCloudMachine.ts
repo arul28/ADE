@@ -55,6 +55,8 @@ export type CloudChatSendRequest = {
   text: string;
   provider?: string | null;
   modelId?: string | null;
+  /** The chat settings picked before this send; the computer applies them before it sends. */
+  settings?: import("../../../account-directory/src/cloud/contract").CloudChatMessageSettings | null;
 };
 
 /**

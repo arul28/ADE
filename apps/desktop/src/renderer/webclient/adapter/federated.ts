@@ -37,7 +37,7 @@ import { createAdeCloudSyncClient } from "./adeCloudSyncClient";
 import type { AdeCloudBridge } from "../../../shared/adeCloud/chatQueue";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer, type CloudChatSendRequest } from "../../../shared/adeCloudMachine";
 import { CloudApiError } from "../../../shared/cloudApiClient";
-import { CLOUD_CHAT_MESSAGE_MAX_CHARS, isCloudRefusalCode } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode } from "../../../../../account-directory/src/cloud/contract";
 
 /** How long a person's connect keeps dialing a cloud computer it just woke. */
 const WOKEN_CONNECT_WAIT_MS = 120_000;
@@ -1210,12 +1210,14 @@ export function createFederatedWebAdapter({
       }
       const provider = field(request.provider, 64);
       const modelId = field(request.modelId, 256);
+      const settings = cloudChatMessageSettingsOf(request.settings);
       try {
         const result = await cloudApiOrThrow().sendChatMessage(machineKey, chatId, {
           messageId,
           text,
           ...(provider ? { provider } : {}),
           ...(modelId ? { modelId } : {}),
+          ...(settings ? { settings } : {}),
         });
         return { state: "sent", messageId: result.message.messageId, wake: { state: result.wake.state, launchId: result.wake.launchId ?? null } };
       } catch (error) {
