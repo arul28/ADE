@@ -38,7 +38,10 @@ struct SettingsProvidersPage: View {
 
   var body: some View {
     ADESettingsPage(route: .providers) {
-      if !connected {
+      if !connected && !syncService.accountHasOwnComputer(AccountService.shared.machines) && AccountService.shared.identity != nil {
+        // No computer of the person's own: the providers on ADE Cloud.
+        SettingsCloudAccountProviders(syncService: syncService)
+      } else if !connected {
         ADESettingsNotice(message: SettingsPageCopy.connectMachine)
       } else if !syncService.supportsRemoteAction("ai.getStatus") {
         ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))

@@ -1,3 +1,4 @@
+import { laneDisplayName } from "../../../../shared/laneDisplayName";
 import React from "react";
 import {
   ArrowDown,
@@ -183,8 +184,8 @@ export function LaneIdentity({
                 fallback={<LaneIcon size={16} />}
               />
             </span>
-            <h1 className="m-0 truncate text-[16px] font-semibold leading-[24px] tracking-[-0.01em] text-fg" title={lane.name}>
-              {lane.name}
+            <h1 className="m-0 truncate text-[16px] font-semibold leading-[24px] tracking-[-0.01em] text-fg" title={laneDisplayName(lane)}>
+              {laneDisplayName(lane)}
             </h1>
             <LaneShareMark laneId={lane.id} laneName={lane.name} pin={pin} size={14} />
           </div>
@@ -243,7 +244,7 @@ export function LaneIdentity({
           </span>
           <Sep />
           {isPrimary ? (
-            <span className="shrink-0">Primary lane</span>
+            <span className="shrink-0">Project folder</span>
           ) : (
             <span className="shrink-0">from <span className="text-fg/80">{fromLabel}</span></span>
           )}

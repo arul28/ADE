@@ -1,3 +1,4 @@
+import { laneDisplayName } from "../../../../shared/laneDisplayName";
 import React from "react";
 import { CircleDashed, CircleNotch, DesktopTower, UsersThree } from "@phosphor-icons/react";
 import type { LaneListSnapshot, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
@@ -112,7 +113,7 @@ function AgentCluster({
       className="flex shrink-0 items-center gap-1"
       data-testid="lane-sidebar-agent-status"
       data-tone={attention ? "attention" : status.tone}
-      title={`${lane.name}: ${label}`}
+      title={`${laneDisplayName(lane)}: ${label}`}
     >
       {shown.length > 0 ? (
         <span className="flex items-center">
@@ -277,7 +278,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
           return;
         }
         const url = `ade://lane/${encodeURIComponent(lane.id)}`;
-        const title = (lane.name || "ADE lane")
+        const title = (laneDisplayName(lane) || "ADE lane")
           .replace(/&/g, "&amp;")
           .replace(/</g, "&lt;")
           .replace(/>/g, "&gt;")
@@ -319,7 +320,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
         <span
           className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold leading-4"
           style={{ color: toneText(accent) }}
-          title={lane.name}
+          title={laneDisplayName(lane)}
         >
           <LaneEmojiGlyph
             emoji={lane.emoji}
@@ -327,12 +328,12 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
             className="shrink-0 text-[11px] leading-none"
             fallback={<LaneIcon size={12} />}
           />
-          <span className="min-w-0 truncate">{lane.name}</span>
+          <span className="min-w-0 truncate">{laneDisplayName(lane)}</span>
           {/* Read out with the row's name, so a screen reader tells lanes of
               the same name apart; on screen the hover card names it. */}
           {machine ? <span className="sr-only">, on {machine.machineName}</span> : null}
         </span>
-        {share && !deleting ? <LaneShareMark laneId={share.laneId} laneName={lane.name} pin={share.pin} /> : null}
+        {share && !deleting ? <LaneShareMark laneId={share.laneId} laneName={laneDisplayName(lane)} pin={share.pin} /> : null}
         {deleting || creating ? (
           <CircleNotch size={12} className="shrink-0 animate-spin" style={{ color: deleting ? COLORS.textMuted : COLORS.accent }} />
         ) : (
@@ -406,7 +407,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
       {hoverCard.anchor && machine ? (
         <SessionHoverCard
           anchor={hoverCard.anchor}
-          title={lane.name}
+          title={laneDisplayName(lane)}
           rows={[{
             id: "machine",
             icon: <DesktopTower size={13} weight="duotone" className="text-amber-400/85" />,

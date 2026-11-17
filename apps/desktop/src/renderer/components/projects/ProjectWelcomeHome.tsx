@@ -499,10 +499,9 @@ export type HomePullRequests = {
 
 /**
  * The card's two lists from a set of pull requests: open ones (yours first,
- * then by bucket, then the newest) and the ones merged this week. The machine
- * read and the direct read (`useDirectHomePullRequests`) share it.
+ * then by bucket, then the newest) and the ones merged this week.
  */
-export function homePullRequestLists(prs: readonly HomePr[], viewer: string | null): Pick<HomePullRequests, "open" | "recent" | "viewer"> {
+function homePullRequestLists(prs: readonly HomePr[], viewer: string | null): Pick<HomePullRequests, "open" | "recent" | "viewer"> {
   // Yours first among open PRs: what you authored or a lane of yours tracks.
   const mine = (pr: HomePr) => (pr.tracked != null || (viewer != null && pr.author === viewer) ? 0 : 1);
   const open = prs

@@ -1,3 +1,7 @@
+import { cloudCatalogOf, isCloudInstanceId } from "../../../shared/adeCloud";
+import { cloudMachineOfInstance } from "../../../shared/cloudMachineOfInstance";
+import { cloudMachineRefusal, runCloudMachineLifecycleAction } from "../../../shared/cloudMachineActions";
+import { CloudApiError, type CloudApiClient } from "../../../shared/cloudApiClient";
 import type {
   CloudAgentLimits,
   CloudMachineActionArgs,
@@ -11,6 +15,8 @@ import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/clo
 import type { AdapterInfra } from "./types";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { UnsupportedRemoteCommandError } from "./infra/commandCaller";
+import type { AccountCloudLaunchesBridge } from "../../../shared/accountCloudLaunches";
+import type { BrowserAccountClient } from "../account/client";
 
 /**
  * `window.ade.cloud` for the web app: enough for Settings › ADE Cloud (the
@@ -32,14 +38,20 @@ import { UnsupportedRemoteCommandError } from "./infra/commandCaller";
  * server itself with this browser's own account token, as the desktop's main
  * process sends its own (`cloudBilling.ts`): no computer has to be connected.
  *
+ * A computer's sleep, wake, resize, backup and update go to the account
+ * server too (`/cloud/instances/:id/...`), as the desktop's main process
+ * sends them (`cloudMachines.ts`), so they need no computer of the person's.
+ * A chat on a new computer starts there as well (`POST /cloud/launches`,
+ * `accountCloudLaunches.ts`).
+ *
  * What only the desktop app can do stays out, so each caller's own guard
  * hides it: the life of a lane's computer (`laneLife`, `onLaneJob`), saving a
- * key or a Claude pass. Making a computer and the machine actions that delete
- * or resize refuse with a plain sentence. The account's cloud sign-ins (saved
- * keys, passes) are read, never written.
+ * key or a Claude pass. A delete refuses with a plain sentence: the desktop
+ * first checks the lane's work for changes not on GitHub. The account's cloud
+ * sign-ins (saved keys, passes) are read, never written.
  */
 
-const DESKTOP_ONLY = "Do this in the ADE desktop app. The web app reads ADE Cloud but can't change computers.";
+const DELETE_ON_DESKTOP = "Delete computers in the ADE desktop app. It first checks each lane for work that isn't on GitHub yet.";
 
 function isMachinesResult(value: unknown): value is CloudMachinesResult {
   if (!value || typeof value !== "object") return false;
@@ -110,9 +122,37 @@ export function createWebCloudAccessNamespace(
   };
 }
 
+/** Sleep, wake, resize, backup and update through the account server, with the desktop's sentences. */
+async function webMachineAction(api: CloudApiClient, args: CloudMachineActionArgs): Promise<CloudMachineActionResult> {
+  const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
+  if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
+  try {
+    const result = await runCloudMachineLifecycleAction({
+      computer: (id) => api.computer(id),
+      sleep: (id) => api.sleep(id),
+      wake: async (id) => (await api.wake(id)).status,
+      resize: async (id, resources, computerIdle) => (await api.resize(id, { ...resources, ...(computerIdle ? { computerIdle: true } : {}) })).status,
+      backup: (id) => api.backup(id),
+      update: (id) => api.update(id),
+    }, instanceId, args);
+    return result ?? { ok: false, blocker: null, message: "ADE can't do that to a computer." };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // A refusal (plans, hours, the backup window) is an answer, not a failure.
+    if (!(error instanceof CloudApiError)) {
+      forwardSignalToSentry("web.cloud_machine_action_failed", { action: args.action, message }, `cloud_machine_action_failed:${args.action}`);
+    }
+    return cloudMachineRefusal(args.action, {
+      message,
+      code: error instanceof CloudApiError ? error.code : null,
+      reason: error instanceof CloudApiError ? error.reason : null,
+    });
+  }
+}
+
 export function createWebCloudNamespace(
   infra: Pick<AdapterInfra, "client" | "commands">,
-  accountClient: CloudBillingAccountClient,
+  accountClient: CloudBillingAccountClient & Pick<BrowserAccountClient, "cloudApi">,
 ): NonNullable<Window["ade"]["cloud"]> {
   const { client, commands } = infra;
   const billing = createWebCloudBilling(accountClient);
@@ -121,17 +161,34 @@ export function createWebCloudNamespace(
 
   const access = async (): Promise<boolean> => (await readCloudAccess(infra, billing)).enabled;
 
-  /** No computer online: the plan and hours straight from the account server; listing computers needs one. */
+  /**
+   * No computer online: the plan, hours and the account's ADE Cloud computers
+   * straight from the account server (`GET /cloud/instances`), so a person
+   * with no computer of their own still sees their cloud lanes. A failed list
+   * leaves the computers unread and the plan standing.
+   */
   const accountOnly = async (): Promise<CloudMachinesResult> => {
     const account = await billing.readAccount();
+    const api = accountClient.cloudApi();
+    const instances = api
+      ? await api.listComputers().catch((error: unknown) => {
+        // The page still shows the plan and hours; the computers come on the next read.
+        forwardSignalToSentry("web.cloud_computers_read_failed", { code: error instanceof CloudApiError ? error.code : null }, "cloud_computers_read_failed", "info");
+        return null;
+      })
+      : null;
+    const catalog = cloudCatalogOf(account);
+    const machines = instances
+      ? instances.filter((instance) => instance.status !== "deleted").map((instance) => cloudMachineOfInstance(instance, catalog))
+      : [];
     return {
       state: "ok",
-      machines: [],
-      instanceCount: account.computers?.total ?? null,
+      machines,
+      instanceCount: account.computers?.total ?? (instances ? machines.length : null),
       runningCount: account.computers?.awake ?? null,
       account,
       message: null,
-      computersUnread: true,
+      ...(instances ? {} : { computersUnread: true }),
     };
   };
 
@@ -175,14 +232,26 @@ export function createWebCloudNamespace(
     }
   };
 
-  /** Sleep and wake only: a delete or resize of a lane's computer needs the desktop app's lane steps. */
+  /**
+   * Through the account server with this browser's account token, with the
+   * desktop's sentences (`cloudMachines.ts`). Without account sign-in here,
+   * sleep and wake still go through a connected computer. A delete stays in
+   * the desktop app (see `DELETE_ON_DESKTOP`).
+   */
   const machineAction = async (args: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> => {
-    if (args.action !== "sleep" && args.action !== "wake") return { ok: false, message: DESKTOP_ONLY } as CloudMachineActionResult;
-    return await commands.call<CloudMachineActionResult>(
-      "cloud.write",
-      { action: args.action, args: { machine: args.instanceId } },
-      { idempotent: false },
-    );
+    if (args.action === "delete") return { ok: false, blocker: null, message: DELETE_ON_DESKTOP };
+    const api = accountClient.cloudApi();
+    if (!api) {
+      if (args.action !== "sleep" && args.action !== "wake") {
+        return { ok: false, blocker: null, message: "Sign in to your ADE account here to change this computer." };
+      }
+      return await commands.call<CloudMachineActionResult>(
+        "cloud.write",
+        { action: args.action, args: { machine: args.instanceId } },
+        { idempotent: false },
+      );
+    }
+    return await webMachineAction(api, args);
   };
 
   /**
@@ -209,9 +278,21 @@ export function createWebCloudNamespace(
     getStatus,
     listMachines,
     machineAction,
+    // The account server runs the code on that computer; no machine connection needed.
+    sendLaunchSignInCode: async ({ instanceId, jobId, code }) => {
+      const api = accountClient.cloudApi();
+      if (!api) throw new Error("Account sign-in isn't configured for this web client.");
+      return await api.sendSignInCode(instanceId, jobId, code);
+    },
     savedChats: {
-      list: async (args) => await savedChatRead<CloudSavedChatList>("saved_chats_list", { ...args }),
-      read: async (args) => await savedChatRead<CloudSavedChatPage>("saved_chats_read", { ...args }),
+      // No computer to ask (ADE Web with none connected): the account server
+      // answers the list itself.
+      list: async (args) => await savedChatRead<CloudSavedChatList>("saved_chats_list", { ...args })
+        ?? await accountClient.cloudApi()?.savedChats(args).catch(() => null)
+        ?? null,
+      read: async (args) => await savedChatRead<CloudSavedChatPage>("saved_chats_read", { ...args })
+        ?? await accountClient.cloudApi()?.savedChat(args).catch(() => null)
+        ?? null,
       delete: async () => {
         throw new Error("Delete a saved chat in the ADE desktop app.");
       },
@@ -248,5 +329,33 @@ export function createWebCloudNamespace(
     setExtraHours: (enabled) => billing.setExtraHours(enabled),
     setExtraDisk: (choice) => billing.setExtraDisk(choice),
     pickPlanCleanup: (input) => billing.pickPlanCleanup(input),
+  };
+}
+
+/**
+ * `window.ade.cloudLaunches` for the web app: a chat on ADE Cloud started
+ * straight from the account server (`POST /cloud/launches`), with no
+ * computer of the person's own. The first message is stored with the launch,
+ * so the tab may close. Account-level: no pin, and never the tab's machine.
+ */
+export function createWebCloudLaunchesNamespace(
+  accountClient: Pick<BrowserAccountClient, "cloudApi">,
+): AccountCloudLaunchesBridge {
+  const api = () => {
+    const client = accountClient.cloudApi();
+    if (!client) throw new Error("Account sign-in isn't configured for this web client.");
+    return client;
+  };
+  return {
+    start: (launch) => api().startLaunch(launch),
+    status: (launchId) => api().launchStatus(launchId),
+    active: () => api().activeLaunches(),
+    cancel: (launchId) => api().cancelLaunch(launchId),
+    messages: (launchId) => api().launchMessages(launchId),
+    addMessage: (launchId, message) => api().addLaunchMessage(launchId, message),
+    signIns: () => api().accountSignIns(),
+    saveSignIn: (signInId, key) => api().saveAccountSignIn(signInId, key),
+    removeSignIn: (signInId) => api().removeAccountSignIn(signInId),
+    models: () => api().modelCatalog(),
   };
 }

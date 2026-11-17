@@ -28,6 +28,7 @@ import {
 } from "../../lib/githubIntegrationStatus";
 import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
 import {
+  githubSignInFailureDetail,
   cancelGithubAccountAppSignIn,
   refreshGithubAccountApp,
   signOutGithubAccountApp,
@@ -818,19 +819,7 @@ function accountFlowPhaseNote(phase: GithubAccountAppSignInPhase, compact: boole
     );
   }
   if (phase.kind !== "failed") return null;
-  const detail = phase.reason === "denied"
-    ? "The sign-in was cancelled on GitHub, so nothing changed. Connect again to try once more."
-    : phase.reason === "refused"
-      ? "GitHub didn't finish the sign-in, so nothing changed. Connect again to try once more."
-    : phase.reason === "expired"
-      ? "The sign-in link ran out before it was finished. Connect again to start a new one."
-      : phase.reason === "rate_limited"
-        ? "Too many sign-ins in a short time. Wait a few minutes, then connect again."
-        : phase.reason === "signed_out"
-          ? "Sign in to your ADE account first."
-          : phase.reason === "unsupported"
-            ? "Your ADE account can't hold a GitHub sign-in yet."
-            : phase.message ?? "ADE couldn't start the GitHub sign-in. Check your connection and try again.";
+  const detail = githubSignInFailureDetail(phase);
   if (compact) return <p style={{ ...authMessageStyle, color: COLORS.danger }}>{detail}</p>;
   return <Banner layout="inline" model={{ id: "github-account-app-sign-in-error", tone: "error", title: "GitHub sign-in didn't finish", detail }} />;
 }

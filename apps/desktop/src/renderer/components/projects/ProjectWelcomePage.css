@@ -185,7 +185,6 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   gap: var(--welcome-gap);
   overflow: hidden;
 }
-.ade-home-grid[data-single="true"] { width: 100%; grid-template-columns: minmax(0, 1fr); grid-auto-rows: minmax(0, 1fr); max-width: 680px; }
 
 .ade-home-hidden-note {
   position: absolute;

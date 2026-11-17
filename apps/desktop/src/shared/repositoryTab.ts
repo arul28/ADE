@@ -211,6 +211,8 @@ export type RepositoryCopyInputs = {
   machineNames?: Readonly<Record<string, string>>;
   /** A lane's own ADE Cloud computer (`adeCloudLaneComputerForMachine`). */
   isAdeCloudMachine?: (machine: { hostname: string | null; machineKey: string | null }) => boolean;
+  /** What an ADE Cloud computer shows ("Cloud · <lane>"), never its instance id; null for any other machine. */
+  adeCloudMachineLabel?: (machine: { hostname: string | null; machineKey: string | null }) => string | null;
 };
 
 /** A connection's account machine key: the paired machine's key, or the target id for an SSH target. */
@@ -319,9 +321,12 @@ export function buildRepositoryCopies(
       projectId: tab.id,
       machineKey: connection ? connectionMachineKey(connection) : fields.machineKey,
       machineId: connection ? connection.target.id : `account-machine:${fields.machineKey}`,
-      machineName: connection
-        ? machineName(connection)
-        : inputs.machineNames?.[fields.machineKey]?.trim() || "Another computer",
+      machineName: (connection
+        ? inputs.adeCloudMachineLabel?.({ hostname: connection.target.hostname ?? null, machineKey: connectionMachineKey(connection) })
+        : inputs.adeCloudMachineLabel?.({ hostname: null, machineKey: fields.machineKey }))
+        ?? (connection
+          ? machineName(connection)
+          : inputs.machineNames?.[fields.machineKey]?.trim() || "Another computer"),
       isThisMachine: false,
       isMain: fields.isMain,
       online: connection?.state === "connected",

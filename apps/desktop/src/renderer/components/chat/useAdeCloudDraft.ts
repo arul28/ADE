@@ -8,12 +8,14 @@ import {
 } from "../../../shared/adeCloud";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
-import type { AgentChatFileRef, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
+import type { AgentChatFileRef, AgentChatProvider, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
 import { cloudTierHoursAt, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { accountCloudLaunchesAvailable } from "../../state/accountCloudLaunches";
+import { cloudRemoteSignInOf, cloudRemoteSignInRefusal } from "../../../shared/accountCloudLaunches";
 import { useRootAppStore } from "../../state/appStore";
 import { pickCloudDefaultTier } from "../../lib/cloudDefaultTier";
 import { useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
@@ -133,10 +135,11 @@ export function useAdeCloudDraft({
 
   return {
     /**
-     * ADE Cloud access is on for this account: the Run on menu lists it. Not
-     * in the web app: making a lane's computer is the desktop app's.
+     * ADE Cloud access is on for this account: the Run on menu lists it. ADE
+     * Web starts the lane through the account server (`POST /cloud/launches`),
+     * so it needs this browser's account sign-in.
      */
-    available: cloudEnabled && !isWebClientMode(),
+    available: cloudEnabled && (!isWebClientMode() || accountCloudLaunchesAvailable()),
     account,
     /** The account's computers from the shared read (empty until it answers). */
     machines: result?.machines ?? NO_MACHINES,
@@ -188,6 +191,8 @@ export function useAdeCloudComposer(input: {
   showControls: boolean;
   parallelChatMode: boolean;
   isCliDraft: boolean;
+  /** The draft chat's provider: ADE Web can't start one that signs in only from the desktop. */
+  provider: AgentChatProvider | null;
   attachments: AgentChatFileRef[];
   newLaneConfig: NewLaneDraftConfig | null;
   /** Stable (module level): the launch's lane config from the "+" lane's draft. */
@@ -302,6 +307,36 @@ export function useAdeCloudComposer(input: {
     const accountBlock = adeCloudAccountBlock(draft.account, { newLane });
     if (accountBlock) return accountBlock;
     if (!newLane) return null;
+    // ADE Web starts a new lane through the account server, which takes a
+    // chat and its message. A CLI session needs a terminal on the new
+    // computer, and files go up with the desktop's launch.
+    if (isWebClientMode() && input.isCliDraft) {
+      return {
+        tone: "notice",
+        message: "A CLI session on ADE Cloud starts from the ADE desktop app. Send a chat here, or pick one of your computers.",
+        short: "CLI on ADE Cloud: desktop app only.",
+        actions: [],
+      };
+    }
+    // The account server can't finish a sign-in that runs only on the desktop
+    // (Antigravity, Qwen Code): the computer would wait on it until it gives up.
+    const remoteSignIn = isWebClientMode() && !input.isCliDraft ? cloudRemoteSignInOf(input.provider) : null;
+    if (remoteSignIn?.remoteSignIn === "desktop") {
+      return {
+        tone: "notice",
+        message: cloudRemoteSignInRefusal(remoteSignIn),
+        short: `${remoteSignIn.label} on ADE Cloud: desktop app only.`,
+        actions: [],
+      };
+    }
+    if (isWebClientMode() && input.attachments.length > 0) {
+      return {
+        tone: "notice",
+        message: "Files go to a new ADE Cloud lane from the ADE desktop app. Remove them to send this chat from here.",
+        short: "Remove the files to send here.",
+        actions: [],
+      };
+    }
     const problem = cloudLaneLaunchStartRefusal({
       args: {
         kind: input.isCliDraft ? "cli" : "chat",
@@ -337,6 +372,7 @@ export function useAdeCloudComposer(input: {
     input.laneConfigOf,
     input.isCliDraft,
     input.parallelChatMode,
+    input.provider,
     input.showControls,
   ]);
   input.sendRef.current = mode

@@ -43,6 +43,9 @@ import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
 import { ResetAdeSection } from "./ResetAdeSection";
 import { DatabaseCopiesSection } from "./DatabaseCopiesSection";
 import { ProvidersSection } from "./ProvidersSection";
+import { AccountCloudProvidersPanel } from "./providers/cloud/AccountCloudProvidersPanel";
+import { accountCloudLaunchesAvailable } from "../../state/accountCloudLaunches";
+import { useHasOwnComputer } from "../../state/ownComputers";
 import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPanel";
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
 import { SettingsSection } from "./primitives/SettingsRows";
@@ -121,6 +124,26 @@ function providerIdFromHash(hash: string): string | null {
   return raw.slice(PROVIDER_ANCHOR_PREFIX.length) || null;
 }
 
+/** ADE Web with no computer of the person's own: the providers' ADE Cloud sign-ins live in Settings. */
+function useAccountProvidersInSettings(): boolean {
+  return !useHasOwnComputer() && isWebClientMode() && accountCloudLaunchesAvailable();
+}
+
+/**
+ * Settings › ADE Cloud. In ADE Web with no computer of the person's own, the
+ * providers' ADE Cloud sign-ins and saved keys show here too: that person has
+ * no machine whose Providers page could hold them.
+ */
+function AdeCloudSettingsPage() {
+  const accountProviders = useAccountProvidersInSettings();
+  return (
+    <SettingsColumn wide>
+      <CloudSection />
+      {accountProviders ? <div className="mt-8"><AccountCloudProvidersPanel /></div> : null}
+    </SettingsColumn>
+  );
+}
+
 /**
  * Agents & Models. One provider's page is a sub-view of this tab rather than a
  * route of its own: `?provider=<id>`, with `#ai-provider-<id>` accepted so the
@@ -130,6 +153,7 @@ function providerIdFromHash(hash: string): string | null {
  * on the chat tab; scheduled work lives on notifications.
  */
 function AgentsTabContent() {
+  const accountProviders = useAccountProvidersInSettings();
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -153,6 +177,10 @@ function AgentsTabContent() {
       { replace: true },
     );
   }, [location.pathname, navigate, searchParams]);
+
+  if (accountProviders) {
+    return <AccountCloudProvidersPanel />;
+  }
 
   if (isWebClientMode()) {
     return (
@@ -575,7 +603,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   ],
   // Account-wide: the plan, hours and computers are the account's, so the page
   // asks this desktop's own main process with no pin and carries no machine kind.
-  "ade-cloud": [{ entryIds: "tab", render: () => <SettingsColumn wide><CloudSection /></SettingsColumn>, title: ADE_CLOUD_NAME }],
+  "ade-cloud": [{ entryIds: "tab", render: () => <AdeCloudSettingsPage />, title: ADE_CLOUD_NAME }],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   // Account-wide: the on/off switch, the computers and the connections live in
   // the account (settings store and vault), so the page asks this desktop's own

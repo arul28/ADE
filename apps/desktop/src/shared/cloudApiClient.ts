@@ -16,11 +16,14 @@
 import {
   CLOUD_INSTANCE_HEADER,
   CLOUD_PATHS,
+  type CloudAccountSignIns,
   type CloudAccountState,
   type CloudAutomationRegistered,
   type CloudAutomationRegistration,
   type CloudAutomationRun,
   type CloudAutomationSummary,
+  type CloudChatRow,
+  type CloudChatTranscriptPage,
   type CloudInstance,
   type CloudLaunchJoinRequest,
   type CloudLaunchJoinResult,
@@ -30,6 +33,8 @@ import {
   type CloudLaunchMessageRequest,
   type CloudLaunchRecord,
   type CloudLaunchStagesUpdate,
+  type CloudLaunchStartRequest,
+  type CloudModelCatalog,
   type CloudProjectComputersDeleteStarted,
   type CloudProjectComputersJob,
   type CloudProjectComputersPreview,
@@ -64,6 +69,9 @@ export class CloudApiError extends Error {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+/** Sleep, wake, resize and update: the server waits on its provider, and a move between hosts takes minutes. */
+const LIFECYCLE_TIMEOUT_MS = 3 * 60_000;
+const BACKUP_TIMEOUT_MS = 15 * 60_000;
 
 type RequestOptions = {
   body?: unknown;
@@ -139,8 +147,14 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
         raw: { bytes: bytes as BodyInit, contentType: contentType || "application/octet-stream" },
         timeoutMs: timeoutMs * 4,
       }),
-    /** 201 for a new launch; the same `launchId` again answers the same launch. */
-    startLaunch: (launch: CloudServerLaunchRequest) => request<CloudLaunchRecord>("POST", CLOUD_PATHS.launches, { body: launch, timeoutMs: timeoutMs * 4 }),
+    /**
+     * 201 for a new launch; the same `launchId` again answers the same launch.
+     * The web's start (`CloudLaunchStartRequest`) may name `{ accountProjectId }`
+     * and leave out `lane` and `sizeId` (a new lane named from the first
+     * message, Small).
+     */
+    startLaunch: (launch: CloudServerLaunchRequest | CloudLaunchStartRequest) =>
+      request<CloudLaunchRecord>("POST", CLOUD_PATHS.launches, { body: launch, timeoutMs: timeoutMs * 4 }),
     launchStatus: (launchId: string) => request<CloudLaunchRecord>("GET", launchPath(launchId)),
     /** The caller's launches still in progress (and failures of the last day). */
     activeLaunches: () => request<CloudLaunchList>("GET", `${CLOUD_PATHS.launches}?active=1`),
@@ -153,11 +167,18 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     cancelLaunch: (launchId: string) => request<CloudLaunchRecord>("DELETE", launchPath(launchId)),
 
     /* ---- One computer ---- */
+    computer: (instanceId: string) => request<CloudInstance>("GET", instancePath(instanceId)),
+    sleep: (instanceId: string) => request<{ status: string }>("POST", `${instancePath(instanceId)}/sleep`, { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
+    /** The server restarts the computer on the newest ADE for its channel. */
+    update: (instanceId: string) => request<{ status: string }>("POST", `${instancePath(instanceId)}/update`, { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
+    /** At most one every 15 minutes (`rate_limited`). */
+    backup: (instanceId: string) =>
+      request<{ id?: string | null; created?: number | null; sizeBytes?: number | null }>("POST", `${instancePath(instanceId)}/backups`, { body: {}, timeoutMs: BACKUP_TIMEOUT_MS }),
     wake: (instanceId: string, args: { reason?: "push_work" } = {}) =>
-      request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: args }),
+      request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     /** The server wakes a sleeping computer first. `computerIdle` is needed to grow the disk of a running one. */
-    resize: (instanceId: string, args: { cpu: number; memory: number; disk?: number; computerIdle?: boolean }) =>
-      request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args }),
+    resize: (instanceId: string, args: { cpu?: number; memory?: number; disk?: number; computerIdle?: boolean }) =>
+      request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     deleteComputer: (instanceId: string, args: { who?: string | null; reason?: string | null } = {}) =>
       request<{ deleted: true }>("DELETE", instancePath(instanceId), { body: args }),
 
@@ -169,6 +190,50 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       request<CloudRemoteSignInStatus>("POST", `${instancePath(instanceId)}/sign-ins/${encodeURIComponent(jobId)}/code`, { body: { code }, timeoutMs: timeoutMs * 3 }),
     signInStatus: (instanceId: string, jobId: string) =>
       request<CloudRemoteSignInStatus>("GET", `${instancePath(instanceId)}/sign-ins/${encodeURIComponent(jobId)}`, { timeoutMs: timeoutMs * 3 }),
+
+    /* ---- The account's ADE Cloud sign-ins (status only, never a value) ---- */
+    accountSignIns: () => request<CloudAccountSignIns>("GET", CLOUD_PATHS.signIns),
+    /** A key, or for `claude` a Claude pass, saved to the account vault. */
+    saveAccountSignIn: (signInId: string, key: string) =>
+      request<CloudAccountSignIns>("PUT", `${CLOUD_PATHS.signIns}/${encodeURIComponent(signInId)}`, { body: { key } }),
+    removeAccountSignIn: (signInId: string) =>
+      request<CloudAccountSignIns>("DELETE", `${CLOUD_PATHS.signIns}/${encodeURIComponent(signInId)}`),
+    /** Models per provider, for a picker before any computer exists. */
+    modelCatalog: () => request<CloudModelCatalog>("GET", CLOUD_PATHS.models),
+    /**
+     * The account's saved chats (the server's copy, readable with no computer
+     * running). A 404 is an account without ADE Cloud: no chats, not a failure.
+     */
+    savedChats: async (args: { machineKey?: string | null; projectKey?: string | null; limit?: number; cursor?: string | null } = {}) => {
+      const query = new URLSearchParams();
+      if (args.machineKey) query.set("machine", args.machineKey);
+      if (args.projectKey) query.set("project", args.projectKey);
+      if (args.limit) query.set("limit", String(args.limit));
+      if (args.cursor) query.set("cursor", args.cursor);
+      const suffix = query.size ? `?${query.toString()}` : "";
+      try {
+        return await request<{ chats: CloudChatRow[]; nextCursor: string | null }>("GET", `${CLOUD_PATHS.chats}${suffix}`);
+      } catch (error) {
+        if (error instanceof CloudApiError && error.status === 404) return { chats: [], nextCursor: null };
+        throw error;
+      }
+    },
+    /** One saved chat's transcript page; null when the server has no such chat. */
+    savedChat: async (args: { machineKey: string; chatId: string; before?: number | null; limit?: number }) => {
+      const query = new URLSearchParams();
+      if (args.before != null) query.set("before", String(args.before));
+      if (args.limit) query.set("limit", String(args.limit));
+      const suffix = query.size ? `?${query.toString()}` : "";
+      try {
+        return await request<CloudChatTranscriptPage>(
+          "GET",
+          `${CLOUD_PATHS.chats}/${encodeURIComponent(args.machineKey)}/${encodeURIComponent(args.chatId)}${suffix}`,
+        );
+      } catch (error) {
+        if (error instanceof CloudApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
 
     /* ---- A project's computers ---- */
     previewProjectComputers: (origin: string) =>

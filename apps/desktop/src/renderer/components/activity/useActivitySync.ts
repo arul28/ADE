@@ -9,6 +9,7 @@ import {
   useActivityStore,
 } from "../../state/activityStore";
 import { useAccountStatus } from "../../lib/account";
+import { useHasOwnComputer } from "../../state/ownComputers";
 import { createBackoffPoller } from "../../lib/backoffPoller";
 import { createPresenceReporter, type PresenceReporter } from "../../lib/presenceReporter";
 
@@ -194,9 +195,12 @@ export function useLiveActivityRefresh(): void {
 export function useActivityIncomplete(): boolean {
   const syncStatus = useActivityStore((state) => state.syncStatus);
   const availabilityState = useActivityStore((state) => state.availability?.state ?? null);
-  const incomplete = syncStatus === "error"
+  // With no computer of their own (ADE Web), the person has no machine whose
+  // activity could fail to load: say nothing rather than a false warning.
+  const hasOwnComputer = useHasOwnComputer();
+  const incomplete = hasOwnComputer && (syncStatus === "error"
     || availabilityState === "degraded"
-    || availabilityState === "incompatible";
+    || availabilityState === "incompatible");
   const [answer, setAnswer] = useState(incomplete);
   useEffect(() => {
     if (syncStatus !== "syncing") setAnswer(incomplete);

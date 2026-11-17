@@ -105,12 +105,14 @@ const DEV_DIRECTORY_PROXY_TARGET =
   || "https://ade-account-directory-production.arulsharma1028.workers.dev";
 
 /**
- * The directory's account routes (machines and the project list), and only
- * those: `/account/callback` is the
- * OAuth landing route owned by the web client's own router, so proxying the
- * whole `/account` prefix would send sign-in returns to the Worker.
+ * The directory's routes the web client calls: the account routes (machines
+ * and the project list), ADE Cloud (`/cloud/…`: launches, computers,
+ * sign-ins, models) and the GitHub reads (`/github/…`). Not the whole
+ * `/account` prefix: `/account/callback` is the OAuth landing route owned by
+ * the web client's own router, so proxying it would send sign-in returns to
+ * the Worker.
  */
-const DEV_DIRECTORY_PROXY_ROUTE = "^/account/(?:machines|projects)(?:[/?]|$)";
+const DEV_DIRECTORY_PROXY_ROUTE = "^/(?:account/(?:machines|projects)|cloud|github)(?:[/?]|$)";
 
 /**
  * Same treatment for the push relay, which the Activity surface calls straight

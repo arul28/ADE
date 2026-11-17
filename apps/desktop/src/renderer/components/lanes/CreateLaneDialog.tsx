@@ -698,7 +698,7 @@ export function CreateLaneDialog({
                   </span>
                 ) : importHolder ? (
                   <span className="cl-hint" data-tone="warn">
-                    <b>{createImportBranch}</b> is already open in {importHolder.laneType === "primary" ? "Primary" : <b>{importHolder.name}</b>}.
+                    <b>{createImportBranch}</b> is already open in {importHolder.laneType === "primary" ? "the main checkout" : <b>{importHolder.name}</b>}.
                     {" "}A branch can only be open in one lane at a time.
                   </span>
                 ) : createImportBranch ? (

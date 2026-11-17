@@ -219,3 +219,20 @@ export function useGithubAccountApp() {
     refresh,
   };
 }
+
+/** Why a GitHub sign-in that failed didn't finish, and what to do next. */
+export function githubSignInFailureDetail(phase: Extract<GithubAccountAppSignInPhase, { kind: "failed" }>): string {
+  return phase.reason === "denied"
+    ? "The sign-in was cancelled on GitHub, so nothing changed. Connect again to try once more."
+    : phase.reason === "refused"
+      ? "GitHub didn't finish the sign-in, so nothing changed. Connect again to try once more."
+    : phase.reason === "expired"
+      ? "The sign-in link ran out before it was finished. Connect again to start a new one."
+      : phase.reason === "rate_limited"
+        ? "Too many sign-ins in a short time. Wait a few minutes, then connect again."
+        : phase.reason === "signed_out"
+          ? "Sign in to your ADE account first."
+          : phase.reason === "unsupported"
+            ? "Your ADE account can't hold a GitHub sign-in yet."
+            : phase.message ?? "ADE couldn't start the GitHub sign-in. Check your connection and try again.";
+}

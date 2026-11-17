@@ -26,9 +26,11 @@ import { ProjectIconDialog, type ProjectIconDialogTarget } from "./ProjectIconDi
 import { CloneLocallyDialog, type CloneLocallyTarget } from "./CloneLocallyDialog";
 import { openProjectCopy } from "./AddProjectForm";
 import { useAppStore } from "../../state/appStore";
+import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { CommandPalette } from "../app/CommandPalette";
+import { webStoppedTabCopies } from "../app/webResumeOwnedTabs";
 import { Banner } from "../ui/notice";
 import {
   ACCOUNT_MACHINE_TARGET_PREFIX,
@@ -49,7 +51,6 @@ import { useHomeLayoutStore } from "../home/homeLayout";
 import { useHomePageWiring } from "../home/useHomePageWiring";
 import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import {
-  WebAddProjectNotice,
   WebZeroMachines,
   webZeroMachinesNotice,
 } from "./ProjectWelcomeWebNotices";
@@ -61,7 +62,9 @@ import type {
 } from "../../../shared/types";
 import "./ProjectWelcomePage.css";
 import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
-import { useHomeAccountProjects } from "./useHomeAccountProjects";
+import { useDesktopFirstAccountTab, useHomeAccountProjects } from "./useHomeAccountProjects";
+import { GetStartedCard, InstallAdeChip, useGetStartedState } from "./GetStartedCard";
+import { useHasOwnComputer, useOwnWebComputers } from "../../state/ownComputers";
 import type { HomeWebComputer } from "./homeProjectRows";
 import { useHomeRowRemoval } from "./useHomeRowRemoval";
 
@@ -72,9 +75,12 @@ const HomeEditTools = lazy(() => import("../home/HomeEditTools"));
 function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
 }
-/** Where a web user with no computer gets ADE. */
-const ADE_DOWNLOAD_PAGE_URL = "https://ade-app.dev/";
 
+/** Whether the tab in front is this remote project (no later choice replaced the open). */
+function isOpenRemoteProject(targetId: string, projectId: string): boolean {
+  const binding = useAppStore.getState().projectBinding;
+  return binding?.kind === "remote" && binding.targetId === targetId && binding.projectId === projectId;
+}
 
 export function ProjectWelcomePage() {
   const navigate = useNavigate();
@@ -92,7 +98,6 @@ export function ProjectWelcomePage() {
   // The first recents read finished (or failed): Home's catalog read waits for it.
   const [recentsLoaded, setRecentsLoaded] = useState(false);
   const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
-  const [webAddProjectNoticeOpen, setWebAddProjectNoticeOpen] = useState(false);
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const applyRemoteSnapshot = useCallback(
@@ -265,13 +270,15 @@ export function ProjectWelcomePage() {
     }
     return { webComputers: byAccount, webComputersByKey: byKey };
   }, [webMachines]);
+  // A chat with no project runs on a computer of the person's own, never on an ADE Cloud computer.
+  const ownWebMachines = useOwnWebComputers();
   const activeWebMachine = useMemo(() => (
-    webMachines.find((machine) => machine.status === "live")
-    ?? webMachines.find((machine) => machine.key === workspace?.snapshot.lastActiveMachineKey)
-    ?? webMachines.find((machine) => machine.status === "available")
-    ?? webMachines[0]
+    ownWebMachines.find((machine) => machine.status === "live")
+    ?? ownWebMachines.find((machine) => machine.key === workspace?.snapshot.lastActiveMachineKey)
+    ?? ownWebMachines.find((machine) => machine.status === "available")
+    ?? ownWebMachines[0]
     ?? null
-  ), [webMachines, workspace?.snapshot.lastActiveMachineKey]);
+  ), [ownWebMachines, workspace?.snapshot.lastActiveMachineKey]);
 
   useEffect(() => {
     if (!webMode || !workspace) return;
@@ -294,7 +301,6 @@ export function ProjectWelcomePage() {
     remoteSnapshot,
     pendingForgetKeys,
   });
-  const accountProjectCount = homeList.accountCount ?? 0;
   const homeRows = useMemo(
     () => [...homeList.accountRows, ...homeList.localGroups.flatMap((group) => group.rows)],
     [homeList],
@@ -307,8 +313,22 @@ export function ProjectWelcomePage() {
     (machineKey: string, projectId: string, rowKey: string, onUnreachable?: () => boolean) => {
       if (!workspace) return;
       const machine = webMachineByKey.get(machineKey);
-      if (!machine) return;
       setRowError(null);
+      if (!machine) {
+        // The row of an open tab names that tab's saved machine, which the
+        // list does not hold while its computer is asleep or not answering:
+        // open the tab, which wakes a sleeping ADE Cloud computer first.
+        void (async () => {
+          try {
+            await switchRemoteProject(machineKey, projectId);
+            if (isOpenRemoteProject(machineKey, projectId)) navigate(workspace.consumePendingProjectPath() ?? "/work");
+          } catch (error) {
+            if (onUnreachable?.()) return;
+            setRowError(error instanceof Error ? error.message : String(error));
+          }
+        })();
+        return;
+      }
       setOpeningRowKey(rowKey);
       void (async () => {
         try {
@@ -324,7 +344,7 @@ export function ProjectWelcomePage() {
         }
       })();
     },
-    [navigate, webMachineByKey, workspace],
+    [navigate, switchRemoteProject, webMachineByKey, workspace],
   );
 
   // Lanes shared with this account: they need no computer of its own.
@@ -338,11 +358,6 @@ export function ProjectWelcomePage() {
           account: workspace.account,
           directoryLoading: workspace.directoryLoading,
           retryError: directoryRetryError,
-          accountProjectCount,
-          sharedLaneCount: sharedRows.length,
-          onGetAde: () => {
-            void window.ade.app.openExternal(ADE_DOWNLOAD_PAGE_URL).catch(() => undefined);
-          },
           onRetry: () => {
             setDirectoryRetryError(null);
             void workspace.retryDirectory().catch((error) => {
@@ -357,7 +372,7 @@ export function ProjectWelcomePage() {
           },
         })
       : null
-  ), [accountProjectCount, directoryRetryError, sharedRows.length, webMachines.length, webMode, workspace]);
+  ), [directoryRetryError, webMachines.length, webMode, workspace]);
 
   const openWebChats = useCallback(() => {
     if (!workspace || !activeWebMachine) return;
@@ -379,6 +394,30 @@ export function ProjectWelcomePage() {
     (rp: RecentProjectSummary) => {
       setRowError(null);
       if (webMode && rp.kind === "remote" && rp.remote) {
+        // A tab of this repository is open, or waiting, on a computer this
+        // browser cannot reach now (asleep, or not answering): the row opens
+        // that tab, which wakes a sleeping ADE Cloud computer first.
+        const origin = normalizeGitRemoteIdentity(rp.gitOriginUrl ?? null);
+        const unreachableTab = [...useAppStore.getState().openRemoteProjectTabs, ...webStoppedTabCopies()].find((binding) => (
+          (origin ? normalizeGitRemoteIdentity(binding.gitOriginUrl ?? null) === origin : binding.rootPath === rp.rootPath)
+          && !webMachines.some((machine) => machine.session?.targetId === binding.targetId && machine.session.state === "live")
+        ));
+        if (unreachableTab) {
+          const rowKey = recentKey(rp);
+          setOpeningRowKey(rowKey);
+          void switchRemoteProject(unreachableTab.targetId, unreachableTab.projectId).then(
+            () => {
+              // A later choice can supersede this open while the computer wakes.
+              if (isOpenRemoteProject(unreachableTab.targetId, unreachableTab.projectId)) {
+                navigate(workspace?.consumePendingProjectPath() ?? "/work");
+              }
+            },
+            (error: unknown) => {
+              if (!openNoMachineTab(rp)) setRowError(error instanceof Error ? error.message : String(error));
+            },
+          ).finally(() => setOpeningRowKey((current) => (current === rowKey ? null : current)));
+          return;
+        }
         const targetId = rp.remote.targetId;
         if (targetId.startsWith(ACCOUNT_MACHINE_TARGET_PREFIX)) {
           // A row from the account list: its copy's computer by its account
@@ -449,9 +488,12 @@ export function ProjectWelcomePage() {
       openWebProject,
       project?.rootPath,
       switchProjectToPath,
+      navigate,
       switchRemoteProject,
       webMachineByAccountKey,
+      webMachines,
       webMode,
+      workspace,
     ],
   );
 
@@ -599,9 +641,15 @@ export function ProjectWelcomePage() {
 
   const browserAvailable = !webMode && browserTabAvailable();
   const musicAvailable = !webMode && musicTabAvailable();
-  const showSide = !webMode || webMachines.length > 0;
-
-
+  // A chat with no project runs on a computer of the person's own; with
+  // none it is hidden (nothing says a computer is needed).
+  const hasOwnComputer = useHasOwnComputer();
+  const getStarted = useGetStartedState({
+    // Desktop: unknown until the recents are read, so a list still loading never finishes the card.
+    priorWork: webMode ? hasOwnComputer && webRecents.length > 0 : recentsLoaded ? recentProjects.length > 0 : null,
+  });
+  const showChatWithoutProject = !webMode || (hasOwnComputer && activeWebMachine != null);
+  useDesktopFirstAccountTab({ enabled: !webMode && recentsLoaded, hasLocalProjects: recentProjects.length > 0 });
 
   // The page's own card look, when the user set one in edit mode. Scoped to
   // this page: the same tokens drive every other kit card in the app.
@@ -663,7 +711,6 @@ export function ProjectWelcomePage() {
     webMode,
   ]);
 
-
   const { homeData, headline, openHeadlineTarget, renderWidget } = useHomePageWiring({
     navigate,
     project,
@@ -681,18 +728,18 @@ export function ProjectWelcomePage() {
         key: "add-project",
         label: "Add project…",
         icon: Plus,
-        disabled: webMode && !activeWebMachine,
-        onSelect: () => (webMode ? setWebAddProjectNoticeOpen(true) : setProjectBrowserOpen(true)),
+        onSelect: () => setProjectBrowserOpen(true),
       },
-      {
+    ];
+    if (showChatWithoutProject) {
+      entries.push({
         kind: "item",
         key: "chat",
         label: "Chat without a project",
         icon: ChatCircleDots,
-        disabled: webMode && !activeWebMachine,
         onSelect: () => (webMode ? openWebChats() : navigate("/chats")),
-      },
-    ];
+      });
+    }
     entries.push({
       kind: "item",
       key: "customize-home",
@@ -716,7 +763,7 @@ export function ProjectWelcomePage() {
       });
     }
     return entries;
-  }, [activeWebMachine, browserAvailable, musicAvailable, navigate, openWebChats, setEditingHome, webMode]);
+  }, [browserAvailable, musicAvailable, navigate, openWebChats, setEditingHome, showChatWithoutProject, webMode]);
   const backgroundMenu = useBackgroundContextMenu(backgroundPageEntries);
 
   return (
@@ -825,26 +872,15 @@ export function ProjectWelcomePage() {
                 label="Add project"
                 tour="project.welcomeAddButton"
                 onboardingAnchor="add-project"
-                disabled={webMode && !activeWebMachine}
-                title={
-                  webMode && !activeWebMachine
-                    ? "Connect a machine first — projects are added on the machine that hosts them."
-                    : undefined
-                }
-                onClick={() => {
-                  if (!webMode) {
-                    setProjectBrowserOpen(true);
-                    return;
-                  }
-                  setWebAddProjectNoticeOpen(true);
-                }}
+                onClick={() => setProjectBrowserOpen(true)}
               />
-              <HomeAction
-                icon={ChatCircleDots}
-                label={webMode && activeWebMachine ? `Chat on ${activeWebMachine.name}` : "Chat without a project"}
-                disabled={webMode && !activeWebMachine}
-                onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
-              />
+              {showChatWithoutProject ? (
+                <HomeAction
+                  icon={ChatCircleDots}
+                  label={webMode && activeWebMachine ? `Chat on ${activeWebMachine.name}` : "Chat without a project"}
+                  onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
+                />
+              ) : null}
               {/* The desktop's own browser and Apple Music, each a tab of its
                   own, as square app-icon buttons beside the text actions. */}
               {browserAvailable ? (
@@ -860,28 +896,24 @@ export function ProjectWelcomePage() {
               ) : null}
               {musicAvailable && !hiddenApps.includes("appleMusic") ? <HomeAppButton app="appleMusic" /> : null}
               {musicAvailable && !hiddenApps.includes("spotify") ? <HomeAppButton app="spotify" /> : null}
-              {showSide ? (
-                <button
-                  type="button"
-                  className="ade-home-action ade-home-customize"
-                  data-onboarding-anchor="home-customize"
-                  aria-label="Customize home page"
-                  title="Customize home page"
-                  onClick={() => setEditingHome(true)}
-                >
-                  <SlidersHorizontal size={15} aria-hidden />
-                </button>
-              ) : null}
+              <button
+                type="button"
+                className="ade-home-action ade-home-customize"
+                data-onboarding-anchor="home-customize"
+                aria-label="Customize home page"
+                title="Customize home page"
+                onClick={() => setEditingHome(true)}
+              >
+                <SlidersHorizontal size={15} aria-hidden />
+              </button>
             </>
           )}
         />
 
-        {webMode && webAddProjectNoticeOpen && activeWebMachine ? (
-          <WebAddProjectNotice
-            machineName={activeWebMachine.name}
-            onDismiss={() => setWebAddProjectNoticeOpen(false)}
-          />
+        {getStarted.show && !editingHome ? (
+          <GetStartedCard state={getStarted} onAddProject={() => setProjectBrowserOpen(true)} />
         ) : null}
+        {webMode && !hasOwnComputer && getStarted.finished && !editingHome ? <InstallAdeChip /> : null}
         {/* Above the recents list, not inside it: "Chat without a project"
             reports its failures here too, and that button works with zero
             recents — where a banner scoped to the list rendered nothing. */}
@@ -914,7 +946,6 @@ export function ProjectWelcomePage() {
         {webZeroMachines ? <WebZeroMachines notice={webZeroMachines} /> : null}
 
         <HomeWidgetGrid
-          single={!showSide}
           style={appearanceStyle}
           renderWidget={renderWidget}
         />

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Desktop, FolderSimple, WifiSlash } from "@phosphor-icons/react";
+import { ArrowSquareOut, Desktop, FolderSimple, GitBranch, WifiSlash } from "@phosphor-icons/react";
 import {
   resolveDefaultCopy,
   type RepositoryCopy,
@@ -8,18 +8,19 @@ import {
 import { repositoryTabOfNoMachineTab } from "../../state/repositoryScope";
 import { useAppStore, type NoMachineRepositoryTab } from "../../state/appStore";
 import { useAccountProjectList, useRepositoryCopies } from "../../state/useRepositoryCopies";
-import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { adeCloudLaneComputerForMachine, isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
+import { openExternalUrl } from "../../lib/openExternal";
+import { workChatPath } from "../../lib/workChatPath";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { copyMachines, repoKeyForOriginIdentity } from "./projectCopies";
 import { startCopyJob, useCopyJobs } from "./projectCopyJobs";
 import { requestRemoveProject } from "./removeProjectRequest";
 import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
+import { PRIMARY_LANE_DISPLAY_NAME } from "../../../shared/laneDisplayName";
 import { repoRefForTab } from "../prs/state/prsReader";
-import { PullRequestsCard } from "./ProjectWelcomeHome";
 import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";
-import { useDirectHomePullRequests } from "./useDirectHomePullRequests";
 import { useOptionalWebWorkspace, useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import type { WebMachineEntry } from "../../webclient/workspace/webWorkspaceModel";
 import { resolveMachinePresence } from "../../../shared/types/power";
@@ -30,6 +31,29 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { isPageHidden, observePageVisibility } from "../../lib/pageVisibility";
 import { isWebResumeOwnedTab } from "../app/webResumeOwnedTabs";
 import { accountMachinePresence, unconnectedCopyMachineKeys } from "../../state/connectRepositoryCopies";
+import { refreshCloudMachines, refreshCloudMachinesIfStale } from "../remoteTargets/useCloudMachines";
+import { useSavedChatsOfOrigin } from "../../state/savedChatsOfOrigin";
+import {
+  accountCloudLaunchesAvailable,
+  hideAccountCloudLaunch,
+  launchesForOrigin,
+  useAccountCloudLaunches,
+} from "../../state/accountCloudLaunches";
+import type { CloudLaunchRecord } from "../../../shared/accountCloudLaunches";
+import { useOwnWebComputers } from "../../state/ownComputers";
+import { refreshAccountProjectList } from "../../state/accountProjectListClient";
+import {
+  AccountProjectSteps,
+  CloudChatComposer,
+  GithubTabsCard,
+  ProjectLanesCard,
+  cloudLaneStateWord,
+  cloudLanesOfOrigin,
+  useGithubAccess,
+  type AccountProjectLane,
+} from "./AccountProjectSections";
+import { CloudSetupCardList, type LaunchChatState } from "./CloudSetupCard";
+import { CloneToMachineDialog, type CloneDialogMachine } from "./CloneToMachineDialog";
 import "./ProjectWelcomePage.css";
 
 /** One copy's key on this page: its computer and folder. */
@@ -86,6 +110,8 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   );
   const [openingCopyKey, setOpeningCopyKey] = useState<string | null>(null);
   const [openError, setOpenError] = useState<{ title: string; technicalDetail: string } | null>(null);
+  // A launch's "Open chat" that waits for its computer's copy to be listed.
+  const [pendingLaunchOpen, setPendingLaunchOpen] = useState<string | null>(null);
   const list = useAccountProjectList();
   const repositoryTab = useMemo(() => repositoryTabOfNoMachineTab(tab, list), [list, tab]);
   const copies = useRepositoryCopies(repositoryTab);
@@ -101,17 +127,54 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   // The card names the repository as the account spells it (the read key is lower case).
   const accountProject = list.state === "ready" ? list.projects.find((entry) => entry.id === tab.id) : undefined;
   const githubRepoTitle = accountProject?.owner && accountProject.name ? `${accountProject.owner}/${accountProject.name}` : githubRepoKey;
-  const pullRequests = useDirectHomePullRequests(githubRepo);
+  // The repository's origin as the account names it; the launches and cloud lanes key on it.
+  const origin = repoAddress ? `https://${repoAddress}` : null;
+  const githubAccess = useGithubAccess(githubRepo);
+  const { entries: launchEntries } = useAccountCloudLaunches();
+  const launches = useMemo(
+    () => launchesForOrigin(launchEntries, origin).filter((entry) => entry.record?.state !== "cancelled"),
+    [launchEntries, origin],
+  );
+  // A chat on ADE Cloud starts here only where the client talks to the account server for it (ADE Web).
+  const cloudChats = accountCloudLaunchesAvailable() && accountProject != null && ACCOUNT_PROJECT_ID_PATTERN.test(tab.id) && origin != null;
+  // The cloud lanes come from the account's computers: read them once when no fresh read is in hand.
+  // The launch store reads them again when a chat gets its lane.
+  useEffect(() => {
+    refreshCloudMachinesIfStale();
+  }, []);
 
   // A copy came online: open it. Once per copy, so a copy that fails to open
   // does not loop; the list still offers it.
   const tried = useRef(new Set<string>());
   // A failed open shows as an error banner, which also reports it.
   const [openFailure, setOpenFailure] = useState<{ copy: RepositoryCopy; detail: string } | null>(null);
+  // "Open chat" on a computer that had to wake first: the copy opens when it is
+  // back (the effect below), then that chat opens, not the new-chat page.
+  const chatToOpenRef = useRef<{ record: CloudLaunchRecord; machineKey: string } | null>(null);
+  const openRequestRef = useRef(0);
   const openCopyAndReport = useCallback((copy: RepositoryCopy) => {
     setOpenFailure(null);
-    void openCopy(copy).catch((error: unknown) => setOpenFailure({ copy, detail: extractError(error) }));
-  }, []);
+    const chat = chatToOpenRef.current;
+    const opensChat = chat != null && chat.record.sessionId != null && copy.machineKey?.toLowerCase() === chat.machineKey;
+    if (opensChat) chatToOpenRef.current = null;
+    const request = ++openRequestRef.current;
+    void openCopy(copy).then(
+      () => {
+        // A later open (or another project) won: the earlier chat opens nothing.
+        if (request !== openRequestRef.current) return;
+        const bound = useAppStore.getState().projectBinding;
+        const address = copy.address;
+        const sameCopy = bound != null && address != null && (
+          bound.kind === "remote" && address.kind === "remote"
+            ? bound.targetId === address.targetId
+            : bound.kind === "local" && address.kind === "local" && bound.rootPath === address.rootPath
+        );
+        if (!sameCopy) return;
+        if (opensChat && chat.record.sessionId) navigate(workChatPath(chat.record.sessionId, chat.record.laneId));
+      },
+      (error: unknown) => setOpenFailure({ copy, detail: extractError(error) }),
+    );
+  }, [navigate]);
   // The copy the tab showed before its computer left comes back first.
   const defaultAddress = resolveDefaultCopy({ copies, currentKey: tab.lastCopyKey ?? null });
   useEffect(() => {
@@ -169,6 +232,18 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   const accountMachineOf = useCallback((copy: RepositoryCopy): AdeAccountMachine | undefined => (
     copy.machineKey ? accountMachines?.find((machine) => sameMachineKey(machine.machineKey, copy.machineKey)) : undefined
   ), [accountMachines]);
+  // Any ADE Cloud computer, with a lane or not: it sleeps, and Wake starts it.
+  const cloudIndex = useAdeCloudLaneComputers();
+  /**
+   * A copy's computer, as the person should see it: ADE Cloud's own word that
+   * it sleeps wins, since the account keeps an ADE Cloud computer "online" for
+   * minutes after it went to sleep.
+   */
+  const copyPresence = useCallback((copy: RepositoryCopy) => {
+    const computer = copy.machineKey ? adeCloudLaneComputerForMachine({ machineKey: copy.machineKey }, cloudIndex.computers) : null;
+    if (computer?.state === "asleep" || computer?.state === "stopped") return "asleep" as const;
+    return accountMachinePresence(accountMachineOf(copy));
+  }, [accountMachineOf, cloudIndex.computers]);
   const autoTried = useRef(new Set<string>());
   // A hidden page connects nothing on its own; the try waits until it is shown.
   const [pageShown, setPageShown] = useState(() => !isPageHidden());
@@ -192,7 +267,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
         && copy.machineKey != null
         && !autoTried.current.has(copy.machineKey.toLowerCase())
         && !(resumeOwned && tab.lastCopyKey?.startsWith(`remote:${copy.machineId}:`))
-        && accountMachinePresence(accountMachineOf(copy)) === "online"
+        && copyPresence(copy) === "online"
       )),
       tab.lastCopyKey ?? null,
     )[0];
@@ -218,7 +293,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
         settle();
       },
     );
-  }, [accountMachineOf, accountMachines, autoOpen, copies, defaultAddress, pageShown, tab.id, tab.lastCopyKey, webMode]);
+  }, [accountMachines, autoOpen, copies, copyPresence, defaultAddress, pageShown, tab.id, tab.lastCopyKey, webMode]);
 
   // A row's Connect or Wake: the person asked, so this connect wakes a
   // sleeping ADE Cloud computer and clears a Disconnect.
@@ -272,17 +347,10 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     if (!machine) return null;
     const opening = openingCopyKey === copyKeyOf(copy);
     const held = machine.status === "live" || machine.status === "parked" || (machine.status === "connecting" && opening);
-    const account = machine.accountMachine;
-    const awake = account != null && resolveMachinePresence({
-      connected: false,
-      online: account.online,
-      sleepState: account.sleepState,
-      sleepStateAt: account.sleepStateAt,
-      lastSeenAt: account.lastSeenAt,
-    }) === "online";
+    const awake = machine.accountMachine != null && copyPresence(copy) === "online";
     return held || (machine.status === "available" && awake) ? machine : null;
   };
-  const openOnWeb = (copy: RepositoryCopy, machine: WebMachineEntry) => {
+  const openOnWeb = (copy: RepositoryCopy, machine: WebMachineEntry, chat?: CloudLaunchRecord) => {
     const checkoutId = copy.checkoutId;
     if (!workspace || !checkoutId) return;
     const copyKey = copyKeyOf(copy);
@@ -294,7 +362,10 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
         await workspace.adapter.openProject(targetId, checkoutId);
         // The project is open now; leave this page as the desktop does when a copy opens.
         useAppStore.setState((state) => (state.activeNoMachineTabId === tab.id ? { activeNoMachineTabId: null } : {}));
-        navigate(workspace.consumePendingProjectPath() ?? "/work");
+        const pendingPath = workspace.consumePendingProjectPath();
+        // "Open chat" lands on that chat, not on the project's new-chat page.
+        if (chat?.sessionId) navigate(workChatPath(chat.sessionId, chat.laneId));
+        else navigate(pendingPath ?? "/work");
       } catch (error) {
         setOpenError({
           title: `${machine.name} did not open ${tab.displayName}.`,
@@ -306,15 +377,65 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     })();
   };
   const webOpenable = webMode && copies.some((copy) => webMachineFor(copy) != null);
-  // Any ADE Cloud computer, with a lane or not: it sleeps, and Wake starts it.
-  const cloudIndex = useAdeCloudLaneComputers();
+  // ADE Web: the person's own computers that are on and have no copy yet. Clone here opens the clone dialog.
+  const ownComputers = useOwnWebComputers();
+  const copyMachineKeys = new Set(copies.flatMap((copy) => (copy.machineKey ? [copy.machineKey.toLowerCase()] : [])));
+  const machinesWithoutCopy = webMode
+    ? ownComputers.filter((machine) => {
+      const account = machine.accountMachine;
+      const key = account?.machineKey?.toLowerCase();
+      if (!account || !key || copyMachineKeys.has(key) || machine.rememberedOnly) return false;
+      const awake = resolveMachinePresence({
+        connected: false,
+        online: account.online,
+        sleepState: account.sleepState,
+        sleepStateAt: account.sleepStateAt,
+        lastSeenAt: account.lastSeenAt,
+      }) === "online";
+      return machine.status === "live" || machine.status === "parked" || (machine.status === "available" && awake);
+    })
+    : [];
+  /** The machine the clone dialog clones to, with the folders of its other projects. */
+  const [cloneTarget, setCloneTarget] = useState<(CloneDialogMachine & { otherProjectPaths: string[] }) | null>(null);
+  const [cloneConnecting, setCloneConnecting] = useState<string | null>(null);
+  const cloneOn = (machine: WebMachineEntry) => {
+    if (!workspace) return;
+    setOpenError(null);
+    setCloneConnecting(machine.key);
+    void workspace.connectMachineEntry(machine).then(
+      (targetId) => setCloneTarget({
+        machineId: targetId,
+        name: machine.name,
+        targetId,
+        otherProjectPaths: machine.projects.map((project) => project.rootPath).filter((path): path is string => typeof path === "string"),
+      }),
+      (error: unknown) => setOpenError({ title: `Couldn't connect to ${machine.name}`, technicalDetail: extractError(error) }),
+    ).finally(() => setCloneConnecting(null));
+  };
+  const openClone = (target: { kind: "local"; rootPath: string } | { kind: "remote"; targetId: string; projectId: string }, machineName: string) => {
+    setCloneTarget(null);
+    if (target.kind === "local") {
+      void useAppStore.getState().switchProjectToPath(target.rootPath, { skipWorktreeGate: true });
+      return;
+    }
+    if (!workspace) return;
+    void (async () => {
+      try {
+        await workspace.adapter.openProject(target.targetId, target.projectId);
+        useAppStore.setState((state) => (state.activeNoMachineTabId === tab.id ? { activeNoMachineTabId: null } : {}));
+        navigate(workspace.consumePendingProjectPath() ?? "/work");
+      } catch (error) {
+        setOpenError({ title: `${machineName} did not open ${tab.displayName}.`, technicalDetail: extractError(error) });
+      }
+    })();
+  };
   const onAdeCloud = (copy: RepositoryCopy): boolean => (
     copy.isAdeCloud || isAdeCloudComputer({ machineKey: copy.machineKey }, cloudIndex)
   );
   /** "Connect" for a copy on an awake computer with no connection here, "Wake" for a resting ADE Cloud computer. */
   const wakeOrConnectLabel = (copy: RepositoryCopy): "Connect" | "Wake" | null => {
     if (copy.isThisMachine || copy.online || !copy.machineKey) return null;
-    const presence = accountMachinePresence(accountMachineOf(copy));
+    const presence = copyPresence(copy);
     if (presence === "online") return "Connect";
     return onAdeCloud(copy) && presence === "asleep" ? "Wake" : null;
   };
@@ -328,8 +449,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     const webMachine = webMode ? webMachineOf(copy) : null;
     if (webMachine?.status === "connecting") return webMachine.statusLabel;
     if (!onAdeCloud(copy)) return "Offline";
-    const machine = accountMachineOf(copy);
-    return accountMachinePresence(machine) === "asleep" || machine?.sleepState === "asleep" ? "Asleep" : "Offline";
+    return copyPresence(copy) === "asleep" || accountMachineOf(copy)?.sleepState === "asleep" ? "Asleep" : "Offline";
   };
   const connectable = webOpenable || copies.some((copy) => wakeOrConnectLabel(copy) != null);
   // Every computer the page can reach is an asleep ADE Cloud computer: the
@@ -342,23 +462,184 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     ?? null;
 
   const canAddLocal = !webMode && copyRepoKey != null && !copies.some((copy) => copy.isThisMachine);
+  /** The copy on a cloud lane's computer, once that computer registered it. */
+  const copyOnComputer = (instanceId: string | null, machineKey: string | null): RepositoryCopy | null => (
+    copies.find((copy) => (
+      (machineKey != null && copy.machineKey != null && sameMachineKey(copy.machineKey, machineKey))
+      || (instanceId != null && isAdeCloudComputer({ machineKey: copy.machineKey }, cloudIndex)
+        && cloudIndex.computers.some((computer) => computer.instanceId === instanceId && computer.machineKey === copy.machineKey))
+    )) ?? null
+  );
+  const openCloudCopy = (copy: RepositoryCopy, chat?: CloudLaunchRecord) => {
+    const webMachine = webMode ? webMachineFor(copy) : null;
+    if (webMachine) openOnWeb(copy, webMachine, chat);
+    else if (copy.online && copy.address) openCopyAndReport(copy);
+    else connectCopy(copy);
+  };
+  const launchCopy = (instanceId: string | null): RepositoryCopy | null => {
+    const computer = cloudIndex.computers.find((entry) => entry.instanceId === instanceId) ?? null;
+    return copyOnComputer(instanceId, computer?.machineKey ?? null);
+  };
+  const openLaunchChat = (record: CloudLaunchRecord) => {
+    const machineKey = cloudIndex.computers.find((entry) => entry.instanceId === record.instanceId)?.machineKey?.toLowerCase() ?? null;
+    chatToOpenRef.current = machineKey ? { record, machineKey } : null;
+    const copy = launchCopy(record.instanceId);
+    if (copy) {
+      openCloudCopy(copy, record);
+      return;
+    }
+    // The computer or its copy isn't listed here yet: read both again, and open it once it is.
+    setPendingLaunchOpen(record.instanceId);
+    refreshCloudMachines();
+    void refreshAccountProjectList({ force: true });
+  };
+  const pendingCopy = pendingLaunchOpen ? launchCopy(pendingLaunchOpen) : null;
+  useEffect(() => {
+    if (!pendingCopy) return;
+    const record = launches.find((entry) => entry.record?.instanceId === pendingLaunchOpen)?.record ?? undefined;
+    setPendingLaunchOpen(null);
+    openCloudCopy(pendingCopy, record);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the copy appears
+  }, [pendingCopy?.machineKey, pendingCopy?.checkoutId]);
+  // A copy that never appears: read again every few seconds for a minute, then stop.
+  useEffect(() => {
+    if (!pendingLaunchOpen) return;
+    let reads = 0;
+    const timer = window.setInterval(() => {
+      reads += 1;
+      if (reads > 12) {
+        window.clearInterval(timer);
+        setPendingLaunchOpen(null);
+        setOpenError({ title: "Couldn't open the chat yet. Try again in a moment.", technicalDetail: `ADE Cloud computer ${pendingLaunchOpen} has no project copy listed` });
+        return;
+      }
+      refreshCloudMachines();
+      void refreshAccountProjectList({ force: true });
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [pendingLaunchOpen]);
+  const cloudLanes = cloudLanesOfOrigin(cloudIndex.computers, launches, origin);
+  // A lane whose chat is still starting (making its computer, waiting for a sign-in) is not one yet.
+  const readyCloudLaneIds = cloudLanes.filter((lane) => !lane.launch || Boolean(lane.launch.record?.sessionId)).map((lane) => lane.laneId);
+  // The account's saved chats of this repository count too: a chat whose computer slept or was deleted still happened.
+  const savedChats = useSavedChatsOfOrigin(origin);
+  const accountLaneCount = new Set([...readyCloudLaneIds, ...savedChats.flatMap((chat) => (chat.laneId ? [chat.laneId] : []))]).size;
+  const accountChatCount = Math.max(readyCloudLaneIds.length, savedChats.length);
+  const laneRows: AccountProjectLane[] = cloudLanes.map((lane) => {
+    const copy = copyOnComputer(lane.computer?.instanceId ?? lane.launch?.record?.instanceId ?? null, lane.computer?.machineKey ?? null);
+    return {
+      key: `cloud:${lane.laneId}`,
+      name: lane.laneName,
+      where: "ADE Cloud",
+      state: cloudLaneStateWord(lane),
+      onOpen: copy ? () => openCloudCopy(copy) : null,
+    };
+  });
+  // The account's copy of a chat is saved when a turn ends, so it can be stale
+  // while the chat runs again elsewhere. Only a chat whose computer is deleted
+  // is surely done; otherwise the card names the lane without a state.
+  const savedChatStateOf = (record: CloudLaunchRecord): LaunchChatState | null => {
+    const saved = savedChats.find((chat) => (record.sessionId && chat.chatId === record.sessionId) || (record.laneId != null && chat.laneId === record.laneId));
+    return saved?.computer?.state === "deleted" ? "done" : null;
+  };
+  // Lanes whose chats were saved on the account, with their computer asleep or deleted, are lanes still.
+  const listedLaneIds = new Set(cloudLanes.map((lane) => lane.laneId));
+  for (const chat of savedChats) {
+    if (!chat.laneId || listedLaneIds.has(chat.laneId)) continue;
+    listedLaneIds.add(chat.laneId);
+    laneRows.push({
+      key: `saved:${chat.laneId}`,
+      name: chat.laneName?.trim() || chat.title?.trim() || "Chat",
+      where: "ADE Cloud",
+      state: chat.computer?.state === "deleted" ? "Computer deleted" : "Saved",
+      onOpen: null,
+    });
+  }
+  // Copies on the person's own computers are lanes too: each copy's main checkout.
+  for (const copy of copies) {
+    if (onAdeCloud(copy)) continue;
+    laneRows.push({
+      key: `copy:${copyKeyOf(copy)}`,
+      name: PRIMARY_LANE_DISPLAY_NAME,
+      where: copy.machineName,
+      state: copy.online ? "Online" : offlineWord(copy),
+      onOpen: null,
+    });
+  }
+  // Copies on the person's own computers, or a way to add one: the copies card shows only then.
+  const ownCopies = copies.filter((copy) => !onAdeCloud(copy));
+  const showCopiesCard = ownCopies.length > 0 || canAddLocal || machinesWithoutCopy.length > 0 || opening != null
+    || openError != null || connectFailure != null || openFailure != null || (failed != null && !adding);
   // Leaving the account needs the account project id and this computer's account call (desktop).
   const canLeaveAccount = !webMode
     && ACCOUNT_PROJECT_ID_PATTERN.test(tab.id)
     && typeof window.ade?.project?.accountRemove === "function";
 
+  const headerTitle = accountProject?.name ?? tab.displayName;
   return (
-    <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-4 overflow-y-auto p-6">
-      <section className="kit-card w-full max-w-[460px]" aria-label={`${tab.displayName}: no computer online`}>
-        <header className="kit-card-head">
+    <div className="flex h-full min-h-0 w-full flex-col overflow-y-auto">
+      <div className="mx-auto flex w-full max-w-[760px] flex-col gap-3 px-6 py-6">
+        <header className="flex flex-wrap items-center gap-x-3 gap-y-1" aria-label={tab.displayName}>
           {tab.iconDataUrl ? (
-            <img src={tab.iconDataUrl} alt="" className="h-3.5 w-3.5 rounded-sm" />
+            <img src={tab.iconDataUrl} alt="" className="h-4 w-4 rounded-sm" />
           ) : (
-            <FolderSimple size={14} aria-hidden />
+            <FolderSimple size={16} aria-hidden style={{ color: "var(--kit-text-3)" }} />
           )}
-          <span className="min-w-0 truncate">{tab.displayName}</span>
+          <h1 className="m-0 min-w-0 truncate text-[17px] font-semibold" style={{ letterSpacing: "-0.01em" }}>{headerTitle}</h1>
+          {githubRepoTitle && githubRepoTitle !== headerTitle ? (
+            <span className="truncate text-[12px]" style={{ color: "var(--kit-text-3)" }}>{githubRepoTitle}</span>
+          ) : null}
+          {accountProject?.defaultBranch ? (
+            <span className="kit-tag flex items-center gap-1"><GitBranch size={11} aria-hidden />{accountProject.defaultBranch}</span>
+          ) : null}
+          <span className="ml-auto flex items-center gap-1">
+            {githubRepo ? (
+              <button
+                type="button"
+                className="kit-btn kit-btn-ghost"
+                data-size="sm"
+                onClick={() => openExternalUrl(`https://github.com/${githubRepo.owner}/${githubRepo.name}`)}
+              >
+                GitHub <ArrowSquareOut size={11} aria-hidden />
+              </button>
+            ) : null}
+            <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={() => useAppStore.getState().closeNoMachineTab(tab.id)}>
+              Close tab
+            </button>
+            {canLeaveAccount ? (
+              <button
+                type="button"
+                className="kit-btn kit-btn-ghost"
+                data-size="sm"
+                data-tone="crit"
+                onClick={() => requestRemoveProject({ kind: "no-machine", id: tab.id, displayName: tab.displayName })}
+              >
+                Remove from account…
+              </button>
+            ) : null}
+          </span>
+        </header>
+        {githubRepo && accountProject ? (
+          <AccountProjectSteps owner={githubRepo.owner} access={githubAccess} launches={launches} chatCount={accountChatCount} laneCount={accountLaneCount + ownCopies.length} />
+        ) : null}
+        {cloudChats && origin ? (
+          <CloudChatComposer accountProjectId={tab.id} origin={origin} owner={githubRepo?.owner ?? accountProject?.owner ?? null} access={githubAccess} />
+        ) : null}
+        <CloudSetupCardList
+          entries={launches}
+          onOpenChat={openLaunchChat}
+          onHide={hideAccountCloudLaunch}
+          openingLaunchId={pendingLaunchOpen == null ? null : launches.find((entry) => entry.record?.instanceId === pendingLaunchOpen)?.launchId ?? null}
+          chatStateOf={savedChatStateOf}
+        />
+        {showCopiesCard ? (
+      <section className="kit-card w-full" aria-label="Computers">
+        <header className="kit-card-head">
+          <Desktop size={13} aria-hidden />
+          <span className="min-w-0 truncate">Computers</span>
         </header>
         <div className="kit-card-body flex flex-col gap-3">
+          {copies.length > 0 || opening ? (
           <div className="flex items-start gap-2">
             {opening || connectable ? (
               <Desktop size={16} aria-hidden className="mt-0.5 shrink-0" style={{ color: "var(--kit-text-3)" }} />
@@ -375,7 +656,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
                     ? "A computer with this project is not connected"
                     : directoryFailure && copies.length > 0
                       ? "ADE couldn't check which computers are on"
-                      : copies.length > 0 ? "No computer with this project is online" : "No computer has a copy yet"}
+                      : "No computer with this project is online"}
               </strong>
               <span className="text-[12px]" style={{ color: "var(--kit-text-2)" }}>
                 {opening
@@ -384,15 +665,18 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
                     ? "Wake it to open the project here."
                     : connectable
                     ? "Connect it to open the project here."
-                    : copies.length === 0
-                      ? "Add a copy on a computer to work on it."
-                      : webMode
+                    : webMode
                         ? "Turn on one of these computers to open it here."
                         : "The project opens here as soon as one is."}
               </span>
             </div>
           </div>
-          {copies.length > 0 ? (
+          ) : (
+            <p className="m-0 text-[12px]" style={{ color: "var(--kit-text-2)" }}>
+              {canAddLocal ? "Copy it here to work on it from this computer too." : "Clone it on one of your computers to work on it there too."}
+            </p>
+          )}
+          {copies.length > 0 || machinesWithoutCopy.length > 0 ? (
             <div className="kit-panel flex flex-col py-1" role="list" aria-label="Copies">
               {copies.map((copy) => {
                 const copyKey = copyKeyOf(copy);
@@ -440,6 +724,16 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
                 </div>
                 );
               })}
+              {machinesWithoutCopy.map((machine) => (
+                <div key={`no-copy:${machine.key}`} role="listitem" className="kit-row flex items-center gap-2 px-2.5 py-1.5">
+                  <Desktop size={13} aria-hidden className="shrink-0" style={{ color: "var(--kit-text-3)" }} />
+                  <span className="min-w-0 flex-1 truncate text-[12.5px]">{machine.name}</span>
+                  <span className="kit-tag shrink-0">No copy yet</span>
+                  <button type="button" className="kit-btn" data-size="sm" disabled={cloneConnecting != null} onClick={() => cloneOn(machine)}>
+                    {cloneConnecting === machine.key ? "Connecting…" : "Clone here"}
+                  </button>
+                </div>
+              ))}
             </div>
           ) : null}
           {openError ? (
@@ -498,16 +792,17 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
               model={{
                 id: "no-machine-add-copy",
                 tone: "error",
-                title: "Couldn't add a copy on this computer",
+                title: "Couldn't copy it here",
                 detail: failed.failure?.reason ?? undefined,
                 report: { surface: "repository_tab_no_machine", code: "add_local_copy_failed" },
               }}
             />
           ) : null}
+          {canAddLocal || !webMode ? (
           <div className="flex flex-wrap items-center gap-2">
             {canAddLocal ? (
               <button type="button" className="kit-btn kit-btn-primary" disabled={adding} onClick={addLocalCopy}>
-                {adding ? "Adding a copy…" : "Add a copy on this computer"}
+                {adding ? "Copying…" : "Copy here"}
               </button>
             ) : null}
             {/* ADE Web has no connections panel; its rows above connect a computer. */}
@@ -516,33 +811,28 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
                 Connect a computer
               </button>
             )}
-            <button
-              type="button"
-              className="kit-btn kit-btn-ghost"
-              onClick={() => useAppStore.getState().closeNoMachineTab(tab.id)}
-            >
-              Close tab
-            </button>
-            {canLeaveAccount ? (
-              <button
-                type="button"
-                className="kit-btn kit-btn-ghost"
-                data-tone="crit"
-                style={{ marginLeft: "auto" }}
-                onClick={() => requestRemoveProject({ kind: "no-machine", id: tab.id, displayName: tab.displayName })}
-              >
-                Remove from account…
-              </button>
-            ) : null}
           </div>
+          ) : null}
         </div>
       </section>
-      {githubRepoKey ? (
-        <div className="flex w-full max-w-[460px] shrink-0 flex-col" style={{ height: 300 }}>
-          <PullRequestsCard projectName={githubRepoTitle ?? githubRepoKey} projectRoot={githubRepoKey} prs={pullRequests} />
-        </div>
+        ) : null}
+        <ProjectLanesCard lanes={laneRows} />
+        {githubRepo ? <GithubTabsCard repo={githubRepo} defaultBranch={accountProject?.defaultBranch ?? null} /> : null}
+      </div>
+      {cloneTarget && copyRepoKey ? (
+        <CloneToMachineDialog
+          open
+          machine={cloneTarget}
+          repoKey={copyRepoKey}
+          url={`https://${copyRepoKey}`}
+          repoName={copyRepoKey.split("/").pop() ?? tab.displayName}
+          otherProjectPaths={cloneTarget.otherProjectPaths}
+          confirmLabel="Clone & open"
+          sendsMessage={false}
+          onCancel={() => setCloneTarget(null)}
+          onReady={(target) => openClone(target, cloneTarget.name)}
+        />
       ) : null}
     </div>
   );
 }
-

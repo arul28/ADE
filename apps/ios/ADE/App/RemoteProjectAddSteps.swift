@@ -141,6 +141,8 @@ struct ProjectAccountGitHubRepoPicker: View {
   @State private var pickedId: String?
   /// The GitHub sign-in the list belongs to.
   @State private var listedFor: String?
+  /// A public repository added by its address: no GitHub sign-in needed.
+  @State private var address = ""
 
   private var shown: [GitHubDirectRepository] {
     let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -151,7 +153,14 @@ struct ProjectAccountGitHubRepoPicker: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       if let error, let copy = githubDirectStateCopy(error, githubLogin: connection.state.login) {
-        GitHubStateCard(copy: copy)
+        GitHubStateCard(copy: error.kind == .notConnected && error.reason != "signed_out" && error.reason != "unsupported"
+          ? GitHubDirectStateCopy(
+            title: copy.title,
+            body: "Connect GitHub to list your repositories here, or add a public one by its address below.",
+            primary: copy.primary,
+            secondary: copy.secondary
+          )
+          : copy)
       } else {
         ProjectField(label: "SEARCH REPOSITORIES") {
           TextField("owner/repo", text: $search)
@@ -189,6 +198,29 @@ struct ProjectAccountGitHubRepoPicker: View {
           }
         }
       }
+      if onCloneURL == nil {
+        // No computer to clone a URL on: the account keeps the address, and the first chat clones it on ADE Cloud.
+        ProjectField(label: "OR ADD BY ADDRESS") {
+          TextField("owner/repo or a github.com link", text: $address)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .keyboardType(.URL)
+            .submitLabel(.done)
+            .onSubmit(addAddress)
+        }
+        Button {
+          addAddress()
+        } label: {
+          if isSubmitting && pickedId == "address" {
+            ProgressView().controlSize(.small)
+          } else {
+            Text("Add")
+          }
+        }
+        .buttonStyle(ProjectSecondaryButtonStyle())
+        .disabled(isSubmitting || Self.repoOfAddress(address) == nil)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+      }
       if let onCloneURL {
         Button("Clone from a URL", action: onCloneURL)
           .buttonStyle(ProjectSecondaryButtonStyle())
@@ -222,6 +254,39 @@ struct ProjectAccountGitHubRepoPicker: View {
       error = failure
     }
     loaded = true
+  }
+
+  private func addAddress() {
+    guard !isSubmitting, let repo = Self.repoOfAddress(address) else { return }
+    pickedId = "address"
+    onPick(MobileGitHubRepoSummary(
+      owner: repo.owner,
+      name: repo.name,
+      fullName: "\(repo.owner)/\(repo.name)",
+      isPrivate: false,
+      pushedAt: nil,
+      defaultBranch: "",
+      htmlUrl: "https://github.com/\(repo.owner)/\(repo.name)",
+      cloneUrl: "https://github.com/\(repo.owner)/\(repo.name).git",
+      sshUrl: "git@github.com:\(repo.owner)/\(repo.name).git"
+    ))
+  }
+
+  /// `owner/repo`, `github.com/owner/repo`, an https link or a `.git` address; nil for anything else.
+  static func repoOfAddress(_ text: String) -> (owner: String, name: String)? {
+    var rest = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    for prefix in ["https://", "http://"] where rest.lowercased().hasPrefix(prefix) { rest = String(rest.dropFirst(prefix.count)) }
+    if rest.lowercased().hasPrefix("www.") { rest = String(rest.dropFirst(4)) }
+    if rest.lowercased().hasPrefix("github.com/") { rest = String(rest.dropFirst("github.com/".count)) }
+    if rest.lowercased().hasPrefix("git@github.com:") { rest = String(rest.dropFirst("git@github.com:".count)) }
+    if rest.hasSuffix("/") { rest.removeLast() }
+    if rest.lowercased().hasSuffix(".git") { rest = String(rest.dropLast(4)) }
+    let parts = rest.split(separator: "/", omittingEmptySubsequences: false)
+    guard parts.count == 2 else { return nil }
+    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+    let owner = String(parts[0]), name = String(parts[1])
+    guard !owner.isEmpty, !name.isEmpty, owner.unicodeScalars.allSatisfy(allowed.contains), name.unicodeScalars.allSatisfy(allowed.contains) else { return nil }
+    return (owner, name)
   }
 
   static func summary(_ repo: GitHubDirectRepository) -> MobileGitHubRepoSummary {

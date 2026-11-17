@@ -1,12 +1,10 @@
 import type { CloudAgentMaker } from "../../../shared/adeCloud";
 import { githubRepoOf } from "../../../shared/cloudLaneLaunch";
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
-import { DEFAULT_LANE_START } from "../../../shared/laneStart";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import type {
   ChatLaunchArgs,
   ChatLaunchEvent,
-  ChatLaunchLaneConfig,
   ChatLaunchStage,
   ChatLaunchStageId,
   OpenProjectBinding,
@@ -163,26 +161,6 @@ export function githubClone(originUrl: string | null): { identity: string; clone
   const spelled = /([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(String(originUrl).trim().replace(/[?#].*$/, ""))?.[1];
   const repoName = spelled && spelled.toLowerCase() === repo.repo.toLowerCase() ? spelled : repo.repo;
   return { identity: repo.identity, cloneUrl: `https://github.com/${repo.owner}/${repo.repo}.git`, repoName };
-}
-
-/**
- * The lane recipe the computer's brain gets: always from the pushed copy of
- * its branch. A lane on an existing branch keeps that branch.
- *
- * Named exactly as a lane on this computer is (chatLaunchService
- * `laneIsAutoNamed`): a launch with no recipe, or one asking for it
- * (`autoName`), starts on the name from the prompt and a placeholder branch in
- * the project's pattern, and the brain there renames both with the AI name.
- * The name the person chose is kept. A rename follows the lane to its
- * computer's metadata, its own name and its account machine's name
- * (cloudLaneNameSync.ts, on the computer's brain), so the ADE Cloud page and
- * the machine list show the new name.
- */
-export function cloudLaneConfig(config: ChatLaunchLaneConfig | null | undefined): ChatLaunchLaneConfig {
-  if (config?.mode === "existing") return config;
-  const autoName = !config || config.autoName === true;
-  const { autoName: _autoName, ...base }: ChatLaunchLaneConfig = config ?? { mode: "new" };
-  return { ...base, mode: "new", start: { ...(base.start ?? DEFAULT_LANE_START), on: "remote" }, ...(autoName ? { autoName: true } : {}) };
 }
 
 /** A file on this computer: it goes to the new computer at the hand-off. Links need nothing. */

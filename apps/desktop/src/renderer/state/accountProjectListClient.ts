@@ -164,6 +164,37 @@ async function readMachineNames(projects: readonly AccountProjectView[], known: 
   writeCache({ v: 1, userId: currentUserId, projects: [...current.projects], machineNames: names });
 }
 
+const accountChangeListeners = new Set<() => void>();
+/** The account the last status read named, whether or not its list read worked. */
+let seenUserId: string | null = null;
+
+/**
+ * Runs when another account signs in on this client, or the account signs
+ * out: state kept for the last account (its ADE Cloud launches, its Get
+ * started progress) goes. Answers the unsubscribe.
+ */
+export function onAccountProjectListAccountChange(listener: () => void): () => void {
+  accountChangeListeners.add(listener);
+  return () => accountChangeListeners.delete(listener);
+}
+
+/** The account the list is for, once a read named it; null before that and when signed out. */
+export function accountProjectListUserId(): string | null {
+  return currentUserId;
+}
+
+let accountEpoch = 0;
+
+/** Moves on each time another account signs in here or the account signs out. */
+export function accountProjectListEpoch(): number {
+  return accountEpoch;
+}
+
+function noteAccountChanged(): void {
+  accountEpoch += 1;
+  for (const listener of accountChangeListeners) listener();
+}
+
 /**
  * Drops the list another account left: the one in memory and the copy in
  * localStorage. A browser can be shared, so on the web a new account must
@@ -183,6 +214,10 @@ async function readList(): Promise<void> {
   lastReadAt = Date.now();
   const status = await window.ade?.account?.status?.().catch(() => null);
   const userId = status?.userId ?? null;
+  // Another account than the last one named here, even when that one's list never loaded.
+  const previousUserId = seenUserId ?? currentUserId;
+  if (userId && previousUserId && userId !== previousUserId) noteAccountChanged();
+  if (userId) seenUserId = userId;
   forgetOtherAccount(userId);
   const answer = await accountList().catch((error: unknown) => {
     // The cached list stays on screen; the next focus reads again.
@@ -191,10 +226,13 @@ async function readList(): Promise<void> {
   });
   if (!answer) return;
   if (answer.state === "signed_out") {
+    const wasSignedIn = currentUserId != null || seenUserId != null;
     currentUserId = null;
+    seenUserId = null;
     pendingChanges.clear();
     writeCache(null);
     publish({ state: "signed_out", projects: [] });
+    if (wasSignedIn) noteAccountChanged();
     return;
   }
   if (answer.state === "not_loaded") {

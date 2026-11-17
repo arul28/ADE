@@ -77,7 +77,8 @@ func hubAccountStatusInputs(
     anyFleetMachineLive: fleetMachines.contains { $0.state == .live },
     anyFleetMachineConnecting: fleetMachines.contains { $0.isWanted && $0.state == .connecting },
     hasPairedComputer: sync.canReconnectToSavedHost || !fleetMachines.isEmpty,
-    accountHasComputers: !account.machines.isEmpty,
+    // The person's own computers: ADE Cloud computers do not count.
+    accountHasComputers: sync.accountHasOwnComputer(account.machines),
     hasCards: hasCards,
     canAddProject: canAddProject
   )
@@ -157,7 +158,9 @@ func hubAccountCardPass(
   merged: [String: String],
   display: [String: AccountProjectDisplay],
   machines: [AccountMachine],
-  hiddenOnPhone: Set<String> = []
+  hiddenOnPhone: Set<String> = [],
+  /// The account has a computer of the person's own (not ADE Cloud).
+  hasOwnComputer: Bool = true
 ) -> HubAccountCardPass {
   let join = hubJoinAccountProjects(cards: cards, live: live, removed: removed, merged: merged)
   let shown = presentations.filter { !join.hiddenCardIds.contains($0.project.id) }
@@ -195,7 +198,7 @@ func hubAccountCardPass(
       laneCount: 0,
       chatCount: 0,
       lanes: [],
-      note: hubAccountProjectNote(project, machines: machines)
+      note: hubAccountProjectNote(project, machines: machines, hasOwnComputer: hasOwnComputer)
     ))
   }
   return HubAccountCardPass(

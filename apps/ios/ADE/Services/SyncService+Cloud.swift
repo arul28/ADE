@@ -754,7 +754,8 @@ struct CloudServerClient {
     do { return try JSONDecoder().decode(type, from: data) } catch { throw Failure.unreadable }
   }
 
-  private func send(
+  /// One call to the account server; `AccountCloudLaunches.swift` adds the launch routes.
+  func send(
     _ method: String,
     _ path: String,
     query: [URLQueryItem] = [],
@@ -826,8 +827,11 @@ extension SyncService {
     cloudServerReadTask?.cancel()
     cloudServerReadTask = nil
     cloudServerReadAt = nil
+    cloudServerReadFinished = false
     cloudServerInstances = []
     cloudSavedChats = []
+    // The last account's chat launches from this phone go too.
+    AccountCloudLaunchStore.shared.reset()
     // The last account's ADE Cloud computers and wake messages go too.
     setCloudMachines([])
     cloudAccountMachineKeys = nil
@@ -845,6 +849,14 @@ extension SyncService {
       // A cancelled read (an account change) leaves a newer read in place.
       if !Task.isCancelled { self?.cloudServerReadTask = nil }
     }
+  }
+
+  /// Reads the account's ADE Cloud computers now and waits for the answer (a launch's new computer).
+  func refreshCloudServerInstances() async {
+    // A read already out may have started before the launch: let it end, then read again.
+    await cloudServerReadTask?.value
+    refreshCloudServerIfStale(force: true)
+    await cloudServerReadTask?.value
   }
 
   private func readCloudServer() async {
@@ -872,7 +884,18 @@ extension SyncService {
     }
     // An account switch while it read: the answer is the old account's.
     guard !Task.isCancelled, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
-    if let instances { cloudServerInstances = instances.filter { !$0.isGone } }
+    if instances != nil, !cloudServerReadFinished {
+      // Views that tell own computers from cloud ones read again now. A
+      // failed read leaves it unset: an unknown computer is not yet the
+      // person's own.
+      cloudServerReadFinished = true
+      objectWillChange.send()
+    }
+    if let instances {
+      cloudServerInstances = instances.filter { !$0.isGone }
+      // Name these computers by their lane in every machine row ("Cloud · <lane>").
+      CloudLaneComputerLabels.noteServerInstances(cloudServerInstances)
+    }
     if let chats { cloudSavedChats = chats }
     guard instances != nil || chats != nil else { return }
     // Every computer that saves chats is an ADE Cloud computer: its work
@@ -1076,5 +1099,17 @@ extension SyncService {
       return .failed("\(name) did not answer within 2 minutes. Try again.")
     }
     return .failed(lastFailure ?? "\(name) did not answer. Try again.")
+  }
+}
+
+@MainActor
+extension SyncService {
+  /// Whether the account has a computer of the person's own: an account
+  /// machine that is not one of the account's ADE Cloud computers. A chat
+  /// on ADE Cloud from the phone is offered without one.
+  func accountHasOwnComputer(_ machines: [AccountMachine]) -> Bool {
+    var cloudKeys = Set(cloudServerInstances.compactMap { $0.machineKey?.lowercased() })
+    for key in cloudAccountMachineKeys ?? [] { cloudKeys.insert(key.lowercased()) }
+    return machines.contains { !cloudKeys.contains($0.machineKey.lowercased()) }
   }
 }

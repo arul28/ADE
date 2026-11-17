@@ -24,6 +24,7 @@ import {
   isGithubAppUserAuthSupported,
 } from "../../lib/githubIntegrationStatus";
 import { useGitHubIssueWriteAccess, useProjectGitHubRepo } from "../issues/githubIssueStore";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { showToast } from "./toast/toastStore";
 import { useActiveRepositoryReader } from "../../state/repositoryScope";
@@ -433,7 +434,15 @@ export function IntegrationBanners({
       && (!githubStatus.connected || !githubStatusHasWriteCredential(githubStatus))
     ) {
       githubCliShown = true;
-      const cli = describeGithubCliBanner(githubStatus);
+      const described = describeGithubCliBanner(githubStatus);
+      // ADE Web can't run `gh auth login` on the project's computer: the account's GitHub sign-in reaches it.
+      const cli = isWebClientMode() && described.subState === "no-token"
+        ? {
+          ...described,
+          title: "GitHub isn't connected",
+          detail: "Connect GitHub to your ADE account so ADE can push and open pull requests from this project.",
+        }
+        : described;
       list.push({
         id: "github-cli",
         tone: "warning",

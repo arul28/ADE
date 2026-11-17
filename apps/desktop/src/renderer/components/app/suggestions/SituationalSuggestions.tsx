@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { isAdeCloudComputer } from "../../../state/adeCloudLaneIndex";
 import type { GitHubStatus, LaneSummary, OpenProjectBinding, UsageSnapshot } from "../../../../shared/types";
 import type { AttentionItem } from "../../../../shared/types/attention";
 import { isProviderInstanceProvider } from "../../../../shared/types/providerInstances";
@@ -69,7 +70,10 @@ function projectWorkView(): { key: string; store: ReturnType<typeof workViewStor
 export function SituationalSuggestions(props: Props): null {
   const { machines, settled: machinesSettled } = useProjectMachines(props.enabled);
   const otherMachines = machines.filter((machine) => !machine.isThisMachine);
-  const onlineMachineName = otherMachines.find((machine) => machine.online)?.machineName ?? null;
+  // Work goes by @ to another computer: not the one the tab works on, nor a lane's ADE Cloud computer (it has one lane).
+  const onlineMachineName = otherMachines.find((machine) => (
+    machine.online && !machine.isActiveBinding && !isAdeCloudComputer({ hostname: machine.hostname })
+  ))?.machineName ?? null;
 
   useUsageLowSuggestion(props);
   useMachineMentionSuggestion(props, machinesSettled ? onlineMachineName : null);

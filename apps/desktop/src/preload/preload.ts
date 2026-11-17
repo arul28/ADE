@@ -142,6 +142,7 @@ import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInv
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
+import type { CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -14255,6 +14256,9 @@ const adeBridge = {
     },
     /** C4: account-level (the account's GitHub sign-in), so no pin. */
     gitPreflight: (args: { originUrl: string }): Promise<CloudGitPreflight | null> => ipcRenderer.invoke(IPC.cloudGitPreflight, args),
+    /** Through the account server, to that computer: no pin. */
+    sendLaunchSignInCode: (args: { instanceId: string; jobId: string; code: string }): Promise<CloudRemoteSignInStatus> =>
+      ipcRenderer.invoke(IPC.cloudLaunchSignInCode, args),
     cloudSignInStatus: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInStatus),
     cloudSignInClaudeStart: (args?: CloudSignInClaudeStartArgs): Promise<CloudSignInStatus | null> =>
       ipcRenderer.invoke(IPC.cloudSignInClaudeStart, {

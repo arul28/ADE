@@ -101,3 +101,48 @@ export function useAccountGithubIssue(repo: GithubDirectRepoRef | null, number: 
     refresh,
   };
 }
+
+const REPOSITORIES_REQUEST = { op: "listRepositories" as const, params: { maxPages: 1 } };
+
+/**
+ * The repositories the account's GitHub sign-in can see (one page), newest
+ * push first: the Add a project step's one-tap chips. Off while `enabled` is false.
+ */
+export function useAccountGithubRepositories(enabled: boolean) {
+  const read = useAccountGithubRead<"listRepositories">(enabled ? REPOSITORIES_REQUEST : null);
+  const repositories = useMemo(
+    () => (read.data ?? []).slice().sort((a, b) => Date.parse(b.pushedAt ?? "") - Date.parse(a.pushedAt ?? "") || a.fullName.localeCompare(b.fullName)),
+    [read.data],
+  );
+  return { ...read, repositories };
+}
+
+/** The branches of one repository (up to three pages). */
+export function useAccountGithubBranches(repo: GithubDirectRepoRef | null) {
+  const owner = repo?.owner ?? null;
+  const name = repo?.name ?? null;
+  const request = useMemo(() => (owner && name ? { op: "listBranches" as const, params: { owner, name } } : null), [owner, name]);
+  const read = useAccountGithubRead<"listBranches">(request);
+  return { ...read, branches: read.data ?? [] };
+}
+
+/** One folder of a repository on GitHub ("" = the root), folders first. */
+export function useAccountGithubContents(repo: GithubDirectRepoRef | null, path: string) {
+  const owner = repo?.owner ?? null;
+  const name = repo?.name ?? null;
+  const request = useMemo(
+    () => (owner && name ? { op: "listContents" as const, params: { owner, name, path } } : null),
+    [owner, name, path],
+  );
+  const read = useAccountGithubRead<"listContents">(request);
+  return { ...read, entries: read.data ?? [] };
+}
+
+/** Can the account's GitHub sign-in reach this repository (installed, approved, visible)? */
+export function useAccountGithubDiagnosis(repo: GithubDirectRepoRef | null) {
+  const owner = repo?.owner ?? null;
+  const name = repo?.name ?? null;
+  const request = useMemo(() => (owner && name ? { op: "diagnoseRepository" as const, params: { owner, name } } : null), [owner, name]);
+  const read = useAccountGithubRead<"diagnoseRepository">(request);
+  return { ...read, diagnosis: read.data };
+}

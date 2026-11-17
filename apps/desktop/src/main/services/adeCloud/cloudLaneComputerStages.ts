@@ -4,6 +4,7 @@ import { cloudCatalogOf } from "../../../shared/adeCloud";
 import { isChatLaunchCloudStageId } from "../../../shared/chatLaunch";
 import { cloudTier, type CloudTier } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { cloudLaunchAppArgs, cloudLaunchLaneFields } from "../../../shared/cloudLaneLaunch";
 import { createCloudApiClient, CloudApiError } from "../../../shared/cloudApiClient";
 import type {
   AgentChatFileRef,
@@ -14,7 +15,7 @@ import type {
   ChatLaunchStageStatus,
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
-import { CLOUD_LAUNCH_MAX_ARGS_BYTES, cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
+import { cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
 import type {
   CloudLaunchAttachment,
   CloudLaunchRecord,
@@ -33,7 +34,6 @@ import {
   SERVER_LAUNCH_SLOW_POLL_MS,
   SERVER_LAUNCH_BIND_WAIT_MS,
   clip,
-  cloudLaneConfig,
   isFinished,
   type CloudLaneLaunchDeps,
   type Logger,
@@ -98,10 +98,6 @@ function contentTypeOf(file: AgentChatFileRef, readPath: string): string {
   if (known) return known;
   return file.type === "image" ? "image/png" : "application/octet-stream";
 }
-
-/** Only links: files from this computer travel as the server's files, never as paths here. */
-const linksOnly = (list: AgentChatFileRef[] | undefined): AgentChatFileRef[] | undefined =>
-  list ? list.filter((file) => file.type === "image-url") : list;
 
 /** The rows the computer's brain runs after the clone, in order: the server's record carries them once it reports them. */
 const BRAIN_STAGE_IDS = ["fetch", "checkout", "environment", "agent"] as const satisfies readonly ChatLaunchStageId[];
@@ -226,32 +222,12 @@ export function createCloudLaneComputerStages(
   const serverRequestOf = (record: CloudLaneLaunchRecord, files: CloudLaunchAttachment[], retry: boolean): CloudServerLaunchRequest => {
     const launch = record.launch;
     const snapshot = record.snapshot;
-    const lane = cloudLaneConfig(launch.laneConfig);
     const create = launch.chat?.create;
     const kind = snapshot.kind;
     const madeByChat = record.madeByChat ?? null;
     const madeByAgent = record.madeByAgent ?? (madeByChat ? "chat" : null);
-    // The first message travels once, in `chat.prompt`: the whole start is one body of at most 256 KB.
-    const chatFacts = kind === "chat" && Boolean(create && launch.chat);
-    const { prompt: _prompt, ...rest } = launch;
-    let appArgs: Record<string, unknown> = {
-      ...(chatFacts ? rest : launch),
-      ...(launch.attachments ? { attachments: linksOnly(launch.attachments) } : {}),
-      ...(launch.chat
-        ? { chat: { ...launch.chat, message: { ...launch.chat.message, ...(chatFacts ? { text: "" } : {}), attachments: linksOnly(launch.chat.message.attachments) } } }
-        : {}),
-      laneConfig: lane,
-    };
-    // Bytes as the server counts them (UTF-8), not UTF-16 string length.
-    const argsBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), "utf8");
-    if (argsBytes(appArgs) > CLOUD_LAUNCH_MAX_ARGS_BYTES) {
-      // A long display text is the only big part left: without it the computer shows the message itself.
-      const { displayPrompt: _displayPrompt, ...lighter } = appArgs;
-      const chat = lighter.chat as { message?: Record<string, unknown> } | undefined;
-      appArgs = chat?.message ? { ...lighter, chat: { ...chat, message: { ...chat.message, displayText: null } } } : lighter;
-    }
-    const sendArgs = argsBytes(appArgs) <= CLOUD_LAUNCH_MAX_ARGS_BYTES;
-    if (!sendArgs) logger.warn("cloud_lane_launch.app_args_too_big", { launchId: snapshot.launchId });
+    const appArgs = cloudLaunchAppArgs(launch);
+    if (!appArgs) logger.warn("cloud_lane_launch.app_args_too_big", { launchId: snapshot.launchId });
     return {
       launchId: snapshot.launchId,
       // A CLI launch goes as the lane (`cli` stays in `launch.kind`): a server or computer before it runs the lane alone.
@@ -259,13 +235,7 @@ export function createCloudLaneComputerStages(
       sizeId: snapshot.cloud.sizeId as CloudServerLaunchRequest["sizeId"],
       ...(snapshot.cloud.sizeChoice ? { sizeChoice: snapshot.cloud.sizeChoice } : {}),
       project: { origin: record.project.identity },
-      lane: {
-        id: snapshot.laneId,
-        name: snapshot.laneName,
-        ...(lane.mode === "existing" && lane.branchRef ? { existingBranch: lane.branchRef } : {}),
-        ...(lane.mode !== "existing" && lane.start?.from === "branch" && lane.start.branch ? { from: lane.start.branch } : {}),
-        ...(lane.mode !== "existing" && lane.autoName ? { autoName: true } : {}),
-      },
+      lane: { id: snapshot.laneId, ...cloudLaunchLaneFields(snapshot.laneName, launch.laneConfig) },
       ...(kind === "chat" && create && launch.chat
         ? {
           chat: {
@@ -281,7 +251,7 @@ export function createCloudLaneComputerStages(
         : {}),
       madeBy: madeByAgent ? { kind: "agent", agent: madeByAgent, chatSessionId: madeByChat } : { kind: "person" },
       channel: deps.updateChannel?.() === "beta" ? "beta" : "stable",
-      ...(sendArgs ? { launch: appArgs } : {}),
+      ...(appArgs ? { launch: appArgs } : {}),
       ...(retry ? { retry: true } : {}),
     };
   };

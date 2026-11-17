@@ -37,7 +37,7 @@ import { foreignCopyPaths } from "../components/app/projectTabGrouping";
 import { refreshCloudMachinesIfStale } from "../components/remoteTargets/useCloudMachines";
 import { rememberProjectOriginSummaries } from "../components/lanes/laneMachines";
 import { isWebClientMode } from "../lib/webClientMode";
-import { adeCloudLaneComputerForMachine, useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
+import { adeCloudMachineLabel, adeCloudLaneComputerForMachine, useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
 import { useAdeCloudEnabled } from "./cloudAccess";
 import { useStableBinding } from "./laneMachineRouting";
 import { readThisComputerCatalog, useThisComputerCatalog, withCatalogFolders } from "./thisComputerCatalog";
@@ -74,7 +74,8 @@ function subscribeAccountProjectList(listener: () => void): () => void {
   return () => accountProjectListListeners.delete(listener);
 }
 
-const readAccountProjectList = () => accountProjectList;
+/** The account's project list now, for a callback that must not re-render on its changes. */
+export const readAccountProjectList = (): AccountProjectListState => accountProjectList;
 
 /** The account's project list as last published. */
 export function useAccountProjectList(): AccountProjectListState {
@@ -248,7 +249,8 @@ export function useRepositoryCopySources(active: boolean, given?: GivenCopySourc
   const list = useAccountProjectList();
   const { snapshot: ownSnapshot } = useRemoteConnectionSnapshot(active && !given);
   const ownThisComputer = useThisComputer(active && !given);
-  const { computers } = useAdeCloudLaneComputers();
+  const cloudIndex = useAdeCloudLaneComputers();
+  const { computers } = cloudIndex;
   // The ADE Cloud index says which copy is on an ADE Cloud computer; only
   // Connections keeps it current, so a page that needs it reads it once.
   const cloudEnabled = useAdeCloudEnabled();
@@ -290,7 +292,8 @@ export function useRepositoryCopySources(active: boolean, given?: GivenCopySourc
     thisMachine: thisComputer,
     machineNames: list.machineNames,
     isAdeCloudMachine: (machine) => adeCloudLaneComputerForMachine(machine, computers) != null,
-  }), [computers, connections, list.machineNames, thisComputer]);
+    adeCloudMachineLabel: (machine) => adeCloudMachineLabel(machine, cloudIndex),
+  }), [cloudIndex, computers, connections, list.machineNames, thisComputer]);
 }
 
 function useRepositoryCopyState(tab: RepositoryTab | null, active: boolean): RepositoryCopiesState {

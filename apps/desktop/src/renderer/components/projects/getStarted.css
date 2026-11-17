@@ -1,0 +1,161 @@
+/*
+ * "Get started with ADE": the steps card on Home, the slim steps strip on a
+ * project page, and the setup card of a chat on a new ADE Cloud computer.
+ * Kit surfaces only. The one motion is the check that draws itself when a
+ * step finishes while the person watches (once, about 0.4 s, off under
+ * reduced motion).
+ */
+
+.ade-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ade-steps[data-layout="strip"] {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+}
+
+.ade-step {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+}
+
+.ade-steps[data-layout="strip"] .ade-step {
+  grid-template-columns: 16px auto auto;
+  min-height: 26px;
+  padding: 2px 0;
+  gap: 6px;
+}
+
+.ade-step[data-current="true"] {
+  background: var(--kit-hover);
+}
+
+.ade-steps[data-layout="strip"] .ade-step[data-current="true"] {
+  background: none;
+}
+
+.ade-step-title {
+  font-size: 12.5px;
+  color: var(--color-fg);
+  min-width: 0;
+}
+
+.ade-step[data-state="done"] .ade-step-title {
+  color: var(--kit-text-2);
+}
+
+.ade-step[data-state="todo"]:not([data-current="true"]) .ade-step-title {
+  color: var(--kit-text-2);
+}
+
+.ade-step-hint {
+  display: block;
+  margin-top: 1px;
+  font-size: 11.5px;
+  color: var(--kit-text-3);
+}
+
+.ade-steps[data-layout="strip"] .ade-step-hint {
+  display: none;
+}
+
+/* The mark: a ring while to do, a filled ring with a check when done. */
+.ade-step-mark {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--kit-text-3);
+}
+
+.ade-steps[data-layout="strip"] .ade-step-mark {
+  width: 16px;
+  height: 16px;
+}
+
+.ade-step[data-state="done"] .ade-step-mark { color: var(--kit-ok); }
+.ade-step[data-state="running"] .ade-step-mark { color: var(--color-accent); }
+.ade-step[data-state="failed"] .ade-step-mark { color: var(--kit-crit); }
+.ade-step[data-state="waiting"] .ade-step-mark { color: var(--kit-warn); }
+
+.ade-step-mark-ring { fill: none; stroke: currentColor; stroke-width: 1.5; opacity: 0.55; }
+.ade-step[data-state="done"] .ade-step-mark-ring { opacity: 1; fill: color-mix(in srgb, currentColor 16%, transparent); }
+.ade-step-mark-check { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+.ade-step[data-fresh="true"] .ade-step-mark-check {
+  stroke-dasharray: 12;
+  stroke-dashoffset: 12;
+  animation: ade-step-check 0.42s cubic-bezier(0.3, 0.7, 0.2, 1) 0.06s forwards;
+}
+
+@keyframes ade-step-check {
+  to { stroke-dashoffset: 0; }
+}
+
+/* A step in progress: the ring turns in steps (no smooth infinite loop). */
+.ade-step[data-state="running"] .ade-step-mark-ring {
+  stroke-dasharray: 10 6;
+  transform-origin: 50% 50%;
+  animation: ade-step-turn 1.2s steps(8) infinite;
+}
+
+@keyframes ade-step-turn {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-step[data-fresh="true"] .ade-step-mark-check { animation: none; stroke-dashoffset: 0; }
+  .ade-step[data-state="running"] .ade-step-mark-ring { animation: none; }
+}
+
+/* The Home card: at most 520px, above the widgets. */
+.ade-get-started {
+  width: 100%;
+  max-width: 520px;
+  flex: none;
+}
+
+.ade-get-started-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ade-repo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  max-width: 220px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--kit-card-edge);
+  background: var(--kit-card-bg);
+  color: var(--color-fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ade-repo-chip:hover:not(:disabled) { border-color: color-mix(in srgb, var(--color-fg) 24%, transparent); }
+.ade-repo-chip:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-repo-chip:disabled { opacity: 0.55; cursor: default; }
+.ade-repo-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The sign-in code in the setup card: big enough to read across a room. */
+.ade-signin-code {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+  user-select: all;
+}

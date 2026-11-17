@@ -1,3 +1,4 @@
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 import type { DeviceKind } from "../../../shared/types/deviceSources";
 import {
   useCallback,
@@ -989,7 +990,7 @@ export function WorkSidebar({
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
                 style={{ background: resolveLaneAccentColor(activeLane) ?? "var(--color-muted-fg)" }}
               />
-              <span className="min-w-0 max-w-[45%] shrink truncate text-muted-fg">{activeLane.name}</span>
+              <span className="min-w-0 max-w-[45%] shrink truncate text-muted-fg">{laneDisplayName(activeLane)}</span>
               <span aria-hidden className="shrink-0 text-muted-fg/50">·</span>
             </>
           ) : null}

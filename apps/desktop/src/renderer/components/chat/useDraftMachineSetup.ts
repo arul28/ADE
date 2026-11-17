@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CLOUD_WAKE_WAIT_MS, type CloudMachine } from "../../../shared/adeCloud";
 import { githubRepoOf } from "../../../shared/cloudLaneLaunch";
+import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
+import { repoKeyForUrl } from "../projects/projectCopies";
 import { ipcErrorMessage } from "../../lib/format";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { connectWithRetry } from "./connectWithRetry";
@@ -24,9 +26,12 @@ export function draftCloneRowTargetId(rowId: string): string | null {
 type Busy = { targetId: string; name: string; phase: "waking" | "cloning" | "selecting" };
 
 /** `https://github.com/owner/repo.git` for a GitHub origin, else null: only GitHub repositories are set up on another machine. */
-function githubCloneUrl(originUrl: string | null): { url: string; repo: string } | null {
+function githubCloneUrl(originUrl: string | null): { url: string; repoName: string; repoKey: string } | null {
   const repo = githubRepoOf(originUrl);
-  return repo ? { url: `https://github.com/${repo.owner}/${repo.repo}.git`, repo: repo.repo } : null;
+  if (!repo) return null;
+  const url = `https://github.com/${repo.owner}/${repo.repo}.git`;
+  const repoKey = repoKeyForUrl(url);
+  return repoKey ? { url, repoName: repo.repo, repoKey } : null;
 }
 
 /**
@@ -51,6 +56,7 @@ export function useDraftMachineSetup({
   cloneCandidates,
   offlineMachines,
   selectableMachineIds,
+  connections,
   onMachineReady,
   onNotice,
 }: {
@@ -70,6 +76,8 @@ export function useDraftMachineSetup({
   offlineMachines: readonly OfflineDraftMachine[];
   /** The ids the picker can select right now. */
   selectableMachineIds: readonly string[];
+  /** The connected machines: the clone dialog lists the projects already on its machine. */
+  connections: readonly RemoteRuntimeConnectionStatus[];
   onMachineReady: (machineId: string) => void;
   onNotice: (notice: { message: string; kind: "hint" | "status" } | null) => void;
 }) {
@@ -80,6 +88,20 @@ export function useDraftMachineSetup({
   /** Prepared (connected, repository there): selected as soon as the picker lists it. */
   const [pendingTargetId, setPendingTargetId] = useState<string | null>(null);
   const attemptRef = useRef(0);
+  /**
+   * The clone dialog for a machine with no copy yet: the person picks the
+   * folder, the clone runs as the first step (`startCopyJob`), then the
+   * machine is selected and, when asked, the draft is sent.
+   */
+  const [cloneDialog, setCloneDialog] = useState<{ targetId: string; name: string } | null>(null);
+  /** The folders of the projects already on the clone dialog's machine (it suggests one beside them). */
+  const cloneOtherPaths = useMemo(
+    () => (cloneDialog
+      ? connections.find((connection) => connection.target.id === cloneDialog.targetId)?.projects.map((project) => project.rootPath) ?? []
+      : []),
+    [cloneDialog, connections],
+  );
+  const sendAfterRef = useRef<string | null>(null);
 
   const cloudOffline = useMemo(() => {
     if (!enabled || !cloudEnabled) return [];
@@ -95,11 +117,11 @@ export function useDraftMachineSetup({
     if (!clone) throw new Error(`${name} doesn't have this repository, and ADE sets up GitHub repositories only. Clone it there by hand.`);
     const remoteRuntime = window.ade.remoteRuntime;
     setBusy({ targetId, name, phase: "cloning" });
-    onNotice({ message: `Cloning ${clone.repo} on ${name}…`, kind: "status" });
+    onNotice({ message: `Cloning ${clone.repoName} on ${name}…`, kind: "status" });
     const parentDir = await remoteRuntime.getDefaultParentDir(targetId);
     if (!stillWanted()) return;
     // That machine's own Git sign-in: no credential from this computer goes with it.
-    await remoteRuntime.cloneProject(targetId, { url: clone.url, parentDir, name: clone.repo }, { credentialMode: "destination_only" });
+    await remoteRuntime.cloneProject(targetId, { url: clone.url, parentDir, name: clone.repoName }, { credentialMode: "destination_only" });
     if (stillWanted()) setBusy({ targetId, name, phase: "selecting" });
   }, [clone, onNotice]);
 
@@ -167,6 +189,7 @@ export function useDraftMachineSetup({
       return;
     }
     const timer = window.setTimeout(() => {
+      sendAfterRef.current = null;
       setPendingTargetId(null);
       setBusy(null);
       onNotice({ message: "ADE set the machine up but couldn't offer it here. Open the picker again.", kind: "status" });
@@ -177,6 +200,7 @@ export function useDraftMachineSetup({
   /** The person picked another machine, or the draft launched: stop following this one. */
   const abandon = useCallback(() => {
     attemptRef.current += 1;
+    sendAfterRef.current = null;
     setPendingTargetId(null);
     setBusy(null);
   }, []);
@@ -185,6 +209,21 @@ export function useDraftMachineSetup({
     if (!enabled) abandon();
   }, [abandon, enabled]);
 
+  /** The copy is there: select the machine once the picker lists it, then send. */
+  const cloneDialogReady = useCallback((targetId: string, name: string, options: { send: boolean }) => {
+    attemptRef.current += 1;
+    sendAfterRef.current = options.send ? targetId : null;
+    setCloneDialog(null);
+    setBusy({ targetId, name, phase: "selecting" });
+    setPendingTargetId(targetId);
+  }, []);
+  /** The machine the last clone dialog asked to send to, once (then cleared). */
+  const takeSendAfter = useCallback((machineId: string): boolean => {
+    if (sendAfterRef.current !== machineId) return false;
+    sendAfterRef.current = null;
+    return true;
+  }, []);
+
   const rows = useMemo<DraftMachineOption[]>(() => {
     const busyDetail = (targetId: string) =>
       busy?.targetId === targetId ? (busy.phase === "waking" ? "Waking…" : busy.phase === "cloning" ? "Cloning the project…" : "Opening…") : null;
@@ -192,7 +231,7 @@ export function useDraftMachineSetup({
       ...cloneCandidates.map((option) => ({
         id: `${CLONE_ROW_PREFIX}${option.targetId}`,
         name: option.name,
-        detail: busyDetail(option.targetId!) ?? "Clone the project here",
+        detail: busyDetail(option.targetId!) ?? "No copy yet",
         unavailableReason: clone ? null : "ADE sets up GitHub repositories only. Clone it there by hand.",
       })),
       ...cloudOffline.map((machine) => ({
@@ -210,13 +249,27 @@ export function useDraftMachineSetup({
   const choose = useCallback((rowId: string) => {
     const targetId = rowId.slice(rowId.startsWith(CLONE_ROW_PREFIX) ? CLONE_ROW_PREFIX.length : WAKE_ROW_PREFIX.length);
     const name = rows.find((row) => row.id === rowId)?.name ?? targetId;
+    // A connected machine with no copy: the person picks the folder first.
+    if (rowId.startsWith(CLONE_ROW_PREFIX) && clone) {
+      // A machine still waking for the last pick stops here.
+      attemptRef.current += 1;
+      setPendingTargetId(null);
+      setBusy(null);
+      setCloneDialog({ targetId, name });
+      return;
+    }
     void prepare(targetId, name);
-  }, [prepare, rows]);
+  }, [clone, prepare, rows]);
 
   return {
     rows,
     owns,
     choose,
+    /** The clone dialog to show (a machine with no copy yet), with what it clones. */
+    cloneDialog: cloneDialog && clone ? { ...cloneDialog, ...clone, otherProjectPaths: cloneOtherPaths } : null,
+    closeCloneDialog: () => setCloneDialog(null),
+    cloneDialogReady,
+    takeSendAfter,
     /** Sets up and selects a machine by its target id (a new machine ADE just connected). */
     prepare,
     abandon,

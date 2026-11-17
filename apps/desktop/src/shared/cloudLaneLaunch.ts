@@ -8,11 +8,86 @@
 
 import { CLOUD_OUT_OF_HOURS_MESSAGE, cloudFreePlanOf, cloudOutOfHours, type CloudAccountState, type CloudAgentMaker, type CloudMachine } from "./adeCloud";
 import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
-import type { ChatLaunchArgs, ChatLaunchSnapshot } from "./types/chatLaunch";
+import type { ChatLaunchArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot } from "./types/chatLaunch";
+import type { AgentChatFileRef } from "./types/chat";
+import { DEFAULT_LANE_START } from "./laneStart";
 import { isChatLaunchSucceeded } from "./chatLaunch";
-import { CLOUD_LANE_METADATA } from "../../../account-directory/src/cloud/contract";
+import { CLOUD_LANE_METADATA, CLOUD_LAUNCH_MAX_ARGS_BYTES } from "../../../account-directory/src/cloud/contract";
 
 export type { CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
+
+/**
+ * The lane recipe the computer's brain gets: always from the pushed copy of
+ * its branch. A lane on an existing branch keeps that branch.
+ *
+ * Named exactly as a lane on this computer is (chatLaunchService
+ * `laneIsAutoNamed`): a launch with no recipe, or one asking for it
+ * (`autoName`), starts on the name from the prompt and a placeholder branch in
+ * the project's pattern, and the brain there renames both with the AI name.
+ * The name the person chose is kept. A rename follows the lane to its
+ * computer's metadata, its own name and its account machine's name
+ * (cloudLaneNameSync.ts, on the computer's brain), so the ADE Cloud page and
+ * the machine list show the new name.
+ */
+export function cloudLaneConfig(config: ChatLaunchLaneConfig | null | undefined): ChatLaunchLaneConfig {
+  if (config?.mode === "existing") return config;
+  const autoName = !config || config.autoName === true;
+  const { autoName: _autoName, ...base }: ChatLaunchLaneConfig = config ?? { mode: "new" };
+  return { ...base, mode: "new", start: { ...(base.start ?? DEFAULT_LANE_START), on: "remote" }, ...(autoName ? { autoName: true } : {}) };
+}
+
+/**
+ * The `lane` of a launch request (`POST /cloud/launches`) for a lane recipe,
+ * as the desktop's main process and the web app both send it.
+ */
+export function cloudLaunchLaneFields(
+  name: string,
+  config: ChatLaunchLaneConfig | null | undefined,
+): { name: string; existingBranch?: string; from?: string; autoName?: true } {
+  const lane = cloudLaneConfig(config);
+  return {
+    name,
+    ...(lane.mode === "existing" && lane.branchRef ? { existingBranch: lane.branchRef } : {}),
+    ...(lane.mode !== "existing" && lane.start?.from === "branch" && lane.start.branch ? { from: lane.start.branch } : {}),
+    ...(lane.mode !== "existing" && lane.autoName ? { autoName: true as const } : {}),
+  };
+}
+
+/** Only links: files from the sending computer travel as the server's files, never as its paths. */
+const linksOnly = (list: AgentChatFileRef[] | undefined): AgentChatFileRef[] | undefined =>
+  list ? list.filter((file) => file.type === "image-url") : list;
+
+/** Bytes as the server counts them (UTF-8), not UTF-16 string length. */
+const jsonBytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
+
+/**
+ * The launch as the person set it up in the app (`CloudServerLaunchRequest.launch`),
+ * so the computer starts with what the request's facts leave out: a
+ * provider's own permission modes, a harness preset or account, plan mode, a
+ * lane template. The desktop's main process and the web app both send it.
+ * A chat's first message travels once, in `chat.prompt`, so its text is left
+ * out here. Null when it is still over `CLOUD_LAUNCH_MAX_ARGS_BYTES` without
+ * its display text: the computer then starts from the facts alone.
+ */
+export function cloudLaunchAppArgs(launch: Omit<ChatLaunchArgs, "cloud" | "priorStages">): Record<string, unknown> | null {
+  const chatFacts = launch.kind === "chat" && Boolean(launch.chat?.create);
+  const { prompt: _prompt, ...rest } = launch;
+  let appArgs: Record<string, unknown> = {
+    ...(chatFacts ? rest : launch),
+    ...(launch.attachments ? { attachments: linksOnly(launch.attachments) } : {}),
+    ...(launch.chat
+      ? { chat: { ...launch.chat, message: { ...launch.chat.message, ...(chatFacts ? { text: "" } : {}), attachments: linksOnly(launch.chat.message.attachments) } } }
+      : {}),
+    laneConfig: cloudLaneConfig(launch.laneConfig),
+  };
+  if (jsonBytes(appArgs) > CLOUD_LAUNCH_MAX_ARGS_BYTES) {
+    // A long display text is the only big part left: without it the computer shows the message itself.
+    const { displayPrompt: _displayPrompt, ...lighter } = appArgs;
+    const chat = lighter.chat as { message?: Record<string, unknown> } | undefined;
+    appArgs = chat?.message ? { ...lighter, chat: { ...chat, message: { ...chat.message, displayText: null } } } : lighter;
+  }
+  return jsonBytes(appArgs) <= CLOUD_LAUNCH_MAX_ARGS_BYTES ? appArgs : null;
+}
 
 /**
  * Why the account can't start a new ADE Cloud lane now, from facts of the

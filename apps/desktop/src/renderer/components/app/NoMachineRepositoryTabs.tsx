@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import { FolderSimple, WifiSlash, X } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { useHasOwnComputer } from "../../state/ownComputers";
 
 /**
  * The tabs of repositories with no copy open in this window (S4): no computer
@@ -19,6 +20,9 @@ export function NoMachineRepositoryTabs({
 }) {
   const tabs = useAppStore((state) => state.noMachineTabs);
   const activeId = useAppStore((state) => state.activeNoMachineTabId);
+  // A person with no computer of their own works on ADE Cloud: the tab is a
+  // normal project tab there, with no "offline" mark.
+  const hasOwnComputer = useHasOwnComputer();
   if (tabs.length === 0) return null;
   return (
     <>
@@ -42,7 +46,7 @@ export function NoMachineRepositoryTabs({
               active && "font-semibold",
             )}
             style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
-            title={`${tab.displayName}: no computer with this project is online`}
+            title={hasOwnComputer ? `${tab.displayName}: no computer with this project is online` : tab.displayName}
             onClick={select}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
@@ -52,12 +56,12 @@ export function NoMachineRepositoryTabs({
             }}
           >
             {tab.iconDataUrl ? (
-              <img src={tab.iconDataUrl} alt="" className="h-3.5 w-3.5 shrink-0 rounded-sm opacity-60" />
+              <img src={tab.iconDataUrl} alt="" className={cn("h-3.5 w-3.5 shrink-0 rounded-sm", hasOwnComputer && "opacity-60")} />
             ) : (
-              <FolderSimple size={13} weight="regular" aria-hidden className="shrink-0 opacity-60" />
+              <FolderSimple size={13} weight="regular" aria-hidden className={cn("shrink-0", hasOwnComputer && "opacity-60")} />
             )}
-            <span className="min-w-0 flex-1 truncate text-center text-[12px] opacity-75">{tab.displayName}</span>
-            <WifiSlash size={11} weight="regular" aria-label="No computer online" className="shrink-0 opacity-60" />
+            <span className={cn("min-w-0 flex-1 truncate text-center text-[12px]", hasOwnComputer && "opacity-75")}>{tab.displayName}</span>
+            {hasOwnComputer ? <WifiSlash size={11} weight="regular" aria-label="No computer online" className="shrink-0 opacity-60" /> : null}
             <button
               type="button"
               className={cn(

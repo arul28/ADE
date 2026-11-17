@@ -325,14 +325,11 @@ function cardMinRowPx(item: HomeLayoutItem, sizeClass: HomeSizeClass | undefined
 }
 
 export function HomeWidgetGrid({
-  single,
   style,
   renderWidget,
 }: {
   /** The page's card-look overrides (opacity and blur tokens), scoped to the widgets. */
   style?: React.CSSProperties;
-  /** Only the Projects widget (the hosted client with no machines yet). */
-  single: boolean;
   renderWidget: (ctx: WidgetRenderContext) => ReactNode;
 }) {
   const layout = useHomeLayoutStore((s) => s.layout);
@@ -376,14 +373,10 @@ export function HomeWidgetGrid({
     if (metrics) setMetrics(metrics);
   }, [metrics, setMetrics]);
 
-  const allCells = useMemo(() => layoutCells(layout.items), [layout.items]);
-  const cells = useMemo(
-    () => (single ? allCells.filter((cell) => cell.host.type === "projects").slice(0, 1) : allCells),
-    [allCells, single],
-  );
+  const cells = useMemo(() => layoutCells(layout.items), [layout.items]);
   const packed: PackResult | null = useMemo(
-    () => (metrics && !single ? packLayout(cells, metrics, widgetShape) : null),
-    [cells, metrics, single],
+    () => (metrics ? packLayout(cells, metrics, widgetShape) : null),
+    [cells, metrics],
   );
 
   const endDrag = useCallback(() => {
@@ -411,9 +404,9 @@ export function HomeWidgetGrid({
   const gridWidth = packed?.width ?? metrics?.width;
   const setPackedWidth = useHomeGridMetrics((s) => s.setPackedWidth);
   useEffect(() => {
-    setPackedWidth(single ? null : gridWidth ?? null);
+    setPackedWidth(gridWidth ?? null);
     return () => setPackedWidth(null);
-  }, [gridWidth, single, setPackedWidth]);
+  }, [gridWidth, setPackedWidth]);
   const rows = packed?.rows ?? 2;
   // The height each row is drawn at: the rows share the grid's height evenly.
   const drawnRowPx = metrics && packed ? (metrics.height - (rows - 1) * GRID_GAP) / rows : 0;
@@ -426,7 +419,7 @@ export function HomeWidgetGrid({
   // This window's view of the Clipboard widget, told to main: a widget the
   // layout had no room for does not record unless another window shows it.
   const hasClipboardCell = (cell: HomeLayoutCell) => cell.host.type === "clipboard" || cell.stacked.some((item) => item.type === "clipboard");
-  const clipboardView: "shown" | "hidden" | null = single || packed == null || !cells.some(hasClipboardCell)
+  const clipboardView: "shown" | "hidden" | null = packed == null || !cells.some(hasClipboardCell)
     ? null
     : packed.placed.some(({ cell }) => hasClipboardCell(cell)) ? "shown" : "hidden";
   useEffect(() => {
@@ -437,19 +430,16 @@ export function HomeWidgetGrid({
       void bridge.setPresence(null).catch(() => {});
     };
   }, [clipboardView]);
-  const shown: Array<{ cell: HomeLayoutCell; x: number; y: number; w: number; h: number; cls?: HomeSizeClass }> = single
-    ? cells.map((cell) => ({ cell, x: 0, y: 0, w: 1, h: 1 }))
-    : packed?.placed ?? [];
+  const shown: Array<{ cell: HomeLayoutCell; x: number; y: number; w: number; h: number; cls?: HomeSizeClass }> = packed?.placed ?? [];
 
   return (
     <MotionConfig reducedMotion="user">
       <div ref={hostRef} className="ade-home-grid-host">
         <div
           className="ade-home-grid"
-          data-single={single ? "true" : undefined}
           data-editing={editing ? "true" : undefined}
           data-dragging={dragId ? "true" : undefined}
-          style={single ? style : {
+          style={{
             ...style,
             width: gridWidth ? `${gridWidth}px` : undefined,
             gridTemplateColumns,
@@ -465,20 +455,20 @@ export function HomeWidgetGrid({
             // the cards beside it instead of cutting across a row. Only when
             // every card fits one row; a shorter row would cut its content
             // off, so those cells keep the split sized to their content.
-            const rowAligned = !single && stacked.length > 0 && h === 1 + stacked.length
+            const rowAligned = stacked.length > 0 && h === 1 + stacked.length
               && cardMinRowPx(host, cls) <= drawnRowPx
               && stacked.every((item) => cardMinRowPx(item, itemSizeClass(item, widgetShape(item.type))) <= drawnRowPx);
             return (
               <motion.div
                 key={host.id}
-                layout={single ? false : "position"}
+                layout="position"
                 transition={REFLOW}
                 className="ade-home-cell"
                 data-class={cls}
                 data-drop={marker}
                 data-dragged={dragId === host.id || undefined}
                 data-row-aligned={rowAligned || undefined}
-                style={single ? undefined : { gridColumn: `${x * 2 + 1} / span ${w * 2}`, gridRow: `${y + 1} / span ${h}` }}
+                style={{ gridColumn: `${x * 2 + 1} / span ${w * 2}`, gridRow: `${y + 1} / span ${h}` }}
                 onDragOver={(event) => {
                   if (!dragId || !event.dataTransfer.types.includes(WIDGET_DRAG_TYPE)) return;
                   event.preventDefault();
@@ -501,7 +491,7 @@ export function HomeWidgetGrid({
                   if (landingKey.current === key) return;
                   landingKey.current = key;
                   const hovered: HomeDropTarget = { id: host.id, side };
-                  setDropTarget(single || !metrics
+                  setDropTarget(!metrics
                     ? hovered
                     : dropLanding(items, dragId, hovered, spot, (next) => packLayout(next, metrics, widgetShape)));
                 }}
@@ -525,7 +515,7 @@ export function HomeWidgetGrid({
                   editing={editing}
                   canStack={index > 0}
                   renderWidget={renderWidget}
-                  span={single ? undefined : { w, h }}
+                  span={{ w, h }}
                   shownClass={cls}
                   onDragStart={(event) => startDrag(event, host.id, event.currentTarget.closest(".ade-home-cell"))}
                   onDragEnd={endDrag}

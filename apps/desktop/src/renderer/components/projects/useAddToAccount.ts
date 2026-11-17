@@ -1,8 +1,41 @@
 import { useEffect, useRef, useState } from "react";
 import { extractError } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
-import { noteAccountProjectChange } from "../../state/accountProjectListClient";
+import { accountProjectListEpoch, noteAccountProjectChange } from "../../state/accountProjectListClient";
 import { showToast } from "../app/toast/toastStore";
+import type { AccountProjectChangeResult, AccountProjectView } from "../../../shared/accountProject";
+
+/** A project just added to the account: the list learns it, and its tab opens (no computer has it yet). */
+export function openAddedAccountProject(project: AccountProjectView): void {
+  noteAccountProjectChange({ added: project });
+  useAppStore.getState().showNoMachineTab({ id: project.id, displayName: project.name, iconDataUrl: null });
+}
+
+type AccountAddAnswer = AccountProjectChangeResult;
+
+/**
+ * One account add, and whether another account signed in while it ran: a
+ * result for the first account never lands in the next one's list.
+ */
+export async function addRepoToAccount(repoUrl: string): Promise<{ answer: AccountAddAnswer; accountChanged: boolean }> {
+  const accountAdd = window.ade?.project?.accountAdd;
+  if (typeof accountAdd !== "function") {
+    return { answer: { ok: false, code: "unavailable", message: "This ADE can't add projects to your account." }, accountChanged: false };
+  }
+  const accountUser = () => window.ade?.account?.status?.().then((status) => status?.userId ?? null, () => null) ?? Promise.resolve(null);
+  const epoch = accountProjectListEpoch();
+  const startedFor = await accountUser();
+  const answer: AccountAddAnswer = await accountAdd(repoUrl).catch((error: unknown) => ({
+    ok: false as const,
+    code: "unavailable",
+    message: extractError(error),
+  }));
+  if (!answer.ok) return { answer, accountChanged: false };
+  const endedFor = await accountUser();
+  const knowsAccount = typeof window.ade?.account?.status === "function";
+  const accountChanged = accountProjectListEpoch() !== epoch || (knowsAccount && (!startedFor || startedFor !== endedFor));
+  return { answer, accountChanged };
+}
 
 /**
  * Adds a repository to the account's project list (S13), for the Add project
@@ -11,11 +44,12 @@ import { showToast } from "../app/toast/toastStore";
  * add runs beside the clones, and a signed-out client or an address only the
  * cloning computer can read is not an error.
  */
-export function useAddToAccount(args: { webMode: boolean; folderName: string; onClose: () => void }) {
-  const { webMode, folderName, onClose } = args;
+export function useAddToAccount(args: { folderName: string; onClose: () => void }) {
+  const { folderName, onClose } = args;
   const [accountError, setAccountError] = useState<string | null>(null);
   const [addingToAccount, setAddingToAccount] = useState(false);
-  const canAddToAccount = !webMode && typeof window.ade?.project?.accountAdd === "function";
+  // ADE Web adds with the browser's own account token (no computer needed).
+  const canAddToAccount = typeof window.ade?.project?.accountAdd === "function";
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -25,15 +59,10 @@ export function useAddToAccount(args: { webMode: boolean; folderName: string; on
   }, []);
 
   const addToAccount = async (repoUrl: string, options: { openTab: boolean }): Promise<boolean> => {
-    const accountAdd = window.ade?.project?.accountAdd;
-    if (typeof accountAdd !== "function") return false;
+    if (typeof window.ade?.project?.accountAdd !== "function") return false;
     setAccountError(null);
     setAddingToAccount(true);
-    const answer = await accountAdd(repoUrl).catch((error: unknown) => ({
-      ok: false as const,
-      code: "unavailable",
-      message: extractError(error),
-    }));
+    const { answer, accountChanged } = await addRepoToAccount(repoUrl);
     if (mountedRef.current) setAddingToAccount(false);
     if (!answer.ok) {
       // Signed out, or an ssh alias only the cloning machine can read: the
@@ -43,10 +72,17 @@ export function useAddToAccount(args: { webMode: boolean; folderName: string; on
       else showToast({ tone: "error", title: `Couldn't add ${folderName} to your account`, message: answer.message });
       return false;
     }
-    noteAccountProjectChange({ added: answer.project });
-    if (options.openTab) {
-      useAppStore.getState().showNoMachineTab({ id: answer.project.id, displayName: answer.project.name, iconDataUrl: null });
-      showToast({ tone: "success", title: `Added ${answer.project.name} to your account`, message: "No computer has a copy yet." });
+    if (accountChanged) {
+      if (mountedRef.current) onClose();
+      return false;
+    }
+    // A form closed while the add ran opens no tab: the project only joins the list.
+    if (!options.openTab || !mountedRef.current) {
+      noteAccountProjectChange({ added: answer.project });
+      if (options.openTab) showToast({ tone: "success", title: `Added ${answer.project.name}`, message: "Open it from Home to send its first chat." });
+    } else {
+      openAddedAccountProject(answer.project);
+      showToast({ tone: "success", title: `Added ${answer.project.name}`, message: "Send a chat from its page to start work on ADE Cloud." });
       onClose();
     }
     return true;

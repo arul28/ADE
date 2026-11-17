@@ -36,6 +36,7 @@ import {
   unconnectedMachinesLabel,
   isGitHubRepoUrl,
   repoKeyForUrl,
+  readMachineDefaultParentDir,
   repoNameForUrl,
   type CopyMachine,
   type CopyOpenTarget,
@@ -125,7 +126,6 @@ type RowState =
   | { kind: "job"; job: CopyJob }
   | { kind: "existing"; copy: ExistingCopy }
   | { kind: "unconnected" }
-  | { kind: "web" }
   | { kind: "available" };
 
 /**
@@ -183,7 +183,7 @@ export function AddProjectForm({
   const urlValid = isGitHubRepoUrl(repoUrl);
   const repoKey = urlValid ? repoKeyForUrl(repoUrl) : null;
   const folderName = urlValid ? repoNameForUrl(repoUrl) : "";
-  const { accountError, addingToAccount, canAddToAccount, addToAccount } = useAddToAccount({ webMode, folderName, onClose });
+  const { accountError, addingToAccount, canAddToAccount, addToAccount } = useAddToAccount({ folderName, onClose });
 
   useEffect(() => (repoKey ? watchCopyJobs(repoKey) : undefined), [repoKey]);
   const jobs = useCopyJobs(repoKey);
@@ -209,10 +209,9 @@ export function AddProjectForm({
       const copy = existing.get(machine.machineId);
       if (copy) return { kind: "existing", copy };
       if (!machine.online) return { kind: "unconnected" };
-      if (webMode && !machine.isLocal) return { kind: "web" };
       return { kind: "available" };
     },
-    [existing, jobByMachine, webMode],
+    [existing, jobByMachine],
   );
 
   // A long list of machines not connected here collapses into one row, so the folder
@@ -297,25 +296,19 @@ export function AddProjectForm({
     const wanted = machines.filter((machine) =>
       machine.online
       && !fetchedDefaultsRef.current.has(machine.machineId)
-      && (machine.isLocal || !webMode));
+      && (machine.isLocal || machine.targetId != null));
     for (const machine of wanted) {
       fetchedDefaultsRef.current.add(machine.machineId);
-      const read = machine.targetId
-        ? window.ade.remoteRuntime.getDefaultParentDir(machine.targetId)
-        : window.ade.project.getDefaultParentDir();
-      void read
-        .then((value) => {
-          if (!mountedRef.current || !value) return;
-          setParentByMachine((current) => (current[machine.machineId] ? current : { ...current, [machine.machineId]: value }));
-        })
-        .catch(() => {
-          // A machine that cannot say uses its own default when it clones.
-        });
+      // A machine that cannot say uses its own default when it clones.
+      void readMachineDefaultParentDir(machine.targetId).then((value) => {
+        if (!mountedRef.current || !value) return;
+        setParentByMachine((current) => (current[machine.machineId] ? current : { ...current, [machine.machineId]: value }));
+      });
     }
     // Keyed on the connected machines, not the list object: a snapshot tick
     // that changes nothing must not read again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onlineTargetsKey, webMode]);
+  }, [onlineTargetsKey]);
 
   const cloneableTicked = machines.filter(
     (machine) => ticked.has(machine.machineId) && rowState(machine).kind === "available",
@@ -479,6 +472,13 @@ export function AddProjectForm({
     <div style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}>
       <RepoField value={urlInput} onChange={setUrlInput} valid={urlValid} />
 
+      {machines.length === 0 ? (
+        // No machine at all (a person with no computer): the project goes on
+        // the account, and ADE Cloud makes its copy at the first chat.
+        <p style={{ margin: 0, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+          ADE Cloud makes a copy when you send the first chat.
+        </p>
+      ) : (
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <span style={sectionLabelStyle}>Put a copy on</span>
         <div
@@ -540,6 +540,7 @@ export function AddProjectForm({
           </span>
         ) : null}
       </div>
+      )}
 
       {openOnOptions.length > 0 ? (
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
@@ -604,12 +605,20 @@ export function AddProjectForm({
           disabled={(!canAdd && !openOnlyCopy && !accountOnly) || addingToAccount}
           onClick={handleAdd}
         >
-          {openOnlyCopy ? "Open" : accountOnly ? (addingToAccount ? "Adding…" : "Add to account") : "Add project"}
+          {addButtonLabel({ openOnlyCopy, accountOnly, adding: addingToAccount, machineCount: machines.length })}
         </button>
       </div>
       {moreActions}
     </div>
   );
+}
+
+/** The Add button: open the one copy, add to the account (no computer needed), or clone. */
+function addButtonLabel(state: { openOnlyCopy: boolean; accountOnly: boolean; adding: boolean; machineCount: number }): string {
+  if (state.openOnlyCopy) return "Open";
+  if (!state.accountOnly) return "Add project";
+  if (state.adding) return "Adding…";
+  return state.machineCount === 0 ? "Add project" : "Add to account";
 }
 
 function MachineRow({
@@ -640,7 +649,7 @@ function MachineRow({
   onFolderChange: (value: string) => void;
   onRetry: (job: CopyJob) => void;
 }) {
-  const muted = state.kind === "unconnected" || state.kind === "web";
+  const muted = state.kind === "unconnected";
   const rowStyle: CSSProperties = {
     display: "flex",
     alignItems: "center",
@@ -733,10 +742,6 @@ function MachineRow({
       lead = glyph(<CircleDashed size={14} />);
       // Not connected here; the account may still show it online.
       detail = <span style={detailStyle}>not connected</span>;
-      break;
-    case "web":
-      lead = glyph(<CircleDashed size={14} />);
-      detail = <span style={detailStyle}>Needs the desktop app</span>;
       break;
     case "available":
       lead = (

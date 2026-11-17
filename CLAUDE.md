@@ -48,6 +48,23 @@ session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
    computer, guard it with a clear message (as Cursor Cloud launch does), never
    by letting the call misroute.
 
+## Main checkout
+
+Claude Code does not load `AGENTS.md`, so this is a copy of its **Main
+checkout** section. Keep the two the same.
+
+A project's primary lane (its own folder, not a worktree) is stored with the
+name "Primary". Every screen calls it **Main checkout**. This is a UI name
+only:
+
+1. Show a lane's name through `laneDisplayName(lane)`
+   (`apps/desktop/src/shared/laneDisplayName.ts`), never `lane.name` alone,
+   and write new copy as "main checkout", never "Primary lane".
+2. Do not change the stored name, the `laneType: "primary"` value, or code
+   that matches the primary lane by name (`useDraftMachineRouting.ts`).
+3. An ADE Cloud lane computer exists for its one lane. The lane lists leave
+   out its main checkout (`crossMachineLanes.ts`).
+
 ## Every provider, both surfaces
 
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Every

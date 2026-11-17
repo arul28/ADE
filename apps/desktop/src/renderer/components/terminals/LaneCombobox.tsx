@@ -14,6 +14,7 @@ import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import type { LaneIcon as LaneIconValue } from "../../../shared/types";
 import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 import { isImeComposing } from "../../lib/imeComposition";
 
@@ -83,6 +84,8 @@ export type LaneComboboxLane = {
   detail?: string | null;
   /** Optional icon replacing the lane mark, for pseudo-options that are not lanes. */
   icon?: React.ReactNode;
+  /** "primary" for a main checkout: shown as "Main checkout" (`laneDisplayName`). */
+  laneType?: string | null;
 };
 
 /** A machine group header. Names are absolute ("This computer", "MacBook Pro (97)"). */
@@ -160,7 +163,7 @@ function laneListItemFromLane(
 ): LaneListItem {
   return {
     id: optionId,
-    name: lane.name,
+    name: laneDisplayName(lane),
     color: lane.color ?? null,
     emoji: laneEmojiForDisplay(
       lane.emoji,
@@ -538,7 +541,7 @@ export function LaneCombobox({
     : null;
   const displayLabel = value === "all"
     ? allLabel
-    : (selectedLane?.name ?? autoCreateFallbackLabel ?? placeholder);
+    : ((selectedLane ? laneDisplayName(selectedLane) : null) ?? autoCreateFallbackLabel ?? placeholder);
   const customLaneColor = selectedLane?.color?.trim() ? selectedLane.color : null;
   const displayColor =
     value === "all" || !selectedLane

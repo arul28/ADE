@@ -31,6 +31,7 @@ const CLOUD_COMPUTERS_STORAGE_KEY = "ade.cloudComputerIds.v1";
 /** An ADE Cloud computer as the account names it: its id on the provider and its account key. */
 export type AdeCloudComputerId = { instanceId: string; machineKey: string | null };
 
+export type AdeCloudIndexState = IndexState;
 type IndexState = {
   computers: readonly AdeCloudLaneComputer[];
   /**
@@ -274,6 +275,19 @@ export function machineLabelForMachine(
   computers: readonly AdeCloudLaneComputer[] = state.computers,
 ): string {
   return adeCloudLaneLabelForMachine(machine, computers) ?? machine.name;
+}
+
+/**
+ * What a machine row shows for an ADE Cloud computer: "Cloud · <lane>" for a
+ * lane's computer, "Cloud" for one without a lane, else null (not ADE Cloud:
+ * the row keeps the machine's own name). Never the instance id.
+ */
+export function adeCloudMachineLabel(
+  machine: { hostname?: string | null; machineKey?: string | null },
+  index: Pick<IndexState, "computers" | "cloudComputers"> = state,
+): string | null {
+  return adeCloudLaneLabelForMachine(machine, index.computers)
+    ?? (isAdeCloudComputer(machine, index) ? ADE_CLOUD_MACHINE_LABEL : null);
 }
 
 /**

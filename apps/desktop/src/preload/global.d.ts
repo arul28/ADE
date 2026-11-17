@@ -2,6 +2,7 @@ import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopy
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
+import type { AccountCloudLaunchesBridge, CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
@@ -5050,6 +5051,13 @@ declare global {
         onChanged: (cb: () => void) => () => void;
       };
       /**
+       * ADE Cloud launches from the account server, for a client with no
+       * computer of its own (the web app). Account-level: no pin, and never
+       * the tab's machine. Absent on the desktop, whose own launch service
+       * makes a lane's computer.
+       */
+      cloudLaunches?: AccountCloudLaunchesBridge;
+      /**
        * ADE Cloud, account-wide: the machines and
        * new machines made on it. No pin: nothing here acts on a lane, chat or
        * another machine. Optional because the web client does not expose it.
@@ -5082,6 +5090,13 @@ declare global {
          * same check at its start; no renderer surface calls this yet.
          */
         gitPreflight?: (args: { originUrl: string }) => Promise<CloudGitPreflight | null>;
+        /**
+         * The code from a provider's sign-in page (Claude's pasted code) for
+         * the sign-in job of one ADE Cloud computer. The account server runs
+         * it on that computer (`instanceId`), so no pin and never this
+         * window's machine. `state: "failed"` with `reason` when refused.
+         */
+        sendLaunchSignInCode?: (args: { instanceId: string; jobId: string; code: string }) => Promise<CloudRemoteSignInStatus>;
         /**
          * Sign-ins for cloud machines: the provider sign-ins every new cloud
          * machine starts with. Kept in the account vault and run on this

@@ -44,6 +44,8 @@ import { CloudIdleCleanupNotices, idleRowTag } from "./CloudIdleCleanupNotice";
 import { CloudSizes } from "./CloudSizes";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
+import { useHasOwnComputer } from "../../../state/ownComputers";
+import { useWebMachines } from "../../../webclient/workspace/WebWorkspaceContext";
 import {
   STATE_LABEL,
   dashLanes,
@@ -102,6 +104,10 @@ const errorText = (error: unknown) => ipcErrorMessage(error) || `${ADE_CLOUD_NAM
  * already holds; nothing wakes a computer to look.
  */
 export function CloudDashboard({ account, machines }: { account: CloudAccountState; machines: CloudMachinesState }) {
+  const ownComputer = useHasOwnComputer();
+  // ADE Web with no computer of its own still reads and sets the agent limits
+  // through a connected ADE Cloud computer, when one is connected.
+  const connectedMachine = useWebMachines().some((machine) => machine.status === "live");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [insideKey, setInsideKey] = useState<string | null>(null);
   const { hash } = useLocation();
@@ -347,13 +353,23 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 
       {/* Sign-ins on the left; the shorter agent limits and the invite card
           stack on the right, so the two columns end near one height (B14-2). */}
-      <div className="adecd-pair">
-        <CloudSignIns />
+      {/* With no computer of the person's own (ADE Web), the sign-ins show as
+          "Providers on ADE Cloud" below this page instead; the agent limits
+          need a connected computer to read them (an ADE Cloud one will do). */}
+      {ownComputer ? (
+        <div className="adecd-pair">
+          <CloudSignIns />
+          <div className="adecd-stack">
+            <CloudAgentLimitsCard />
+            <CloudInviteCard account={account} onChanged={refresh} />
+          </div>
+        </div>
+      ) : (
         <div className="adecd-stack">
-          <CloudAgentLimitsCard />
+          {connectedMachine ? <CloudAgentLimitsCard /> : null}
           <CloudInviteCard account={account} onChanged={refresh} />
         </div>
-      </div>
+      )}
 
       {freeing ? (
         <CloudFreeUpSpace account={account} lanes={lanes} now={now} onClose={() => setFreeing(false)} onDone={refresh} />

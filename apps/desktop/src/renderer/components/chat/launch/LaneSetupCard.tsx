@@ -84,6 +84,7 @@ import {
   normalizeStatus,
   stepCardFrameClass,
 } from "./stepCardParts";
+import { CloudSignInCodeField } from "./CloudSignInCodeField";
 
 /** A launch's own error text without Electron's wrapper; the raw text when the wrapper was all there was. */
 function launchErrorText(raw: string): string {
@@ -521,13 +522,10 @@ export function LaneSetupCard({
     : null;
   // The new computer waits for the chat's provider sign-in (the server launcher's `waiting_for_sign_in`).
   const signIn = snapshot.phase === "running" ? snapshot.cloud?.signIn ?? null : null;
-  // A code shown after sign-in (Claude) has no way back to the computer from this card yet: the
-  // account sign-in in Settings reaches the computer instead, so the card sends the person there.
-  const pastesCode = signIn?.needsPastedCode === true;
   const signInDetail = signIn
     ? [
-      pastesCode ? `Sign in to ${signIn.label} in Settings › ADE Cloud. The computer goes on when it sees the sign-in.` : null,
       signIn.userCode ? `Enter the code ${signIn.userCode}.` : null,
+      signIn.needsPastedCode && signIn.jobId ? "Open the sign-in page, then paste the code it shows below." : null,
       signIn.reason,
     ].filter(Boolean).join(" ")
     : "";
@@ -587,8 +585,16 @@ export function LaneSetupCard({
             tone: "info",
             title: `Sign in to ${signIn.label} to start the chat`,
             ...(signInDetail ? { detail: signInDetail } : {}),
-            ...(signIn.url && !pastesCode ? { actions: [{ label: "Open sign-in", href: signIn.url }] } : {}),
+            ...(signIn.url ? { actions: [{ label: "Open sign-in", href: signIn.url }] } : {}),
           }}
+        />
+      ) : null}
+      {signIn?.needsPastedCode && signIn.jobId ? (
+        <CloudSignInCodeField
+          key={signIn.jobId}
+          jobId={signIn.jobId}
+          instanceId={snapshot.cloud?.instanceId ?? null}
+          className={cn("mt-1.5", metaSize)}
         />
       ) : null}
 

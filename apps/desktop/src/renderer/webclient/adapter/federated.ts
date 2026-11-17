@@ -10,6 +10,7 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeDoctorResult,
   RemoteRuntimeProjectRecord,
+  CloneProjectInput,
 } from "../../../shared/types";
 import { markExpected } from "../../../shared/expectedError";
 import {
@@ -26,6 +27,8 @@ import { createAdeWebAdapter, type AdeWebAdapter } from "./index";
 import { createReconnectHold } from "./reconnectHold";
 import { resolveMachinePresence } from "../../../shared/types/power";
 import { wakeWebCloudMachine } from "../workspace/webCloudMachines";
+import { isAdeCloudComputer } from "../../state/adeCloudLaneIndex";
+import { setProjectOpenWaking } from "../../state/projectOpenWaking";
 
 /** How long a person's connect keeps dialing a cloud computer it just woke. */
 const WOKEN_CONNECT_WAIT_MS = 120_000;
@@ -174,6 +177,8 @@ export type FederatedWebAdapter = {
   activateChats(targetId: string): Promise<void>;
   forgetEnvironment(targetId: string): Promise<void>;
   restore(): Promise<"project" | "chats" | null>;
+  /** Why the last restore could not reopen its project, once; null when it did or there was none. */
+  takeRestoreFailure(): { projectName: string; message: string } | null;
   subscribeActiveAdapter(listener: () => void): () => void;
   dispose(): void;
 };
@@ -559,10 +564,34 @@ export function createFederatedWebAdapter({
   // host-driven rebind below can fire against the binding the user is in the
   // middle of leaving and write it back over the one they asked for.
   let activationsInFlight = 0;
+  /** Why the last `restore` could not reopen its project (taken once by the shell). */
+  let restoreFailure: { projectName: string; message: string } | null = null;
+
+  /**
+   * A project tab on an ADE Cloud computer that went to sleep: wake it (the
+   * top bar says so) and connect, instead of dialing it until the dial times
+   * out. Any other machine, or one connected here, is left to the open.
+   */
+  const wakeSleepingTarget = async (targetId: string): Promise<void> => {
+    if (manager.getSnapshot().sessions.some((session) => session.targetId === targetId && session.state === "live")) return;
+    const deviceId = manager.listEnvironments().find((environment) => environment.envId === targetId)?.hostDeviceId;
+    const machine = deviceId ? accountClient.getSnapshot().machines.find((entry) => entry.deviceId === deviceId) : null;
+    if (!machine?.machineKey || !isAdeCloudComputer({ machineKey: machine.machineKey })) return;
+    if (!await sleepingServerComputer(machine.machineKey)) return;
+    // Never its generated name (an instance id): the person knows it as their ADE Cloud computer.
+    setProjectOpenWaking("your ADE Cloud computer");
+    try {
+      const result = await machinesOverrides.connect(machine.machineKey);
+      if (!result.ok) throw new Error(result.message);
+    } finally {
+      setProjectOpenWaking(null);
+    }
+  };
 
   const openProject = async (targetId: string, projectId: string): Promise<RemoteBinding> => {
     activationsInFlight += 1;
     try {
+      await wakeSleepingTarget(targetId);
       const { project } = await manager.openProject(targetId, projectId);
       const info = projectInfo(project);
       const environment = manager.getSession(targetId)?.environment;
@@ -698,6 +727,12 @@ export function createFederatedWebAdapter({
     async accountList() {
       return await accountClient.readAccountProjects();
     },
+    // Add project on the web puts a GitHub repository on the account, with
+    // this browser's own account token: no computer needed (S13).
+    // The caller records the added row (`noteAccountProjectChange`).
+    async accountAdd(origin: string) {
+      return await accountClient.addAccountProject(origin);
+    },
     // A connected machine read a changed list from the account: read it too.
     onAccountListChanged(cb: () => void) {
       return manager.subscribeAccountProjectsChanged(cb);
@@ -796,6 +831,31 @@ export function createFederatedWebAdapter({
         diagnosis: { tone: "warning", title: `${name} isn't connected to this tab.`, fix: "Connect it, then test again." },
       };
     },
+    // A clone on one of the account's machines, over that machine's own
+    // connection (the phone's `project_clone_request`). The target names the
+    // machine; nothing goes to the tab's machine by default.
+    async cloneProject(targetId: string, input: CloneProjectInput): Promise<RemoteRuntimeProjectRecord> {
+      const client = manager.getClient(targetId);
+      if (!client) throw new Error("The machine is not connected.");
+      const answer = await client.requestProjectClone(input);
+      const project = answer?.project ?? null;
+      if (!answer?.ok || !project) throw new Error(answer?.message?.trim() || "The machine couldn't clone the repository.");
+      const now = Date.now();
+      return {
+        projectId: project.id,
+        rootPath: project.rootPath ?? "",
+        displayName: project.displayName,
+        addedAt: now,
+        lastOpenedAt: now,
+        gitOriginUrl: input.url,
+      };
+    },
+    async getDefaultParentDir(targetId: string): Promise<string> {
+      const client = manager.getClient(targetId);
+      if (!client) return "";
+      const answer = await client.requestDefaultParentDir();
+      return answer?.ok ? answer.parentDir ?? "" : "";
+    },
     // A web tab reaches a machine through the relay, never over SSH, so there
     // is no host key to confirm before Connect.
     async getSshHostKeyTrust(_targetId: string) {
@@ -880,6 +940,18 @@ export function createFederatedWebAdapter({
   // through the account, the same path Connect takes. It never moves the
   // machine on screen; `background` (a repository tab opening) also skips a
   // machine the person disconnected and never parks another one for room.
+  /** The account server's ADE Cloud computer with this machine key, or null (none, or no answer). */
+  const serverComputerOf = async (machineKey: string) => {
+    const api = accountClient.cloudApi();
+    if (!api) return null;
+    const computers = await api.listComputers().catch(() => null);
+    return computers?.find((entry) => sameMachineKey(entry.metadata?.ade_machine_key ?? "", machineKey)) ?? null;
+  };
+  /** That computer, when the server says it is asleep or stopped. */
+  const sleepingServerComputer = async (machineKey: string) => {
+    const computer = await serverComputerOf(machineKey);
+    return computer && /^(sleeping|stopped|asleep)$/i.test(computer.status) ? computer : null;
+  };
   const accountMachineFor = (machineKey: string): AdeAccountMachine | null =>
     accountClient.getSnapshot().machines.find((entry) => sameMachineKey(entry.machineKey, machineKey)) ?? null;
   const machineDisplayName = (machine: AdeAccountMachine, fallback?: string | null): string =>
@@ -922,8 +994,23 @@ export function createFederatedWebAdapter({
       // A sleep announcement older than the window reads "offline", but an
       // ADE Cloud computer can sleep for days with no heartbeat: its last word
       // was that it went to sleep, so a person's connect still wakes it.
+      // The provider's own idle sleep says nothing to the account: an ADE
+      // Cloud computer that reads offline is asked about on the account server.
+      // So is one that still reads online with no connection here: the account
+      // keeps it "online" for minutes after it went to sleep, and a dial alone
+      // would wait out its timeout.
+      const liveHere = saved != null && manager.getClient(saved.envId)?.getStatus().state === "connected";
+      const askServer = machine.sleepState !== "asleep" && (
+        (!background && presence === "offline")
+        || (presence === "online" && !liveHere && isAdeCloudComputer({ machineKey: key }))
+      );
+      const serverComputer = askServer ? await sleepingServerComputer(key) : null;
+      // A background connect never wakes one: it stops here instead of dialing.
+      if (background && serverComputer) {
+        return { ok: false, reason: "unreachable", machineKey: key, message: `${machineDisplayName(machine)} is asleep.` };
+      }
       const asleep = !background && (
-        presence === "asleep" || (presence === "offline" && machine.sleepState === "asleep")
+        presence === "asleep" || (presence === "offline" && machine.sleepState === "asleep") || serverComputer != null
       );
       // "Asleep" is also how an ordinary computer with a recent heartbeat
       // reads, and this browser cannot tell the two apart here: a wake that
@@ -940,6 +1027,13 @@ export function createFederatedWebAdapter({
             snapshot: manager.getSnapshot(),
             getClient: (targetId) => manager.getClient(targetId),
             machineKey: key,
+            wakeThroughServer: async (machineKey) => {
+              const api = accountClient.cloudApi();
+              const computer = serverComputer ?? await serverComputerOf(machineKey);
+              if (!api || !computer) return false;
+              await api.wake(computer.id);
+              return true;
+            },
           });
           woke = true;
         } catch (error) {
@@ -1293,6 +1387,7 @@ export function createFederatedWebAdapter({
     },
     forgetEnvironment,
     async restore() {
+      restoreFailure = null;
       if (workspace.activeSurface === "chats" && workspace.selectedChatsTargetId) {
         try {
           await manager.connectEnvironment(workspace.selectedChatsTargetId);
@@ -1312,13 +1407,20 @@ export function createFederatedWebAdapter({
       try {
         await openProject(binding.targetId, binding.projectId);
         return "project";
-      } catch {
+      } catch (error) {
+        // The tab falls back to the welcome page; the shell says why.
+        restoreFailure = { projectName: binding.displayName, message: error instanceof Error ? error.message : String(error) };
         activeBinding = null;
         manager.setProtectedTargetId(null);
         workspace = { ...workspace, activeBindingKey: null, activeSurface: "hub" };
         persist();
         return null;
       }
+    },
+    takeRestoreFailure() {
+      const failure = restoreFailure;
+      restoreFailure = null;
+      return failure;
     },
     subscribeActiveAdapter(listener) {
       activeAdapterListeners.add(listener);

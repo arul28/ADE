@@ -89,7 +89,7 @@ import { cloudMachineResting } from "../../shared/adeCloud";
 import { cloudBoxForMachine } from "../components/remoteTargets/cloudMachineModel";
 import { readWebAccountMachineKeys } from "./webAccountMachineKeys";
 import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
-import { adeCloudLaneComputersNow, machineLabelForMachine, subscribeAdeCloudLaneComputers, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
+import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, machineLabelForMachine, subscribeAdeCloudLaneComputers, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 
 /** Coalescing window for burst-y event sources (lane lifecycle, session churn). */
 const REFRESH_COALESCE_MS = 400;
@@ -1637,7 +1637,11 @@ async function readMachine(
       `lane.list on ${machineName}`,
     );
   const decodeLanes = (result: unknown, includeStatus: boolean): LaneSummary[] => {
-    const lanes = decodeForeignLanes(result);
+    // An ADE Cloud lane computer exists for its one lane: its main checkout is
+    // only the clone the lane came from, so the lists leave it out.
+    const cloudLaneComputer = adeCloudLaneComputerForMachine({ hostname: binding.hostname }) != null;
+    const decoded = decodeForeignLanes(result);
+    const lanes = cloudLaneComputer ? decoded.filter((lane) => lane.laneType !== "primary") : decoded;
     return includeStatus ? lanes : withPreservedLaneStatus(machineId, lanes);
   };
   // PRs ride the lane cadence, not the chat cadence. A PR is only ever rendered

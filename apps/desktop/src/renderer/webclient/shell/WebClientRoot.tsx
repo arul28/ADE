@@ -50,6 +50,8 @@ import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
 // Not from `state/repositoryScope`: that module pulls the app store into the
 // signed-out page.
 import { requirePin } from "../../lib/requirePin";
+import { useProjectOpenWaking } from "../../state/projectOpenWaking";
+import { showToast } from "../../components/app/toast/toastStore";
 
 async function loadFederatedAdapter(
   manager: WebMachineSessionManager,
@@ -243,6 +245,8 @@ export function WebClientRoot({
   // The catalog cache is its own store instance: it holds no credentials, so it
   // must not wait behind the sync client's environment/trust bookkeeping.
   const [catalogStore] = useState(() => new WebClientEnvStore());
+  // A restored tab on a sleeping ADE Cloud computer wakes it first: the start screen says so.
+  const projectOpenWaking = useProjectOpenWaking();
   const [sessionManager] = useState(
     () => new WebMachineSessionManager(client, accountClient, undefined, catalogStore),
   );
@@ -509,6 +513,11 @@ export function WebClientRoot({
     // A link owned by another machine or project skips the restore: dialing the
     // last machine and reopening its project would only be undone.
     const restored = options.restore === false ? null : await adapter.restore();
+    // The last project could not reopen (its computer did not wake or answer): say so on the page it falls back to.
+    const restoreFailure = adapter.takeRestoreFailure();
+    if (restoreFailure) {
+      showToast({ tone: "error", title: `Couldn't reopen ${restoreFailure.projectName}`, message: `${restoreFailure.message.trim().replace(/[.!?…]?$/, ".")} Open it again from its tab or project page.` });
+    }
     return { adapter, restored };
   }, [accountClient, client, sessionManager]);
 
@@ -1021,7 +1030,7 @@ export function WebClientRoot({
     case "signing-in":
       return <ProgressScreen title="Signing in…" message="Completing secure sign-in…" />;
     case "booting":
-      return <ProgressScreen title={phase.title ?? "Starting ADE"} message={phase.message} done={phase.done} />;
+      return <ProgressScreen title={phase.title ?? "Starting ADE"} message={projectOpenWaking ? `Waking ${projectOpenWaking}…` : phase.message} done={phase.done} />;
     case "error":
       return (
         <ScreenShell title="ADE Web couldn't start" subtitle={phase.message}>

@@ -76,7 +76,7 @@ export function startBranchItems(args: {
     },
     {
       ref: START_PRIMARY_REF,
-      label: "Primary lane's branch",
+      label: "Main checkout's branch",
       tag: primaryBranch || "detached",
       branch: pinnedBranch(byName.get(primaryBranch)),
       pinned: true,

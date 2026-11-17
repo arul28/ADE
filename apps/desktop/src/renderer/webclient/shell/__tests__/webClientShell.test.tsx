@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => {
   const federated = {
     ade: {} as Window["ade"],
     restore: vi.fn<[], Promise<unknown>>(),
+    takeRestoreFailure: vi.fn(() => null),
     dispose: vi.fn(),
     getOpenBindings: vi.fn(() => []),
     getActiveBinding: vi.fn(() => null),

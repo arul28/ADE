@@ -187,6 +187,18 @@ export type GithubDirectIssueDetail = GithubDirectIssue & {
   closedAt: string | null;
 };
 
+/** One branch, as the project page lists it. */
+export type GithubDirectBranch = { name: string; sha: string; protected: boolean };
+
+/** One entry of a folder on GitHub (`listContents`). */
+export type GithubDirectContentEntry = {
+  name: string;
+  path: string;
+  kind: "file" | "dir" | "symlink" | "submodule";
+  size: number;
+  htmlUrl: string | null;
+};
+
 /** What `diagnoseRepository` found, in the spec's detection order. */
 export type GithubDirectRepositoryDiagnosis = {
   /**
@@ -214,6 +226,8 @@ export type GithubDirectRequest =
   | { op: "listIssues"; params: GithubDirectRepoRef & { state?: GithubDirectListState; maxPages?: number } }
   | { op: "getIssue"; params: GithubDirectRepoRef & { number: number } }
   | { op: "listIssueComments"; params: GithubDirectRepoRef & { number: number } }
+  | { op: "listBranches"; params: GithubDirectRepoRef & { maxPages?: number } }
+  | { op: "listContents"; params: GithubDirectRepoRef & { path?: string; ref?: string } }
   | { op: "diagnoseRepository"; params: GithubDirectRepoRef };
 
 export type GithubDirectOp = GithubDirectRequest["op"];
@@ -229,6 +243,8 @@ export type GithubDirectData = {
   listIssues: GithubDirectIssue[];
   getIssue: GithubDirectIssueDetail;
   listIssueComments: GithubDirectComment[];
+  listBranches: GithubDirectBranch[];
+  listContents: GithubDirectContentEntry[];
   diagnoseRepository: GithubDirectRepositoryDiagnosis;
 };
 

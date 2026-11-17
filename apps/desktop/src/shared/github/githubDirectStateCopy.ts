@@ -10,6 +10,9 @@ import type { GithubDirectError, GithubDirectErrorKind } from "../types";
  * (`POST /github/app/sign-in`), not a URL.
  */
 
+/** What a read lists, for the sentences that name it. */
+export type GithubDirectItems = "pull requests" | "issues" | "branches" | "files";
+
 /** Same pages as `githubRelayConfig.ts` and Settings › GitHub. */
 export const ADE_GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
 export const GITHUB_INSTALLATIONS_SETTINGS_URL = "https://github.com/settings/installations";
@@ -37,7 +40,7 @@ export type GithubDirectStateContext = {
   /** The read still works through another sign-in (the CLI or a token). */
   changesUseOtherSignIn?: "gh" | "token" | null;
   /** What the list shows, for the body text. Defaults to "pull requests". */
-  items?: "pull requests" | "issues";
+  items?: GithubDirectItems;
 };
 
 const repoLabel = (ctx: GithubDirectStateContext): string =>

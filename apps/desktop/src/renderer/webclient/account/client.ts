@@ -1,8 +1,10 @@
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { CLOUD_PATHS } from "../../../../../account-directory/src/cloud/contract";
 import { captureError } from "../../../shared/sentry/capture";
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 // Loaded on the first read, so the signed-out page does not pay for it.
-import type { AccountProjectListResult } from "../../../shared/accountProject";
+import type { AccountProjectChangeResult, AccountProjectListResult } from "../../../shared/accountProject";
+import { createCloudApiClient, type CloudApiClient } from "../../../shared/cloudApiClient";
 import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
@@ -482,6 +484,11 @@ export class BrowserAccountClient {
       return null;
     }
     return { userId, generation: this.sessionGeneration };
+  }
+
+  /** The signed-in account's id, or null; a token refresh keeps it, another sign-in changes it. */
+  private sessionUserId(): string | null {
+    return this.session?.userId?.trim() || null;
   }
 
   isSessionLeaseCurrent(lease: BrowserAccountSessionLease): boolean {
@@ -1042,6 +1049,89 @@ export class BrowserAccountClient {
     return await this.allowedDirectoryRequest(request, { timeoutMs: CLOUD_REQUEST_TIMEOUT_MS });
   }
 
+  /**
+   * Adds a GitHub repository to the account's project list (S13), from this
+   * browser with its own account token: the web's Add project, which needs
+   * no computer. The same answer shape as the desktop's `project.accountAdd`.
+   */
+  async addAccountProject(origin: string): Promise<AccountProjectChangeResult> {
+    const { ACCOUNT_PROJECT_PATHS, accountProjectAddRequestForOrigin, coerceAccountProjectView } = await import("../../../shared/accountProject");
+    const request = accountProjectAddRequestForOrigin(origin);
+    if (!request) return { ok: false, code: "invalid_repository", message: "That is not a GitHub repository." };
+    let answer: { status: number; body: unknown };
+    try {
+      answer = await this.allowedDirectoryRequest({ method: "POST", path: ACCOUNT_PROJECT_PATHS.root, body: { ...request } });
+    } catch (error) {
+      const code = parseCodedErrorMessage(error).code === "signed_out" ? "signed_out" : "unavailable";
+      return { ok: false, code, message: code === "signed_out" ? "Sign in to ADE to change your projects." : "ADE couldn't reach your account. Try again." };
+    }
+    const body = answer.body && typeof answer.body === "object" ? answer.body as Record<string, unknown> : {};
+    if (answer.status < 200 || answer.status >= 300) {
+      const error = body.error && typeof body.error === "object" ? body.error as Record<string, unknown> : {};
+      return {
+        ok: false,
+        code: typeof error.code === "string" ? error.code : `http_${answer.status}`,
+        message: typeof error.message === "string" && error.message.trim() ? error.message : "Your account refused the change.",
+      };
+    }
+    const raw = body.project && typeof body.project === "object" ? body.project as Record<string, unknown> : null;
+    const project = raw ? coerceAccountProjectView({ ...raw, removedAt: null, mergedInto: null }) : null;
+    if (!project) return { ok: false, code: "bad_answer", message: "Your account sent an answer ADE can't read." };
+    return { ok: true, project, created: body.created === true, revived: body.revived === true };
+  }
+
+  /**
+   * ADE Cloud's server routes for a browser with no computer (launches, their
+   * queued messages, the account's cloud sign-ins, the model list), with this
+   * browser's own account token. The token goes to the account directory and
+   * nowhere else; null when sign-in isn't configured.
+   */
+  cloudApi(): CloudApiClient | null {
+    const config = this.config;
+    if (!config) return null;
+    if (this.cloudApiClient?.baseUrl === config.directoryBaseUrl) return this.cloudApiClient.client;
+    const fetchImpl = this.options.fetchImpl ?? fetch;
+    const client = createCloudApiClient({
+      baseUrl: config.directoryBaseUrl,
+      accessToken: async () => {
+        const startedFor = this.sessionUserId();
+        try {
+          const token = await this.getAccessToken();
+          // Another account signed in while the token refreshed: this request belongs to the first one.
+          return this.sessionUserId() === startedFor ? token : null;
+        } catch (error) {
+          // No token: the server answers 401 and the caller says "sign in".
+          forwardSignalToSentry("web.cloud_api_token_failed", { message: error instanceof Error ? error.message : String(error) }, "cloud_api_token_failed", "info");
+          return null;
+        }
+      },
+      fetch: async (input, init) => {
+        const send = (headers: Record<string, string> | undefined) => fetchImpl(input, {
+          ...init,
+          headers: { ...headers, "x-ade-correlation-id": createAccountDirectoryCorrelationId() },
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          cache: "no-store",
+          redirect: "error",
+        });
+        const headers = init?.headers as Record<string, string> | undefined;
+        const sentFor = this.sessionUserId();
+        const response = await send(headers);
+        if (response.status !== 401 || !headers?.authorization) return response;
+        // The directory refused a token that has not expired here: refresh it once, as the directory reads do.
+        const fresh = await this.getAccessToken({ forceRefresh: true }).catch(() => null);
+        // Another account signed in meanwhile: its token never carries this account's request.
+        if (!fresh || this.sessionUserId() !== sentFor) return response;
+        return await send({ ...headers, authorization: `Bearer ${fresh}` });
+      },
+      timeoutMs: CLOUD_REQUEST_TIMEOUT_MS,
+    });
+    this.cloudApiClient = { baseUrl: config.directoryBaseUrl, client };
+    return client;
+  }
+
+  private cloudApiClient: { baseUrl: string; client: CloudApiClient } | null = null;
+
   /** A directory call whose path the caller already checked; one retry after a 401. */
   private async allowedDirectoryRequest(request: {
     method: "GET" | "POST" | "DELETE";
@@ -1080,6 +1170,7 @@ export class BrowserAccountClient {
         clearTimeout(timer);
       }
     };
+    const sentFor = this.sessionUserId();
     let response: Response;
     try {
       response = await send(token);
@@ -1091,6 +1182,8 @@ export class BrowserAccountClient {
         } catch {
           throw signedOut();
         }
+        // Another account signed in meanwhile: its token never carries this account's request.
+        if (this.sessionUserId() !== sentFor) throw signedOut();
         response = await send(refreshed);
       }
     } catch (cause) {

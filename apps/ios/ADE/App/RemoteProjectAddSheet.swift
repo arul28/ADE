@@ -269,7 +269,11 @@ struct RemoteProjectAddSheet: View {
 
   private var projectChooser: some View {
     let hasComputer = !targets.isEmpty
+    // With no computer, From GitHub is the way in (the first chat starts a
+    // computer on ADE Cloud); the cards that need one do not show.
+    let computerCards = hasComputer || !canAddFromAccountGitHub
     return VStack(spacing: 12) {
+      if computerCards {
       RemoteProjectChoiceCard(
         icon: .system("desktopcomputer"),
         title: "From a computer",
@@ -286,6 +290,7 @@ struct RemoteProjectAddSheet: View {
         enabled: hasComputer
       ) {
         begin(.create)
+      }
       }
 
       RemoteProjectChoiceCard(
@@ -732,6 +737,9 @@ struct RemoteProjectAddSheet: View {
       return result.folder?.rootPath
     case .added, .copy:
       if result.folder == nil, openTarget(result) == nil {
+        if !syncService.accountHasOwnComputer(account.machines) {
+          return "It is on your ADE account. Send its first chat from the project and ADE Cloud starts a computer for it."
+        }
         return "It is on your ADE account with no copy yet. Put a copy on a computer to start work."
       }
       return result.folder?.rootPath

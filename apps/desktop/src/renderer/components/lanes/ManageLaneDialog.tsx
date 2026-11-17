@@ -1,3 +1,4 @@
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 import React, { useEffect, useRef, useState } from "react";
 import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { requireLanePin } from "./laneMachines";
@@ -156,14 +157,14 @@ function ManageLaneRenameControls({
 
   if (!canRename) {
     return (
-      <span className={MANAGE_LANE_TITLE_CLASS} style={{ color: nameColor }}>{lane.name}</span>
+      <span className={MANAGE_LANE_TITLE_CLASS} style={{ color: nameColor }}>{laneDisplayName(lane)}</span>
     );
   }
 
   if (!editing) {
     return (
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className={MANAGE_LANE_TITLE_CLASS} style={{ color: nameColor }}>{lane.name}</span>
+        <span className={MANAGE_LANE_TITLE_CLASS} style={{ color: nameColor }}>{laneDisplayName(lane)}</span>
         <button
           type="button"
           aria-label="Rename lane"
@@ -280,7 +281,7 @@ function ManageLaneHeaderDetails({
                 className="shrink-0 text-[11px] leading-none"
                 fallback={<LaneIcon size={11} className="shrink-0 text-muted-fg/60" />}
               />
-              <span className="font-semibold text-fg">{lane.name}</span>
+              <span className="font-semibold text-fg">{laneDisplayName(lane)}</span>
               <BranchIcon size={10} className="shrink-0 text-muted-fg/50" />
               <span className="truncate font-mono text-muted-fg/60">{formatBranchLabel(lane.branchRef)}</span>
               <span className="rounded-md bg-fg/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-fg">
@@ -736,7 +737,7 @@ export function ManageLaneDialog({
     : undefined;
   const dialogTitle = isBatch
     ? `${lanes.length} lanes`
-    : singleLane?.name ?? "Lane";
+    : singleLane ? laneDisplayName(singleLane) : "Lane";
   const titleContent = isBatch
     ? (
         <span className={MANAGE_LANE_TITLE_CLASS}>{dialogTitle}</span>
@@ -769,7 +770,7 @@ export function ManageLaneDialog({
         <div className="py-4 text-sm text-muted-fg">Select a lane first.</div>
       ) : allPrimary ? (
         <div className="rounded-lg border border-fg/[0.06] bg-fg/[0.02] px-3 py-3 text-sm text-muted-fg">
-          Primary lane cannot be archived or deleted. Close this dialog or pick another lane.
+          The main checkout cannot be archived or deleted. Close this dialog or pick another lane.
         </div>
       ) : (
         <div className="space-y-4" data-tour="lanes.manageDialog">

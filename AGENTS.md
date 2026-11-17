@@ -367,6 +367,20 @@ rules apply to every agent and every skill.
    re-runs only the failing CI file, or the tests and typecheck of the package
    that fix touched, once, before the push.
 
+## Main checkout
+
+A project's primary lane (its own folder, not a worktree) is stored with the
+name "Primary". Every screen calls it **Main checkout**. This is a UI name
+only:
+
+1. Show a lane's name through `laneDisplayName(lane)`
+   (`apps/desktop/src/shared/laneDisplayName.ts`), never `lane.name` alone,
+   and write new copy as "main checkout", never "Primary lane".
+2. Do not change the stored name, the `laneType: "primary"` value, or code
+   that matches the primary lane by name (`useDraftMachineRouting.ts`).
+3. An ADE Cloud lane computer exists for its one lane. The lane lists leave
+   out its main checkout (`crossMachineLanes.ts`).
+
 ## Terminology
 
 - Use "lane" for ADE worktrees/branches.

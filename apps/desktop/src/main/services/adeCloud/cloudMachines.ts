@@ -13,32 +13,19 @@ import {
   CLOUD_MADE_BY_CHAT_METADATA,
   isCloudInstanceId,
   cloudCatalogOf,
-  cloudHoursRate,
-  cloudMachineKindOf,
-  cloudMachineState,
-  cloudMachineType,
-  cloudShape,
-  cloudDiskFullMessage,
-  CLOUD_DISK_FULL_METADATA,
-  CLOUD_DISK_FULL_REASON_METADATA,
-  cloudShapeFor,
   cloudStatusAwake,
   type CloudAccountState,
-  type CloudMachine,
   type CloudMachineActionArgs,
-  type CloudMachineUpdate,
-  type CloudCatalog,
   type CloudMachineActionResult,
   type CloudMachinesResult,
-  type CloudResources,
   readCloudInviteRefusalReason,
   type CloudInviteRedeemOutcome,
   type CloudReferralSummary,
 } from "../../../shared/adeCloud";
-import { cloudMachineLaneFactsOf, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
+import { CLOUD_MACHINE_KEY_METADATA, cloudMachineOfInstance as toCloudMachine } from "../../../shared/cloudMachineOfInstance";
+import { cloudMachineRefusal, runCloudMachineLifecycleAction } from "../../../shared/cloudMachineActions";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider, type CloudInstance } from "./cloudProvider";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
-import { cloudSleepPolicyOf } from "./cloudSleep";
 import { wakeThroughTransition } from "./cloudInstanceOps";
 import { getErrorMessage } from "../shared/utils";
 import { withDeadline } from "../shared/withTimeout";
@@ -49,7 +36,7 @@ type Logger = {
 };
 
 /** The metadata key ADE writes once a box joins the account: its ADE machine key. */
-export const CLOUD_MACHINE_KEY_METADATA = "ade_machine_key";
+export { CLOUD_MACHINE_KEY_METADATA } from "../../../shared/cloudMachineOfInstance";
 
 /**
  * The machine keys of the computers a move replaced, oldest first, joined by
@@ -104,62 +91,6 @@ export type CloudMachinesDeps = {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 };
-
-function resourcesOf(instance: CloudInstance): CloudResources | null {
-  const raw = instance.resources;
-  if (!raw || !raw.cpu || !raw.memory) return null;
-  return { cpu: raw.cpu, memoryGb: raw.memory, diskGb: raw.disk };
-}
-
-/**
- * One computer as the list shows it. A lane computer also carries its lane
- * facts from its metadata (`CloudLaneMachine.lane`), so the composer can list
- * a project's ADE Cloud lanes without waking any of them.
- */
-function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudLaneMachine {
-  const lane = cloudMachineLaneFactsOf(instance.metadata);
-  const resources = resourcesOf(instance);
-  const type = cloudMachineType(instance.type);
-  const shape = cloudShapeFor(resources);
-  return {
-    instanceId: instance.id,
-    name: instance.name,
-    status: instance.status,
-    state: cloudMachineState(instance.status),
-    type,
-    resources,
-    shapeId: shape?.id ?? null,
-    region: instance.region,
-    hoursRate: shape ? cloudHoursRate(cloudMachineKindOf(type), shape.id, catalog) : null,
-    pastDue: instance.pastDue,
-    failure: instance.status === "failed" ? instance.statusReason?.message ?? null : null,
-    machineKey: instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null,
-    createdAtMs: instance.created != null ? instance.created * 1000 : null,
-    sleep: cloudSleepPolicyOf(instance),
-    diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog, instance.metadata[CLOUD_DISK_FULL_REASON_METADATA]),
-    update: updateOf(instance),
-    // Use facts the computer reported while awake: read with the list, no wake.
-    lastActiveAtMs: instance.lastActiveAt ?? null,
-    diskUsage: instance.diskUsage ?? null,
-    laneWork: instance.laneWork ?? null,
-    ...(lane ? { lane } : {}),
-    replacesInstanceId: instance.metadata.ade_moved_from ?? instance.metadata.ade_copied_from ?? null,
-  };
-}
-
-/** The server's update facts, or null from a server before updates. */
-function updateOf(instance: CloudInstance): CloudMachineUpdate | null {
-  if (!instance.channel) return null;
-  return {
-    channel: instance.channel === "beta" ? "beta" : "stable",
-    image: instance.templateVersion ?? null,
-    target: instance.targetTemplate ?? null,
-    auto: instance.autoUpdate === true,
-    state: instance.updateState === "updating" || instance.updateState === "failed" ? instance.updateState : "auto",
-    error: instance.updateState === "failed" ? instance.updateError ?? null : null,
-    updatedAtMs: instance.updatedAt ?? null,
-  };
-}
 
 /** The ADE machine keys of the account's computers that still exist. */
 function liveMachineKeys(instances: readonly CloudInstance[]): Set<string> {
@@ -441,32 +372,6 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     });
   }
 
-  /** The sentence and the way out for a provider refusal of a lifecycle action. */
-  function refusal(
-    action: CloudMachineActionArgs["action"],
-    error: unknown,
-  ): CloudMachineActionResult {
-    const code = error instanceof CloudProviderError ? error.code : null;
-    if (code === "rate_limited" && action === "backup") {
-      return {
-        ok: false,
-        blocker: "rate_limited",
-        message: "ADE Cloud takes one backup of a computer every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
-      };
-    }
-    if (code === "out_of_hours" || code === "over_plan_disk" || code === "over_plan_limits") {
-      return { ok: false, blocker: code, message: getErrorMessage(error) };
-    }
-    // A disk refusal keeps its reason, so a notice can offer the way out (extra disk, a bigger size).
-    const reason = error instanceof CloudProviderError && (code === "disk_limit" || code === "needs_paid_plan")
-      ? error.detail.reason ?? (code === "needs_paid_plan" ? "plan_disk" : null)
-      : null;
-    if (reason && error instanceof CloudProviderError) {
-      return { ok: false, blocker: null, message: getErrorMessage(error), diskRefusal: { reason } };
-    }
-    return { ok: false, blocker: null, message: getErrorMessage(error) };
-  }
-
   async function run(args: CloudMachineActionArgs): Promise<CloudMachineActionResult> {
     const client = await deps.client();
     if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
@@ -475,67 +380,16 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     const action = args.action;
     logger.info?.("cloud.machine_action", { instanceId, action, shape: args.shape ?? null, disk: args.disk ?? null });
     try {
+      const lifecycle = await runCloudMachineLifecycleAction({
+        computer: (id) => client.getInstance(id),
+        sleep: (id) => client.sleepInstance(id),
+        wake: (id) => client.startInstance(id),
+        resize: (id, resources, computerIdle) => client.resizeInstance(id, resources, computerIdle ? { computerIdle: true } : undefined),
+        backup: (id) => client.createBackup(id),
+        update: (id) => client.updateInstance(id),
+      }, instanceId, args);
+      if (lifecycle) return lifecycle;
       switch (action) {
-        case "sleep": {
-          await client.sleepInstance(instanceId);
-          return { ok: true, blocker: null, message: "Asleep. It uses no hours until it wakes." };
-        }
-        case "wake": {
-          const status = await client.startInstance(instanceId);
-          return {
-            ok: true,
-            blocker: null,
-            message: status === "running" ? "Awake. ADE on it is starting." : "Waking. ADE Cloud is moving it to a host with room.",
-          };
-        }
-        case "resize": {
-          const shape = args.shape === undefined ? null : cloudShape(args.shape);
-          const disk = typeof args.disk === "number" && Number.isInteger(args.disk) && args.disk > 0 ? args.disk : null;
-          if ((args.shape !== undefined && !shape) || (!shape && disk == null)) return { ok: false, blocker: null, message: "Pick a size." };
-          const instance = await client.getInstance(instanceId);
-          const current = resourcesOf(instance);
-          if (!current) return { ok: false, blocker: null, message: "ADE Cloud didn't say how big this computer is, so ADE can't resize it." };
-          const growDisk = disk != null && disk > current.diskGb;
-          if (!shape) {
-            if (!growDisk) return { ok: true, blocker: null, message: "The disk is already that size." };
-            // Same size, bigger disk: the server restarts the computer for it.
-            const status = await client.resizeInstance(
-              instanceId,
-              { cpu: current.cpu, memory: current.memoryGb, disk },
-              args.computerIdle === true ? { computerIdle: true } : undefined,
-            );
-            return {
-              ok: true,
-              blocker: null,
-              message: status === "running"
-                ? `The disk is ${disk} GB now. ADE on it is starting again.`
-                : `Growing the disk to ${disk} GB. The computer restarts and is back in a few minutes.`,
-            };
-          }
-          if (current.cpu === shape.cpu && current.memoryGb === shape.memoryGb && !growDisk) {
-            return { ok: true, blocker: null, message: "It's already that size." };
-          }
-          const status = await client.resizeInstance(
-            instanceId,
-            { cpu: shape.cpu, memory: shape.memoryGb, ...(growDisk ? { disk } : {}) },
-            growDisk && args.computerIdle === true ? { computerIdle: true } : undefined,
-          );
-          return {
-            ok: true,
-            blocker: null,
-            message: status === "running"
-              ? `Resized to ${shape.label}. ADE on it is starting again.`
-              : `Resizing to ${shape.label}. It is back in a few minutes.`,
-          };
-        }
-        case "backup": {
-          await client.createBackup(instanceId);
-          return { ok: true, blocker: null, message: "Backed up. ADE Cloud keeps this one until your next backup, plus the last seven nights." };
-        }
-        case "update": {
-          await client.updateInstance(instanceId);
-          return { ok: true, blocker: null, message: "Updating. It restarts and is back in a few minutes." };
-        }
         case "delete": {
           try {
             const keepLane = args.keepLane ? { branchRef: args.keepLane.branchRef ?? null } : null;
@@ -574,7 +428,11 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       }
     } catch (error) {
       logger.warn?.("cloud.machine_action_failed", { instanceId, action, error: getErrorMessage(error) });
-      return refusal(action, error);
+      return cloudMachineRefusal(action, {
+        message: getErrorMessage(error),
+        code: error instanceof CloudProviderError ? error.code : null,
+        reason: error instanceof CloudProviderError ? error.detail.reason : null,
+      });
     }
   }
 

@@ -16,6 +16,10 @@ import type {
   SyncMobileProjectSummary,
   SyncProjectCatalogPayload,
   SyncProjectSwitchResultPayload,
+  SyncProjectActionResultPayload,
+  SyncProjectCloneRequestEnvelope,
+  SyncProjectDefaultParentDirPayload,
+  SyncProjectDefaultParentDirRequestEnvelope,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandAction,
   SyncTerminalDataPayload,
@@ -28,6 +32,7 @@ import { hostStallFromHello, hostStorageWaitFromHealth } from "../../../shared/c
 import { announceHostStall, announceHostStorageWait } from "../../lib/hostStallToast";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { ChatLaunchEvent } from "../../../shared/types/chatLaunch";
+import type { CloneProjectInput } from "../../../shared/types";
 import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../../../main/services/git/gitTimeouts";
 import {
   ARCHIVE_DELETE_TIMEOUT_MS,
@@ -1090,6 +1095,54 @@ export class AdeSyncClient {
     return await promise;
   }
 
+  private readonly pendingProjectClones = new Map<string, PendingRequest<SyncProjectActionResultPayload>>();
+  private readonly pendingDefaultParentDirs = new Map<string, PendingRequest<SyncProjectDefaultParentDirPayload>>();
+
+  /** Clones a repository on this machine (`project_clone_request`, as the phone sends it). Waits up to 10 minutes. */
+  async requestProjectClone(input: CloneProjectInput): Promise<SyncProjectActionResultPayload> {
+    return await this.sendProjectAction(this.pendingProjectClones, { type: "project_clone_request", payload: input }, 10 * 60_000);
+  }
+
+  /** The folder this machine clones into by default (`project_default_parent_dir_request`). */
+  async requestDefaultParentDir(): Promise<SyncProjectDefaultParentDirPayload> {
+    return await this.sendProjectAction(this.pendingDefaultParentDirs, { type: "project_default_parent_dir_request", payload: {} }, DEFAULT_REQUEST_TIMEOUT_MS);
+  }
+
+  private async sendProjectAction<T>(
+    requests: Map<string, PendingRequest<T>>,
+    envelope: Pick<SyncProjectCloneRequestEnvelope, "type" | "payload"> | Pick<SyncProjectDefaultParentDirRequestEnvelope, "type" | "payload">,
+    timeoutMs: number,
+  ): Promise<T> {
+    const generation = this.requireReadyGeneration();
+    const requestId = uuid();
+    const promise = new Promise<T>((resolve, reject) => {
+      const pending: PendingRequest<T> = {
+        resolve,
+        reject,
+        generation,
+        timer: setTimeout(() => timeout(pending, requests, requestId), timeoutMs),
+      };
+      requests.set(requestId, pending);
+    });
+    try {
+      this.connection.send({ ...envelope, requestId });
+    } catch (error) {
+      this.rejectPending(requests, requestId, this.connectionError(error));
+    }
+    return await promise;
+  }
+
+  private resolveProjectAction<T>(requests: Map<string, PendingRequest<T>>, requestId: string | null, payload: T): void {
+    if (!requestId) return;
+    // Machine-wide, not the open project's: a project change keeps it, and a
+    // lost connection rejects it (its request id is never answered twice).
+    const pending = requests.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    requests.delete(requestId);
+    pending.resolve(payload);
+  }
+
   /**
    * `rootPath` is optional and additive: the host resolver already accepts
    * either identity, and an Activity item carries the owning machine's local
@@ -1450,6 +1503,12 @@ export class AdeSyncClient {
         break;
       case "project_switch_result":
         this.handleProjectSwitchResult(envelope.requestId ?? null, envelope.payload as SyncProjectSwitchResultPayload);
+        break;
+      case "project_clone_result":
+        this.resolveProjectAction(this.pendingProjectClones, envelope.requestId ?? null, envelope.payload as SyncProjectActionResultPayload);
+        break;
+      case "project_default_parent_dir":
+        this.resolveProjectAction(this.pendingDefaultParentDirs, envelope.requestId ?? null, envelope.payload as SyncProjectDefaultParentDirPayload);
         break;
       case "chat_launch_event": {
         // Typed, but still wire data from a host of any version: validate before fanning out.
@@ -2039,12 +2098,18 @@ export class AdeSyncClient {
       this.pendingTerminalHistory.delete(requestId);
       pending.reject(error);
     }
-    for (const [requestId, pending] of this.pendingProjectSwitches) {
+    this.rejectAllIn(this.pendingProjectSwitches, error);
+    this.rejectAllIn(this.pendingProjectClones, error);
+    this.rejectAllIn(this.pendingDefaultParentDirs, error);
+    this.rejectPendingProjectCatalog(error);
+  }
+
+  private rejectAllIn<T>(requests: Map<string, PendingRequest<T>>, error: Error): void {
+    for (const [requestId, pending] of requests) {
       clearTimeout(pending.timer);
-      this.pendingProjectSwitches.delete(requestId);
+      requests.delete(requestId);
       pending.reject(error);
     }
-    this.rejectPendingProjectCatalog(error);
   }
 
   private rejectPendingCommands(error: Error): void {
