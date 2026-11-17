@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { captureError } from "../../../shared/sentry/capture";
 import {
   cloudCatalogOf,
   cloudHoursLeftMilli,
@@ -229,7 +230,10 @@ function useAntigravityCarried(wanted: boolean): boolean | null {
         (value) => {
           if (!cancelled) setCarried(typeof value?.antigravity === "boolean" ? value.antigravity : null);
         },
-        () => undefined,
+        // Unknown stays unknown; the next focus reads again.
+        (error: unknown) => {
+          captureError(error, { level: "warning", handled: true, fingerprint: ["ade-cloud", "carried-sign-ins-read"] });
+        },
       );
     };
     read();

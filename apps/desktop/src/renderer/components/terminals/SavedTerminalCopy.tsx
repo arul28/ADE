@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowClockwise, PaperPlaneRight, Play, Terminal as TerminalIcon } from "@phosphor-icons/react";
 import type { CloudChatQueuedMessage } from "../../../../../account-directory/src/cloud/contract";
 import type { TerminalSessionSummary } from "../../../shared/types";
+import { captureError } from "../../../shared/sentry/capture";
 import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
 import { stripAnsi } from "../../../shared/ansiStrip";
 import { SAVED_CHATS_MACHINE_PREFIX } from "../../../shared/cloudSavedChats";
@@ -128,8 +129,9 @@ function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessio
     try {
       const next = await read({ machineKey, chatId: sessionId });
       if (next) setMessages(next.filter((message) => SHOWN_STATES.has(message.state)).sort((a, b) => a.seq - b.seq).slice(-5));
-    } catch {
+    } catch (error) {
       // The rows stay as they were; the next focus or send reads again.
+      captureError(error, { level: "warning", handled: true, fingerprint: ["ade-cloud", "saved-cli-queue-read"] });
     }
   }, [machineKey, sessionId]);
 

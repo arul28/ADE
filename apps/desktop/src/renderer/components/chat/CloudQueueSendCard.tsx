@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import type { CloudLaunchRecord } from "../../../shared/accountCloudLaunches";
+import { captureError } from "../../../shared/sentry/capture";
 import { openExternalUrl } from "../../lib/openExternal";
 import { Banner } from "../ui/notice";
 import { CloudSignInCodeField } from "./launch/CloudSignInCodeField";
@@ -65,7 +66,10 @@ export function CloudQueueSendCard({
       (next) => {
         if (seq === seqRef.current && next) setRecord(next);
       },
-      () => undefined,
+      // The card keeps its last record; the next focus or status change reads again.
+      (error: unknown) => {
+        captureError(error, { level: "warning", handled: true, fingerprint: ["ade-cloud", "queue-send-launch-status"] });
+      },
     );
   }, [launchId]);
   useEffect(() => {

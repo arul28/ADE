@@ -1,4 +1,5 @@
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { captureError } from "../../../shared/sentry/capture";
 import type { AgentChatLaunchDefaults } from "../../../shared/types";
 
 /**
@@ -40,7 +41,8 @@ export async function readAccountLaunchDefaults(): Promise<AgentChatLaunchDefaul
   try {
     const result = await api.get({ scope: ACCOUNT_SCOPE_ALL, key: ACCOUNT_LAUNCH_DEFAULTS_KEY });
     return result.ok ? accountLaunchDefaultsOf(result.value) : null;
-  } catch {
+  } catch (error) {
+    captureError(error, { level: "warning", handled: true, fingerprint: ["chat-launch-defaults", "account-read"] });
     return null;
   }
 }
@@ -61,7 +63,8 @@ export async function publishLaunchDefaults(
   try {
     if (JSON.stringify(value).length >= MAX_ROW_BYTES) return;
     await api.set({ scope: ACCOUNT_SCOPE_ALL, key: ACCOUNT_LAUNCH_DEFAULTS_KEY, value: { ...value, fastMode: false } });
-  } catch {
+  } catch (error) {
     // As above: the machine's copy stays.
+    captureError(error, { level: "warning", handled: true, fingerprint: ["chat-launch-defaults", "account-publish"] });
   }
 }

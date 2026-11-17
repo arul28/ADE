@@ -2,6 +2,7 @@ import { peekLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { msToNextBeat } from "../../lib/workBeat";
 import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
+import { captureError } from "../../../shared/sentry/capture";
 import { CloneToMachineDialog } from "../projects/CloneToMachineDialog";
 import { Suspense, lazy, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { compactFirstOffer } from "../../../shared/compactFirst";
@@ -18651,7 +18652,10 @@ export function AgentChatPane({
       // A machine that can't answer (asleep, refused, ADE Cloud as a tab)
       // leaves the account's row to seed the draft.
       const machine: Promise<AgentChatLaunchDefaults | null> = defaultsPin
-        ? (agentChatApiRef.current.launchDefaults?.(defaultsPin) ?? Promise.resolve(null)).catch(() => null)
+        ? (agentChatApiRef.current.launchDefaults?.(defaultsPin) ?? Promise.resolve(null)).catch((error: unknown) => {
+          captureError(error, { level: "warning", handled: true, fingerprint: ["chat-launch-defaults", "machine-read"] });
+          return null;
+        })
         : Promise.resolve(null);
       void Promise.all([machine, account])
         .then(([defaults, accountDefaults]) => {
@@ -18663,7 +18667,8 @@ export function AgentChatPane({
           if (defaults) void publishLaunchDefaults(defaults, accountDefaults);
           apply(newerLaunchDefaults(defaults, accountDefaults));
         })
-        .catch(() => {
+        .catch((error: unknown) => {
+          captureError(error, { level: "warning", handled: true, fingerprint: ["chat-launch-defaults", "apply"] });
           if (!cancelled) setMachineLaunchDefaults(null);
         });
     };

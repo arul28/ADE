@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { CloudGitSummaryCounts } from "../../../../../account-directory/src/cloud/contract";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { captureError } from "../../../shared/sentry/capture";
 import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 import { useAppStore } from "../../state/appStore";
 
@@ -30,7 +31,9 @@ export function CloudGitAsOf({ pin, laneId }: { pin: OpenProjectBinding; laneId:
         setCheckedAt(match?.checkedAt ?? null);
       },
       // The panel's own reads say when the summary can't load; this line just stays away.
-      () => undefined,
+      (error: unknown) => {
+        captureError(error, { level: "warning", handled: true, fingerprint: ["ade-cloud", "git-as-of-overview"] });
+      },
     );
     return () => {
       cancelled = true;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Plugs, ShareNetwork } from "@phosphor-icons/react";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { captureError } from "../../../shared/sentry/capture";
 import { PROVIDER_LOGINS_CLOUD_SETTING, readCloudSetting } from "../../../shared/providerLoginsCloudSetting";
 import { MCP_SERVERS_SETTING_KEY, MCP_TRANSPORT_LABEL, normalizeMcpRegistry } from "../../../shared/mcpRegistry";
 import { Banner } from "../ui/notice";
@@ -26,7 +27,10 @@ function readAccountSetting(key: string): Promise<{ ok: true; value: unknown } |
   return store
     .get({ scope: ACCOUNT_SCOPE_ALL, key })
     .then((answer) => (answer.ok ? { ok: true as const, value: answer.value } : { ok: false as const }))
-    .catch(() => ({ ok: false as const }));
+    .catch((error: unknown) => {
+      captureError(error, { level: "warning", handled: true, fingerprint: ["account-settings", "web-card-read", key] });
+      return { ok: false as const };
+    });
 }
 
 /** One account setting, read on open and on window focus (no poll). */
