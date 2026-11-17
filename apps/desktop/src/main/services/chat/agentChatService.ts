@@ -12356,7 +12356,7 @@ export function createAgentChatService(args: {
   ptyService?: (
     Pick<
       ReturnType<typeof createPtyService>,
-      "create" | "sendToSession" | "enrichSessions" | "canAcceptScheduledTurn" | "getRuntimeState"
+      "create" | "sendToSession" | "enrichSessions" | "canAcceptScheduledTurn" | "canTakeTypedMessage" | "getRuntimeState"
     >
     // Optional so narrow test doubles keep compiling. `listTerminals` /
     // `previewTerminal` serve composer @-mentions (and a CLI child's report
@@ -51691,6 +51691,7 @@ export function createAgentChatService(args: {
   // boundary (`agentCliWakes.ts`). The later helpers are read at call time.
   const {
     agentCliWakeDeferred,
+    agentCliTypingDeferred,
     agentCliOwnedByAnotherRuntime,
     deliverWakeToSession,
     wakeAgentCliParent,
@@ -72883,7 +72884,7 @@ export function createAgentChatService(args: {
       if (isChatToolType(row.toolType)) return true;
       return row.tracked && isTrackedAgentCliToolType(row.toolType) && !row.archivedAt;
     },
-    wakeDeferred: (sessionId) => agentCliWakeDeferred(sessionId),
+    wakeDeferred: (sessionId) => agentCliTypingDeferred(sessionId),
     ownedByAnotherBrain: chatOwnedByAnotherBrain,
     getMovedAwayTarget: (sessionId) => getCrossMachineMoveLock(sessionId, "chat_wait"),
     assertDeliverableHere: (sessionId) => {
@@ -84410,7 +84411,7 @@ ${schedule.prompt}`
      * another runtime took the terminal). Same path as scheduled work and wakes.
      */
     agentCliCanTakeText: (sessionId: string) =>
-      isTrackedAgentCliSession(sessionId) && !agentCliWakeDeferred(sessionId),
+      isTrackedAgentCliSession(sessionId) && !agentCliTypingDeferred(sessionId),
     typeIntoAgentCli: async ({ sessionId, text }: { sessionId: string; text: string }) => {
       if (!isTrackedAgentCliSession(sessionId)) {
         throw new Error(`Session '${sessionId}' is not an agent CLI session.`);

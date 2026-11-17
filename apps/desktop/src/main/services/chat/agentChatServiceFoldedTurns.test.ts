@@ -41,6 +41,7 @@ describe("createAgentChatService", () => {
         create: vi.fn(),
         sendToSession: vi.fn(),
         canAcceptScheduledTurn: vi.fn(() => false),
+        canTakeTypedMessage: vi.fn(() => false),
         getRuntimeState: vi.fn(() => "running"),
         waitForResumeTargetBackfill: vi.fn((sessionId: string) =>
           options.waitForResumeTargetBackfill?.(sessionId) ?? Promise.resolve()),

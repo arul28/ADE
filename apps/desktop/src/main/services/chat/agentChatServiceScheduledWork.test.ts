@@ -359,6 +359,7 @@ describe("createAgentChatService", () => {
         ptyService: {
           create: vi.fn(),
           canAcceptScheduledTurn: () => true,
+          canTakeTypedMessage: () => true,
           enrichSessions: (rows: Array<Record<string, unknown>>) => rows.map((row) => ({
             ...row,
             runtimeState: "exited",
@@ -462,6 +463,7 @@ describe("createAgentChatService", () => {
         ptyService: {
           create: vi.fn(),
           canAcceptScheduledTurn: () => canAcceptScheduledTurn,
+          canTakeTypedMessage: () => canAcceptScheduledTurn,
           enrichSessions: (rows: Array<Record<string, unknown>>) => rows.map((row) => ({
             ...row,
             runtimeState: canAcceptScheduledTurn ? "waiting-input" : "running",
@@ -507,6 +509,7 @@ describe("createAgentChatService", () => {
         ptyService: {
           create: vi.fn(),
           canAcceptScheduledTurn: () => true,
+          canTakeTypedMessage: () => true,
           enrichSessions: (rows: Array<Record<string, unknown>>) => rows.map((row) => ({
             ...row,
             runtimeState: "exited",
@@ -659,6 +662,7 @@ describe("createAgentChatService", () => {
         create: vi.fn(),
         resumeSession: vi.fn(),
         canAcceptScheduledTurn: () => true,
+        canTakeTypedMessage: () => true,
         enrichSessions: (rows: Array<Record<string, unknown>>) => rows,
       };
 
@@ -735,6 +739,7 @@ describe("createAgentChatService", () => {
             create: vi.fn(),
             resumeSession: vi.fn(),
             canAcceptScheduledTurn: () => true,
+            canTakeTypedMessage: () => true,
             enrichSessions: (rows: Array<Record<string, unknown>>) => rows,
           },
         });
@@ -776,6 +781,7 @@ describe("createAgentChatService", () => {
         create: vi.fn(),
         resumeSession: vi.fn(),
         canAcceptScheduledTurn: () => true,
+        canTakeTypedMessage: () => true,
         enrichSessions: (rows: Array<Record<string, unknown>>) => rows,
       });
       const continueRows = () => (scheduledWork.readState()?.schedules ?? []).filter((row) => row.source === "update_restart");

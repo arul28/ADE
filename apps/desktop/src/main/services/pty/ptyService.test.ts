@@ -1136,12 +1136,23 @@ describe("ptyService", () => {
 
       // The main turn is over while the agent runs. Its timer redraws the
       // screen every second, so the screen never goes quiet, yet the prompt
-      // takes a message now instead of after the last agent stops.
-      mockPty._emitter.emit("data", "╭────────────╮\n│ >          │\n╰────────────╯\n  agent-1 running (3s)\n");
-      expect(service.canAcceptScheduledTurn("session-agents")).toBe(true);
+      // takes a typed message once the end has settled, not after the last
+      // agent stops. A relaunch still waits: it would end the agent.
+      const box = "╭────────────╮\n│ >          │\n╰────────────╯\n  agent-1 running (3s)\n";
+      mockPty._emitter.emit("data", box);
+      expect(service.canTakeTypedMessage("session-agents"), "just after Stop").toBe(false);
+      const settledAt = Date.now() + 700;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => settledAt);
+      try {
+        mockPty._emitter.emit("data", box);
+        expect(service.canTakeTypedMessage("session-agents")).toBe(true);
+      } finally {
+        clock.mockRestore();
+      }
+      expect(service.canAcceptScheduledTurn("session-agents")).toBe(false);
       // A line typed since the turn ended starts the next turn: not free.
       hook({ hook_event_name: "UserPromptSubmit", prompt_id: "p-2" });
-      expect(service.canAcceptScheduledTurn("session-agents")).toBe(false);
+      expect(service.canTakeTypedMessage("session-agents")).toBe(false);
       hook({ hook_event_name: "Stop" });
 
       // Each hook is its own process: a short agent's stop can arrive before its start.

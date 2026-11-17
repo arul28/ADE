@@ -874,6 +874,8 @@ type PtyEntry = {
    * CLI's own signals when it has them (cliTurnSignals.ts). Null for shells.
    */
   cliTurn: CliTurnState | null;
+  /** When an exact signal last moved the turn to idle; null while working or before any. */
+  cliTurnEndedAt: number | null;
   /** The secret this launch's Claude hooks send back (`CLI_TURN_HOOK_TOKEN_ENV`); null without hooks. */
   cliTurnHookToken: string | null;
   /**
@@ -5828,6 +5830,7 @@ export function createPtyService({
       // The state, not output, says the turn moved; touch nothing so the quiet
       // fallback still measures from the last real output.
       setRuntimeState(entry.sessionId, runtimeState, { touch: false });
+      entry.cliTurnEndedAt = transition.to === "idle" ? now : null;
       if (transition.to === "working" && transition.from === "idle") anchorTurnStart(entry.sessionId);
       if (transition.to === "working" && turn.source === "claude-hooks") scheduleIdleTransition(entry.sessionId);
       else clearIdleTimer(entry.sessionId);
@@ -6336,7 +6339,7 @@ export function createPtyService({
     while (Date.now() < deadline) {
       const readiness = agentCliInputReadiness(sessionId, provider);
       if (!readiness) return false;
-      if (readiness.takesInputNow) return true;
+      if (readiness.readyNow) return true;
       if (provider === "codex" && readiness.markerVisible) {
         if (readiness.text === stableReadyText) {
           if (stableReadySince > 0 && Date.now() - stableReadySince >= AGENT_CLI_READY_QUIET_MS) {
@@ -6359,14 +6362,7 @@ export function createPtyService({
   const agentCliInputReadiness = (
     sessionId: string,
     provider: TerminalResumeProvider,
-  ): {
-    markerVisible: boolean;
-    /** At the prompt and quiet: no output for `AGENT_CLI_READY_QUIET_MS`. */
-    readyNow: boolean;
-    /** May a message be typed now: ready, or at the prompt with the main turn exactly idle. */
-    takesInputNow: boolean;
-    text: string;
-  } | null => {
+  ): { markerVisible: boolean; readyNow: boolean; text: string } | null => {
     const live = liveEntryBySessionId(sessionId);
     if (!live || live[1].disposed) return null;
     const entry = live[1];
@@ -6386,24 +6382,29 @@ export function createPtyService({
       && entry.agentCliState !== "idle"
       && entry.agentCliState !== "done";
     const markerVisible = !reportedBusy && providerReadyMarkerVisible(provider, readinessText);
-    const quiet = quietForMs >= AGENT_CLI_READY_QUIET_MS;
-    // An exact report (Claude Code's hooks, Codex's OSC 7501) that the main
-    // turn is over, with nothing typed since. Background subagents keep the
-    // screen busy (their timers redraw every second), so the screen never goes
-    // quiet while they run, yet the CLI's prompt takes a message: it must not
-    // wait for every subagent to finish.
+    return {
+      markerVisible,
+      readyNow: markerVisible && quietForMs >= AGENT_CLI_READY_QUIET_MS,
+      text: readinessText,
+    };
+  };
+
+  /**
+   * The CLI reported (Claude Code's hooks, Codex's OSC 7501) that its main turn
+   * ended at least `AGENT_CLI_READY_QUIET_MS` ago, with nothing typed since.
+   * Its background agents redraw their timers every second, so the screen
+   * never goes quiet while they run, yet its prompt takes a message. The
+   * tracker's starting `idle` does not count: only a reported end does.
+   */
+  const agentCliMainTurnEndedAndSettled = (entry: PtyEntry): boolean => {
     const turn = entry.cliTurn;
-    const exactIdle = turn != null
+    return turn != null
+      && entry.cliTurnEndedAt != null
+      && Date.now() - entry.cliTurnEndedAt >= AGENT_CLI_READY_QUIET_MS
       && isExactCliTurnSource(turn.source)
       && turn.phase === "idle"
       && !turn.submittedSinceEnd
       && turn.awaitingHookSince == null;
-    return {
-      markerVisible,
-      readyNow: markerVisible && quiet,
-      takesInputNow: markerVisible && (quiet || exactIdle),
-      text: readinessText,
-    };
   };
 
   const agentCliInputReadyNow = (
@@ -8213,6 +8214,7 @@ export function createPtyService({
         cliTurnInterruptTimer: null,
         cliSubagentRecheckTimer: null,
         cliTurnHookToken: launchEnv[CLI_TURN_HOOK_TOKEN_ENV] ?? null,
+        cliTurnEndedAt: null,
         cliSubagents: null,
         priorEndState,
         piSessionLease,
@@ -8925,7 +8927,29 @@ export function createPtyService({
       if (!live) return true;
       const provider = session.resumeMetadata?.provider
         ?? providerFromTool(session.toolType ?? live[1].toolTypeHint);
-      return provider != null && (agentCliInputReadiness(normalizedSessionId, provider)?.takesInputNow ?? false);
+      return provider != null && agentCliInputReadyNow(normalizedSessionId, provider);
+    },
+
+    /**
+     * Whether a message may be typed at this CLI's prompt now: as
+     * `canAcceptScheduledTurn`, or at the prompt with its main turn reported
+     * over while only its background agents still run. For typing only:
+     * a relaunch (restart, model or account change) must keep the stricter
+     * check, or it would end those agents.
+     */
+    canTakeTypedMessage(sessionId: string): boolean {
+      if (service.canAcceptScheduledTurn(sessionId)) return true;
+      const normalizedSessionId = sessionId.trim();
+      const session = normalizedSessionId ? sessionService.get(normalizedSessionId) : null;
+      if (!session?.tracked || !isTrackedAgentCliToolType(session.toolType)) return false;
+      if (isOwnedByLivePeerRuntime(session)) return false;
+      const live = liveEntryBySessionId(normalizedSessionId);
+      if (!live) return false;
+      const provider = session.resumeMetadata?.provider
+        ?? providerFromTool(session.toolType ?? live[1].toolTypeHint);
+      if (provider == null) return false;
+      return (agentCliInputReadiness(normalizedSessionId, provider)?.markerVisible ?? false)
+        && agentCliMainTurnEndedAndSettled(live[1]);
     },
 
     async sendToSession(args: PtySendToSessionArgs): Promise<PtySendToSessionResult> {
