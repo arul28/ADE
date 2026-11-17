@@ -965,6 +965,19 @@ func syncLinkIsWeak(handshakeSeconds: TimeInterval?) -> Bool {
   guard let handshakeSeconds else { return false }
   return handshakeSeconds >= 0.7
 }
+
+/// Command descriptors by action; the first one for an action wins, as a scan
+/// of the list did. Capability checks run several times for every Work row,
+/// and a scan of the whole list per check made a list pass slow.
+func syncCommandDescriptorIndex(_ descriptors: [SyncRemoteCommandDescriptor]) -> [String: SyncRemoteCommandDescriptor] {
+  var index: [String: SyncRemoteCommandDescriptor] = [:]
+  index.reserveCapacity(descriptors.count)
+  for descriptor in descriptors where index[descriptor.action] == nil {
+    index[descriptor.action] = descriptor
+  }
+  return index
+}
+
 /// The terminal buffer kept per session, in UTF-8 bytes. Over the cap it is
 /// cut back to `syncTerminalBufferTrimmedBytes`, so steady output trims once
 /// per 40 KB rather than on every chunk.
@@ -5098,7 +5111,15 @@ final class SyncService: ObservableObject {
   /// came back while the failed attempt was still being handled.
   private var helloSentWithProvisionalDeviceId = false
   private var keychainRecheckObservers: [NSObjectProtocol] = []
-  private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
+  private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] {
+    get { remoteCommandDescriptorList }
+    set {
+      remoteCommandDescriptorList = newValue
+      remoteCommandDescriptorsByAction = syncCommandDescriptorIndex(newValue)
+    }
+  }
+  private var remoteCommandDescriptorList: [SyncRemoteCommandDescriptor] = []
+  private var remoteCommandDescriptorsByAction: [String: SyncRemoteCommandDescriptor] = [:]
   /// The last hello_ok carried a non-empty project catalog, so the post-hello
   /// catalog request would only repeat it.
   private var helloCarriedProjectCatalog = false
@@ -19731,7 +19752,7 @@ final class SyncService: ObservableObject {
   }
 
   func commandDescriptor(for action: String) -> SyncRemoteCommandDescriptor? {
-    remoteCommandDescriptors.first(where: { $0.action == action })
+    remoteCommandDescriptorsByAction[action]
   }
 
   private func commandPolicy(for action: String) -> SyncRemoteCommandPolicy? {

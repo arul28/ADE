@@ -2589,7 +2589,7 @@ struct WorkRootListScreen: View, Equatable {
       pullRequest: lanePrTagsByLaneId[session.laneId]
         ?? lanePrTagsByLaneId[resolvedWorkNavigationLaneId(for: session, lanes: lanes)],
       chatSummary: chatSummaries[session.id],
-      isArchived: archivedSessionIds.contains(session.id),
+      isArchived: sessionPresentation.archivedSessionIds.contains(session.id),
       transitionNamespace: transitionNamespace,
       machineName: workSessionMachineName(laneId: session.laneId, options: inputs.machineFilterOptions),
       compact: compact,

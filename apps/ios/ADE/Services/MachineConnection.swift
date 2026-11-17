@@ -63,7 +63,10 @@ final class MachineConnection {
   /// The host streams terminals of any open project to this socket
   /// (`rosterTerminal`), so a terminal opens here without a focus switch.
   private(set) var supportsRosterTerminal = false
-  private(set) var commandDescriptors: [SyncRemoteCommandDescriptor] = []
+  private(set) var commandDescriptors: [SyncRemoteCommandDescriptor] = [] {
+    didSet { commandDescriptorsByAction = syncCommandDescriptorIndex(commandDescriptors) }
+  }
+  private var commandDescriptorsByAction: [String: SyncRemoteCommandDescriptor] = [:]
   /// Host display name from the last hello.
   private(set) var hostName: String?
   /// The machine's ADE version from the last hello (`brain.appVersion`). Nil
@@ -755,11 +758,11 @@ final class MachineConnection {
   }
 
   func supportsAction(_ action: String) -> Bool {
-    commandDescriptors.contains { $0.action == action }
+    commandDescriptorsByAction[action] != nil
   }
 
   func commandDescriptor(for action: String) -> SyncRemoteCommandDescriptor? {
-    commandDescriptors.first { $0.action == action }
+    commandDescriptorsByAction[action]
   }
 
   // MARK: - Heartbeat
