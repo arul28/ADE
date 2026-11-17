@@ -338,6 +338,8 @@ final class GitHubDirectClient {
   /// Fixture screens: canned answers instead of requests
   /// (`GitHubDirectPreviewAnswers`, `HubAccountPreviews.swift`).
   var preview: GitHubDirectPreviewAnswers?
+  /// Fixture screens: canned folders, files and commits (`CloudFilesPreviews.swift`).
+  var contentsPreview: GitHubContentsPreviewAnswers?
 #endif
 
   init() {
@@ -459,7 +461,9 @@ final class GitHubDirectClient {
 
   // MARK: Engine
 
-  private func read<T>(
+  /// One read with the account's token, the rate-limit pause and the retry
+  /// after a 401 (`GitHubDirectClient+Contents.swift` uses it too).
+  func read<T>(
     repo: GitHubDirectRepoRef?,
     background: Bool,
     _ work: @escaping (String, String) async throws -> Result<T, GitHubDirectError>
@@ -575,7 +579,7 @@ final class GitHubDirectClient {
     return (items, url != nil)
   }
 
-  private func single(path: String, query: [String: String] = [:], token: String, scope: String, repo: GitHubDirectRepoRef?) async throws -> Any? {
+  func single(path: String, query: [String: String] = [:], token: String, scope: String, repo: GitHubDirectRepoRef?) async throws -> Any? {
     guard let url = Self.url(path: path, query: query) else { throw GitHubDirectError(kind: .invalidRequest) }
     let page = try await fetch(url, token: token, scope: scope, repo: repo)
     return try? JSONSerialization.jsonObject(with: page.body)

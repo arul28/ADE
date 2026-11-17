@@ -885,6 +885,10 @@ struct WorkNewChatScreen: View {
     guard isCloudSelected else { return nil }
     if let refusal = cloudStore.doingRefusal { return refusal }
     if let entry = cloudProviderEntry, entry.remoteSignIn == "desktop" {
+      // The desktop's sign-in already reached ADE Cloud: nothing to do.
+      if cloudLaunches.carriedSignIns[entry.provider] == true {
+        return "Uses your \(entry.label) sign-in from ADE desktop."
+      }
       return cloudDesktopSignInSentence(label: entry.label)
     }
     if cloudLaunches.catalog != nil, cloudProviderEntry?.models.contains(where: { $0.id == modelId }) != true {

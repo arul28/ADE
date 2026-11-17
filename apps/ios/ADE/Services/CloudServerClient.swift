@@ -35,6 +35,14 @@ enum CloudRefusalCode {
     "github_app_not_installed", "template_unset", "template_unavailable",
     "linear_needs_renewal", "plan_past_due",
   ]
+
+  /// Refusals of the Linear, Jira and limits routes (`CLOUD_INTEGRATION_ERROR_CODES`,
+  /// `limits_changed`). Each comes with the sentence to show; none is a
+  /// reason to stop other ADE Cloud work.
+  static let reads: Set<String> = [
+    "linear_not_connected", "linear_renewing", "jira_not_connected", "jira_site_unsupported",
+    "integration_failed", "limits_changed",
+  ]
 }
 
 /// One ADE Cloud computer as the account server lists it.
@@ -433,7 +441,7 @@ func cloudServerFailure(status: Int, body: Data) -> CloudServerClient.Failure {
   let message = detail?.message.flatMap { nonEmptyTrimmed($0) }
   if status == 401 { return .unauthorized }
   if status == 404 { return .noAccess }
-  if let code, CloudRefusalCode.all.contains(code) {
+  if let code, CloudRefusalCode.all.contains(code) || CloudRefusalCode.reads.contains(code) {
     return .refused(code: code, message: message ?? "ADE Cloud can't do that right now.")
   }
   if status == 403 { return message.map { .refused(code: code ?? "forbidden", message: $0) } ?? .unauthorized }

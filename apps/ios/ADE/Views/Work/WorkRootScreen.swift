@@ -458,6 +458,10 @@ struct WorkRootListScreen: View, Equatable {
   @State var localHandoffSubject: WorkSessionHandoffSubject?
   @State var autoHandoffSubject: WorkSessionHandoffSubject?
   @State var crossMachineHandoffTarget: WorkCrossMachineHandoffTarget?
+  /// A chat whose ADE Cloud computer sleeps or was deleted, for Hand off.
+  @State var cloudRestingMoveTarget: WorkCloudRestingMoveTarget?
+  /// The saved copy of an ADE Cloud CLI or shell session, opened read-only.
+  @State var cloudSessionCopyRow: CloudSessionRow?
   /// Auto-handoff rule ids scoped to each chat, read once per list load so the
   /// menu can say "Edit auto handoff…" / "Remove auto handoff" without
   /// waiting on the host when it opens. Absent key = unknown.
@@ -2329,6 +2333,25 @@ struct WorkRootListScreen: View, Equatable {
         WorkCrossMachineHandoffSheet(target: target)
           .environmentObject(syncService)
       }
+      .sheet(item: $cloudRestingMoveTarget) { target in
+        WorkCloudRestingMoveSheet(
+          target: target,
+          onAwake: {
+            // Up now: the usual move sheet, from the chat's live row.
+            if let session = mergedSessions.first(where: { $0.id == target.sessionId }) {
+              handleSessionHandoff(session, intent: .remote)
+            }
+          },
+          onOpenChat: {
+            if let session = mergedSessions.first(where: { $0.id == target.sessionId }) {
+              openSession(session)
+            }
+          }
+        )
+      }
+      .sheet(item: $cloudSessionCopyRow) { row in
+        CloudSessionCopyScreen(row: row, fleetKey: syncService.cloudFleetKey(accountMachineKey: row.machineKey))
+      }
       // Once per project (and when the host starts advertising the rules): the
       // menu only needs "does this chat have rules", and the editor re-reads.
       .task(id: "\(inputs.autoHandoffAvailable)|\(inputs.activeProjectId ?? "")|\(sessions.count)") {
@@ -2679,7 +2702,8 @@ struct WorkRootListScreen: View, Equatable {
       restartAvailable: syncService.canInvokeChatRemoteAction("chat.restartSession", sessionId: session.id),
       onRestartAgent: { session in restartAgentSession(session, stopFirst: false) },
       localHandoffAvailable: syncService.canInvokeChatRemoteAction("chat.handoff", sessionId: session.id),
-      crossMachineHandoffAvailable: syncService.crossMachineHandoffAvailable(sessionId: session.id),
+      crossMachineHandoffAvailable: syncService.crossMachineHandoffAvailable(sessionId: session.id)
+        || workCloudRestingMoveTarget(session: session, title: session.title, sync: syncService) != nil,
       crossMachineCancelAvailable: syncService.crossMachineHandoffActionAvailable(
         "chat.cancelCrossMachineHandoff",
         sessionId: session.id

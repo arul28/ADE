@@ -43,7 +43,12 @@ struct CloudDashboardScreen: View {
           if let referral = store.account?.referral {
             CloudInviteCard(referral: referral, syncService: store.syncService, onChanged: { Task { await store.reload() } })
           }
-          CloudSignInsCard(store: store)
+          if store.isDirect {
+            // No computer answers for the account: its ADE Cloud sign-ins, read directly.
+            SettingsCloudAccountProviders(syncService: store.syncService)
+          } else {
+            CloudSignInsCard(store: store)
+          }
           CloudAgentsCard(store: store)
         }
       }

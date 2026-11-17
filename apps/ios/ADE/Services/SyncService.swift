@@ -12109,6 +12109,11 @@ final class SyncService: ObservableObject {
   /// desktop pane's lightweight visibility poll.
   @MainActor
   func refreshLinearConnection() async {
+    // No computer answers for the project: the account server reads Linear.
+    if linearReadsThroughAccount {
+      linearConnectionStatus = await accountLinearConnectionStatus()
+      return
+    }
     guard activeProjectId != nil else {
       linearConnectionStatus = nil
       return
@@ -12157,15 +12162,18 @@ final class SyncService: ObservableObject {
   }
 
   func fetchLinearQuickView() async throws -> LinearQuickView {
-    try await sendDecodableCommand(action: "cto.getLinearQuickView", as: LinearQuickView.self)
+    if linearReadsThroughAccount { return try await accountLinearQuickView() }
+    return try await sendDecodableCommand(action: "cto.getLinearQuickView", as: LinearQuickView.self)
   }
 
   func fetchLinearIssuePickerData() async throws -> LinearIssuePickerData {
-    try await sendDecodableCommand(action: "cto.getLinearIssuePickerData", as: LinearIssuePickerData.self)
+    if linearReadsThroughAccount { return try await accountLinearPickerData() }
+    return try await sendDecodableCommand(action: "cto.getLinearIssuePickerData", as: LinearIssuePickerData.self)
   }
 
   func searchLinearIssues(_ args: LinearIssueSearchArgs = LinearIssueSearchArgs()) async throws -> LinearIssueSearchResult {
-    try await sendDecodableCommand(
+    if linearReadsThroughAccount { return try await accountLinearSearch(args) }
+    return try await sendDecodableCommand(
       action: "cto.searchLinearIssues",
       args: try encodedCommandArgs(from: args),
       as: LinearIssueSearchResult.self
@@ -12173,7 +12181,8 @@ final class SyncService: ObservableObject {
   }
 
   func fetchLinearIssueComments(issueId: String) async throws -> [LinearIssueComment] {
-    try await sendDecodableCommand(
+    if linearReadsThroughAccount { return try await accountLinearComments(issueId: issueId) }
+    return try await sendDecodableCommand(
       action: "cto.getLinearIssueComments",
       args: ["issueId": issueId],
       as: [LinearIssueComment].self

@@ -287,7 +287,15 @@ extension LanesTabView {
   /// another machine holds for a namespaced id.
   @ViewBuilder
   func laneDestination(_ route: LaneRoute, showsBackButton: Bool = true) -> some View {
-    if let snapshot = laneSnapshots.first(where: { $0.lane.id == route.laneId }) {
+    if let snapshot = laneSnapshots.first(where: { $0.lane.id == route.laneId }),
+       let fleetKey = syncService.focusedMachineKey,
+       cloudLaneShowsAtRest(fleetKey: fleetKey, sync: syncService),
+       let subject = cloudLaneAtRestSubject(fleetKey: fleetKey, lane: snapshot.lane, sync: syncService) {
+      // The focused computer is an ADE Cloud computer that is not up: what
+      // the account keeps for the lane, with no wake.
+      CloudLaneAtRestScreen(subject: subject, onAwake: { await reload(refreshRemote: true) })
+        .showsCloudLaneState(fleetKey: fleetKey, onAwake: { await reload(refreshRemote: true) })
+    } else if let snapshot = laneSnapshots.first(where: { $0.lane.id == route.laneId }) {
       LaneDetailScreen(
         laneId: route.laneId,
         initialSnapshot: snapshot,
@@ -302,6 +310,18 @@ extension LanesTabView {
         fleetKey: syncService.focusedMachineKey,
         onAwake: { await reload(refreshRemote: true) }
       )
+    } else if let machine = remoteLanes.machines.first(where: { $0.snapshots.contains { $0.lane.id == route.laneId } }),
+      let snapshot = machine.snapshots.first(where: { $0.lane.id == route.laneId }),
+      cloudLaneShowsAtRest(fleetKey: machine.machineKey, sync: syncService),
+      let subject = cloudLaneAtRestSubject(fleetKey: machine.machineKey, lane: snapshot.lane, sync: syncService)
+    {
+      // A lane on an ADE Cloud computer that is not up: its saved Git state
+      // and its branch on GitHub. Opening it never wakes the computer.
+      CloudLaneAtRestScreen(subject: subject, onAwake: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) })
+        .showsCloudLaneState(
+          fleetKey: machine.machineKey,
+          onAwake: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
+        )
     } else if let machine = remoteLanes.machines.first(where: { $0.snapshots.contains { $0.lane.id == route.laneId } }),
       let snapshot = machine.snapshots.first(where: { $0.lane.id == route.laneId })
     {

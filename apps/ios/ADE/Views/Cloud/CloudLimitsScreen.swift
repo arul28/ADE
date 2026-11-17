@@ -43,7 +43,7 @@ struct CloudLimitsScreen: View {
             .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
-          .disabled(!store.canWrite)
+          .disabled(!store.canWriteLimits)
         }
       } header: { CloudSectionLabel("Choose") } footer: {
         if store.limits?.preset == "custom" { Text("Custom: your own limits below.") }
@@ -54,21 +54,21 @@ struct CloudLimitsScreen: View {
             get: { limits.unattendedSpend },
             set: { value in Task { await store.setLimits(["unattendedSpend": value]) } }
           ))
-          .disabled(!store.canWrite)
+          .disabled(!store.canWriteLimits)
           Picker("New computers a day", selection: Binding(
             get: { limits.machinesPerDay },
             set: { value in Task { await store.setLimits(["machinesPerDay": value]) } }
           )) {
             ForEach([1, 3, 5, 10], id: \.self) { Text("\($0)").tag($0) }
           }
-          .disabled(!limits.unattendedSpend || !store.canWrite)
+          .disabled(!limits.unattendedSpend || !store.canWriteLimits)
           Picker("Largest size", selection: Binding(
             get: { limits.maxShape },
             set: { value in Task { await store.setLimits(["maxShape": value]) } }
           )) {
             ForEach(cloudShapes, id: \.id) { Text($0.label).tag($0.id) }
           }
-          .disabled(!limits.unattendedSpend || !store.canWrite)
+          .disabled(!limits.unattendedSpend || !store.canWriteLimits)
           Picker("Paid extra disk a month", selection: Binding(
             get: { limits.extraDiskMonthCents ?? Self.yourLimit },
             set: { value in
@@ -82,7 +82,7 @@ struct CloudLimitsScreen: View {
             }
             Text("Your limit").tag(Self.yourLimit)
           }
-          .disabled(!limits.unattendedSpend || !store.canWrite)
+          .disabled(!limits.unattendedSpend || !store.canWriteLimits)
         } header: { CloudSectionLabel("Limits") } footer: {
           Text("Paid extra disk: what agents nobody watches may add past your plan's disk. Your limit: up to the monthly limit you set for extra disk.")
         }

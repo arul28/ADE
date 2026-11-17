@@ -202,6 +202,11 @@ extension WorkRootListScreen {
   /// the list stays where the user left it.
   func duoSelectSession(_ session: TerminalSessionSummary) {
     guard !workIsPendingChatCreationSession(session) else { return }
+    // The saved copy of an ADE Cloud CLI or shell opens read-only, as on the phone.
+    if let copy = CloudAtRestStore.shared.session(rowId: session.id) {
+      cloudSessionCopyRow = copy
+      return
+    }
     // Another machine's CLI or shell row opens in the column over that
     // machine's light link when it can. Otherwise it opens on its own
     // machine, as a tap on the phone layout does.

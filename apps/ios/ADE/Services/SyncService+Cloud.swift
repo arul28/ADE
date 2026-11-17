@@ -659,6 +659,9 @@ extension SyncService {
     AccountCloudLaunchStore.shared.reset()
     // And its ADE Cloud account state, held messages and saved transcripts.
     AccountCloudStore.shared.reset()
+    // And its saved Git summaries, CLI and shell copies, and Linear answers.
+    CloudAtRestStore.shared.reset()
+    AccountLinearCache.shared.reset()
     // An account project scope is the last account's project.
     clearAccountProjectScope()
     // The last account's ADE Cloud computers and wake messages go too.
@@ -713,6 +716,11 @@ extension SyncService {
     } catch {
       cloudServerLog.error("cloud_server read=chats failed error=\(String(describing: error), privacy: .public)")
       chats = nil
+    }
+    // The open project's at-rest view (its CLI and shell copies, Git counts)
+    // in one read. An older server answers 404 and today's rows stay.
+    if let origin = cloudProjectOrigin {
+      await CloudAtRestStore.shared.refreshOverview(origin: origin, client: client)
     }
     await accountState
     // An account switch while it read: the answer is the old account's.
@@ -815,7 +823,11 @@ extension SyncService {
         fleetKey = cloudSavedFleetKey(accountMachineKey: machineKey)
       }
       guard !skip.contains(fleetKey), fleetKey != focusedMachineKey else { continue }
-      let projects = cloudSavedRosterProjects(rows: byMachine[machineKey] ?? [], box: laneOnly[machineKey])
+      let projects = cloudSavedRosterProjects(
+        rows: byMachine[machineKey] ?? [],
+        box: laneOnly[machineKey],
+        sessions: CloudAtRestStore.shared.sessions(machineKey: machineKey)
+      )
       guard !projects.isEmpty else { continue }
       // ADE Cloud is one machine to the person: never a computer's own name.
       out.append((fleetKey, ADECloudMachine.name, projects))
@@ -873,14 +885,18 @@ extension SyncService {
     // A computer that left the account lists under its saved key.
     guard let machineKey = cloudAccountMachineKey(fleetKey: fleetKey) else { return [] }
     let box = cloudServerInstances.first { $0.machineKey == machineKey && $0.laneId != nil }
-    return cloudSavedRosterProjects(rows: cloudSavedChats.filter { $0.machineKey == machineKey }, box: box)
+    return cloudSavedRosterProjects(
+      rows: cloudSavedChats.filter { $0.machineKey == machineKey },
+      box: box,
+      sessions: CloudAtRestStore.shared.sessions(machineKey: machineKey)
+    )
   }
 
   /// One roster project per repository: its lanes and its chats, as the
   /// computer last saved them. A lane computer with no saved chat still
   /// shows its lane. Rows with no repository are left out (they belong to no
   /// project's list).
-  private func cloudSavedRosterProjects(rows: [CloudSavedChatRow], box: CloudServerInstance?) -> [RemoteRosterProject] {
+  private func cloudSavedRosterProjects(rows: [CloudSavedChatRow], box: CloudServerInstance?, sessions: [CloudSessionRow] = []) -> [RemoteRosterProject] {
     var order: [String] = []
     var projects: [String: RemoteRosterProject] = [:]
     func project(for origin: String, projectId: String?, root: String?) -> RemoteRosterProject {
@@ -911,9 +927,13 @@ extension SyncService {
       if !entry.chats.contains(where: { $0.id == row.chatId }) {
         let activity = nonEmptyTrimmed(row.lastActivityAt)
           ?? ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: row.updatedAt / 1000))
+        // A subagent chat files under its parent chat, as on the computer.
+        let parent = nonEmptyTrimmed(row.parentChatId)
         entry.chats.append(RemoteRosterChat(
           id: row.chatId,
           laneId: laneId,
+          spawnKind: parent == nil ? nil : AgentChatSpawnKind(wireValue: row.spawnKind ?? ""),
+          orchestrationParentSessionId: parent,
           title: nonEmptyTrimmed(row.title) ?? "Saved chat",
           provider: row.provider,
           model: row.model,
@@ -926,8 +946,35 @@ extension SyncService {
     }
     if let box, let laneId = box.laneId, let origin = box.projectOrigin {
       var entry = project(for: origin, projectId: nil, root: nil)
+      if let index = entry.lanes.firstIndex(where: { $0.id == laneId }) {
+        if entry.lanes[index].branchRef == nil { entry.lanes[index].branchRef = box.laneBranch }
+      } else {
+        entry.lanes.append(RemoteRosterLane(id: laneId, name: box.laneName ?? "Cloud lane", color: nil, icon: nil, laneType: "worktree", branchRef: box.laneBranch))
+      }
+      projects[origin] = entry
+    }
+    // The saved copies of its CLI and shell sessions: read-only rows. Their
+    // ids never name a live session, so a tap opens the copy.
+    for copy in sessions {
+      guard let origin = copy.projectKey.flatMap({ nonEmptyTrimmed($0) }) else { continue }
+      var entry = project(for: origin, projectId: nil, root: nil)
+      let laneId = nonEmptyTrimmed(copy.laneId) ?? "saved-chats"
       if !entry.lanes.contains(where: { $0.id == laneId }) {
-        entry.lanes.append(RemoteRosterLane(id: laneId, name: box.laneName ?? "Cloud lane", color: nil, icon: nil, laneType: "worktree", branchRef: nil))
+        entry.lanes.append(RemoteRosterLane(id: laneId, name: nonEmptyTrimmed(copy.laneName) ?? "Saved chats", color: nil, icon: nil, laneType: "worktree", branchRef: nil))
+      }
+      let rowId = cloudSessionCopyRowId(machineKey: copy.machineKey, sessionId: copy.sessionId)
+      if !entry.chats.contains(where: { $0.id == rowId }) {
+        entry.chats.append(RemoteRosterChat(
+          id: rowId,
+          laneId: laneId,
+          title: nonEmptyTrimmed(copy.title) ?? (copy.isShell ? "Shell" : "CLI session"),
+          provider: nil,
+          model: nil,
+          toolType: copy.isShell ? "shell" : (nonEmptyTrimmed(copy.toolType) ?? "claude-code"),
+          status: copy.status == "running" ? .idle : .ended,
+          lastActivityAt: nonEmptyTrimmed(copy.lastActivityAt)
+            ?? ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: copy.updatedAt / 1000))
+        ))
       }
       projects[origin] = entry
     }

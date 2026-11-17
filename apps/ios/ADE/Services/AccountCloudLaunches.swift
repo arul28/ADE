@@ -179,13 +179,17 @@ struct CloudAccountSignIns: Decodable, Equatable {
   let signIns: [CloudAccountSignIn]
   /// The vault didn't answer: `saved` may be wrong.
   let unknown: Bool
+  /// Provider sign-ins carried from ADE desktop to ADE Cloud, by provider
+  /// (`carried.antigravity`). Empty when the server left it out.
+  let carried: [String: Bool]
 
-  private enum CodingKeys: String, CodingKey { case signIns, unknown }
+  private enum CodingKeys: String, CodingKey { case signIns, unknown, carried }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     signIns = c.lenient([CloudAccountSignIn].self, forKey: .signIns) ?? []
     unknown = c.lenient(Bool.self, forKey: .unknown) ?? false
+    carried = c.lenient([String: Bool].self, forKey: .carried) ?? [:]
   }
 }
 
@@ -350,6 +354,9 @@ final class AccountCloudLaunchStore: ObservableObject {
   @Published private var hiddenIds: Set<String> = []
   @Published private(set) var catalog: CloudModelCatalog?
   @Published private(set) var catalogError: String?
+  /// Provider sign-ins ADE desktop carried to ADE Cloud (`carried` of
+  /// `GET /cloud/sign-ins`), read with the catalog. Empty until read.
+  @Published private(set) var carriedSignIns: [String: Bool] = [:]
 
   private var pollTask: Task<Void, Never>?
   /// Bumped for each poll loop and by `reset`: a loop clears the handle only while it is still the current one.
@@ -381,6 +388,10 @@ final class AccountCloudLaunchStore: ObservableObject {
     } catch {
       guard generation == accountGeneration else { return }
       catalogError = cloudServerFailureMessage(error)
+    }
+    // Whether a desktop-only sign-in (Antigravity) already reached ADE Cloud.
+    if let signIns = try? await client.accountSignIns(), generation == accountGeneration {
+      carriedSignIns = signIns.carried
     }
   }
 
@@ -625,6 +636,7 @@ final class AccountCloudLaunchStore: ObservableObject {
     pollTask?.cancel()
     pollTask = nil
     pollGeneration += 1
+    carriedSignIns = [:]
     accountGeneration += 1
     entries = []
     hiddenIds = []
