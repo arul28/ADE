@@ -351,6 +351,8 @@ final class AccountCloudLaunchStore: ObservableObject {
   private var pollTask: Task<Void, Never>?
   /// Bumped for each poll loop and by `reset`: a loop clears the handle only while it is still the current one.
   private var pollGeneration = 0
+  /// Bumped by `reset`: an answer to a read the last account made lands nowhere.
+  private var accountGeneration = 0
   private var activeReadAt: Date?
   private static let lastModelKey = "ade.cloudChat.lastModel.v1"
 
@@ -361,11 +363,15 @@ final class AccountCloudLaunchStore: ObservableObject {
 
   func loadCatalogIfNeeded(using sync: SyncService) async {
     guard catalog == nil else { return }
+    let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else { return }
     do {
-      catalog = try await client.modelCatalog()
+      let read = try await client.modelCatalog()
+      guard generation == accountGeneration else { return }
+      catalog = read
       catalogError = nil
     } catch {
+      guard generation == accountGeneration else { return }
       catalogError = cloudServerFailureMessage(error)
     }
   }
@@ -389,26 +395,43 @@ final class AccountCloudLaunchStore: ObservableObject {
   func refreshActive(using sync: SyncService, force: Bool = false) async {
     if !force, let at = activeReadAt, Date().timeIntervalSince(at) < 20 { return }
     activeReadAt = Date()
+    let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else { return }
     let list: [CloudLaunchRecord]
     do {
       list = try await client.activeLaunches()
     } catch {
+      guard generation == accountGeneration else { return }
       // The next look (a page that opens, or 20 s later) tries again.
       activeReadAt = nil
       Self.noteReadFailed("active", error)
       return
     }
-    for record in list where !entries.contains(where: { $0.launchId == record.launchId }) {
+    guard generation == accountGeneration else { return }
+    for summary in list {
+      if let index = entries.firstIndex(where: { $0.launchId == summary.launchId }) {
+        // A launch this phone knows: another device may have retried it. The
+        // full record (with its request) stays while the state is the same.
+        if entries[index].record?.state != summary.state {
+          entries[index].record = summary
+        }
+        continue
+      }
       entries.append(Entry(
-        launchId: record.launchId,
-        origin: record.projectOrigin?.lowercased(),
-        prompt: record.prompt ?? "",
-        provider: record.provider,
-        modelId: record.modelId,
-        record: record
+        launchId: summary.launchId,
+        origin: summary.projectOrigin?.lowercased(),
+        prompt: summary.prompt ?? "",
+        provider: summary.provider,
+        modelId: summary.modelId,
+        record: summary
       ))
     }
+    // The list's summaries carry no request: read each failed launch in full, so Retry has it.
+    for entry in entries where entry.record?.state == "failed" && entry.body == nil && entry.record?.request == nil {
+      guard let record = try? await client.launch(entry.launchId), generation == accountGeneration else { continue }
+      patch(entry.launchId) { $0.record = record }
+    }
+    guard generation == accountGeneration else { return }
     poll(using: sync)
   }
 
@@ -453,18 +476,21 @@ final class AccountCloudLaunchStore: ObservableObject {
   }
 
   private func runStart(_ launchId: String, body: RemoteJSONValue, using sync: SyncService) async {
+    let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else {
       patch(launchId) { $0.startError = "Sign in to ADE to start a chat on ADE Cloud." }
       return
     }
     do {
       let record = try await client.startLaunch(body)
+      guard generation == accountGeneration else { return }
       patch(launchId) {
         $0.record = record
         $0.startError = nil
       }
       poll(using: sync)
     } catch {
+      guard generation == accountGeneration else { return }
       let message = cloudServerFailureMessage(error)
       patch(launchId) { $0.startError = message }
     }
@@ -472,10 +498,11 @@ final class AccountCloudLaunchStore: ObservableObject {
 
   /// Cancels a launch still on its way. Answers the server's reason when it refused.
   func cancel(_ launchId: String, using sync: SyncService) async -> String? {
+    let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else { return "Sign in to ADE to cancel this chat." }
     do {
       let record = try await client.cancelLaunch(launchId)
-      patch(launchId) { $0.record = record }
+      if generation == accountGeneration { patch(launchId) { $0.record = record } }
       return nil
     } catch {
       return cloudServerFailureMessage(error)
@@ -484,6 +511,7 @@ final class AccountCloudLaunchStore: ObservableObject {
 
   /// Reads one launch again now (after a sign-in step).
   func refresh(_ launchId: String, using sync: SyncService) async {
+    let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else { return }
     let record: CloudLaunchRecord
     do {
@@ -492,6 +520,7 @@ final class AccountCloudLaunchStore: ObservableObject {
       Self.noteReadFailed("status", error)
       return
     }
+    guard generation == accountGeneration else { return }
     patch(launchId) { $0.record = record }
     poll(using: sync)
   }
@@ -526,6 +555,8 @@ final class AccountCloudLaunchStore: ObservableObject {
             Self.noteReadFailed("status", error)
             continue
           }
+          // A reset while this read was out: the loop is cancelled, and its answer is the last account's.
+          if Task.isCancelled || self.pollGeneration != generation { break }
           if record != entry.record {
             changed = true
             self.patch(entry.launchId) { $0.record = record }
@@ -549,6 +580,7 @@ final class AccountCloudLaunchStore: ObservableObject {
     pollTask?.cancel()
     pollTask = nil
     pollGeneration += 1
+    accountGeneration += 1
     entries = []
     activeReadAt = nil
   }

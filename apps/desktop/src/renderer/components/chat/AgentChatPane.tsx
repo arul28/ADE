@@ -17829,11 +17829,17 @@ export function AgentChatPane({
   // Read when the dialog opens (the open re-renders the pane); no subscription per keystroke.
   const draftCloneSends = draftCloneDialog != null && draftStore.get().trim().length > 0;
   useEffect(() => {
-    if (!selectedDraftMachineId || !takeDraftSendAfter(selectedDraftMachineId)) return;
-    if (draftStore.get().trim().length === 0) return;
-    // One frame later, so the send reads the machine just picked.
-    window.requestAnimationFrame(() => void submitRef.current());
-  }, [selectedDraftMachineId, takeDraftSendAfter]);
+    // After the machine's lanes are read: a send before them stops at "Loading lanes…".
+    if (!selectedDraftMachineId || draftLaneCatalogLoading || !takeDraftSendAfter(selectedDraftMachineId)) return;
+    const draft = draftStore.get();
+    if (draft.trim().length === 0) return;
+    // One frame later, so the send reads the machine just picked. Another pick
+    // first cancels it; an edited draft is the person's to send.
+    const frame = window.requestAnimationFrame(() => {
+      if (draftStore.get() === draft) void submitRef.current();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [draftLaneCatalogLoading, selectedDraftMachineId, takeDraftSendAfter]);
   /**
    * Why the ADE Cloud entry can't be picked now, or null. Parallel models
    * start several lanes on this computer. A chat and a CLI session both run there.

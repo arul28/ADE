@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { GithubLogo, Laptop, Lock, X } from "@phosphor-icons/react";
 import { SetupSteps, type SetupStep } from "./SetupSteps";
-import { startGithubAccountAppSignIn, useGithubAccountApp } from "../../lib/useGithubAccountApp";
+import { githubSignInFailureDetail, startGithubAccountAppSignIn, useGithubAccountApp } from "../../lib/useGithubAccountApp";
 import { useAccountGithubRepositories } from "../../lib/useAccountGithubReads";
 import { useAccountProjectList } from "../../state/useRepositoryCopies";
 import { accountProjectListUserId } from "../../state/accountProjectListClient";
@@ -52,7 +52,9 @@ export function useGetStartedState({ priorWork }: { priorWork: boolean | null })
   const cloudLanes = useAdeCloudLaneComputers();
   // Finished once per account: another account in this browser starts over.
   const doneKey = `${DONE_KEY}:${accountProjectListUserId() ?? "unknown"}`;
-  const doneBefore = useMemo(() => readFlag(doneKey), [doneKey]);
+  const [savedKey, setSavedKey] = useState<string | null>(null);
+  // Finished stays finished on this page too: a step that later changes (GitHub disconnected) doesn't bring the card back.
+  const doneBefore = useMemo(() => savedKey === doneKey || readFlag(doneKey), [doneKey, savedKey]);
   const projects = list.state === "ready" ? list.projects : [];
   const githubDone = github.connected;
   const projectDone = projects.length > 0;
@@ -62,7 +64,9 @@ export function useGetStartedState({ priorWork }: { priorWork: boolean | null })
   const known = github.loaded && list.state === "ready" && launches.known && priorWork != null;
   useEffect(() => {
     // Only once every read is in: a step still loading never counts as done for good.
-    if (allDone && known && accountProjectListUserId()) writeFlag(doneKey);
+    if (!allDone || !known || !accountProjectListUserId()) return;
+    writeFlag(doneKey);
+    setSavedKey(doneKey);
   }, [allDone, doneKey, known]);
   return {
     github,
@@ -123,8 +127,12 @@ export function GetStartedCard({
     {
       id: "github",
       title: github.status?.githubLogin && githubDone ? `GitHub connected as ${github.status.githubLogin}` : "Connect GitHub",
-      hint: githubDone ? undefined : "ADE reads your repositories and opens pull requests with it.",
-      state: githubDone ? "done" : connecting ? "running" : "todo",
+      hint: githubDone
+        ? undefined
+        : github.phase.kind === "failed"
+          ? githubSignInFailureDetail(github.phase)
+          : "ADE reads your repositories and opens pull requests with it.",
+      state: githubDone ? "done" : connecting ? "running" : github.phase.kind === "failed" ? "failed" : "todo",
       action: githubDone ? undefined : (
         <button
           type="button"

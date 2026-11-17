@@ -156,7 +156,8 @@ struct AccountProjectCloudComposer: View {
         modelId: modelId,
         using: syncService
       )
-      text = ""
+      // Text typed while the send was out stays.
+      if text.trimmingCharacters(in: .whitespacesAndNewlines) == prompt { text = "" }
       sending = false
     }
   }

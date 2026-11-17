@@ -1134,8 +1134,10 @@ export class AdeSyncClient {
 
   private resolveProjectAction<T>(requests: Map<string, PendingRequest<T>>, requestId: string | null, payload: T): void {
     if (!requestId) return;
+    // Machine-wide, not the open project's: a project change keeps it, and a
+    // lost connection rejects it (its request id is never answered twice).
     const pending = requests.get(requestId);
-    if (!pending || pending.generation !== this.clientGeneration) return;
+    if (!pending) return;
     clearTimeout(pending.timer);
     requests.delete(requestId);
     pending.resolve(payload);

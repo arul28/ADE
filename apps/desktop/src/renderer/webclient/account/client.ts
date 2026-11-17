@@ -1097,14 +1097,22 @@ export class BrowserAccountClient {
           return null;
         }
       },
-      fetch: (input, init) => fetchImpl(input, {
-        ...init,
-        headers: { ...(init?.headers as Record<string, string> | undefined), "x-ade-correlation-id": createAccountDirectoryCorrelationId() },
-        credentials: "omit",
-        referrerPolicy: "no-referrer",
-        cache: "no-store",
-        redirect: "error",
-      }),
+      fetch: async (input, init) => {
+        const send = (headers: Record<string, string> | undefined) => fetchImpl(input, {
+          ...init,
+          headers: { ...headers, "x-ade-correlation-id": createAccountDirectoryCorrelationId() },
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          cache: "no-store",
+          redirect: "error",
+        });
+        const headers = init?.headers as Record<string, string> | undefined;
+        const response = await send(headers);
+        if (response.status !== 401 || !headers?.authorization) return response;
+        // The directory refused a token that has not expired here: refresh it once, as the directory reads do.
+        const fresh = await this.getAccessToken({ forceRefresh: true }).catch(() => null);
+        return fresh ? await send({ ...headers, authorization: `Bearer ${fresh}` }) : response;
+      },
       timeoutMs: CLOUD_REQUEST_TIMEOUT_MS,
     });
     this.cloudApiClient = { baseUrl: config.directoryBaseUrl, client };

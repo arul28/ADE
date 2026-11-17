@@ -175,7 +175,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     wake: (instanceId: string, args: { reason?: "push_work" } = {}) =>
       request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     /** The server wakes a sleeping computer first. `computerIdle` is needed to grow the disk of a running one. */
-    resize: (instanceId: string, args: { cpu: number; memory: number; disk?: number; computerIdle?: boolean }) =>
+    resize: (instanceId: string, args: { cpu?: number; memory?: number; disk?: number; computerIdle?: boolean }) =>
       request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     deleteComputer: (instanceId: string, args: { who?: string | null; reason?: string | null } = {}) =>
       request<{ deleted: true }>("DELETE", instancePath(instanceId), { body: args }),

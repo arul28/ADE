@@ -319,7 +319,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
         <span
           className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold leading-4"
           style={{ color: toneText(accent) }}
-          title={lane.name}
+          title={laneDisplayName(lane)}
         >
           <LaneEmojiGlyph
             emoji={lane.emoji}
@@ -406,7 +406,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
       {hoverCard.anchor && machine ? (
         <SessionHoverCard
           anchor={hoverCard.anchor}
-          title={lane.name}
+          title={laneDisplayName(lane)}
           rows={[{
             id: "machine",
             icon: <DesktopTower size={13} weight="duotone" className="text-amber-400/85" />,

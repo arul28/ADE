@@ -123,7 +123,7 @@ export type CloudProvider = {
    * size (`CLOUD_AUTO_SIZE`); the server refuses it with 409 `size_kept` when
    * the launch's size was picked, the agent limits keep it, or it moved once.
    */
-  resizeInstance(id: string, resources: { cpu: number; memory: number; disk?: number }, options?: { computerIdle?: boolean; origin?: "auto"; launchId?: string }): Promise<string>;
+  resizeInstance(id: string, resources: { cpu?: number; memory?: number; disk?: number }, options?: { computerIdle?: boolean; origin?: "auto"; launchId?: string }): Promise<string>;
   createBackup(id: string): Promise<{ id: string | null; created: number | null; sizeBytes: number | null }>;
   setAutoSleep(id: string, policy: { autoSleep: boolean; idleTimeoutSeconds?: number }): Promise<void>;
   addPublicPort(id: string, input: { port: number; label: string }): Promise<{ port: number; url: string }>;

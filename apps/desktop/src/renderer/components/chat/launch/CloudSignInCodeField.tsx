@@ -51,13 +51,7 @@ export function CloudSignInCodeField({
     }
   };
 
-  if (sent) {
-    return (
-      <p className={className} style={{ color: "var(--kit-text-2)", margin: 0 }}>
-        Code sent. The chat starts when the sign-in is done.
-      </p>
-    );
-  }
+  // The field stays: the sign-in can ask for another code on the same job.
   return (
     <div className={className}>
       <div className="flex flex-wrap items-center gap-2">
@@ -71,7 +65,10 @@ export function CloudSignInCodeField({
           aria-label="Code from the sign-in page"
           value={value}
           disabled={busy}
-          onChange={(event) => setValue(event.target.value)}
+          onChange={(event) => {
+            setValue(event.target.value);
+            setSent(false);
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter") void send();
           }}
@@ -80,6 +77,9 @@ export function CloudSignInCodeField({
           {busy ? "Sending…" : "Send code"}
         </button>
       </div>
+      {sent && !error ? (
+        <p style={{ color: "var(--kit-text-2)", margin: "6px 0 0" }}>Code sent. The chat starts when the sign-in is done.</p>
+      ) : null}
       {error ? (
         <Banner
           layout="inline"

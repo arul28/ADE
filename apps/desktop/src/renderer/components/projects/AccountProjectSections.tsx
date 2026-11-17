@@ -145,8 +145,10 @@ export function CloudChatComposer({
     setSending(true);
     setSendError(null);
     saveLastCloudModel(current);
-    void startAccountCloudChat({ accountProjectId, origin, provider: current.provider, modelId: current.modelId, prompt: text.trim() })
-      .then(() => setText(""))
+    const prompt = text.trim();
+    void startAccountCloudChat({ accountProjectId, origin, provider: current.provider, modelId: current.modelId, prompt })
+      // Text typed while the send was out stays.
+      .then(() => setText((now) => (now.trim() === prompt ? "" : now)))
       .catch((error: unknown) => setSendError(error instanceof Error ? error.message : String(error)))
       .finally(() => setSending(false));
   };

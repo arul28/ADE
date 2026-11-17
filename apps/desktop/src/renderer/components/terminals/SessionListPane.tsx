@@ -1951,7 +1951,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       const effectiveFilingBuckets = filingBucketsForForeignSessions(row.sessions);
       const matched = query || chipFiltersActive
         ? row.sessions.filter((session) => {
-            if (query && !`${primarySessionLabel(session)} ${row.lane.name}`.toLowerCase().includes(query)) {
+            if (query && !`${primarySessionLabel(session)} ${row.lane.name} ${laneDisplayName(row.lane)}`.toLowerCase().includes(query)) {
               return false;
             }
             return !chipFiltersActive || matchesWorkSessionFilters(session, workSessionFilters, {

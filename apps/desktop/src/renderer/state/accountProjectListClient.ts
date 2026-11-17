@@ -165,6 +165,8 @@ async function readMachineNames(projects: readonly AccountProjectView[], known: 
 }
 
 const accountChangeListeners = new Set<() => void>();
+/** The account the last status read named, whether or not its list read worked. */
+let seenUserId: string | null = null;
 
 /**
  * Runs when another account signs in on this client, or the account signs
@@ -196,7 +198,6 @@ function forgetOtherAccount(userId: string | null): void {
   pendingChanges.clear();
   writeCache(null);
   publish({ state: "unknown", projects: [] });
-  noteAccountChanged();
 }
 
 async function readList(): Promise<void> {
@@ -205,6 +206,10 @@ async function readList(): Promise<void> {
   lastReadAt = Date.now();
   const status = await window.ade?.account?.status?.().catch(() => null);
   const userId = status?.userId ?? null;
+  // Another account than the last one named here, even when that one's list never loaded.
+  const previousUserId = seenUserId ?? currentUserId;
+  if (userId && previousUserId && userId !== previousUserId) noteAccountChanged();
+  if (userId) seenUserId = userId;
   forgetOtherAccount(userId);
   const answer = await accountList().catch((error: unknown) => {
     // The cached list stays on screen; the next focus reads again.
@@ -213,8 +218,9 @@ async function readList(): Promise<void> {
   });
   if (!answer) return;
   if (answer.state === "signed_out") {
-    const wasSignedIn = currentUserId != null;
+    const wasSignedIn = currentUserId != null || seenUserId != null;
     currentUserId = null;
+    seenUserId = null;
     pendingChanges.clear();
     writeCache(null);
     publish({ state: "signed_out", projects: [] });

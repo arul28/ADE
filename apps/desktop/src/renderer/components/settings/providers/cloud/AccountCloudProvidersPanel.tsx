@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CloudAccountSignIn, CloudAccountSignIns, CloudCatalogProvider } from "../../../../../shared/accountCloudLaunches";
 import { useCloudModelCatalog } from "../../../../state/cloudModelCatalog";
 import { openExternalUrl } from "../../../../lib/openExternal";
@@ -25,6 +25,17 @@ export function AccountCloudProvidersPanel() {
     void api.signIns().then(setSignIns, (error: unknown) => setSignInsError(extractError(error)));
   }, []);
   useEffect(() => reload(), [reload]);
+  // Rows save at the same time; each answer is the whole list, so an older answer never replaces a newer one.
+  const changeSeq = useRef(0);
+  const appliedSeq = useRef(0);
+  const beginChange = useCallback(() => {
+    const seq = ++changeSeq.current;
+    return (next: CloudAccountSignIns) => {
+      if (seq < appliedSeq.current) return;
+      appliedSeq.current = seq;
+      setSignIns(next);
+    };
+  }, []);
 
   const signInFor = (provider: string): CloudAccountSignIn | null =>
     signIns?.signIns.find((entry) => entry.providers.includes(provider)) ?? null;
@@ -71,7 +82,7 @@ export function AccountCloudProvidersPanel() {
                 provider={provider}
                 signIn={signInFor(provider.provider)}
                 vaultUnknown={signIns?.unknown === true}
-                onChanged={setSignIns}
+                beginChange={beginChange}
               />
             ))}
           </div>
@@ -108,12 +119,13 @@ function ProviderRow({
   provider,
   signIn,
   vaultUnknown,
-  onChanged,
+  beginChange,
 }: {
   provider: CloudCatalogProvider;
   signIn: CloudAccountSignIn | null;
   vaultUnknown: boolean;
-  onChanged: (next: CloudAccountSignIns) => void;
+  /** Starts a change; the answer it returns applies the list the server sent back. */
+  beginChange: () => (next: CloudAccountSignIns) => void;
 }) {
   const kind = provider.remoteSignIn;
   const [editing, setEditing] = useState(false);
@@ -126,12 +138,13 @@ function ProviderRow({
 
   const save = () => {
     const api = window.ade?.cloudLaunches;
-    if (!api || !signIn || !value.trim()) return;
+    if (!api || !signIn || busy || !value.trim()) return;
     setBusy(true);
     setError(null);
+    const apply = beginChange();
     void api.saveSignIn(signIn.id, value.trim()).then(
       (next) => {
-        onChanged(next);
+        apply(next);
         setValue("");
         setEditing(false);
       },
@@ -150,8 +163,9 @@ function ProviderRow({
     if (!ok) return;
     setBusy(true);
     setError(null);
+    const apply = beginChange();
     try {
-      onChanged(await api.removeSignIn(signIn.id));
+      apply(await api.removeSignIn(signIn.id));
     } catch (failure) {
       setError(extractError(failure));
     } finally {
@@ -183,6 +197,7 @@ function ProviderRow({
             data-size="sm"
             type="password"
             autoFocus
+            disabled={busy}
             autoComplete="off"
             spellCheck={false}
             style={{ flex: "1 1 220px" }}

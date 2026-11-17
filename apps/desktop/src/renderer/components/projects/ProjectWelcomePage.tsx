@@ -62,7 +62,7 @@ import "./ProjectWelcomePage.css";
 import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
 import { useDesktopFirstAccountTab, useHomeAccountProjects } from "./useHomeAccountProjects";
 import { GetStartedCard, InstallAdeChip, useGetStartedState } from "./GetStartedCard";
-import { useHasOwnComputer } from "../../state/ownComputers";
+import { useHasOwnComputer, useOwnWebComputers } from "../../state/ownComputers";
 import type { HomeWebComputer } from "./homeProjectRows";
 import { useHomeRowRemoval } from "./useHomeRowRemoval";
 
@@ -262,13 +262,15 @@ export function ProjectWelcomePage() {
     }
     return { webComputers: byAccount, webComputersByKey: byKey };
   }, [webMachines]);
+  // A chat with no project runs on a computer of the person's own, never on an ADE Cloud computer.
+  const ownWebMachines = useOwnWebComputers();
   const activeWebMachine = useMemo(() => (
-    webMachines.find((machine) => machine.status === "live")
-    ?? webMachines.find((machine) => machine.key === workspace?.snapshot.lastActiveMachineKey)
-    ?? webMachines.find((machine) => machine.status === "available")
-    ?? webMachines[0]
+    ownWebMachines.find((machine) => machine.status === "live")
+    ?? ownWebMachines.find((machine) => machine.key === workspace?.snapshot.lastActiveMachineKey)
+    ?? ownWebMachines.find((machine) => machine.status === "available")
+    ?? ownWebMachines[0]
     ?? null
-  ), [webMachines, workspace?.snapshot.lastActiveMachineKey]);
+  ), [ownWebMachines, workspace?.snapshot.lastActiveMachineKey]);
 
   useEffect(() => {
     if (!webMode || !workspace) return;

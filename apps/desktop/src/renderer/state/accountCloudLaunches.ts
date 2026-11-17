@@ -54,6 +54,10 @@ let poller: BackoffPoller | null = null;
 let discovered = false;
 /** Bumped when the account changes: a read the last account started lands nowhere. */
 let accountEpoch = 0;
+/** Launches whose start (or Retry) is on its way: the poll waits for its answer. */
+const startsInFlight = new Set<string>();
+/** Launches found by the first look whose messages read failed: the poll reads them again. */
+const messagesUnread = new Set<string>();
 
 // Another account here: the last account's launches and messages go, and the new one is looked up.
 onAccountProjectListAccountChange(() => {
@@ -61,6 +65,8 @@ onAccountProjectListAccountChange(() => {
   poller?.stop();
   poller = null;
   discovered = false;
+  startsInFlight.clear();
+  messagesUnread.clear();
   snapshot = { entries: [], known: false };
   emit();
   if (listeners.size > 0) {
@@ -152,7 +158,7 @@ export function launchInProgress(entry: AccountCloudLaunchEntry): boolean {
  * reports the chat, so the read that sees the chat still finds them queued).
  */
 function launchNeedsRead(entry: AccountCloudLaunchEntry): boolean {
-  if (launchInProgress(entry)) return true;
+  if (launchInProgress(entry) || messagesUnread.has(entry.launchId)) return true;
   return Boolean(entry.record?.sessionId) && entry.record?.state !== "failed" && entry.record?.state !== "cancelled" && messagesWaitingRecently(entry);
 }
 
@@ -168,20 +174,23 @@ async function readInProgress(): Promise<boolean> {
   let changed = false;
   for (const entry of snapshot.entries.filter(launchNeedsRead)) {
     // A start still on its way has nothing to read yet.
-    if (entry.startedHere && !entry.record) continue;
+    if ((entry.startedHere && !entry.record) || startsInFlight.has(entry.launchId)) continue;
     let read = "status";
     try {
       if (launchInProgress(entry)) {
         const record = await api.status(entry.launchId);
-        if (signatureOf(record) !== signatureOf(entry.record)) {
+        // A Retry that answered while this read was out has the newer record.
+        const current = snapshot.entries.find((candidate) => candidate.launchId === entry.launchId);
+        if (current?.record === entry.record && !startsInFlight.has(entry.launchId) && signatureOf(record) !== signatureOf(entry.record)) {
           changed = true;
           patchEntry(entry.launchId, { record });
         }
       }
       // Queued messages move to `delivered` once the chat exists; read them while any wait.
-      if (messagesWaiting(entry)) {
+      if (messagesWaiting(entry) || messagesUnread.has(entry.launchId)) {
         read = "messages";
         const { messages } = await api.messages(entry.launchId);
+        messagesUnread.delete(entry.launchId);
         const local = snapshot.entries.find((candidate) => candidate.launchId === entry.launchId)?.messages ?? entry.messages;
         const merged = mergeMessages(local, messages);
         if (messagesSignature(merged) !== messagesSignature(local)) {
@@ -234,7 +243,20 @@ async function discover(): Promise<void> {
     // Fill each found launch's record at once; the poll keeps it current.
     for (const entry of added) {
       void api.status(entry.launchId).then((record) => patchEntry(entry.launchId, { record }), (error: unknown) => noteReadFailed("status", error));
-      void api.messages(entry.launchId).then(({ messages }) => patchEntry(entry.launchId, { messages }), (error: unknown) => noteReadFailed("messages", error));
+      void api.messages(entry.launchId).then(
+        ({ messages }) => {
+          if (epoch !== accountEpoch) return;
+          // A message queued while this read was out stays.
+          const current = snapshot.entries.find((candidate) => candidate.launchId === entry.launchId);
+          patchEntry(entry.launchId, { messages: mergeMessages(current?.messages ?? [], messages) });
+        },
+        (error: unknown) => {
+          if (epoch !== accountEpoch) return;
+          noteReadFailed("messages", error);
+          messagesUnread.add(entry.launchId);
+          syncPoller();
+        },
+      );
     }
   } catch (error) {
     if (epoch !== accountEpoch) return;
@@ -348,10 +370,13 @@ export async function startAccountCloudChat(input: StartAccountCloudChat): Promi
 async function runStart(launchId: string, request: CloudLaunchStartRequest, retry = false): Promise<void> {
   const api = bridge();
   if (!api) return;
+  startsInFlight.add(launchId);
   try {
     const record = await api.start(retry ? { ...request, retry: true } : request);
+    startsInFlight.delete(launchId);
     patchEntry(launchId, { record, startError: null });
   } catch (error) {
+    startsInFlight.delete(launchId);
     patchEntry(launchId, { startError: error instanceof Error ? error.message : String(error) });
   }
 }

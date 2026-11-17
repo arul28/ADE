@@ -8,7 +8,7 @@ type AppLaunch = Omit<ChatLaunchArgs, "cloud" | "priorStages">;
 const LOCAL_FILE = { path: "/Users/me/secret-notes.md", type: "file" as const };
 const LINK = { path: "shot.png", type: "image-url" as const, url: "https://example.com/shot.png" };
 
-function chatLaunch(overrides: Partial<AppLaunch> = {}, displayText: string | null = null): AppLaunch {
+function chatLaunch(overrides: Partial<AppLaunch> = {}, displayText?: string): AppLaunch {
   return {
     kind: "chat",
     mode: "foreground",

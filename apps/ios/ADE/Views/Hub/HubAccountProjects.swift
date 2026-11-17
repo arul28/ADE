@@ -875,29 +875,38 @@ struct AccountProjectHomeScreen: View {
 
   /// The chat runs on its cloud computer, which holds a copy once it joined:
   /// open the project there, where the chat lists, never on another lane's
-  /// computer. The list is read again first when this phone has not seen
-  /// that copy yet.
+  /// computer. The lists are read again first when this phone has not seen
+  /// that computer or copy yet. An asleep computer still opens: the route
+  /// wakes it, or says why it can't.
   private func openCloudChat(_ project: AccountProject, instanceId: String?) {
     Task {
       let syncService = syncPublishes.service
+      let notFound = "ADE can't find the computer for this chat yet. Try again in a moment."
       if instanceId != nil, syncService.cloudServerInstances.first(where: { $0.id == instanceId }) == nil {
         await syncService.refreshCloudServerInstances()
       }
-      let machineKey = syncService.cloudServerInstances.first { $0.id == instanceId }?.machineKey?.lowercased()
       // Only the launch's own computer: an unknown one opens nothing rather than a different lane.
-      guard let machineKey else { return }
-      let onLaunchComputer = { (held: [(copy: AccountProjectCopy, machine: AccountMachine?)]) in
-        held.filter { $0.copy.machineKey.lowercased() == machineKey }
+      guard let machineKey = syncService.cloudServerInstances.first(where: { $0.id == instanceId })?.machineKey?.lowercased() else {
+        dismiss()
+        syncService.landOnHub(notice: notFound)
+        return
       }
-      var held = onLaunchComputer(accountProjectCopyMachines(project, machines: account.machines))
-      if accountProjectOpenCopy(held) == nil {
+      @MainActor func copyOnLaunchComputer(_ project: AccountProject) -> AccountProjectCopy? {
+        accountProjectCopyMachines(project, machines: account.machines)
+          .first { $0.copy.machineKey.lowercased() == machineKey }?.copy
+      }
+      var copy = copyOnLaunchComputer(project)
+      if copy == nil {
         await store.refresh()
-        let fresh = store.liveProjects.first { $0.id == project.id } ?? project
-        held = onLaunchComputer(accountProjectCopyMachines(fresh, machines: account.machines))
+        await account.loadMachines()
+        copy = copyOnLaunchComputer(store.liveProjects.first { $0.id == project.id } ?? project)
       }
-      guard let open = accountProjectOpenCopy(held) else { return }
       dismiss()
-      DeepLinkRouter.shared.openAccountProjectCopy(accountMachineKey: open.machineKey, checkoutId: open.checkoutId)
+      guard let copy else {
+        syncService.landOnHub(notice: notFound)
+        return
+      }
+      DeepLinkRouter.shared.openAccountProjectCopy(accountMachineKey: copy.machineKey, checkoutId: copy.checkoutId)
     }
   }
 

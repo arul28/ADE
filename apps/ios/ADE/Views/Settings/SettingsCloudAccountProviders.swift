@@ -49,7 +49,10 @@ struct SettingsCloudAccountProviders: View {
   }
 
   private func loadSignIns() async {
-    guard let client = await syncService.cloudServerClient() else { return }
+    guard let client = await syncService.cloudServerClient() else {
+      signInsError = "Sign in to ADE again to see your saved keys."
+      return
+    }
     do {
       signIns = try await client.accountSignIns()
       signInsError = nil

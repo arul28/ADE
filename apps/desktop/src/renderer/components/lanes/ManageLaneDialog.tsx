@@ -737,7 +737,7 @@ export function ManageLaneDialog({
     : undefined;
   const dialogTitle = isBatch
     ? `${lanes.length} lanes`
-    : singleLane?.name ?? "Lane";
+    : singleLane ? laneDisplayName(singleLane) : "Lane";
   const titleContent = isBatch
     ? (
         <span className={MANAGE_LANE_TITLE_CLASS}>{dialogTitle}</span>

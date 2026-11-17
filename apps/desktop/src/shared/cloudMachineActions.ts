@@ -16,7 +16,8 @@ export type CloudMachineLifecycleOps = {
   computer(instanceId: string): Promise<CloudInstance>;
   sleep(instanceId: string): Promise<unknown>;
   wake(instanceId: string): Promise<string>;
-  resize(instanceId: string, resources: { cpu: number; memory: number; disk?: number }, computerIdle: boolean): Promise<string>;
+  /** No `cpu`/`memory`: the size stays as the server has it (a disk-only grow). */
+  resize(instanceId: string, resources: { cpu?: number; memory?: number; disk?: number }, computerIdle: boolean): Promise<string>;
   backup(instanceId: string): Promise<unknown>;
   update(instanceId: string): Promise<unknown>;
 };
@@ -89,7 +90,8 @@ export async function runCloudMachineLifecycleAction(
       if (!shape) {
         if (!growDisk) return { ok: true, blocker: null, message: "The disk is already that size." };
         // Same size, bigger disk: the server restarts the computer for it.
-        const status = await ops.resize(instanceId, { cpu: current.cpu, memory: current.memoryGb, disk }, computerIdle);
+        // No size in the request: the server keeps the one it has, never an older read of it.
+        const status = await ops.resize(instanceId, { disk }, computerIdle);
         return {
           ok: true,
           blocker: null,

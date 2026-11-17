@@ -13,7 +13,10 @@ export function useOwnWebComputers(): WebMachineEntry[] {
   const machines = useWebMachines();
   const index = useAdeCloudLaneComputers();
   return useMemo(
-    () => machines.filter((machine) => !isAdeCloudComputer({ machineKey: machine.accountMachine?.machineKey ?? null }, index)),
+    () => machines.filter((machine) =>
+      // A machine this browser only remembers (no longer on the account) counts while it is connected.
+      (!machine.rememberedOnly || machine.status === "live")
+      && !isAdeCloudComputer({ machineKey: machine.accountMachine?.machineKey ?? null }, index)),
     [index, machines],
   );
 }

@@ -189,6 +189,7 @@ export function useDraftMachineSetup({
       return;
     }
     const timer = window.setTimeout(() => {
+      sendAfterRef.current = null;
       setPendingTargetId(null);
       setBusy(null);
       onNotice({ message: "ADE set the machine up but couldn't offer it here. Open the picker again.", kind: "status" });
@@ -199,6 +200,7 @@ export function useDraftMachineSetup({
   /** The person picked another machine, or the draft launched: stop following this one. */
   const abandon = useCallback(() => {
     attemptRef.current += 1;
+    sendAfterRef.current = null;
     setPendingTargetId(null);
     setBusy(null);
   }, []);
@@ -249,6 +251,10 @@ export function useDraftMachineSetup({
     const name = rows.find((row) => row.id === rowId)?.name ?? targetId;
     // A connected machine with no copy: the person picks the folder first.
     if (rowId.startsWith(CLONE_ROW_PREFIX) && clone) {
+      // A machine still waking for the last pick stops here.
+      attemptRef.current += 1;
+      setPendingTargetId(null);
+      setBusy(null);
       setCloneDialog({ targetId, name });
       return;
     }

@@ -51,8 +51,10 @@ export function useAddToAccount(args: { folderName: string; onClose: () => void 
       else showToast({ tone: "error", title: `Couldn't add ${folderName} to your account`, message: answer.message });
       return false;
     }
-    if (!options.openTab) {
+    // A form closed while the add ran opens no tab: the project only joins the list.
+    if (!options.openTab || !mountedRef.current) {
       noteAccountProjectChange({ added: answer.project });
+      if (options.openTab) showToast({ tone: "success", title: `Added ${answer.project.name}`, message: "Open it from Home to send its first chat." });
     } else {
       openAddedAccountProject(answer.project);
       showToast({ tone: "success", title: `Added ${answer.project.name}`, message: "Send a chat from its page to start work on ADE Cloud." });
