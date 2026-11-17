@@ -546,6 +546,9 @@ export function closedComputerStatements(
     ...(args.reason === "account_deleted" ? [] : [keepLaneStatement(env, computer.instance_id, now)]),
     ...markDeletedStatements(env, computer, now),
     ...forgetMachineStatements(env, computer, now),
+    // The topics that woke it at rest and its last event wake (`eventWakes.ts`) go with it.
+    env.DB.prepare("delete from cloud_event_wakes where instance_id = ?").bind(computer.instance_id),
+    env.DB.prepare("delete from cloud_event_wake_state where instance_id = ?").bind(computer.instance_id),
   ];
 }
 
