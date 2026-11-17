@@ -29,8 +29,7 @@
    blinking. A blinking caret repaints every 500 ms and keeps the display link
    awake, so an idle focused prompt box woke the app about 60 times a second.
    xterm's hidden input never shows its caret, so it never blinks. */
-html.caret-resting,
-html.caret-resting * {
+.caret-rest-target {
   caret-animation: manual;
 }
 .xterm .xterm-helper-textarea {

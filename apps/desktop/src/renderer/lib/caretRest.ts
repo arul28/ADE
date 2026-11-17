@@ -4,24 +4,32 @@
  * Chromium repaints a blinking caret every 500 ms, and each repaint keeps the
  * display link running for a while, so a focused prompt box with nobody typing
  * still wakes the app about 60 times a second. After `REST_AFTER_MS` with no
- * key, pointer, wheel or focus change, the root gets `caret-resting` and
- * index.css sets `caret-animation: manual`: the caret stays drawn, solid, and
- * stops blinking. The terminal cursor clock (`xtermCursorBlink.ts`) rests on
+ * key, pointer, wheel or focus change, the root gets `caret-resting` and the
+ * focused element gets `caret-rest-target`, where index.css sets
+ * `caret-animation: manual`: the caret stays drawn, solid, and stops blinking.
+ * Only the focused element shows a caret, so only it is restyled. A rule on
+ * every element (`html.caret-resting *`) made the first key after a rest
+ * restyle the whole document, 35-50 ms with a few thousand elements. The terminal cursor clock (`xtermCursorBlink.ts`) rests on
  * the same signal, and so does any looping attention signal marked
  * `ade-rests-when-idle` (index.css). The first input brings them back at once.
  */
 const REST_AFTER_MS = 10_000;
 const RESTING_CLASS = "caret-resting";
+const TARGET_CLASS = "caret-rest-target";
 
 const listeners = new Set<(resting: boolean) => void>();
 let resting = false;
 let timer: number | null = null;
 let installed = false;
+let target: Element | null = null;
 
 function setResting(next: boolean): void {
   if (resting === next) return;
   resting = next;
   document.documentElement.classList.toggle(RESTING_CLASS, next);
+  target?.classList.remove(TARGET_CLASS);
+  target = next ? document.activeElement : null;
+  target?.classList.add(TARGET_CLASS);
   for (const listener of listeners) listener(next);
 }
 
