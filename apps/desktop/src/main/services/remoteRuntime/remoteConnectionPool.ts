@@ -1072,10 +1072,18 @@ export class RemoteConnectionPool {
     if (!runsJobs) return null;
     const jobId = randomUUID();
     const deadline = Date.now() + (LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS.get(key) ?? FOLLOW_DEFAULT_BUDGET_MS);
-    // The person's disconnection (or a removed machine) ends the follow: it
-    // must not dial again behind their back.
-    const disconnectGeneration = this.disconnectGenerationByTargetId.get(target.id) ?? 0;
-    const cancelled = () => (this.disconnectGenerationByTargetId.get(target.id) ?? 0) !== disconnectGeneration;
+    // A person's Disconnect (or a removed machine) ends the follow: it must
+    // not dial again behind their back. The connection's own redial after a
+    // drop is not that — it bumps the disconnect generation — so this reads
+    // the record the service writes only for a manual disconnect.
+    const startedAt = Date.now();
+    const tracked = this.registry.get(target.id) !== null;
+    const cancelled = () => {
+      const current = this.registry.get(target.id);
+      if (tracked && !current) return true;
+      const at = current?.manuallyDisconnectedAt;
+      return typeof at === "number" && at >= startedAt;
+    };
     let failures = 0;
     for (;;) {
       try {
