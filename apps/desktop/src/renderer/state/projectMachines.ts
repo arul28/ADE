@@ -165,8 +165,10 @@ export function useRemoteTargetState(targetId: string | null): "online" | "offli
 
 /**
  * Whether ADE is bringing a dropped link to this machine back on its own
- * ("reconnecting"), as opposed to waiting for the person. Same shared feed;
- * null target: false, no feed.
+ * ("reconnecting"), as opposed to waiting for the person. A background redial
+ * publishes `connecting` with its recovery kept, so both states count; a first
+ * connect, or one the person asked for, has no recovery and does not. Same
+ * shared feed; null target: false, no feed.
  */
 export function useRemoteTargetReconnecting(targetId: string | null): boolean {
   const subscribe = useMemo(
@@ -178,7 +180,8 @@ export function useRemoteTargetReconnecting(targetId: string | null): boolean {
     () => {
       if (!targetId) return false;
       const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
-      return connection?.state === "error" && connection.recovery === "reconnecting";
+      return (connection?.state === "error" || connection?.state === "connecting")
+        && connection.recovery === "reconnecting";
     },
     () => false,
   );

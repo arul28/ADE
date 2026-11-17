@@ -2194,6 +2194,9 @@ async function subscribeToRuntimeEvents(
   const client = entry.client;
   // Only a brain that takes a list gets one; an older one sends everything.
   const filter = entry.result.capabilities?.ptyDataFilter === true ? ptyDataFilter : undefined;
+  // A window's list change waits on `ready` while the subscription opens; with
+  // no list to send, nothing has to wait.
+  if (ptyDataFilter && !filter) ptyDataFilter.markReady();
   const initialPtyDataIds = filter?.current() ?? null;
   const pendingNotifications: RuntimeEventNotification[] = [];
   let closed = false;
@@ -2264,7 +2267,11 @@ async function subscribeToRuntimeEvents(
         }
       };
       // The window may have changed its list while the subscribe was in flight.
-      void filter.onChange(filter.current()).catch(() => {});
+      // The list is on the brain when that call answers, so the wait for this
+      // subscription ends then.
+      void filter.onChange(filter.current())
+        .catch(() => undefined)
+        .finally(() => filter.markReady());
     }
     onSubscribed?.(normalizeRuntimeEventsSubscribeResult(value, request.cursor));
     for (const notification of pendingNotifications) {
@@ -2275,7 +2282,10 @@ async function subscribeToRuntimeEvents(
     }
   } catch (error) {
     closed = true;
-    if (filter) filter.onChange = null;
+    if (filter) {
+      filter.onChange = null;
+      filter.markReady();
+    }
     removeNotificationListener();
     removeDisconnectListener();
     throw error;
@@ -2284,7 +2294,10 @@ async function subscribeToRuntimeEvents(
   return () => {
     if (closed) return;
     closed = true;
-    if (filter) filter.onChange = null;
+    if (filter) {
+      filter.onChange = null;
+      filter.markReady();
+    }
     removeNotificationListener();
     removeDisconnectListener();
     const id = subscriptionId;

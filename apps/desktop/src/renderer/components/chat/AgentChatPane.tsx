@@ -3929,6 +3929,19 @@ function readLatestComposerDraftSnapshot(
  */
 const UNSENT_TEXT_RESTORED_EVENT = "ade:chat-unsent-text-restored";
 type UnsentTextRestoredDetail = { storageKey: string; text: string };
+/**
+ * What a send put back in its chat's saved draft when the pane closed before
+ * the send settled: its words and everything attached to them.
+ */
+type UnsentSendRestore = {
+  text: string;
+  attachments: AgentChatFileRef[];
+  attachmentDraftIds: string[];
+  contextAttachments: AgentChatContextAttachment[];
+  iosContextItems: IosElementContextItem[];
+  appControlContextItems: AppControlContextItem[];
+  builtInBrowserContextItems: BuiltInBrowserContextItem[];
+};
 
 function writeComposerDraftSnapshot(storageKey: string, snapshot: ComposerDraftStorageSnapshot): void {
   try {
@@ -5691,9 +5704,10 @@ export function AgentChatPane({
   const sendRecoveryTimersRef = useRef<Set<number>>(new Set());
   /**
    * Sends whose arrival is still being checked, by client send id. A pane that
-   * closes before the last check puts each one's text in its chat's saved draft.
+   * closes before the last check puts each one's text and attachments in its
+   * chat's saved draft.
    */
-  const sendsInDoubtRef = useRef<Map<string, { storageKey: string; text: string; arrived: () => boolean }>>(new Map());
+  const sendsInDoubtRef = useRef<Map<string, UnsentSendRestore & { storageKey: string; arrived: () => boolean }>>(new Map());
   /**
    * A send's list update (the chat's recency and running state), held until
    * the frame with the bubble and the cleared composer is drawn. Anything that
@@ -12528,14 +12542,26 @@ export function AgentChatPane({
 
   // A pane that closes while a send is still in doubt (its machine dropped,
   // say) stops checking for it. A send that has not shown up goes back in its
-  // chat's saved draft, so reopening the chat finds the text, unless a newer
-  // draft is already there.
-  const putUnsentTextInSavedDraft = useCallback((storageKey: string, text: string) => {
+  // chat's saved draft, with its attachments and context, so reopening the
+  // chat finds it, unless a newer draft is already there.
+  const putUnsentSendInSavedDraft = useCallback((storageKey: string, restore: UnsentSendRestore) => {
     const saved = readComposerDraftSnapshot(storageKey, initialNativeControls)
       ?? normalizeStoredComposerDraft({ text: "" }, initialNativeControls);
-    if (!saved || saved.text.trim().length) return;
-    writeComposerDraftSnapshot(storageKey, { ...saved, text, updatedAt: new Date().toISOString() });
-    window.dispatchEvent(new CustomEvent<UnsentTextRestoredDetail>(UNSENT_TEXT_RESTORED_EVENT, { detail: { storageKey, text } }));
+    if (!saved) return;
+    // A newer draft, by words or by files, stays as it is.
+    if (saved.text.trim().length || saved.attachments.length || saved.contextAttachments.length) return;
+    writeComposerDraftSnapshot(storageKey, {
+      ...saved,
+      text: restore.text,
+      attachments: restore.attachments,
+      attachmentDraftIds: restore.attachmentDraftIds,
+      contextAttachments: restore.contextAttachments,
+      iosContextItems: restore.iosContextItems,
+      appControlContextItems: restore.appControlContextItems,
+      builtInBrowserContextItems: restore.builtInBrowserContextItems,
+      updatedAt: new Date().toISOString(),
+    });
+    window.dispatchEvent(new CustomEvent<UnsentTextRestoredDetail>(UNSENT_TEXT_RESTORED_EVENT, { detail: { storageKey, text: restore.text } }));
   }, [initialNativeControls]);
   useEffect(() => {
     const onRestored = (event: Event) => {
@@ -12551,10 +12577,10 @@ export function AgentChatPane({
     if (!sendsInDoubt.size) return;
     flushPendingComposerDraftWrite();
     for (const send of sendsInDoubt.values()) {
-      if (!send.arrived()) putUnsentTextInSavedDraft(send.storageKey, send.text);
+      if (!send.arrived()) putUnsentSendInSavedDraft(send.storageKey, send);
     }
     sendsInDoubt.clear();
-  }, [flushPendingComposerDraftWrite, putUnsentTextInSavedDraft]);
+  }, [flushPendingComposerDraftWrite, putUnsentSendInSavedDraft]);
 
   // Save/restore per-session (or per-lane draft) composer state when scope changes.
   const composerDraftTextRef = liveDraftRef;
@@ -16602,6 +16628,19 @@ export function AgentChatPane({
     // the time the send fails.
     const draftStorageKeyAtSend = composerDraftStorageKeyRef.current;
     const attachmentsSnapshot = attachments;
+    // The ids that go with those attachments, and everything else the send
+    // takes out of the composer: a pane that closes mid-send puts it all back
+    // in the chat's saved draft.
+    const attachmentDraftIdsAtSend = [...attachmentDraftIdsRef.current];
+    const unsentRestoreAtSend: UnsentSendRestore = {
+      text: draftSnapshot,
+      attachments: attachmentsSnapshot,
+      attachmentDraftIds: attachmentDraftIdsAtSend,
+      contextAttachments: contextAttachmentsSnapshot,
+      iosContextItems: iosContextSnapshot,
+      appControlContextItems: appControlContextSnapshot,
+      builtInBrowserContextItems: builtInBrowserContextSnapshot,
+    };
     const hasPastedPrompt = hasPastedTextPromptAttachment(attachmentsSnapshot);
     const isLiteralSlashCommand = isProviderSlashCommandInput(text);
     const isCodexGoalSlashCommand = sessionProvider === "codex" && isCodexGoalSlashInput(text);
@@ -17007,7 +17046,7 @@ export function AgentChatPane({
       if (!paneMountedRef.current) {
         const arrivedAnyway = handedOff != null && !notSent
           && countSentMessages(handedOff.sessionId, handedOff.texts, handedOff.submittedAt) > handedOff.alreadyThere;
-        if (!arrivedAnyway) putUnsentTextInSavedDraft(draftStorageKeyAtSend, draftSnapshot);
+        if (!arrivedAnyway) putUnsentSendInSavedDraft(draftStorageKeyAtSend, unsentRestoreAtSend);
         return null;
       }
       // A timeout, or a link that dropped after the message left: the chat's
@@ -17022,7 +17061,7 @@ export function AgentChatPane({
         const arrived = () => countSentMessages(pending.sessionId, pending.texts, pending.submittedAt) > pending.alreadyThere;
         sendsInDoubtRef.current.set(pending.clientSendId, {
           storageKey: draftStorageKeyAtSend,
-          text: draftSnapshot,
+          ...unsentRestoreAtSend,
           arrived,
         });
         // One check pending at a time: 15s, 45s, then the last at 2 minutes.
@@ -17122,7 +17161,7 @@ export function AgentChatPane({
     return steerResult;
   }, [
     countSentMessages,
-    putUnsentTextInSavedDraft,
+    putUnsentSendInSavedDraft,
     startFreedLaneChat,
     openSideChatFromComposer,
     isBoundScopePane, attachments,

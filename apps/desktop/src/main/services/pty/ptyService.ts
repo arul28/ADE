@@ -7028,7 +7028,9 @@ export function createPtyService({
     if (!line.trim()) return false;
     const session = sessionService.get(entry.sessionId);
     const provider = session?.resumeMetadata?.provider ?? providerFromTool(session?.toolType ?? entry.toolTypeHint);
-    const multiline = line.includes("\n");
+    // A pasted tab is text, not the CLI's completion key, and a line break must
+    // stay one message: both go as a bracketed paste.
+    const needsPaste = line.includes("\n") || line.includes("\t");
     const previous = submitInputFlights.get(entry.sessionId) ?? Promise.resolve(true);
     const flight = previous
       .catch(() => true)
@@ -7038,11 +7040,11 @@ export function createPtyService({
           if (entry.disposed) return false;
           service.write({ ptyId, data, inputOrigin });
           return true;
-        }, multiline ? line.replace(/\n/g, "\r") : line, provider, multiline);
+        }, needsPaste ? line.replace(/\n/g, "\r") : line, provider, needsPaste);
         if (!written) return false;
         await delay(provider === "codex"
           ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
-          : multiline ? LOCAL_LINE_PASTE_SUBMIT_DELAY_MS : AGENT_CLI_SUBMIT_DELAY_MS);
+          : needsPaste ? LOCAL_LINE_PASTE_SUBMIT_DELAY_MS : AGENT_CLI_SUBMIT_DELAY_MS);
         if (entry.disposed) return false;
         service.write({ ptyId, data: AGENT_CLI_LINE_SUBMIT_KEY, inputOrigin });
         return true;

@@ -60,7 +60,9 @@ function dropLastWord(text: string): string {
 
 /** The line as the keys typing it in the CLI would have sent. */
 export function localLineAsKeys(text: string): string {
-  if (!text.includes("\n")) return text;
+  // A line break must stay one message, and a tab must stay text rather than
+  // the CLI's completion key: both go as a bracketed paste.
+  if (!text.includes("\n") && !text.includes("\t")) return text;
   const pasted = text.replace(/\r?\n/g, "\r").replace(/\x1b/g, "␛");
   return `${TERMINAL_BRACKETED_PASTE_START}${pasted}${TERMINAL_BRACKETED_PASTE_END}`;
 }

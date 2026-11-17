@@ -19,7 +19,7 @@ import {
   type TerminalPreferences,
   type ThemeId,
 } from "../../state/appStore";
-import { useRemoteTypesLocalLine, useSlowLinkActive, useTypeAheadRoundTripMs } from "../../state/projectMachines";
+import { useRemoteTargetState, useRemoteTypesLocalLine, useSlowLinkActive, useTypeAheadRoundTripMs } from "../../state/projectMachines";
 import { sendAgentCliText } from "./agentCliTypeSend";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
@@ -237,6 +237,14 @@ type CachedRuntime = {
   localLineError: TerminalLocalLineError | null;
   /** The last line that failed, with its id: sent again unchanged, it keeps the id so it never arrives twice. */
   localLineFailed: { text: string; clientSendId: string } | null;
+  /** The last local-line send, so the next line's Enter waits for it (and for the keys typed between them). */
+  localLineFlight: Promise<void> | null;
+  /**
+   * May the local line be handed to the program as keys? False while the
+   * terminal's machine is away, so a line typed before a drop is kept rather
+   * than written into nothing.
+   */
+  localLineHandOver: boolean;
   linkProviderSub: { dispose: () => void } | null;
   pathLinkProviderSub: { dispose: () => void } | null;
   pathLinks: TerminalPathLinkContext;
@@ -1393,8 +1401,14 @@ function programTakesPaste(runtime: CachedRuntime): boolean {
   return runtime.bracketedPasteMode || runtime.term.modes?.bracketedPasteMode === true;
 }
 
-/** A line left when the local line goes off goes to the program as typed. */
+/**
+ * A line left when the local line goes off goes to the program as typed, but
+ * only when the program's machine can take it: while the link is down the
+ * keys would be written into nothing, so the line is kept and comes back with
+ * the line (see `localLineHandOver`).
+ */
 function handOverLocalLine(runtime: CachedRuntime): void {
+  if (!runtime.localLineHandOver) return;
   const keys = runtime.localLine?.text() ? runtime.localLine.takeForHandOver() : "";
   if (keys) writePtyInput(runtime, keys);
 }
@@ -1402,7 +1416,6 @@ function handOverLocalLine(runtime: CachedRuntime): void {
 function setLocalLineWanted(runtime: CachedRuntime, wanted: boolean): void {
   if (runtime.localLineWanted === wanted) return;
   runtime.localLineWanted = wanted;
-  if (!wanted) handOverLocalLine(runtime);
   notifyRuntime(runtime);
 }
 
@@ -1426,12 +1439,25 @@ function applyLocalLineActions(runtime: CachedRuntime, actions: TerminalLocalLin
 /**
  * Sends the line to the terminal's machine, which types it and presses Enter
  * there (`chat.typeIntoCli` with `when: "now"`, the input box's send path).
- * Keys pressed meanwhile wait for it (the paste-write gate), so an Esc after
+ * Sends to one terminal go in order, so keys typed between two Enters (an Esc
+ * for the running turn, say) reach the CLI before the second line. Keys
+ * pressed meanwhile wait for the send (the paste-write gate), so an Esc after
  * Enter still reaches the CLI after the line. A failed send puts the line
  * back; sent again unchanged it keeps its id, and the machine types a line it
  * already has only once.
  */
 async function submitLocalLine(runtime: CachedRuntime, text: string): Promise<void> {
+  const previous = runtime.localLineFlight ?? Promise.resolve();
+  const flight = previous.catch(() => undefined).then(() => sendLocalLine(runtime, text));
+  runtime.localLineFlight = flight;
+  try {
+    await flight;
+  } finally {
+    if (runtime.localLineFlight === flight) runtime.localLineFlight = null;
+  }
+}
+
+async function sendLocalLine(runtime: CachedRuntime, text: string): Promise<void> {
   const pin = runtime.runtimePin;
   if (!pin) {
     runtime.localLine?.restore(text);
@@ -3411,6 +3437,8 @@ function createRuntime(args: {
     localLineSendingText: null,
     localLineError: null,
     localLineFailed: null,
+    localLineFlight: null,
+    localLineHandOver: true,
     linkProviderSub,
     pathLinkProviderSub,
     pathLinks,
@@ -3758,6 +3786,13 @@ export function TerminalView({
   const localLineWanted = localLineOffered && !localLineOff;
   const localLineWantedRef = useRef(localLineWanted);
   localLineWantedRef.current = localLineWanted;
+  // Whether the terminal's machine can take keys now. While it cannot, a line
+  // typed before the drop stays where it is instead of being written into
+  // nothing (`handOverLocalLine`); it comes back with the line.
+  const remoteMachineState = useRemoteTargetState(remoteTargetId);
+  const machineReachable = remoteTargetId == null || remoteMachineState === "online";
+  const machineReachableRef = useRef(machineReachable);
+  machineReachableRef.current = machineReachable;
   const [localLine, setLocalLine] = useState<TerminalLocalLineState | null>(null);
   // Keyboard-scroll hint: web only, and only for a session whose provider we
   // have documented keys for. See `terminalScrollHint.ts` for why the wheel is
@@ -3832,6 +3867,15 @@ export function TerminalView({
   useEffect(() => {
     if (runtimeRef.current) setLocalLineWanted(runtimeRef.current, localLineWanted);
   }, [localLineWanted]);
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime || runtime.disposed) return;
+    runtime.localLineHandOver = machineReachable;
+    // The line is not the one being typed in any more (a fast link, box mode,
+    // the switch), and the program can take keys: hand it over as keys. While
+    // the machine is away it is kept instead.
+    if (!localLineWanted && machineReachable) handOverLocalLine(runtime);
+  }, [localLineWanted, machineReachable]);
   const currentMountConfig = { isActive, isVisible, theme: termTheme, preferences: resolvedPreferences };
   const mountConfigRef = useRef(currentMountConfig);
   mountConfigRef.current = currentMountConfig;
@@ -3860,6 +3904,7 @@ export function TerminalView({
     runtimeRef.current = runtime;
     runtime.typeAhead?.setWanted(typeAheadRttMsRef.current != null, typeAheadRttMsRef.current);
     setLocalLineWanted(runtime, localLineWantedRef.current);
+    runtime.localLineHandOver = machineReachableRef.current;
     if (pathLinkHandleRef.current) {
       runtime.pathLinks.openWorkspacePath = pathLinkHandleRef.current.openWorkspacePath;
       runtime.pathLinks.ensureLaneId = pathLinkHandleRef.current.ensureLaneId;

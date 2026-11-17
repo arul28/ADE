@@ -2330,7 +2330,13 @@ describe("RemoteConnectionPool", () => {
     bootstrapRemoteRuntimeMock.mockResolvedValueOnce({ client, ssh: createSsh(), result });
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
     let shown: string[] | null = ["pty-a"];
-    const filter: RemotePtyDataFilter = { current: () => shown, onChange: null };
+    let ready = false;
+    const filter: RemotePtyDataFilter = {
+      current: () => shown,
+      onChange: null,
+      ready: Promise.resolve(),
+      markReady: () => { ready = true; },
+    };
 
     const cleanup = await pool.subscribeEventsForTarget(
       target, "project-1", { replay: false }, vi.fn(), undefined, undefined, { ptyDataFilter: filter },
@@ -2348,12 +2354,16 @@ describe("RemoteConnectionPool", () => {
         { subscriptionId: "runtime-events-9", ptyDataIds: ["pty-a", "pty-b"] },
       ]);
       expect(pollArgs.ptyDataIds).toEqual(["pty-a"]);
+      // A list change pushed while the subscription opened waits on `ready`.
+      expect(ready).toBe(true);
     } else {
       // An older brain checks its params strictly in places: it gets none.
       expect(subscribeParams).not.toHaveProperty("ptyDataIds");
       expect(filter.onChange).toBeNull();
       expect(listChanges).toHaveLength(0);
       expect(pollArgs).not.toHaveProperty("ptyDataIds");
+      // Nothing is filtered, so a waiting list push does not wait.
+      expect(ready).toBe(true);
     }
     cleanup();
     expect(filter.onChange).toBeNull();

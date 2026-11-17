@@ -4421,15 +4421,17 @@ export const SessionListPane = React.memo(function SessionListPane({
       {/* The tab's machine dropped: its rows are what it last sent, and they
           wait for it. Said once above the list, not on every row. */}
       {reconnectingMachineName && hasAnySessions ? (
-        <div
-          className="mx-2 mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-fg/70"
-          role="status"
-        >
-          <ArrowClockwise size={11} weight="bold" className="shrink-0" aria-hidden />
-          <span className="min-w-0 truncate">
-            Reconnecting to {reconnectingMachineName}… These are the chats it last sent.
-          </span>
-        </div>
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 8px 0" }}
+          model={{
+            id: "work-machine-reconnecting",
+            tone: "info",
+            title: `Reconnecting to ${reconnectingMachineName}…`,
+            detail: "These are the chats it last sent.",
+            dismiss: false,
+          }}
+        />
       ) : null}
 
       {/* Session list */}

@@ -61,6 +61,16 @@ export type RemotePtyDataFilter = {
    * brain takes a list (`ptyDataFilter`). Resolves once the brain applied it.
    */
   onChange: ((ptyIds: string[] | null) => Promise<void>) | null;
+  /**
+   * Resolves once the subscription exists and the list it opened with is on
+   * the brain (or nothing will be sent: the subscribe failed, the brain takes
+   * no list, or the subscription closed). A window's list change waits on it
+   * while the subscription is still opening, so a terminal it just showed is
+   * not filtered out between the push and the subscribe answer.
+   */
+  ready: Promise<void>;
+  /** The pool's: the subscription is up with its list, or it will not be. Safe to call twice. */
+  markReady: () => void;
 };
 
 type RemoteFilterEntry = { bindingKey: string; filter: RemotePtyDataFilter };
@@ -72,9 +82,21 @@ export function openRemotePtyDataFilter(
   sender: WebContents,
   bindingKey: string,
 ): { filter: RemotePtyDataFilter; release: () => void } {
+  let resolveReady: (() => void) | null = null;
+  const ready = new Promise<void>((resolve) => {
+    resolveReady = resolve;
+  });
+  const markReady = () => {
+    resolveReady?.();
+  };
   const entry: RemoteFilterEntry = {
     bindingKey,
-    filter: { current: () => ptyDataIdsForSender(sender), onChange: null },
+    filter: {
+      current: () => ptyDataIdsForSender(sender),
+      onChange: null,
+      ready,
+      markReady,
+    },
   };
   let entries = remoteFiltersByWebContentsId.get(sender.id);
   if (!entries) {
@@ -86,6 +108,7 @@ export function openRemotePtyDataFilter(
     filter: entry.filter,
     release: () => {
       entry.filter.onChange = null;
+      entry.filter.markReady();
       const current = remoteFiltersByWebContentsId.get(sender.id);
       current?.delete(entry);
       if (current?.size === 0) remoteFiltersByWebContentsId.delete(sender.id);
@@ -100,7 +123,8 @@ const REMOTE_PTY_DATA_FILTER_SETTLE_MS = 5_000;
  * Sends the window's list to each of its push subscriptions on other machines.
  * Resolves once the subscriptions of `settleBindingKey` applied it (or after
  * 5 s), so a terminal on that machine reads its screen only after the brain
- * sends its output: nothing printed between the two is lost.
+ * sends its output: nothing printed between the two is lost. A subscription
+ * still opening has no sender yet; the wait covers the list it opens with.
  */
 export async function pushRemotePtyDataFilters(
   sender: WebContents,
@@ -112,7 +136,8 @@ export async function pushRemotePtyDataFilters(
   const settling: Promise<void>[] = [];
   for (const entry of [...entries]) {
     const applied = entry.filter.onChange?.(ptyIds)?.catch(() => {});
-    if (applied && entry.bindingKey === settleBindingKey) settling.push(applied);
+    if (entry.bindingKey !== settleBindingKey) continue;
+    settling.push(applied ?? entry.filter.ready);
   }
   if (!settling.length) return;
   let timer: ReturnType<typeof setTimeout> | null = null;
