@@ -71,7 +71,11 @@ const STATE_FILE = "rest-save.json";
 export type CloudRestSaveOptions = {
   /** Fork capsules too (the delete path, after push-work). */
   capsules: boolean;
-  /** Time for the whole save; work not started by then waits for the next save. */
+  /**
+   * Time for the whole save, counted from the call: a save that waits behind
+   * an earlier one has that much less. Work not started by then waits for the
+   * next save.
+   */
   budgetMs: number;
   reason: string;
   /** The idle step: false once someone used the computer, so the save stops early. */
@@ -455,9 +459,8 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
     }
   };
 
-  const run = async (options: CloudRestSaveOptions): Promise<CloudSaveForRestReport> => {
+  const run = async (options: CloudRestSaveOptions, deadline: number): Promise<CloudSaveForRestReport> => {
     const started = Date.now();
-    const deadline = started + Math.max(5_000, options.budgetMs);
     const idle = () => options.stillIdle?.() ?? true;
     const report: CloudSaveForRestReport = { ok: true, capsules: 0, sessions: 0, git: 0, skipped: 0 };
     const api = await deps.api().catch(() => null);
@@ -768,7 +771,9 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
 
   return {
     save: (options) => {
-      const next = queue.catch(() => undefined).then(() => run(options));
+      // The caller's budget starts now, not when an earlier save ends (the server's exec has its own limit).
+      const deadline = Date.now() + Math.max(5_000, options.budgetMs);
+      const next = queue.catch(() => undefined).then(() => run(options, deadline));
       queue = next;
       return next;
     },
