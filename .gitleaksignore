@@ -95,8 +95,3 @@ df3bfb9abe8aac6338a9686db9e81af64e72ba8f:apps/ios/ADETests/PasswordsVaultTests.s
 df3bfb9abe8aac6338a9686db9e81af64e72ba8f:apps/ios/ADETests/PasswordsVaultTests.swift:generic-api-key:30
 4087934e2be266300a6d8a89dac15331d83db14a:apps/ade-cli/src/services/passwords/passwordTotp.test.ts:generic-api-key:35
 8862d0a24ce0597186c0e64e14a5c46da36ee52b:apps/desktop/src/main/services/secrets/projectSecretService.test.ts:generic-api-key:599
-
-# Push relay vault tests: item key names ("antigravity/default") and fake values, not secrets.
-611f8062fa830662e3f475788be6cdc3cb75a040:apps/push-relay/test/accountVault.test.ts:generic-api-key:453
-611f8062fa830662e3f475788be6cdc3cb75a040:apps/push-relay/test/accountVault.test.ts:generic-api-key:463
-611f8062fa830662e3f475788be6cdc3cb75a040:apps/push-relay/test/accountVault.test.ts:generic-api-key:467

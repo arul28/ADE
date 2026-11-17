@@ -61,6 +61,8 @@ regexes = [
   # (CLERK_EXTRA_OAUTH_CLIENT_IDS). Public by design: it appears in every
   # authorize URL; the client secret is never in the repo.
   '''Az7TbviBocyXjZk1''',
+  # Synthetic vault values in apps/push-relay/test/accountVault.test.ts.
+  '''sk-(live-abc123|gone|repo|other)''',
 ]
 paths = [
   '''\.env\.example$''',
