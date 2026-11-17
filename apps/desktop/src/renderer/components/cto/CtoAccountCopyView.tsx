@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import type { CloudCtoCopy } from "../../../../../account-directory/src/cloud/contract";
 import { savedAgoLabel, useAdeCloudAccountRead } from "../../lib/adeCloudAccountRead";
 import { AccountReadFailed } from "../adeCloud/AccountReadFailed";
@@ -14,17 +14,27 @@ import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
  * Renders nothing on an ADE or a server without the copy route, and nothing
  * when the repository has no copy yet (the state card above says what to do).
  * A home on ADE Cloud reads "ADE Cloud", never its computer's own name.
+ * `onSavedName` gets the CTO's saved name (null while there is none), so the
+ * page header can use it while no home answers.
  */
 export function CtoAccountCopyView({
   origin,
   active,
   homeOnAdeCloud,
+  onSavedName,
 }: {
   origin: string | null;
   active: boolean;
   homeOnAdeCloud: boolean;
+  onSavedName?: (name: string | null) => void;
 }): JSX.Element | null {
   const { state, retry } = useAdeCloudAccountRead(active && origin ? { call: "cto" as const, origin } : null);
+  const savedName = ctoCopyName(state.data?.available ? state.data.copy : null);
+  useEffect(() => {
+    onSavedName?.(savedName);
+  }, [onSavedName, savedName]);
+  // The view leaves (the home answers again): the header goes back to the home's name.
+  useEffect(() => () => onSavedName?.(null), [onSavedName]);
   if (state.status === "failed" && !state.data) {
     return (
       <div className="ade-cto-copy">

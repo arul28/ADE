@@ -239,7 +239,9 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
 
   const primaryLaneId = useMemo(() => resolveCtoPrimaryLaneId(lanes), [lanes]);
 
-  const ctoDisplayName = ctoIdentity?.name?.trim() || "CTO";
+  // While no home answers, the account copy's saved name (`CtoAccountCopyView`).
+  const [copyName, setCopyName] = useState<string | null>(null);
+  const ctoDisplayName = ctoIdentity?.name?.trim() || copyName || "CTO";
   const look = useMemo(() => resolveCtoAvatarLook(ctoIdentity?.avatar ?? null), [ctoIdentity?.avatar]);
   const accent = look.color;
 
@@ -694,7 +696,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   // copy (never the home itself, so nothing wakes). Waking or moving it is
   // the state card's action.
   const accountCopy = stage === "cloudAsleep" || stage === "cloudGone" || stage === "away"
-    ? <CtoAccountCopyView origin={ctoHome.origin} active={active} homeOnAdeCloud={stage !== "away"} />
+    ? <CtoAccountCopyView origin={ctoHome.origin} active={active} homeOnAdeCloud={stage !== "away"} onSavedName={setCopyName} />
     : null;
 
   const renderStage = (): React.ReactNode => {
