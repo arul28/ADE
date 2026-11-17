@@ -107,6 +107,16 @@ describe("codexPlanHandoff", () => {
 
     expect(records).toHaveLength(0);
     expect(setup.args.discard).toHaveBeenCalledTimes(1);
+
+    // The same contract when the send is what failed: an unreadable destination
+    // is proof of neither delivery nor loss, so it must not settle the approval.
+    const unreadable = deps([]);
+    unreadable.args.send.mockRejectedValueOnce(new Error("app-server went away"));
+    unreadable.args.hasPlan.mockResolvedValue("unknown");
+    const second = createCodexPlanDecisions();
+    await expect(second.handoff(unreadable.args)).rejects.toThrow("Couldn't read the implementation chat");
+    expect(unreadable.records[0]?.submitted).toBe(false);
+    expect(unreadable.args.complete).not.toHaveBeenCalled();
   });
 
   it("refuses a second answer while a handoff is starting, and a handoff while an answer is starting", async () => {

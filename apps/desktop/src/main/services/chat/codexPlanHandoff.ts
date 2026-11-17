@@ -230,11 +230,18 @@ export function createCodexPlanDecisions() {
                 try {
                   await args.send(record.implementationSessionId, plan);
                 } catch (error) {
-                  // Only a confirmed "absent" may send again; an unreadable
-                  // destination keeps the plan where it is.
-                  if (await args.hasPlan(record.implementationSessionId, args.itemId) === "absent") throw error;
-                  // The prompt is in the destination's transcript, so that chat
-                  // owns recovery. Sending it again would put it in twice.
+                  // Three answers, three different actions. `absent` means
+                  // nothing landed, so the send may be tried again. `present`
+                  // means it landed and the destination owns recovery — sending
+                  // it again would put it in twice. `unknown` is proof of
+                  // neither, so the reservation stays and the handoff asks to be
+                  // retried rather than settling an approval it cannot confirm.
+                  const afterSend = await args.hasPlan(record.implementationSessionId, args.itemId)
+                    .catch(() => "unknown" as const);
+                  if (afterSend === "absent") throw error;
+                  if (afterSend === "unknown") {
+                    throw new Error("Couldn't read the implementation chat to confirm the plan. Nothing was lost; retry in a moment.");
+                  }
                   args.onAcceptedSendError(error);
                 }
               }
