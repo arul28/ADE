@@ -55,6 +55,12 @@ export const DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS = DEFAULT_HEARTBEAT_INT
 const DETACHED_OWNER_KEEP_MS = 6 * 60 * 60_000;
 /** `process.uptime` and ISO stamps can differ by a little; a run this close to our start is not called dead. */
 const PROCESS_START_SLACK_MS = 1_000;
+/**
+ * When this OS process started (`process.uptime`), read once per process: a
+ * clock step between two registries of one process must not move it past an
+ * earlier one, which would then read as dead.
+ */
+const PROCESS_STARTED_MS = Date.now() - process.uptime() * 1000;
 
 function defaultPidLivenessCheck(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
@@ -77,8 +83,6 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS;
   const pidLivenessCheck = options.pidLivenessCheck ?? defaultPidLivenessCheck;
-  /** When this OS process started (`process.uptime`): an identity with its pid from before then is another run. */
-  const processStartedMs = Date.now() - process.uptime() * 1000;
 
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let started = false;
@@ -254,7 +258,7 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
     listDeadProcessIdentities(): RuntimeProcessIdentity[] {
       return this.listKnownProcessIdentities().filter((identity) => (
         identity.pid === pid
-          ? identity.startedAt !== ownStartedAt && Date.parse(identity.startedAt) < processStartedMs - PROCESS_START_SLACK_MS
+          ? identity.startedAt !== ownStartedAt && Date.parse(identity.startedAt) < PROCESS_STARTED_MS - PROCESS_START_SLACK_MS
           : !pidLivenessCheck(identity.pid)
       ));
     },
