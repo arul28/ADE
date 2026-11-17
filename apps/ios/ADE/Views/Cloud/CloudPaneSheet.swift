@@ -259,7 +259,7 @@ final class CloudPaneStore: ObservableObject {
         return
       }
     }
-    limits = try? await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
+    await readLimitsThroughComputer()
     await reloadSignIns()
   }
 
@@ -272,6 +272,7 @@ final class CloudPaneStore: ObservableObject {
     }
     async let accountRead = Self.readDirect("account") { try await client.account() }
     async let instancesRead = Self.readDirect("instances") { try await client.instances() }
+    limitsError = nil
     async let limitsRead = client.agentLimits()
     let (account, instances) = await (accountRead, instancesRead)
     now = Date()
@@ -298,6 +299,18 @@ final class CloudPaneStore: ObservableObject {
       cloudPaneLog.notice("cloud_pane read=limits failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }
     signIns = nil
+  }
+
+  /// The limits through the connected computer. A failed read gives the
+  /// card its reason in place of "Reading…".
+  private func readLimitsThroughComputer() async {
+    limitsError = nil
+    do {
+      limits = try await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
+    } catch {
+      limitsError = cloudPhoneWords(error.localizedDescription) ?? "ADE couldn't read the agent limits."
+      cloudPaneLog.notice("cloud_pane read=limits failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+    }
   }
 
   /// One direct read of the page; a failure is logged and reads as nil.
@@ -387,7 +400,7 @@ final class CloudPaneStore: ObservableObject {
     } catch {
       actionError = cloudPhoneWords(error.localizedDescription) ?? "ADE Cloud couldn't do that."
     }
-    limits = try? await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
+    await readLimitsThroughComputer()
   }
 
   /// One limits write on the account. A preset sends its whole set of
