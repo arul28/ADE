@@ -109,7 +109,6 @@ export function releaseRestoringCloudChat(sessionId: string): void {
   restoringChats.delete(sessionId);
 }
 
-/** The restored chat's upload goes on from `seq` in the project that holds it (`CloudChatUploader.adoptRestored`). */
 /** Uploads one native subagent's copy through the uploader of the project that holds its parent. */
 export async function uploadSubagentCloudCopy(
   parentSessionId: string,
@@ -122,6 +121,7 @@ export async function uploadSubagentCloudCopy(
   return false;
 }
 
+/** The restored chat's upload goes on from `seq` in the project that holds it (`CloudChatUploader.adoptRestored`). */
 export async function adoptRestoredCloudChat(sessionId: string, seq: number, laneId: string | null): Promise<boolean> {
   try {
     for (const uploader of uploaders) {

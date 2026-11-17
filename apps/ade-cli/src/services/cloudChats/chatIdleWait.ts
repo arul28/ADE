@@ -32,11 +32,15 @@ export async function waitForChatIdleByEvents(
     let checking = false;
     let checkAgain = false;
     const timers = new Set<ReturnType<typeof setTimeout>>();
+    /** A settle read's wait; the end lets it go, so the check never stays pending. */
+    const settles = new Set<() => void>();
     const finish = (idle: boolean) => {
       if (settled) return;
       settled = true;
       unsubscribe();
       for (const timer of timers) clearTimeout(timer);
+      for (const done of settles) done();
+      settles.clear();
       resolve(idle);
     };
     const later = (ms: number, run: () => void) => {
@@ -63,7 +67,14 @@ export async function waitForChatIdleByEvents(
         do {
           checkAgain = false;
           if (await active()) continue;
-          await new Promise<void>((done) => later(settleMs, done));
+          await new Promise<void>((done) => {
+            settles.add(done);
+            later(settleMs, () => {
+              settles.delete(done);
+              done();
+            });
+          });
+          if (settled) return;
           if (!(await active())) {
             finish(true);
             return;
