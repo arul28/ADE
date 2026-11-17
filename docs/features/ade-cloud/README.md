@@ -139,12 +139,15 @@ that stops (see Sleep and busy rules).
   entries are `integrations.ade-cloud*`.
 - **The web app:** the same page (`web: "account"` in the manifest), reached
   from the top bar's Settings with no project or computer, as on the desktop.
-  Whether ADE Cloud is on comes from `GET /cloud/access` (kept a minute). The
-  computers, the plan, the hours and the agent limits come from the account
-  server with the browser's own account token (`BrowserAccountClient.cloudRequest`,
-  `webclient/adapter/cloudBilling.ts`, `webclient/adapter/cloud.ts`), so the page
-  works with no computer online. A computer that is online answers the reads
-  that need a brain. Stripe opens in the same tab with `returnTo: "web"`, so it sends
+  Whether ADE Cloud is on comes from `GET /cloud/access` (kept a minute).
+  With one of the account's computers online, the web asks it for the computer
+  list (`cloud.read`). With none online, or a brain too old to answer, the web
+  reads the plan and hours (`GET /cloud/account`) and the computers
+  (`GET /cloud/instances`) from the account server with the browser's own
+  account token (`webclient/adapter/cloud.ts`). If that list read fails, the
+  page shows the plan and marks the computers unread (`computersUnread`).
+  The plan and billing calls also go straight to the account server
+  (`webclient/adapter/cloudBilling.ts`, `BrowserAccountClient.cloudRequest`). Stripe opens in the same tab with `returnTo: "web"`, so it sends
   the person back to the web app's Settings › ADE Cloud, not the server's
   "go back to ADE" page. The billing routes ask for no recent sign-in. A
   browser whose sign-in ended signs in again from the click and comes back
