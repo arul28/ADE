@@ -290,8 +290,10 @@ describe("artifact media server, paired computer", () => {
       send(origin, `/${TOKEN}${PICTURE}`),
       send(origin, `/${TOKEN}${PICTURE}`),
     ]);
-    const callsForOnePull = Math.ceil(bytes.length / REMOTE_ARTIFACT_CHUNK_BYTES);
-    expect(machine).toHaveBeenCalledTimes(callsForOnePull);
+    // One pull: every byte asked for once, whatever the chunk sizes were.
+    const asked = machine.mock.calls.reduce((sum, [call]) => sum + Math.min(call.length, bytes.length - call.offset), 0);
+    expect(asked).toBe(bytes.length);
+    const callsForOnePull = machine.mock.calls.length;
     for (const reply of [answer, drawer]) {
       expect(reply.status).toBe(200);
       expect(reply.headers["content-type"]).toBe("image/png");
@@ -305,6 +307,81 @@ describe("artifact media server, paired computer", () => {
     expect(slice.status).toBe(206);
     expect(slice.body.equals(bytes.subarray(10, 20))).toBe(true);
     expect(machine).toHaveBeenCalledTimes(callsForOnePull);
+  });
+
+  it("keeps the bytes it has when a chunk's connection drops, and reads only that chunk again", async () => {
+    const bytes = patterned(3 * REMOTE_ARTIFACT_CHUNK_BYTES);
+    const machine = fakeMachine(bytes);
+    let dropped = false;
+    const flaky = vi.fn<Parameters<RemoteArtifactRangeReader>, ReturnType<RemoteArtifactRangeReader>>(async (args) => {
+      if (!dropped && args.offset > 0) {
+        dropped = true;
+        throw new Error("Remote ADE service connection interrupted.");
+      }
+      return await machine(args);
+    });
+    reader = flaky;
+    // The second try waits 500 ms, as on a real link.
+    const reply = await send(origin, `/${TOKEN}/remote/target-9/project-1/.ade/artifacts/computer-use/drop.png`);
+    expect(reply.status).toBe(200);
+    expect(reply.body.equals(bytes)).toBe(true);
+    expect(dropped).toBe(true);
+    // Every byte that arrived was asked for once; the lost chunk went again.
+    const answered = machine.mock.calls.reduce((sum, [call]) => sum + Math.min(call.length, bytes.length - call.offset), 0);
+    expect(answered).toBe(bytes.length);
+  });
+
+  it("shows a picture's display copy on a slow link when the machine has one, and the original otherwise", async () => {
+    const at = (targetId: string, name = "display.png") => `/remote/${targetId}/project-1/.ade/artifacts/computer-use/${name}?view=display`;
+    const original = patterned(400_000);
+    const copy = patterned(90_000).reverse();
+    let hasCopies = true;
+    const machine = vi.fn<Parameters<RemoteArtifactRangeReader>, ReturnType<RemoteArtifactRangeReader>>(
+      async ({ offset, length, variant }) => {
+        const bytes = hasCopies && variant === "display" ? copy : original;
+        return {
+          totalSize: bytes.length,
+          offset,
+          data: bytes.subarray(offset, offset + length).toString("base64"),
+          ...(hasCopies && variant === "display" ? { variant: "display" } : {}),
+        };
+      },
+    );
+    // The round trip each machine's connection measured; no chunk has arrived yet.
+    const rtt: Record<string, number> = { far: 700, "far-older": 700, near: 2 };
+    const media = createArtifactMediaServer({
+      localScope: () => ({ projectRoot, allowedDir: artifactsDir }),
+      remoteReader: () => machine,
+      linkRoundTripMs: (targetId) => rtt[targetId] ?? null,
+      token: TOKEN,
+    });
+    const mediaBase = await media.baseUrl();
+    const mediaOrigin = mediaBase.slice(0, mediaBase.length - TOKEN.length - 1);
+    try {
+      // A far machine with display copies: the tile gets the JPEG, the viewer the original.
+      const tile = await send(mediaOrigin, `/${TOKEN}${at("far")}`);
+      expect(tile.status).toBe(200);
+      expect(tile.headers["content-type"]).toBe("image/jpeg");
+      expect(tile.body.equals(copy)).toBe(true);
+      const viewer = await send(mediaOrigin, `/${TOKEN}${at("far").replace("?view=display", "")}`);
+      expect(viewer.headers["content-type"]).toBe("image/png");
+      expect(viewer.body.equals(original)).toBe(true);
+
+      // A near, fast link: the original is as quick, and the machine encodes nothing.
+      machine.mockClear();
+      const near = await send(mediaOrigin, `/${TOKEN}${at("near")}`);
+      expect(near.headers["content-type"]).toBe("image/png");
+      expect(near.body.equals(original)).toBe(true);
+      expect(machine.mock.calls.every(([call]) => call.variant === undefined)).toBe(true);
+
+      // An older machine ignores the ask and sends the original, served as itself.
+      hasCopies = false;
+      const older = await send(mediaOrigin, `/${TOKEN}${at("far-older", "older.png")}`);
+      expect(older.headers["content-type"]).toBe("image/png");
+      expect(older.body.equals(original)).toBe(true);
+    } finally {
+      await media.close();
+    }
   });
 
   it("serves suffix ranges, HEAD, 200, and 416 like a local file", async () => {

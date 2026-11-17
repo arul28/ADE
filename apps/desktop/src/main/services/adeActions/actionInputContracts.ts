@@ -1613,8 +1613,8 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run computer_use_artifacts.readArtifactPreview --input-json '{\"artifactId\":\"artifact-1\"}' --json",
     },
     readArtifactRange: {
-      description: "Read one bounded slice of a stored proof inside .ade/artifacts, base64-encoded, so a paired desktop can stream a video.",
-      input: "object { uri: string, offset?: number, length?: number }",
+      description: "Read one bounded slice of a stored proof inside .ade/artifacts, base64-encoded, so a paired desktop can stream a video. With `variant: \"display\"` a PNG or JPEG answers from a smaller JPEG copy for showing, and the answer carries `variant`.",
+      input: "object { uri: string, offset?: number, length?: number, variant?: \"display\" }",
       example: "ade --role cto actions run computer_use_artifacts.readArtifactRange --input-json '{\"uri\":\".ade/artifacts/apple-recordings/lane-1/rec.mp4\",\"offset\":0,\"length\":1048576}' --json",
     },
     updateArtifactReview: {

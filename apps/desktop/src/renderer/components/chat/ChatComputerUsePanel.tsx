@@ -12,6 +12,7 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
+import { SlowLinkHeldPicture } from "./SlowLinkHeldPicture";
 import React, {
   useCallback,
   useMemo,
@@ -189,13 +190,16 @@ export function ChatProofArtifactCard({
   const {
     containerRef,
     preview,
+    fullPreview,
     loading,
     failed,
     explanation,
     onMediaError,
     retry,
     retryLabel,
-  } = useArtifactPreview(artifact, allowLocalArtifactProtocol);
+    held,
+    showHeld,
+  } = useArtifactPreview(artifact, allowLocalArtifactProtocol, { holdOnSlowLink: variant === "timeline" });
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const externalUrl = externalArtifactUrl(artifact.uri);
   const image = isImageArtifact(artifact);
@@ -248,7 +252,9 @@ export function ChatProofArtifactCard({
       </div>
 
       <div className={cn("px-2.5", variant === "timeline" ? "pb-2.5" : "pb-3")}>
-        {loading ? (
+        {held ? (
+          <SlowLinkHeldPicture title={artifact.title} bytes={held.bytes} onShow={showHeld} />
+        ) : loading ? (
           <div className="flex min-h-36 items-center justify-center rounded-xl border border-fg/[0.055] bg-black/18 text-muted-fg/35">
             <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof preview" />
           </div>
@@ -303,7 +309,7 @@ export function ChatProofArtifactCard({
       {lightboxOpen && preview && (image || video) ? (
         <ArtifactLightbox
           artifact={artifact}
-          preview={preview}
+          preview={fullPreview ?? preview}
           failed={failed}
           failureText={failureText}
           onMediaError={onMediaError}
@@ -390,6 +396,7 @@ function DrawerProofTile({
   const {
     containerRef,
     preview,
+    fullPreview,
     loading,
     failed,
     explanation,
@@ -542,7 +549,7 @@ function DrawerProofTile({
       {lightboxOpen && preview && (image || video) ? (
         <ArtifactLightbox
           artifact={artifact}
-          preview={preview}
+          preview={fullPreview ?? preview}
           failed={failed}
           failureText={failureText}
           onMediaError={onMediaError}

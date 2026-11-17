@@ -186,6 +186,76 @@ export function useRemoteConnectionMark(targetId: string | null): string {
   );
 }
 
+/**
+ * Whether slow-connection mode is on for the connection to this machine
+ * (`shared/slowLinkMode.ts`). Same shared feed; null target: false, no feed.
+ */
+export function useSlowLinkActive(targetId: string | null): boolean {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return false;
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      return connection?.state === "connected" && connection.slowLink?.active === true;
+    },
+    () => false,
+  );
+}
+
+/**
+ * The last measured round trip to this machine, in ms, while it is connected;
+ * null before the first measure. Same shared feed; null target: null.
+ */
+export function useLinkRoundTripMs(targetId: string | null): number | null {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return null;
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      if (connection?.state !== "connected") return null;
+      const rtt = connection.slowLink?.rttMs ?? connection.route?.latencyMs;
+      return typeof rtt === "number" ? rtt : null;
+    },
+    () => null,
+  );
+}
+
+/** Round trip from which a terminal shows typed characters before the echo. */
+export const TYPE_AHEAD_RTT_MS = 200;
+
+/**
+ * The round trip to this machine when its terminals should guess typed
+ * characters (`terminalTypeAhead.ts`), else null: slow-connection mode on, or
+ * a round trip of `TYPE_AHEAD_RTT_MS` or more. The machine's "Off" setting
+ * turns it off. Same shared feed; null target: null.
+ */
+export function useTypeAheadRoundTripMs(targetId: string | null): number | null {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return null;
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      if (connection?.state !== "connected" || connection.target.slowLinkMode === "off") return null;
+      const rtt = connection.slowLink?.rttMs ?? connection.route?.latencyMs ?? null;
+      if (connection.slowLink?.active) return typeof rtt === "number" ? rtt : TYPE_AHEAD_RTT_MS;
+      return typeof rtt === "number" && rtt >= TYPE_AHEAD_RTT_MS ? rtt : null;
+    },
+    () => null,
+  );
+}
+
 /** This computer's sync identity, read once per activation through the shared reader. */
 function useThisMachineIdentity(active: boolean): {
   deviceId: string | null;

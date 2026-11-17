@@ -96,6 +96,19 @@ const REFRESH_COALESCE_MS = 400;
 /** A machine that stops answering must never stall the sidebar. */
 const MACHINE_READ_TIMEOUT_MS = 8_000;
 /**
+ * The same read on a slow link (`shared/slowLinkMode.ts`): as long as the main
+ * process gives a read before it tries again (25 s). A 300 KB list takes 3.3 s
+ * on a quiet 700 ms satellite link, but more while a picture or a paste shares
+ * it, and an answer that comes at 9 s is worth the wait: giving up threw away
+ * what the link had already carried and counted a failure toward the notice.
+ */
+const SLOW_LINK_MACHINE_READ_TIMEOUT_MS = 25_000;
+
+function machineReadTimeoutMs(targetId: string): number {
+  const connection = runtime.connections.find((candidate) => candidate.target.id === targetId);
+  return connection?.slowLink?.active === true ? SLOW_LINK_MACHINE_READ_TIMEOUT_MS : MACHINE_READ_TIMEOUT_MS;
+}
+/**
  * Failed reads in a row before Work says a machine's chats could not load. The
  * first read after a reconnect often times out while that machine is still
  * waking; the next one, ten seconds later, usually succeeds.
@@ -1615,11 +1628,12 @@ async function readMachine(
     return;
   }
   if (machineCallsInFlight.has(machineId)) return;
+  const readTimeoutMs = machineReadTimeoutMs(targetId);
   const track = <T,>(promise: Promise<T>): Promise<T> => trackMachineCall(machineId, promise);
   const readLanes = (includeStatus: boolean) =>
     withTimeout(
       track(listLanes({ includeArchived: false, includeStatus }, binding)),
-      MACHINE_READ_TIMEOUT_MS,
+      readTimeoutMs,
       `lane.list on ${machineName}`,
     );
   const decodeLanes = (result: unknown, includeStatus: boolean): LaneSummary[] => {
@@ -1640,7 +1654,7 @@ async function readMachine(
     try {
       const response = await withTimeout(
         track(listPrs(binding)),
-        MACHINE_READ_TIMEOUT_MS,
+        readTimeoutMs,
         `pr.listAll on ${machineName}`,
       );
       return decodeForeignPrs(response);
@@ -1658,7 +1672,7 @@ async function readMachine(
       lanesDue ? readLanes(statusDue) : null,
       withTimeout(
         track(listSessions(foreignSessionListArgs(machineId), binding)),
-        MACHINE_READ_TIMEOUT_MS,
+        readTimeoutMs,
         `session.list on ${machineName}`,
       ),
       lanesDue ? readPrs() : null,

@@ -1427,6 +1427,66 @@ describe("registerRuntimeBridge", () => {
     );
   });
 
+  it("asks the other machine for a proof picture's display copy only when the reader asks for one", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteCallActionForTargetMock.mockResolvedValue({
+      ok: true,
+      domain: "computer_use_artifacts",
+      action: "readArtifactRange",
+      result: { totalSize: 10, offset: 0, data: "", variant: "display" },
+      statusHints: {},
+    });
+    const bridge = registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await bridge.readRemoteArtifactRange({
+      targetId: "target-1",
+      projectId: "project-1",
+      relativePath: ".ade/artifacts/computer-use/shot.png",
+      offset: 0,
+      length: 1024,
+      variant: "display",
+    });
+    // The tile's request reaches the machine that holds the picture; without
+    // this field the machine returns the original and the copy never arrives.
+    expect(remoteCallActionForTargetMock).toHaveBeenCalledWith(
+      target,
+      "project-1",
+      {
+        domain: "computer_use_artifacts",
+        action: "readArtifactRange",
+        args: {
+          uri: ".ade/artifacts/computer-use/shot.png",
+          offset: 0,
+          length: 1024,
+          variant: "display",
+        },
+      },
+    );
+
+    remoteCallActionForTargetMock.mockClear();
+    await bridge.readRemoteArtifactRange({
+      targetId: "target-1",
+      projectId: "project-1",
+      relativePath: ".ade/artifacts/computer-use/shot.png",
+      offset: 0,
+      length: 1024,
+    });
+    // The lightbox asks for the original, and an older machine would ignore
+    // the field anyway.
+    expect(remoteCallActionForTargetMock).toHaveBeenCalledWith(
+      target,
+      "project-1",
+      {
+        domain: "computer_use_artifacts",
+        action: "readArtifactRange",
+        args: { uri: ".ade/artifacts/computer-use/shot.png", offset: 0, length: 1024 },
+      },
+    );
+  });
+
   it("creates remote port forwards through the selected target", async () => {
     remoteRegistryGetMock.mockReturnValue(target);
     remoteEnsureLocalPortForwardMock.mockResolvedValue({

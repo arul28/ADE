@@ -10,6 +10,7 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { chatMachineMediaSentence, chatMachineReach, useChatMachineWake, type ChatMachineReach } from "./useChatMachineWake";
 import { withChatPin } from "./chatMachinePin";
+import { useSlowLinkActive } from "../../state/projectMachines";
 
 export function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
   return artifact.kind === "screenshot" || (artifact.mimeType?.startsWith("image/") ?? false);
@@ -129,6 +130,11 @@ type ArtifactPreviewSource = "local-stream" | "remote-stream" | "data-url";
 
 type PreviewState = {
   preview: string | null;
+  /**
+   * The original, when `preview` is a paired machine's smaller display copy
+   * of a picture. The full-size viewer shows it; the tile shows the copy.
+   */
+  original?: string | null;
   source: ArtifactPreviewSource | null;
   loading: boolean;
   loaded: boolean;
@@ -150,9 +156,18 @@ const EMPTY_PREVIEW: PreviewState = {
 export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   artifact: ComputerUseArtifactView,
   allowLocalArtifactProtocol: boolean,
+  options: {
+    /**
+     * In slow-connection mode a paired machine's picture waits for a tap
+     * (`held`), so a chat full of pictures does not fill a slow link.
+     */
+    holdOnSlowLink?: boolean;
+  } = {},
 ): {
   containerRef: RefObject<E>;
   preview: string | null;
+  /** What the full-size viewer shows: the original picture, not the tile's copy. */
+  fullPreview: string | null;
   loading: boolean;
   failed: boolean;
   explanation: string;
@@ -165,6 +180,12 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   retry: (() => void) | null;
   /** The retry's label: "Wake" on a sleeping cloud computer. */
   retryLabel: "Retry" | "Wake";
+  /**
+   * Set while a picture waits for a tap on a slow connection, with the bytes
+   * it will take (null until known). `showHeld` loads it.
+   */
+  held: { bytes: number | null } | null;
+  showHeld: () => void;
 } {
   const scope = useChatRuntimeScope();
   const containerRef = useRef<E>(null);
@@ -177,7 +198,49 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   const projectId = remote?.projectId ?? null;
   const remoteRoot = remote?.rootPath ?? null;
   const remoteOffline = scope.isRemote && !scope.online;
-  const { preview, source, loading, loaded, failure, readThrew } = state;
+  const { preview, original, source, loading, loaded, failure, readThrew } = state;
+  const slowLink = useSlowLinkActive(targetId);
+  const [released, setReleased] = useState(false);
+  const [heldBytes, setHeldBytes] = useState<number | null>(null);
+  // Held only before the first load: a picture already shown stays shown
+  // when the link turns slow.
+  const holding = options.holdOnSlowLink === true
+    && slowLink
+    && !released
+    && !loaded
+    && !allowLocalArtifactProtocol
+    && !isWebClientMode()
+    && Boolean(targetId && projectId)
+    && isImageArtifact(artifact)
+    && !isBrokenArtifact(artifact);
+  const showHeld = useCallback(() => setReleased(true), []);
+
+  // The size a held picture will take: one small read of its display copy.
+  useEffect(() => {
+    if (!holding || !visible || heldBytes !== null) return;
+    const mediaSize = window.ade.computerUse.mediaSize;
+    if (typeof mediaSize !== "function") return;
+    let cancelled = false;
+    void window.ade.computerUse.mediaBaseUrl()
+      .then((base) => {
+        if (!base || cancelled) return null;
+        const url = remoteArtifactMediaUrl(base, {
+          uri: artifact.uri,
+          targetId: targetId ?? "",
+          projectId: projectId ?? "",
+          remoteProjectRoot: remoteRoot,
+          display: true,
+        });
+        return url ? mediaSize(url) : null;
+      })
+      .then((bytes) => {
+        if (!cancelled && typeof bytes === "number") setHeldBytes(bytes);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [artifact.uri, heldBytes, holding, projectId, remoteRoot, targetId, visible]);
 
   useEffect(() => {
     const node = containerRef.current;
@@ -198,6 +261,8 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   useEffect(() => {
     setState(EMPTY_PREVIEW);
     setStreamRefused(false);
+    setReleased(false);
+    setHeldBytes(null);
   }, [artifact.id, artifact.uri]);
 
   // The machine came back: load again instead of keeping "is offline".
@@ -208,6 +273,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   useEffect(() => {
     if (
       !visible
+      || holding
       || loaded
       || !artifact.uri
       // The host already told us there are no bytes; asking for them anyway
@@ -276,15 +342,20 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
       .then((base) => {
         if (cancelled) return;
         let url: string | null = null;
+        let original: string | null = null;
         if (base && allowLocalArtifactProtocol) {
           url = localArtifactMediaUrl(base, artifact.uri, scope.rootPath);
         } else if (base) {
-          url = remoteArtifactMediaUrl(base, {
+          const remote = {
             uri: artifact.uri,
             targetId: targetId ?? "",
             projectId: projectId ?? "",
             remoteProjectRoot: remoteRoot,
-          });
+          };
+          original = remoteArtifactMediaUrl(base, remote);
+          // A picture's tile shows the machine's display copy: a fifth of the
+          // bytes on the link. The full-size viewer reads the original.
+          url = video ? original : remoteArtifactMediaUrl(base, { ...remote, display: true });
         }
         if (!url) {
           readDataUrl();
@@ -293,6 +364,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
         setState((s) => ({
           ...s,
           preview: url,
+          original: original !== url ? original : null,
           source: allowLocalArtifactProtocol ? "local-stream" : "remote-stream",
           loaded: true,
         }));
@@ -303,6 +375,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   }, [
     allowLocalArtifactProtocol,
     artifact,
+    holding,
     loaded,
     projectId,
     remoteOffline,
@@ -322,7 +395,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
       // which the host reads for this chat's project, before calling the
       // preview broken.
       setStreamRefused(true);
-      setState((s) => ({ ...s, preview: null, source: null, loaded: false }));
+      setState((s) => ({ ...s, preview: null, original: null, source: null, loaded: false }));
       return;
     }
     setState((s) => ({ ...s, failure: "unplayable" }));
@@ -366,5 +439,17 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
         : null,
       retryLabel: "Retry",
     };
-  return { containerRef, preview, loading, failed, explanation, onMediaError, ...action };
+  const fullPreview = original ?? preview;
+  return {
+    containerRef,
+    preview,
+    fullPreview,
+    loading,
+    failed,
+    explanation,
+    onMediaError,
+    ...action,
+    held: holding ? { bytes: heldBytes } : null,
+    showHeld,
+  };
 }

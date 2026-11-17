@@ -27,6 +27,7 @@ import type {
   ComputerUseArtifactWorkflowState,
   ComputerUseEventPayload,
 } from "../../../shared/types";
+import { createArtifactDisplayCopies, type ArtifactDisplayCopies } from "./artifactDisplayCopy";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types/computerUseArtifacts";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { pathsEqual } from "../shared/pathCompare";
@@ -259,9 +260,11 @@ async function readArtifactRangeChunk(args: {
   uri?: string;
   offset?: number;
   length?: number;
+  variant?: unknown;
   projectRoot: string;
   artifactsDir: string;
-}): Promise<{ totalSize: number; offset: number; data: string }> {
+  displayCopies: ArtifactDisplayCopies;
+}): Promise<{ totalSize: number; offset: number; data: string; variant?: "display" }> {
   const uri = typeof args.uri === "string" ? args.uri.trim() : "";
   if (!uri) throw new Error("Artifact uri is required.");
   let resolved: string;
@@ -278,6 +281,16 @@ async function readArtifactRangeChunk(args: {
     throw new Error("Artifact path must resolve within .ade/artifacts.");
   }
   if (!isStreamableArtifactFile(resolved)) throw new Error("This artifact type cannot be streamed.");
+  // A paired desktop asks for the display copy of a picture to show it in a
+  // transcript. Without one (not a PNG or JPEG, or no smaller copy helps)
+  // the answer is the original, with no `variant`.
+  if (args.variant === "display" && /\.(png|jpe?g)$/i.test(resolved)) {
+    const displayPath = await args.displayCopies.pathFor(resolved);
+    if (displayPath) {
+      const range = await readArtifactByteRange(displayPath, args.offset, args.length);
+      return { totalSize: range.totalSize, offset: range.rangeStart, data: range.base64, variant: "display" };
+    }
+  }
   // Read through one opened handle (no separate stat first). A proof deleted,
   // or never copied to this computer, is an answer, not a defect.
   const range = await readArtifactByteRange(resolved, args.offset, args.length).catch((error: unknown) => {
@@ -539,6 +552,7 @@ export function createComputerUseArtifactBrokerService(args: {
 }) {
   const { db, projectId, projectRoot, onEvent } = args;
   const layout = resolveAdeLayout(projectRoot);
+  const displayCopies = createArtifactDisplayCopies(layout.cacheDir);
   const allowedImportRoots = Array.from(new Set([
     layout.artifactsDir,
     layout.cacheDir,
@@ -1900,13 +1914,15 @@ export function createComputerUseArtifactBrokerService(args: {
       });
     },
 
-    readArtifactRange(args: { uri?: string; offset?: number; length?: number }) {
+    readArtifactRange(args: { uri?: string; offset?: number; length?: number; variant?: "display" }) {
       return readArtifactRangeChunk({
         uri: args?.uri,
         offset: args?.offset,
         length: args?.length,
+        variant: args?.variant,
         projectRoot,
         artifactsDir: layout.artifactsDir,
+        displayCopies,
       });
     },
 

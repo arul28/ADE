@@ -114,6 +114,9 @@ export class RuntimeRpcClient {
   private readonly disconnectCallbacks = new Set<(error: Error) => void>();
   private closedError: Error | null = null;
   private lastInboundAtMs: number | null = null;
+  /** Characters sent and received on this connection, for the link summary log. */
+  private bytesIn = 0;
+  private bytesOut = 0;
 
   constructor(
     private readonly transport: RuntimeRpcTransport,
@@ -124,7 +127,10 @@ export class RuntimeRpcClient {
     // the next piece. Decoding each piece alone turned that character into
     // U+FFFD, at a different place on every read of the same data.
     const decoder = new StringDecoder("utf8");
-    this.transport.onData((chunk) => this.onData(decoder.write(chunk)));
+    this.transport.onData((chunk) => {
+      this.bytesIn += chunk.length;
+      this.onData(decoder.write(chunk));
+    });
     this.transport.onError?.((error) => {
       // `cause` keeps the transport's typed error, so a caller can tell an
       // over-budget channel close from a lost machine.
@@ -198,7 +204,9 @@ export class RuntimeRpcClient {
       });
       this.pending.set(id, { method, label, resolve, reject, deadline });
       try {
-        this.transport.write(`${JSON.stringify(payload)}\n`);
+        const line = `${JSON.stringify(payload)}\n`;
+        this.bytesOut += Buffer.byteLength(line);
+        this.transport.write(line);
       } catch (error) {
         this.takePending(id);
         reject(error instanceof Error ? error : new Error(String(error)));
@@ -250,6 +258,11 @@ export class RuntimeRpcClient {
    */
   lastInboundAt(): number | null {
     return this.lastInboundAtMs;
+  }
+
+  /** Bytes in and out on this connection since it opened (out: characters of each request). */
+  traffic(): { bytesIn: number; bytesOut: number } {
+    return { bytesIn: this.bytesIn, bytesOut: this.bytesOut };
   }
 
   private onData(chunk: string): void {

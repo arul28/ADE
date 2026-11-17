@@ -1,3 +1,4 @@
+import type { SlowLinkPreference } from "../../../shared/slowLinkMode";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowClockwise,
@@ -1068,6 +1069,21 @@ export function RemoteTargetList({
     ],
   );
 
+  const setTargetSlowLinkMode = useCallback(async (targetId: string, mode: SlowLinkPreference) => {
+    const setMode = window.ade.remoteRuntime.setSlowLinkMode;
+    if (!setMode) return;
+    setRowBusy(targetId, "autoConnect");
+    try {
+      const updated = await setMode(targetId, mode);
+      setTargets((current) => current.map((target) => (target.id === updated.id ? updated : target)));
+      setError(null);
+    } catch (err) {
+      setError(formatRemoteTargetError(err));
+    } finally {
+      setRowBusy(targetId, null);
+    }
+  }, [setRowBusy]);
+
   const setTargetAutoConnect = useCallback(async (targetId: string, enabled: boolean) => {
     setRowBusy(targetId, "autoConnect");
     try {
@@ -1268,6 +1284,9 @@ export function RemoteTargetList({
           onAutoConnectChange={(targetId, enabled) => {
             void setTargetAutoConnect(targetId, enabled);
           }}
+          onSlowLinkModeChange={typeof window.ade.remoteRuntime.setSlowLinkMode === "function"
+            ? (targetId, mode) => void setTargetSlowLinkMode(targetId, mode)
+            : undefined}
           onTrustAndConnect={() => void trustAndConnect()}
           onCancelHostKeyTrust={() => setHostKeyTrust(null)}
           onPairAgain={pairAgainMachine

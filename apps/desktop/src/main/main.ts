@@ -55,6 +55,7 @@ logMachineEvent("info", "desktop.main_started", {
 
 import { UNAVAILABLE_CAPTURE_GESTURE_HEALTH } from "./services/capture/captureGestureState";
 import { AsyncLocalStorage } from "node:async_hooks";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1909,6 +1910,7 @@ app.whenReady().then(async () => {
   let adeArtifactAllowedDir: string | null = null;
   /** Reads proof bytes from a paired computer; set once the runtime bridge is up. */
   let remoteArtifactRangeReader: RemoteArtifactRangeReader | null = null;
+  let remoteLinkRoundTripMs: ((targetId: string) => number | null) | null = null;
 
   /**
    * The project a proof read is served from. A URL that names a `root` is
@@ -1943,12 +1945,32 @@ app.whenReady().then(async () => {
   const artifactMediaServer = createArtifactMediaServer({
     localScope: artifactServeScope,
     remoteReader: () => remoteArtifactRangeReader,
+    linkRoundTripMs: (targetId) => remoteLinkRoundTripMs?.(targetId) ?? null,
     warn: (message, details) => logMachineEvent("warn", "computer_use.artifact_media_failed", { message, ...details }),
     onRefused: logArtifactServeRefusal,
   });
   ipcMain.handle(IPC.computerUseMediaBaseUrl, (event) => {
     if (!isTrustedAdeRendererSender(event)) throw new Error("Computer-use media is only available to the ADE window.");
     return artifactMediaServer.baseUrl();
+  });
+  // A picture held behind a tap on a slow link shows its size. The renderer
+  // cannot read the media server itself (another origin), so main asks it
+  // with a HEAD: on a paired machine that is one 1-byte read.
+  ipcMain.handle(IPC.computerUseMediaSize, async (event, arg: { url?: unknown }): Promise<number | null> => {
+    if (!isTrustedAdeRendererSender(event)) throw new Error("Computer-use media is only available to the ADE window.");
+    const url = typeof arg?.url === "string" ? arg.url : "";
+    const base = await artifactMediaServer.baseUrl();
+    if (!url || !url.startsWith(base.replace(/\/+$/, "") + "/")) return null;
+    return await new Promise<number | null>((resolve) => {
+      const request = http.request(url, { method: "HEAD", timeout: 60_000 }, (response) => {
+        response.resume();
+        const length = Number(response.headers["content-length"]);
+        resolve(response.statusCode === 200 && Number.isSafeInteger(length) ? length : null);
+      });
+      request.on("timeout", () => request.destroy());
+      request.on("error", () => resolve(null));
+      request.end();
+    });
   });
   // Saves a proof video that plays from the media server. The renderer cannot
   // read that server (a different origin with no CORS) and the whole-file
@@ -11202,6 +11224,7 @@ app.whenReady().then(async () => {
     getCurrentAccountOwnerId: () => readAccountOwnerId(),
   });
   remoteArtifactRangeReader = ipcBridge.readRemoteArtifactRange;
+  remoteLinkRoundTripMs = ipcBridge.remoteLinkRoundTripMs;
   markMainBoot("registerIpcMs");
 
   // Explicit project launches still bind a project before the renderer boots;

@@ -183,7 +183,7 @@ export function artifactImageSrc(
 /** Where a media server path points, after the token. */
 export type ArtifactMediaTarget =
   | { kind: "project"; relativePath: string; projectRoot: string | null }
-  | { kind: "remote"; targetId: string; projectId: string; relativePath: string };
+  | { kind: "remote"; targetId: string; projectId: string; relativePath: string; display?: boolean };
 
 function withMediaBase(base: string, tail: string): string {
   return `${withoutTrailingSlash(base.trim())}/${tail}`;
@@ -207,6 +207,8 @@ export function remoteArtifactMediaUrl(base: string, args: {
   targetId: string;
   projectId: string;
   remoteProjectRoot?: string | null;
+  /** The picture's smaller display copy, for a transcript tile. */
+  display?: boolean;
 }): string | null {
   const targetId = args.targetId.trim();
   const projectId = args.projectId.trim();
@@ -215,7 +217,7 @@ export function remoteArtifactMediaUrl(base: string, args: {
   if (!relative) return null;
   return withMediaBase(
     base,
-    `remote/${encodeURIComponent(targetId)}/${encodeURIComponent(projectId)}/${encodePath(relative)}`,
+    `remote/${encodeURIComponent(targetId)}/${encodeURIComponent(projectId)}/${encodePath(relative)}${args.display ? "?view=display" : ""}`,
   );
 }
 
@@ -256,5 +258,9 @@ export function parseArtifactMediaPath(pathAfterToken: string): ArtifactMediaTar
   }
   if (!targetId || !projectId) return null;
   const relativePath = strictRelativePath(parts.slice(2));
-  return relativePath ? { kind: "remote", targetId, projectId, relativePath } : null;
+  if (!relativePath) return null;
+  const display = queryAt >= 0 && new URLSearchParams(withoutHash.slice(queryAt + 1)).get("view") === "display";
+  return display
+    ? { kind: "remote", targetId, projectId, relativePath, display }
+    : { kind: "remote", targetId, projectId, relativePath };
 }

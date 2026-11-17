@@ -226,7 +226,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "startCrossMachineBatchMove", "retryCrossMachineBatchMove", "importCrossMachineHandoffLane",
       "resolveCrossMachineBatchMoveApproval",
       "dismissPendingInput", "reloadClaudePlugins", "rewindFiles", "saveTempAttachment",
-      "copyTempAttachment", "createAttachmentUpload", "sendMessage", "createSessionAndSend", "setClaudeOutputStyle",
+      "saveTempAttachmentPart", "copyTempAttachment", "createAttachmentUpload", "sendMessage", "createSessionAndSend", "setClaudeOutputStyle",
       "setParallelLaunchState", "cancelScheduledWork", "resumeUsageLimitNow",
       "continueUsageLimitOnAlternate", "switchAccount", "setScheduledWorkPaused",
       "setScheduledWorkItemPaused", "runScheduledWorkNow", "steer",
@@ -883,6 +883,8 @@ const REPLAY_SAFE_WRITES = new Set<string>([
   "session.clearWokeMarker",
   // Publishes which tool a desktop has open; the same publish twice is a no-op.
   "work_tools.setActiveTool",
+  // Each part says where it starts; a repeat is answered, not added again.
+  "chat.saveTempAttachmentPart",
 ]);
 
 // Reads that are never run again: they wait on purpose, call a model, or walk

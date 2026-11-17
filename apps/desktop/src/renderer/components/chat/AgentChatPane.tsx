@@ -244,8 +244,10 @@ import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeS
 import { ChatActionsToggleBadge } from "./ChatActionsToggleBadge";
 import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
 import { beginChatSendTiming, noteChatSendBubbleShown, noteChatSendTimingEvent, type ChatSendTimingHandle } from "./chatSendTiming";
+import { forgetUnconfirmedSend, rememberUnconfirmedSend, unconfirmedSend, type UnconfirmedSend } from "./chatUnconfirmedSends";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ChatMachineWakeBanner, ChatMachineWakeProvider } from "./useChatMachineWake";
+import { ChatSlowLinkChip } from "./ChatSlowLinkChip";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
@@ -16384,7 +16386,9 @@ export function AgentChatPane({
 
     // Set once the message is handed to the chat, so a transport timeout can
     // tell "may still arrive" from "never left".
-    let handedOff: { sessionId: string; submittedAt: string; texts: string[]; alreadyThere: number } | null = null;
+    let handedOff: { sessionId: string; submittedAt: string; texts: string[]; alreadyThere: number; identityKey: string; clientSendId: string } | null = null;
+    // The send's identity (chat + payload) and client id, once a send (not a steer) went out.
+    let sendIdentity: { identityKey: string; record: UnconfirmedSend } | null = null;
     try {
       let justCreatedSession = false;
       let finalText = composedWithVisualContext.text;
@@ -16541,8 +16545,40 @@ export function AgentChatPane({
 
       const submittedAt = new Date().toISOString();
       const sentTexts = [finalText, finalDisplayText].map((value) => value.trim()).filter(Boolean);
+      // Everything the send carries besides its words: two sends that differ
+      // here are different messages, whatever the words say.
+      const sendKey = JSON.stringify([
+        finalText,
+        selectedAttachments.map((attachment) => attachment.path),
+        sortedMatchKeys(selectedContextAttachments, contextAttachmentMatchKey),
+        includeThreadComments
+          ? sortedMatchKeys(guestCommentsForSend, (selection) => `${selection.id}@${selection.revision}`)
+          : null,
+      ]);
+      const identityKey = `${sessionId}\u0000${sendKey}`;
       // Identical messages already in the chat, so only a new one counts as arrived.
-      handedOff = { sessionId, submittedAt, texts: sentTexts, alreadyThere: countSentMessages(sessionId, sentTexts, submittedAt) };
+      const alreadyThere = countSentMessages(sessionId, sentTexts, submittedAt);
+      // A retry reuses the id only while the earlier send is still in doubt.
+      // It may have arrived while this pane was closed, and a message that is
+      // already in the chat must not swallow the new one as its repeat.
+      const known = unconfirmedSend(identityKey);
+      const knownArrived = known != null
+        && countSentMessages(known.sessionId, known.texts, known.submittedAt) > known.alreadyThere;
+      if (knownArrived && known) forgetUnconfirmedSend(identityKey, known.clientSendId);
+      sendIdentity = {
+        identityKey,
+        record: {
+          clientSendId: known && !knownArrived
+            ? known.clientSendId
+            : globalThis.crypto?.randomUUID?.()
+              ?? `send-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+          sessionId,
+          texts: sentTexts,
+          submittedAt,
+          alreadyThere,
+        },
+      };
+      handedOff = { sessionId, submittedAt, texts: sentTexts, alreadyThere, identityKey: sendIdentity.identityKey, clientSendId: sendIdentity.record.clientSendId };
       // The bubble and the cleared composer draw first. Re-sorting the list
       // and marking the chat as running re-render every surface that reads
       // the list, so that waits for the task after the frame: one frame later.
@@ -16599,6 +16635,7 @@ export function AgentChatPane({
           await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.send({
             sessionId,
             clientSubmittedAtMs: sendTiming.enterAtMs,
+            clientSendId: sendIdentity?.record.clientSendId,
             text: finalText,
             ...(compactFirst.sendRef.current?.sessionId === sessionId ? { compactFirst: compactFirst.sendRef.current.value } : {}),
             displayText: hasPastedPrompt
@@ -16613,6 +16650,8 @@ export function AgentChatPane({
             ...(sessionProvider === "cursor" ? { runtime: cursorRuntime } : {}),
           }, chatPin));
           sendTiming.mark("sendResolved");
+          // The answer confirms it: this message is not waiting to be retried.
+          forgetUnconfirmedSend(identityKey, sendIdentity?.record.clientSendId ?? "");
         } catch (sendError) {
           // Race condition: the turn may have started between our state check
           // and the backend call. If so, automatically fall back to steer
@@ -16677,7 +16716,12 @@ export function AgentChatPane({
       // One plain sentence: a pinned call's failure arrives inside Electron's
       // "Error invoking remote method '…': <Class>Error:" wrapper.
       const message = stripElectronErrorWrapper(submitError instanceof Error ? submitError.message : String(submitError));
-      if (handedOff && isRuntimeTransportTimeoutError(submitError)) {
+      // Not confirmed: the same payload sent again to this chat reuses the id,
+      // and the arrival check above keeps this from swallowing a later message.
+      if (sendIdentity) rememberUnconfirmedSend(sendIdentity.identityKey, sendIdentity.record);
+      // A timeout, or a link that dropped after the message left: the chat's
+      // machine may still have it. Wait for it rather than handing it back now.
+      if (handedOff && (isRuntimeTransportTimeoutError(submitError) || isRemoteOutcomeUnknownError(submitError))) {
         // The call gave up, not the send: the chat's machine usually still
         // delivers it. Put the text back only if it never shows up.
         const pending = handedOff;
@@ -16692,6 +16736,9 @@ export function AgentChatPane({
             sendRecoveryTimersRef.current.delete(timer);
             if (!paneMountedRef.current) return;
             if (arrived()) {
+              // It did arrive after all: an identical message later today is a
+              // message of its own, not a repeat of this one.
+              forgetUnconfirmedSend(pending.identityKey, pending.clientSendId);
               setError((current) => (current === waitingMessage ? null : current));
               return;
             }
@@ -20842,6 +20889,7 @@ export function AgentChatPane({
       <StatusStrip className="min-w-0 flex-1">
         {lifecyclePill}
         {usageLimitChip}
+        <ChatSlowLinkChip />
         <LaneBranchComposerChip laneId={composerDriftLaneId} />
         {compactFirstChip}
         {mcpRefreshChip}

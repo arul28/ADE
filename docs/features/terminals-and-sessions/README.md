@@ -1706,6 +1706,18 @@ Renderer surfaces:
   `rehydrate-after-fit`, `hydrate-normalize-declined`, `hydrate-complete`, …);
   a dims mismatch warns on **columns only**, since row disagreement is normal
   and columns are what decide wrapping.
+- `apps/desktop/src/renderer/components/terminals/terminalTypeAhead.ts` — the
+  dimmed, underlined guess a terminal on a slow link draws at the cursor until
+  the program's own echo arrives. It only paints a layer over the terminal, so
+  a wrong guess cannot change the screen. Only plain narrow characters are
+  guessed; Enter, Tab, arrows, control keys and pastes clear every guess; a
+  guess with no echo within max(1 s, 3 × round trip) clears. Nothing is guessed
+  in the alternate screen, with the cursor hidden, with mouse reporting on, or
+  while scrolled up, and only an output chunk shaped exactly like the echo
+  confirms a line — with a new output line clearing it — so a password prompt
+  never shows what was typed. It is on for a plain shell (`toolType` "shell" or
+  none) on a machine whose link is slow or 200 ms or more away, never for an
+  agent CLI. See [Terminals](README.md#type-ahead-on-a-slow-link).
 - `apps/desktop/src/renderer/components/terminals/terminalImagePaste.ts`,
   `TerminalImagePasteNotice.tsx`, and `terminalBracketedPaste.ts` — the image
   paste path of a Work-tracked CLI terminal, split out of `TerminalView`.
@@ -3050,6 +3062,26 @@ sliding window, not an absolute offset).
   session event the service raises for the chat (`sessionService.notifyChanged`).
 - **Persistence:** in memory only. Watches end when the brain restarts; agents
   re-arm. CTO tools: `watchTerminal` / `unwatchTerminal`.
+
+## Type-ahead on a slow link
+
+A plain shell on another machine shows the characters you type straight away,
+dimmed and with a dotted underline at the cursor, until the machine's echo
+arrives (`terminalTypeAhead.ts`). The window picks it per terminal from the
+connection snapshot: on when that machine's slow-connection mode is on, or its
+measured round trip is 200 ms or more, and never when the machine's setting is
+**Off** (`useTypeAheadRoundTripMs` in `state/projectMachines.ts`). Agent command
+line tools get none of it — they draw their own input box, so a guess at the
+cursor is not safe there (`toolType` other than "shell" or none) — and neither
+does any terminal in the alternate screen. The rules are mosh's: only plain
+narrow characters; Enter, Tab, arrows, control keys and pastes clear the guess;
+after a clear, nothing shows until one guess comes back as the program's own
+echo; a guess expires after max(1 s, 3 × round trip). Confirmation is
+deliberately strict: only an output chunk that is exactly the typed characters
+confirms a line, and output that starts a new line clears it, so a prompt that
+echoes nothing (a password) never shows what was typed. A guess is one DOM
+layer over the terminal, never input, so a wrong guess cannot change the
+screen. See [Remote runtime](../remote-runtime/README.md#a-slow-or-dropping-link).
 
 ## Gotchas
 

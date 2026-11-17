@@ -1133,7 +1133,10 @@ describe("RemoteConnectionPool", () => {
     expect(firstClient.call.mock.calls.some(([method]) => method === "ping")).toBe(ping !== "unused");
   });
 
-  it("reports an unknown outcome to an action whose connection another call dropped", async () => {
+  it.each([
+    { name: "reports an unknown outcome to a write", domain: "lane", action: "delete", retried: false },
+    { name: "sends a read again on the new connection", domain: "computer_use_artifacts", action: "getOwnerSnapshot", retried: true },
+  ])("when another call dropped the connection, $name", async ({ domain, action, retried }) => {
     const firstClient = createClient();
     let failDelete: (error: Error) => void = () => {};
     firstClient.call.mockImplementation((method: string, params: { name?: string }) => {
@@ -1162,14 +1165,15 @@ describe("RemoteConnectionPool", () => {
     });
     const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
 
-    const deletion = pool.callActionForTarget(target, "project-1", {
-      domain: "lane",
-      action: "delete",
-      args: { laneId: "lane-1" },
-    });
+    const call = pool.callActionForTarget(target, "project-1", { domain, action, args: { laneId: "lane-1" } });
     await pool.streamEventsForTarget(target, "project-1", { cursor: 3 });
 
-    await expect(deletion).rejects.toBeInstanceOf(RemoteActionOutcomeUnknownError);
+    if (retried) {
+      await expect(call).resolves.toMatchObject({ domain, action });
+      expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+    } else {
+      await expect(call).rejects.toBeInstanceOf(RemoteActionOutcomeUnknownError);
+    }
   });
 
   it("retries idempotent reads once when the connection closes during the request", async () => {
@@ -1449,6 +1453,40 @@ describe("RemoteConnectionPool", () => {
       },
     }), { timeoutMs: LANE_GIT_WRITE_ACTION_TIMEOUT_MS });
     expect(secondClient.call).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "a send with an id, to a brain that drops repeats", dedupes: true, clientSendId: "send-1", resent: true },
+    { name: "a send with an id, to an older brain", dedupes: false, clientSendId: "send-1", resent: false },
+    { name: "a send with no id", dedupes: true, clientSendId: undefined, resent: false },
+  ])("sends a chat message again after a drop only when a repeat is safe: $name", async ({ dedupes, clientSendId, resent }) => {
+    const withDedupe = (version: string): RemoteRuntimeConnectResult => {
+      const result = connectResult(version);
+      if (dedupes) result.capabilities!.clientSendDedupe = true;
+      return result;
+    };
+    const firstClient = createClient();
+    firstClient.call.mockRejectedValueOnce(new Error("Remote runtime connection failed: channel closed"));
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({ client: firstClient, ssh: createSsh(), result: withDedupe("1.0.0") });
+    const secondClient = createClient();
+    secondClient.call.mockResolvedValue({ ok: true, result: { accepted: true } });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({ client: secondClient, ssh: createSsh(), result: withDedupe("1.0.1") });
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+    const args = { sessionId: "chat-1", text: "hello", ...(clientSendId ? { clientSendId } : {}) };
+
+    const sent = pool.callActionForTarget(target, "project-1", { domain: "chat", action: "sendMessage", args });
+
+    if (resent) {
+      await expect(sent).resolves.toMatchObject({ domain: "chat", action: "sendMessage" });
+      // The same send, with the same id, on the new connection.
+      expect(secondClient.call).toHaveBeenCalledTimes(1);
+      const [method, params] = secondClient.call.mock.calls[0]!;
+      expect(method).toBe("ade/actions/call");
+      expect(params).toMatchObject({ arguments: { domain: "chat", action: "sendMessage", args } });
+    } else {
+      await expect(sent).rejects.toBeInstanceOf(RemoteActionOutcomeUnknownError);
+      expect(secondClient.call).not.toHaveBeenCalled();
+    }
   });
 
   it("does not reconnect or replay a timed-out mutation", async () => {

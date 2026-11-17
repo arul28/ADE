@@ -189,6 +189,7 @@ function coerceTarget(value: unknown): RemoteRuntimeTarget | null {
       : typeof record.lastConnectedAt === "number" && Number.isFinite(record.lastConnectedAt)
         && !(typeof record.manuallyDisconnectedAt === "number" && Number.isFinite(record.manuallyDisconnectedAt)),
     manuallyDisconnectedAt: typeof record.manuallyDisconnectedAt === "number" && Number.isFinite(record.manuallyDisconnectedAt) ? record.manuallyDisconnectedAt : null,
+    ...(record.slowLinkMode === "on" || record.slowLinkMode === "off" ? { slowLinkMode: record.slowLinkMode } : {}),
   };
 }
 
@@ -251,6 +252,9 @@ export class RemoteTargetRegistry {
       runtimeBinaryVersion: existing?.runtimeBinaryVersion ?? null,
       lastConnectedAt: existing?.lastConnectedAt ?? null,
       autoConnect: existing?.autoConnect ?? false,
+      // The person's slow-connection setting belongs to this computer's record;
+      // saving the address again keeps it.
+      ...(existing?.slowLinkMode ? { slowLinkMode: existing.slowLinkMode } : {}),
       manuallyDisconnectedAt: existing?.manuallyDisconnectedAt ?? null,
     };
     file.targets = [next, ...file.targets.filter((target) => target.id !== id)];

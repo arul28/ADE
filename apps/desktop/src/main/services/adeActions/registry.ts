@@ -19,6 +19,7 @@ import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import type { IntegrationConnectRequestResult } from "../../../shared/integrationConnect";
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import { readImageFileAsDataUrl } from "../chat/imageAttachmentConverter";
+import { createAttachmentPartStore, type AttachmentPartArgs, type AttachmentPartStore } from "../chat/chatAttachmentParts";
 import { createHash } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { ingestSceneSnapshot } from "../scenes/sceneSnapshotIngest";
@@ -996,6 +997,24 @@ async function saveAgentChatTempAttachment(projectRoot: string, arg: { data?: st
   });
 }
 
+const attachmentPartStores = new Map<string, AttachmentPartStore>();
+
+function attachmentPartStoreFor(projectRoot: string): AttachmentPartStore {
+  let store = attachmentPartStores.get(projectRoot);
+  if (!store) {
+    store = createAttachmentPartStore({
+      maxBytes: MAX_TEMP_ATTACHMENT_BYTES,
+      stage: (content, filename) => stageAttachmentBytes({
+        content,
+        filename,
+        attachmentsDir: projectAttachmentsDir(projectRoot),
+      }),
+    });
+    attachmentPartStores.set(projectRoot, store);
+  }
+  return store;
+}
+
 /** The refusal for an image path outside every folder a chat image can live in. */
 const AGENT_CHAT_IMAGE_PATH_REFUSAL = "Image path is outside the folders ADE shows chat images from.";
 
@@ -1488,6 +1507,10 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     saveTempAttachment: (args?: { data?: string; filename?: string }) =>
       saveAgentChatTempAttachment(runtime.projectRoot, args ?? {}),
+    // The same staging, sent in parts by a desktop on a slow link
+    // (`chatAttachmentParts`). Each part is safe to send again.
+    saveTempAttachmentPart: (args?: AttachmentPartArgs) =>
+      attachmentPartStoreFor(runtime.projectRoot).savePart(args ?? {}),
     // The composer's same-machine attachment staging. The renderer only reaches
     // it after `getAttachmentStagingMode` answered `copy`, which it only does
     // when the chat's machine binding IS this machine — so in the product the

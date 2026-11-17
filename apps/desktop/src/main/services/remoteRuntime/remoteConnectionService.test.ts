@@ -2018,6 +2018,67 @@ describe("RemoteConnectionService", () => {
     }
   });
 
+  it("shows a machine whose round trips are long in slow-connection mode, until the person turns it off", async () => {
+    let saved = target("far-machine", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [saved]),
+      get: vi.fn((id: string) => (id === saved.id ? saved : null)),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => {
+        saved = { ...saved, ...patch };
+        return saved;
+      }),
+    } as unknown as RemoteTargetRegistry;
+    let pingMs = 700;
+    const pool = {
+      connect: vi.fn(async (t: RemoteRuntimeTarget) => connectResult(t)),
+      disconnect: vi.fn(),
+      // The round trip is the time the ping takes.
+      callMachineForTarget: vi.fn(async () => {
+        vi.setSystemTime(Date.now() + pingMs);
+        return { pong: true };
+      }),
+      connectionTraffic: vi.fn(() => null),
+      onHostStorageWait: vi.fn(() => () => {}),
+      onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
+      onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
+    } as unknown as RemoteConnectionPool;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const service = new RemoteConnectionService(registry, pool, { pingTimeoutMs: 5_000 });
+      await service.connect(saved.id, { explicit: true });
+      const probe = async () => {
+        const calls = vi.mocked(pool.callMachineForTarget).mock.calls.length;
+        service.probeSavedConnections();
+        await vi.waitFor(() => expect(vi.mocked(pool.callMachineForTarget).mock.calls.length).toBe(calls + 1));
+        await new Promise((resolve) => setImmediate(resolve));
+      };
+      const slowLink = () => service.snapshot().connections[0]?.slowLink;
+
+      await probe();
+      expect(slowLink()?.active ?? false).toBe(false);
+      await probe();
+      expect(slowLink()).toEqual({ active: true, reason: "latency", rttMs: 700 });
+      // The desktop tells the machine what it measured.
+      expect(vi.mocked(pool.callMachineForTarget).mock.calls[1]?.[2]).toMatchObject({ link: { rttP50Ms: 700 } });
+
+      service.setSlowLinkMode(saved.id, "off");
+      expect(slowLink()?.active).toBe(false);
+      service.setSlowLinkMode(saved.id, "auto");
+      expect(slowLink()?.active).toBe(true);
+
+      // A good link again: it stays on until five good round trips in a row.
+      pingMs = 30;
+      for (let i = 0; i < 4; i += 1) await probe();
+      expect(slowLink()?.active).toBe(true);
+      await probe();
+      expect(slowLink()?.active).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not disconnect a healthy client when a resume probe request times out", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {
@@ -2053,7 +2114,7 @@ describe("RemoteConnectionService", () => {
       expect(pool.callMachineForTarget).toHaveBeenCalledWith(
         previouslyConnected,
         "ping",
-        {},
+        expect.any(Object),
         { timeoutMs: 5_000 },
       );
     });
