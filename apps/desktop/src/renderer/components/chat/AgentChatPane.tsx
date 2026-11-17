@@ -17832,18 +17832,6 @@ export function AgentChatPane({
   const takeDraftSendAfter = draftMachineSetup.takeSendAfter;
   // Read when the dialog opens (the open re-renders the pane); no subscription per keystroke.
   const draftCloneSends = draftCloneDialog != null && draftStore.get().trim().length > 0;
-  useEffect(() => {
-    // After the machine's lanes are read: a send before them stops at "Loading lanes…".
-    if (!selectedDraftMachineId || draftLaneCatalogLoading || !takeDraftSendAfter(selectedDraftMachineId)) return;
-    const draft = draftStore.get();
-    if (draft.trim().length === 0) return;
-    // One frame later, so the send reads the machine just picked. Another pick
-    // first cancels it; an edited draft is the person's to send.
-    const frame = window.requestAnimationFrame(() => {
-      if (draftStore.get() === draft) void submitRef.current();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [draftLaneCatalogLoading, selectedDraftMachineId, takeDraftSendAfter]);
   /**
    * Why the ADE Cloud entry can't be picked now, or null. Parallel models
    * start several lanes on this computer. A chat and a CLI session both run there.
@@ -18810,6 +18798,19 @@ export function AgentChatPane({
     clearVisualContext: clearDraftVisualContext,
     setError,
   });
+  useEffect(() => {
+    // After the machine's lanes are read (a send before them stops at "Loading lanes…"),
+    // and after the draft's attachments are copied there (before, they name the old machine's paths).
+    if (!selectedDraftMachineId || draftLaneCatalogLoading || draftAttachmentTransferPending || !takeDraftSendAfter(selectedDraftMachineId)) return;
+    const draft = draftStore.get();
+    if (draft.trim().length === 0) return;
+    // One frame later, so the send reads the machine just picked. Another pick
+    // first cancels it; an edited draft is the person's to send.
+    const frame = window.requestAnimationFrame(() => {
+      if (draftStore.get() === draft) void submitRef.current();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [draftAttachmentTransferPending, draftLaneCatalogLoading, selectedDraftMachineId, takeDraftSendAfter]);
   const draftAttachmentUnavailableReason = showDraftLaunchControls && !draftMachineSelectionReconciled
     ? "Restoring this project's selected machine."
     : showDraftLaunchControls && !draftExecutionBinding

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { extractError } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
-import { noteAccountProjectChange } from "../../state/accountProjectListClient";
+import { accountProjectListEpoch, noteAccountProjectChange } from "../../state/accountProjectListClient";
 import { showToast } from "../app/toast/toastStore";
 import type { AccountProjectView } from "../../../shared/accountProject";
 
@@ -37,6 +37,10 @@ export function useAddToAccount(args: { folderName: string; onClose: () => void 
     if (typeof accountAdd !== "function") return false;
     setAccountError(null);
     setAddingToAccount(true);
+    // The account the add runs for: a result that lands after another account signed in is not this list's.
+    const accountUser = () => window.ade?.account?.status?.().then((status) => status?.userId ?? null, () => null) ?? Promise.resolve(null);
+    const epoch = accountProjectListEpoch();
+    const startedFor = await accountUser();
     const answer = await accountAdd(repoUrl).catch((error: unknown) => ({
       ok: false as const,
       code: "unavailable",
@@ -49,6 +53,12 @@ export function useAddToAccount(args: { folderName: string; onClose: () => void 
       if (!options.openTab && (answer.code === "signed_out" || answer.code === "invalid_repository")) return false;
       if (mountedRef.current) setAccountError(answer.message);
       else showToast({ tone: "error", title: `Couldn't add ${folderName} to your account`, message: answer.message });
+      return false;
+    }
+    const endedFor = await accountUser();
+    const knowsAccount = typeof window.ade?.account?.status === "function";
+    if (accountProjectListEpoch() !== epoch || (knowsAccount && (!startedFor || startedFor !== endedFor))) {
+      if (mountedRef.current) onClose();
       return false;
     }
     // A form closed while the add ran opens no tab: the project only joins the list.

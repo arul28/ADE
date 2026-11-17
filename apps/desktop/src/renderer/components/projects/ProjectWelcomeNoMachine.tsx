@@ -448,7 +448,10 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     if (copy) openCloudCopy(copy);
     else refreshCloudMachines();
   };
-  const laneRows: AccountProjectLane[] = cloudLanesOfOrigin(cloudIndex.computers, launches, origin).map((lane) => {
+  const cloudLanes = cloudLanesOfOrigin(cloudIndex.computers, launches, origin);
+  // A lane whose chat is still starting (making its computer, waiting for a sign-in) is not one yet.
+  const readyCloudLaneCount = cloudLanes.filter((lane) => !lane.launch || Boolean(lane.launch.record?.sessionId)).length;
+  const laneRows: AccountProjectLane[] = cloudLanes.map((lane) => {
     const copy = copyOnComputer(lane.computer?.instanceId ?? lane.launch?.record?.instanceId ?? null, lane.computer?.machineKey ?? null);
     return {
       key: `cloud:${lane.laneId}`,
@@ -458,7 +461,6 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
       onOpen: copy ? () => openCloudCopy(copy) : null,
     };
   });
-  const cloudLaneCount = laneRows.length;
   // Copies on the person's own computers are lanes too: each copy's main checkout.
   for (const copy of copies) {
     if (onAdeCloud(copy)) continue;
@@ -524,7 +526,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
           </span>
         </header>
         {githubRepo && accountProject ? (
-          <AccountProjectSteps owner={githubRepo.owner} access={githubAccess} launches={launches} laneCount={cloudLaneCount + ownCopies.length} />
+          <AccountProjectSteps owner={githubRepo.owner} access={githubAccess} launches={launches} chatCount={readyCloudLaneCount} laneCount={readyCloudLaneCount + ownCopies.length} />
         ) : null}
         {cloudChats && origin ? (
           <CloudChatComposer accountProjectId={tab.id} origin={origin} owner={githubRepo?.owner ?? accountProject?.owner ?? null} access={githubAccess} />

@@ -825,6 +825,7 @@ extension SyncService {
     cloudServerReadTask?.cancel()
     cloudServerReadTask = nil
     cloudServerReadAt = nil
+    cloudServerReadFinished = false
     cloudServerInstances = []
     cloudSavedChats = []
     // The last account's chat launches from this phone go too.
@@ -850,6 +851,8 @@ extension SyncService {
 
   /// Reads the account's ADE Cloud computers now and waits for the answer (a launch's new computer).
   func refreshCloudServerInstances() async {
+    // A read already out may have started before the launch: let it end, then read again.
+    await cloudServerReadTask?.value
     refreshCloudServerIfStale(force: true)
     await cloudServerReadTask?.value
   }
@@ -879,6 +882,11 @@ extension SyncService {
     }
     // An account switch while it read: the answer is the old account's.
     guard !Task.isCancelled, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
+    if !cloudServerReadFinished {
+      // Views that tell own computers from cloud ones read again now.
+      cloudServerReadFinished = true
+      objectWillChange.send()
+    }
     if let instances {
       cloudServerInstances = instances.filter { !$0.isGone }
       // Name these computers by their lane in every machine row ("Cloud · <lane>").

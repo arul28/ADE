@@ -18,11 +18,17 @@ export function AccountCloudProvidersPanel() {
   const { catalog, error: catalogError, loading, retry } = useCloudModelCatalog(true);
   const [signIns, setSignIns] = useState<CloudAccountSignIns | null>(null);
   const [signInsError, setSignInsError] = useState<string | null>(null);
+  // A change that settles makes reads still out stale: their list predates it.
+  const readGeneration = useRef(0);
   const reload = useCallback(() => {
     const api = window.ade?.cloudLaunches;
     if (!api) return;
+    const generation = readGeneration.current;
     setSignInsError(null);
-    void api.signIns().then(setSignIns, (error: unknown) => setSignInsError(extractError(error)));
+    void api.signIns().then(
+      (list) => { if (generation === readGeneration.current) setSignIns(list); },
+      (error: unknown) => { if (generation === readGeneration.current) setSignInsError(extractError(error)); },
+    );
   }, []);
   useEffect(() => reload(), [reload]);
   // Each answer is the whole list as the server had it then, and two rows can
@@ -37,9 +43,11 @@ export function AccountCloudProvidersPanel() {
     return (next: CloudAccountSignIns | null) => {
       if (settled) return;
       settled = true;
+      readGeneration.current += 1;
       changesInFlight.current -= 1;
       if (changesInFlight.current > 0) return;
-      if (changesOverlapped.current) {
+      // Overlapped, or this change failed (its list is unknown): read the list again.
+      if (changesOverlapped.current || !next) {
         changesOverlapped.current = false;
         reload();
       } else if (next) {

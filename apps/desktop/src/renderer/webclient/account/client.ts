@@ -486,6 +486,11 @@ export class BrowserAccountClient {
     return { userId, generation: this.sessionGeneration };
   }
 
+  /** The signed-in account's id, or null; a token refresh keeps it, another sign-in changes it. */
+  private sessionUserId(): string | null {
+    return this.session?.userId?.trim() || null;
+  }
+
   isSessionLeaseCurrent(lease: BrowserAccountSessionLease): boolean {
     const current = this.captureSessionLease();
     return current?.userId === lease.userId && current.generation === lease.generation;
@@ -1107,11 +1112,14 @@ export class BrowserAccountClient {
           redirect: "error",
         });
         const headers = init?.headers as Record<string, string> | undefined;
+        const sentFor = this.sessionUserId();
         const response = await send(headers);
         if (response.status !== 401 || !headers?.authorization) return response;
         // The directory refused a token that has not expired here: refresh it once, as the directory reads do.
         const fresh = await this.getAccessToken({ forceRefresh: true }).catch(() => null);
-        return fresh ? await send({ ...headers, authorization: `Bearer ${fresh}` }) : response;
+        // Another account signed in meanwhile: its token never carries this account's request.
+        if (!fresh || this.sessionUserId() !== sentFor) return response;
+        return await send({ ...headers, authorization: `Bearer ${fresh}` });
       },
       timeoutMs: CLOUD_REQUEST_TIMEOUT_MS,
     });
@@ -1159,6 +1167,7 @@ export class BrowserAccountClient {
         clearTimeout(timer);
       }
     };
+    const sentFor = this.sessionUserId();
     let response: Response;
     try {
       response = await send(token);
@@ -1170,6 +1179,8 @@ export class BrowserAccountClient {
         } catch {
           throw signedOut();
         }
+        // Another account signed in meanwhile: its token never carries this account's request.
+        if (this.sessionUserId() !== sentFor) throw signedOut();
         response = await send(refreshed);
       }
     } catch (cause) {

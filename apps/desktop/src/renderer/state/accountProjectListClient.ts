@@ -183,7 +183,15 @@ export function accountProjectListUserId(): string | null {
   return currentUserId;
 }
 
+let accountEpoch = 0;
+
+/** Moves on each time another account signs in here or the account signs out. */
+export function accountProjectListEpoch(): number {
+  return accountEpoch;
+}
+
 function noteAccountChanged(): void {
+  accountEpoch += 1;
   for (const listener of accountChangeListeners) listener();
 }
 

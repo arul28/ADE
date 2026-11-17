@@ -127,6 +127,7 @@ import { GitHubIssuesButton } from "../issues/GitHubIssuesButton";
 import { JiraIssuesButton } from "../issues/JiraIssuesButton";
 import { CloudAgentsQuickViewButton } from "./cloudAgents/CloudAgentsQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
+import { useHasOwnComputer } from "../../state/ownComputers";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import {
   subscribeOpenConnectionsPanel,
@@ -416,10 +417,13 @@ function ShellConnectionChip({
   trailing,
   layout = "chip",
   onboardingAnchor,
+  idle = false,
 }: {
   label: string;
   icon: React.ReactNode;
   connected: boolean;
+  /** Nothing to connect to (ADE Web with no computer of the person's own): no status dot. */
+  idle?: boolean;
   title: string;
   ariaExpanded?: boolean;
   onClick: () => void;
@@ -441,7 +445,7 @@ function ShellConnectionChip({
       role={layout === "menu-row" ? "menuitem" : undefined}
       style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       title={title}
-      aria-label={`${label}, ${connected ? "connected" : "not connected"}`}
+      aria-label={idle ? label : `${label}, ${connected ? "connected" : "not connected"}`}
       aria-expanded={ariaExpanded}
       onClick={onClick}
     >
@@ -451,13 +455,15 @@ function ShellConnectionChip({
       ) : (
         icon
       )}
-      <span
-        className={cn(
-          "h-1.5 w-1.5 shrink-0 rounded-full",
-          connected ? "bg-emerald-400" : "bg-red-400",
-        )}
-        aria-hidden
-      />
+      {idle ? null : (
+        <span
+          className={cn(
+            "h-1.5 w-1.5 shrink-0 rounded-full",
+            connected ? "bg-emerald-400" : "bg-red-400",
+          )}
+          aria-hidden
+        />
+      )}
       {trailing}
     </button>
   );
@@ -935,6 +941,7 @@ export function TopBar({
   const remoteConnected = connectedRemoteCount > 0;
   const syncConnected = isSyncConnected(syncSnapshot);
   const webConnected = isWebSyncConnected(syncSnapshot);
+  const hasOwnComputer = useHasOwnComputer();
   const showSyncControl = projectHydrated === true;
   const syncStatusTargetKey =
     remoteBinding?.key ?? project?.rootPath ?? "machine";
@@ -2606,6 +2613,8 @@ export function TopBar({
   );
 
   const anyConnectionActive = remoteConnected || syncConnected || webConnected;
+  // A person on ADE Web with no computer of their own has nothing to connect: no red dot.
+  const connectionsIdle = !hasOwnComputer && !anyConnectionActive;
 
   const renderDesktopIntegrationControls = () => (
     <>
@@ -2630,6 +2639,7 @@ export function TopBar({
         label="Connections"
         onboardingAnchor="connections"
         connected={anyConnectionActive}
+        idle={connectionsIdle}
         title="Machines, mobile, and web clients"
         ariaExpanded={connectionsOpen}
         onClick={() => (connectionsOpen ? closeConnections() : openConnections("machines"))}
@@ -2671,6 +2681,7 @@ export function TopBar({
         layout="menu-row"
         label="Connections"
         connected={anyConnectionActive}
+        idle={connectionsIdle}
         title="Machines, mobile, and web clients"
         ariaExpanded={connectionsOpen}
         onClick={() => {

@@ -192,6 +192,13 @@ function cardPhaseOf(entry: AccountCloudLaunchEntry): CardPhase {
  * computer starts, clones the repository, and signs in to the chat's
  * provider; then the computer sends it. Messages typed now wait with it.
  */
+function firstWords(text: string): string {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "";
+  const head = words.slice(0, 6).join(" ");
+  return words.length > 6 ? `${head}…` : head;
+}
+
 export function CloudSetupCard({
   entry,
   onOpenChat,
@@ -261,11 +268,17 @@ export function CloudSetupCard({
     return message.state === "sending" ? "Sending" : "Waiting";
   };
   const canQueue = working && record != null;
+  // Two cards side by side tell apart by their lane, or by the first words of the message.
+  const firstText = entry.messages.find((message) => message.seq === 1)?.text ?? entry.request?.chat?.prompt ?? "";
+  const cardName = record?.laneName?.trim() || firstWords(firstText);
 
   return (
     <section className="kit-card w-full" aria-label="Getting ADE Cloud ready" data-testid="ade-cloud-setup-card">
       <header className="kit-card-head">
-        {CARD_TITLE[phase]}
+        <span className="shrink-0">{CARD_TITLE[phase]}</span>
+        {cardName ? (
+          <span className="min-w-0 truncate font-normal" style={{ color: "var(--kit-text-3)" }} title={cardName}>{cardName}</span>
+        ) : null}
         {working && record ? (
           <button type="button" className="kit-card-head-action" disabled={cancelling} onClick={() => void cancel()}>
             {cancelling ? "Cancelling…" : "Cancel"}

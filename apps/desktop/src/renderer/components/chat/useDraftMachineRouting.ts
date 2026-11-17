@@ -62,7 +62,9 @@ type DraftLaneInput = LaneComboboxLane & {
  * Primary in the same list.
  */
 export function isPrimaryDraftLane(lane: { laneType?: string | null; name: string }): boolean {
-  return lane.laneType === "primary" || lane.name.trim().toLowerCase() === "primary";
+  // The name answers only for a lane whose type was not read: a worktree may be named "Primary".
+  if (lane.laneType != null) return lane.laneType === "primary";
+  return lane.name.trim().toLowerCase() === "primary";
 }
 
 /** `laneType` wins over a lane merely NAMED "Primary" — matches the auto-create rule. */
@@ -630,7 +632,10 @@ export function useDraftMachineRouting({
         ?? executionLanes.find((candidate) => candidate.id === previous.laneId)
         ?? null
       : null;
-    const nextLane = remapDraftLaneToMachine(previousLane, executionLanes);
+    // A catalog with no main checkout (a lane's ADE Cloud computer lists its own lane) takes its first lane.
+    const nextLane = remapDraftLaneToMachine(previousLane, executionLanes)
+      ?? executionLanes.find((candidate) => !isPrimaryDraftLane(candidate))
+      ?? null;
     // Nothing resolved (the catalog decoded to zero lanes): stay unresolved so
     // the remap runs again when that machine's real lane list lands. Committing
     // the remap would short-circuit this effect forever.

@@ -717,8 +717,11 @@ struct AccountProjectHomeScreen: View {
   @State private var locationPresented = false
 
   /// No computer of the person's own: chats run on ADE Cloud from here.
+  /// Before the first read of the account's ADE Cloud computers, every machine
+  /// would count as the person's own: the composer stays until that read ends.
   private var cloudChats: Bool {
-    !syncPublishes.service.accountHasOwnComputer(account.machines)
+    let service = syncPublishes.service
+    return !service.cloudServerReadFinished || !service.accountHasOwnComputer(account.machines)
   }
 
   private var project: AccountProject? {
@@ -882,7 +885,7 @@ struct AccountProjectHomeScreen: View {
     Task {
       let syncService = syncPublishes.service
       let notFound = "ADE can't find the computer for this chat yet. Try again in a moment."
-      if instanceId != nil, syncService.cloudServerInstances.first(where: { $0.id == instanceId }) == nil {
+      if instanceId != nil, syncService.cloudServerInstances.first(where: { $0.id == instanceId })?.machineKey == nil {
         await syncService.refreshCloudServerInstances()
       }
       // Only the launch's own computer: an unknown one opens nothing rather than a different lane.

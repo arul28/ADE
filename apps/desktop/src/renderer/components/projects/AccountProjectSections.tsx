@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ArrowSquareOut, CaretRight, File, FolderSimple, GitBranch, GitPullRequest, Circle } from "@phosphor-icons/react";
 import type { GithubDirectError, GithubDirectRepoRef } from "../../../shared/types";
 import { ADE_GITHUB_APP_INSTALL_URL, githubDirectStateCopy, type GithubDirectItems } from "../../../shared/github/githubDirectStateCopy";
@@ -21,6 +21,7 @@ import {
   type CloudModelPick,
 } from "../../state/cloudModelCatalog";
 import { Banner } from "../ui/notice";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { SetupSteps, type SetupStep, type SetupStepState } from "./SetupSteps";
 
 /* ---- GitHub access ---- */
@@ -37,9 +38,61 @@ export type GithubAccess = {
   state: "unknown" | "no_github" | "no_access" | "ok" | "failed";
   installUrl: string;
   retry?: () => void;
+  /**
+   * Whether GitHub shows the repository to anyone (`null` while reading).
+   * A cloud computer clones a public one with no GitHub sign-in, so its
+   * access is not a step.
+   */
+  visibility: RepoVisibility | null;
 };
 
+type RepoVisibility = "public" | "private" | "unknown";
+
+// One unsigned read per repository per page, as the account server does before a launch.
+const visibilityReads = new Map<string, Promise<RepoVisibility>>();
+
+function readRepoVisibility(repo: GithubDirectRepoRef): Promise<RepoVisibility> {
+  const key = `${repo.owner}/${repo.name}`.toLowerCase();
+  let read = visibilityReads.get(key);
+  if (!read) {
+    read = fetch(`https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`, {
+      headers: { accept: "application/vnd.github+json" },
+      credentials: "omit",
+    })
+      .then(async (response): Promise<RepoVisibility> => {
+        if (response.status === 404) return "private";
+        if (!response.ok) return "unknown";
+        const body = (await response.json().catch(() => null)) as { private?: unknown } | null;
+        return body?.private === false ? "public" : body?.private === true ? "private" : "unknown";
+      })
+      .catch((): RepoVisibility => "unknown");
+    visibilityReads.set(key, read);
+    // A failed read is asked again on the next visit.
+    void read.then((answer) => { if (answer === "unknown") visibilityReads.delete(key); });
+  }
+  return read;
+}
+
+function useRepoVisibility(repo: GithubDirectRepoRef | null): RepoVisibility | null {
+  const key = repo ? `${repo.owner}/${repo.name}` : null;
+  const [answer, setAnswer] = useState<{ key: string; visibility: RepoVisibility } | null>(null);
+  useEffect(() => {
+    if (!repo || !key) return;
+    let live = true;
+    void readRepoVisibility(repo).then((visibility) => { if (live) setAnswer({ key, visibility }); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the repository's name
+  }, [key]);
+  return answer && answer.key === key ? answer.visibility : null;
+}
+
 export function useGithubAccess(repo: GithubDirectRepoRef | null): GithubAccess {
+  const visibility = useRepoVisibility(repo);
+  const access = useGithubSignInAccess(repo);
+  return { ...access, visibility };
+}
+
+function useGithubSignInAccess(repo: GithubDirectRepoRef | null): Omit<GithubAccess, "visibility"> {
   const github = useGithubAccountApp();
   const { diagnosis, error, refresh } = useAccountGithubDiagnosis(github.connected ? repo : null);
   if (!repo) return { state: "unknown", installUrl: ADE_GITHUB_APP_INSTALL_URL };
@@ -75,17 +128,24 @@ export function AccountProjectSteps({
   owner,
   access,
   launches,
+  chatCount,
   laneCount,
 }: {
   owner: string | null;
   access: GithubAccess;
   launches: readonly AccountCloudLaunchEntry[];
+  /** Chats that exist on the project's cloud lanes. */
+  chatCount: number;
+  /** Lanes listed for the project: cloud lanes past their start, and copies on the person's computers. */
   laneCount: number;
 }) {
   const chatRunning = launches.some(launchInProgress);
-  const chatDone = laneCount > 0 || launches.some((entry) => Boolean(entry.record?.sessionId));
-  if (access.state === "ok" && chatDone && laneCount > 0) return null;
-  const steps: SetupStep[] = [
+  const chatDone = chatCount > 0 || launches.some((entry) => Boolean(entry.record?.sessionId));
+  // A public repository clones with no GitHub sign-in: its access is not a step.
+  const accessStep = access.visibility !== "public";
+  if ((!accessStep || access.state === "ok") && chatDone && laneCount > 0) return null;
+  const steps: SetupStep[] = [];
+  if (accessStep) steps.push(
     {
       id: "access",
       title: "GitHub access",
@@ -104,9 +164,11 @@ export function AccountProjectSteps({
         </button>
       ) : undefined,
     },
+  );
+  steps.push(
     { id: "chat", title: "First chat", state: chatDone ? "done" : chatRunning ? "running" : "todo" },
     { id: "lanes", title: "Lanes", state: laneCount > 0 ? "done" : "todo" },
-  ];
+  );
   return <SetupSteps steps={steps} layout="strip" label="Project setup" />;
 }
 
@@ -135,9 +197,15 @@ export function CloudChatComposer({
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const provider = catalog?.providers.find((entry) => entry.provider === current?.provider) ?? null;
+  const catalogModelIds = useMemo(
+    () => catalog?.providers.flatMap((entry) => entry.models.map((model) => model.id)) ?? [],
+    [catalog],
+  );
   const desktopOnly = provider ? provider.remoteSignIn === "desktop" : false;
   // The server decides: a public repo clones without GitHub, a private one answers "Give ADE access".
-  const needsAccess = access.state === "no_github" || access.state === "no_access";
+  // The hint shows once the repository reads as private, or can't be read.
+  const needsAccess = (access.state === "no_github" || access.state === "no_access")
+    && access.visibility != null && access.visibility !== "public";
   const canSend = text.trim().length > 0 && current != null && !sending && !desktopOnly;
 
   const send = () => {
@@ -172,27 +240,22 @@ export function CloudChatComposer({
           }}
         />
         <div className="flex flex-wrap items-center gap-2">
-          <select
-            className="kit-input"
-            data-size="sm"
-            style={{ width: "auto", maxWidth: 260 }}
-            aria-label="Model"
+          <ModelPicker
+            value={current?.modelId ?? ""}
+            emptyLabel={catalog ? "Select model" : loading ? "Loading models…" : "No models"}
             disabled={!catalog}
-            value={current ? `${current.provider}\n${current.modelId}` : ""}
-            onChange={(event) => {
-              const [nextProvider, modelId] = event.target.value.split("\n");
-              if (nextProvider && modelId) setPick({ provider: nextProvider, modelId });
+            availableModelIds={catalogModelIds}
+            constrainToAvailableModelIds
+            catalogMode="available-only"
+            listsHarnessPresets={false}
+            hidePermissionRail
+            compact
+            onChange={(modelId) => {
+              const has = (entry: { models: ReadonlyArray<{ id: string }> }) => entry.models.some((model) => model.id === modelId);
+              const owner = provider && has(provider) ? provider : catalog?.providers.find(has);
+              if (owner) setPick({ provider: owner.provider, modelId });
             }}
-          >
-            {!catalog ? <option value="">{loading ? "Loading models…" : "No models"}</option> : null}
-            {catalog?.providers.map((entry) => (
-              <optgroup key={entry.provider} label={entry.label}>
-                {entry.models.map((model) => (
-                  <option key={model.id} value={`${entry.provider}\n${model.id}`}>{model.displayName}</option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          />
           <span className="text-[11.5px]" style={{ color: "var(--kit-text-3)" }}>Runs on ADE Cloud</span>
           <button type="button" className="kit-btn kit-btn-primary" style={{ marginLeft: "auto" }} disabled={!canSend} onClick={send}>
             {sending ? "Sending…" : "Send"}
@@ -204,9 +267,13 @@ export function CloudChatComposer({
           </p>
         ) : needsAccess ? (
           <p className="m-0 text-[11.5px]" style={{ color: "var(--kit-text-3)" }}>
-            {access.state === "no_github"
-              ? "A private repo needs GitHub connected first."
-              : `A private repo needs ADE to have access to ${owner ?? "its owner"} first.`}
+            {access.visibility === "private"
+              ? access.state === "no_github"
+                ? "This repo is private: connect GitHub first."
+                : `This repo is private: give ADE access to ${owner ?? "its owner"} first.`
+              : access.state === "no_github"
+                ? "ADE can't read this repo without GitHub: connect GitHub first."
+                : `ADE can't read this repo yet: give ADE access to ${owner ?? "its owner"} first.`}
           </p>
         ) : null}
         {catalogError ? (

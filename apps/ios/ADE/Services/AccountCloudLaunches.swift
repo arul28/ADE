@@ -397,6 +397,8 @@ final class AccountCloudLaunchStore: ObservableObject {
     activeReadAt = Date()
     let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else { return }
+    // Each known launch's state before the read: a Retry or a poll that moves it meanwhile is newer than this list.
+    let statesBefore = Dictionary(entries.map { ($0.launchId, $0.record?.state) }, uniquingKeysWith: { first, _ in first })
     let list: [CloudLaunchRecord]
     do {
       list = try await client.activeLaunches()
@@ -412,7 +414,8 @@ final class AccountCloudLaunchStore: ObservableObject {
       if let index = entries.firstIndex(where: { $0.launchId == summary.launchId }) {
         // A launch this phone knows: another device may have retried it. The
         // full record (with its request) stays while the state is the same.
-        if entries[index].record?.state != summary.state {
+        if entries[index].record?.state != summary.state,
+           statesBefore[summary.launchId].map({ $0 == entries[index].record?.state }) ?? true {
           entries[index].record = summary
         }
         continue
