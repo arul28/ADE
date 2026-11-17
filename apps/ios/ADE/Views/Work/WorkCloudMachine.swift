@@ -513,14 +513,15 @@ struct CloudQueuedMessagesView: View {
   /// The account machine key the chat is saved under, and the chat id.
   let accountMachineKey: String
   let chatId: String
+  /// Puts a failed message's text back in the composer. Nil: no "Put back".
+  var onPutBack: ((String) -> Void)? = nil
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject private var store = AccountCloudStore.shared
   private var syncService: SyncService { syncPublishes.service }
   @State private var cancelling: String?
 
   var body: some View {
-    let messages = (store.queued[AccountCloudStore.chatKey(machineKey: accountMachineKey, chatId: chatId)] ?? [])
-      .filter { $0.isOpen || $0.state == "failed" }
+    let messages = store.visibleMessages(machineKey: accountMachineKey, chatId: chatId)
     if !messages.isEmpty {
       VStack(alignment: .trailing, spacing: 8) {
         ForEach(messages, id: \.messageId) { message in
@@ -567,6 +568,23 @@ struct CloudQueuedMessagesView: View {
           .tint(ADEColor.accent)
           .disabled(cancelling != nil)
         }
+        if message.state == "failed" {
+          if let onPutBack, let text = message.text, !text.isEmpty {
+            Button("Put back") {
+              onPutBack(text)
+              store.hideFailedMessage(message.messageId)
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.borderless)
+            .tint(ADEColor.accent)
+            .adeInspectable("CloudLane.Queued.PutBack")
+          }
+          Button("Dismiss") { store.hideFailedMessage(message.messageId) }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.borderless)
+            .tint(ADEColor.accent)
+            .adeInspectable("CloudLane.Queued.Dismiss")
+        }
       }
       if message.state == "waiting_for_sign_in", let signIn = message.signIn {
         CloudSignInStepDetail(signIn: signIn, instanceId: syncService.cloudServerInstances.first { $0.machineKey == accountMachineKey }?.id) {
@@ -594,14 +612,16 @@ extension View {
   /// the follow that reads them while the chat is open and the app is in
   /// front. When one leaves the queue the chat reads again: from the
   /// computer once it is up, else from the saved copy.
-  func followsCloudQueue(fleetKey: String?, sessionId: String) -> some View {
-    modifier(CloudQueueFollowModifier(fleetKey: fleetKey, sessionId: sessionId))
+  /// `onPutBack` puts a failed message's text back in the chat's composer.
+  func followsCloudQueue(fleetKey: String?, sessionId: String, onPutBack: @escaping (String) -> Void) -> some View {
+    modifier(CloudQueueFollowModifier(fleetKey: fleetKey, sessionId: sessionId, onPutBack: onPutBack))
   }
 }
 
 private struct CloudQueueFollowModifier: ViewModifier {
   let fleetKey: String?
   let sessionId: String
+  let onPutBack: (String) -> Void
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject private var store = AccountCloudStore.shared
   @Environment(\.scenePhase) private var scenePhase
@@ -616,7 +636,7 @@ private struct CloudQueueFollowModifier: ViewModifier {
     content
       .safeAreaInset(edge: .bottom, spacing: 0) {
         if let accountKey {
-          CloudQueuedMessagesView(accountMachineKey: accountKey, chatId: sessionId)
+          CloudQueuedMessagesView(accountMachineKey: accountKey, chatId: sessionId, onPutBack: onPutBack)
         }
       }
       // Runs again when a send queues a message, and when the app comes back.

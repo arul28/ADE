@@ -65,6 +65,14 @@ final class AccountCloudStore: ObservableObject {
   @Published private(set) var queued: [String: [CloudChatQueuedMessage]] = [:]
   /// "Keep it" went through for these computers this run.
   @Published private(set) var keptInstanceIds: Set<String> = []
+  /// Failed held messages the person put back or dismissed. They stay on
+  /// the server until it prunes them, so the phone keeps the ids, per
+  /// account, newest last, at most `hiddenMessagesLimit`.
+  @Published private(set) var hiddenMessageIds: Set<String> = []
+  private var hiddenMessageOrder: [String] = []
+  /// The account `hiddenMessageIds` belongs to.
+  private var hiddenMessagesUserId: String?
+  private static let hiddenMessagesLimit = 200
 
   /// Bumped on an account change: an answer to the last account's read lands nowhere.
   private var accountGeneration = 0
@@ -235,9 +243,43 @@ final class AccountCloudStore: ObservableObject {
       return
     }
     guard generation == accountGeneration else { return }
+    loadHiddenMessagesIfNeeded()
     let key = Self.chatKey(machineKey: machineKey, chatId: chatId)
     let next = messages.sorted { ($0.seq ?? 0) < ($1.seq ?? 0) }
     if queued[key] != next { queued[key] = next }
+  }
+
+  /// The held messages a chat shows: the open ones, and the failed ones
+  /// the person did not put back or dismiss.
+  func visibleMessages(machineKey: String, chatId: String) -> [CloudChatQueuedMessage] {
+    (queued[Self.chatKey(machineKey: machineKey, chatId: chatId)] ?? []).filter { message in
+      message.isOpen || (message.state == "failed" && !hiddenMessageIds.contains(message.messageId))
+    }
+  }
+
+  /// Put back or Dismiss on a failed held message: the chat stops showing it.
+  func hideFailedMessage(_ messageId: String) {
+    loadHiddenMessagesIfNeeded()
+    guard let userId = hiddenMessagesUserId, !hiddenMessageIds.contains(messageId) else { return }
+    hiddenMessageOrder.append(messageId)
+    if hiddenMessageOrder.count > Self.hiddenMessagesLimit {
+      hiddenMessageOrder.removeFirst(hiddenMessageOrder.count - Self.hiddenMessagesLimit)
+    }
+    hiddenMessageIds = Set(hiddenMessageOrder)
+    UserDefaults.standard.set(hiddenMessageOrder, forKey: Self.hiddenMessagesKey(userId))
+  }
+
+  private static func hiddenMessagesKey(_ userId: String) -> String {
+    "ade.cloud.hiddenQueuedMessages.\(userId)"
+  }
+
+  /// Reads the signed-in account's hidden ids once per account.
+  private func loadHiddenMessagesIfNeeded() {
+    let userId = AccountService.shared.identity?.userId
+    guard userId != hiddenMessagesUserId else { return }
+    hiddenMessagesUserId = userId
+    hiddenMessageOrder = userId.flatMap { UserDefaults.standard.stringArray(forKey: Self.hiddenMessagesKey($0)) } ?? []
+    hiddenMessageIds = Set(hiddenMessageOrder)
   }
 
   private func upsert(_ message: CloudChatQueuedMessage, key: String) {
@@ -313,6 +355,9 @@ final class AccountCloudStore: ObservableObject {
     lanesWithoutComputer = []
     queued = [:]
     keptInstanceIds = []
+    hiddenMessageIds = []
+    hiddenMessageOrder = []
+    hiddenMessagesUserId = nil
     transcriptCursors = [:]
     for task in transcriptReads.values { task.cancel() }
     transcriptReads = [:]

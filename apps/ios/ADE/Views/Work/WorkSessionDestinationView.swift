@@ -1698,7 +1698,9 @@ struct WorkSessionDestinationView: View {
         onAwake: { await loadMissingSessionWhenLive() }
       )
       // Messages ADE Cloud holds for this chat until its computer is up.
-      .followsCloudQueue(fleetKey: sessionCloudMachineKey, sessionId: sessionId)
+      .followsCloudQueue(fleetKey: sessionCloudMachineKey, sessionId: sessionId) { text in
+        composerDraftRestore = WorkChatComposerDraftRestore(text: text)
+      }
       // The wake can return before this chat's link reads as live.
       .onChange(of: isLiveAndReachable) { _, live in
         guard live, session == nil, initialLoadCompleted else { return }

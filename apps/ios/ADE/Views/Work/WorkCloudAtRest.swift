@@ -189,7 +189,9 @@ struct CloudSessionCopyScreen: View {
   /// Cloud holds for it above (as in a chat).
   private var composer: some View {
     VStack(spacing: 0) {
-      CloudQueuedMessagesView(accountMachineKey: row.machineKey, chatId: row.sessionId)
+      CloudQueuedMessagesView(accountMachineKey: row.machineKey, chatId: row.sessionId) { text in
+        draft = nonEmptyTrimmed(draft).map { "\($0)\n\(text)" } ?? text
+      }
       if let sendError {
         Text(sendError)
           .font(.caption)
