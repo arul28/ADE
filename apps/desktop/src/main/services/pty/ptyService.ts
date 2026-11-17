@@ -6336,7 +6336,7 @@ export function createPtyService({
     while (Date.now() < deadline) {
       const readiness = agentCliInputReadiness(sessionId, provider);
       if (!readiness) return false;
-      if (readiness.readyNow) return true;
+      if (readiness.takesInputNow) return true;
       if (provider === "codex" && readiness.markerVisible) {
         if (readiness.text === stableReadyText) {
           if (stableReadySince > 0 && Date.now() - stableReadySince >= AGENT_CLI_READY_QUIET_MS) {
@@ -6359,7 +6359,14 @@ export function createPtyService({
   const agentCliInputReadiness = (
     sessionId: string,
     provider: TerminalResumeProvider,
-  ): { markerVisible: boolean; readyNow: boolean; text: string } | null => {
+  ): {
+    markerVisible: boolean;
+    /** At the prompt and quiet: no output for `AGENT_CLI_READY_QUIET_MS`. */
+    readyNow: boolean;
+    /** May a message be typed now: ready, or at the prompt with the main turn exactly idle. */
+    takesInputNow: boolean;
+    text: string;
+  } | null => {
     const live = liveEntryBySessionId(sessionId);
     if (!live || live[1].disposed) return null;
     const entry = live[1];
@@ -6379,9 +6386,22 @@ export function createPtyService({
       && entry.agentCliState !== "idle"
       && entry.agentCliState !== "done";
     const markerVisible = !reportedBusy && providerReadyMarkerVisible(provider, readinessText);
+    const quiet = quietForMs >= AGENT_CLI_READY_QUIET_MS;
+    // An exact report (Claude Code's hooks, Codex's OSC 7501) that the main
+    // turn is over, with nothing typed since. Background subagents keep the
+    // screen busy (their timers redraw every second), so the screen never goes
+    // quiet while they run, yet the CLI's prompt takes a message: it must not
+    // wait for every subagent to finish.
+    const turn = entry.cliTurn;
+    const exactIdle = turn != null
+      && isExactCliTurnSource(turn.source)
+      && turn.phase === "idle"
+      && !turn.submittedSinceEnd
+      && turn.awaitingHookSince == null;
     return {
       markerVisible,
-      readyNow: markerVisible && quietForMs >= AGENT_CLI_READY_QUIET_MS,
+      readyNow: markerVisible && quiet,
+      takesInputNow: markerVisible && (quiet || exactIdle),
       text: readinessText,
     };
   };
@@ -8905,7 +8925,7 @@ export function createPtyService({
       if (!live) return true;
       const provider = session.resumeMetadata?.provider
         ?? providerFromTool(session.toolType ?? live[1].toolTypeHint);
-      return provider != null && agentCliInputReadyNow(normalizedSessionId, provider);
+      return provider != null && (agentCliInputReadiness(normalizedSessionId, provider)?.takesInputNow ?? false);
     },
 
     async sendToSession(args: PtySendToSessionArgs): Promise<PtySendToSessionResult> {
