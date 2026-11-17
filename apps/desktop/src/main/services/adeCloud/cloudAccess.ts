@@ -12,6 +12,7 @@ import { getSignedInAccountAccessToken, type AccountAuthService } from "../../..
 import { resolveSelectedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
 import { readCloudComputerIdAsync } from "../../../../../ade-cli/src/services/account/hardwareAnchor";
 import { isAdeCloudComputer } from "./cloudComputerRules";
+import { cloudAccessKey, rememberCloudAccess, rememberedCloudAccess } from "./cloudAccessMemory";
 import { getErrorMessage } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
@@ -195,7 +196,7 @@ function setAccessCache(next: { key: string; enabled: boolean; at: number } | nu
   }
 }
 
-const accessKey = (deps: CloudAccessDeps): string => `${deps.directoryBaseUrl() ?? ""}|${deps.accountId() ?? ""}`;
+const accessKey = (deps: CloudAccessDeps): string => cloudAccessKey(deps.directoryBaseUrl(), deps.accountId());
 
 /**
  * Whether ADE Cloud exists for this account here: yes only on the server's yes,
@@ -241,6 +242,8 @@ async function readAccessFlag(key: string, provider: CloudProvider, deps: CloudA
     (enabled) => {
       setAccessCache({ key, enabled, at: Date.now() });
       accessFailure = null;
+      // The brain starts its next life with this answer (`cloudAccessMemory`).
+      rememberCloudAccess(key, enabled);
       return enabled;
     },
     (error: unknown) => {
@@ -259,7 +262,12 @@ async function readAccessFlag(key: string, provider: CloudProvider, deps: CloudA
 
 async function readCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
   const access = await askCloudAccess(deps);
-  setAdeCloudSkillVisible(access.state === "ready");
+  // A check that failed is no answer: the skills keep the yes this brain last
+  // had for the account, as a cached yes rides out a failure above. Only the
+  // skills: every product surface still says the check failed.
+  setAdeCloudSkillVisible(
+    access.state === "ready" || (access.state === "unreadable" && rememberedCloudAccess(accessKey(deps)) === true),
+  );
   return access;
 }
 

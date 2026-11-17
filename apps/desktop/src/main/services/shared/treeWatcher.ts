@@ -11,8 +11,9 @@ import { nonAsarFs } from "./nonAsarFs";
  * neither fits a tree: the native one opens one watch per directory, and
  * opening or closing thousands of those blocks the event loop (on Windows it
  * also stats the whole tree first, seconds on a large repository); the polling
- * one (`chokidarOptions.ts`) checks every path under the root once a second for
- * as long as the watcher lives.
+ * one checks every path under the root once a second for as long as the
+ * watcher lives. A few single files go through `watchFileSet`
+ * (`fileSetWatcher.ts`) instead.
  *
  * So macOS and Windows get one recursive native watch per root (FSEvents,
  * ReadDirectoryChangesW), which costs nothing while the tree is still, and one

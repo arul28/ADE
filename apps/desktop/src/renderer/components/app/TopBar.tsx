@@ -136,7 +136,7 @@ import { HeaderActivityControl } from "../activity/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
-import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
+import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription, type ResourcePressureLevel } from "../../lib/resourcePressure";
 import { ShellNavTab } from "./ShellNavTab";
 import { StoragePressureIndicator } from "./StoragePressureIndicator";
 import {
@@ -286,9 +286,23 @@ function useHeaderStatusCompactLayout(): boolean {
   return compact;
 }
 
+/**
+ * Samples in a row below the shown level before the indicator steps down. A
+ * load near a threshold crossed it on most samples, and each step repainted
+ * the chip and the blurred top bar behind it. A rise still shows at once.
+ */
+const RESOURCE_PRESSURE_STEP_DOWN_SAMPLES = 3;
+
+/** The sample the indicator draws, and the level it shows for it. */
+type ResourcePressureSample = {
+  usage: AppResourceUsageSnapshot | null;
+  level: ResourcePressureLevel;
+};
+
+const NO_RESOURCE_PRESSURE_SAMPLE: ResourcePressureSample = { usage: null, level: 0 };
+
 /** Everything `ResourcePressureIndicator` draws from a sample; null when it is hidden. */
-function resourcePressureView(usage: AppResourceUsageSnapshot | null) {
-  const level = appResourcePressureLevel(usage);
+function resourcePressureView({ usage, level }: ResourcePressureSample) {
   if (level === 0) return null;
   return {
     level,
@@ -304,22 +318,51 @@ function resourcePressureView(usage: AppResourceUsageSnapshot | null) {
   };
 }
 
-function resourcePressureIndicatorKey(usage: AppResourceUsageSnapshot | null): string {
-  return JSON.stringify(resourcePressureView(usage));
+/**
+ * What a new sample must change before the chip draws it. While the person
+ * reads the tooltip (`detailed`), that is every figure. Otherwise it is the
+ * level, the counts and the sample status: the CPU and memory figures change
+ * on every sample and are shown only in the tooltip, so they wait until the
+ * pointer or the focus comes to the chip.
+ */
+function resourcePressureIndicatorKey(sample: ResourcePressureSample, detailed: boolean): string {
+  if (detailed) return JSON.stringify(resourcePressureView(sample));
+  if (sample.level === 0) return "hidden";
+  return JSON.stringify([
+    sample.level,
+    sample.usage?.activePtyCount ?? 0,
+    sample.usage?.ptyProcessCount ?? 0,
+    sample.usage?.processSample?.status ?? "",
+  ]);
 }
 
-function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | null {
-  const [usage, setUsage] = useState<AppResourceUsageSnapshot | null>(null);
+function useResourcePressureSample(enabled: boolean, detailed: boolean): ResourcePressureSample {
+  const [sample, setSample] = useState<ResourcePressureSample>(NO_RESOURCE_PRESSURE_SAMPLE);
+  const latestRef = useRef<ResourcePressureSample>(NO_RESOURCE_PRESSURE_SAMPLE);
+  const detailedRef = useRef(detailed);
+  detailedRef.current = detailed;
+
+  // The pointer or the focus came to the chip: show the newest figures.
+  useEffect(() => {
+    if (!detailed) return;
+    const latest = latestRef.current;
+    setSample((previous) => (
+      resourcePressureIndicatorKey(previous, true) === resourcePressureIndicatorKey(latest, true) ? previous : latest
+    ));
+  }, [detailed]);
 
   useEffect(() => {
     if (!enabled) {
-      setUsage(null);
+      latestRef.current = NO_RESOURCE_PRESSURE_SAMPLE;
+      setSample(NO_RESOURCE_PRESSURE_SAMPLE);
       return;
     }
 
     let cancelled = false;
     let requestVersion = 0;
     let timer: number | undefined;
+    let shownLevel: ResourcePressureLevel = 0;
+    let samplesBelowShown = 0;
     // A hidden window schedules nothing; showing or focusing it samples again.
     const refresh = () => {
       window.clearTimeout(timer);
@@ -328,16 +371,30 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
       void getAppResourceUsageCoalesced()
         .then((snapshot) => {
           if (cancelled || version !== requestVersion) return;
+          const sampledLevel = appResourcePressureLevel(snapshot);
+          if (sampledLevel >= shownLevel) {
+            shownLevel = sampledLevel;
+            samplesBelowShown = 0;
+          } else if (++samplesBelowShown >= RESOURCE_PRESSURE_STEP_DOWN_SAMPLES) {
+            shownLevel = sampledLevel;
+            samplesBelowShown = 0;
+          }
+          const next: ResourcePressureSample = { usage: snapshot, level: shownLevel };
+          latestRef.current = next;
           // Every sample is a new object with fresh CPU numbers. Keep the old
           // one unless the indicator would draw something different.
-          setUsage((previous) => (
-            resourcePressureIndicatorKey(previous) === resourcePressureIndicatorKey(snapshot) ? previous : snapshot
+          const detailedNow = detailedRef.current;
+          setSample((previous) => (
+            resourcePressureIndicatorKey(previous, detailedNow) === resourcePressureIndicatorKey(next, detailedNow)
+              ? previous
+              : next
           ));
+          // A shown chip samples fast, also while a step down is pending.
           timer = window.setTimeout(
             refresh,
-            appResourcePressureLevel(snapshot) > 0 ? RESOURCE_PRESSURE_SAMPLE_MS : RESOURCE_PRESSURE_CALM_SAMPLE_MS,
+            shownLevel > 0 ? RESOURCE_PRESSURE_SAMPLE_MS : RESOURCE_PRESSURE_CALM_SAMPLE_MS,
           );
-        })
+        });
     };
 
     refresh();
@@ -354,16 +411,19 @@ function useResourcePressureUsage(enabled: boolean): AppResourceUsageSnapshot | 
     };
   }, [enabled]);
 
-  return usage;
+  return sample;
 }
 
 /**
  * Samples on its own: under load its numbers change every sample, and only
- * this chip needs to redraw for that, not the whole top bar.
+ * this chip needs to redraw for that, not the whole top bar. At rest it
+ * writes to the page only when its level or its counts change.
  */
 function ResourcePressureIndicator({ enabled }: { enabled: boolean }) {
-  const usage = useResourcePressureUsage(enabled);
-  const view = resourcePressureView(usage);
+  const [pointerOver, setPointerOver] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const sample = useResourcePressureSample(enabled, pointerOver || focused);
+  const view = resourcePressureView(sample);
   if (!view) return null;
   const { level, description } = view;
   const color =
@@ -395,6 +455,10 @@ function ResourcePressureIndicator({ enabled }: { enabled: boolean }) {
           boxShadow: `0 0 0 1px ${color}22, 0 0 16px -10px ${color}`,
           outline: "none",
         }}
+        onPointerEnter={() => setPointerOver(true)}
+        onPointerLeave={() => setPointerOver(false)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onClick={() => {
           window.location.hash = `#${settingsRouteFor("storage.diagnostics")}`;
         }}

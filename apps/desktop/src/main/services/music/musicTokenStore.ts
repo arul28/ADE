@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { safeStorage } from "electron";
-import { isSecureStorageAvailable } from "../shared/secureStorage";
+import { isSecureStorageAvailable, isSecureStorageCheckPending } from "../shared/secureStorage";
 
 /**
  * Where a music provider's sign-in lives: one small file per provider in this
@@ -31,6 +31,9 @@ export function createMusicTokenStore(args: {
 
   const load = () => {
     if (loaded) return;
+    // Not read yet, so not "read and empty": a save now would replace the file
+    // with only the new values. `save` refuses until the key is known.
+    if (isSecureStorageCheckPending()) return;
     loaded = true;
     try {
       if (!fs.existsSync(file) || !isSecureStorageAvailable(safeStorage)) return;
@@ -61,6 +64,16 @@ export function createMusicTokenStore(args: {
     }
   };
 
+  /**
+   * A write before the file has been read would save only the keys written
+   * since: the loaded ones are missing. While the OS credential store has not
+   * answered, `load` cannot read it, so nothing may write. The read retries on
+   * the next call.
+   */
+  const refuseUntilLoaded = (): never => {
+    throw new Error(`This computer's secure storage is not ready yet, so ADE can't remember your ${args.serviceName ?? "Apple Music"} sign-in. Try again in a moment.`);
+  };
+
   return {
     get: async (key: string): Promise<string | null> => {
       load();
@@ -68,12 +81,15 @@ export function createMusicTokenStore(args: {
     },
     set: async (key: string, value: string): Promise<void> => {
       load();
+      if (!loaded) refuseUntilLoaded();
       values.set(key, value);
       save();
     },
     delete: async (key: string): Promise<void> => {
       load();
-      if (!values.delete(key)) return;
+      // Not loaded: the file holds keys this map never saw, so removing the
+      // last visible one must not remove it.
+      if (!loaded || !values.delete(key)) return;
       if (values.size === 0) fs.rmSync(file, { force: true });
       else save();
     },

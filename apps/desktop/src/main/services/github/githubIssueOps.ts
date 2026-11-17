@@ -21,11 +21,7 @@ import {
 } from "../../../shared/githubIssueList";
 import type { GitHubIssue, GitHubIssueComment, GitHubIssueUpdate, GitHubMilestone } from "./githubService";
 import { createAppInstallationGrantReader, describeIssueWriteAccess } from "../../../shared/github/githubAppGrant";
-import {
-  parseGitHubIssueTemplate,
-  parseGitHubIssueTemplateConfig,
-  type GitHubIssueTemplateSet,
-} from "../../../shared/githubIssueTemplates";
+import type { GitHubIssueTemplateSet } from "../../../shared/githubIssueTemplates";
 import type { GitHubIssueLike } from "../../../shared/laneGitHubIssue";
 import { AdeExpectedError } from "../../../shared/expectedError";
 
@@ -245,6 +241,9 @@ export function createGithubIssueOps(deps: {
       });
       return decodeContent(data);
     };
+    // Loaded here, at the first template read: the parser imports yaml, which
+    // would otherwise load with the main bundle before the first window.
+    const { parseGitHubIssueTemplate, parseGitHubIssueTemplateConfig } = await import("../../../shared/githubIssueTemplates");
     let blankIssuesEnabled = true;
     const templates = [];
     for (const file of files) {

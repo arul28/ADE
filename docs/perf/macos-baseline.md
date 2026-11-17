@@ -1184,6 +1184,7 @@ CPU is % of one core.
 | Lanes working mark (60 steps/s, compositor): not adopted, unchanged | `loop-cost.mjs lane-spin` | 240/s; 7.6%; 8.8% | same | — |
 | Chat working indicator (sparkle glyph, twinkle, label sheen; 30 steps/s), one running chat: frames / GPU / renderer. Replaces the thinking dots in the chat; measured 2026-10-28 on `bf09cd4b0` + this branch, 120 Hz, load ~3 | `loop-cost.mjs thinking` | 120/s; 22-24%; 15% | 31/s; 17-18%; 14% | 31/s; 23%; 18% |
 | Same, three running chats on screen (split view): the clock shares one frame for all three | `loop-cost.mjs thinking3` | 120/s; 36-40%; 13-17% | 31/s; 21%; 14-15% | 31/s; 26%; 19% |
+| Chat working indicator at 20 steps/s, one working chat: window composites (`Display::DrawAndSwap`) / main frames. Before: the glyph drawn by a worker into an OffscreenCanvas, whose frames the display drew apart from the sheen's. Baseline: the CSS glyph. Measured 2026-11-16 on `495173296` + this branch, 240 Hz, standalone Electron 44 with the demo-mode renderer build, 5 s traces | Electron `contentTracing`, categories `viz,cc` | 34-38/s; 3.6-4.2/s | 21-22/s; 3.6-4.2/s | 31/s; 10/s |
 
 Any running infinite CSS animation makes Chromium service every display
 frame, whatever its `steps()` say: a compositor loop ticks the compositor and
@@ -1492,8 +1493,8 @@ when it is shown (about 5 ms more per reveal).
 
 ### Brain: file watchers
 
-On macOS every watcher polls (`withMacosSafeChokidarOptions`): each path under
-the watched root is checked once a second on the brain's worker threads.
+Before the native tree watch, every watcher on macOS polled: each path under
+the watched root was checked once a second on the brain's worker threads.
 
 | Metric | How | Before | Baseline | Ceiling |
 |---|---|---:|---:|---:|
@@ -1515,6 +1516,19 @@ is now watched with one recursive native watch (`watchTree`,
 | Time until the watcher is ready, repository root | same | 423-438 ms | 94-97 ms | 250 ms |
 | Longest event-loop block on open and close | same | 30 ms | 2 ms | 20 ms |
 | The same block with chokidar's own native mode (why polling was chosen) | same, `WITH_NATIVE_CHOKIDAR=1` | 13,207 ms | not used | - |
+
+The three config files of each open project (`ade.yaml`, `local.yaml`,
+`local.secret.yaml`) went through the same 1 s poll. They now have one native
+watch each (`watchFileSet`, `services/shared/fileSetWatcher.ts`). A missing
+file is checked every 5 s. A watched file gets a 30 s safety stat, because a
+network volume sends no native event for an edit made on another machine.
+Measured 2026-11-16 on this Mac (Node 26.3) with a Node process that holds
+only the watch, `proc_pid_rusage` over 20 s (before) and 90 s (after):
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Wakeups a second from the config watch of one open project, one file missing | `proc_pid_rusage` wakeups | 2.65 | 0.66 | 1 |
+| The same with all three files present | same | 2.35 | 0.24 | 0.5 |
 
 ### Brain: memory a loaded brain keeps
 

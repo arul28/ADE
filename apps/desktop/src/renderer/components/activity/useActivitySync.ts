@@ -160,6 +160,13 @@ export async function refreshActivitySnapshot(): Promise<void> {
   return promise;
 }
 
+function hasWorkingActivityRow(): boolean {
+  for (const item of Object.values(activityStore.getState().itemsById)) {
+    if (item.boardColumn === "working") return true;
+  }
+  return false;
+}
+
 /**
  * Keeps Activity current while the calling page is on screen: one read when it
  * opens, then one every few seconds while the window is visible. For pages that
@@ -393,7 +400,11 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
         await refreshActivitySnapshot();
         const { syncStatus, syncError, revision } = activityStore.getState();
         if (syncStatus === "error") throw new Error(syncError ?? "Activity refresh failed");
-        return revision !== revisionBefore;
+        // While a row reads as working, keep the base cadence: the end of that
+        // work arrives only through this read, and a backed-off poll left the
+        // header's live dot pulsing (and redrawing the blurred header) for up
+        // to two minutes after the last turn ended.
+        return revision !== revisionBefore || hasWorkingActivityRow();
       },
     });
     snapshotPoller.start();

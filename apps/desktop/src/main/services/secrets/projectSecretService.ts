@@ -83,6 +83,8 @@ const LEGACY_VALUE_PREFIX = "secret:";
 const LEGACY_VAULT_KIND = "project_secret";
 /** A pull of the account's rows this recent is fresh enough to read the old rows from. */
 const LEGACY_VAULT_PULL_MAX_AGE_MS = 60_000;
+/** How long a look that found no old store is trusted; see `openLegacyStore`. */
+const LEGACY_ABSENT_RECHECK_MS = 60_000;
 
 /** How long a read by name or a list waits for the account before answering from this computer's copy. */
 const FRESH_READ_WAIT_MS = 3_000;
@@ -195,10 +197,19 @@ export function createProjectSecretService(projectRoot: string, options: Project
 
   // One store object while the file exists: its reads are cached by the file's stat.
   let legacyStore: EncryptedFileCredentialStore | null = null;
+  /**
+   * Until when "no old store" is trusted without a new look. Most projects
+   * never had one, or finished the move, and each secret read looked for the
+   * file again. Only an older ADE writes this file, so a file it makes is seen
+   * within this time.
+   */
+  let legacyAbsentUntil = 0;
   const openLegacyStore = (): EncryptedFileCredentialStore | null => {
+    if (Date.now() < legacyAbsentUntil) return null;
     const paths = legacyPaths();
     if (!fs.existsSync(paths.credentialsPath)) {
       legacyStore = null;
+      legacyAbsentUntil = Date.now() + LEGACY_ABSENT_RECHECK_MS;
       return null;
     }
     legacyStore ??= new EncryptedFileCredentialStore(paths);
@@ -235,6 +246,10 @@ export function createProjectSecretService(projectRoot: string, options: Project
 
   /** One name out of the old store: moved in, deleted before it moved, or another account's copy. */
   const removeLegacyName = (name: string): boolean => {
+    // A delete must not trust the "no old store" window: an older ADE could
+    // have written the file during it, and the delete would leave that value
+    // behind to be read again later. Look again, once.
+    legacyAbsentUntil = 0;
     let removed = false;
     openLegacyStore()?.updateSync((values) => {
       const index = JSON.parse(values[LEGACY_INDEX_KEY] ?? "null") as { entries?: Record<string, unknown> } | null;
@@ -252,6 +267,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
     const { credentialsPath, machineKeyPath, lockPath } = legacyPaths();
     for (const file of [credentialsPath, machineKeyPath, lockPath]) fs.rmSync(file, { force: true });
     legacyStore = null;
+    legacyAbsentUntil = Date.now() + LEGACY_ABSENT_RECHECK_MS;
   };
 
   /** The keys the old account rows for this repository sit under: its repository key and the SSH-alias key older ADE wrote. */

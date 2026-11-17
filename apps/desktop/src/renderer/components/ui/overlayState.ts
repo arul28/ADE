@@ -37,7 +37,9 @@ const TEXT_INPUT_TYPES = new Set(["text", "search", "url", "email", "tel", "pass
 /**
  * The person may be in the middle of writing: a focused text field that holds
  * text, or a focused terminal (its draft lives on the screen, not in the
- * helper textarea). Opening a modal now would take the keyboard mid-sentence.
+ * helper textarea, so a terminal is never "empty"). Opening a modal now would
+ * take the keyboard mid-sentence. An empty focused field is not writing: ADE
+ * focuses the composer by itself.
  */
 export function editingTextNow(): boolean {
   const active = document.activeElement;

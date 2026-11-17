@@ -8,7 +8,7 @@ import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import cron from "node-cron";
+import { loadNodeCron } from "../shared/lazyPackages";
 import type {
   AutomationAction,
   AutomationActionResult,
@@ -117,6 +117,12 @@ type CronScheduler = {
     expression: string,
     callback: (scheduledAt?: Date | string) => void,
   ) => { stop: () => void };
+};
+
+/** node-cron as the scheduler, loaded at the first validate or schedule. */
+const lazyCronScheduler: CronScheduler = {
+  validate: (expression) => loadNodeCron().validate(expression),
+  schedule: (expression, callback) => loadNodeCron().schedule(expression, callback),
 };
 
 function scheduledMinuteSlot(date: Date): string {
@@ -1089,7 +1095,7 @@ function parseCronPart(field: string, value: number, min: number, max: number): 
 
 function computeNextScheduleAt(cronExpr: string, from = new Date()): string | null {
   const expr = cronExpr.trim();
-  if (!expr || !cron.validate(expr)) return null;
+  if (!expr || !loadNodeCron().validate(expr)) return null;
   const fields = expr.split(/\s+/);
   if (fields.length !== 5) return null;
   const [minute, hour, dayOfMonth, month, dayOfWeek] = fields;
@@ -1564,7 +1570,7 @@ export function createAutomationService({
   onEvent,
   secretAvailable,
   onRunOnChanged,
-  cronScheduler = cron,
+  cronScheduler = lazyCronScheduler,
 }: {
   db: AdeDb;
   logger: Logger;

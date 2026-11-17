@@ -20,7 +20,7 @@
 // first, batched, TTL-bound, nothing blocking first open).
 // ---------------------------------------------------------------------------
 
-import YAML from "yaml";
+import { YAML } from "../shared/lazyPackages";
 import {
   pipelineStateOf,
   worstPipelineState,

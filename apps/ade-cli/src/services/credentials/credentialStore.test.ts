@@ -520,6 +520,30 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     }).getSync("account.session.v1")).toBe("legacy-async-windows-session");
   });
 
+  it("keeps a settled asynchronous read and still sees another store's write", async () => {
+    const keyMaterial = { read: () => null, readAsync: async () => null };
+    const writer = new EncryptedFileCredentialStore({ secretsDir: tempDir, keyMaterial });
+    const reader = new EncryptedFileCredentialStore({ secretsDir: tempDir, keyMaterial });
+    writer.setSync("account.session.v1", "first");
+    await expect(reader.get("account.session.v1")).resolves.toBe("first");
+
+    const readFile = vi.spyOn(fs.promises, "readFile");
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      await expect(reader.get("account.session.v1")).resolves.toBe("first");
+      expect(readFile).not.toHaveBeenCalled();
+
+      writer.setSync("account.session.v1", "rotated");
+      await new Promise((resolve) => setImmediate(resolve));
+      await expect(reader.getWithReadState("account.session.v1")).resolves.toEqual({
+        value: "rotated",
+        state: "available",
+      });
+    } finally {
+      readFile.mockRestore();
+    }
+  });
+
   it("uses the asynchronous key-material path for asynchronous reads", async () => {
     const osMaterial = Buffer.from("test-os-material");
     new EncryptedFileCredentialStore({

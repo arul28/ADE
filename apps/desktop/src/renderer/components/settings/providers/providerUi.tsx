@@ -57,7 +57,7 @@ export function AlertBanner({
   message,
   onDismiss,
 }: {
-  tone: "success" | "error" | "warning";
+  tone: "success" | "error" | "warning" | "info";
   message: string;
   onDismiss: () => void;
 }) {

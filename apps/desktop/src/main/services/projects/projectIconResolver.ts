@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import YAML from "yaml";
+import { YAML } from "../shared/lazyPackages";
 
 import {
   PROJECT_ICON_EXTENSIONS,

@@ -22,6 +22,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   checkServedFingerprint,
   Connection,
+  createUuidV7Mint,
   MspError,
   ProtocolError,
   type DuplexTransport,
@@ -166,6 +167,16 @@ const MUSE_KNOWN_METHODS: { readonly [M in keyof MuseNotificationParams]: true }
  * Whether a notification is one ADE models. The predicate narrows the union to
  * the SDK-typed members, so a `switch` on `method` sees exact params.
  */
+/**
+ * The SDK's own `commandId` minter (UUIDv7, in order even within one
+ * millisecond). A chat keeps one and hands it to each host it starts
+ * ({@link MuseHostStartOptions.mintCommandId}), so the turn id it mints before
+ * the host is up comes from the same single minter the connection then uses.
+ */
+export function createMuseCommandIdMint(): () => string {
+  return createUuidV7Mint();
+}
+
 export function isMuseKnownNotification(notification: MuseNotification): notification is MuseKnownNotification {
   return Object.prototype.hasOwnProperty.call(MUSE_KNOWN_METHODS, notification.method);
 }
@@ -216,6 +227,12 @@ type MuseHostStartOptions = {
    * task host that nobody watches says no, so Muse never waits on a question.
    */
   userInputDialogs?: boolean;
+  /**
+   * The connection's `commandId` minter. A chat passes its own, so ids it
+   * minted before this host started share one ordered sequence with the
+   * connection's (INV-013: one minter). Default: the connection's own.
+   */
+  mintCommandId?: () => string;
 };
 
 export type MuseHost = {
@@ -372,7 +389,7 @@ export async function startMuseHost(options: MuseHostStartOptions): Promise<Muse
       child.stdin.end();
     },
   };
-  const connection = new Connection(transport);
+  const connection = new Connection(transport, options.mintCommandId ? { mintCommandId: options.mintCommandId } : undefined);
 
   const sessionHandlers = new Map<string, Set<(n: MuseNotification) => void>>();
   const hostHandlers = new Set<(n: MuseNotification) => void>();

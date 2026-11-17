@@ -62,6 +62,7 @@ import {
   usageProviderAccountUrl,
 } from "../../../shared/types";
 import { finiteNumberOrNull, isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
+import { launchQuietRemainingMs, runAfterLaunchQuiet } from "../shared/launchQuiet";
 import {
   decodeOpenCodeRegistryId,
   getModelById,
@@ -4457,6 +4458,12 @@ export function createUsageTrackingService({
   const githubStatsInFlight = new Map<string, Promise<GitHubActivityStats>>();
   const statsRefreshInFlight = new Map<string, Promise<void>>();
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * A poll round finished, so an empty panel now means "nothing to show", not
+   * "not read yet". A snapshot loaded from disk counts: its readings are a
+   * completed poll's, and a demand read must not start one at launch.
+   */
+  let hasCompletedPoll = lastSnapshot.windows.length > 0;
   let pollingEnabled = false;
   let inFlightPoll: Promise<UsageSnapshot> | null = null;
   let inFlightPollReason: UsageRefreshReason | null = null;
@@ -5992,6 +5999,7 @@ export function createUsageTrackingService({
         };
 
         const published = publishSnapshot(snapshot);
+        hasCompletedPoll = true;
         void writeCachedUsageSnapshot(published, logger);
 
         logger.debug("usage.poll.complete", {
@@ -6058,6 +6066,20 @@ export function createUsageTrackingService({
       scheduleNextPoll(FIRST_AUTOMATIC_POLL_DELAY_MS);
       return;
     }
+    if (firstStart && launchQuietRemainingMs() > 0) {
+      // Nothing on disk to show, and the launch is still on: the poll starts
+      // Codex's app-server and Claude's CLI, which read 75 MB each from a cold
+      // disk while the person opens their first thread. It runs once the
+      // launch is over (`launchQuiet.ts`); asking for usage sooner
+      // (`noteQuotaDemand`, a Refresh) still polls at once.
+      void runAfterLaunchQuiet(async () => {
+        if (!pollingEnabled || pollTimer) return;
+        await poll({ reason: "automatic" }).catch(() => {});
+      }).finally(() => {
+        if (pollingEnabled && !pollTimer) scheduleNextPoll();
+      });
+      return;
+    }
     scheduleNextPoll();
     void poll({ reason: "automatic" })
       .catch(() => {})
@@ -6084,7 +6106,11 @@ export function createUsageTrackingService({
     demandLeaseUntilMs = nowMs + QUOTA_DEMAND_LEASE_MS;
     if (pollTimer) scheduleNextPoll();
     const snapshot = getUsageSnapshot();
-    if (nowMs - Date.parse(snapshot.lastPolledAt) > ACTIVE_POLL_INTERVAL_MS) {
+    // A poll that has not finished (a fresh launch, or the first one still
+    // waiting out the launch quiet period) leaves the panel empty: the person
+    // is looking at it, so poll now. A completed poll that legitimately found
+    // no windows is not a reason to poll again on every open.
+    if (!hasCompletedPoll || nowMs - Date.parse(snapshot.lastPolledAt) > ACTIVE_POLL_INTERVAL_MS) {
       void poll({ reason: "automatic" }).catch(() => {});
     }
     // Someone is looking at limits: pull the other machines' readings too, so a

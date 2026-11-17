@@ -4,6 +4,7 @@ import {
   type SyncCredentialStore,
 } from "./credentialStore";
 import { updateCredentialKeySync } from "./updateCredentialKey";
+import { expectedErrorKind } from "../../../../desktop/src/shared/expectedError";
 
 /**
  * Stores that stand in front of the real ones: the per-key router, and the
@@ -49,7 +50,9 @@ export function createRoutedCredentialStore(args: {
     getWithReadState: async (key) => {
       const store = storeFor(key);
       if (store.getWithReadState) return await store.getWithReadState(key);
-      const value = await store.get(key);
+      // Read and state in one synchronous turn: `get()` would let another read
+      // change the store's last-read state before this one asks for it.
+      const value = store.getSync(key);
       return { value, state: store.getLastReadState?.() ?? "missing" };
     },
     set: async (key, value) => storeFor(key).set(key, value),
@@ -103,5 +106,80 @@ export function createUnavailableCredentialStore(message: string): SyncCredentia
     getSync: refuse,
     setSync: refuse,
     deleteSync: refuse,
+  };
+}
+
+/**
+ * A store that is built on its first call, not when it is made.
+ *
+ * The desktop's Electron-only store needs this. On macOS, the first safeStorage
+ * call reads the app's key from the Keychain. A build that the Keychain does
+ * not recognize (a new signature) gets a prompt, and that read holds the
+ * calling thread until the person answers. Built at launch, it held the main
+ * process before the first window existed, so no window opened. Built on first
+ * use, it costs nothing until a key that lives in it is needed.
+ *
+ * `build` runs again on a later call when it throws, so a store that could not
+ * be built is not kept. Until then the store reads as unreadable, never as
+ * missing: "not connected" would invite a reconnect over secrets that are
+ * still on disk. The reason is `no_os_key_material` (the OS has not handed
+ * over the key), which never counts as corruption.
+ *
+ * A build that throws an expected error (`shared/expectedError.ts`: the desktop
+ * while the OS keychain has not answered) is a state, not a failure. Reads then
+ * return nothing and read as unreadable, as a store that cannot decrypt does,
+ * so readers log no failure. Writes still throw it: a write now could replace
+ * secrets ADE cannot read yet.
+ */
+export function createLazyCredentialStore(build: () => SyncCredentialStore): SyncCredentialStore {
+  let store: SyncCredentialStore | null = null;
+  let buildFailed = false;
+  const resolve = (): SyncCredentialStore => {
+    if (store) return store;
+    try {
+      store = build();
+    } catch (error) {
+      buildFailed = true;
+      throw error;
+    }
+    buildFailed = false;
+    return store;
+  };
+  /** The built store for a read, or null when the build answered "not yet". */
+  const resolveForRead = (): SyncCredentialStore | null => {
+    try {
+      return resolve();
+    } catch (error) {
+      if (expectedErrorKind(error)) return null;
+      throw error;
+    }
+  };
+  return {
+    get: async (key) => {
+      const target = resolveForRead();
+      return target ? await target.get(key) : null;
+    },
+    getWithReadState: async (key) => {
+      const target = resolveForRead();
+      if (!target) return { value: null, state: "unreadable" };
+      if (target.getWithReadState) return await target.getWithReadState(key);
+      // Read and state in one synchronous turn: `get()` would let another read
+      // change the store's last-read state before this one asks for it.
+      const value = target.getSync(key);
+      return { value, state: target.getLastReadState?.() ?? "missing" };
+    },
+    set: async (key, value) => resolve().set(key, value),
+    delete: async (key) => resolve().delete(key),
+    getSync: (key) => resolveForRead()?.getSync(key) ?? null,
+    setSync: (key, value) => resolve().setSync(key, value),
+    deleteSync: (key) => resolve().deleteSync(key),
+    // Atomic when the built store is: it picks the built store's own update.
+    updateKeySync: (key, mutator) => {
+      updateCredentialKeySync(resolve(), key, mutator);
+    },
+    // Not built by a question about the last read: before the first call,
+    // there was no read.
+    getLastReadState: () => store?.getLastReadState?.() ?? (buildFailed ? "unreadable" : "missing"),
+    getLastReadFailureReason: () => store?.getLastReadFailureReason?.() ?? (buildFailed ? "no_os_key_material" : null),
   };
 }

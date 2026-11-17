@@ -15,7 +15,8 @@
  *   prompt, so it costs no quota, and it closes its session and process.
  * - **Never on the read path.** A catalog read serves what is cached and, when
  *   the cache is older than the TTL, starts one background warm. Warms run one
- *   at a time, so a cold start spawns at most one CLI at once.
+ *   at a time, so a cold start spawns at most one CLI at once, and not in the
+ *   first seconds of a launch (`launchQuiet.ts`).
  * - **A live session is the probe.** A chat that opened refreshed the cache, so
  *   a warm within the TTL finds it fresh and spawns nothing.
  * - **Persistence.** The last good list per provider lives in Electron
@@ -46,6 +47,7 @@ import { ACP_HANDSHAKE_TIMEOUT_MS, createAcpConnection, initializeAcpConnection 
 import { acpDialectFor } from "./acpDialects";
 import { ACP_EFFORT_LADDER } from "./acpDialects/shared";
 import { resolveAdeCacheFile } from "../../shared/adeCacheFile";
+import { runAfterLaunchQuiet } from "../../shared/launchQuiet";
 import { writeTextAtomic } from "../../shared/utils";
 import { createFailureBackoff, type FailureBackoff } from "../../../../shared/failureBackoff";
 import {
@@ -358,7 +360,9 @@ export function warmAcpModelCatalog(
   }
   if (!onDisk) return;
   inFlight.add(provider);
-  queue = queue.then(async () => {
+  // One warm at a time, and none in the first seconds of a launch: each one
+  // starts the provider's CLI (`launchQuiet.ts`).
+  queue = queue.then(() => runAfterLaunchQuiet(async () => {
     // A chat may have refreshed the list while this warm waited its turn.
     const latest = readFile().providers[provider];
     if (latest && Date.now() - latest.savedAt < CATALOG_TTL_MS) return;
@@ -383,7 +387,7 @@ export function warmAcpModelCatalog(
         error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
       });
     }
-  }).finally(() => {
+  })).finally(() => {
     inFlight.delete(provider);
   });
 }

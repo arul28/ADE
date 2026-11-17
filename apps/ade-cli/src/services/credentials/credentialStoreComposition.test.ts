@@ -6,7 +6,7 @@ import {
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
 } from "./credentialStore";
-import { createRoutedCredentialStore } from "./credentialStoreRouting";
+import { createLazyCredentialStore, createRoutedCredentialStore } from "./credentialStoreRouting";
 import { adoptFileBackedCredentials } from "./credentialStoreAdoption";
 import { ACCOUNT_SESSION_CREDENTIAL_KEY } from "../account/accountAuthService";
 import { GITHUB_APP_USER_TOKEN_KEY } from "../../../../desktop/src/main/services/github/githubAppUserAuthService";
@@ -87,6 +87,46 @@ describe("routed credential store", () => {
       // them. Callers already carry a per-key fallback for a store without it.
       expect(routed.updateSync).toBeUndefined();
     });
+  });
+
+  it("touches the OS keychain only when a key that lives in the Electron-only store is used", () => {
+    // On macOS the first safeStorage call can wait on a Keychain prompt and holds
+    // its thread until the person answers. The desktop makes these stores before
+    // its first window, so making one, or using a file-backed key, must not reach it.
+    new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage }).setSync("linear.token.v1", "lin_secret");
+    let keychainCalls = 0;
+    const countingSafeStorage = {
+      ...safeStorage,
+      isEncryptionAvailable: () => {
+        keychainCalls += 1;
+        return true;
+      },
+    };
+    let builds = 0;
+    const fileStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    const routed = createRoutedCredentialStore({
+      primary: createLazyCredentialStore(() => {
+        builds += 1;
+        if (builds === 1) throw new Error("keychain not answering");
+        return new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage: countingSafeStorage });
+      }),
+      fileStore,
+    });
+
+    routed.setSync("github.appUserToken.v1", "app-token");
+    expect(routed.getSync("github.appUserToken.v1")).toBe("app-token");
+    expect(routed.getLastReadState?.()).toBe("available");
+    routed.credentialStoreIdentity?.();
+    expect({ builds, keychainCalls }).toEqual({ builds: 0, keychainCalls: 0 });
+
+    // A build that failed is not kept: the next use builds again.
+    expect(() => routed.getSync("linear.token.v1")).toThrow("keychain not answering");
+    // Unreadable, not missing: "not connected" would invite a reconnect.
+    expect(routed.getLastReadState?.()).toBe("unreadable");
+    expect(routed.getLastReadFailureReason?.()).toBe("no_os_key_material");
+    expect(routed.getSync("linear.token.v1")).toBe("lin_secret");
+    expect(builds).toBe(2);
+    expect(keychainCalls).toBeGreaterThan(0);
   });
 });
 

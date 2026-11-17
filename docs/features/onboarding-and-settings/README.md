@@ -2315,7 +2315,9 @@ due, a pager.
   visit. It also waits for 8 s with no key press or click, and never opens
   while a focused text field (a prompt box) holds text or a terminal has
   focus, so it cannot take the keyboard in the middle of a sentence. A page counts as seen once it is on
-  screen.
+  screen. A page added before the signed-in account was created never shows by
+  itself (`accountCreatedAtFromUserId` reads the creation time from the
+  account id); Help › What's new still lists every page.
 - **After an update** this computer installed: on the first launch of the new
   version, after the boot splash. Up to three unseen pages, then the release
   notes since the version it came from. This one arrives: the logo flies from
@@ -2323,7 +2325,11 @@ due, a pager.
   around it (`WhatsNewArrival.tsx`; `BootSplashReveal.tsx` records the splash's
   last logo box and says when the splash is gone). The window mounts one frame
   after the logo, so the frame in which the splash goes stays light. Reduce
-  motion (ADE's or the system's) skips the flight.
+  motion (ADE's or the system's) skips the flight. If the person typed or
+  clicked since launch, or is writing, it waits for the same quiet moment as
+  the in-project showing and then rises in the middle of the window instead.
+  A showing that opened by itself takes focus in its panel, not on a button, so
+  a stray Enter does nothing.
 - **Reopen:** Help › What's new and the command palette ("What's new") show
   every page, with the plain dialog fade.
 
@@ -3372,6 +3378,19 @@ reported as "can't read your sign-in". It also means a locked OS keychain no
 longer hides the shared credentials — those need no keychain, so they stay
 reachable while only the Electron-only half refuses. See
 [ARCHITECTURE §8.1](../../ARCHITECTURE.md#81-electron-safestorage-for-secrets).
+
+While the OS credential store has not answered its first check — macOS shows a
+keychain prompt on a build it does not recognize — a read is not unreadable yet,
+it is **waiting**. That check runs off the main thread once the app is ready, so
+the window opens and stays usable while the prompt is up;
+`isSecureStorageCheckPending()` is what a surface reads to say "ADE is waiting
+for the system keychain" (Settings → Providers shows that as an info banner and
+re-reads the status when the prompt is answered) instead of the unreadable
+warning. Nothing is cached in that state — the key reads, the legacy-token
+migrations and the file-backed adoption all run again once it answers — so a
+granted prompt shows the saved keys without a restart. A quit during the prompt
+does not wait for it either: the shutdown work finishes, the web storage is
+flushed, and the process ends.
 
 `GitHubStatus` therefore separates three answers, not two:
 

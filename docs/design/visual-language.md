@@ -287,8 +287,12 @@ Visual polish must not cost CPU or GPU while ADE is idle.
   frame, so a loop that already runs on the compositor opts out with
   `data-loop-clock="off"` (the chat's thinking indicator, the Work list's
   Working label).
-- A loop with no compositor form (a path morph) is drawn by a worker into a
-  canvas, as the thinking glyph is (`ui/thinkingGlyphPainter.ts`).
+- A loop with no compositor form (a path morph) becomes a strip of its
+  stepped shapes behind a one-shape window, moved by a stepped transform, as
+  the thinking glyph is (`ui/ThinkingIndicator.tsx`). Do not draw such a loop
+  from a worker into an OffscreenCanvas: the canvas sends its own frames, and
+  the display draws them apart from the compositor's, so each step costs a
+  second window composite.
 - Nothing listens for `animationiteration`: while any node does, Chrome wakes
   the main thread at the end of every pass of every loop.
   `lib/animationPhaseAlignment.ts` turns the listener type away for the whole

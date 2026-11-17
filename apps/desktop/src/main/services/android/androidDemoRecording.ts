@@ -9,7 +9,7 @@ import { planPlainDemo } from "../../../shared/demoVideo/demoPlanner";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
-import { Muxer, StreamTarget } from "mp4-muxer";
+import { loadMp4Muxer } from "../shared/lazyPackages";
 import { buildAvcC } from "./androidRecording";
 
 /*
@@ -189,6 +189,7 @@ async function remuxParts(files: readonly string[], outputPath: string, canvas: 
   const fd = fs.openSync(target, "w");
   let closed = false;
   try {
+    const { Muxer, StreamTarget } = loadMp4Muxer();
     const muxer = new Muxer({
       target: new StreamTarget({
         onData: (data, position) => {

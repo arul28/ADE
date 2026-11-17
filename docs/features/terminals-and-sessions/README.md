@@ -1834,7 +1834,12 @@ Renderer surfaces:
   derives `sessions` by merging stand-in rows for new-lane chat launches whose
   chat the roster (or the cross-machine slice) does not list yet; launch rows
   are never written to `sessionsCacheByProject` and never count as running for
-  refresh cadence. `SessionListPane` groups a launch's rows under the lane the
+  refresh cadence. The 30 s safety-net reload runs only while a row needs it: a
+  chat counts while its turn runs, while it waits on the person, or while its
+  background work runs — a resting chat changes only through pushes this list
+  already takes — and a chat row the host could not match to its chat still
+  counts, because its state is a guess until a reload brings the real one.
+  Shells and CLI agents count while they run, as before. `SessionListPane` groups a launch's rows under the lane the
   brain is still creating (named from the launch, not shown as an orphan
   lane), and `SessionCard` shows the launch's status line in the preview slot and
   "Setting up" / "Setup failed" in the status slot while it is pending. It also owns the board's renderer-side derivation:

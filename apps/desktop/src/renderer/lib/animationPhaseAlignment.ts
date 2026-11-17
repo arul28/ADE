@@ -1,7 +1,7 @@
 /**
  * Every looping CSS animation runs on the document timeline's clock.
  *
- * Stepped loops (`--animate-spin` is `steps(30)`, the status pulses step too)
+ * Stepped loops (`--animate-spin` is `steps(20)`, the status pulses step too)
  * only need a new frame when they move to their next step. Each one started
  * at its own moment, so their steps landed on different frames: four spinners
  * on the PR page (one per running check) drew 120 frames a second instead of

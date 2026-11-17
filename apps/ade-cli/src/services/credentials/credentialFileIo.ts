@@ -166,11 +166,22 @@ export class CredentialFileStatWatcher {
   /** A change was signalled while a stat was running: stat again after it. */
   private recheck = false;
 
+  private readonly listeners = new Set<() => void>();
+
   constructor(
     private readonly filePath: string,
-    private readonly listener: () => void,
     private readonly intervalMs: number | null,
   ) {}
+
+  addListener(listener: () => void): void {
+    this.listeners.add(listener);
+  }
+
+  /** True when no listener is left. */
+  removeListener(listener: () => void): boolean {
+    this.listeners.delete(listener);
+    return this.listeners.size === 0;
+  }
 
   /**
    * Watches the file's folder (writes replace the file by a rename, so a
@@ -264,11 +275,13 @@ export class CredentialFileStatWatcher {
     }
     if (isSameCredentialFileStat(current, this.previous)) return;
     this.previous = current;
-    try {
-      this.listener();
-    } catch {
-      // Credential observers are best-effort; one subscriber must not stop
-      // the watcher or prevent sibling subscribers from seeing the change.
+    for (const listener of [...this.listeners]) {
+      try {
+        listener();
+      } catch {
+        // Credential observers are best-effort; one subscriber must not stop
+        // the watcher or prevent sibling subscribers from seeing the change.
+      }
     }
   }
 
@@ -278,6 +291,57 @@ export class CredentialFileStatWatcher {
     this.timer = null;
     this.closeFolderWatch();
   }
+}
+
+/** A subscription to one credential file's changes; see {@link subscribeCredentialFileChanges}. */
+export type CredentialFileChangeSubscription = {
+  /** Stats the file now and tells every subscriber of the file if it changed. */
+  checkNow(): void;
+  dispose(): void;
+};
+
+const sharedCredentialFileWatchers = new Map<string, CredentialFileStatWatcher>();
+
+/**
+ * Tells `listener` when the file changes. Every subscriber of the same file
+ * (and the same poll interval) in this process shares one watcher: each
+ * subscriber used to start its own folder watch and its own backup stat of
+ * the same file every 5 s.
+ *
+ * A subscriber that joins after the file changed, but before the shared
+ * watcher saw that change, also hears of it. Subscribers re-read on a change,
+ * so an extra call costs one read; a missed change is not possible.
+ */
+export function subscribeCredentialFileChanges(
+  filePath: string,
+  intervalMs: number | null,
+  listener: () => void,
+): CredentialFileChangeSubscription {
+  const key = `${path.resolve(filePath)}\0${intervalMs ?? "manual"}`;
+  let watcher = sharedCredentialFileWatchers.get(key);
+  if (!watcher) {
+    watcher = new CredentialFileStatWatcher(filePath, intervalMs);
+    sharedCredentialFileWatchers.set(key, watcher);
+    watcher.start();
+  }
+  const shared = watcher;
+  // One registration per subscriber, even when two pass the same callback: a
+  // Set would keep one, and the first dispose would stop the other's watcher.
+  const entry = (): void => listener();
+  shared.addListener(entry);
+  let disposed = false;
+  return {
+    checkNow: () => {
+      if (!disposed) shared.checkNow();
+    },
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      if (!shared.removeListener(entry)) return;
+      shared.dispose();
+      if (sharedCredentialFileWatchers.get(key) === shared) sharedCredentialFileWatchers.delete(key);
+    },
+  };
 }
 
 function parseLockMetadata(raw: string): CredentialLockMetadata {

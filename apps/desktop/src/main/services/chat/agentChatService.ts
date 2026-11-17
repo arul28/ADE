@@ -1702,6 +1702,7 @@ import {
   isMuseKnownNotification,
   museNotificationFromWire,
   museViewCursorOf,
+  createMuseCommandIdMint,
   startMuseHost,
   startPinnedMuseHost,
   resolvePinnedMuseLaunch,
@@ -5826,6 +5827,19 @@ type ManagedChatSession = {
     event: Extract<AgentChatEvent, { type: "plan" }>;
     timer: NodeJS.Timeout | null;
   } | null;
+  /**
+   * Codex command output not yet emitted: the deltas of one command, joined.
+   * A busy command sends many deltas a second, and each one was a stored
+   * event, an IPC message and a new row. They go out as one chunk on the
+   * 100 ms text clock, or before any other event of the session.
+   */
+  bufferedCommandOutput?: {
+    runtime: CodexRuntime;
+    itemId: string;
+    turnId: string | undefined;
+    delta: string;
+    timer: NodeJS.Timeout | null;
+  } | null;
   previewTextBuffer: {
     text: string;
     messageId?: string;
@@ -6390,6 +6404,11 @@ const CLAUDE_POST_TOOL_HOOK_SKIPPED_TOOLS: ReadonlySet<string> = new Set(["WebFe
 const CLAUDE_POST_TOOL_HOOK_MATCHER = `^(?!${[...CLAUDE_POST_TOOL_HOOK_SKIPPED_TOOLS].map((tool) => `${tool}$`).join("|")}).*`;
 const CLAUDE_TOOL_OUTPUT_TRIM_PREVIEW_CHARS = 24 * 1024;
 const BUFFERED_TEXT_FLUSH_MS = 100;
+/**
+ * A Codex command's joined output goes out early at this size, so one fast
+ * burst does not become one very large event before the 100 ms clock fires.
+ */
+const BUFFERED_COMMAND_OUTPUT_FLUSH_CHARS = 64 * 1024;
 /**
  * Longest a chat's stored preview line trails its stream. Every streamed text
  * flush and command chunk moves the preview, and each write is a synchronous
@@ -8460,14 +8479,21 @@ function claudeSubagentLabelFields(
   return {};
 }
 
+/**
+ * The last non-blank line of `text`, trimmed and clipped. It reads back from
+ * the end: a streaming reply calls this on every chunk with the whole reply so
+ * far, and splitting all of it each time grew with the reply's length.
+ */
 function normalizePreview(text: string, maxChars = 220): string | null {
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (!lines.length) return null;
-  const preview = lines[lines.length - 1] ?? "";
-  return preview.length > maxChars ? preview.slice(0, maxChars) : preview;
+  let end = text.length;
+  while (end > 0) {
+    const start = text.lastIndexOf("\n", end - 1) + 1;
+    // trim() also drops the "\r" of a "\r\n" line end.
+    const line = text.slice(start, end).trim();
+    if (line) return line.length > maxChars ? line.slice(0, maxChars) : line;
+    end = start - 1;
+  }
+  return null;
 }
 
 const REJECTED_TITLES = new Set([
@@ -14050,15 +14076,39 @@ export function createAgentChatService(args: {
   ): AgentChatEventEnvelope[] =>
     keepNewestWithinCharBudget(envelopes, maxChars, estimateEnvelopeChars, options);
 
-  // The single policy for what bounds the in-memory event ring: an event-count
-  // cap, then a byte budget. Applied wherever the ring is (re)written.
-  const boundRingEnvelopes = (envelopes: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] =>
-    trimEnvelopesToByteBudget(
-      envelopes.length > CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION
-        ? envelopes.slice(-CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION)
-        : envelopes,
-      CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS,
+  /**
+   * The single policy for what bounds the in-memory event ring: an event-count
+   * cap, then a byte budget. `total` is the sum of the sizes of every entry;
+   * a caller that keeps a running total passes it instead of summing the ring.
+   * The newest entry is kept even when it alone does not fit, so a single
+   * oversized event cannot empty the ring it was recorded in. Returns the
+   * drop from the front and the total that remains.
+   */
+  const trimRing = (
+    length: number,
+    total: number,
+    sizeOf: (index: number) => number,
+  ): { drop: number; total: number } => {
+    let drop = Math.max(0, length - CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION);
+    for (let index = 0; index < drop; index += 1) total -= sizeOf(index);
+    while (total > CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS && length - drop > 1) {
+      total -= sizeOf(drop);
+      drop += 1;
+    }
+    return { drop, total };
+  };
+
+  // Applied wherever the ring is (re)written.
+  const boundRingEnvelopes = (envelopes: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] => {
+    let total = 0;
+    for (const envelope of envelopes) total += estimateEnvelopeChars(envelope);
+    const { drop } = trimRing(
+      envelopes.length,
+      total,
+      (index) => estimateEnvelopeChars(envelopes[index]!),
     );
+    return drop > 0 ? envelopes.slice(drop) : envelopes;
+  };
 
   const touchEventHistoryRing = (sessionId: string, envelopes: AgentChatEventEnvelope[]): void => {
     eventHistoryBySession.delete(sessionId);
@@ -14116,10 +14166,30 @@ export function createAgentChatService(args: {
     }
   };
 
+  // The serialized size of each live ring, kept as events arrive. Without it
+  // every streamed event walked the whole ring (up to 4,000 cached sizes) to
+  // re-check the budget: with five chats streaming that walk was the largest
+  // cost in the brain. Rings are replaced, never edited, except by the push
+  // below, so a ring this map does not know is summed once.
+  const ringCharTotals = new WeakMap<AgentChatEventEnvelope[], number>();
+
   const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
     const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
+    let total = ringCharTotals.get(current);
+    if (total == null) {
+      total = 0;
+      for (const entry of current) total += estimateEnvelopeChars(entry);
+    }
     current.push(envelope);
-    touchEventHistoryRing(envelope.sessionId, boundRingEnvelopes(current));
+    total += estimateEnvelopeChars(envelope);
+    const { drop, total: keptTotal } = trimRing(
+      current.length,
+      total,
+      (index) => estimateEnvelopeChars(current[index]!),
+    );
+    const ring = drop > 0 ? current.slice(drop) : current;
+    ringCharTotals.set(ring, keptTotal);
+    touchEventHistoryRing(envelope.sessionId, ring);
   };
 
   const rememberTranscriptHistoryCache = (
@@ -15025,6 +15095,11 @@ export function createAgentChatService(args: {
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   /** Interrupt arrived while the Pi SDK worker was still being acquired. */
   const piRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
+  /**
+   * Turns shown before their provider process was ready (`showTurnBeforeRuntime`),
+   * by session id: the turn id, and whether a Stop ended it during the start.
+   */
+  const turnsShownBeforeRuntime = new Map<string, { turnId: string; stopped: boolean }>();
   /** Released Pi workers still holding their chat's session-file lease. */
   const piWorkerExits = createPiWorkerExitTracker({ maxWaitMs: PI_WORKER_EXIT_WAIT_MS });
   /** Interrupt arrived while `ensureCursorSdkRuntime` was still acquiring the SDK worker. */
@@ -16504,8 +16579,10 @@ export function createAgentChatService(args: {
       }
     }
     const managed = ensureManagedSession(sessionId);
-    // Flush any pending buffered text so the transcript includes all content
+    // Flush any pending buffered text and command output so the transcript
+    // includes all content.
     flushBufferedText(managed);
+    flushBufferedCommandOutput(managed);
     const {
       entries: transcriptEntries,
       entryPositions,
@@ -16596,6 +16673,7 @@ export function createAgentChatService(args: {
     }
     const managed = ensureManagedSession(sessionId);
     flushBufferedText(managed);
+    flushBufferedCommandOutput(managed);
     const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
     if (!transcriptPath) {
       return {
@@ -23364,6 +23442,69 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Shows a turn (its message, `started`, the working row) before its provider
+   * process is ready, as Claude, Codex, Cursor and Droid do: an ACP agent, Muse,
+   * Pi, Copilot or OpenCode that starts cold (a new chat, or one whose process
+   * was released) otherwise left the message with no working row for the whole
+   * start. The turn is active from here, so `turnAcceptedAt` clears; the
+   * provider's own start timeout or a Stop ends a start that hangs. `emitUserMessage` emits the message under `turnId`.
+   *
+   * Shows nothing and returns false while another turn of the chat runs or
+   * starts: that send keeps the order it had, waiting for the process and then
+   * queued or refused there. A shown turn must end through
+   * {@link settleTurnShownBeforeRuntime} once the start resolves or fails.
+   */
+  const showTurnBeforeRuntime = (
+    managed: ManagedChatSession,
+    turnId: string,
+    emitUserMessage: () => void,
+  ): boolean => {
+    const sessionId = managed.session.id;
+    if (turnsShownBeforeRuntime.has(sessionId) || runtimeMidTurn(managed) || managed.session.status === "active") {
+      return false;
+    }
+    turnsShownBeforeRuntime.set(sessionId, { turnId, stopped: false });
+    setSessionActive(managed);
+    emitUserMessage();
+    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    captureTurnBeforeSha(managed);
+    emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+    persistChatState(managed);
+    return true;
+  };
+
+  /**
+   * Ends the wait {@link showTurnBeforeRuntime} began. True when a Stop already
+   * ended the turn during the start: the caller sends nothing and reports nothing.
+   */
+  const settleTurnShownBeforeRuntime = (managed: ManagedChatSession, turnId: string): boolean => {
+    const entry = turnsShownBeforeRuntime.get(managed.session.id);
+    if (!entry || entry.turnId !== turnId) return false;
+    turnsShownBeforeRuntime.delete(managed.session.id);
+    return entry.stopped;
+  };
+
+  /**
+   * A Stop while a shown turn waits for its process: the turn ends here, at
+   * once, and the start that is still running sends nothing when it resolves.
+   */
+  const stopTurnShownBeforeRuntime = (managed: ManagedChatSession): void => {
+    const entry = turnsShownBeforeRuntime.get(managed.session.id);
+    if (!entry || entry.stopped) return;
+    entry.stopped = true;
+    setSessionIdle(managed);
+    emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId: entry.turnId });
+    emitChatEvent(managed, {
+      type: "done",
+      turnId: entry.turnId,
+      status: "interrupted",
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+    });
+    persistChatState(managed);
+  };
+
+  /**
    * The turn already marked active (Codex, Cursor and Droid start optimistically)
    * runs at the effort its send just applied, not the one it was marked with.
    */
@@ -25590,7 +25731,110 @@ export function createAgentChatService(args: {
   const deleteThreadComment = (args: ChatThreadCommentDeleteArgs): { deleted: boolean } =>
     threadComments.delete({ ...args, sessionId: assertThreadCommentSession(args?.sessionId) });
 
+  /**
+   * Emits one chunk of a Codex command's output: a stored `command` event, or
+   * a live-only one once the stored copy is full. A joined burst of deltas
+   * reads exactly like one larger delta from Codex.
+   */
+  const emitCodexCommandOutput = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    itemId: string,
+    turnId: string | undefined,
+    delta: string,
+  ): void => {
+    const storageClosed = runtime.commandOutputStorageClosedItemIds.has(itemId);
+    const currentOutput = runtime.commandOutputByItemId.get(itemId) ?? "";
+    const next = storageClosed ? currentOutput : `${currentOutput}${delta}`;
+    const compacted = storageClosed
+      ? null
+      : compactRunningCommandOutput(next);
+    if (!storageClosed) {
+      runtime.commandOutputByItemId.set(itemId, compacted?.text ?? next);
+      evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
+      if (compacted) runtime.commandOutputStorageClosedItemIds.add(itemId);
+    }
+    const liveCommandEvent: AgentChatEvent = {
+      type: "command",
+      command: "command",
+      cwd: managed.laneWorktreePath,
+      output: delta,
+      itemId,
+      turnId,
+      status: "running",
+    };
+    if (storageClosed) {
+      emitLiveOnlyChatEvent(managed, liveCommandEvent);
+      return;
+    }
+    const storedCommandEvent: AgentChatEvent = {
+      type: "command",
+      command: "command",
+      cwd: managed.laneWorktreePath,
+      output: compacted?.text ?? delta,
+      itemId,
+      turnId,
+      status: "running",
+      ...(compacted ? {
+        outputOriginalBytes: compacted.originalBytes,
+        outputOmittedBytes: compacted.omittedBytes,
+      } : {}),
+    };
+    emitChatEvent(
+      managed,
+      storedCommandEvent,
+      compacted ? { liveEvent: liveCommandEvent } : undefined,
+    );
+  };
+
+  /** Sends the buffered command output now. Safe to call with nothing buffered. */
+  const flushBufferedCommandOutput = (managed: ManagedChatSession): void => {
+    const buffered = managed.bufferedCommandOutput;
+    if (!buffered) return;
+    if (buffered.timer) clearTimeout(buffered.timer);
+    // Cleared first: the emit below re-enters `emitChatEvent`, which flushes.
+    managed.bufferedCommandOutput = null;
+    // A deleted chat has no transcript to store it in.
+    if (managed.deleted) return;
+    emitCodexCommandOutput(managed, buffered.runtime, buffered.itemId, buffered.turnId, buffered.delta);
+  };
+
+  /**
+   * One Codex output delta. Deltas of the same command join the buffer; any
+   * other event of the session flushes it first, so the order never changes.
+   */
+  const queueCodexCommandOutput = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    itemId: string,
+    turnId: string | undefined,
+    delta: string,
+  ): void => {
+    const buffered = managed.bufferedCommandOutput;
+    if (buffered && buffered.runtime === runtime && buffered.itemId === itemId && buffered.turnId === turnId) {
+      buffered.delta += delta;
+      if (buffered.delta.length >= BUFFERED_COMMAND_OUTPUT_FLUSH_CHARS) flushBufferedCommandOutput(managed);
+      return;
+    }
+    flushBufferedCommandOutput(managed);
+    // The working line shows at once, as before. While the buffer is open no
+    // other event goes out, so the same line for the later deltas would be a
+    // repeat that `emitChatEvent` drops anyway.
+    emitChatEvent(managed, {
+      type: "activity",
+      activity: "running_command",
+      detail: "Shell command running",
+      turnId,
+    });
+    const timer = setTimeout(() => {
+      if (managed.bufferedCommandOutput) managed.bufferedCommandOutput.timer = null;
+      flushBufferedCommandOutput(managed);
+    }, BUFFERED_TEXT_FLUSH_MS);
+    managed.bufferedCommandOutput = { runtime, itemId, turnId, delta, timer };
+  };
+
   const emitLiveOnlyChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    flushBufferedCommandOutput(managed);
     managed.lastActivityTimestamp = Date.now();
     // Retry/reconnect activity bypasses emitChatEvent so it stays live-only.
     // Flush any 100ms text/reasoning buffer first, otherwise that older
@@ -26073,6 +26317,8 @@ export function createAgentChatService(args: {
     // A draft warmup has no chat to show an event in, and an event would put
     // an empty chat in every client's list.
     if (managed.draftWarm) return;
+    // Buffered command output came first, so it goes out first.
+    flushBufferedCommandOutput(managed);
     // A message ADE wrote carries its row's one line, so no client keeps its
     // own table of reasons (`HOST_CONTINUATION_REASON_LABEL`).
     const continuation = event.type === "user_message" ? event.metadata?.hostContinuation : undefined;
@@ -29447,7 +29693,13 @@ export function createAgentChatService(args: {
    */
   const assertExpectedTurn = (managed: ManagedChatSession, expected: string | null | undefined): void => {
     if (expected === undefined) return;
-    const current = activeTurnIdForManaged(managed);
+    // A turn shown before its runtime exists (`showTurnBeforeRuntime`) has no
+    // active runtime turn yet: a Stop that names it must still match. A record
+    // a Stop already ended is not that turn, and the chat is idle again.
+    const shownBeforeRuntime = turnsShownBeforeRuntime.get(managed.session.id);
+    const current = activeTurnIdForManaged(managed)
+      ?? (shownBeforeRuntime && !shownBeforeRuntime.stopped ? shownBeforeRuntime.turnId : null)
+      ?? null;
     const running = current != null || runtimeMidTurn(managed) || managed.session.status === "active";
     if (expected === null ? !running : current === expected) return;
     throw markExpected(codedError(
@@ -30224,6 +30476,9 @@ export function createAgentChatService(args: {
     runtimeTeardownEpochs.set(managed, runtimeTeardownEpoch(managed) + 1);
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
+    // Codex command output still on the 100 ms clock is stored before the
+    // runtime goes, not by a timer that fires after it.
+    flushBufferedCommandOutput(managed);
     closeHttpMcpServers(managed);
 
     const reasonAllowsPreservation =
@@ -30634,6 +30889,7 @@ export function createAgentChatService(args: {
     clearSubagentSnapshots(managed.session.id);
     flushBufferedText(managed);
     flushBufferedReasoning(managed);
+    flushBufferedCommandOutput(managed);
     // The last preview lands before the row ends, never after it.
     if (managed.previewWriteTimer) {
       clearTimeout(managed.previewWriteTimer);
@@ -38360,10 +38616,34 @@ export function createAgentChatService(args: {
     // Anything captured below belongs to this attempt and is used immediately.
     managed.acpLastExitStderrTail = undefined;
 
+    const attachments = args.attachments ?? [];
+    const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
+      ...attachment,
+      _resolvedPath: attachment.path,
+      _rootPath: managed.laneWorktreePath,
+    }));
+    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
+    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
+    const emitUserMessage = () => emitPreparedUserMessage(managed, {
+      text: userText,
+      displayText,
+      attachments,
+      contextAttachments: args.contextAttachments ?? [],
+      metadata: args.metadata,
+      turnId,
+      laneDirectiveKey: args.laneDirectiveKey,
+      onDispatched: args.onDispatched,
+    });
+    // The agent process can take a second to start (and to resume the session):
+    // the turn shows as working meanwhile.
+    const shownEarly = showTurnBeforeRuntime(managed, turnId, emitUserMessage);
+
     let runtime: AcpRuntime;
     let behindActiveTurn: "queued" | "dropped" | null = null;
     try {
       runtime = await ensureAcpSessionRuntime(managed);
+      // Stopped during the start: the Stop ended the turn, so nothing is sent.
+      if (shownEarly && settleTurnShownBeforeRuntime(managed, turnId)) return;
       const validation = validateSessionReadyForTurn(managed);
       if (!validation.ready) {
         // Another send started a turn while this one waited for the runtime.
@@ -38373,7 +38653,8 @@ export function createAgentChatService(args: {
         // The busy runtime is the live one, which a recycle during the wait
         // may have replaced; the queue that is drained belongs to it.
         const live = managed.runtime;
-        if (validation.reason === TURN_ALREADY_ACTIVE_REASON && live?.kind === "acp" && live.busy) {
+        // A shown turn already has its own row, so it never turns into a queued one.
+        if (!shownEarly && validation.reason === TURN_ALREADY_ACTIVE_REASON && live?.kind === "acp" && live.busy) {
           const queued = enqueueSteerOrDrop(
             managed,
             live,
@@ -38394,6 +38675,8 @@ export function createAgentChatService(args: {
         }
       }
     } catch (error) {
+      // A Stop during the start already ended the shown turn.
+      if (shownEarly && settleTurnShownBeforeRuntime(managed, turnId)) return;
       // Setup failure. One visible error, then the terminal markers that
       // release the composer — a chat that never reaches `done` stays stuck
       // with no way for the user to see why.
@@ -38439,27 +38722,12 @@ export function createAgentChatService(args: {
     runtime.interrupted = false;
     setSessionActive(managed);
 
-    const attachments = args.attachments ?? [];
-    const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
-      ...attachment,
-      _resolvedPath: attachment.path,
-      _rootPath: managed.laneWorktreePath,
-    }));
-    const displayText = args.displayText !== undefined ? args.displayText.trim() : args.promptText;
-    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
-    emitPreparedUserMessage(managed, {
-      text: userText,
-      displayText,
-      attachments,
-      contextAttachments: args.contextAttachments ?? [],
-      metadata: args.metadata,
-      turnId,
-      laneDirectiveKey: args.laneDirectiveKey,
-      onDispatched: args.onDispatched,
-    });
-    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
-    captureTurnBeforeSha(managed);
-    emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+    if (!shownEarly) {
+      emitUserMessage();
+      emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+      captureTurnBeforeSha(managed);
+      emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+    }
 
     let acpLaneGuidance: string | null = null;
     /** Whether the background watcher was told this turn began; only then may it hear the end. */
@@ -39464,6 +39732,21 @@ export function createAgentChatService(args: {
    * keeps running with nobody holding it.
    */
   const museRuntimeStarts = new WeakMap<ManagedChatSession, Promise<MuseRuntime>>();
+  /**
+   * Each chat's single Muse `commandId` minter. Every host the chat starts
+   * uses it, so a turn id minted before the host is up (`runMuseTurn`) and the
+   * connection's own ids form one ordered sequence.
+   */
+  const museCommandMints = new WeakMap<ManagedChatSession, () => string>();
+  const museCommandMintFor = (managed: ManagedChatSession): (() => string) => {
+    let mint = museCommandMints.get(managed);
+    if (!mint) {
+      mint = createMuseCommandIdMint();
+      museCommandMints.set(managed, mint);
+    }
+    return mint;
+  };
+
   const ensureMuseRuntime = (managed: ManagedChatSession): Promise<MuseRuntime> => {
     const inFlight = museRuntimeStarts.get(managed);
     if (inFlight) return inFlight;
@@ -39503,6 +39786,8 @@ export function createAgentChatService(args: {
       serveArgs: launch.serveArgs,
       clientVersion: appVersion,
       logger,
+      // The chat's minter: turn ids minted before this host started stay in its order.
+      mintCommandId: museCommandMintFor(managed),
     });
     try {
       const mcpServers = await museMcpServersFor(managed);
@@ -39735,36 +40020,15 @@ export function createAgentChatService(args: {
       onBackendDispatched?: () => void;
     },
   ): Promise<void> => {
-    const setupTurnId = randomUUID();
+    // MSP derives the turn id from the command id, so ADE mints it and uses
+    // the same id for its own turn: every item Muse streams already carries it.
+    // The chat's one minter mints it, also before its host is up, so the turn
+    // can show while the host starts; the host's connection uses the same minter.
+    const turnId = museCommandMintFor(managed)();
     const doneModel = () => ({
       model: managed.session.model,
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
     });
-    let runtime: MuseRuntime;
-    try {
-      runtime = await ensureMuseRuntime(managed);
-      const validation = validateSessionReadyForTurn(managed);
-      if (!validation.ready) throw new Error(validation.reason);
-    } catch (error) {
-      markSessionIdleWithFreshCache(managed);
-      const message = describeMuseError(error);
-      reportProviderRuntimeFailure("muse", message);
-      emitChatEvent(managed, { type: "error", message, turnId: setupTurnId });
-      emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId: setupTurnId });
-      emitChatEvent(managed, { type: "done", turnId: setupTurnId, status: "failed", ...doneModel() });
-      persistChatState(managed);
-      return;
-    }
-
-    // MSP derives the turn id from the command id, so ADE mints it and uses
-    // the same id for its own turn: every item Muse streams already carries it.
-    const turnId = runtime.host.mintCommandId();
-    runtime.busy = true;
-    runtime.activeTurnId = turnId;
-    runtime.interrupted = false;
-    resetMuseTurnState(runtime.mapperState);
-    setSessionActive(managed);
-
     const attachments = args.attachments ?? [];
     const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
       ...attachment,
@@ -39775,7 +40039,7 @@ export function createAgentChatService(args: {
     const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     // The turn id doubles as the message's steer id, so a retracted turn
     // (`turn/retracted`) can turn this same bubble into an unprocessed one.
-    emitPreparedUserMessage(managed, {
+    const emitUserMessage = () => emitPreparedUserMessage(managed, {
       text: userText,
       displayText,
       attachments,
@@ -39786,6 +40050,38 @@ export function createAgentChatService(args: {
       laneDirectiveKey: args.laneDirectiveKey,
       onDispatched: args.onDispatched,
     });
+    const shownEarly = showTurnBeforeRuntime(managed, turnId, emitUserMessage);
+    let runtime: MuseRuntime;
+    let refusedBehindActiveTurn = false;
+    try {
+      runtime = await ensureMuseRuntime(managed);
+      // Stopped during the start: the Stop ended the turn, so nothing is sent.
+      if (shownEarly && settleTurnShownBeforeRuntime(managed, turnId)) return;
+      const validation = validateSessionReadyForTurn(managed);
+      if (!validation.ready) {
+        refusedBehindActiveTurn = validation.reason === TURN_ALREADY_ACTIVE_REASON;
+        throw new Error(validation.reason);
+      }
+    } catch (error) {
+      if (shownEarly && settleTurnShownBeforeRuntime(managed, turnId)) return;
+      // Refused behind another turn: that turn runs on, so its chat stays active.
+      if (!refusedBehindActiveTurn) markSessionIdleWithFreshCache(managed);
+      const message = describeMuseError(error);
+      reportProviderRuntimeFailure("muse", message);
+      emitChatEvent(managed, { type: "error", message, turnId });
+      emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+      emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel() });
+      persistChatState(managed);
+      return;
+    }
+
+    runtime.busy = true;
+    runtime.activeTurnId = turnId;
+    runtime.interrupted = false;
+    resetMuseTurnState(runtime.mapperState);
+    setSessionActive(managed);
+
+    if (!shownEarly) emitUserMessage();
     runtime.sentTurnInputs.set(turnId, {
       text: userText,
       ...(displayText !== userText ? { displayText } : {}),
@@ -39799,9 +40095,11 @@ export function createAgentChatService(args: {
       if (oldest === undefined) break;
       runtime.sentTurnInputs.delete(oldest);
     }
-    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
-    captureTurnBeforeSha(managed);
-    emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+    if (!shownEarly) {
+      emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+      captureTurnBeforeSha(managed);
+      emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+    }
 
     const outcomePromise = new Promise<MuseTurnOutcome>((resolve) => {
       runtime.turnWaiters.set(turnId, resolve);
@@ -40119,15 +40417,42 @@ export function createAgentChatService(args: {
     },
   ): Promise<"queued" | void> => {
     const setupTurnId = randomUUID();
+    const attachments = args.attachments ?? [];
+    const displayText = args.displayText != null ? args.displayText.trim() : args.promptText;
+    const emitUserMessage = () => emitPreparedUserMessage(managed, {
+      text: args.userText?.trim() || displayText,
+      displayText,
+      attachments,
+      contextAttachments: args.contextAttachments ?? [],
+      metadata: args.metadata,
+      turnId: setupTurnId,
+      ...(args.steerId ? { steerId: args.steerId } : {}),
+      laneDirectiveKey: args.laneDirectiveKey,
+      onDispatched: args.onDispatched,
+    });
+    // A compaction queues the message instead (below), so it never shows as a turn.
+    const compacting = managed.runtime?.kind === "pi" && Boolean(managed.runtime.activeCompactionId);
+    const shownEarly = !compacting && showTurnBeforeRuntime(managed, setupTurnId, emitUserMessage);
     let runtime: PiRuntime;
+    let refusedBehindActiveTurn = false;
     try {
       runtime = await startPiRuntime(managed);
+      // Stopped during the start: the Stop ended the turn, so nothing is sent.
+      if (shownEarly && settleTurnShownBeforeRuntime(managed, setupTurnId)) return;
+      if (shownEarly && runtime.activeCompactionId) {
+        throw new Error("A compaction started while Pi was starting. Send the message again when it finishes.");
+      }
       if (!runtime.activeCompactionId) {
         const validation = validateSessionReadyForTurn(managed);
-        if (!validation.ready) throw new Error(validation.reason);
+        if (!validation.ready) {
+          refusedBehindActiveTurn = validation.reason === TURN_ALREADY_ACTIVE_REASON;
+          throw new Error(validation.reason);
+        }
       }
     } catch (error) {
-      markSessionIdleWithFreshCache(managed);
+      if (shownEarly && settleTurnShownBeforeRuntime(managed, setupTurnId)) return;
+      // Refused behind another turn: that turn runs on, so its chat stays active.
+      if (!refusedBehindActiveTurn) markSessionIdleWithFreshCache(managed);
       const message = error instanceof Error ? error.message : String(error);
       // Another writer holding the session is the user's to resolve; Pi itself is fine.
       if (!(error instanceof PiSessionLeaseConflictError)) reportProviderRuntimeFailure("pi", message);
@@ -40173,22 +40498,12 @@ export function createAgentChatService(args: {
     resetPiSdkEventMapperTurn(runtime.eventMapperState);
     runtime.interrupted = false;
     setSessionActive(managed);
-    const attachments = args.attachments ?? [];
-    const displayText = args.displayText != null ? args.displayText.trim() : args.promptText;
-    emitPreparedUserMessage(managed, {
-      text: args.userText?.trim() || displayText,
-      displayText,
-      attachments,
-      contextAttachments: args.contextAttachments ?? [],
-      metadata: args.metadata,
-      turnId,
-      ...(args.steerId ? { steerId: args.steerId } : {}),
-      laneDirectiveKey: args.laneDirectiveKey,
-      onDispatched: args.onDispatched,
-    });
-    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
-    captureTurnBeforeSha(managed);
-    emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+    if (!shownEarly) {
+      emitUserMessage();
+      emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+      captureTurnBeforeSha(managed);
+      emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+    }
     // Read at settle time, not now: the turn's own events fill the mapper state.
     const piDoneEvent = (status: "completed" | "interrupted" | "failed") => mapPiSdkRunResultToDoneEvent({
       turnId,
@@ -41084,6 +41399,11 @@ export function createAgentChatService(args: {
        * by `runClaudeTurn`; Pi and ACP ignore it.
        */
       steerId?: string;
+      /**
+       * OpenCode: the send already showed this turn (message, `started`) while
+       * the session started (`showTurnBeforeRuntime`); the turn keeps that id.
+       */
+      shownTurnId?: string;
       onDispatched?: () => void;
       onBackendDispatched?: () => void;
     },
@@ -41114,7 +41434,7 @@ export function createAgentChatService(args: {
       logger.warn("agent_chat.turn_not_ready", { sessionId: managed.session.id, reason: validation.reason });
       throw new Error(validation.reason);
     }
-    const turnId = randomUUID();
+    const turnId = args.shownTurnId ?? randomUUID();
     const attachments = args.attachments ?? [];
     const contextAttachments = args.contextAttachments ?? [];
     const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
@@ -41133,24 +41453,26 @@ export function createAgentChatService(args: {
       requestedModel: { providerID: model.providerID, modelID: model.id },
       laneDirectiveKey: args.laneDirectiveKey ?? null,
     });
-    emitPreparedUserMessage(managed, {
-      text: userText,
-      displayText,
-      attachments,
-      contextAttachments,
-      metadata: args.metadata,
-      turnId,
-      ...(args.steerId ? { steerId: args.steerId } : {}),
-      laneDirectiveKey: args.laneDirectiveKey,
-      onDispatched: args.onDispatched,
-    });
-    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
-    captureTurnBeforeSha(managed);
-    emitChatEvent(managed, {
-      type: "activity",
-      ...initialTurnActivity(managed.session),
-      turnId,
-    });
+    if (!args.shownTurnId) {
+      emitPreparedUserMessage(managed, {
+        text: userText,
+        displayText,
+        attachments,
+        contextAttachments,
+        metadata: args.metadata,
+        turnId,
+        ...(args.steerId ? { steerId: args.steerId } : {}),
+        laneDirectiveKey: args.laneDirectiveKey,
+        onDispatched: args.onDispatched,
+      });
+      emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+      captureTurnBeforeSha(managed);
+      emitChatEvent(managed, {
+        type: "activity",
+        ...initialTurnActivity(managed.session),
+        turnId,
+      });
+    }
 
     const client = runtime.handle.client;
     const sessionID = runtime.handle.sessionId;
@@ -42249,6 +42571,8 @@ export function createAgentChatService(args: {
   ): void => {
     const interruptedTurnId = turnId?.trim() || runtime.activeTurnId || runtime.startedTurnId || randomUUID();
     clearCodexNoFirstEventWatchdog(managed);
+    // Output of the turn goes out before its per-command state clears.
+    flushBufferedCommandOutput(managed);
     markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
     rememberInterruptedCodexTurn(runtime, interruptedTurnId);
     rememberTerminalCodexTurn(runtime, interruptedTurnId, managed);
@@ -46435,54 +46759,7 @@ export function createAgentChatService(args: {
       const itemId = String((params.itemId as string | undefined) ?? randomUUID());
       const delta = String((params.delta as string | undefined) ?? "");
       const turnId = turnIdFromParams ?? runtime.itemTurnIdByItemId.get(itemId) ?? runtime.activeTurnId ?? undefined;
-      const storageClosed = runtime.commandOutputStorageClosedItemIds.has(itemId);
-      const currentOutput = runtime.commandOutputByItemId.get(itemId) ?? "";
-      const next = storageClosed ? currentOutput : `${currentOutput}${delta}`;
-      const compacted = storageClosed
-        ? null
-        : compactRunningCommandOutput(next);
-      if (!storageClosed) {
-        runtime.commandOutputByItemId.set(itemId, compacted?.text ?? next);
-        evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
-        if (compacted) runtime.commandOutputStorageClosedItemIds.add(itemId);
-      }
-      const liveCommandEvent: AgentChatEvent = {
-        type: "command",
-        command: "command",
-        cwd: managed.laneWorktreePath,
-        output: delta,
-        itemId,
-        turnId,
-        status: "running",
-      };
-      emitChatEvent(managed, {
-        type: "activity",
-        activity: "running_command",
-        detail: "Shell command running",
-        turnId,
-      });
-      if (storageClosed) {
-        emitLiveOnlyChatEvent(managed, liveCommandEvent);
-        return;
-      }
-      const storedCommandEvent: AgentChatEvent = {
-        type: "command",
-        command: "command",
-        cwd: managed.laneWorktreePath,
-        output: compacted?.text ?? delta,
-        itemId,
-        turnId,
-        status: "running",
-        ...(compacted ? {
-          outputOriginalBytes: compacted.originalBytes,
-          outputOmittedBytes: compacted.omittedBytes,
-        } : {}),
-      };
-      emitChatEvent(
-        managed,
-        storedCommandEvent,
-        compacted ? { liveEvent: liveCommandEvent } : undefined,
-      );
+      queueCodexCommandOutput(managed, runtime, itemId, turnId, delta);
       return;
     }
 
@@ -46576,6 +46853,7 @@ export function createAgentChatService(args: {
         return;
       }
       const turnId = resolvedAbortTurnId ?? randomUUID();
+      flushBufferedCommandOutput(managed);
       markAcceptedCodexSteersUnprocessed(managed, runtime, turnId);
       rememberInterruptedCodexTurn(runtime, turnId);
       rememberTerminalCodexTurn(runtime, turnId, managed);
@@ -59287,6 +59565,7 @@ export function createAgentChatService(args: {
     }
 
     if (managed.runtime?.kind === "codex" && !isBusyError) {
+      flushBufferedCommandOutput(managed);
       managed.runtime.activeTurnId = null;
       managed.runtime.startedTurnId = null;
       managed.runtime.awaitingTurnStart = false;
@@ -64841,13 +65120,40 @@ export function createAgentChatService(args: {
     const ownedCommandReply = typedCommand ? copilotAdeOwnedCommandReply(typedCommand.name) : null;
     if (ownedCommandReply) controlReply = ownedCommandReply;
     const turnId = args.turnId ?? randomUUID();
-    const runtime = await ensureCopilotRuntime(managed);
+    const displayText = args.displayText.trim();
+    const userText = args.userText?.trim() || displayText;
+    // Rewind finds a turn by this id; the turn's `user.message` maps it to
+    // Copilot's rewind point.
+    const userMessageId = randomUUID();
+    const emitUserMessage = () => emitPreparedUserMessage(managed, {
+      text: userText, displayText, attachments: args.attachments,
+      contextAttachments: args.contextAttachments, metadata: args.metadata, turnId,
+      messageId: userMessageId,
+      laneDirectiveKey: args.laneDirectiveKey, onDispatched: args.onDispatched,
+    });
+    // The Copilot worker can take a second to start: the turn shows as working meanwhile.
+    const shownEarly = showTurnBeforeRuntime(managed, turnId, emitUserMessage);
+    let runtime: CopilotRuntime;
     let nativeCommand: { name: string; input: string } | null = null;
-    if (typedCommand && !controlReply) {
-      runtime.slashCommands ??= await listCopilotCommands(managed, runtime);
-      const resolved = resolveCopilotSlashCommand(typedCommand.name, runtime.slashCommands);
-      if (resolved) nativeCommand = { name: resolved.name, input: typedCommand.input };
+    try {
+      runtime = await ensureCopilotRuntime(managed);
+      if (typedCommand && !controlReply) {
+        runtime.slashCommands ??= await listCopilotCommands(managed, runtime);
+        const resolved = resolveCopilotSlashCommand(typedCommand.name, runtime.slashCommands);
+        if (resolved) nativeCommand = { name: resolved.name, input: typedCommand.input };
+      }
+    } catch (error) {
+      if (!shownEarly) throw error;
+      // A Stop during the start already ended the shown turn.
+      if (settleTurnShownBeforeRuntime(managed, turnId)) return;
+      // The shown turn ends here with the error, and the send still fails:
+      // the marker keeps the send path from reporting the turn a second time.
+      emitManagedSendFailure(managed, error, turnId);
+      markCursorTurnReported(error);
+      throw error;
     }
+    // Stopped during the start: the Stop ended the turn, so nothing is sent.
+    if (shownEarly && settleTurnShownBeforeRuntime(managed, turnId)) return;
     runtime.interrupted = false;
     runtime.busy = true;
     runtime.activeTurnId = turnId;
@@ -64862,21 +65168,13 @@ export function createAgentChatService(args: {
     // A failed MCP server is shown once per chat.
     if (previousMapperState) runtime.eventMapperState.failedMcpServers = previousMapperState.failedMcpServers;
     setSessionActive(managed);
-    const displayText = args.displayText.trim();
-    const userText = args.userText?.trim() || displayText;
-    // Rewind finds a turn by this id; the turn's `user.message` maps it to
-    // Copilot's rewind point.
-    const userMessageId = randomUUID();
     runtime.pendingRewindMessageId = userMessageId;
-    emitPreparedUserMessage(managed, {
-      text: userText, displayText, attachments: args.attachments,
-      contextAttachments: args.contextAttachments, metadata: args.metadata, turnId,
-      messageId: userMessageId,
-      laneDirectiveKey: args.laneDirectiveKey, onDispatched: args.onDispatched,
-    });
-    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
-    emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
-    captureTurnBeforeSha(managed);
+    if (!shownEarly) {
+      emitUserMessage();
+      emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+      emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
+      captureTurnBeforeSha(managed);
+    }
     if (controlReply) {
       runtime.busy = false;
       runtime.activeTurnId = null;
@@ -65566,11 +65864,42 @@ export function createAgentChatService(args: {
 
     // OpenCode runtime dispatch
     if (managed.session.provider === "opencode") {
+      let shownTurnId: string | undefined;
       if (!managed.runtime || managed.runtime.kind !== "opencode") {
-        const restarted = await startOpenCodeSessionRuntime(managed);
-        if (restarted !== "handled" || !managed.runtime) {
-          throw new Error(`OpenCode runtime is not available for session '${managed.session.id}'.`);
+        // The OpenCode session (and its server) can take a second to start:
+        // the turn shows as working meanwhile, under the turn id `runTurn` then
+        // uses. The send keeps that id too, so a failure it reports ends this row.
+        const shownId = turnId ?? randomUUID();
+        prepared.turnId = shownId;
+        const userText = submittedText?.trim().length ? submittedText.trim() : (visibleText?.trim() ?? promptText);
+        const shownEarly = showTurnBeforeRuntime(managed, shownId, () => emitPreparedUserMessage(managed, {
+          text: userText,
+          displayText: visibleText !== undefined ? visibleText.trim() : promptText,
+          attachments,
+          contextAttachments,
+          metadata,
+          turnId: shownId,
+          ...(steerId ? { steerId } : {}),
+          laneDirectiveKey,
+          onDispatched,
+        }));
+        try {
+          const restarted = await startOpenCodeSessionRuntime(managed);
+          // Stopped during the start: the Stop ended the turn, so nothing is sent.
+          if (shownEarly && settleTurnShownBeforeRuntime(managed, shownId)) return;
+          if (restarted !== "handled" || !managed.runtime) {
+            throw new Error(`OpenCode runtime is not available for session '${managed.session.id}'.`);
+          }
+        } catch (error) {
+          if (!shownEarly) throw error;
+          if (settleTurnShownBeforeRuntime(managed, shownId)) return;
+          // The shown turn ends here with the error, and the send still fails:
+          // the marker keeps the send path from reporting the turn a second time.
+          emitManagedSendFailure(managed, error, shownId);
+          markCursorTurnReported(error);
+          throw error;
         }
+        if (shownEarly) shownTurnId = shownId;
       }
       if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
         managed.session.reasoningEffort = applySessionPresetReasoningEffort("opencode", reasoningEffort);
@@ -65598,6 +65927,7 @@ export function createAgentChatService(args: {
         laneDirectiveKey,
         providerSlashCommand,
         ...(steerId ? { steerId } : {}),
+        ...(shownTurnId ? { shownTurnId } : {}),
         onDispatched,
         onBackendDispatched,
       });
@@ -69887,6 +70217,8 @@ export function createAgentChatService(args: {
       cancelledQueuedCount: 0,
     };
     abortActiveBashControllers(managed, "Session interrupt requested.");
+    // A turn shown while its process still starts ends now; every mode stops the turn.
+    stopTurnShownBeforeRuntime(managed);
 
     // OpenCode runtime interrupt. `session.execution.interrupted` ends the turn;
     // queued follow-ups stay in OpenCode's inbox only for `stop_only`.
@@ -76932,6 +77264,12 @@ export function createAgentChatService(args: {
       throw new Error("Chat session id is required.");
     }
     warmIdleCompaction.clear(trimmedSessionId);
+    // A turn shown before its process answered ends with this chat: mark it
+    // stopped so an in-flight start sends nothing, and leave the record for
+    // that start's settle to remove. Removing it here would turn the Stop into
+    // a send when the start resolves.
+    const shownBeforeDelete = turnsShownBeforeRuntime.get(trimmedSessionId);
+    if (shownBeforeDelete) shownBeforeDelete.stopped = true;
     const deletedManaged = managedSessions.get(trimmedSessionId);
     if (deletedManaged) settlePendingClaudeKeychainRetry(deletedManaged, { silent: true });
     automaticContinuityRecoveryAt.delete(trimmedSessionId);

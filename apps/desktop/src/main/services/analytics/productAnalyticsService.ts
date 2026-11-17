@@ -53,6 +53,8 @@ const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
 const IDENTIFY_DAILY_BUDGET = 3;
 const IDENTIFY_MINUTE_BUDGET = 2;
 const STATE_LOCK_STALE_MS = 5_000;
+/** Fallback stat poll of the opt-out marker; the directory watch is the fast path. */
+const OPT_OUT_MARKER_FALLBACK_POLL_MS = 5_000;
 const RANDOM_UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /**
  * A once-only milestone counts as sent only after delivery is confirmed. One
@@ -543,8 +545,9 @@ function rollQuotaDay(state: ProductAnalyticsState, nowMs: number): ProductAnaly
   };
 }
 
-function makePostHogClient(token: string, host: string): ProductAnalyticsClient {
+function makePostHogClient(token: string, host: string, options: { stillEnabled?: () => boolean } = {}): ProductAnalyticsClient {
   type Message = Parameters<ProductAnalyticsClient["capture"]>[0];
+  const stillEnabled = options.stillEnabled ?? (() => true);
   const captureUrl = `${host}/i/v0/e/`;
   const queue: Message[] = [];
   const activeControllers = new Set<AbortController>();
@@ -592,6 +595,13 @@ function makePostHogClient(token: string, host: string): ProductAnalyticsClient 
   };
 
   const drain = async (): Promise<void> => {
+    // The marker is re-read here, not only where the client was created: this
+    // runs from the flush timer and the retry loop, so a withdrawal made while
+    // events waited must drop them rather than send them.
+    if (!stillEnabled()) {
+      queue.splice(0, queue.length);
+      return;
+    }
     const batch = queue.splice(0, 50);
     const results = await Promise.allSettled(batch.map(send));
     const failed = results.find((result) => result.status === "rejected");
@@ -769,8 +779,11 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       optOutDirectoryWatcher = null;
     }
     // Polling remains as a portable fallback for filesystems that coalesce or
-    // do not support native directory notifications.
-    fs.watchFile(optOutMarkerPath, { interval: 100, persistent: false }, onOptOutMarkerChanged);
+    // do not support native directory notifications. It is slow on purpose:
+    // every capture checks the marker itself (`effective`), so the poll only
+    // stops an idle client sooner, and a 100 ms poll woke the brain 10 times a
+    // second all day.
+    fs.watchFile(optOutMarkerPath, { interval: OPT_OUT_MARKER_FALLBACK_POLL_MS, persistent: false }, onOptOutMarkerChanged);
   };
 
   const stopOptOutWatcher = (): void => {
@@ -805,7 +818,11 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   const ensureClient = (currentState: ProductAnalyticsState): ProductAnalyticsClient | null => {
     if (!effective(currentState) || !host) return null;
     if (!client) {
-      client = (args.makeClient ?? makePostHogClient)(token, host);
+      client = (args.makeClient ?? makePostHogClient)(token, host, {
+        // Checked again by each drain: the opt-out marker can change while
+        // events wait in the client's queue.
+        stillEnabled: () => !isLocallyOptedOut() && !isRuntimeDisabled(),
+      });
       startOptOutWatcher();
       if (isLocallyOptedOut()) {
         cancelClientForOptOut();

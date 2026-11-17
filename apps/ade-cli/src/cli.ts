@@ -143,7 +143,8 @@ import { readInstalledDesktopApp } from "../../desktop/src/main/services/native/
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { findSettingsEntries, isAdeCloudSettingEntry, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
 import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess";
-import { setAdeCloudSkillVisible } from "../../desktop/src/shared/agentSkillRoots";
+import { setAdeCloudSkillVisible, setAgentSkillAccessRefresh } from "../../desktop/src/shared/agentSkillRoots";
+import { cloudAccessKey, rememberedCloudAccess, useCloudAccessMemory } from "../../desktop/src/main/services/adeCloud/cloudAccessMemory";
 import { OPEN_PLACES } from "../../desktop/src/shared/openPlaces";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
 import { canonicalGitOriginUrl } from "../../desktop/src/main/services/github/githubSshAlias";
@@ -230,6 +231,7 @@ import {
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { isRemoteWorkLaneId } from "../../desktop/src/shared/types/remoteWork";
 import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
+import { armLaunchQuiet } from "../../desktop/src/main/services/shared/launchQuiet";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import { trackPtyOutputBacklog } from "../../desktop/src/main/services/pty/ptyOutputFlowControl";
 import { forgetCliSessionsToReopen } from "../../desktop/src/main/services/pty/cliReopenAfterRestart";
@@ -29835,6 +29837,9 @@ async function runServe(
     const { getRuntimeServiceStatus } = await import("./serviceManager");
     return getRuntimeServiceStatus();
   }
+  // A brain starts with the desktop app on a cold launch: its background
+  // provider CLI work waits out the launch (`launchQuiet.ts`).
+  armLaunchQuiet();
   // Before anything reads the env: a brain started from an agent's shell must
   // not lend that agent's identity to every client it serves.
   const droppedCallerIdentityKeys = dropInheritedCallerIdentity(process.env);
@@ -30465,6 +30470,30 @@ async function runServe(
     })));
     return cloudBrainAccess;
   };
+  if (!embedded && servesMachineEndpoint) {
+    // Until this brain has the server's ADE Cloud answer (asked a few seconds
+    // in, below), its agents' skills follow the answer it last had for the
+    // signed-in account, so a chat resumed right after a restart keeps the
+    // prompt it had. Signed out, or an account with no saved answer: withheld.
+    // `createCloudBrainAccess` replaces this hook with the one that asks.
+    useCloudAccessMemory(path.join(layout.adeDir, "cloud-access.json"));
+    let rememberedDirectory: string | null | undefined;
+    setAgentSkillAccessRefresh(() => {
+      const status = brainAccountAuthService.getStatus();
+      if (status.signedIn !== true || !status.userId) {
+        setAdeCloudSkillVisible(false);
+        return;
+      }
+      if (rememberedDirectory === undefined) {
+        try {
+          rememberedDirectory = getSharedAccountDirectoryBaseUrl() || null;
+        } catch {
+          rememberedDirectory = null;
+        }
+      }
+      setAdeCloudSkillVisible(rememberedCloudAccess(cloudAccessKey(rememberedDirectory, status.userId)) === true);
+    });
+  }
   // This computer's ADE Cloud id, on a cloud computer; empty elsewhere.
   const cloudInstanceId = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
   const cloudDiskGrowModule = cloudKeepAwakeModule && isAdeCloudComputer()
