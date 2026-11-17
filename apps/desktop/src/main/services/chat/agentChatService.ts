@@ -26344,6 +26344,12 @@ export function createAgentChatService(args: {
     // The send running for this chat (if it carries a client id) has now
     // written its message, so a retry of it must not write it again.
     if (event.type === "user_message") clientSends.noteMessageWritten(managed.session.id);
+    // The person's message carries that send's id, so a client finds it by id
+    // (a queued message from the web or phone). A message ADE wrote does not.
+    if (event.type === "user_message" && !event.clientSendId && !event.metadata?.hostContinuation) {
+      const clientSendId = clientSends.claimSendId(managed.session.id);
+      if (clientSendId) event = { ...event, clientSendId };
+    }
     if (event.type === "user_message" && event.turnId && /^\/compact(?:\s|$)/i.test(event.text.trim())) {
       rememberBoundedEntry(compactOnlyTurns, event.turnId, automaticCompactSessions.delete(managed.session.id) ? "auto" : "manual", 512);
     }
@@ -67034,7 +67040,8 @@ export function createAgentChatService(args: {
     const timeout = setTimeout(settle, COMPACT_FIRST_INLINE_WAIT_MS);
     timeout.unref?.();
     try {
-      await sendMessageWithoutReview({ sessionId, text: "/compact", displayText: "/compact" });
+      // The `/compact` is ADE's, not the person's message: it does not claim the send's id.
+      await clientSends.outsideSend(() => sendMessageWithoutReview({ sessionId, text: "/compact", displayText: "/compact" }));
       await settled;
       // The compaction's terminal event can arrive inside the turn that
       // carried it (Codex closes that turn a moment later), so the message
@@ -67077,7 +67084,7 @@ export function createAgentChatService(args: {
     let markDispatched = () => {};
     const dispatched = new Promise<void>((resolve) => { markDispatched = resolve; });
     // No ADE time limit, the same as a `/compact` the user types: Stop ends it.
-    const turn = runSessionTurn({ sessionId: managed.session.id, text: "/compact", timeoutMs: null, onDispatched: markDispatched });
+    const turn = clientSends.outsideSend(() => runSessionTurn({ sessionId: managed.session.id, text: "/compact", timeoutMs: null, onDispatched: markDispatched }));
     const ended = turn.then(() => undefined, () => undefined);
     await Promise.race([dispatched, ended]);
     return { turn, before };

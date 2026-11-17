@@ -1637,6 +1637,13 @@ export type AgentChatEvent =
       deliveryState?: AgentChatUserMessageDeliveryState;
       processed?: boolean;
       runtime?: AgentChatRuntime;
+      /**
+       * The `clientSendId` of the send that wrote this message (at most 128
+       * characters), so a client finds its own message by id, not by text.
+       * Only the first person's message a send writes carries it. Absent: an
+       * older host, a send without an id, or a message ADE wrote itself.
+       */
+      clientSendId?: string;
     }
   | {
       /**
