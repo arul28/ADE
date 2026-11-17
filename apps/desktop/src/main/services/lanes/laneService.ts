@@ -6081,6 +6081,9 @@ export function createLaneService({
               branchGoes: deleteBranch,
               otherBranchesGoing: [...branchesBeingDeleted.entries()].filter(([otherLaneId]) => otherLaneId !== laneId).map(([, branch]) => branch),
               remoteGoes,
+              // The same commit the retry lease uses; the snapshot reads the
+              // ref itself only when the capture came back empty.
+              remoteTip: savedRemoteBranchTip || null,
             });
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
