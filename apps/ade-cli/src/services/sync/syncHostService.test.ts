@@ -2694,6 +2694,54 @@ describe("sync host account authentication", () => {
         ([message]) => message === "sync_host.legacy_adoption_aead_unbound",
       )).toHaveLength(1);
 
+      // A paired device that presents, inside the sealed payload, the secret
+      // it holds keeps it: nothing is minted, so no lost reply can strand it.
+      const keptSecret = openedHelloOk.accountPairing.secret;
+      const keptClient = await openAccountClient(port);
+      clients.push(keptClient);
+      const keptChallenge = await issueChallenge(keptClient, "sealed-kept");
+      keptClient.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "sealed-kept-hello",
+        payload: {
+          peer,
+          auth: {
+            kind: "account_sealed",
+            v: 1,
+            deviceId: peer.deviceId,
+            sealed: seal(
+              keptChallenge.sessionKey,
+              buildAdoptHelloAad(keptChallenge.payload.hostDeviceId, peer.deviceId),
+              Buffer.from(JSON.stringify({
+                ...accountAuth,
+                dpop: signAccountDpop({
+                  privateKey: dpopKey.privateKey,
+                  publicKeyX963: dpopKey.publicKeyX963,
+                  deviceId: peer.deviceId,
+                  accountToken,
+                }),
+                pairedSecret: keptSecret,
+              })),
+            ),
+          },
+        },
+      }));
+      const keptHelloOk = await waitForValue(
+        () => keptClient.envelopes.find((entry) =>
+          entry.type === "hello_ok" && entry.requestId === "sealed-kept-hello"
+        ),
+        "sealed kept-secret hello_ok",
+      );
+      const keptOpened = JSON.parse(unseal(
+        keptChallenge.sessionKey,
+        buildAdoptHelloOkAad(keptChallenge.payload.hostDeviceId, peer.deviceId),
+        (keptHelloOk.payload as { sealed: string }).sealed,
+      ).toString("utf8")) as { brain: { deviceId: string }; accountPairing?: unknown };
+      expect(keptOpened.brain.deviceId).toBe("host-device-1");
+      expect(keptOpened).not.toHaveProperty("accountPairing");
+      expect(pairingStore.verifySecret(peer.deviceId, keptSecret)).toBe("committed");
+      expect(pairingStore.hasPendingRotation(peer.deviceId)).toBe(false);
+
       const plainClient = await openAccountClient(port);
       clients.push(plainClient);
       const plainPeer = {

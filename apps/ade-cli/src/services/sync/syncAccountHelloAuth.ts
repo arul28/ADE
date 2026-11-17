@@ -316,6 +316,12 @@ export async function authenticateSyncAccountHello(
       if (!pairingRecord) {
         return reject(SYNC_ACCOUNT_PAIRING_WRITE_FAILED_MESSAGE);
       }
+      // Which secret the device leaves with, so a later "pair it again" can be
+      // traced to the adoption that preceded it. Never the secret itself.
+      logger.info(`${logPrefix}.account_pairing_secret`, {
+        deviceId: paired.deviceId,
+        outcome: paired.keptExistingSecret ? "kept" : existingPairingRecord ? "staged" : "minted",
+      });
       if (upgradingLegacyPairing && options.allowLegacyUpgrade) {
         logger.info(`${logPrefix}.account_legacy_pairing_upgraded`, { deviceId: auth.deviceId });
       }

@@ -3810,6 +3810,10 @@ again" on every connect. Now, for a record that already exists:
   staged one. Proving any staged secret clears the list. A phone that saved
   one adoption's secret and lost the next reply keeps working.
 
+Each account hello that reaches the store logs
+`sync_host.account_pairing_secret` (`sync_ingress.` on the brain) with
+`outcome` `kept`, `staged` or `minted`, never the secret.
+
 A first-time account pairing (no record) still writes straight through: the
 device holds no secret that a lost reply could strand. On the client,
 `reconcileStaleAccountCommit` puts a prior record back only when it holds the
