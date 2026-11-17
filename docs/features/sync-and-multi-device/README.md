@@ -3790,7 +3790,9 @@ leave the host on the new secret and the device on the old one, with "pair it
 again" on every connect. Now, for a record that already exists:
 
 - The account hello may carry `pairedSecret`, the secret the device already
-  holds for this host (desktop and web send it). When it matches the committed
+  holds for this host (desktop and web send it; iOS does not yet and gets the
+  staging below). The desktop sends it only to the host identity that issued
+  it. When it matches the committed
   or the staged secret, the host keeps that secret, applies the account's
   ownership and grants, and omits `accountPairing`. Nothing is minted, so no
   reply can be lost.
@@ -3828,7 +3830,9 @@ caller's claim:
   hello's offered key is ignored.
 
 Adoption is **deferred** while a PIN re-pair is staged on the record and the
-device has not acknowledged it (`pairingStore.hasPendingRotation`). Adoption
+device has not acknowledged it (`pairingStore.hasPendingPinRotation`). An
+earlier adoption's staged secret does not defer: it never expires, so it would
+block every later adoption of that record. Adoption
 would replace the staged secret and leave the device's `pairing_commit` with
 nothing to promote. That hello answers
 `hello_ok` without `accountPairing` and logs

@@ -58,6 +58,9 @@ export const SYNC_ACCOUNT_VERIFY_FAILED_MESSAGE = "The computer you're connectin
   + " its ADE account session. Open ADE there and check that it is signed in to the same ADE account,"
   + " then try again.";
 
+/** A paired secret is 48 hex characters; anything far longer is not one. */
+const MAX_PRESENTED_PAIRED_SECRET_CHARS = 4_096;
+
 export type SyncAccountHelloAuth = Extract<SyncHelloPayload["auth"], { kind: "account" }>;
 
 export type SyncAccountHelloResult =
@@ -85,7 +88,7 @@ export type SyncAccountHelloAuthOptions = {
   logPrefix: string;
   pairingStore: Pick<
     SyncPairingStore,
-    "getPairingRecord" | "hasPendingRotation" | "pairPeerViaAccount" | "verifySecret"
+    "getPairingRecord" | "hasPendingPinRotation" | "pairPeerViaAccount" | "verifySecret"
   >;
   dpopNonceCache: SyncDpopNonceCache;
   /** Re-read on every gate: the account can change mid-handshake. */
@@ -263,7 +266,7 @@ export async function authenticateSyncAccountHello(
       if (
         upgradingLegacyPairing
         && existingPairingRecord
-        && pairingStore.hasPendingRotation(auth.deviceId)
+        && pairingStore.hasPendingPinRotation(auth.deviceId)
       ) {
         logger.info(`${logPrefix}.account_adoption_deferred_pending_rotation`, {
           deviceId: auth.deviceId,
@@ -281,7 +284,12 @@ export async function authenticateSyncAccountHello(
       // secret the device presents, or stages the new one behind the
       // committed secret (see `writeNewPairingRecord`). A reply lost after
       // this point then leaves both ends on a secret the other accepts.
-      const presentedSecret = typeof auth.pairedSecret === "string" ? auth.pairedSecret.trim() : "";
+      // Advisory: a value that is not a plausible secret is ignored, never a
+      // reason to refuse the hello. The store compares it in constant time.
+      const presentedSecret = typeof auth.pairedSecret === "string"
+        && auth.pairedSecret.trim().length <= MAX_PRESENTED_PAIRED_SECRET_CHARS
+        ? auth.pairedSecret.trim()
+        : "";
       let paired: ReturnType<SyncPairingStore["pairPeerViaAccount"]>;
       try {
         paired = pairingStore.pairPeerViaAccount(peer, attestation, {

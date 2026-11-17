@@ -40,10 +40,10 @@ export type SyncPairingRecord = {
    */
   localTrustOrigin?: boolean;
   /**
-   * A PIN re-pair that the device has not proven it received. See
-   * `writeNewPairingRecord`: the fields above stay live and authoritative until
-   * a legacy hello promotes the staged secret or a commit-capable client
-   * acknowledges hello_ok.
+   * A PIN re-pair, or an account adoption's new secret (`secretOnly`), that
+   * the device has not proven it received. See `writeNewPairingRecord`: the
+   * committed secret stays live until a legacy hello promotes the staged one
+   * or a commit-capable client acknowledges hello_ok.
    */
   pendingRotation?: PendingPairingRotation | null;
 };
@@ -421,39 +421,30 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     //   now, because the attestation is the proof; only the secret waits for
     //   the first hello that authenticates with it.
     if (trust.kind === "account" && existing) {
-      const current = pruneExpiredRotation(existing, Date.now()).record ?? committedView(existing);
-      const presentedHash = options?.presentedSecret?.trim()
-        ? hashSecret(options.presentedSecret.trim())
-        : null;
+      const current = pruneExpiredRotation(existing, Date.now()).record!;
       const pending = current.pendingRotation ?? null;
-      if (presentedHash && safeHashEquals(current.secretHash, presentedHash)) {
+      const presented = options?.presentedSecret?.trim() || null;
+      const presentedHash = presented ? hashSecret(presented) : null;
+      const provedCommitted = presentedHash != null && safeHashEquals(current.secretHash, presentedHash);
+      const provedPending = !provedCommitted
+        && presentedHash != null
+        && pending != null
+        && safeHashEquals(pending.record.secretHash, presentedHash);
+      if (presented && (provedCommitted || provedPending)) {
         records[peer.deviceId] = {
           ...replacement,
-          secretHash: current.secretHash,
+          secretHash: provedCommitted ? current.secretHash : pending!.record.secretHash,
           lastUsedAt: nowIso(),
-          // A staged rotation is not this device's to discard: it may hold the
-          // staged secret in a store another process writes.
-          pendingRotation: pending,
+          // Proving the staged secret promotes it. Proving the committed one
+          // leaves a staged rotation in place: it is not this device's to
+          // discard, since it may hold the staged secret in a store another
+          // process writes.
+          pendingRotation: provedCommitted ? pending : null,
         };
         writeRecords(records);
         return {
           deviceId: peer.deviceId,
-          secret: options!.presentedSecret!.trim(),
-          pendingRotationExpiresAtMs: null,
-          keptExistingSecret: true,
-        };
-      }
-      if (presentedHash && pending && safeHashEquals(pending.record.secretHash, presentedHash)) {
-        records[peer.deviceId] = {
-          ...replacement,
-          secretHash: pending.record.secretHash,
-          lastUsedAt: nowIso(),
-          pendingRotation: null,
-        };
-        writeRecords(records);
-        return {
-          deviceId: peer.deviceId,
-          secret: options!.presentedSecret!.trim(),
+          secret: presented,
           pendingRotationExpiresAtMs: null,
           keptExistingSecret: true,
         };
@@ -682,6 +673,18 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       const pending = entry.pendingRotation;
       if (pending && safeHashEquals(pending.record.secretHash, presented)) return "pending";
       return null;
+    },
+
+    /**
+     * Whether an unproven PIN re-pair is still waiting on this device. An
+     * account adoption's staged secret does not count: it never expires, so
+     * treating it like a PIN re-pair would defer every later adoption.
+     */
+    hasPendingPinRotation(deviceId: string): boolean {
+      const normalized = deviceId.trim();
+      if (!normalized) return false;
+      const pending = pruneExpiredRotation(readRecords()[normalized], Date.now()).record?.pendingRotation;
+      return Boolean(pending && !pending.secretOnly);
     },
 
     /** Whether an unproven re-pair is still waiting on this device. */

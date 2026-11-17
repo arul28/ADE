@@ -1260,8 +1260,12 @@ export class DesktopPairedMachineStore {
           dpop: accountDpop,
           // The secret this desktop already holds for the host. A host that
           // recognizes it keeps it instead of minting a new one, so a reply
-          // lost below cannot leave the two ends on different secrets.
-          ...(existing?.secret ? { pairedSecret: existing.secret } : {}),
+          // lost below cannot leave the two ends on different secrets. Only
+          // the host that issued it sees it: a record found by machine key
+          // may belong to an earlier identity of that machine.
+          ...(existing?.secret && existing.hostIdentity.deviceId === expectedHostDeviceId
+            ? { pairedSecret: existing.secret }
+            : {}),
         };
         let sealedAccountAuth: string | null = null;
         if (adoptSessionKey) {

@@ -69,8 +69,6 @@ export class PairedRuntimeHostMismatchError extends Error {
   constructor(
     readonly expectedHostId: string,
     readonly actualHostId: string,
-    /** The rejection the other machine sent, when it rejected the hello. */
-    readonly otherHostHelloCode: SyncHelloErrorPayload["code"] | null = null,
   ) {
     super(
       `Sync endpoint identity mismatch (expected ${expectedHostId || "unknown"}, received ${actualHostId || "unknown"}).`,

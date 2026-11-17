@@ -566,11 +566,7 @@ export async function openPairedSyncConnection(
         ? rejection.rejectingHost?.deviceId ?? null
         : null;
       if (rejectingHostId && rejectingHostId !== expectedHostId) {
-        throw new PairedRuntimeHostMismatchError(
-          expectedHostId,
-          rejectingHostId,
-          (rejection as PairedRuntimeHelloRejectedError).helloCode,
-        );
+        throw new PairedRuntimeHostMismatchError(expectedHostId, rejectingHostId);
       }
       throw rejection;
     }

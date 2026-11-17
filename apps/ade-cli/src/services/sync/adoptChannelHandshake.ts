@@ -36,9 +36,6 @@ import type { SyncDpopProof, SyncHelloPayload } from "../../../../desktop/src/sh
  */
 export const ALLOW_LEGACY_UNBOUND_ADOPTION_AEAD = true;
 
-/** A paired secret is 48 hex characters; anything far longer is not one. */
-const MAX_PAIRED_SECRET_CHARS = 4_096;
-
 export type ParsedAccountChallenge = {
   nonce: string;
   nonceBytes: Buffer;
@@ -99,8 +96,7 @@ export function parseUnsealedAccountAuth(value: unknown): UnsealedAccountAuth | 
     ? null
     : toOptionalString(account.runtimeHostGrant);
   if (account.runtimeHostGrant != null && !runtimeHostGrant) return null;
-  // Optional and advisory: a value that is not a usable string is dropped,
-  // never a reason to refuse the hello.
+  // Optional and advisory; `authenticateSyncAccountHello` bounds it.
   const pairedSecret = toOptionalString(account.pairedSecret);
   return {
     kind: "account",
@@ -108,7 +104,7 @@ export function parseUnsealedAccountAuth(value: unknown): UnsealedAccountAuth | 
     accountToken,
     dpop: account.dpop as SyncDpopProof | null | undefined,
     ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
-    ...(pairedSecret && pairedSecret.length <= MAX_PAIRED_SECRET_CHARS ? { pairedSecret } : {}),
+    ...(pairedSecret ? { pairedSecret } : {}),
   };
 }
 
