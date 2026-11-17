@@ -19,8 +19,9 @@
  *   request; the same call for a folder it already loaded does not.
  * - With an empty refresh token (an access-only copy) the renewal is refused
  *   and the row stays as it is: the copy works until its own expiry.
- * - `credential.create` with an id that exists answers 409, so a new copy of
- *   the same row is a remove, then a create.
+ * - `credential.create` with an id that exists answers 409. Each copy is a
+ *   new row instead: created and made the one in use first, then the copy
+ *   before is removed, so a failed write never leaves no sign-in.
  */
 
 import fs from "node:fs";
@@ -33,6 +34,7 @@ import { resolveAdeOpenCodeRuntimeRoot } from "../../../shared/opencodeDataHome"
 import type { OpenCodeCredentialWriter } from "../providerLogins/providerLoginApply";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 import { SHARED_OPENCODE_PROFILE } from "./openCodeConfig";
+import { loadNodeSqlite } from "../projects/readOnlySqlite";
 import { credentialsChanged } from "./openCodeAccounts";
 import { readOpenCodeCredentials, resolveAdeOpenCodeDbPath } from "./openCodeCredentials";
 import { acquireOpenCodeServer } from "./openCodeServer";
@@ -64,6 +66,18 @@ function hasCredential(dbPath: string, id: string): boolean {
   return readOpenCodeCredentials(dbPath).some((credential) => credential.id === id);
 }
 
+/** One row out by SQL, for a store with no OpenCode to ask. Nothing else is ever written by SQL. */
+function deleteCredentialRow(dbPath: string, id: string): void {
+  const { DatabaseSync } = loadNodeSqlite();
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec("PRAGMA busy_timeout = 2000");
+    db.prepare("DELETE FROM credential WHERE id = ?").run(id);
+  } finally {
+    db.close();
+  }
+}
+
 /** The shared server writes ADE's own store only: a write meant for another store is refused, never sent there. */
 function assertAdeStore(dbPath: string): void {
   if (path.resolve(dbPath) !== path.resolve(resolveAdeOpenCodeDbPath())) {
@@ -76,7 +90,6 @@ export function createOpenCodeCarryWriter(logger: Logger | null): OpenCodeCreden
     async put(dbPath, row) {
       assertAdeStore(dbPath);
       const done = await withSharedClient(logger, async (client) => {
-        if (hasCredential(dbPath, row.id)) await client.credential.remove({ credentialID: row.id });
         await client.credential.create({
           id: row.id,
           integrationID: "opencode",
@@ -92,14 +105,14 @@ export function createOpenCodeCarryWriter(logger: Logger | null): OpenCodeCreden
     },
     async remove(dbPath, id) {
       assertAdeStore(dbPath);
-      if (!hasCredential(dbPath, id)) return "ok";
+      if (!hasCredential(dbPath, id)) return;
       const done = await withSharedClient(logger, async (client) => {
         await client.credential.remove({ credentialID: id });
         return true;
       });
-      if (!done) return "not_installed";
+      // No OpenCode here (it was removed): the row still goes, so an ADE sign-out never leaves an account's sign-in.
+      if (!done) deleteCredentialRow(dbPath, id);
       credentialsChanged("opencode");
-      return "ok";
     },
   };
 }

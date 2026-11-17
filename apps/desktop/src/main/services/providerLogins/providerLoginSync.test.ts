@@ -517,7 +517,6 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
         const db = openStore(dbPath);
         db.prepare("DELETE FROM credential WHERE id = ?").run(id);
         db.close();
-        return "ok";
       },
     });
     try {
@@ -550,7 +549,7 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
       // The cloud computer and the computer with no OpenCode sign-in: the owner's row, in use, with no refresh token.
       for (const computer of [cloud, desk]) {
         expect(rowsOf(storeOf(computer.home))).toEqual([{
-          id: "cred_owner",
+          id: expect.stringMatching(/^cred_ade[0-9a-f]{20}$/),
           integration: "opencode",
           active: true,
           value: { ...opencodeLogin("", "access-owner"), expires: expect.any(Number) },

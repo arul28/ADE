@@ -45,6 +45,7 @@ import path from "node:path";
 
 import type { ProviderLoginProvider } from "../../../shared/types/providerLogins";
 import { writeFileAtomic } from "../state/durableFile";
+import { captureError } from "../../../shared/sentry/capture";
 import { isRecord } from "../shared/utils";
 import { readOpenCodeCredentialValue, type OpenCodeCarryCredential } from "../opencode/openCodeCredentials";
 import {
@@ -250,13 +251,10 @@ export function appliedEntryUnchanged(entry: AppliedEntry): boolean {
  * (`openCodeCarryWriter.ts`); without it an OpenCode sign-in is not applied.
  */
 export type OpenCodeCredentialWriter = {
-  /**
-   * Put the row into the store at `dbPath` and make it the one in use; a row
-   * with the same id is replaced. "not_installed": no OpenCode here yet.
-   */
+  /** Add the row (a new id) to the store at `dbPath` and make it the one in use. "not_installed": no OpenCode here yet. */
   put(dbPath: string, row: OpenCodeCarryCredential): Promise<"ok" | "not_installed">;
-  /** Take the row out of the store at `dbPath`. "not_installed": no OpenCode here, so nothing to take. */
-  remove(dbPath: string, id: string): Promise<"ok" | "not_installed">;
+  /** Take the row out of the store at `dbPath`, with OpenCode not installed too. */
+  remove(dbPath: string, id: string): Promise<void>;
 };
 
 let openCodeWriter: OpenCodeCredentialWriter | null = null;
@@ -544,14 +542,20 @@ export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | nu
       const written = accessOnly ? accessOnlyOpenCodeValue(value) : value;
       const label = typeof row.label === "string" && row.label ? row.label : "default";
       const dbPath = path.join(carryRootDir("openCodeData", ctx)!, OPENCODE_DB_REL);
-      // The copy before (another sign-in's row) goes first, while it is still ADE's; a row the person changed stays.
-      if (previous?.openCode && previous.openCode.id !== row.id && appliedEntryUnchanged({ ...previous, files: [] })) {
-        await openCodeWriter.remove(previous.openCode.dbPath, previous.openCode.id);
-      }
-      if (await openCodeWriter.put(dbPath, { id: row.id, label, value: written }) === "not_installed") return { ok: false, reason: "not_installed" };
-      const stored = readOpenCodeCredentialValue(dbPath, row.id);
+      // Each copy is a new row: the copy before stays in use until this one is in, so a failed write loses nothing.
+      const id = `cred_ade${crypto.randomBytes(10).toString("hex")}`;
+      const previousUnchanged = previous?.openCode ? appliedEntryUnchanged({ ...previous, files: [] }) : false;
+      if (await openCodeWriter.put(dbPath, { id, label, value: written }) === "not_installed") return { ok: false, reason: "not_installed" };
+      const stored = readOpenCodeCredentialValue(dbPath, id);
       if (!stored || stored === "unreadable") return { ok: false, reason: "write_failed" };
-      entry.openCode = { dbPath, id: row.id, valueHash: shortHash(JSON.stringify(stored)) };
+      entry.openCode = { dbPath, id, valueHash: shortHash(JSON.stringify(stored)) };
+      // Then the copy before goes, while it is still ADE's; a row the person changed stays. The new copy is
+      // in use already, so a failed removal only leaves an unused row: reported, never a failed apply.
+      if (previous?.openCode && previousUnchanged) {
+        await openCodeWriter.remove(previous.openCode.dbPath, previous.openCode.id).catch((error: unknown) => {
+          captureError(error, { level: "warning", handled: true, tags: { area: "provider_logins", seam: "opencode_previous_copy" } });
+        });
+      }
     }
 
     // Antigravity: the token file is the whole sign-in (it names its own
