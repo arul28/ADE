@@ -6,7 +6,18 @@ import { SAVED_CHAT_COMPUTER_GONE_MESSAGE } from "../../state/cloudSavedChats";
  * `NoticeKind`) decides how it looks: a caught error is a `failure`; an
  * offline machine or a slow send is a `status`; a missing model is a `hint`.
  */
-export type ChatNotice = { message: string; kind: NoticeKind };
+export type ChatNotice = {
+  message: string;
+  kind: NoticeKind;
+  /** The chat a send's note is about: it shows on that chat only, and opening another chat clears it. */
+  sessionId?: string | null;
+  /**
+   * The words a send put back in the composer: the note clears when the
+   * chat's machine connects again, or when the message shows in the chat
+   * after all (`alreadyThere` copies were there when it was sent).
+   */
+  unsent?: { texts: string[]; submittedAt: string; alreadyThere: number };
+};
 
 /**
  * What a pane's `setError` takes: a message (a failure), a notice of another
@@ -18,7 +29,9 @@ export type ChatNoticeAction =
   | string
   | ChatNotice
   | null
-  | ((current: string | null) => string | null);
+  | ((current: string | null) => string | null)
+  /** Clears the notice when the test says so, and keeps it otherwise. */
+  | { clearIf: (notice: ChatNotice) => boolean };
 
 /** `useReducer(chatNoticeReducer, null)`: its dispatch is stable, like a state setter. */
 export function chatNoticeReducer(current: ChatNotice | null, action: ChatNoticeAction): ChatNotice | null {
@@ -28,7 +41,9 @@ export function chatNoticeReducer(current: ChatNotice | null, action: ChatNotice
     return message === current?.message ? current : { message, kind: "failure" };
   }
   if (!action) return null;
-  return typeof action === "string" ? { message: action, kind: "failure" } : action;
+  if (typeof action === "string") return { message: action, kind: "failure" };
+  if ("clearIf" in action) return current && action.clearIf(current) ? null : current;
+  return action;
 }
 
 /**

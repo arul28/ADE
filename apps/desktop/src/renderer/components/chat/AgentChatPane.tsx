@@ -5847,9 +5847,9 @@ export function AgentChatPane({
     availableLanes,
     pinOverride: hostRuntimePin,
   });
-  // The send's failure note names the chat's machine without a callback dependency.
   /** The draft's machine, named in a launch that could not reach it. */
   const draftMachineDisplayNameRef = useRef<string | null>(null);
+  // The send's failure note names the chat's machine without a callback dependency.
   const chatMachineNameRef = useRef(chatMachineName);
   chatMachineNameRef.current = chatMachineName;
   // Held in a ref so the ~40 call sites below can read the pin without
@@ -5900,10 +5900,39 @@ export function AgentChatPane({
   // An ADE Cloud lane computer is called by its lane in the notice; any other
   // machine keeps the name it was given, short or not.
   const chatCloudLane = useAdeCloudLaneForBinding(chatRuntimePin ?? projectBinding);
+  // A send's note belongs to its chat: during a switch, before the effect
+  // below clears it, it is not drawn over another chat.
+  const noticeForThisChat = chatNotice?.sessionId != null
+    && (chatNotice.sessionId !== selectedSessionId || chatNotice.sessionId !== renderedSessionId)
+    ? null
+    : chatNotice;
+  const noticeSessionId = chatNotice?.sessionId ?? null;
+  useEffect(() => {
+    setError({ clearIf: (notice) => notice.sessionId != null && notice.sessionId !== selectedSessionId });
+  }, [selectedSessionId]);
+  // A note that put words back in the composer is out of date once the
+  // chat's machine connects again, or once the message shows in the chat.
+  const noticeMachine = chatRuntimePin ?? projectBinding;
+  const noticeConnectionMark = useRemoteConnectionMark(noticeMachine?.kind === "remote" ? noticeMachine.targetId : null);
+  const noticeConnectionMarkRef = useRef(noticeConnectionMark);
+  useEffect(() => {
+    const previous = noticeConnectionMarkRef.current;
+    noticeConnectionMarkRef.current = noticeConnectionMark;
+    if (!noticeConnectionMark || noticeConnectionMark === previous) return;
+    setError({ clearIf: (notice) => notice.unsent != null });
+  }, [noticeConnectionMark]);
+  const unsentNoticeEvents = chatNotice?.unsent && noticeSessionId ? eventsBySession[noticeSessionId] : undefined;
+  useEffect(() => {
+    if (!unsentNoticeEvents) return;
+    setError({
+      clearIf: (notice) => notice.unsent != null && notice.sessionId != null
+        && countSentMessages(notice.sessionId, notice.unsent.texts, notice.unsent.submittedAt) > notice.unsent.alreadyThere,
+    });
+  }, [countSentMessages, unsentNoticeEvents]);
   // Another machine's chat: pinned there, or on the machine this project tab
   // itself is bound to.
   const shownNotice = shownChatNotice(
-    chatNotice,
+    noticeForThisChat,
     (chatRuntimePin ?? projectBinding)?.kind === "remote",
     // Read when the notice renders: the saved-chats read marks a chat whose
     // cloud computer no longer exists (no connection, or gone from the list).
@@ -16984,7 +17013,7 @@ export function AgentChatPane({
         const pending = handedOff;
         const waitingMessage = "Sending is taking longer than expected. If the message does not appear, it goes back in the composer.";
         setOptimisticOutgoingMessageSynced(null);
-        setError({ message: waitingMessage, kind: "status" });
+        setError({ message: waitingMessage, kind: "status", sessionId: pending.sessionId });
         const arrived = () => countSentMessages(pending.sessionId, pending.texts, pending.submittedAt) > pending.alreadyThere;
         sendsInDoubtRef.current.set(pending.clientSendId, {
           storageKey: draftStorageKeyAtSend,
@@ -17028,7 +17057,12 @@ export function AgentChatPane({
             setDraft(draftSnapshot);
             setAttachments((current) => (current.length ? current : attachmentsSnapshot));
             setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
-            setError("Message not sent. It is back in the composer.");
+            setError({
+              message: "Message not sent. It is back in the composer.",
+              kind: "failure",
+              sessionId: pending.sessionId,
+              unsent: { texts: pending.texts, submittedAt: pending.submittedAt, alreadyThere: pending.alreadyThere },
+            });
           }, checkDelays[index]);
           sendRecoveryTimersRef.current.add(timer);
         };
@@ -17045,8 +17079,17 @@ export function AgentChatPane({
       setOptimisticOutgoingMessageSynced(null);
       inPlaceFirstSendHandoffRef.current = null;
       inPlaceSendKeepsKeyboardRef.current = false;
+      const unsentRecord = sendIdentity?.record;
       setError(notSent
-        ? `Can't reach ${chatMachineNameRef.current || "the chat's machine"}, so the message was not sent. It is back in the composer.`
+        ? {
+          message: `Can't reach ${chatMachineNameRef.current || "the chat's machine"}, so the message was not sent. It is back in the composer.`,
+          kind: "failure",
+          sessionId: unsentRecord?.sessionId ?? selectedSessionId,
+          unsent: unsentRecord
+            ? { texts: unsentRecord.texts, submittedAt: unsentRecord.submittedAt, alreadyThere: unsentRecord.alreadyThere }
+            // Refused before the send was put together: nothing to find in the chat, but a reconnect still clears it.
+            : { texts: [], submittedAt: new Date().toISOString(), alreadyThere: 0 },
+        }
         : message);
       await refreshSessions({ force: true }).catch(() => {});
       if (
