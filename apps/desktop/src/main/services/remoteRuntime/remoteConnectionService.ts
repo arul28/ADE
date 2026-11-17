@@ -2068,6 +2068,10 @@ export class RemoteConnectionService {
       if (!isDedupedSend(request, this.statusById.get(target.id)?.capabilities)) throw error;
       await this.waitForHeldReconnect(target.id);
       if (!this.pool.hasEntry(target.id)) throw error;
+      // The machine may have updated while the link was down. A brain that no
+      // longer answers a repeated id would type a second copy, so the retry is
+      // only safe while it says it dedupes this request.
+      if (!isDedupedSend(request, this.statusById.get(target.id)?.capabilities)) throw error;
       return await this.pool.callActionForTarget(target, await projectId(), request);
     }
   }

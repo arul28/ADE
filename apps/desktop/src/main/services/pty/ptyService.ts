@@ -7038,16 +7038,16 @@ export function createPtyService({
         if (entry.disposed) return false;
         const written = await writeAgentCliText((data) => {
           if (entry.disposed) return false;
-          service.write({ ptyId, data, inputOrigin });
-          return true;
+          // A write that throws is not a delivered line: the caller puts it
+          // back instead of reporting it typed.
+          return service.write({ ptyId, data, inputOrigin });
         }, needsPaste ? line.replace(/\n/g, "\r") : line, provider, needsPaste);
         if (!written) return false;
         await delay(provider === "codex"
           ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
           : needsPaste ? LOCAL_LINE_PASTE_SUBMIT_DELAY_MS : AGENT_CLI_SUBMIT_DELAY_MS);
         if (entry.disposed) return false;
-        service.write({ ptyId, data: AGENT_CLI_LINE_SUBMIT_KEY, inputOrigin });
-        return true;
+        return service.write({ ptyId, data: AGENT_CLI_LINE_SUBMIT_KEY, inputOrigin });
       });
     submitInputFlights.set(entry.sessionId, flight);
     try {
@@ -9475,9 +9475,9 @@ export function createPtyService({
       }
     },
 
-    write({ ptyId, data, inputOrigin }: { ptyId: string; data: string; inputOrigin?: unknown }): void {
+    write({ ptyId, data, inputOrigin }: { ptyId: string; data: string; inputOrigin?: unknown }): boolean {
       const entry = ptys.get(ptyId);
-      if (!entry) return;
+      if (!entry) return false;
       // Enter in a CLI chat is a message sent: remember which desktop sent it
       // (or that nobody can tell, when it came without a stamp).
       if (/[\r\n]/.test(data)) noteSessionInputOrigin(entry.sessionId, inputOrigin);
@@ -9486,7 +9486,7 @@ export function createPtyService({
         // passed through but is not the user typing.
         if (writeIsTerminalReport(data)) {
           entry.pty.write(data);
-          return;
+          return true;
         }
         markPtyUserInput(entry, data);
         claimAgentShellForUser(entry, data);
@@ -9495,8 +9495,10 @@ export function createPtyService({
         tryCliUserTitleFromWrite(entry, data);
         setRuntimeState(entry.sessionId, "running");
         scheduleIdleTransition(entry.sessionId);
+        return true;
       } catch (err) {
         logger.warn("pty.write_failed", { ptyId, err: String(err) });
+        return false;
       }
     },
 

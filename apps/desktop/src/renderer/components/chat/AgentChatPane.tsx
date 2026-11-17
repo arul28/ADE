@@ -478,7 +478,7 @@ import {
   collectDraftVisualAttachmentPaths,
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
-import { chatNoticeReducer, noticeForChat, shownChatNotice } from "./chatNotice";
+import { chatNoticeReducer, noticeForChat, shownChatNotice, type ChatNotice } from "./chatNotice";
 import { savedChatComputerGone } from "../../state/cloudSavedChats";
 import { useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
@@ -5918,7 +5918,17 @@ export function AgentChatPane({
   // below clears it, it is not drawn over another chat (a new-chat draft has
   // no chat yet; `noticeForChat` holds that distinction).
   const noticeForThisChat = noticeForChat(chatNotice, selectedSessionId, renderedSessionId);
-  const noticeSessionId = chatNotice?.sessionId ?? null;
+  /**
+   * A send's note and what it put back, kept after the note itself went away
+   * (the machine reconnected, the person opened another chat). The message may
+   * still arrive, and the words in the composer then are not unsent.
+   */
+  const unsentReconcileRef = useRef<{ sessionId: string | null; unsent: NonNullable<ChatNotice["unsent"]> } | null>(null);
+  useEffect(() => {
+    if (chatNotice?.unsent) {
+      unsentReconcileRef.current = { sessionId: chatNotice.sessionId ?? null, unsent: chatNotice.unsent };
+    }
+  }, [chatNotice]);
   useEffect(() => {
     setError({ clearIf: (notice) => notice.sessionId !== undefined && notice.sessionId !== selectedSessionId });
   }, [selectedSessionId]);
@@ -5931,15 +5941,21 @@ export function AgentChatPane({
     const previous = noticeConnectionMarkRef.current;
     noticeConnectionMarkRef.current = noticeConnectionMark;
     if (!noticeConnectionMark || noticeConnectionMark === previous) return;
+    // Only the note goes: `unsentReconcileRef` keeps what it put back, so a
+    // message that arrives after the reconnect does not stay in the composer.
     setError({ clearIf: (notice) => notice.unsent != null });
   }, [noticeConnectionMark]);
-  const unsentNoticeEvents = chatNotice?.unsent && noticeSessionId ? eventsBySession[noticeSessionId] : undefined;
+  const unsentReconcile = chatNotice?.unsent
+    ? { sessionId: chatNotice.sessionId ?? null, unsent: chatNotice.unsent }
+    : unsentReconcileRef.current;
+  const unsentReconcileSessionId = unsentReconcile?.sessionId ?? null;
+  const unsentNoticeEvents = unsentReconcileSessionId ? eventsBySession[unsentReconcileSessionId] : undefined;
   useEffect(() => {
-    const notice = chatNotice;
-    if (!unsentNoticeEvents || !notice?.unsent || notice.sessionId == null) return;
-    const { unsent } = notice;
-    if (countSentMessages(notice.sessionId, unsent.texts, unsent.submittedAt) <= unsent.alreadyThere) return;
-    setError({ clearIf: (current) => current === notice });
+    if (!unsentNoticeEvents || !unsentReconcile || !unsentReconcileSessionId) return;
+    const { unsent } = unsentReconcile;
+    if (countSentMessages(unsentReconcileSessionId, unsent.texts, unsent.submittedAt) <= unsent.alreadyThere) return;
+    setError({ clearIf: (current) => current.unsent === unsent && (current.sessionId ?? null) === unsentReconcileSessionId });
+    if (unsentReconcileRef.current?.unsent === unsent) unsentReconcileRef.current = null;
     // What went back in the composer for it is not unsent either. Anything
     // the person changed since stays as it is.
     const putBack = unsent.putBack;
@@ -5947,7 +5963,7 @@ export function AgentChatPane({
     setDraft((current) => (current === putBack.text ? "" : current));
     setAttachments((current) => (current === putBack.attachments ? keepEmptyArray(current) : current));
     setContextAttachments((current) => (current === putBack.contextAttachments ? keepEmptyArray(current) : current));
-  }, [chatNotice, countSentMessages, setAttachments, setDraft, unsentNoticeEvents]);
+  }, [countSentMessages, setAttachments, setDraft, unsentNoticeEvents, unsentReconcile, unsentReconcileSessionId]);
   // Another machine's chat: pinned there, or on the machine this project tab
   // itself is bound to.
   const shownNotice = shownChatNotice(
@@ -16475,6 +16491,10 @@ export function AgentChatPane({
       return;
     }
     const text = draft.trim();
+    // The chat this text belongs to, even if the pane shows another chat by
+    // the time the send fails. Read before any await: a project or chat switch
+    // during a pending native-control update must not change it.
+    const draftStorageKeyAtSend = composerDraftStorageKeyRef.current;
     const iosContextSnapshot = [...iosElementContextItems];
     const appControlContextSnapshot = [...appControlContextItems];
     const builtInBrowserContextSnapshot = [...builtInBrowserContextItems];
@@ -16624,9 +16644,6 @@ export function AgentChatPane({
       }
     }
     const draftSnapshot = draft;
-    // The chat this text belongs to, even if the pane shows another chat by
-    // the time the send fails.
-    const draftStorageKeyAtSend = composerDraftStorageKeyRef.current;
     const attachmentsSnapshot = attachments;
     // The ids that go with those attachments, and everything else the send
     // takes out of the composer: a pane that closes mid-send puts it all back
@@ -17119,19 +17136,25 @@ export function AgentChatPane({
         await refreshSessions({ force: true }).catch(() => {});
         return null;
       }
-      setDraft((current) => (current.trim().length ? current : draftSnapshot));
-      setAttachments((current) => (current.length ? current : attachmentsSnapshot));
-      setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
-      setIosElementContextItems((current) => (current.length ? current : iosContextSnapshot));
-      setAppControlContextItems((current) => (current.length ? current : appControlContextSnapshot));
-      setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
+      // A pane that moved on to another chat does not get this send's words
+      // and files in its composer: they go to the chat the send was for.
+      const submittingChatOpen = draftStorageKeyAtSend === composerDraftStorageKeyRef.current;
+      if (!submittingChatOpen) putUnsentSendInSavedDraft(draftStorageKeyAtSend, unsentRestoreAtSend);
+      if (submittingChatOpen) {
+        setDraft((current) => (current.trim().length ? current : draftSnapshot));
+        setAttachments((current) => (current.length ? current : attachmentsSnapshot));
+        setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
+        setIosElementContextItems((current) => (current.length ? current : iosContextSnapshot));
+        setAppControlContextItems((current) => (current.length ? current : appControlContextSnapshot));
+        setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
+      }
       setOptimisticOutgoingMessageSynced(null);
       inPlaceFirstSendHandoffRef.current = null;
       inPlaceSendKeepsKeyboardRef.current = false;
       const unsentRecord = sendIdentity?.record;
       setError(notSent
         ? {
-          message: `Can't reach ${chatMachineNameRef.current || "the chat's machine"}, so the message was not sent. It is back in the composer.`,
+          message: `Can't reach ${chatMachineNameRef.current || "the chat's machine"}, so the message was not sent. ${submittingChatOpen ? "It is back in the composer." : "It is saved in that chat's draft."}`,
           kind: "failure",
           sessionId: unsentRecord?.sessionId ?? selectedSessionId,
           unsent: unsentRecord
@@ -17139,7 +17162,9 @@ export function AgentChatPane({
               texts: unsentRecord.texts,
               submittedAt: unsentRecord.submittedAt,
               alreadyThere: unsentRecord.alreadyThere,
-              putBack: { text: draftSnapshot, attachments: attachmentsSnapshot, contextAttachments: contextAttachmentsSnapshot },
+              ...(submittingChatOpen
+                ? { putBack: { text: draftSnapshot, attachments: attachmentsSnapshot, contextAttachments: contextAttachmentsSnapshot } }
+                : {}),
             }
             // Refused before the send was put together: nothing to find in the chat, but a reconnect still clears it.
             : { texts: [], submittedAt: new Date().toISOString(), alreadyThere: 0 },

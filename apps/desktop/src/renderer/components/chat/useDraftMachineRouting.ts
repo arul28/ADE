@@ -256,10 +256,11 @@ export function useDraftMachineRouting({
       cloudIndex,
     });
     // The tab's machine is reconnecting: it stays in the list as the bound
-    // machine, marked, so a draft does not move to This computer meanwhile.
+    // machine, marked, so a draft does not move to This computer meanwhile. A
+    // background redial publishes "connecting" with its recovery kept.
     if (
       boundConnection
-      && boundConnection.state === "error"
+      && (boundConnection.state === "error" || boundConnection.state === "connecting")
       && boundConnection.recovery === "reconnecting"
       && !options.some((option) => option.isBound)
     ) {

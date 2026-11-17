@@ -102,6 +102,12 @@ export type TerminalLocalLineState = {
   /** The line on its way, shown dimmed until the machine has it. */
   sendingText: string | null;
   error: TerminalLocalLineError | null;
+  /**
+   * The line holds text whose send could not be confirmed. It stays in the
+   * line (never handed to the CLI as keys, which has no id) until Enter sends
+   * it again with the same id or it is edited.
+   */
+  uncertain: boolean;
 };
 
 /** Why the last line was not sent: its terminal stopped, the link dropped, or the machine refused it. */
@@ -245,6 +251,12 @@ type CachedRuntime = {
    * than written into nothing.
    */
   localLineHandOver: boolean;
+  /**
+   * The text of a line whose send could not be confirmed: it may already be
+   * in the CLI, so it must not also go out as raw keys (that path has no id,
+   * and the CLI could get it twice). Enter sends it again with its id.
+   */
+  localLineUncertainText: string | null;
   linkProviderSub: { dispose: () => void } | null;
   pathLinkProviderSub: { dispose: () => void } | null;
   pathLinks: TerminalPathLinkContext;
@@ -1090,7 +1102,8 @@ function warnInvalidFitOnce(runtime: CachedRuntime, args: {
 
 function sameLocalLineState(a: TerminalLocalLineState | null, b: TerminalLocalLineState): boolean {
   return a != null && a.on === b.on && a.programTakesPaste === b.programTakesPaste
-    && a.text === b.text && a.sending === b.sending && a.sendingText === b.sendingText && a.error === b.error;
+    && a.text === b.text && a.sending === b.sending && a.sendingText === b.sendingText
+    && a.error === b.error && a.uncertain === b.uncertain;
 }
 
 /** The one place a snapshot is built, so a new field is added once. */
@@ -1107,6 +1120,7 @@ function runtimeSnapshot(runtime: CachedRuntime): RuntimeSnapshot {
       sending: runtime.localLineSending > 0,
       sendingText: runtime.localLineSending > 0 ? runtime.localLineSendingText : null,
       error: runtime.localLineError,
+      uncertain: localLineUncertainText(runtime) != null,
     },
   };
 }
@@ -1388,13 +1402,22 @@ function clearPtyInputFlushTimer(runtime: CachedRuntime): void {
 /**
  * The local line takes keys only while the view offers it and the program has
  * bracketed paste on: a screen without it (a sign-in, a picker) gets every key
- * as before.
+ * as before. A line whose send could not be confirmed keeps taking keys even
+ * when the line is not offered any more, so it stays visible and Enter can
+ * retry it.
  */
 function localLineOn(runtime: CachedRuntime): boolean {
-  return runtime.localLineWanted
+  return (runtime.localLineWanted || localLineUncertainText(runtime) != null)
     && runtime.localLine != null
     && runtime.inputEnabled
     && programTakesPaste(runtime);
+}
+
+/** The text of the line while it is the one whose send could not be confirmed. */
+function localLineUncertainText(runtime: CachedRuntime): string | null {
+  const text = runtime.localLineUncertainText;
+  if (!text) return null;
+  return runtime.localLine?.text() === text ? text : null;
 }
 
 function programTakesPaste(runtime: CachedRuntime): boolean {
@@ -1403,12 +1426,12 @@ function programTakesPaste(runtime: CachedRuntime): boolean {
 
 /**
  * A line left when the local line goes off goes to the program as typed, but
- * only when the program's machine can take it: while the link is down the
- * keys would be written into nothing, so the line is kept and comes back with
- * the line (see `localLineHandOver`).
+ * only when the program's machine can take it and the line is not one whose
+ * send is already in doubt (that one may be in the CLI, so keys could type it
+ * twice). While the machine is away the line is kept and comes back with it.
  */
 function handOverLocalLine(runtime: CachedRuntime): void {
-  if (!runtime.localLineHandOver) return;
+  if (!runtime.localLineHandOver || localLineUncertainText(runtime) != null) return;
   const keys = runtime.localLine?.text() ? runtime.localLine.takeForHandOver() : "";
   if (keys) writePtyInput(runtime, keys);
 }
@@ -1422,7 +1445,10 @@ function setLocalLineWanted(runtime: CachedRuntime, wanted: boolean): void {
 /** A key from the person: through the local line while it is on, else to the program. */
 function writeKeyInput(runtime: CachedRuntime, data: string): void {
   if (localLineOn(runtime)) {
-    applyLocalLineActions(runtime, runtime.localLine?.input(data) ?? []);
+    // A line whose send is in doubt only submits through Enter (which keeps
+    // its id); any other key goes to the CLI without the line.
+    const handOver = localLineUncertainText(runtime) == null;
+    applyLocalLineActions(runtime, runtime.localLine?.input(data, { handOver }) ?? []);
     return;
   }
   handOverLocalLine(runtime);
@@ -1467,6 +1493,7 @@ async function sendLocalLine(runtime: CachedRuntime, text: string): Promise<void
   if (pendingKeys) writePtyInputNow(runtime, pendingKeys);
   const clientSendId = runtime.localLineFailed?.text === text ? runtime.localLineFailed.clientSendId : crypto.randomUUID();
   runtime.localLineFailed = null;
+  runtime.localLineUncertainText = null;
   runtime.localLineSending += 1;
   runtime.localLineSendingText = text;
   runtime.localLineError = null;
@@ -1483,6 +1510,9 @@ async function sendLocalLine(runtime: CachedRuntime, text: string): Promise<void
     if (sent.kind !== "typed" && !runtime.disposed) {
       runtime.localLine?.restore(text);
       runtime.localLineFailed = { text, clientSendId };
+      // "Unconfirmed" may already be in the CLI: keeping it in the line means
+      // no other path can type it again, and Enter retries it with this id.
+      runtime.localLineUncertainText = sent.kind === "unconfirmed" ? text : null;
       runtime.localLineError = sent.kind === "ended" ? "stopped" : sent.kind === "failed" ? "refused" : "dropped";
     }
   } finally {
@@ -3439,6 +3469,7 @@ function createRuntime(args: {
     localLineFailed: null,
     localLineFlight: null,
     localLineHandOver: true,
+    localLineUncertainText: null,
     linkProviderSub,
     pathLinkProviderSub,
     pathLinks,
@@ -3779,6 +3810,9 @@ export function TerminalView({
   const localLineOffered = slowLink
     && machineTypesLocalLine
     && localLineAllowed
+    // ADE Web's adapter types every text at a free prompt and refuses
+    // `when: "now"`, so it gets no local line.
+    && !isWebClientMode()
     && toolTypeTakesLocalLine(toolType)
     && typeof window.ade?.agentChat?.typeIntoCli === "function";
   const [localLineOffSessionId, setLocalLineOffSessionId] = useState<string | null>(() => (readLocalLineOff(sessionId) ? sessionId : null));
@@ -4380,7 +4414,7 @@ export function TerminalView({
           }}
         />
       ) : null}
-      {localLineOffered && exited == null && localLine?.programTakesPaste ? (
+      {localLineOffered && exited == null && localLine?.programTakesPaste && !localLine.uncertain ? (
         <TerminalLocalLineSwitch
           on={!localLineOff}
           onChange={(on) => {

@@ -2249,22 +2249,34 @@ async function subscribeToRuntimeEvents(
     if (filter && !closed) {
       const id = subscriptionId;
       let sent = ptyDataIdsSignature(initialPtyDataIds);
-      filter.onChange = async (ptyIds) => {
+      let pending: Promise<void> | null = null;
+      filter.onChange = (ptyIds) => {
         const signature = ptyDataIdsSignature(ptyIds);
-        if (closed || signature === sent) return;
+        if (closed) return Promise.resolve();
+        // The same list asked for again while its call is out waits for that
+        // call: `sent` records a request, and a settle must not pass before
+        // the brain has it.
+        if (signature === sent) return pending ?? Promise.resolve();
         const previous = sent;
         sent = signature;
-        try {
-          await client.call("runtimeEvents.setPtyDataFilter", {
-            subscriptionId: id,
-            ptyDataIds: ptyIds,
-          }, { timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS });
-        } catch (error) {
-          // The brain kept the previous list: a later push of this one must
-          // go out again, or a terminal it now shows would get no output.
-          if (sent === signature) sent = previous;
-          throw error;
-        }
+        const call: Promise<void> = client.call("runtimeEvents.setPtyDataFilter", {
+          subscriptionId: id,
+          ptyDataIds: ptyIds,
+        }, { timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS }).then(
+          () => undefined,
+          (error: unknown) => {
+            // The brain kept the previous list: a later push of this one must
+            // go out again, or a terminal it now shows would get no output.
+            if (sent === signature) sent = previous;
+            throw error;
+          },
+        );
+        pending = call;
+        const settlePending = () => {
+          if (pending === call) pending = null;
+        };
+        void call.then(settlePending, settlePending);
+        return call;
       };
       // The window may have changed its list while the subscribe was in flight.
       // The list is on the brain when that call answers, so the wait for this

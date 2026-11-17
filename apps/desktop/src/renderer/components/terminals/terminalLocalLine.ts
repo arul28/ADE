@@ -30,7 +30,7 @@ export type TerminalLocalLineAction =
 export type TerminalLocalLine = {
   readonly text: () => string;
   /** Keys from the terminal (xterm `onData`). Empty when the line took them. */
-  input: (data: string) => TerminalLocalLineAction[];
+  input: (data: string, options?: { handOver?: boolean }) => TerminalLocalLineAction[];
   /** Shift+Enter. False when the line is empty: the key goes to the CLI. */
   newline: () => boolean;
   /** Pasted text joins the line. */
@@ -81,7 +81,7 @@ export function createTerminalLocalLine(onChange: () => void): TerminalLocalLine
   };
   return {
     text: () => text,
-    input(data) {
+    input(data, options) {
       if (writeIsTerminalReport(data)) return [{ kind: "write", data }];
       if (isPlainText(data)) {
         set(text + data);
@@ -95,6 +95,9 @@ export function createTerminalLocalLine(onChange: () => void): TerminalLocalLine
         else set(dropLastCharacter(text));
         return [];
       }
+      // A line whose send is in doubt is not handed over (`handOver: false`):
+      // the key still reaches the CLI, the line waits for Enter.
+      if (options?.handOver === false) return [{ kind: "write", data }];
       return [{ kind: "write", data: `${localLineAsKeys(take())}${data}` }];
     },
     newline() {

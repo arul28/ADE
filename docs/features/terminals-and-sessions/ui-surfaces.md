@@ -817,7 +817,10 @@ the same shape as the box's; `agentCliTypeSend.ts` classifies it for both.
 - **A failed send** puts the line back, in front of anything typed since, and
   says why (`Not sent: this terminal has stopped / the connection dropped / the
   machine did not take it`). A line sent again unchanged keeps its id, so the
-  machine types it once.
+  machine types it once. When the answer was lost (the connection dropped), the
+  line stays in the line and is never handed to the CLI as keys — that path has
+  no id — until Enter sends it again with the same id, or editing it makes it a
+  new line.
 - **The switch** in the corner turns the line off for that session
   (`ade.terminal.localLineOff`, most recent 200 sessions) and hands any text
   already in it to the CLI as keys. With the line off, a fast link's type-ahead

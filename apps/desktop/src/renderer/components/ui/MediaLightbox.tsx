@@ -214,13 +214,25 @@ export function MediaLightbox({
               src={src}
               alt={title}
               onLoad={() => setPicture("loaded")}
-              onError={onMediaError}
+              onError={() => {
+                // The caller's own failure handling may replace this view; if
+                // it does not, say so instead of spinning forever.
+                setPicture("failed");
+                onMediaError?.();
+              }}
               className={cn(
                 "block h-auto max-h-[calc(100vh_/_var(--ade-web-zoom-factor,1)_-_32px)] w-auto max-w-[calc(100vw_/_var(--ade-web-zoom-factor,1)_-_32px)] object-contain",
                 picture === "loaded" ? null : "pointer-events-none absolute left-0 top-0 h-px w-px opacity-0",
               )}
             />
-            {picture === "loaded" ? null : (
+            {picture === "loaded" ? null : picture === "failed" ? (
+              <div
+                role="status"
+                className="flex min-h-40 w-[min(420px,calc(100vw-32px))] items-center justify-center bg-black/70 px-6 py-10 text-center font-sans text-[13px] text-white/75"
+              >
+                This picture did not load.
+              </div>
+            ) : (
               <div
                 role="status"
                 className="flex min-h-40 w-[min(420px,calc(100vw-32px))] items-center justify-center gap-2 bg-black/70 px-6 py-10 font-sans text-[13px] text-white/75"
