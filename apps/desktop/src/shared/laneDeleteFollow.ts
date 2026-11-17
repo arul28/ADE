@@ -24,9 +24,10 @@ export const LANE_DELETE_START_RETRY_BUDGET_MS = 2 * 60_000;
 export const LANE_DELETE_FOLLOW_UNREACHABLE_MS = 5 * 60_000;
 /**
  * The longest ADE follows a delete the machine still reports as running. The
- * machine bounds each git step itself; this only ends a wait on a wedged one.
+ * machine allows one lane git write 47 minutes, so a delete waiting behind
+ * another write or removing a large folder can take that long before it ends.
  */
-export const LANE_DELETE_FOLLOW_MAX_MS = 30 * 60_000;
+export const LANE_DELETE_FOLLOW_MAX_MS = 47 * 60_000;
 /** Starts sent again because the machine lost the delete (restarted, say). */
 const MAX_RESTARTS = 2;
 
@@ -46,8 +47,7 @@ export type LaneDeleteFollowDeps = {
 /** A failure that says nothing about the delete: the call never reached the machine, or its answer was lost. */
 function isTransientStartError(error: unknown): boolean {
   if (isRemoteOutcomeUnknownError(error)) return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return /Remote ADE service connection failed recently|Remote target is not connected/i.test(message);
+  return /Remote ADE service connection failed recently|Remote target is not connected/i.test(errorText(error));
 }
 
 function errorText(error: unknown): string {
@@ -70,7 +70,7 @@ function terminalError(progress: LaneDeleteProgress): Error {
  */
 export async function deleteLaneAndFollow(deps: LaneDeleteFollowDeps): Promise<DeleteLaneResult> {
   const now = deps.now ?? Date.now;
-  const done = (result?: Pick<DeleteLaneResult, "savedWork"> & { leftoverWorktree?: DeleteLaneResult["leftoverWorktree"] } | null): DeleteLaneResult => ({
+  const done = (result?: Partial<Pick<DeleteLaneResult, "leftoverWorktree" | "savedWork">> | null): DeleteLaneResult => ({
     leftoverWorktree: result?.leftoverWorktree ?? null,
     savedWork: result?.savedWork ?? null,
   });
@@ -90,7 +90,14 @@ export async function deleteLaneAndFollow(deps: LaneDeleteFollowDeps): Promise<D
         // An older ADE answers a re-sent start the old way.
         if (/Lane delete is already running/i.test(message)) return "follow";
         if (resent && /^Lane not found/i.test(message)) return done(null);
-        if (!isTransientStartError(error) || now() - startedAt >= LANE_DELETE_START_RETRY_BUDGET_MS) throw error;
+        // A refusal (unsaved work, a lock) is the answer, and is not sent again.
+        if (!isTransientStartError(error)) throw error;
+        if (now() - startedAt >= LANE_DELETE_START_RETRY_BUDGET_MS) {
+          // An earlier attempt may have reached the machine and started the
+          // delete, so this is not a plain failure. Say the outcome is unknown,
+          // which the UI already handles by re-reading the machine.
+          throw new Error(`${OUTCOME_UNKNOWN_MESSAGE} (${message})`);
+        }
         resent = true;
         await deps.wait(LANE_DELETE_FOLLOW_POLL_MS);
       }

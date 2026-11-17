@@ -1518,23 +1518,27 @@ function retryRemoteBranchDeleteInBackground(args: {
     return;
   }
   const timer = setTimeout(() => {
-    void args.attempt().then(
-      (result) => {
-        args.logger.info("lane.delete.remote_branch_retry_done", { laneId: args.laneId, branch: args.branch, detail: result.detail });
-      },
-      (error: unknown) => {
-        args.logger.warn("lane.delete.remote_branch_retry_failed", {
-          laneId: args.laneId,
-          branch: args.branch,
-          retry: retryIndex + 1,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        // A refusal (the remote moved on, or is gone) is final.
-        if (!(error instanceof AdeExpectedError) && !/stale info|rejected/i.test(error instanceof Error ? error.message : "")) {
-          retryRemoteBranchDeleteInBackground({ ...args, retryIndex: retryIndex + 1 });
-        }
-      },
-    );
+    // A closed project can make `attempt` throw before it returns a promise;
+    // the retry then fails cleanly instead of escaping the timer.
+    void Promise.resolve()
+      .then(() => args.attempt())
+      .then(
+        (result) => {
+          args.logger.info("lane.delete.remote_branch_retry_done", { laneId: args.laneId, branch: args.branch, detail: result.detail });
+        },
+        (error: unknown) => {
+          args.logger.warn("lane.delete.remote_branch_retry_failed", {
+            laneId: args.laneId,
+            branch: args.branch,
+            retry: retryIndex + 1,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          // A refusal (the remote moved on, or is gone) is final.
+          if (!(error instanceof AdeExpectedError) && !/stale info|rejected/i.test(error instanceof Error ? error.message : "")) {
+            retryRemoteBranchDeleteInBackground({ ...args, retryIndex: retryIndex + 1 });
+          }
+        },
+      );
   }, delayMs);
   timer.unref?.();
 }
@@ -4628,8 +4632,13 @@ export function createLaneService({
   };
 
   const deleteProgressByLaneId = new Map<string, LaneDeleteProgress>();
+  /** A delete running for a lane: its outcome, and the answer a `background` join waits for. */
+  type LaneDeleteInFlight = {
+    result: Promise<DeleteLaneResult>;
+    accepted: Promise<DeleteLaneResult>;
+  };
   /** The delete running for each lane, so a second call for it waits for that one. */
-  const deleteInFlightByLaneId = new Map<string, Promise<DeleteLaneResult>>();
+  const deleteInFlightByLaneId = new Map<string, LaneDeleteInFlight>();
   /**
    * External folders left behind after a successful lane delete, keyed by the
    * removed lane id. `dev` and `ino` are the directory itself at delete time,
@@ -6033,7 +6042,7 @@ export function createLaneService({
       // lane's branch holds. Taken after the chats and terminals stopped, so
       // nothing writes after it. A save that fails stops the step that needed
       // it: a forced delete never discards work it could not keep.
-      const refreshRemoteTrackingBranch = async (remote: string, branch: string): Promise<void> => {
+      const refreshRemoteTrackingBranch = async (remote: string, branch: string): Promise<string> => {
         // What the remote holds now, so a push from elsewhere is saved too.
         const fetched = await runGitWithGithubAuthFallback(
           ["fetch", "--no-tags", remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`],
@@ -6042,7 +6051,16 @@ export function createLaneService({
         if (fetched.exitCode !== 0) {
           logger.warn("lane.delete.remote_refresh_failed", { laneId, remote, error: fetched.stderr.trim().split(/\r?\n/, 1)[0] });
         }
+        // The commit the save keeps for the remote branch. A later retry only
+        // deletes the branch while it still holds this one, so it can never
+        // remove a push the save does not have.
+        const tip = await runGit(["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${branch}`], {
+          cwd: projectRoot,
+          timeoutMs: 8_000,
+        });
+        return tip.exitCode === 0 ? tip.stdout.trim() : "";
       };
+      let savedRemoteBranchTip = "";
       let savedWorkPromise: Promise<void> | null = null;
       const ensureWorkSaved = (): Promise<void> => {
         savedWorkPromise ??= (async () => {
@@ -6051,7 +6069,9 @@ export function createLaneService({
             && await isExpectedGitWorktreeRoot(row.worktree_path);
           try {
             const remoteGoes = deleteRemoteBranch && row.branch_ref ? (remoteName.trim() || "origin") : null;
-            if (remoteGoes) await refreshRemoteTrackingBranch(remoteGoes, branchNameForDelete(row.branch_ref, remoteGoes));
+            if (remoteGoes) {
+              savedRemoteBranchTip = await refreshRemoteTrackingBranch(remoteGoes, branchNameForDelete(row.branch_ref, remoteGoes));
+            }
             progress.savedWork = await saveDeletedLaneSnapshot({
               projectRoot,
               laneId,
@@ -6378,11 +6398,7 @@ export function createLaneService({
           if (error instanceof AdeExpectedError) throw error;
           const message = error instanceof Error ? error.message : String(error);
           // The commit the remote had when the delete saved the lane's work.
-          const tracked = await runGit(["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${remoteBranchName}`], {
-            cwd: projectRoot,
-            timeoutMs: 8_000,
-          });
-          const expectedSha = tracked.exitCode === 0 ? tracked.stdout.trim() : "";
+          const expectedSha = savedRemoteBranchTip;
           if (!expectedSha) throw error;
           retryRemoteBranchDeleteInBackground({
             laneId,
@@ -9269,9 +9285,10 @@ export function createLaneService({
       const background = args.background === true;
       const running = deleteInFlightByLaneId.get(laneId);
       if (running) {
-        // The first call's options (force, branches) stand.
-        if (background) return { leftoverWorktree: null, savedWork: null, accepted: true };
-        return await running;
+        // The first call's options (force, branches) stand, and so does its
+        // answer: a background join waits for the same checks, so a refusal
+        // reaches it as a refusal and not as `accepted`.
+        return background ? await running.accepted : await running.result;
       }
       if (background && !getLaneRow(laneId)) {
         return { leftoverWorktree: null, savedWork: null, alreadyDeleted: true };
@@ -9281,15 +9298,24 @@ export function createLaneService({
         markAccepted = () => resolve(null);
       });
       const run = runLaneDelete(args, runtimeOpts, () => markAccepted());
-      deleteInFlightByLaneId.set(laneId, run);
+      // `accepted` resolves after the checks; `run` rejects when one of them
+      // refuses. Racing them answers `accepted` early without hiding a refusal.
+      const acceptedResult = Promise.race([accepted, run]).then(
+        (result): DeleteLaneResult => result ?? { leftoverWorktree: null, savedWork: null, accepted: true },
+      );
+      const inFlight: LaneDeleteInFlight = { result: run, accepted: acceptedResult };
+      // A non-background caller never reads `acceptedResult`; keep its refusal
+      // from going unhandled.
+      void acceptedResult.catch(() => undefined);
+      deleteInFlightByLaneId.set(laneId, inFlight);
       const forget = (): void => {
-        if (deleteInFlightByLaneId.get(laneId) === run) deleteInFlightByLaneId.delete(laneId);
+        if (deleteInFlightByLaneId.get(laneId) === inFlight) deleteInFlightByLaneId.delete(laneId);
       };
       // Also marks a background run's rejection as handled: the progress and the log carry it.
       run.then(forget, forget);
       if (!background) return await run;
       // A refusal from the checks (unsaved work, say) still reaches the caller.
-      return (await Promise.race([accepted, run])) ?? { leftoverWorktree: null, savedWork: null, accepted: true };
+      return await acceptedResult;
     },
 
     /**
