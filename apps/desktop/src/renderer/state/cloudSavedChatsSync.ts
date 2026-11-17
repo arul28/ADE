@@ -40,6 +40,7 @@ import {
 } from "./cloudSavedChats";
 import { sendThroughAdeCloudQueue } from "./adeCloudChatQueue";
 import { startAdeCloudRestingReads } from "./adeCloudRestingReads";
+import { isSavedTerminalSession, savedTerminalSession } from "./cloudSavedTerminals";
 
 /** Computers a reach found off the account (contract C2 `not_in_account`): gone, whatever the lists say. */
 const goneMachineKeys = new Set<string>();
@@ -470,6 +471,56 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         online: false,
         lanes: [...others, { ...row, branchRef: lane.branch ? `refs/heads/${lane.branch}` : row.branchRef }],
         sessions: savedSliceIds.has(machineId) ? previous?.sessions ?? [] : (previous?.sessions ?? []).filter((session) => !session.cloudSavedCopy),
+        error: null,
+      });
+    }
+    // Saved CLI and shell copies (the overview's `sessions`; none from an
+    // older server): read-only rows on their computer's slice, next to its
+    // saved chats. A computer that is live here shows its live terminals.
+    const terminalsByMachine = new Map<string, NonNullable<CloudProjectOverview["sessions"]>>();
+    for (const row of overview?.sessions ?? []) {
+      if (!row.machineKey) continue;
+      const rows = terminalsByMachine.get(row.machineKey);
+      if (rows) rows.push(row);
+      else terminalsByMachine.set(row.machineKey, [row]);
+    }
+    for (const [machineKey, rows] of terminalsByMachine) {
+      if (goneMachineKeys.has(machineKey.toLowerCase()) || machineFacts.get(machineKey)?.gone) continue;
+      const connection = connectionFor(context.connections, machineKey, rows[0]!.instanceId);
+      if (liveHere(connection)) continue;
+      const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
+      const previous = rootAppStoreApi.getState().crossMachineLanesByMachineId[machineId] ?? null;
+      if (!connection) keptSyntheticIds.add(machineId);
+      savedSliceIds.add(machineId);
+      const machineName = connection?.target.name ?? previous?.machineName ?? "ADE Cloud";
+      const binding: OpenProjectBinding = previous?.binding ?? {
+        kind: "remote",
+        key: `${machineId}:${context.projectKey}`,
+        targetId: machineId,
+        runtimeName: machineName,
+        transport: "paired",
+        ...(rows[0]!.instanceId ? { hostname: rows[0]!.instanceId } : {}),
+        projectId: context.projectKey!,
+        rootPath: "",
+        displayName: savedProjectName(null, context.projectKey!),
+      };
+      const lanes = [...(previous?.lanes ?? [])];
+      const known = new Set(lanes.map((lane) => lane.id));
+      for (const row of rows) {
+        if (!row.laneId || known.has(row.laneId)) continue;
+        known.add(row.laneId);
+        lanes.push(laneComputerLane({ laneId: row.laneId, laneName: row.laneName ?? row.laneId }, undefined));
+      }
+      store.mergeCrossMachineLanes({
+        machineId,
+        machineName,
+        targetId: connection?.target.id ?? null,
+        projectId: binding.kind === "remote" ? binding.projectId : null,
+        binding,
+        online: false,
+        ...(previous?.computerGone ? { computerGone: true } : {}),
+        lanes,
+        sessions: [...(previous?.sessions ?? []).filter((session) => !isSavedTerminalSession(session)), ...rows.map(savedTerminalSession)],
         error: null,
       });
     }

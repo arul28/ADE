@@ -8,6 +8,9 @@ import { nextScheduledWakeDeadlineMs, scheduledWakeState } from "../../../shared
 import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
+import { ADE_CLOUD_MACHINE_ID, isAdeCloudBinding } from "../../../shared/adeCloud/binding";
+import { isAdeCloudComputer } from "../../state/adeCloudLaneIndex";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import {
   PROVIDER_TOOL_TYPE,
   type ExternalSessionImportResult,
@@ -2403,7 +2406,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
    */
   const chipFiltered = useMemo(() => {
     if (isWorkSessionFilterEmpty(workSessionFilters)) return filtered;
-    const activeMachineId = machineIdForBinding(projectBinding);
+    // Every ADE Cloud computer is one "ADE Cloud" machine choice, as in the
+    // pane's `filterMachineIdOf` (impl-renderer-core).
+    const filterMachineIdOf = (binding: OpenProjectBinding | null | undefined): string => {
+      const machineId = machineIdForBinding(binding ?? null);
+      return isAdeCloudBinding(binding)
+        || isAdeCloudComputer({ machineKey: machineId, hostname: binding?.kind === "remote" ? binding.hostname ?? null : null })
+        ? ADE_CLOUD_MACHINE_ID
+        : machineId;
+    };
+    const activeMachineId = filterMachineIdOf(projectBinding);
     // A pending-launch stand-in for a chat whose lane lives on another machine
     // is listed in this active-binding roster (that machine's slice does not
     // have its chat yet), so the machine filter must judge it by its OWN
@@ -2414,7 +2426,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const source of chatLaunchRowSources) {
       const sessionId = source.snapshot.sessionId;
       if (!sessionId || !source.binding || source.bindingKey === activeChatLaunchBindingKey) continue;
-      launchMachineIdBySessionId.set(sessionId, machineIdForBinding(source.binding));
+      launchMachineIdBySessionId.set(sessionId, filterMachineIdOf(source.binding));
     }
     const ctx = {
       nowMs: Date.now(),
