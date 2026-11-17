@@ -456,8 +456,12 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
         return null;
       });
       logger?.info("android.start_disk_grow", { laneId, avdName: avd.name, state: answer?.state ?? "failed" });
-      // Grew in place, or there was room after all: the start goes on.
-      if (answer?.state === "grown" || answer?.state === "fits") return;
+      // Grew in place, or there was room after all: the start goes on, once the room is really there
+      // (other work can write into the new space while the grow waits).
+      if (answer?.state === "grown" || answer?.state === "fits") {
+        assertAndroidDiskForStart({ laneId, avd, logger });
+        return;
+      }
       if (answer?.state === "growing") {
         // No disk numbers: the pane offers no Grow for a grow already asked for.
         throw new AndroidEmulatorFailure(
@@ -495,7 +499,22 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     // that can't make its data partition grows the disk first, or is refused
     // here, not by the emulator. `force` passes the memory guard only; no
     // start fits on a full disk.
-    if (process.env.ADE_CLOUD_INSTANCE_ID?.trim()) await growCloudDiskForStart(slot.laneId, avd, chatSessionId);
+    if (process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
+      // A grow can wait minutes: the device reads as starting meanwhile, so a Stop reaches it
+      // (`interruptSlot`) and no emulator boots after it.
+      slot.stopRequested = false;
+      slot.transient = "starting";
+      try {
+        await growCloudDiskForStart(slot.laneId, avd, chatSessionId);
+      } finally {
+        slot.transient = null;
+      }
+      if (slot.stopRequested) {
+        slot.error = null;
+        hooks.onStoppedWhileStarting();
+        throw stoppedWhileStarting();
+      }
+    }
     const reservation = await reserveAndroidMemoryForStart({
       laneId: slot.laneId,
       avd,

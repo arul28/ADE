@@ -103,7 +103,7 @@ export type AndroidEmulatorService = AndroidEmulatorServiceApi & {
   streamRemoteBitrateKbpsCap: () => number;
 };
 
-/** The least time between two forced acceleration checks for an emulator step. */
+/** How old a cached "not usable" acceleration answer may be for an emulator step. */
 const ACCEL_RECHECK_MS = 30_000;
 
 export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): AndroidEmulatorService {
@@ -222,27 +222,29 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const sdkSettings = createAndroidSdkSettingStore(settingsFile);
   const streamPreferences = createAndroidMachinePreferenceStore(settingsFile);
   const readSdkSettingPath = deps.readSdkSettingPath ?? (() => sdkSettings.read());
-  const readSdk = async (options: { forceAccelCheck?: boolean } = {}): Promise<AndroidSdkStatus> => {
-    const sdk = await readAndroidSdkStatus({ settingPath: readSdkSettingPath(), env, platform, home, forceAccelCheck: options.forceAccelCheck });
+  const readSdk = async (options: { forceAccelCheck?: boolean; recheckUnusableAccelAfterMs?: number } = {}): Promise<AndroidSdkStatus> => {
+    const sdk = await readAndroidSdkStatus({
+      settingPath: readSdkSettingPath(),
+      env,
+      platform,
+      home,
+      forceAccelCheck: options.forceAccelCheck,
+      recheckUnusableAccelAfterMs: options.recheckUnusableAccelAfterMs,
+    });
     const key = JSON.stringify([sdk.found, sdk.root, sdk.tools.map((tool) => [tool.id, tool.available]), sdk.acceleration.usable]);
     if (lastSdkKey !== null && key !== lastSdkKey) emit({ type: "android.sdk.changed" });
     lastSdkKey = key;
     return sdk;
   };
 
-  let accelRecheckedAt = 0;
   /** The SDK with adb and the emulator, or the refusal that says what is missing. */
   const requireSdk = async (needs: { emulator: boolean }): Promise<ReadyAndroidSdk> => {
     if (unsupportedReason !== null) throw new AndroidEmulatorFailure("ANDROID_SDK_NOT_FOUND", unsupportedReason);
-    let sdk = await readSdk();
     const onCloud = Boolean(process.env.ADE_CLOUD_INSTANCE_ID?.trim());
-    // A "no acceleration" answer stays cached for minutes; an emulator step checks
-    // again (at most every 30 s: a check can take 20 s), so a fixed /dev/kvm works
+    // A "no acceleration" answer stays cached for minutes; an emulator step reads one older
+    // than 30 s again (one check, shared by steps at the same time), so a fixed /dev/kvm works
     // now. A cloud computer never has KVM: no recheck.
-    if (needs.emulator && sdk.found && !sdk.acceleration.usable && !onCloud && Date.now() - accelRecheckedAt > ACCEL_RECHECK_MS) {
-      accelRecheckedAt = Date.now();
-      sdk = await readSdk({ forceAccelCheck: true });
-    }
+    const sdk = await readSdk(needs.emulator && !onCloud ? { recheckUnusableAccelAfterMs: ACCEL_RECHECK_MS } : {});
     const ready = requireAndroidSdkTools(sdk, platform, needs);
     // a cloud box never has KVM. Refuse its first emulator step (making a
     // device, or a start) with what a VM costs, not "turn on KVM".

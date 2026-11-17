@@ -32,6 +32,8 @@ type Entry = ChatDeviceSourcesState & {
   pin: OpenProjectBinding | null;
   sessionId: string;
   readSeq: number;
+  /** Counts switches: only the newest one's answer (or rollback) lands. */
+  writeSeq: number;
   listeners: Set<() => void>;
   /** What readers see: replaced on every change, so React notices it. */
   snapshot: ChatDeviceSourcesState;
@@ -116,7 +118,7 @@ function ensureEntry(sessionId: string, pin: OpenProjectBinding | null): Entry {
   const key = entryKey(sessionId, pin);
   let entry = entries.get(key);
   if (!entry) {
-    entry = { ...EMPTY_STATE, pin, sessionId, readSeq: 0, listeners: new Set(), snapshot: EMPTY_STATE };
+    entry = { ...EMPTY_STATE, pin, sessionId, readSeq: 0, writeSeq: 0, listeners: new Set(), snapshot: EMPTY_STATE };
     entries.set(key, entry);
     if (entries.size > MAX_ENTRIES) {
       for (const [oldKey, old] of entries) {
@@ -159,6 +161,7 @@ export async function setChatDeviceSource(args: {
   }
   entry.sources = next;
   entry.readSeq += 1;
+  const mine = ++entry.writeSeq;
   emit(entry);
   try {
     const answer = await set({
@@ -168,14 +171,18 @@ export async function setChatDeviceSource(args: {
         ? { kind: "machine", machineKey: args.machine.key, machineName: args.machine.name }
         : { kind: "here" },
     }, args.pin);
-    // A newer switch (another pane, after a remount) owns the row now: its answer lands last.
-    if (entry.sources === next) {
+    // The newest switch's answer is the brain's choice now, even over a read that came back
+    // meanwhile; a read still out is from before it, so it no longer lands. A newer switch
+    // (another pane, after a remount) owns the row instead.
+    if (mine === entry.writeSeq) {
+      entry.readSeq += 1;
       entry.sources = normalizeChatDeviceSources(answer?.sources) ?? {};
       emit(entry);
     }
     return true;
   } catch (error) {
-    if (entry.sources === next) {
+    // Rolled back only while nothing newer (a switch, or a read of the brain) replaced it.
+    if (mine === entry.writeSeq && entry.sources === next) {
       entry.sources = previous;
       emit(entry);
     }

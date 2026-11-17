@@ -135,8 +135,12 @@ export function cloudDiskGrowFit(
       // The server asks before any extra disk while no monthly limit is set.
       return limit("needs_approval", `A ${toGb} GB disk goes ${pastGb} GB past your plan's ${limitGb} GB at one time. Set a monthly limit for extra disk in Settings, or delete a computer.`, { settings: true, ...past });
     }
-    // The server's rule: the extra disk, kept for a full month, must cost no more than the limit.
-    if ((pastGb * extraPrice) / 10 > limitCents) {
+    // The server's two rules: the extra disk, kept for a full month, costs no more than the limit;
+    // and this period's extra disk so far, plus this one for the days left (at least one), fits it too.
+    const periodEnd = account.billing?.periodEnd;
+    const daysLeft = typeof periodEnd === "number" && Number.isFinite(periodEnd) ? Math.max(1, Math.ceil((periodEnd - Date.now()) / 86_400_000)) : 0;
+    const periodCents = (extra.usedCents ?? 0) + (pastGb * extraPrice * daysLeft) / (10 * 30);
+    if ((pastGb * extraPrice) / 10 > limitCents || periodCents > limitCents) {
       return limit("monthly_limit", `A ${toGb} GB disk would pass the ${formatCloudCents(limitCents)} a month you set for extra disk. Raise the limit in Settings, or delete a computer you no longer use.`, { settings: true, ...past });
     }
     const monthCents = Math.ceil((pastGb / 10) * extraPrice);

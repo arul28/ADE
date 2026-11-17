@@ -541,6 +541,8 @@ export function createCloudLaneComputerStages(
           if (snapshot) return snapshot;
         }
         if (server.state === "failed" || server.state === "cancelled") throw serverFailure(server);
+        // A provider sign-in waits on a person: the time to find the launch starts again after it.
+        if (server.state === "waiting_for_sign_in") clonedAt = null;
         const signedIn = server.state === "joined" || server.state === "running" || server.state === "done";
         if (signedIn && record.snapshot.cloud.instanceId) {
           if (isCloned(server)) clonedAt ??= Date.now();

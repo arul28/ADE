@@ -513,7 +513,12 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
    * once per launch (`record.carriedFiles`), so a Retry sends none twice.
    * Links and files already there pass as they are.
    */
-  const carryAttachments = async (record: CloudLaneLaunchRecord, list: AgentChatFileRef[] | undefined): Promise<AgentChatFileRef[] | undefined> => {
+  const carryAttachments = async (
+    record: CloudLaneLaunchRecord,
+    list: AgentChatFileRef[] | undefined,
+    /** This computer's copies for this message: the start's (`localCopies`), or a queued message's own. */
+    copies: Record<string, string> | undefined = record.localCopies,
+  ): Promise<AgentChatFileRef[] | undefined> => {
     if (!list?.length || !hasLocalAttachments(list)) return list;
     const binding = record.snapshot.cloud.binding;
     const upload = deps.uploadAttachment;
@@ -525,16 +530,17 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         out.push(attachment);
         continue;
       }
-      const there = carried[attachment.path];
+      // Keyed by the bytes read: two messages can name one path with different copies.
+      const sourcePath = copies?.[attachment.path] ?? attachment.path;
+      const there = carried[sourcePath];
       if (there) {
         out.push({ ...attachment, path: there });
         continue;
       }
-      const sourcePath = record.localCopies?.[attachment.path] ?? attachment.path;
       const filename = launchFileName(attachment.path, sourcePath);
       try {
         const uploaded = await upload(binding, { sourcePath, filename });
-        carried[attachment.path] = uploaded.path;
+        carried[sourcePath] = uploaded.path;
         store.persist(record);
         out.push({ ...attachment, path: uploaded.path });
       } catch (error) {
@@ -562,7 +568,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         }
         if (!next || disposed || record.snapshot.phase === "cancelled") return;
         try {
-          const attachments = await carryAttachments(record, next.attachments);
+          const attachments = await carryAttachments(record, next.attachments, record.messageCopies?.[next.id] ?? record.localCopies);
           const brain = await deps.callChatAction(binding, "queueLaunchMessage", {
             args: {
               launchId,
@@ -575,6 +581,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
           }) as ChatLaunchSnapshot;
           record.pendingMessageIds = record.pendingMessageIds.filter((id) => id !== next.id);
           record.snapshot.queuedMessages = record.snapshot.queuedMessages.filter((message) => message.id !== next.id);
+          if (record.messageCopies) delete record.messageCopies[next.id];
           // Written before the next send, so a quit now never sends this one twice.
           store.persist(record);
           if (brain?.launchId === launchId) adoptBrainSnapshot(record, brain);
@@ -1023,10 +1030,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const record = recordFor(args);
     // Throw rather than answer: a caller holding a message must never read "no launch" as "queued".
     if (!record) throw new Error(`Launch not found: ${String(args?.launchId)}`);
-    if (localCopies && Object.keys(localCopies).length) {
-      record.localCopies = { ...record.localCopies, ...localCopies };
-      store.persist(record);
-    }
+    const copies = localCopies && Object.keys(localCopies).length ? localCopies : undefined;
     const text = String(args.text ?? "");
     if (!text.trim() && !args.attachments?.length) throw new Error("A queued message needs text or an attachment.");
     if (record.snapshot.phase === "cancelled") throw new Error("This launch was cancelled.");
@@ -1034,7 +1038,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (hasLocalAttachments(args.attachments) && !deps.uploadAttachment) throw new Error(CANT_CARRY_FILES);
     const waitingHere = record.pendingMessageIds.length > 0;
     if (isHandedOff(record) && !waitingHere) {
-      const attachments = await carryAttachments(record, args.attachments);
+      const attachments = await carryAttachments(record, args.attachments, copies ?? record.localCopies);
       const brain = await deps.callChatAction(record.snapshot.cloud.binding!, "queueLaunchMessage", {
         args: { launchId: record.snapshot.launchId, text, ...(args.displayText ? { displayText: args.displayText } : {}), ...(attachments?.length ? { attachments } : {}) },
       }) as ChatLaunchSnapshot;
@@ -1050,6 +1054,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const queued = toQueuedMessage({ ...args, text }, { id: randomUUID(), createdAt: nowIso() });
     record.snapshot.queuedMessages.push(queued);
     record.pendingMessageIds.push(queued.id);
+    // Its copies go with it, not with the path: another message can name the same path.
+    if (copies) (record.messageCopies ??= {})[queued.id] = copies;
     publish(record);
     // Waiting behind an earlier one that failed to send: this is the cue to try them all again.
     if (isHandedOff(record)) {
