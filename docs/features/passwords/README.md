@@ -313,6 +313,11 @@ ADE desktop or the iPhone to see and change Passwords. Agents on every
 computer, ADE Cloud too, still use them." The web adapter's passwords calls
 throw the same sentence.
 
+Why: items are sealed under the account's vault key, which only a signed-in
+device opens. A script on the ADE Web origin must never get that key or a
+value, so the relay gives a browser page no `passwords/*` or `vault` route
+(see "How it is kept").
+
 ## Gotchas
 
 - **A brain with sync off has no Passwords.** The machine route
