@@ -4490,6 +4490,57 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       .resolves.toMatchObject({ alreadyDeleted: true });
   });
 
+  it("waits for the running delete's checks, so a joined background delete gets the refusal", async () => {
+    // A delete refused for unsaved work must refuse its duplicate too. If the
+    // join answered `accepted` before the checks, the second window would
+    // follow a delete that never started and never show the refusal.
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service } = await setupWithLane({ teardown: fake, events });
+    let releaseStatus: () => void = () => undefined;
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatus = resolve;
+    });
+    let markStatusReached: () => void = () => undefined;
+    const statusReached = new Promise<void>((resolve) => {
+      markStatusReached = resolve;
+    });
+    let statusCalls = 0;
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        statusCalls += 1;
+        markStatusReached();
+        await statusGate;
+        return { exitCode: 0, stdout: " M src/app.ts\n", stderr: "" } as any;
+      }
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+
+    const first = service.delete({ laneId: "lane-child", deleteBranch: false, background: true });
+    await statusReached;
+    expect(statusCalls, "expected the first delete to be in its dirty-state check").toBe(1);
+
+    let joinedSettled = false;
+    const joined = service.delete({ laneId: "lane-child", deleteBranch: false, background: true })
+      .finally(() => {
+        joinedSettled = true;
+      });
+    // A macrotask drain: the old behavior answered the join in its first
+    // microtask, before the checks finished.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(joinedSettled, "the join must wait for the running delete's checks").toBe(false);
+
+    releaseStatus();
+    await expect(first).rejects.toThrow(/Enable force delete/);
+    await expect(joined).rejects.toThrow(/Enable force delete/);
+    expect(fake.ptyService.disposeForLane).not.toHaveBeenCalled();
+    expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])?.id).toBe("lane-child");
+    expect(events.at(-1)?.progress.overallStatus).toBe("failed");
+  });
+
   it("deletes the lane locally when optional remote branch cleanup fails", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();

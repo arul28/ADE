@@ -60,6 +60,12 @@ describe("deleteLaneAndFollow", () => {
       reads: [[]],
       sentStarts: 2,
     },
+    {
+      name: "a start that finds no lane counts as deleted, on an older machine too",
+      starts: [new Error("Lane not found: lane-1")],
+      reads: [],
+      sentStarts: 1,
+    },
   ])("resolves: $name", async ({ starts, reads, sentStarts }) => {
     const machine = scriptedMachine(starts, reads);
     await expect(machine.run()).resolves.toMatchObject({ leftoverWorktree: null });
@@ -72,22 +78,34 @@ describe("deleteLaneAndFollow", () => {
       starts: [accepted],
       reads: [[progress("failed", { errorMessage: "ADE could not save this lane's unsaved work." })]],
       error: /could not save this lane's unsaved work/,
+      sentStarts: 1,
     },
     {
       name: "a refusal from the checks, without sending it again",
       starts: [new Error("1 changed file. Enable force delete after confirming warnings."), accepted],
       reads: [],
       error: /Enable force delete/,
+      sentStarts: 1,
     },
     {
       name: "an unknown outcome once the machine stays out of reach",
       starts: [accepted],
       reads: [new Error("socket closed")],
       error: /before ADE could confirm the action result/,
+      sentStarts: 1,
     },
-  ])("rejects with $name", async ({ starts, reads, error }) => {
+    {
+      // An answer was lost, then the machine stopped answering at all until
+      // the start budget ran out: the delete may have started there.
+      name: "an unknown outcome when the start cannot be confirmed",
+      starts: [new Error(LOST), new Error("Remote target is not connected")],
+      reads: [],
+      error: /before ADE could confirm the action result/,
+      sentStarts: 41,
+    },
+  ])("rejects with $name", async ({ starts, reads, error, sentStarts }) => {
     const machine = scriptedMachine(starts, reads);
     await expect(machine.run()).rejects.toThrow(error);
-    expect(machine.sent.starts).toBe(1);
+    expect(machine.sent.starts).toBe(sentStarts);
   });
 });
