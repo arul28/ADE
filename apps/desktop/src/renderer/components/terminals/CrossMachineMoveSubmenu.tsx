@@ -102,7 +102,7 @@ export function CrossMachineMoveSubmenu({
   const [options, setOptions] = useState<OptionsState>({ status: "idle" });
   const requestRef = useRef(0);
 
-  // An ADE Cloud chat whose computer rests or was removed (impl-renderer-core, R5):
+  // An ADE Cloud chat whose computer rests or was removed:
   // the menu never asks that computer, so opening it never dials or wakes one.
   const cloudSource = adeCloudMoveSource(binding, session.id);
   const load = () => {

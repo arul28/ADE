@@ -47,7 +47,7 @@ export function wakeAdeCloudLane(
 }
 
 /**
- * Where a chat on an ADE Cloud computer can move from (R5): "resting" when its
+ * Where a chat on an ADE Cloud computer can move from: "resting" when its
  * computer is asleep (a move wakes it first, then the usual handoff runs),
  * "gone" when its computer was removed (a message continues the chat on a new
  * computer through the account queue), null for a computer that is connected
