@@ -399,7 +399,7 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
       const seconds = (Date.now() - 10_000) / 1000;
       fs.utimesSync(codexPath, seconds, seconds);
     };
-    return { name, home, vault, sync, renewCalls, codexPath, writeCodex };
+    return { name, home, adeDir, vault, sync, renewCalls, codexPath, writeCodex };
   }
 
   const keyOf = (rows: Map<string, Row>) => [...rows.values()].find((row) => row.key.startsWith("codex/"))!;
@@ -511,9 +511,11 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
       db.close();
       return rows;
     };
+    let busy = false;
     setOpenCodeCredentialWriter({
       put: async (dbPath, row) => (putRow(dbPath, row.id, "opencode", row.value, true), "ok"),
       remove: async (dbPath, id) => {
+        if (busy) throw Object.assign(new Error("busy"), { code: "EBUSY" });
         const db = openStore(dbPath);
         db.prepare("DELETE FROM credential WHERE id = ?").run(id);
         db.close();
@@ -561,6 +563,18 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
       expect([...relay.rows.values()].filter((row) => row.key === carried[0]!.key)).toEqual([expect.objectContaining({ writerDeviceId: "device-owner", refreshOwner: "device-owner" })]);
       expect([...relay.rows.values()].filter((row) => row.kind === "provider_login" && !row.deleted && row.writerDeviceId === "device-cloud")).toEqual([]);
       expect([...relay.rows.values()].filter((row) => row.kind === "provider_login" && !row.deleted && row.writerDeviceId === "device-desk")).toEqual([]);
+
+      // ADE sign-out with OpenCode's store busy: the copy is not forgotten, and the next pass removes it.
+      const [deskCopy] = rowsOf(storeOf(desk.home));
+      busy = true;
+      desk.sync.forgetAccount();
+      const appliedPath = path.join(desk.adeDir, "provider-logins", "applied.json");
+      await vi.waitFor(() => expect(JSON.parse(fs.readFileSync(appliedPath, "utf8"))).toMatchObject({ accountUserId: null, applied: { opencode: expect.anything() } }));
+      busy = false;
+      await desk.sync.pass();
+      const after = rowsOf(storeOf(desk.home));
+      expect(after.map((row) => row.id)).not.toContain(deskCopy!.id);
+      expect(after).toHaveLength(1);
     } finally {
       setOpenCodeCredentialWriter(null);
     }
