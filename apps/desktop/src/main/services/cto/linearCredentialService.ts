@@ -587,28 +587,30 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   let cachedToken: StoredLinearToken | null | undefined;
   let cachedOAuthCreds: LinearOAuthClientCredentials | null | undefined;
 
+  /**
+   * A read while the OS credential store has not answered cannot open an
+   * encrypted token file, so "nothing" then is "not readable yet". The answer
+   * is not cached in that state: the next read after the keychain answers
+   * finds the saved token without a restart or a reconnect.
+   */
   const getStoredToken = (): StoredLinearToken | null => {
     if (cachedToken !== undefined) return cachedToken;
-    if (credentialStore) {
-      migrateLegacyProjectCredentialsIfNeeded();
-      cachedToken = readMachineToken();
-      if (!cachedToken) {
-        const envToken = readEnvToken();
-        if (envToken) {
-          cachedToken = { token: envToken, authMode: "manual" };
-        }
+    const read = (): StoredLinearToken | null => {
+      if (credentialStore) {
+        migrateLegacyProjectCredentialsIfNeeded();
+        const machineToken = readMachineToken();
+        if (machineToken) return machineToken;
+      } else {
+        importLegacyTokenIfNeeded();
+        const encryptedToken = readEncryptedToken();
+        if (encryptedToken) return encryptedToken;
       }
-      return cachedToken;
-    }
-    importLegacyTokenIfNeeded();
-    cachedToken = readEncryptedToken();
-    if (!cachedToken) {
       const envToken = readEnvToken();
-      if (envToken) {
-        cachedToken = { token: envToken, authMode: "manual" };
-      }
-    }
-    return cachedToken;
+      return envToken ? { token: envToken, authMode: "manual" } : null;
+    };
+    const token = read();
+    if (!isSecureStorageCheckPending()) cachedToken = token;
+    return token;
   };
 
   const invalidateCache = (): void => {
@@ -647,45 +649,36 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const readOAuthClientCredentials = (): LinearOAuthClientCredentials | null => {
     if (cachedOAuthCreds !== undefined) return cachedOAuthCreds;
+    // Same rule as `getStoredToken`: an unreadable-yet answer is not kept.
+    const credentials = readOAuthClientCredentialsUncached();
+    if (!isSecureStorageCheckPending()) cachedOAuthCreds = credentials;
+    return credentials;
+  };
+
+  function readOAuthClientCredentialsUncached(): LinearOAuthClientCredentials | null {
     if (credentialStore) {
       migrateLegacyProjectCredentialsIfNeeded();
       const stored = readMachineOAuthClientCredentials();
-      if (stored) {
-        cachedOAuthCreds = stored;
-        return cachedOAuthCreds;
-      }
+      if (stored) return stored;
       const configFileCredentials = readOAuthConfigFileCredentials();
-      if (configFileCredentials) {
-        cachedOAuthCreds = configFileCredentials;
-        return cachedOAuthCreds;
-      }
+      if (configFileCredentials) return configFileCredentials;
       if (BUNDLED_LINEAR_OAUTH_CLIENT_ID) {
-        cachedOAuthCreds = { clientId: BUNDLED_LINEAR_OAUTH_CLIENT_ID, clientSecret: null };
-        return cachedOAuthCreds;
+        return { clientId: BUNDLED_LINEAR_OAUTH_CLIENT_ID, clientSecret: null };
       }
-      cachedOAuthCreds = null;
       return null;
     }
     // Priority 1: User-configured credentials (encrypted store)
     const stored = readStoredOAuthClientCredentials();
-    if (stored) {
-      cachedOAuthCreds = stored;
-      return cachedOAuthCreds;
-    }
+    if (stored) return stored;
     // Priority 2: Config files in secrets dir
     const configFileCredentials = readOAuthConfigFileCredentials();
-    if (configFileCredentials) {
-      cachedOAuthCreds = configFileCredentials;
-      return cachedOAuthCreds;
-    }
+    if (configFileCredentials) return configFileCredentials;
     // Priority 3: Bundled client ID (ships with ADE, no secret — uses PKCE)
     if (BUNDLED_LINEAR_OAUTH_CLIENT_ID) {
-      cachedOAuthCreds = { clientId: BUNDLED_LINEAR_OAUTH_CLIENT_ID, clientSecret: null };
-      return cachedOAuthCreds;
+      return { clientId: BUNDLED_LINEAR_OAUTH_CLIENT_ID, clientSecret: null };
     }
-    cachedOAuthCreds = null;
     return null;
-  };
+  }
 
   // Refresh the OAuth access token via grant_type=refresh_token when it is at or
   // near expiry (Linear tokens expire ~24h after sign-in). Concurrent callers

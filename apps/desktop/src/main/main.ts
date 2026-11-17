@@ -552,7 +552,7 @@ import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrai
 import { runUpdateTransaction } from "./services/updates/updateTransaction";
 import { createInstallOnQuitController, type InstallOnQuitDecision } from "./services/updates/installOnQuit";
 import { recordInstalledDesktopApp } from "./services/native/nativeHelperPaths";
-import { isSecureStorageAvailable, isSecureStorageCheckPending, startSecureStorageCheck } from "./services/shared/secureStorage";
+import { isSecureStorageAvailable, isSecureStorageCheckPending, onSecureStorageAnswered, startSecureStorageCheck } from "./services/shared/secureStorage";
 import { resolveSafeStorageKeyName } from "./safeStorageKeyName";
 import {
   checkRuntimeIdentity,
@@ -1031,8 +1031,25 @@ function getRendererUrl(): string {
  */
 function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   const legacyStore = new EncryptedFileCredentialStore({ secretsDir });
+  let primary: SyncCredentialStore | null = null;
+  const buildPrimary = (): SyncCredentialStore => (primary ??= buildDesktopPrimaryCredentialStore(secretsDir, legacyStore));
+  // The adoption that repairs file-backed keys an older build left in
+  // `credentials.safe.enc` runs while that store is built. A read of a
+  // file-backed key goes straight to the shared file and never builds it, so
+  // the repair would wait for an unrelated Electron-only credential. Run it
+  // once the OS keychain answers, which is after the first window; a failed
+  // build is left to the first real read, which reports it.
+  const warmAdoption = (): void => {
+    try {
+      buildPrimary();
+    } catch {
+      // Reads report it; nothing is owed at launch.
+    }
+  };
+  if (isSecureStorageCheckPending()) onSecureStorageAnswered(warmAdoption);
+  else warmAdoption();
   return createRoutedCredentialStore({
-    primary: createLazyCredentialStore(() => buildDesktopPrimaryCredentialStore(secretsDir, legacyStore)),
+    primary: createLazyCredentialStore(buildPrimary),
     fileStore: legacyStore,
   });
 }

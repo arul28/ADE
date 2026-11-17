@@ -43,6 +43,8 @@ describe("resolveSafeStorageKeyName", () => {
 
   it.each([
     ["the machine safeStorage file", ".ade-alpha/secrets/credentials.safe.enc", "x"],
+    ["the API key file", ".ade-alpha/secrets/api-keys.v1.bin", "x"],
+    ["a Linear token", ".ade-alpha/secrets/linear-token.v1.bin", "x"],
     ["the GitHub token file", "ade-desktop-alpha/secrets/github/github-token.v1.bin", "x"],
     ["a music sign-in", "ade-desktop-alpha/music-player/spotify-session.enc", "x"],
     ["an older safeStorage file under the shared name", ".ade-alpha/secrets/credentials.json.enc", "v10\u0001sealed"],
@@ -54,9 +56,16 @@ describe("resolveSafeStorageKeyName", () => {
     expect(resolve()).toBe(STABLE_SAFE_STORAGE_NAME);
   });
 
-  it("gives a fresh install its own name and keeps it once files exist", () => {
-    // The shared file store is JSON and needs no key: not a reason to share.
-    put(".ade-alpha/secrets/credentials.json.enc", JSON.stringify({ version: 1, ciphertext: "" }));
+  it("keeps the shared name for a channel that has run before", () => {
+    // A project folder is not known at launch, and its `.ade/secrets` is sealed
+    // with the same key: an install that already ran must not change the name
+    // under files this check cannot see.
+    put(".ade-alpha/ade.db", "");
+    expect(resolve()).toBe(STABLE_SAFE_STORAGE_NAME);
+  });
+
+  it("gives a first launch its own name and keeps it once files exist", () => {
+    // No ADE home yet: nothing on this machine was sealed with the shared key.
     expect(resolve()).toBe("ade-desktop-alpha");
 
     // The next launch finds this launch's sealed files, and must not go back

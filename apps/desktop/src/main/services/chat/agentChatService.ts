@@ -77207,6 +77207,10 @@ export function createAgentChatService(args: {
       throw new Error("Chat session id is required.");
     }
     warmIdleCompaction.clear(trimmedSessionId);
+    // A turn that was shown before its process answered has no process to end
+    // it: the delete is its end, and a later send under this id (a restore of
+    // the same chat) starts clean instead of reading as already showing one.
+    turnsShownBeforeRuntime.delete(trimmedSessionId);
     const deletedManaged = managedSessions.get(trimmedSessionId);
     if (deletedManaged) settlePendingClaudeKeychainRetry(deletedManaged, { silent: true });
     automaticContinuityRecoveryAt.delete(trimmedSessionId);

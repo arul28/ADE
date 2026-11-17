@@ -883,6 +883,10 @@ export function createGithubService({
     }
 
     if (migrationDone) return null;
+    // The OS credential store has not answered: this file cannot be opened
+    // yet, so its silence now is "not readable yet", not "none there". Left
+    // unlatched, the read after the keychain answers migrates it as usual.
+    if (isSecureStorageCheckPending()) return null;
 
     const legacyToken = readEncryptedToken(legacyTokenPath);
     if (!legacyToken) { migrationDone = true; return null; }

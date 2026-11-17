@@ -13,11 +13,13 @@ import path from "node:path";
  * a new key that the other build's files cannot be read with.
  *
  * Stable keeps `ade-desktop` exactly. A channel build gets `ade-desktop-<channel>`,
- * but only when it has nothing encrypted yet: a key name cannot change under
- * files sealed with the old key, because one process holds one key and the old
- * files would stay unreadable. A channel install that already has such files
- * keeps the shared name. The choice is written down once, beside the files it
- * protects, so it never changes for that install.
+ * but only on its first launch, and only when it has nothing encrypted yet: a
+ * key name cannot change under files sealed with the old key, because one
+ * process holds one key and the old files would stay unreadable. A channel
+ * install that has run before keeps the shared name — its project folders can
+ * hold files sealed with the shared key that no check at launch can see. The
+ * choice is written down once, beside the files it protects, so it never
+ * changes for that install.
  *
  * Windows needs none of this: its key is sealed with DPAPI into the user-data
  * folder's `Local State`, and each channel already has its own folder.
@@ -65,7 +67,7 @@ export function resolveSafeStorageKeyName(args: SafeStorageKeyNameArgs): string 
     return known;
   }
 
-  const chosen = hasFilesSealedWithSharedKey(args) ? STABLE_SAFE_STORAGE_NAME : channelName;
+  const chosen = !isFirstLaunch(args) || hasFilesSealedWithSharedKey(args) ? STABLE_SAFE_STORAGE_NAME : channelName;
   if (chosen === STABLE_SAFE_STORAGE_NAME) {
     markerPaths.forEach((markerPath) => writeMarker(markerPath, chosen));
     return chosen;
@@ -79,17 +81,47 @@ export function resolveSafeStorageKeyName(args: SafeStorageKeyNameArgs): string 
 }
 
 /**
+ * Whether this channel has never run on this machine. Its ADE home is made by
+ * the first launch, before any credential is written, so its absence is the
+ * one signal available before the app is ready that nothing here was sealed
+ * with the shared key yet.
+ *
+ * An install that has run before keeps the shared name, whatever files this
+ * module can see: a project's own `.ade/secrets` is sealed with the same key,
+ * and no project folder is known at launch. Only a first launch chooses a name
+ * of its own.
+ */
+function isFirstLaunch(args: SafeStorageKeyNameArgs): boolean {
+  return !fs.existsSync(args.adeHome);
+}
+
+/**
  * Whether this channel already keeps a file sealed with the shared key. Read
  * widely on purpose: a false "yes" only keeps the shared name, a false "no"
  * would lose the secrets.
+ *
+ * Every file that `safeStorage.encryptString` writes is listed here, not only
+ * the credential store's: an install whose only sealed secret is an API key or
+ * a Linear token is just as unreadable after a name change. A new store that
+ * seals with the OS key adds its file to this list.
  */
 function hasFilesSealedWithSharedKey(args: SafeStorageKeyNameArgs): boolean {
   const secretsDir = path.join(args.adeHome, "secrets");
+  const userSecretsDir = path.join(args.userDataPath, "secrets");
+  const musicDir = path.join(args.userDataPath, "music-player");
   const sealedFiles = [
     path.join(secretsDir, "credentials.safe.enc"),
-    path.join(args.userDataPath, "secrets", "github", "github-token.v1.bin"),
-    path.join(args.userDataPath, "music-player", "apple-music-user-token.enc"),
-    path.join(args.userDataPath, "music-player", "spotify-session.enc"),
+    // `apiKeyStore` (`AdeLayout.apiKeysPath` and its provenance companion).
+    path.join(secretsDir, "api-keys.v1.bin"),
+    path.join(secretsDir, "api-keys.v1.bin.provenance"),
+    // `linearCredentialService`.
+    path.join(secretsDir, "linear-token.v1.bin"),
+    path.join(secretsDir, "linear-oauth-client.v1.bin"),
+    path.join(secretsDir, "linear-credential-provenance.v1.bin"),
+    // `githubService`, and the music stores.
+    path.join(userSecretsDir, "github", "github-token.v1.bin"),
+    path.join(musicDir, "apple-music-user-token.enc"),
+    path.join(musicDir, "spotify-session.enc"),
   ];
   if (sealedFiles.some((filePath) => fs.existsSync(filePath))) return true;
   // The shared file store (`credentials.json.enc`) is JSON and needs no key,
