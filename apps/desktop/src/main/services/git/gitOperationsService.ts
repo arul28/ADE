@@ -799,7 +799,11 @@ export function createGitOperationsService({
       return action;
     },
 
-    async commit(args: GitCommitArgs): Promise<GitActionResult> {
+    /**
+     * `options.identity` (in-process callers only, never on the wire): the
+     * author for this one commit, passed with `-c`; git's config stays as it is.
+     */
+    async commit(args: GitCommitArgs, options?: { identity?: { name: string; email: string } }): Promise<GitActionResult> {
       const inputMessage = args.message.trim();
       const laneForMessage = laneService.getLaneBaseAndBranch(args.laneId);
       const message = laneForMessage.linearIssue
@@ -815,9 +819,11 @@ export function createGitOperationsService({
         reason: args.amend ? "amend_commit" : "commit",
         metadata: { amend: Boolean(args.amend), message },
         fn: async (lane) => {
-          const cmd = args.amend
-            ? ["commit", "--amend", "-m", message]
-            : ["commit", "-m", message];
+          const identity = options?.identity;
+          const cmd = [
+            ...(identity ? ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`] : []),
+            ...(args.amend ? ["commit", "--amend", "-m", message] : ["commit", "-m", message]),
+          ];
           await runGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });

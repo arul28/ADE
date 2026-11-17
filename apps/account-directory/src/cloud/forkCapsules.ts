@@ -5,9 +5,9 @@ import {
   CLOUD_PATHS,
   type CloudCapsuleManifest,
 } from "./contract";
-import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
+import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import { openBytes, sealBytes, userKeys } from "./seal";
-import { ROW_ID, callingComputer, segmentsAfter } from "./sessionCopies";
+import { callingComputer, segmentsAfter } from "./sessionCopies";
 import { logCloud, type CloudEnv } from "./store";
 
 /**

@@ -27,6 +27,8 @@ export function clippedText(value: unknown, max: number): string | null {
 }
 
 /** A lowercase 8-4-4-4-12 UUID: a launch, a lane on a launch, a delete job. Callers lowercase first. */
+/** A saved row's id in a path or a body: a machine key, chat, session or lane id. */
+export const ROW_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** Largest request body a `/cloud` route reads. */

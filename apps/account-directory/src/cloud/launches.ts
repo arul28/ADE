@@ -35,7 +35,7 @@ import {
   CLOUD_REMOTE_SIGN_IN_KINDS,
   cloudRemoteSignInOf,
 } from "./contract";
-import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
+import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
 import { WAKE_PORT, cloudSizeForTier } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { LAUNCH_COMPUTER_DELETED, deleteComputer, logCloud, ownedComputer, parseJsonColumn, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
@@ -154,8 +154,6 @@ const STAGE_ID = /^[a-z][a-z0-9_-]{0,39}$/;
 const STAGE_STATUSES: ReadonlySet<CloudLaunchStageStatus> = new Set(["pending", "running", "done", "failed", "skipped", "warning"]);
 /** Branch names: what git allows that is safe to carry, at a sane length. */
 const BRANCH = /^[A-Za-z0-9._/@+-]{1,250}$/;
-/** A saved chat's machine key or chat id (`chats.ts` ROW_ID). */
-const CONTINUE_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const utf8 = new TextEncoder();
 /** A value's JSON size in bytes (UTF-8), the unit of `CLOUD_LAUNCH_MAX_ARGS_BYTES`; a string's length counts UTF-16 units. */
 const jsonBytes = (value: unknown): number => utf8.encode(JSON.stringify(value)).byteLength;
@@ -324,8 +322,8 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
   let continueChat: CloudServerLaunchRequest["continueChat"];
   if (body.continueChat != null) {
     const raw = typeof body.continueChat === "object" && !Array.isArray(body.continueChat) ? body.continueChat as Record<string, unknown> : null;
-    const machineKey = typeof raw?.machineKey === "string" && CONTINUE_ID.test(raw.machineKey.trim()) ? raw.machineKey.trim() : null;
-    const chatId = typeof raw?.chatId === "string" && CONTINUE_ID.test(raw.chatId.trim()) ? raw.chatId.trim() : null;
+    const machineKey = typeof raw?.machineKey === "string" && ROW_ID.test(raw.machineKey.trim()) ? raw.machineKey.trim() : null;
+    const chatId = typeof raw?.chatId === "string" && ROW_ID.test(raw.chatId.trim()) ? raw.chatId.trim() : null;
     if (!machineKey || !chatId) return "The chat to continue can't be read.";
     if (raw?.kind != null && raw.kind !== "chat" && raw.kind !== "cli") return "The chat to continue can't be read.";
     if (kind !== "chat") return "Only a chat launch continues a chat.";

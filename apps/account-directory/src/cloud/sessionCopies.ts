@@ -10,7 +10,7 @@ import {
   type CloudSessionRow,
   type CloudSessionRowInput,
 } from "./contract";
-import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
+import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
 import { openBytes, openJson, sealBytes, sealJson, userKeys, type UserKeys } from "./seal";
 import { logCloud, ownedComputer, type CloudEnv, type ComputerRow } from "./store";
 
@@ -26,7 +26,6 @@ import { logCloud, ownedComputer, type CloudEnv, type ComputerRow } from "./stor
  * sealed too. Another account's session answers 404 like a missing one.
  */
 
-export const ROW_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 /** Room for the JSON around the text. */

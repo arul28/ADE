@@ -9,34 +9,21 @@ import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
 import { trustedHttpsOrigin } from "../trustedOrigin";
-import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, routeLaunches } from "./launches";
+import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, routeLaunches, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
 import { serverGitCheck } from "./accountVault";
 import { routeAccountSignIns } from "./accountSignIns";
-// --- server-edge ---
 import { routeAccountSecrets } from "./accountSecrets";
 import { routeCtoCopy } from "./ctoCopy";
 import { handleInternalEventWake, isInternalEventWakeRequest, routeEventWakeSubscription, type EventWakeOutcome } from "./eventWakes";
 import { routeJiraIssue, routeJiraSearch, routeLinearQuery } from "./integrations";
 import { routeCloudLimits } from "./limits";
-import { CLOUD_EDGE_PATHS } from "./contract";
-// --- end server-edge ---
-// --- server-core: ADE without a computer ---
 import { adeVersionAtLeast, routeChatMessages, routeComputerMessages, type ChatWake } from "./chatMessages";
+import { ROW_ID } from "./http";
 import { routeSessionCopies } from "./sessionCopies";
 import { routeGitSummaries } from "./gitSummaries";
 import { routeForkCapsules } from "./forkCapsules";
 import { handleProjectOverview } from "./projectOverview";
-import { startServerLaunch, type LaunchRouteDeps } from "./launches";
-import { ACCOUNT_BLOCKED_MESSAGE } from "./blocks";
-import {
-  CLOUD_BLOCKED_READ_ROUTES,
-  CLOUD_CHAT_QUEUE_MIN_ADE_VERSION,
-  CLOUD_COMPUTER_COMMANDS,
-  CLOUD_PLAN_PAST_DUE_SENTENCE,
-  type CloudAccess,
-} from "./contract";
-// --- end server-core ---
 import { handleCloudModels } from "./models";
 import { handleAutomationDelivery, isAutomationDeliveryRequest, noteAutomationLaunchProgress, routeAutomations } from "./automations";
 import { routeProjectComputersDelete } from "./projectComputers";
@@ -55,10 +42,25 @@ import {
 } from "./lanesWithoutComputer";
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
 import { ignoredFilesStatement, keepIdleComputer, parseIgnoredFiles, recordIdleUse } from "./idleCleanup";
-import { CLOUD_PATHS, cloudAutoSizeRefusalSentence, formatCloudCents, overPlanLimitsSentence, type CloudDiskLimitLane, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
+import {
+  CLOUD_BLOCKED_READ_ROUTES,
+  CLOUD_CHAT_QUEUE_MIN_ADE_VERSION,
+  CLOUD_COMPUTER_COMMANDS,
+  CLOUD_EDGE_PATHS,
+  CLOUD_PATHS,
+  CLOUD_PLAN_PAST_DUE_SENTENCE,
+  cloudAutoSizeRefusalSentence,
+  formatCloudCents,
+  overPlanLimitsSentence,
+  type CloudAccess,
+  type CloudDiskLimitLane,
+  type CloudDiskRefusalReason,
+  type CloudInstance,
+  type CloudPlanId,
+} from "./contract";
 import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
 import { freeCapRefuses } from "./costReport";
-import { accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
+import { ACCOUNT_BLOCKED_MESSAGE, accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
 import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
 import { INSTANCE_LIST_TTL_S, listInstancesCached } from "./instanceListCache";
 import { boundedDisplayText } from "../displayText";
@@ -419,7 +421,6 @@ async function recordStatus(env: CloudEnv, computer: ComputerRow, status: string
   if (statements.length) await env.DB.batch(statements);
 }
 
-// --- server-edge ---
 /**
  * One event wake (`eventWakes.ts`): the checks a person's wake makes, without
  * waiting at the awake cap and without counting as use for the idle cleanup.
@@ -435,7 +436,6 @@ async function eventWakeComputer(env: CloudEnv, computer: ComputerRow, now: numb
   await recordStatus(env, computer, status, now, "event_wake");
   return "woken";
 }
-// --- end server-edge ---
 
 async function markGone(env: CloudEnv, computer: ComputerRow, now: number): Promise<void> {
   await env.DB.batch(goneFromProviderStatements(env, computer, now));
@@ -1492,7 +1492,6 @@ function withCors(response: Response, origin: string): Response {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
-// --- server-core: ADE without a computer ---
 /** A blocked account's GET of a route it may still read (CONTRACTS 4). */
 function blockedMayRead(method: string, path: string): boolean {
   if (method !== "GET") return false;
@@ -1510,10 +1509,9 @@ function chatMessagesRouteOf(path: string): { machineKey: string; chatId: string
     }
   });
   const [machineKey, chatId, action, ...rest] = segments;
-  if (action !== "messages" || !machineKey || !chatId || !SAVED_ROW_ID.test(machineKey) || !SAVED_ROW_ID.test(chatId)) return null;
+  if (action !== "messages" || !machineKey || !chatId || !ROW_ID.test(machineKey) || !ROW_ID.test(chatId)) return null;
   return { machineKey, chatId, rest };
 }
-const SAVED_ROW_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 
 /** What a start of a server launch needs, for `POST /cloud/launches` and the queue's continue launch alike. */
 function launchDepsFor(request: Request, env: CloudEnv, userId: string, provider: CloudProvider | null, ctx: CloudRequestContext): LaunchRouteDeps {
@@ -1590,7 +1588,6 @@ function chatWakeFor(env: CloudEnv, userId: string, provider: CloudProvider | nu
     startLaunch: (parsed) => startServerLaunch(env, userId, parsed, launchDeps),
   };
 }
-// --- end server-core ---
 
 /**
  * `/cloud/*` straight from a browser and a phone (C7). CORS is the
@@ -1646,11 +1643,10 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
       createComputer: (userId, launchProvider, extras) => createComputerSettled(env, userId, launchProvider, extras, { now, waitUntil }),
     }));
   }
-  // --- server-edge --- The webhook relay's event wake: its shared secret is the proof, no account token.
+  // The webhook relay's event wake: its shared secret is the proof, no account token.
   if (isInternalEventWakeRequest(path)) {
     return providerCall(() => handleInternalEventWake(request, env, (computer, now) => eventWakeComputer(env, computer, now), Date.now()));
   }
-  // --- end server-edge ---
   const caller = await authenticate(request, env);
   if (!caller.ok) {
     return caller.reason === "authentication unavailable"
@@ -1699,7 +1695,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (referrals) return referrals;
   const billing = await routeBilling(request, url, path, env, caller.userId, ctx);
   if (billing) return billing;
-  // --- server-core: ADE without a computer --- Rows and R2 only; a send wakes or launches through the provider.
+  // ADE without a computer: rows and R2 only; a send wakes or launches through the provider.
   if (path === CLOUD_PATHS.projectsOverview) {
     return request.method === "GET" ? handleProjectOverview(url, env, caller.userId, now) : notFound();
   }
@@ -1723,7 +1719,6 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     if (computerRoute.rest.length || request.method !== "POST") return notFound();
     return handleComputerUse(env, computer, now);
   }
-  // --- end server-core ---
   // Saved chats need no provider: they stay readable when the computer can't be.
   if (path === CLOUD_PATHS.chats || path.startsWith(`${CLOUD_PATHS.chats}/`)) {
     return routeSavedChats(request, url, path, env, caller.userId, now, waitUntil);
@@ -1734,7 +1729,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   }
   // The account vault's ADE Cloud sign-ins, for the web (status only), and the model list: no provider needed.
   if (path === CLOUD_PATHS.signIns || path.startsWith(`${CLOUD_PATHS.signIns}/`)) return routeAccountSignIns(request, path, env, now);
-  // --- server-edge --- Account data and integrations with no computer; no provider needed.
+  // Account data and integrations with no computer; no provider needed.
   if (path === CLOUD_EDGE_PATHS.limits) return routeCloudLimits(request, env);
   if (path === CLOUD_EDGE_PATHS.accountSecrets) return routeAccountSecrets(request, url, env);
   if (path === CLOUD_EDGE_PATHS.cto) return routeCtoCopy(request, url, env);
@@ -1743,7 +1738,6 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (path === CLOUD_EDGE_PATHS.jiraIssue) return routeJiraIssue(request, env, caller.userId, now);
   const eventWakes = /^\/cloud\/instances\/([^/]+)\/event-wakes$/.exec(path);
   if (eventWakes) return INSTANCE_ID.test(eventWakes[1]!) ? routeEventWakeSubscription(request, env, caller.userId, eventWakes[1]!, now) : notFound();
-  // --- end server-edge ---
   if (path === CLOUD_PATHS.models) return handleCloudModels(request);
   // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.
   if (path === CLOUD_PATHS.launches || path.startsWith(`${CLOUD_PATHS.launches}/`)) {

@@ -5,7 +5,6 @@
  */
 
 import type { AdeRuntime } from "../../bootstrap";
-import { runGitOrThrow } from "../../../../desktop/src/main/services/git/git";
 import type { CloudGitIdentity } from "../github/cloudGitIdentity";
 
 const COMMIT_MESSAGE = "Work saved from ADE Cloud";
@@ -47,7 +46,7 @@ type Logger = { info(event: string, data?: unknown): void; warn(event: string, d
 const MISSING_IDENTITY = /author identity unknown|unable to auto-detect email|empty ident name|please tell me who you are/i;
 
 async function pushLane(
-  runtime: Pick<AdeRuntime, "gitService" | "laneService">,
+  runtime: Pick<AdeRuntime, "gitService">,
   laneId: string,
   dirty: boolean,
   message: string,
@@ -63,12 +62,7 @@ async function pushLane(
       // work: this one commit passes ADE's identity with `-c`, and the config
       // stays as it is.
       if (!commitIdentity || !MISSING_IDENTITY.test(error instanceof Error ? error.message : String(error))) throw error;
-      const identity = commitIdentity();
-      const lane = runtime.laneService.getLaneBaseAndBranch(laneId);
-      await runGitOrThrow(
-        ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, "commit", "-m", message],
-        { cwd: lane.worktreePath, timeoutMs: 30_000 },
-      );
+      await runtime.gitService.commit({ laneId, message }, { identity: commitIdentity() });
     }
   }
   await runtime.gitService.push({ laneId });

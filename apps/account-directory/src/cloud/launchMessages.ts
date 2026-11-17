@@ -68,7 +68,6 @@ export function dropFirstMessageStatement(env: CloudEnv, launchId: string, from:
     .bind(launchId);
 }
 
-/** The chat exists: the computer started it with the first message. */
 /**
  * A chat's queued messages that this launch carries (`cloud_chat_messages`,
  * `via_launch`) read delivered once the launch's own message is delivered.
@@ -85,6 +84,7 @@ export function chatMessagesDeliveredStatement(env: CloudEnv, launchId: string, 
   `).bind(now, launchId);
 }
 
+/** The chat exists: the computer started it with the first message. */
 export function firstMessageDeliveredStatement(env: CloudEnv, launchId: string, sessionId: string, now: number): D1PreparedStatement {
   return env.DB.prepare(`
     update cloud_launch_messages set state = 'delivered', session_id = ?, updated_at = ? where launch_id = ? and seq = 1 and state in ('queued', 'sending')

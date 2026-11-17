@@ -11,7 +11,7 @@ import {
   type CloudChatTranscriptPage,
   type CloudComputerDeleteReason,
 } from "./contract";
-import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
+import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import { rewardAfterCloudChat } from "./referrals";
 import { captureCloudSafety, type CloudWaitUntil } from "./analytics";
 import { logCloud, ownedComputer, type CloudEnv } from "./store";
@@ -19,10 +19,6 @@ import { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type Use
 import { deleteCapsule, deleteCapsulesForLane } from "./forkCapsules";
 import { deleteGitSummaryForLaneStatement } from "./gitSummaries";
 import { deleteSessionCopiesForLane } from "./sessionCopies";
-import { readJson } from "./http";
-
-/** The seal helpers moved to `seal.ts`; older imports from here keep working. */
-export { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type UserKeys } from "./seal";
 
 /**
  * Saved chats (README, "Saved chats"). After each turn a computer sends the new
@@ -45,8 +41,6 @@ export { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type Use
  * reaches a log line, an error message, or Sentry: a part is opaque bytes here.
  */
 
-/** A chat, machine or lane id in a path. */
-const ROW_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const SEQ = /^[1-9][0-9]{0,8}$/;
 /** Room for the JSON around a part in the request body. */
 const PUT_BODY_OVERHEAD_BYTES = 64 * 1024;
