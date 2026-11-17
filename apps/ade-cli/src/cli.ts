@@ -21788,6 +21788,8 @@ function buildCloudPrepareStopPlan(args: string[]): CliPlan {
   if (!Number.isFinite(seconds) || seconds <= 0) throw new CliUsageError("ade cloud prepare-stop --timeout <seconds>");
   // A disk-only grow (the lane's size-change job): keep the turns, note the restart as a disk grow.
   const growRaw = readValue(args, ["--disk-grow"]);
+  const growId = readValue(args, ["--grow-id"]);
+  if (growId != null && !/^[A-Za-z0-9_-]{1,80}$/.test(growId)) throw new CliUsageError("ade cloud prepare-stop --disk-grow <GB> --grow-id <job id>");
   const diskGrowToGb = growRaw == null ? null : Number(growRaw);
   if (diskGrowToGb != null && (!Number.isFinite(diskGrowToGb) || diskGrowToGb <= 0)) {
     throw new CliUsageError("ade cloud prepare-stop --timeout <seconds> --disk-grow <GB>");
@@ -21795,7 +21797,7 @@ function buildCloudPrepareStopPlan(args: string[]): CliPlan {
   return {
     kind: "execute",
     label: "cloud prepare-stop",
-    steps: [{ key: "result", method: "cloud.prepareStop", params: { timeoutMs: Math.round(seconds * 1000), ...(diskGrowToGb != null ? { diskGrowToGb } : {}) } }],
+    steps: [{ key: "result", method: "cloud.prepareStop", params: { timeoutMs: Math.round(seconds * 1000), ...(diskGrowToGb != null ? { diskGrowToGb, ...(growId ? { growId } : {}) } : {}) } }],
     machineOnly: true,
     minTimeoutMs: Math.round(seconds * 1000) + 15_000,
   };
@@ -32277,11 +32279,11 @@ async function runServe(
           }
         : null,
       prepareCloudStop: cloudKeepAwake
-        ? async ({ timeoutMs, diskGrowToGb }) => {
+        ? async ({ timeoutMs, diskGrowToGb, growId }) => {
             const { prepareCloudComputerToStop } = await import("./services/power/cloudPrepareStop");
             // A disk grow's restart continues the turns it cuts (`continueAfterRestartAllowed`): keep them
             // running, once the note that marks the restart is written. No note: stop them, as before.
-            const keepTurns = diskGrowToGb != null && (cloudDiskGrower?.noteOutsideGrow(diskGrowToGb) ?? false);
+            const keepTurns = diskGrowToGb != null && (cloudDiskGrower?.noteOutsideGrow(diskGrowToGb, growId ?? null) ?? false);
             const booted = await Promise.all(projectRegistry.list().map(async (record) =>
               (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null));
             const personal = await personalChatScope.bootedRuntime().catch(() => null);

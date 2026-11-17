@@ -91,16 +91,19 @@ const NOT_AGENT_WORK = new Set(["in_use", "schedule"]);
  * computer notes the restart as a disk grow, so they continue after it. An
  * ADE there that predates `--disk-grow` stops them, as before.
  */
-const prepareStopCommand = (diskGrowGb: number | null): string => [
+const prepareStopCommand = (diskGrow: { gb: number; jobId: string } | null): string => [
   'export PATH="$ADE_HOME/bin:$PATH"',
-  diskGrowGb
-    ? `ade cloud prepare-stop --timeout 40 --disk-grow ${Math.ceil(diskGrowGb)} || ade cloud prepare-stop --timeout 40`
+  diskGrow
+    ? `ade cloud prepare-stop --timeout 40 --disk-grow ${Math.ceil(diskGrow.gb)} --grow-id ${shellJobId(diskGrow.jobId)} || ade cloud prepare-stop --timeout 40`
     : "ade cloud prepare-stop --timeout 40",
 ].join("\n");
+/** A job id as a shell word: ids are ADE's own UUIDs; anything else is dropped to letters, digits, `-` and `_`. */
+const shellJobId = (jobId: string): string => jobId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || "job";
 /** How long a save covers a disk grow's restart: past it (a Retry), the chats are saved again first. */
 const SAVE_FRESH_MS = 2 * 60_000;
-/** A resize that failed after a disk-only save: its note would read the next restart as a disk grow. Only the person's note goes. */
-const CLEAR_GROW_NOTE_COMMAND = `f="$ADE_HOME/cloud/disk-grow.json"; grep -q '"origin":"person"' "$f" 2>/dev/null && rm -f "$f"; true`;
+/** A disk-only job that stopped after its save: its own note goes (a newer grow's note stays). */
+const clearGrowNoteCommand = (jobId: string): string =>
+  `f="$ADE_HOME/cloud/disk-grow.json"; grep -q '"jobId":"${shellJobId(jobId)}"' "$f" 2>/dev/null && rm -f "$f"; true`;
 const KEEP_AWAKE_STATE_COMMAND = 'cat "$ADE_HOME/cloud/keep-awake.json" 2>/dev/null';
 
 class JobStopped extends Error {}
@@ -456,7 +459,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     if (instance.status === "running") {
       // Stops what still runs and writes the saved chat copy, so the chats
       // read the same while the computer restarts or moves.
-      const ran = await client.exec(job.instanceId, prepareStopCommand(cloudLaneJobGrowsDiskOnly(job) ? job.diskGb : null), { timeoutMs: 90_000 }).catch((error: unknown) => {
+      const ran = await client.exec(job.instanceId, prepareStopCommand(cloudLaneJobGrowsDiskOnly(job) ? { gb: job.diskGb, jobId: job.jobId } : null), { timeoutMs: 90_000 }).catch((error: unknown) => {
         logger.warn?.("cloud.lane_job_prepare_stop_failed", { jobId: job.jobId, error: getErrorMessage(error) });
         return null;
       });
@@ -654,7 +657,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
   const clearGrowNote = async (record: JobRecord): Promise<void> => {
     const job = record.job;
     if (!cloudLaneJobGrowsDiskOnly(job) || finished(stageOf(record, "resize")) || stageOf(record, "save")?.status === "pending") return;
-    await deps.client().then((client) => client.exec(job.instanceId, CLEAR_GROW_NOTE_COMMAND, { timeoutMs: 20_000 })).catch((error: unknown) => {
+    await deps.client().then((client) => client.exec(job.instanceId, clearGrowNoteCommand(job.jobId), { timeoutMs: 20_000 })).catch((error: unknown) => {
       logger.warn?.("cloud.lane_job_grow_note_left", { jobId: job.jobId, error: getErrorMessage(error) });
     });
   };

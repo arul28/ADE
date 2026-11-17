@@ -415,7 +415,7 @@ export type MultiProjectRpcHandlerOptions = {
    * which never own the machine's power settings.
    */
   /** On a cloud computer: interrupts work and writes the saved chat copy before a stop (`ade cloud prepare-stop`). */
-  prepareCloudStop?: ((args: { timeoutMs: number; diskGrowToGb?: number | null }) => Promise<unknown>) | null;
+  prepareCloudStop?: ((args: { timeoutMs: number; diskGrowToGb?: number | null; growId?: string | null }) => Promise<unknown>) | null;
   /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
   pushCloudWork?: ((args: { check: boolean; message?: string | null }) => Promise<unknown>) | null;
   /** On a cloud computer: keeps it awake while `run` works (a first clone), and counts the end as use. */
@@ -3638,6 +3638,7 @@ export function createMultiProjectRpcRequestHandler(
       return await prepare({
         timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 40_000,
         diskGrowToGb: typeof params.diskGrowToGb === "number" && Number.isFinite(params.diskGrowToGb) && params.diskGrowToGb > 0 ? params.diskGrowToGb : null,
+        growId: typeof params.growId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(params.growId) ? params.growId : null,
       });
     }
 
