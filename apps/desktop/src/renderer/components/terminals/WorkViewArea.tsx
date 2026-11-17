@@ -44,6 +44,7 @@ import {
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { CliLaunchChips } from "./CliLaunchChips";
 import { WorkStartSurface } from "./WorkStartSurface";
+import { useRemoteConnectionMark } from "../../state/projectMachines";
 import { hasPendingComposerDock } from "../chat/launch/chatLaunchDock";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
@@ -1364,9 +1365,22 @@ export function WorkViewArea({
   );
 
   const showingDraft = activeItemId == null;
+  const listedActiveSession = showingDraft ? null : sessionsById.get(activeItemId) ?? null;
+  // The open chat, with its machine, as the list last had it. While that
+  // machine reconnects its rows leave the list; the open chat stays open
+  // instead of the view jumping to another chat or to the new chat draft.
+  const heldActiveSessionRef = useRef<{ session: TerminalSessionSummary; pin: OpenProjectBinding | null } | null>(null);
+  if (listedActiveSession && heldActiveSessionRef.current?.session !== listedActiveSession) {
+    heldActiveSessionRef.current = { session: listedActiveSession, pin: resolveSessionRuntimePin?.(listedActiveSession) ?? null };
+  }
+  const held = !showingDraft && !listedActiveSession && heldActiveSessionRef.current?.session.id === activeItemId
+    ? heldActiveSessionRef.current
+    : null;
+  const heldMachineMark = useRemoteConnectionMark(held?.pin?.kind === "remote" ? held.pin.targetId : null);
+  const holdActiveSession = held != null && held.pin?.kind === "remote" && heldMachineMark === "";
   const activeSession = showingDraft
     ? null
-    : sessionsById.get(activeItemId) ?? visibleSessions[0] ?? null;
+    : listedActiveSession ?? (holdActiveSession ? held.session : visibleSessions[0] ?? null);
   /* ---- Single / grid session view ---- */
   // The focused session decides the view: if it belongs to a grid set we render
   // the whole set (Cursor-style resizable tiles); otherwise the single session.

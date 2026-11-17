@@ -2972,6 +2972,12 @@ export function resolveNextSelectedSessionId(args: {
   draftSelectionLocked: boolean;
   forceDraft: boolean;
   preferDraftStart: boolean;
+  /**
+   * The open chat's machine cannot be reached right now. A list read then
+   * comes from another copy or is incomplete, so a chat missing from it is
+   * not gone: the open chat stays open.
+   */
+  chatMachineUnreachable?: boolean;
 }): string | null {
   const {
     rows,
@@ -2981,6 +2987,7 @@ export function resolveNextSelectedSessionId(args: {
     draftSelectionLocked,
     forceDraft,
     preferDraftStart,
+    chatMachineUnreachable,
   } = args;
 
   if (pendingSelectedSessionId) {
@@ -2994,6 +3001,7 @@ export function resolveNextSelectedSessionId(args: {
   if (!current && (draftSelectionLocked || forceDraft || preferDraftStart)) {
     return null;
   }
+  if (current && chatMachineUnreachable) return current;
   if (current && rows.some((row) => row.sessionId === current)) {
     return current;
   }
@@ -9259,9 +9267,13 @@ export function AgentChatPane({
       return;
     }
 
+    // Read when the list came back: the machine the open chat lives on.
+    const listMachine = chatRuntimePinRef.current;
+    const chatMachineUnreachable = listMachine?.kind === "remote" && remoteConnectionMarkNow(listMachine.targetId) === "";
     setSelectedSessionId((current) => {
       const pendingSelectedSessionId = pendingSelectedSessionIdRef.current;
       const nextSelectedSessionId = resolveNextSelectedSessionId({
+        chatMachineUnreachable,
         rows: nextRows,
         current,
         pendingSelectedSessionId,
