@@ -98,6 +98,7 @@ import { LAUNCH_PROFILES } from "../../../../desktop/src/shared/cliLaunch";
 import { createLaneShareRightsStore, ensureLaneShareRightsSchema } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import { LANE_SHARE_CLI_TYPING_UNAVAILABLE, LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS, laneSharePresetRights, type LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
 import { PAIR_FAILURE_THRESHOLD } from "./syncPairFailureTracker";
+import { setMachineUpdateRemoteCommands } from "./machineUpdateRemoteCommands";
 import { buildSyncDpopChallenge, sha256Hex, syncDpopKeyThumbprint } from "./syncDpop";
 import {
   buildRelayReauthorizationChallenge,
@@ -8871,6 +8872,13 @@ describe("CTO-gated Linear sync commands", () => {
   it("advertises them as optional capabilities and forbids the credential writers at the gate", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const base = createHostArgs(projectRoot, []);
+    // An `ade serve` brain that can update its machine registers `machine.*`.
+    // An update stops every chat there: a viewer must never reach it.
+    const machineUpdate = {
+      updateImpact: vi.fn(async () => { throw new Error("viewer reached updateImpact"); }),
+      updateAndRestart: vi.fn(async () => { throw new Error("viewer reached updateAndRestart"); }),
+    };
+    const uninstallMachineUpdate = setMachineUpdateRemoteCommands(machineUpdate);
     const host = createSyncHostService({
       ...base,
       projectId: "project-1",
@@ -9001,9 +9009,14 @@ describe("CTO-gated Linear sync commands", () => {
         // Running a chat's code block runs a command on the host: a person on
         // a phone or browser controller may, a read-only viewer never.
         "work.runShellBlock",
+        // Update & restart stops every chat on the machine.
+        "machine.updateImpact",
+        "machine.updateAndRestart",
       ]);
       const controllerAllowedActions = new Set<string>([
         "work.runShellBlock",
+        "machine.updateImpact",
+        "machine.updateAndRestart",
         "ai.createCursorCloudRun",
         "ai.archiveCursorCloudAgent",
         "ai.unarchiveCursorCloudAgent",
@@ -9063,9 +9076,7 @@ describe("CTO-gated Linear sync commands", () => {
         // will. `android.*` is the same: only a runtime with an emulator
         // service registers it. Their absence is exactly what feature
         // detection is for, so asserting them here would be asserting the fixture.
-        // `machine.*` (Update & restart) is registered only by an `ade serve`
-        // brain that can update its machine, which this fixture is not.
-        if (action.startsWith("apple.") || action.startsWith("android.") || action.startsWith("machine.")) continue;
+        if (action.startsWith("apple.") || action.startsWith("android.")) continue;
         const viewerBlocked = viewerBlockedActions.has(action);
         const controllerAllowed = controllerAllowedActions.has(action);
         // Optional actions answered by the runtime's own stores rather than a
@@ -9087,8 +9098,9 @@ describe("CTO-gated Linear sync commands", () => {
           "ai.antigravitySignInComplete",
           "ai.antigravitySignInCancel",
         ]);
-        // Provider accounts are machine-wide config homes, never a project's.
-        const scope = RUNTIME_SCOPED_OPTIONAL_ACTIONS.has(action) || action.startsWith("providerAccounts.") || action.startsWith("providerLogins.")
+        // Provider accounts are machine-wide config homes, never a project's;
+        // an update is the machine's.
+        const scope = RUNTIME_SCOPED_OPTIONAL_ACTIONS.has(action) || action.startsWith("providerAccounts.") || action.startsWith("providerLogins.") || action.startsWith("machine.")
           ? "runtime"
           : "project";
         // Policy shape varies (lifecycle mutations are additionally queueable);
@@ -9141,9 +9153,12 @@ describe("CTO-gated Linear sync commands", () => {
           expect(errorCode).not.toBe("forbidden_command");
         }
       }
+      expect(machineUpdate.updateImpact).not.toHaveBeenCalled();
+      expect(machineUpdate.updateAndRestart).not.toHaveBeenCalled();
     } finally {
       peer?.ws.close();
       await host.dispose();
+      uninstallMachineUpdate();
       cleanup();
     }
     // A ceiling, not a sleep: ~180 real round trips plus a host start take

@@ -219,6 +219,23 @@ The Settings machine card mirrors this state through
 update recommended" warning while staying connected, so users can still browse
 available state and recover the host.
 
+A machine whose ADE is behind on its own update track also gets **Update** /
+**Update & restart** on its Settings row (Settings › General's "Every machine"
+list and Settings › Machines read the same store, `MachineUpdateStore.swift`),
+with **Update all** when several are behind and an attention line before the
+confirmation ("Mac Studio can update to 1.2.130"). The phone asks
+`machine.updateImpact` first and names what the restart stops in the
+confirmation (chats mid-turn by name, plus the open CLI sessions and terminals),
+then sends `machine.updateAndRestart`. Both commands are offered only by a host
+that advertises them; otherwise the row keeps its "update ADE on that computer"
+state. A machine that answers `updateInstallMode: "manual_download"` (a Linux
+AppImage, or an install that cannot replace itself) shows **Download the
+update** instead of a restart. The newest build on each track comes from the
+account directory's `GET /releases/latest`, falling back to the two release
+manifests when signed out, and a machine only ever receives a build from its own
+track. An answer lost to the restart is settled by the version the machine comes
+back on, and an ADE Cloud computer updates itself so it is never offered.
+
 The phone also checks the public App Store listing for its bundle at most once
 per six hours, including on foreground. A newer numeric dotted version appears
 as a low-priority root banner with Update and per-version Later actions; missing
@@ -476,6 +493,15 @@ apps/ios/
 │   │   │                             # account-wide "agent runs" activity
 │   │   ├── MobileUsageQuotaStore.swift # host-scoped cached Claude/Codex
 │   │   │                               # quota snapshot + refresh state
+│   │   ├── MachineUpdateStore.swift  # "Update & restart" for the account's
+│   │   │                             # other machines: `machine.updateImpact`
+│   │   │                             # / `machine.updateAndRestart` over the
+│   │   │                             # focused or roster link, the newest
+│   │   │                             # build per track from the account
+│   │   │                             # directory's /releases/latest (release
+│   │   │                             # manifests when signed out), and the
+│   │   │                             # attempt state ("Back on 1.2.130") the
+│   │   │                             # Settings rows and machine page read
 │   │   ├── PendingSessionSettleStates.swift # in-flight settle/unsettle/
 │   │   │                            # override intents, applied over session
 │   │   │                            # reads. Purely local and never persisted,
@@ -934,6 +960,12 @@ apps/ios/
 │   │   │                            #   (reachable-machine list: top 3 + See all),
 │   │   │                            # SettingsMachineRenameSheet (account-wide
 │   │   │                            #   custom name set/clear),
+│   │   │                            # SettingsMachineUpdates.swift (the
+│   │   │                            #   desktop's machine-update controls:
+│   │   │                            #   Update / Update all on the machine
+│   │   │                            #   rows, the confirmation that names
+│   │   │                            #   what is running there, the steps, and
+│   │   │                            #   the machine page's ADE card),
 │   │   │                            # SettingsPairingSection,
 │   │   │                            # SettingsPairingScannerSheet (camera QR
 │   │   │                            #   scanner),

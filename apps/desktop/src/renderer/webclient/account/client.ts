@@ -1241,6 +1241,9 @@ export class BrowserAccountClient {
             return this.latestReleases?.value ?? empty;
           }
           const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+          if (!body || typeof body !== "object") {
+            forwardSignalToSentry("web.latest_releases_read_failed", { status: response.status, body: "unreadable" }, "latest_releases_read_failed", "info");
+          }
           const read = (raw: unknown) => (typeof raw === "string" ? raw : null);
           const value: LatestReleasesResponse = {
             stable: validVersionOn("stable", read(body?.stable)) ?? this.latestReleases?.value.stable ?? null,

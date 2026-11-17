@@ -554,17 +554,18 @@ final class MachineUpdateStore: ObservableObject {
   }
 
   /// The restart drops the link the reply would come back on. A reply lost
-  /// that way is not a failure; the reconnect tells. An answered error, or a
-  /// refusal before anything was sent, is.
+  /// that way is not a failure; the reconnect tells. Anything else is: an
+  /// answered error, a refused command (6), or a refusal before sending (15,
+  /// 41).
   ///
-  /// Refused before sending: 15 (the focused link is not live) and 41 (`send`
-  /// found no live link). A closed link fails what it sent with 26 (focused)
-  /// or 14 (a machine's own link, which `send` checked was live first). The
-  /// update is runtime-scoped, so 26's "needs the lane's project" never applies.
+  /// Lost means only these: the focused link closed under the request (26),
+  /// a machine's own link closed under it (14; `send` checked it was live
+  /// first), or the wait ran out (23). The update is runtime-scoped, so 26's
+  /// "needs the lane's project" never applies.
   private static func lostAnswer(_ error: Error) -> Bool {
     if isRemoteCommandApplicationError(error) || isSyncHostUnavailableError(error) { return false }
     let nsError = error as NSError
-    return !(nsError.domain == "ADE" && [15, 41].contains(nsError.code))
+    return nsError.domain == "ADE" && [14, 23, 26].contains(nsError.code)
   }
 
   private static func sendFailureMessage(_ error: Error, name: String) -> String {

@@ -31761,9 +31761,22 @@ async function runServe(
           personalChatScope,
           readContinueAfterRestart: () => resolveContinueAfterRestart(),
         }),
-        updateAndRestart: (targetVersion, requestedBy) => joinOrStartMachineUpdate(
-          () => runMachineUpdateAndRestart(machineUpdateControls, targetVersion, requestedBy),
-        ),
+        updateAndRestart: async (targetVersion, requestedBy) => {
+          const result = await joinOrStartMachineUpdate(
+            () => runMachineUpdateAndRestart(machineUpdateControls, targetVersion, requestedBy),
+          );
+          // Whether people update a machine from a phone or browser, and how
+          // often it fails. The detail stays in the update log.
+          const outcome = result.ok ? "completed" : "failed";
+          brainProductAnalytics?.capture({
+            event: "ade_feature_used",
+            surface: requestedBy?.clientKind === "ios" ? "mobile" : requestedBy?.clientKind === "web" ? "web" : "api",
+            properties: { feature: "updates", action: "remote_machine_update", outcome },
+            dedupeKey: `remote_machine_update:${outcome}`,
+            minimumIntervalMs: 60 * 60_000,
+          });
+          return result;
+        },
       })
     : () => {};
 

@@ -1243,6 +1243,11 @@ export function createBrainProjectActionsSyncHandler(
             if (!isCurrent()) return;
             send(peer.ws, "command_result", { commandId, ok: true, result }, envelope.requestId);
           } catch (error) {
+            args.logger.warn("sync_brain.command_failed", {
+              action,
+              commandId,
+              errorType: error instanceof Error ? error.name : typeof error,
+            });
             if (!isCurrent()) return;
             failCommand(error);
           }

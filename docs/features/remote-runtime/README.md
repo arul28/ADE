@@ -1143,7 +1143,9 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   desktop's own computer asks with `folderMode: "caller"` and moves the folder
   to the Trash itself. Older hosts lack `machineProjects.removeCopy`; the
   desktop then offers only entry removal through `projects.remove`. It also serves
-  `machine.updateAndRestart` (cto role, runtime endpoint only) and hosts the
+  `machine.updateAndRestart` (cto role on the runtime endpoint; a paired phone or
+  browser instead sends the sync commands `machine.updateImpact` /
+  `machine.updateAndRestart`) and hosts the
   `ProjectlessSyncControls` fallback for `sync.*` on a machine with no project —
   see [sync and multi-device](../sync-and-multi-device/README.md#sync-on-a-machine-with-no-project).
 - `apps/ade-cli/src/services/runtime/brainHeartbeat.ts` — the brain's
@@ -1220,6 +1222,9 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `machine.updateAndRestart`. Absent for embedded and test runtimes, which have
   no installed service to update; the method then refuses rather than pretending
   to have restarted something.
+  `apps/ade-cli/src/services/runtime/machineUpdateInFlight.ts` —
+  `joinOrStartMachineUpdate`, the one-run-per-process coalescer the runtime RPC
+  and the phone's sync command both go through.
 - `apps/ade-cli/src/services/runtime/atomicJson.ts` — the shared
   write-temp-then-rename JSON helper these runtime state files use, so a reader
   outside the process never sees a half-written record.
@@ -2205,10 +2210,16 @@ truncated file.
 
 A machine that is stuck, or quietly running old code because no local desktop
 ever connected to notice, has to be fixable from wherever the user is. The
-projectless runtime method `machine.updateAndRestart` does that. It requires the
-`cto` role and only exists on the authenticated runtime RPC endpoint, so it
-inherits the paired/authenticated channel; it is never automatic and never
-silent.
+projectless runtime method `machine.updateAndRestart` does that. On the
+authenticated runtime RPC endpoint it requires the `cto` role and inherits that
+endpoint's paired/authenticated channel; a paired phone or ADE Web asks for the
+same run over sync commands instead (`machine.updateImpact` and
+`machine.updateAndRestart`,
+`apps/ade-cli/src/services/sync/machineUpdateRemoteCommands.ts`), where any
+paired controller may run them and a viewer or lane-share guest is refused. One
+run happens per process whatever asked for it (`machineUpdateInFlight.ts`): a
+second caller joins the run already in flight and gets its result. It is never
+automatic and never silent.
 
 The host records who asked (`requestedBy`: a machine name and a client kind).
 The name comes from the paired device record of the connection; the client's
