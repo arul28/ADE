@@ -507,12 +507,12 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
       onOpen: copy ? () => openCloudCopy(copy) : null,
     };
   });
-  // The account's copy of a chat is saved when a turn ends: "active" there is a turn still running.
+  // The account's copy of a chat is saved when a turn ends, so it can be stale
+  // while the chat runs again elsewhere. Only a chat whose computer is deleted
+  // is surely done; otherwise the card names the lane without a state.
   const savedChatStateOf = (record: CloudLaunchRecord): LaunchChatState | null => {
     const saved = savedChats.find((chat) => (record.sessionId && chat.chatId === record.sessionId) || (record.laneId != null && chat.laneId === record.laneId));
-    if (!saved?.status) return null;
-    if (saved.status === "active") return "working";
-    return saved.status === "idle" || saved.status === "ended" ? "done" : null;
+    return saved?.computer?.state === "deleted" ? "done" : null;
   };
   // Lanes whose chats were saved on the account, with their computer asleep or deleted, are lanes still.
   const listedLaneIds = new Set(cloudLanes.map((lane) => lane.laneId));
