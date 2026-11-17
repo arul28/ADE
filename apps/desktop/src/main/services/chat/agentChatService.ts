@@ -56856,7 +56856,7 @@ export function createAgentChatService(args: {
     const sessionId = restoreArgs.sessionId.trim();
     const toolType = restoreArgs.toolType.trim() as TerminalToolType;
     if (!isTrackedAgentCliToolType(toolType)) throw new Error(`ADE here can't start the '${restoreArgs.toolType}' CLI. Update ADE on this computer.`);
-    const provider = cliMoveProvider({ toolType, resumeMetadata: null } as unknown as TerminalSessionSummary);
+    const provider = cliMoveProvider({ toolType, resumeMetadata: null });
     if (!provider) throw new Error("ADE can't tell which agent this CLI ran, so it can't continue it here.");
     const typeMessage = async () => {
       const typed = await typeIntoAgentCliWhenFree({
