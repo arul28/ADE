@@ -51,7 +51,7 @@ import {
   useGithubAccess,
   type AccountProjectLane,
 } from "./AccountProjectSections";
-import { CloudSetupCardList } from "./CloudSetupCard";
+import { CloudSetupCardList, type LaunchChatState } from "./CloudSetupCard";
 import { CloneToMachineDialog, type CloneDialogMachine } from "./CloneToMachineDialog";
 import "./ProjectWelcomePage.css";
 
@@ -507,6 +507,13 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
       onOpen: copy ? () => openCloudCopy(copy) : null,
     };
   });
+  // The account's copy of a chat is saved when a turn ends: "active" there is a turn still running.
+  const savedChatStateOf = (record: CloudLaunchRecord): LaunchChatState | null => {
+    const saved = savedChats.find((chat) => (record.sessionId && chat.chatId === record.sessionId) || (record.laneId != null && chat.laneId === record.laneId));
+    if (!saved?.status) return null;
+    if (saved.status === "active") return "working";
+    return saved.status === "idle" || saved.status === "ended" ? "done" : null;
+  };
   // Lanes whose chats were saved on the account, with their computer asleep or deleted, are lanes still.
   const listedLaneIds = new Set(cloudLanes.map((lane) => lane.laneId));
   for (const chat of savedChats) {
@@ -595,6 +602,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
           onOpenChat={openLaunchChat}
           onHide={hideAccountCloudLaunch}
           openingLaunchId={pendingLaunchOpen == null ? null : launches.find((entry) => entry.record?.instanceId === pendingLaunchOpen)?.launchId ?? null}
+          chatStateOf={savedChatStateOf}
         />
         {showCopiesCard ? (
       <section className="kit-card w-full" aria-label="Computers">

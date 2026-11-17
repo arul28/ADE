@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { hideAccountCloudLaunch, launchInProgress, launchesForOrigin, useAccountCloudLaunches } from "../../../state/accountCloudLaunches";
 import { useAdeCloudLaneComputers } from "../../../state/adeCloudLaneIndex";
-import { CloudSetupCardList } from "../../projects/CloudSetupCard";
+import { CloudSetupCardList, type LaunchChatState } from "../../projects/CloudSetupCard";
+import { useTabCopyPin } from "../../../state/repositoryScope";
+import type { AgentChatSessionSummary } from "../../../../shared/types";
 import { refreshCloudMachines } from "../../remoteTargets/useCloudMachines";
 import { cn } from "../../ui/cn";
 import { navigateToAppTarget } from "../../../lib/openExternal";
@@ -9,6 +11,65 @@ import { extractError } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { useOptionalWebWorkspace, useWebMachines } from "../../../webclient/workspace/WebWorkspaceContext";
 import type { CloudLaunchRecord } from "../../../../shared/accountCloudLaunches";
+
+function chatStateOfSummary(summary: AgentChatSessionSummary): LaunchChatState {
+  if (summary.awaitingInput) return "waiting";
+  return summary.status === "active" ? "working" : "done";
+}
+
+/**
+ * The state of the started chats, read from the computer this tab is
+ * connected to (the tab copy's pin) and read again when one of them changes.
+ * A chat on a computer this tab is not connected to has no state here; its
+ * card then names the lane without saying what the agent is doing.
+ */
+function useLaunchChatStates(sessionIds: readonly string[]): ReadonlyMap<string, LaunchChatState> {
+  const pin = useTabCopyPin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const idsKey = [...sessionIds].sort().join("\0");
+  const [states, setStates] = useState<ReadonlyMap<string, LaunchChatState>>(() => new Map());
+  useEffect(() => {
+    const target = pinRef.current;
+    const ids = idsKey ? idsKey.split("\0") : [];
+    if (!target || ids.length === 0) {
+      setStates(new Map());
+      return;
+    }
+    let cancelled = false;
+    const read = (sessionId: string) => {
+      void window.ade.agentChat.getSummary({ sessionId }, target).then(
+        (summary) => {
+          if (cancelled) return;
+          setStates((current) => {
+            const next = new Map(current);
+            if (summary) next.set(sessionId, chatStateOfSummary(summary));
+            else next.delete(sessionId);
+            return next;
+          });
+        },
+        () => undefined,
+      );
+    };
+    for (const id of ids) read(id);
+    const watched = new Set(ids);
+    // A turn's start, end or a question changes the state: read that chat again (once per burst).
+    const queued = new Set<string>();
+    const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
+      if (!watched.has(envelope.sessionId) || queued.has(envelope.sessionId)) return;
+      queued.add(envelope.sessionId);
+      window.setTimeout(() => {
+        queued.delete(envelope.sessionId);
+        if (!cancelled) read(envelope.sessionId);
+      }, 1_000);
+    }, target);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [idsKey, pin?.key]);
+  return states;
+}
 
 /** How many 5 s reads "Open chat" waits for a new computer to be listed before it gives up. */
 const OPEN_CHAT_READS = 12;
@@ -33,6 +94,11 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
     )),
     [entries, originUrl],
   );
+  const readySessionIds = useMemo(
+    () => shown.flatMap((entry) => (entry.record?.sessionId ? [entry.record.sessionId] : [])),
+    [shown],
+  );
+  const chatStates = useLaunchChatStates(readySessionIds);
   const workspace = useOptionalWebWorkspace();
   const webMachines = useWebMachines();
   const cloudIndex = useAdeCloudLaneComputers();
@@ -108,6 +174,7 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
         openingLaunchId={opening?.launchId ?? null}
         onHide={hideAccountCloudLaunch}
         compact
+        chatStateOf={(record) => (record.sessionId ? chatStates.get(record.sessionId) ?? null : null)}
       />
     </div>
   );

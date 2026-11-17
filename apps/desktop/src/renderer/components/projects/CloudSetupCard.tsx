@@ -206,8 +206,11 @@ export function CloudSetupCardList({
   openingLaunchId = null,
   onHide,
   compact = false,
+  chatStateOf,
 }: {
   entries: readonly AccountCloudLaunchEntry[];
+  /** The started chat's state of a launch, when the page can tell. */
+  chatStateOf?: (record: CloudLaunchRecord) => LaunchChatState | null;
   /** Cards above a composer: see `CloudSetupCard`'s `compact`. */
   compact?: boolean;
   onOpenChat?: (record: CloudLaunchRecord) => void;
@@ -234,6 +237,7 @@ export function CloudSetupCardList({
           openingChat={openingLaunchId === entry.launchId}
           onHide={onHide ? () => onHide(entry.launchId) : undefined}
           compact={compact}
+          chatState={entry.record && chatStateOf ? chatStateOf(entry.record) : null}
         />
       ))}
       {newest ? (
@@ -324,6 +328,17 @@ function CompactSteps({ rows }: { rows: readonly SetupStep[] }) {
   );
 }
 
+/** What the launch's chat is doing now, when the page can tell. */
+export type LaunchChatState = "working" | "waiting" | "done";
+
+function readyLine(laneName: string | null | undefined, state: LaunchChatState | null): string {
+  const lane = laneName?.trim() ? `Lane “${laneName.trim()}”` : null;
+  if (state === "working") return lane ? `${lane} is working.` : "The agent is working.";
+  if (state === "waiting") return lane ? `${lane} is waiting for you.` : "The agent is waiting for you.";
+  if (state === "done") return lane ? `${lane} is done.` : "The agent is done.";
+  return lane ? `The chat is in ${lane.charAt(0).toLowerCase()}${lane.slice(1)}.` : "The chat is on ADE Cloud.";
+}
+
 /** What a failed launch said went wrong, if anything. */
 function failureOf(entry: AccountCloudLaunchEntry): string | null {
   return entry.startError?.trim() || entry.record?.error?.trim() || null;
@@ -341,8 +356,11 @@ export function CloudSetupCard({
   openingChat = false,
   onHide,
   compact = false,
+  chatState = null,
 }: {
   entry: AccountCloudLaunchEntry;
+  /** The started chat's state, when known; the ready line says it. */
+  chatState?: LaunchChatState | null;
   /**
    * Above a composer, where height is short: only the step that is happening
    * now (or failed), with how many are done, and no closing note.
@@ -474,7 +492,7 @@ export function CloudSetupCard({
         {ready && record ? (
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1 text-[12px]" style={{ color: "var(--kit-text-2)" }}>
-              {record.laneName ? `Lane “${record.laneName}” is working.` : "The agent is working."}
+              {readyLine(record.laneName, chatState)}
             </span>
             {onOpenChat ? (
               <button type="button" className="kit-btn kit-btn-primary" data-size="sm" disabled={openingChat} onClick={() => onOpenChat(record)}>
