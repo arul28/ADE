@@ -12488,19 +12488,21 @@ export function AgentChatPane({
   // say) stops checking for it. A send that has not shown up goes back in its
   // chat's saved draft, so reopening the chat finds the text, unless a newer
   // draft is already there.
+  const putUnsentTextInSavedDraft = useCallback((storageKey: string, text: string) => {
+    const saved = readComposerDraftSnapshot(storageKey, initialNativeControls)
+      ?? normalizeStoredComposerDraft({ text: "" }, initialNativeControls);
+    if (!saved || saved.text.trim().length) return;
+    writeComposerDraftSnapshot(storageKey, { ...saved, text, updatedAt: new Date().toISOString() });
+  }, [initialNativeControls]);
   useEffect(() => () => {
     const sendsInDoubt = sendsInDoubtRef.current;
     if (!sendsInDoubt.size) return;
     flushPendingComposerDraftWrite();
     for (const send of sendsInDoubt.values()) {
-      if (send.arrived()) continue;
-      const saved = readComposerDraftSnapshot(send.storageKey, initialNativeControls)
-        ?? normalizeStoredComposerDraft({ text: "" }, initialNativeControls);
-      if (!saved || saved.text.trim().length) continue;
-      writeComposerDraftSnapshot(send.storageKey, { ...saved, text: send.text, updatedAt: new Date().toISOString() });
+      if (!send.arrived()) putUnsentTextInSavedDraft(send.storageKey, send.text);
     }
     sendsInDoubt.clear();
-  }, [flushPendingComposerDraftWrite, initialNativeControls]);
+  }, [flushPendingComposerDraftWrite, putUnsentTextInSavedDraft]);
 
   // Save/restore per-session (or per-lane draft) composer state when scope changes.
   const composerDraftTextRef = liveDraftRef;
@@ -16544,6 +16546,9 @@ export function AgentChatPane({
       }
     }
     const draftSnapshot = draft;
+    // The chat this text belongs to, even if the pane shows another chat by
+    // the time the send fails.
+    const draftStorageKeyAtSend = composerDraftStorageKeyRef.current;
     const attachmentsSnapshot = attachments;
     const hasPastedPrompt = hasPastedTextPromptAttachment(attachmentsSnapshot);
     const isLiteralSlashCommand = isProviderSlashCommandInput(text);
@@ -16943,6 +16948,16 @@ export function AgentChatPane({
       // ADE did not even dial (a connect failed a moment ago): nothing left,
       // so the text comes back now with a plain note, not after the checks.
       const notSent = isRemoteCallNotSentError(submitError);
+      // The pane closed while the call was out (its Work list went away, say):
+      // no pane is left to put the text back or to check for it later, so it
+      // goes in its chat's saved draft now, unless it already shows in the
+      // chat or a newer draft is there.
+      if (!paneMountedRef.current) {
+        const arrivedAnyway = handedOff != null && !notSent
+          && countSentMessages(handedOff.sessionId, handedOff.texts, handedOff.submittedAt) > handedOff.alreadyThere;
+        if (!arrivedAnyway) putUnsentTextInSavedDraft(draftStorageKeyAtSend, draftSnapshot);
+        return null;
+      }
       // A timeout, or a link that dropped after the message left: the chat's
       // machine may still have it. Wait for it rather than handing it back now.
       if (handedOff && !notSent && (isRuntimeTransportTimeoutError(submitError) || isRemoteOutcomeUnknownError(submitError))) {
@@ -16954,7 +16969,7 @@ export function AgentChatPane({
         setError({ message: waitingMessage, kind: "status" });
         const arrived = () => countSentMessages(pending.sessionId, pending.texts, pending.submittedAt) > pending.alreadyThere;
         sendsInDoubtRef.current.set(pending.clientSendId, {
-          storageKey: composerDraftStorageKeyRef.current,
+          storageKey: draftStorageKeyAtSend,
           text: draftSnapshot,
           arrived,
         });
@@ -17031,6 +17046,7 @@ export function AgentChatPane({
     return steerResult;
   }, [
     countSentMessages,
+    putUnsentTextInSavedDraft,
     startFreedLaneChat,
     openSideChatFromComposer,
     isBoundScopePane, attachments,
