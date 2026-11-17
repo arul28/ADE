@@ -258,9 +258,13 @@ export function WorkSidebar({
   const chosenRemote = catalogState.chosenRemote;
   // A device opens even where the chat's machine cannot run it, when another
   // machine of the account can: its tool is where the machine is picked.
-  const iosOpensElsewhere = Boolean(chosenRemote.ios) || onlineMacElsewhere(toolMachines.machines);
+  // A chat on ADE Cloud keeps both device cards: they open on a computer the
+  // person picks (the pick state says why ADE Cloud can't run them).
+  const chatOnAdeCloud = toolMachines.machines.some((machine) => machine.isChat && machine.adeCloud === true);
+  const iosOpensElsewhere = Boolean(chosenRemote.ios) || onlineMacElsewhere(toolMachines.machines) || chatOnAdeCloud;
   const androidOpensElsewhere = Boolean(chosenRemote.android)
-    || toolMachines.machines.some((machine) => !machine.isChat && machine.online);
+    || toolMachines.machines.some((machine) => !machine.isChat && machine.online)
+    || chatOnAdeCloud;
   const { remoteMacDesktopPlatform, hasRemoteWindowsDesktop } = remoteDesktopToolContext(chosenRemote.screen?.platform);
   const hasRemoteAppControl = Boolean(chosenRemote.app);
   const toolActivity = useChatToolActivity(panelChatSessionId, chatPin, active, catalogState.refreshDeviceSources);

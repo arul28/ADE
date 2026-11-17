@@ -24,7 +24,8 @@ import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { foreignLaneKey, machineBlockedReason } from "../../state/laneMachineRouting";
 import { machineIdForBinding, machineIdOfSlot } from "../../../shared/machineIdentity";
-import { useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
+import { isAdeCloudComputer, useAdeCloudLaneComputers, useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
+import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME, isAdeCloudBinding } from "../../../shared/adeCloud/binding";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import { machineShowsConnected, rowShowsConnected } from "../../state/cloudRestingRows";
 import { wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
@@ -1419,13 +1420,25 @@ export const SessionListPane = React.memo(function SessionListPane({
   // An ADE Cloud lane's computer reads "Cloud · <lane>" in the machine filter.
   const machineLabelOf = useMachineLabelForMachine();
   const activeMachineLabel = useMachineLabelForBinding(projectBinding);
+  // Every ADE Cloud computer is one "ADE Cloud" choice in the filter: the
+  // person has no single cloud computers to pick from.
+  const adeCloudIndex = useAdeCloudLaneComputers();
+  const filterMachineIdOf = useCallback(
+    (machineId: string, binding?: OpenProjectBinding | null): string =>
+      isAdeCloudBinding(binding)
+        || isAdeCloudComputer({ machineKey: machineId, hostname: binding?.kind === "remote" ? binding.hostname ?? null : null }, adeCloudIndex)
+        ? ADE_CLOUD_MACHINE_ID
+        : machineId,
+    [adeCloudIndex],
+  );
+  const activeFilterMachineId = filterMachineIdOf(activeMachineId, projectBinding);
   const machineFilterOptions = useMemo<WorkFilterMachineOption[]>(() => {
     // A computer with two checkouts has two slices; the filter lists the computer once.
     const byMachine = new Map<string, WorkFilterMachineOption>();
     for (const entry of Object.values(crossMachineEntries)) {
-      const machineId = machineIdOfSlot(entry.machineId);
+      const machineId = filterMachineIdOf(machineIdOfSlot(entry.machineId), entry.binding);
       // A deleted cloud computer is no machine to filter by: its lanes have their own place.
-      if (machineId === activeMachineId || entry.computerGone === true) continue;
+      if (machineId === activeFilterMachineId || entry.computerGone === true) continue;
       const online = machineShowsConnected(entry);
       const known = byMachine.get(machineId);
       if (known) {
@@ -1433,18 +1446,24 @@ export const SessionListPane = React.memo(function SessionListPane({
         continue;
       }
       // A sleeping cloud computer is not listed as offline: a send wakes it.
-      byMachine.set(machineId, { id: machineId, name: machineLabelOf({ machineId, binding: entry.binding, name: entry.machineName }), online });
+      byMachine.set(machineId, {
+        id: machineId,
+        name: machineId === ADE_CLOUD_MACHINE_ID
+          ? ADE_CLOUD_NAME
+          : machineLabelOf({ machineId, binding: entry.binding, name: entry.machineName }),
+        online: machineId === ADE_CLOUD_MACHINE_ID ? true : online,
+      });
     }
     const others = [...byMachine.values()].sort((a, b) => a.name.localeCompare(b.name));
     return [
       {
-        id: activeMachineId,
-        name: activeMachineLabel,
-        online: crossMachineEntries[activeMachineId]?.online ?? true,
+        id: activeFilterMachineId,
+        name: activeFilterMachineId === ADE_CLOUD_MACHINE_ID ? ADE_CLOUD_NAME : activeMachineLabel,
+        online: activeFilterMachineId === ADE_CLOUD_MACHINE_ID ? true : crossMachineEntries[activeMachineId]?.online ?? true,
       },
       ...others,
     ];
-  }, [activeMachineId, activeMachineLabel, crossMachineEntries, machineLabelOf]);
+  }, [activeFilterMachineId, activeMachineId, activeMachineLabel, crossMachineEntries, filterMachineIdOf, machineLabelOf]);
   // A machine that answers the connection but refuses the chat read would
   // otherwise just contribute nothing, which reads as "no chats there". Only
   // when it has nothing retained to show: a blip on a machine whose chats are
@@ -1479,7 +1498,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     [dismissedMachineReadFailureIds, failingMachineReads],
   );
   const localMachineFilteredOut = workSessionFilters.machine.length > 0
-    && !workSessionFilters.machine.includes(activeMachineId);
+    && !workSessionFilters.machine.includes(activeFilterMachineId);
 
   const filteredHandoffJobs = useMemo(() => {
     const filtered = handoffJobs.filter((job) => {
@@ -1962,7 +1981,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               // remote lane instead of incorrectly treating an unknown PR as open.
               laneHasPr: () => false,
               laneIsDirty: (laneId) => laneId === row.lane.id && row.lane.status.dirty,
-              machineId: machineIdOfSlot(row.machineId),
+              machineId: filterMachineIdOf(machineIdOfSlot(row.machineId), row.binding),
               effectiveFilingBuckets,
             });
           })
