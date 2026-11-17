@@ -1071,7 +1071,7 @@ binding with the caller's own bearer, so it only ever reaches the caller's
 vault, and the items are the desktop's (`integration/cloud-key-<id>`,
 `provider_login/claude-pass/<hex>`). A value passes through memory only.
 
-## Saved copies (read with no computer awake)
+## Saved chats and other saved copies
 
 ADE Cloud computers can't answer while asleep, stopped, out of hours or
 deleted. So each computer saves here what a person reads, and every client
