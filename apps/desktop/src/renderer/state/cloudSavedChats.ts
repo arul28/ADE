@@ -262,6 +262,18 @@ function updateCarriedByQueue(args: AgentChatUpdateSessionArgs): boolean {
   return Object.entries(args).every(([key, value]) => QUEUE_CARRIED_UPDATE_KEYS.has(key) || value === undefined);
 }
 
+/** An update that goes to the computer now: the waiting picks of the same keys are older, so they go. */
+function dropPicksSetBy(chatId: string, args: AgentChatUpdateSessionArgs): void {
+  const picks = queuedChatPicks.get(chatId);
+  if (!picks) return;
+  const next: QueuedChatPicks = { ...picks };
+  for (const key of Object.keys(next) as Array<keyof QueuedChatPicks>) {
+    if (args[key] !== undefined) delete next[key];
+  }
+  if (Object.keys(next).length > 0) queuedChatPicks.set(chatId, next);
+  else queuedChatPicks.delete(chatId);
+}
+
 /** Adds the picked keys of one update to the chat's picks. */
 function notePicks(chatId: string, args: AgentChatUpdateSessionArgs): QueuedChatPicks {
   const next: QueuedChatPicks = { ...queuedChatPicks.get(chatId) };
@@ -384,6 +396,10 @@ export function withSavedChatReads(
       return run(wokenPin as P);
     }
   };
+  /** A failed apply of the waiting picks does not stop the message: the send goes on. */
+  const picksNotApplied = (error: unknown): void => {
+    console.warn("[cloud] the picked chat settings were not applied", error instanceof Error ? error.message : String(error));
+  };
   const savedReads: Pick<AgentChatApi, "getEventHistory" | "getEventHistoryPage" | "getSummary" | "send" | "steer" | "updateSession" | "delete"> = {
     getEventHistory: async (args, pin) => {
       const saved = async (location: SavedChatLocation) => {
@@ -418,6 +434,12 @@ export function withSavedChatReads(
       // to sleep: a plain send through the connection only dials, which an
       // asleep computer does not answer.
       if (!location || !reach || !(isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
+        // Picks made while the chat rested reach it before this send.
+        const picks = takeQueuedChatPicks(args.sessionId);
+        if (picks) {
+          await wakeOnRefusal(pin, args.sessionId, (callPin) => api.updateSession({ sessionId: args.sessionId, ...picks }, callPin))
+            .catch(picksNotApplied);
+        }
         return wakeOnRefusal(pin, args.sessionId, (callPin) => api.send(args, callPin));
       }
       // The account's queue keeps the message and wakes the computer; the
@@ -428,7 +450,7 @@ export function withSavedChatReads(
       const reachedPin = await reach.pinFor(location);
       const sendPin = reachedPin ?? pin;
       const picks = takeQueuedChatPicks(location.chatId);
-      if (picks) await api.updateSession({ sessionId: args.sessionId, ...picks }, sendPin);
+      if (picks) await api.updateSession({ sessionId: args.sessionId, ...picks }, sendPin).catch(picksNotApplied);
       if (!reachedPin) return api.send(args, pin);
       const result = await api.send(args, reachedPin);
       reach.reached(location);
@@ -449,6 +471,8 @@ export function withSavedChatReads(
         && (isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
         return savedChatSessionAfterPick(location, notePicks(location.chatId, args));
       }
+      // This change reaches the computer now: older waiting picks of the same keys must not follow it.
+      dropPicksSetBy(args.sessionId, args);
       if (location && reach && isSavedChatsMachineId(location.machineId)) {
         const reachedPin = await reach.pinFor(location);
         if (reachedPin) return api.updateSession(args, reachedPin);

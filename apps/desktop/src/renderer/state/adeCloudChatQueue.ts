@@ -224,21 +224,22 @@ export const sendThroughAdeCloudQueue: SavedChatQueueSend = async (location, arg
   // Settings picked since the last send (`updateSession` kept them): the
   // computer applies them before the message. They stay for a direct send
   // until the queue took this one.
+  // A model goes only when the person picked one: the computer applies a sent
+  // model as a pick, and a gone computer's launch falls back to the saved model.
   const { modelId: pickedModel, ...settings } = peekQueuedChatPicks(location.chatId) ?? {};
-  const modelId = pickedModel ?? location.row.model ?? null;
   const answer = await send({
     machineKey: location.machineKey,
     chatId: location.chatId,
     messageId,
     text,
     provider,
-    modelId,
+    ...(pickedModel ? { modelId: pickedModel } : {}),
     ...(Object.keys(settings).length > 0 ? { settings } : {}),
   });
   if (answer.state === "unsupported") return "unsupported";
   if (answer.state === "refused") throw new Error(answer.message);
   clearQueuedChatPicks(location.chatId);
-  noteAdeCloudQueuedSend({ machineKey: location.machineKey, chatId: location.chatId }, answer, { text, provider, modelId });
+  noteAdeCloudQueuedSend({ machineKey: location.machineKey, chatId: location.chatId }, answer, { text, provider, modelId: pickedModel ?? location.row.model ?? null });
   return "sent";
 };
 
