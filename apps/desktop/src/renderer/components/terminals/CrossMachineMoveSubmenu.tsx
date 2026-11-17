@@ -30,6 +30,9 @@ import { MENU_ITEM_CLASS, MenuRowIcon, MenuSeparator, MenuSubmenu, MenuSubmenuSt
 import { cn } from "../ui/cn";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 import { adeCloudMoveSource, wakeAdeCloudLane } from "../../state/adeCloudLaneWake";
+import { CloudMark } from "../remoteTargets/cloudBrand";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
+import { ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE, useOwnMoveMachines } from "../chat/crossMachineMoveTargets";
 
 /**
  * Session menu "Hand off ▸ Another machine ▸". The panel paints at once and
@@ -117,6 +120,8 @@ export function CrossMachineMoveSubmenu({
   };
 
   const result = options.status === "ready" ? options.result : null;
+  // Own computers only: ADE Cloud shows once, as the disabled row below.
+  const machines = useOwnMoveMachines(result?.machines);
   // The summary and the brain's answer can arrive in either order.
   const record: AgentChatCrossMachineHandoffRecord | null = pickNewerCrossMachineHandoffRecord(
     session.crossMachineHandoff ?? null,
@@ -241,7 +246,7 @@ export function CrossMachineMoveSubmenu({
   };
 
   const anyQuickBrief = Boolean(
-    result?.machines.some((machine) => machine.online && !machine.unavailableReason && machine.hasRepository !== false),
+    machines?.some((machine) => machine.online && !machine.unavailableReason && machine.hasRepository !== false),
   );
   const quickBriefHint = anyQuickBrief
     ? [
@@ -376,7 +381,7 @@ export function CrossMachineMoveSubmenu({
             <MenuSubmenuStatus>Finding your machines…</MenuSubmenuStatus>
           ) : options.status === "error" ? (
             <MenuSubmenuStatus>{options.message}</MenuSubmenuStatus>
-          ) : result && result.machines.length === 0 ? (
+          ) : machines && machines.length === 0 ? (
             <MenuSubmenuStatus>No other machines on this account.</MenuSubmenuStatus>
           ) : null}
           {hardBlockers.length ? (
@@ -392,7 +397,7 @@ export function CrossMachineMoveSubmenu({
               {quickBriefHint}
             </div>
           ) : null}
-          {result?.machines.map((machine) => {
+          {machines?.map((machine) => {
             // No repository there: the full setup asks before cloning. A CLI
             // has no full setup, so it waits until the project is open there.
             const needsClone = machine.hasRepository === false;
@@ -456,6 +461,22 @@ export function CrossMachineMoveSubmenu({
               </div>
             );
           })}
+          {machines ? (
+            <div className="flex items-center gap-0.5" data-testid="session-menu-move-ade-cloud">
+              <button
+                type="button"
+                disabled
+                title={ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE}
+                aria-label={`${ADE_CLOUD_NAME}, unavailable. ${ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE}`}
+                className={cn(MENU_ITEM_CLASS, "min-w-0 flex-1 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent")}
+              >
+                <CloudMark size={12} className="shrink-0 text-muted-fg" />
+                <span className="min-w-0 flex-1 truncate">{ADE_CLOUD_NAME}</span>
+                <span className="ml-3 shrink-0 whitespace-nowrap text-[10px] text-muted-fg/60">not yet</span>
+              </button>
+              <span aria-hidden className="kit-icon-btn shrink-0 invisible" />
+            </div>
+          ) : null}
           {cli ? null : (
             <>
               <MenuSeparator />

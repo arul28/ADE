@@ -17,6 +17,12 @@ entry point calls the same `chat` action, `startCrossMachineHandoff`:
   chat ("wrap up and continue this on the Mac mini");
 - the phone, through the sync remote command `chat.startCrossMachineHandoff`.
 
+The pickers on desktop, web and iOS offer the account's own computers only.
+`getCrossMachineHandoffOptions` still lists ADE Cloud computers (clients that
+read the full list keep it); the UI drops them and shows one disabled
+**ADE Cloud** row: "ADE Cloud can't take a moved lane yet. Pick one of your
+computers."
+
 The brain reaches the destination over its agents' paired connection (the same
 path as `ade … --machine`), and the destination applies its own action policy to
 each step: `preflightCrossMachineDestination`, then
