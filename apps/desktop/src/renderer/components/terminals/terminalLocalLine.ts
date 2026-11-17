@@ -30,13 +30,11 @@ export type TerminalLocalLineAction =
 export type TerminalLocalLine = {
   readonly text: () => string;
   /** Keys from the terminal (xterm `onData`). Empty when the line took them. */
-  input: (data: string, options?: { handOver?: boolean }) => TerminalLocalLineAction[];
+  input: (data: string, options?: { handOver?: boolean; submit?: boolean }) => TerminalLocalLineAction[];
   /** Shift+Enter. False when the line is empty: the key goes to the CLI. */
   newline: () => boolean;
   /** Pasted text joins the line. */
   paste: (text: string) => void;
-  /** Text joins the line after what is already in it (a queued line its send skipped). */
-  append: (text: string) => void;
   /** The line as keys for the CLI (the line turned off): typed, or a paste with line breaks. */
   takeForHandOver: () => string;
   /** A submit that failed: its text goes back in front of what came since. */
@@ -90,7 +88,8 @@ export function createTerminalLocalLine(onChange: () => void): TerminalLocalLine
         return [];
       }
       if (!text) return [{ kind: "write", data }];
-      if (data === "\r") return [{ kind: "submit", text: take() }];
+      // Enter while another line is out keeps this one here for the next Enter.
+      if (data === "\r") return options?.submit === false ? [] : [{ kind: "submit", text: take() }];
       if (SINGLE_KEY_LOCAL_EDITS.has(data)) {
         if (data === "\x15") set("");
         else if (data === "\x17" || data === "\x1b\x7f") set(dropLastWord(text));
@@ -117,9 +116,6 @@ export function createTerminalLocalLine(onChange: () => void): TerminalLocalLine
         .replace(/\x1b/g, "\u241b")
         .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
       if (lines) set(text + lines);
-    },
-    append(added) {
-      if (added) set(text + added);
     },
     takeForHandOver: () => localLineAsKeys(take()),
     restore(failed) {

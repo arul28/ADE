@@ -45,9 +45,11 @@ describe("the terminal's local line", () => {
     expect(line.text()).toBe("retry me");
     expect(line.input("\r")).toEqual([{ kind: "submit", text: "retry me" }]);
 
-    // A line typed behind a failed one keeps its place after it.
-    line.restore("first");
-    line.append("second");
-    expect(line.text()).toBe("firstsecond");
+    // Enter while another line is being sent does not start a second send: the
+    // text stays for the next Enter.
+    line.paste("next");
+    expect(line.input("\r", { submit: false })).toEqual([]);
+    expect(line.text()).toBe("next");
+    expect(line.input("\r")).toEqual([{ kind: "submit", text: "next" }]);
   });
 });

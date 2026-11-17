@@ -243,8 +243,6 @@ type CachedRuntime = {
   localLineError: TerminalLocalLineError | null;
   /** The last line that failed, with its id: sent again unchanged, it keeps the id so it never arrives twice. */
   localLineFailed: { text: string; clientSendId: string } | null;
-  /** The last local-line send, so the next line's Enter waits for it (and for the keys typed between them). */
-  localLineFlight: Promise<void> | null;
   /**
    * May the local line be handed to the program as keys? False while the
    * terminal's machine is away, so a line typed before a drop is kept rather
@@ -1446,9 +1444,14 @@ function setLocalLineWanted(runtime: CachedRuntime, wanted: boolean): void {
 function writeKeyInput(runtime: CachedRuntime, data: string): void {
   if (localLineOn(runtime)) {
     // A line whose send is in doubt only submits through Enter (which keeps
-    // its id); any other key goes to the CLI without the line.
+    // its id); any other key goes to the CLI without the line. While a line is
+    // being sent, Enter keeps the next one here rather than starting a second
+    // send: one line is out at a time, in the order the person presses Enter.
     const handOver = localLineUncertainText(runtime) == null;
-    applyLocalLineActions(runtime, runtime.localLine?.input(data, { handOver }) ?? []);
+    applyLocalLineActions(runtime, runtime.localLine?.input(data, {
+      handOver,
+      submit: runtime.localLineSending === 0,
+    }) ?? []);
     return;
   }
   handOverLocalLine(runtime);
@@ -1465,37 +1468,13 @@ function applyLocalLineActions(runtime: CachedRuntime, actions: TerminalLocalLin
 /**
  * Sends the line to the terminal's machine, which types it and presses Enter
  * there (`chat.typeIntoCli` with `when: "now"`, the input box's send path).
- * Sends to one terminal go in order, so keys typed between two Enters (an Esc
- * for the running turn, say) reach the CLI before the second line. Keys
- * pressed meanwhile wait for the send (the paste-write gate), so an Esc after
- * Enter still reaches the CLI after the line. A failed send puts the line
- * back; sent again unchanged it keeps its id, and the machine types a line it
- * already has only once.
+ * One line is out at a time (`writeKeyInput` keeps the next Enter's text in
+ * the line), so what the person typed reaches the CLI in order, and an Esc
+ * after Enter waits for the line (the paste-write gate) instead of overtaking
+ * it. A failed send puts the line back; sent again unchanged it keeps its id,
+ * and the machine types a line it already has only once.
  */
 async function submitLocalLine(runtime: CachedRuntime, text: string): Promise<void> {
-  // A line typed while an earlier one is still out keeps its place behind it:
-  // if that one fails, this one waits instead of overtaking the restored text.
-  const queued = runtime.localLineFlight != null;
-  const previous = runtime.localLineFlight ?? Promise.resolve();
-  const flight = previous.catch(() => undefined).then(() => sendLocalLine(runtime, text, queued));
-  runtime.localLineFlight = flight;
-  try {
-    await flight;
-  } finally {
-    if (runtime.localLineFlight === flight) runtime.localLineFlight = null;
-  }
-}
-
-async function sendLocalLine(runtime: CachedRuntime, text: string, queued: boolean): Promise<void> {
-  // The line ahead failed: stop here and keep this text after it, in the order
-  // the person typed it. Enter sends the restored line as one message.
-  if (queued && runtime.localLineFailed) {
-    if (!runtime.disposed) {
-      runtime.localLine?.append(text);
-      notifyRuntime(runtime);
-    }
-    return;
-  }
   const pin = runtime.runtimePin;
   if (!pin) {
     runtime.localLine?.restore(text);
@@ -3479,7 +3458,6 @@ function createRuntime(args: {
     localLineSendingText: null,
     localLineError: null,
     localLineFailed: null,
-    localLineFlight: null,
     localLineHandOver: true,
     localLineUncertainText: null,
     linkProviderSub,
