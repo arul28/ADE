@@ -495,6 +495,12 @@ A tap, key or swipe that fails shows one error toast per stall
 
 ### Where a device runs
 
+An ADE Cloud computer runs no Android emulator yet. For a chat on ADE Cloud
+the Android tool is not hidden: it says "Android comes to ADE Cloud later" and
+offers the person's own machines (`workToolPanels.tsx`). The chat's cloud
+computer shows as "ADE Cloud", never by its own name, and no other cloud
+computer is listed.
+
 The **Runs on** machine row of a device tool lists the chat's machine first,
 then this computer, then the rest by name. The order is the same each time the
 tool opens. One switch per device kind runs at a time: the chosen chip shows a

@@ -14,8 +14,8 @@ channels, persistence fields, and analytics/log identifiers.
 - **Activity is an agent feed.** The session list carries `kind: "agent"` items
   only. Pull requests, checks, and review outcomes keep pushing, badging, and
   toasting, but they render in a separate **Notifications** column rather than
-  as rows beside the agent working on them — one lane with an open PR used to
-  appear twice.
+  as rows beside the agent working on them, so one lane with an open PR shows
+  once.
 - Running work is ambient. It belongs in Activity, widgets, and
   Live Activities, not in a stream of toast or push interruptions.
 - Only urgent events push by default: an agent that needs you, an agent that
@@ -313,6 +313,15 @@ POST   /machines/:machineKey/attention
 
 Any other `/attention/account/*` path is a 404 rather than a silent fallthrough.
 
+A browser may call only the Activity routes: the snapshot, ack, presence,
+preferences and account settings (`BROWSER_ACCOUNT_ROUTES` in
+`apps/push-relay/src/relay.ts`). A request with an `Origin` header to any
+other account route gets a 403 before authentication. So the vault, the
+Passwords key and items, provider sign-ins, and machine and device changes stay
+native-only, and a script on the ADE Web origin can never read a secret. The
+web and the iPhone read account data that holds no secret through the account
+server instead (for example `GET /cloud/sign-ins`, which returns status only).
+
 D1 stores account revisions, machine links, items, tombstones, revoked machines,
 device registrations, Live Activity state/tokens, presence, preferences, and
 delivery receipts. Snapshots and fan-out are capped. Expired items, old
@@ -512,18 +521,14 @@ What it filters and how:
   `running`.
 
   The first resolution and every refresh go through **one** `applyChatSummary`.
-  They used to be written out separately and the refresh only re-read the
-  interaction mode, which is how a renamed chat kept its birth title for the life
-  of the session — so an attention row named a chat nobody recognised. The
-  attempt is stamped *before* the await, so a slow or failing read cannot make
+  So a renamed chat's row always shows its current title. The attempt is stamped *before* the await, so a slow or failing read cannot make
   every flush retry the same session, and a thrown read keeps the last known
   metadata rather than blanking the title or flipping the glyph. A terminal run
   is skipped: it cannot be renamed into something the user is waiting on.
 - **Lifetimes.** Running/starting rows expire after 2 h, recent outcomes after
-  24 h, and idle roster rows after 7 days. Idle rows used to carry
-  `expiresAt: null`, which meant a chat deleted while its machine was offline sat
-  in the account feed forever, because only the owning machine can tombstone it
-  and it never came back to do so.
+  24 h, and idle roster rows after 7 days. Every row expires, because only the
+  owning machine can tombstone a row, and a deleted chat's machine may never
+  come back.
 - **Deletion tombstones immediately.** The publisher subscribes to session
   removals; a delete drops the run, its pending alerts, and the 10 s roster disk
   cache, then flushes, so the protocol-2 delta tombstones the id on the spot
@@ -657,7 +662,7 @@ default, the same way version 2 moved event policies. "At
 a computer" means any client that is not a phone reported presence in the last
 45 s with a foreground ADE window, or a visible Activity surface showing that
 exact item. Desktops on Windows and Linux report platform `unknown` and the
-hosted web client `web`; both count, where only `macOS` used to. The next
+hosted web client `web`; both count. The next
 machine heartbeat escalates an item that is still unseen after the delay.
 
 The delay is only the fallback. The desktop app also reports `userActive`
@@ -1007,6 +1012,9 @@ long and offers a retry instead of leaving the header pinned on syncing.
 
 ## Hosted web Activity
 
+The hosted web client has no push notifications. It shows Activity only while
+a page is open.
+
 The hosted web client renders the desktop renderer, so it shows the same
 Activity panel in both sizes, with the same four columns and chips. Only the
 data source differs: the hosted browser adapter reads account Activity directly from the relay with
@@ -1073,9 +1081,8 @@ and paired-machine route; omitted tokens preserve the existing registration.
 ## Live Activity and widgets
 
 There is one account-wide `agent-runs` Live Activity per iPhone, and only the
-relay starts it. A brain never starts a Live Activity of its own: the per-machine
-activity it used to start when account delivery was unavailable is how a phone
-came to show two. The relay's legacy `/machines/:key/publish` route still lets an
+relay starts it. A brain never starts a Live Activity of its own, so a phone
+never shows two. The relay's legacy `/machines/:key/publish` route still lets an
 older brain end the activity it started, and reports its start and update frames
 as suppressed so the brain stops retrying.
 

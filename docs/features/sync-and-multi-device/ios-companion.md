@@ -1,16 +1,18 @@
 # iOS Companion
 
-The ADE iOS app is a native SwiftUI companion that acts as a
-**controller** for an ADE runtime (`ade serve`). The runtime may be running
-on a Mac that also has the desktop app open or on a headless machine —
-the phone does not care, and the desktop renderer is just another
-client of the same runtime. The phone never runs agents; it reads synced
-state from a local SQLite DB and sends execution commands to the runtime
-over WebSocket.
+The ADE iOS app is a native SwiftUI client. It works in two ways, and the
+person sees the same tabs in both:
 
-This doc summarises the architecture at a level useful for understanding
-the sync surface. For the full roadmap, see Phase 6 and Phase 7 plans in
-the repo's `docs/final-plan/`.
+- **With a computer.** The phone is a controller for an ADE runtime
+  (`ade serve`) on one of the person's computers. It reads synced state from a
+  local SQLite database and sends commands to the runtime over WebSocket. The
+  desktop renderer is another client of the same runtime.
+- **With no computer.** ADE Cloud is one machine that every signed-in account
+  has. The phone reads saved chats, copies, Git summaries, files and history
+  from the account server and GitHub. It wakes a cloud computer only to do
+  work. See [ADE Cloud on the phone](#ade-cloud-on-the-phone).
+
+The phone never runs agents.
 
 ## Connect Your Phone
 
@@ -228,8 +230,8 @@ action.
 
 ## Slim mobile chat wire
 
-A phone used to download the same chat bytes a desktop does. On a real 16.1 MB
-/ 21,665-event thread from a four-lane program, three families own most of it:
+Without these rules, a phone downloads the same chat bytes a desktop does. On a
+real 16.1 MB / 21,665-event thread, three event families own most of the bytes:
 `tool_result` 23.1%, `subagent_progress` 19.8% (7,775 events), and
 `subagent.progress` a further 15.2% — a second copy of the same 7,775 facts.
 
@@ -272,22 +274,6 @@ again from the turn-activity sheet — costs nothing. "Could not read it" and
 "it is no longer in the transcript" are different answers and the row says
 which.
 
-### Before and after, on the measured thread
-
-| | legacy phone | `mobileChatSlimV1` |
-|---|---|---|
-| `chat_subscribe` snapshot, events | 498 | 91 (81.7% fewer) |
-| `chat_subscribe` snapshot, bytes | 237.4 KiB | 86.2 KiB (63.7% smaller) |
-| whole live stream, events | 21,937 | 14,046 (36.0% fewer) |
-| whole live stream, bytes | 14,367.5 KiB | 10,859.0 KiB (24.4% smaller) |
-
-The snapshot is what the phone pays every time it opens a thread, which is why
-it is the number that matters most. In the live stream the mirror is the
-biggest single saving (2,489.8 KiB → 0) and tool results the next
-(2,036.7 → 1,070.8 KiB); the one-per-second coalescing removes only 116 events
-on this thread, because a single subagent already reports more slowly than once
-a second — it bounds a burst rather than thinning a steady stream.
-
 ## In-thread subagents have a card, not a transcript
 
 A subagent that runs INSIDE a main thread — a Claude or Codex native Task —
@@ -311,16 +297,15 @@ the child's Work row, so a child on another machine opens on that machine.
 ## Startup diagnostics collapse to one row
 
 Desktop folds routine turn receipts into its per-turn work summary. The phone
-has no such summary, so a Codex thread's first turns used to leave a wall of
-near-identical rows: a config warning, then one "Turn details · 2 optional
-integrations unavailable", then another. iOS now folds a contiguous run of two
+has no such summary, so without a fold a Codex thread's first turns show a
+wall of near-identical rows. iOS folds a contiguous run of two
 or more diagnostics cards — every `turnDetails` receipt plus routine warning
 notices (Codex config warnings, hook notices, rate-limit warnings) — into ONE
 small, chrome-free line in the thread, `1 warning · 2 optional integrations
 unavailable` with a chevron, which expands to the full sentence of every
 warning and each unavailable integration. Danger notices (auth, thread errors) and actionable
 notices (a reset credit, a host sleep, a spawn chip) keep their own rows, and a
-lone diagnostics card renders exactly as it did before. The fold lives in
+lone diagnostics card renders as a normal card. The fold lives in
 `foldingWorkDiagnosticCards` (`WorkTimelineHelpers.swift`) and changes nothing
 for the desktop or the web client.
 
@@ -435,6 +420,18 @@ apps/ios/
 │   │   │                            # (--check exits 1 when it is stale)
 │   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
 │   ├── Services/
+│   │   ├── AccountCloudStore.swift  # ADE Cloud account reads: access, saved
+│   │   │                            #   chat copies, the message queue
+│   │   │                            #   (queueSend, followQueue), Keep it
+│   │   ├── AccountCloudLaunches.swift # cloud launches, the model catalog,
+│   │   │                            #   sign-in status (/cloud/sign-ins)
+│   │   ├── CloudServerClient.swift  # /cloud/* routes, refusal mapping
+│   │   ├── CloudAtRestReads.swift   # CloudAtRestStore: project overview,
+│   │   │                            #   Git summaries, session copies
+│   │   ├── SyncService+Cloud.swift  # cloud rows, resting rows, wakes
+│   │   ├── SyncService+LinearAccount.swift # Linear through the account
+│   │   ├── GitHubDirectClient+Contents.swift # folders, files, commits
+│   │   │                            #   of a branch, straight from GitHub
 │   │   ├── AccountService.swift     # Clerk-backed account identity,
 │   │   │                            # transferable social auth outcomes,
 │   │   │                            # durable sign-out/device-ownership epochs,
@@ -609,8 +606,8 @@ apps/ios/
 │   │   │                            #   "<rows> (may be out of date)" rule),
 │   │   │                            # dictation mic, recording pill, global
 │   │   │                            # dictation pill
-│   │   │                            # — `ADEStreamingShimmer.swift` was retired
-│   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
+│   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView,
+│   │   │                            # CtoAccountCopy (the CTO's account copy)
 │   │   ├── Hub/                     # HubScreen (all-projects roster home),
 │   │   │                            # HubActivityState (canonical six-group
 │   │   │                            #   glyphs/tallies plus Hub roster filter
@@ -645,7 +642,7 @@ apps/ios/
 │   │   │                            # Account projects (see "Account
 │   │   │                            #   projects on the phone"):
 │   │   │                            #   HubAccountProjects (join, resolver,
-│   │   │                            #   status line, project home),
+│   │   │                            #   status line, account project scope),
 │   │   │                            #   HubAccountCards (card pass, chips,
 │   │   │                            #   saved order, account sheets),
 │   │   │                            #   ProjectLocationScreen,
@@ -679,14 +676,21 @@ apps/ios/
 │   │   │                            # LaneDeeplinkHelpers (envelope-aware
 │   │   │                            #   https/ade lane/session/branch/PR
 │   │   │                            #   link minting),
+│   │   │                            # LaneMoveSheet ("Move to…" and the
+│   │   │                            #   resting cloud lane's move),
 │   │   │                            # LaneEnvInitProgressView, etc.
 │   │   ├── Files/                   # FilesRootScreen, FilesDirectoryScreen,
 │   │   │                            # FilesDetailScreen, *+Actions helpers,
 │   │   │                            # FilesSearchScreen (full-screen unified
-│   │   │                            #   name+content search; replaced the
-│   │   │                            #   inline FilesQueryCard search cards),
+│   │   │                            #   name+content search),
 │   │   │                            # FilesWorkspacePickerDropdown
 │   │   ├── Work/                    # WorkRootScreen, WorkChatSessionView,
+│   │   │                            # WorkCloudMachine (ADE Cloud new chat,
+│   │   │                            #   setup card, held messages, state
+│   │   │                            #   lines), WorkCloudAtRest (CLI and
+│   │   │                            #   shell copies, the resting chat move),
+│   │   │                            # WorkNewChatMachinePicker (ADE Cloud
+│   │   │                            #   is always an option),
 │   │   │                            # WorkRootComponents (list chrome: one-row
 │   │   │                            #   header, filter panel — including the
 │   │   │                            #   Machine chip row and
@@ -871,13 +875,16 @@ apps/ios/
 │   │   │                            #   (github.* remote commands, menu shown only
 │   │   │                            #   when the repo has open issues; see
 │   │   │                            #   docs/features/issues).
-│   │   ├── Cloud/                    # ADE Cloud page (Work ⋯ menu, shown once the
-│   │   │                            #   account has ADE Cloud): machines and their
-│   │   │                            #   actions, spending, a new
-│   │   │                            #   machine approved here, what agents may
-│   │   │                            #   spend; Duo book and laptop layouts. Over
-│   │   │                            #   cloud.read / cloud.write (see
-│   │   │                            #   docs/features/ade-cloud/README.md).
+│   │   ├── Cloud/                    # Settings › ADE Cloud (CloudPaneSheet: over
+│   │   │                            #   cloud.read / cloud.write on a computer,
+│   │   │                            #   or the account server directly with no
+│   │   │                            #   computer), limits, sign-ins, sizes.
+│   │   │                            # CloudLaneAtRest: the lane detail, files
+│   │   │                            #   and history of a resting cloud lane.
+│   │   │                            # CloudPhoneFormat: every cloud computer
+│   │   │                            #   is named "ADE Cloud".
+│   │   │                            # CloudAtRestPreviews,
+│   │   │                            #   CloudNoComputerPreviews: fixtures.
 │   │   ├── CursorCloud/              # Cursor Cloud fleet pane: CursorCloudPaneSheet
 │   │   │                            #   (full-screen sheet mirroring the Linear
 │   │   │                            #   pane's presentation) +
@@ -906,8 +913,8 @@ apps/ios/
 │   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen
 │   │   │                            #   (PrDetailView — Overview emitted as
 │   │   │                            #   sibling List rows, not a monolith),
-│   │   │                            # PrDetailActivityTab (timeline builder +
-│   │   │                            #   commit-group folding), PrDetailOverviewTab,
+│   │   │                            # PrConversationDigest (the PR story:
+│   │   │                            #   pushes, bots, comments), PrDetailOverviewTab,
 │   │   │                            # PrDetailHeaderComponents (compact summary,
 │   │   │                            #   collapsible local-lane offer, description),
 │   │   │                            # PrGitHubDescriptionParser (safe embedded
@@ -1305,7 +1312,28 @@ iPhone are `compact` and use the same views stacked, never an older design.
   events with the display family, edge bar and fold, and adds one breadcrumb
   per change.
 - **Fixtures.** `-adePreviewScreen duo-*` opens a fixture screen on any
-  simulator (`DuoPreviews.swift`, `DuoSplitPreviews.swift`).
+  simulator (`DuoPreviews.swift`, `DuoSplitPreviews.swift`). The ADE Cloud
+  fixtures are in `Views/Cloud/CloudNoComputerPreviews.swift` and
+  `Views/Cloud/CloudAtRestPreviews.swift`:
+  - chats: `duo-cloud-chat-asleep`, `duo-cloud-chat-waking`,
+    `duo-cloud-chat-queued`, `duo-cloud-chat-sign-in`,
+    `duo-cloud-chat-deleted`, `duo-cloud-deleting-soon`
+  - refusals: `duo-cloud-refused-out_of_hours`,
+    `duo-cloud-refused-too_many_awake`, `duo-cloud-refused-account_blocked`
+  - new chat and lists: `duo-cloud-new-chat`, `duo-cloud-new-chat-setup`,
+    `duo-cloud-new-chat-refused`, `duo-cloud-lanes`, `duo-cloud-work`,
+    `duo-cloud-account-tabs`
+  - lanes at rest: `duo-cloud-rest-lane`, `duo-cloud-rest-lane-unpushed`,
+    `duo-cloud-files`, `duo-cloud-files-folder`, `duo-cloud-files-file`,
+    `duo-cloud-files-no-access`, `duo-cloud-files-unpushed`
+  - copies: `duo-cloud-session-copy`, `duo-cloud-session-copy-deleted`,
+    `duo-cloud-shell-copy-deleted`
+  - moves: `duo-cloud-move-asleep`, `duo-cloud-move-deleted`,
+    `duo-lane-move`, `duo-lane-move-asleep`, `duo-lane-move-deleted`
+  - CTO and Settings: `duo-cloud-cto-copy`, `duo-cloud-cto-copy-sheet`,
+    `duo-cloud-settings-direct`, `duo-cloud-machine`, `duo-cloud-limits`,
+    `duo-cloud-models`, `duo-cloud-plans`, `duo-cloud-sizes`,
+    `duo-cloud-invite`
 - **Tent** stands the phone on its front screen, held sideways; the inner
   display is off, so the app lays out compact. Only laptop stacks.
 - **Hinge angle.** `DuoHingeObserver` keeps `\.duoLayout.hingeAngle` on a 5°
@@ -1325,8 +1353,7 @@ All visible connection affordances read from `SyncConnectionHealth`
 (produced by the pure helper `syncConnectionHealth(connectionState:
 prefersReducedSyncLoad: lastError:)` and re-exposed through
 `SyncService.connectionHealth`) instead of branching on the raw
-`RemoteConnectionState`. The health value separates three concerns
-that used to be tangled together:
+`RemoteConnectionState`. The health value separates three concerns:
 
 - `transport: SyncTransportHealth` — `disconnected` / `connecting` /
   `connected` / `unreachable`. `RemoteConnectionState` has no separate
@@ -1357,10 +1384,8 @@ The dot is placed in the top-leading `ToolbarItem` of every top-level
 tab (Lanes, Files, Work, PRs) and every deep screen
 (`LaneDetailScreen`, `PrDetailView`, `WorkSessionDestinationView`,
 `WorkNewChatScreen`, `FilesDirectoryScreen`; `FilesDetailScreen`
-hosts it alongside its back-button affordance). It replaces the
-older `ADEConnectionPill` and the per-tab "connection notice" banner
-cards — controllers no longer ship duplicate offline / reconnect /
-hydrating cards inside each screen body.
+hosts it alongside its back-button affordance). Screens show no separate
+offline, reconnect or hydrating cards in their bodies.
 
 The Work root top bar also places a Settings gear immediately to the right of
 the notification bell. It opens the same `ConnectionSettingsView` sheet as the
@@ -1631,7 +1656,8 @@ A project is one GitHub repository. Each computer can hold copies of it.
 - The Hub joins each machine card to its account project in this order: the
   id the brain sent, the account's copy table, then the GitHub `owner/name`.
   A card of a removed project is hidden. A project that no reachable machine
-  shows gets its own card.
+  shows gets its own card. Opening that card opens the project's normal tabs
+  in account scope (see [ADE Cloud on the phone](#ade-cloud-on-the-phone)).
 - The saved Hub order uses account project ids, so it is the same on every
   machine.
 - The main list has one card per account project. A second folder of the
@@ -1711,6 +1737,149 @@ computer on.
 - Add project → From GitHub lists the account's repositories directly when
   GitHub is connected, or when no computer is online.
 
+## ADE Cloud on the phone
+
+ADE Cloud is one machine that every signed-in account has. The phone shows it
+next to the person's own computers. Each cloud lane has its own computer
+behind it, but the phone never shows one cloud computer by name: every cloud
+computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
+`Views/Cloud/CloudPhoneFormat.swift`).
+
+### The rule: reading never wakes, doing wakes
+
+- **Reading** comes from the account server or GitHub, with no wake: saved
+  chats, CLI and shell copies, Git summaries, files, history, the CTO copy,
+  Linear, and Settings › ADE Cloud.
+- **Doing** wakes the computer: a send, "Wake and open" on a changed file,
+  "Wake to use it" on a copy, "Wake and move", and the Wake button. The wake
+  never blocks the screen. The person can leave the screen or the app.
+- `MachineFleet.connect(machineKey:timeout:wake:)` connects with no wake when
+  `wake` is false: it connects only to a computer that is already up.
+  `showsCloudLaneState` (`Views/Work/WorkChatSessionView.swift`) uses that for
+  an opened chat or lane. It shows one state line: asleep, waking, deleted,
+  wake failed, refused (the server's sentence), or "deleting soon" with Keep
+  it (`POST /cloud/instances/:id/keep`).
+- `beginCloudWakeIfAsleep` (`Services/SyncService.swift`) is the one waker. A
+  second wake of the same computer waits for the first, because a wake costs
+  money. `wakeCloudMachineIfNeeded` (`Services/SyncService+Cloud.swift`) sends
+  it through a connected computer or through the account server itself.
+
+### Account scope: the tabs with no computer
+
+- A Hub card of an account project that no reachable computer holds opens the
+  normal tabs in account scope (`SyncService.openAccountProjectScope`). The
+  scope is saved in `ade.sync.activeAccountProjectId`. `activeProject` is then
+  a synthetic summary with the id `account:<id>`.
+- In account scope, a command for a computer throws "Pick a lane on a computer
+  or on ADE Cloud." (`refuseAccountProjectScopeCommand`). The phone never
+  queues it.
+- Picking a project on a computer (`setActiveProjectId`) ends the scope.
+
+### Work: new chats, saved chats and the queue
+
+- **New chat.** The machine picker always lists "ADE Cloud"
+  (`workNewChatCloudOption`, `Views/Work/WorkNewChatMachinePicker.swift`),
+  also before the server answers. When the account is refused (out of hours,
+  blocked), the option shows the server's reason and is disabled. ADE Cloud is
+  preselected in account scope and when the account has no computer of its
+  own. With ADE Cloud picked, the lane list shows the project's cloud lanes,
+  and "new lane" is the default. The model chip opens the server's catalog
+  (`CloudModelPickerSheet`). The send starts a server launch
+  (`AccountCloudLaunchStore.start`, `POST /cloud/launches`), and the setup card
+  (`WorkCloudLaunchCard`) shows the steps above the composer.
+- **Saved chats.** `CloudServerClient.savedChats` reads pages of 200, at most
+  5 pages. With no live link, a chat thread reads the saved copy through
+  `AccountCloudStore` (`savedCloudChatAccountKey`). A saved subagent chat nests
+  under its parent. A computer that left the account still lists its saved
+  chats under the key `cloud-saved:<accountMachineKey>`.
+- **The queue.** A send to a cloud chat with no live link goes to
+  `POST /cloud/chats/:machine/:chat/messages` with the `clientSendId` as the
+  message id (`SyncService.sendChatMessage`). The server holds it, wakes the
+  computer, and delivers it once. A chat whose computer was deleted continues
+  on a new computer in the same chat row. A send with attachments wakes the
+  computer and sends over the live link. An older server (404) falls back to
+  wake, connect and send.
+- **Held messages.** `CloudQueuedMessagesView`
+  (`Views/Work/WorkCloudMachine.swift`) shows each held message above the
+  composer: queued (with Cancel), sending, waiting for a sign-in (with the
+  sign-in step), or failed (with the server's sentence).
+  `AccountCloudStore.followQueue` reads the queue only while the chat is open
+  and the app is in front, from 3 s up to 10 s between reads.
+- **CLI and shell copies.** The project overview
+  (`GET /cloud/projects/overview?origin=`, at most once in 15 s, in
+  `CloudAtRestStore`, `Services/CloudAtRestReads.swift`) adds each saved CLI
+  or shell session as a Work row with the id `cloud-copy:<machine>|<session>`.
+  `CloudSessionCopyScreen` (`Views/Work/WorkCloudAtRest.swift`) shows the
+  copy read-only, at the newest line. A shell keeps its last 5,000 lines.
+  - Asleep computer: "Wake to use it".
+  - Deleted computer, CLI: a composer. The message goes through the same
+    queue, and the server continues the CLI on a new computer.
+  - Deleted computer, shell: no composer. A shell can't continue on a new
+    computer.
+- **Move a chat.** Hand off › Another machine on a resting cloud chat opens
+  `WorkCloudRestingMoveSheet`: "Wake and move" when the computer sleeps,
+  "Write a message" when it was deleted.
+
+### Lanes: at rest, and the lane move
+
+- `laneDestination` (`Views/Lanes/LaneListViewParts.swift`) opens
+  `CloudLaneAtRestScreen` (`Views/Cloud/CloudLaneAtRest.swift`) for a cloud
+  lane whose computer is not awake. It has three cards:
+  - **Git:** the summary the computer saved when it went to sleep
+    (`GET /cloud/git/:machine/:lane`): branch, ahead and behind, changed files
+    with line counts.
+  - **Files:** the lane's branch from GitHub, one folder at a time
+    (`GitHubDirectClient+Contents.swift`). Changed files have a mark. A
+    changed file offers "Wake and open" or "Open the GitHub copy".
+  - **History:** the pushed commits from GitHub, and a line for the commits
+    that are on the lane only.
+- The Lanes machine filter has one "ADE Cloud" chip for every cloud lane.
+- **Move a lane.** The lane detail's ⋯ menu has "Move to…" when the lane has
+  an open Work chat (`LaneMoveSheet`, `Views/Lanes/LaneMoveSheet.swift`). The
+  move sends `chat.startCrossMachineBatchMove` to the lane's own computer
+  through one of its chats (`SyncService.startLaneMove`): the lane, its
+  commits, its uncommitted work and its open chats move together.
+  - The places are the person's own computers. An offline computer, or one
+    without the project, shows disabled with the reason.
+  - ADE Cloud shows as one disabled place: "ADE Cloud can't take a moved lane
+    yet. Pick one of your computers." No action moves a lane onto a new cloud
+    computer.
+  - A resting cloud lane offers "Wake and move" (`CloudLaneRestingMoveSheet`).
+    After the wake, the live lane detail opens the move sheet.
+  - A lane whose computer was deleted is not moved. The sheet says "This
+    lane's computer was deleted. Send a message in one of its chats to
+    continue it on ADE Cloud."
+
+### CTO, Linear and Settings
+
+- **CTO.** When the CTO home is asleep or offline, "Read where <name> left
+  off" opens the CTO account copy (`GET /cloud/cto?origin=`,
+  `Views/Cto/CtoAccountCopy.swift`): open work, notes, routines and the last
+  turns, read-only. A message to the CTO wakes its home.
+- **Linear.** When no computer answers for the project,
+  `SyncService+LinearAccount.swift` reads Linear through
+  `POST /cloud/integrations/linear/query` with the account's Linear sign-in.
+  A pane load reads at most 2 pages, because the server allows 30 Linear and
+  Jira requests a minute. Linear writes still need a computer. iOS has no
+  Jira pane.
+- **Settings › ADE Cloud.** With no computer, `CloudPaneStore.reloadDirect`
+  (`Views/Cloud/CloudPaneSheet.swift`) reads `/cloud/account`,
+  `/cloud/instances` and `/cloud/limits` directly. Limits are written with
+  `PUT /cloud/limits` and `ifRevision`. Sign-ins come from `/cloud/sign-ins`,
+  which returns status only, never a secret. A provider that signs in on ADE
+  desktop (Antigravity) shows "Signed in from ADE desktop" when its login
+  carried to the account. Qwen takes an API key.
+- **Settings › Machines** shows one ADE Cloud row ("N lane computers, M
+  awake"), not one row per cloud computer.
+
+### Old servers and old computers
+
+- A 404 or a missing route keeps today's behavior and never shows an empty
+  state. A failed read keeps the last answer.
+- A computer without `chat.getCrossMachineHandoffOptions` and
+  `chat.startCrossMachineBatchMove` shows "The computer this lane is on needs
+  an ADE update to move a lane from the phone."
+
 ## Architectural pattern
 
 The implementation is deliberately small:
@@ -1726,7 +1895,8 @@ The implementation is deliberately small:
 
 Navigation:
 
-- `TabView` at the root with five tabs (Lanes, Files, Work, PRs, Settings).
+- `TabView` at the root with five tabs (Work, Lanes, PRs, Files, CTO).
+  Settings opens as a sheet.
 - `NavigationStack` per tab for push/pop.
 - Deep links jump to specific screens.
 
@@ -2135,9 +2305,7 @@ cannot proceed explains itself rather than silently doing nothing.
 attachment predicate for the whole app: every surface that asks "did we get on
 the machine?" goes through it rather than re-deriving a comparison, so the
 definition stays in one place if the state machine grows again.
-`SettingsPinSheet` reads PIN-pairing success off it for exactly that reason — it
-used to compare against `.connected` while the connect path was still parked in
-the retired `.syncing`, so a successful pairing reported failure.
+`SettingsPinSheet` reads PIN-pairing success off it for that reason.
 
 Attachment is published at `hello_ok`, not after post-hello restoration.
 `applyHelloPayload` sets `.connected`, and `beginPostHelloAttachment` — the
@@ -2453,19 +2621,15 @@ yet arrived in the catchup batch.
 the entry UX. If the user misreads the digits, the runtime applies
 per-IP rate limiting (5 failures → 10-minute cooldown). The sheet decides
 success with `syncService.isAttached` rather than its own
-`connectionState == .connected` comparison: the canonical attachment predicate
-is the only thing that stays correct as the transport state machine changes, and
-a hand-rolled comparison is exactly what made a *successful* pairing report
-failure while the connect path was parked in the (now retired) `.syncing` state.
+`connectionState == .connected` comparison, because the canonical attachment
+predicate stays correct when the transport state machine changes.
 
 ### Browser access
 
-The iOS app no longer offers **Pair a browser**. New hosted-web connections are
-account-only: open the web client, sign in to the same ADE account as the Mac,
-and choose the Mac from the account directory. The deleted
-`SettingsWebClientPairSheet` and its QR/link/PIN flow are not compatibility
-entry points; only browser environments paired before this release keep their
-saved local/direct reconnect behavior.
+The iOS app does not pair a browser. Hosted-web connections are account-only:
+open the web client, sign in to the same ADE account as the Mac, and choose the
+Mac from the account directory. Browser environments paired by an older
+release keep their saved direct reconnect.
 
 ### Background App Refresh
 
@@ -2891,12 +3055,8 @@ and filter counts follow what is listed. An ADE Cloud computer's rows always
 list, from its last roster, also while it sleeps. A cloud computer this phone
 never paired lists the chats and lane it last saved to the account
 (`restingCloudMachineRows`, from the account server's saved chats). Opening one
-of its chats or lanes wakes it (`beginCloudWakeIfAsleep` →
-`wakeCloudMachineIfNeeded`: through the focused machine, else another connected
-machine that can send cloud commands, else the account server itself, so no
-other computer has to be connected) and shows "Waking <computer>…" in the
-opened screen until it answers. One wake per computer: a second open waits for
-the first. A wake answer that arrives after an account change is dropped. There
+of its chats or lanes reads the saved copy and never wakes it. Doing work
+wakes it; see [ADE Cloud on the phone](#ade-cloud-on-the-phone). There
 is no control in a project that switches
 the machine to see work: the Lanes and Work machine filters only narrow the
 list, and a machine is picked only where new work starts (Start on). The
@@ -3262,10 +3422,8 @@ The Work chat composer folds by gesture, not by a control. A downward swipe
 anywhere on the composer card — the field, the controls row, or the card's own
 padding — folds the field to one line and lowers the keyboard in one spring; an
 upward swipe on the folded card, a tap into the field, or a tap on the compact
-attachment tray brings both back. The card carries no collapse row: the
-dedicated `keyboard.chevron.compact.down` button that used to sit in its own row
-above the field is gone, and the row with it. (The structured-question card
-keeps its own separate chevron footer.) The swipe rides alongside the field's
+attachment tray brings both back. The card has no collapse row. (The
+structured-question card keeps its own chevron footer.) The swipe rides alongside the field's
 own recognizers rather than replacing them, so text selection and the tray's
 horizontal scroll still work, and only a mostly-vertical drag past 40 pt is
 claimed (`workComposerFoldGesture`). Once a draft grows past the field, the
@@ -3813,11 +3971,8 @@ as a status string — and the lane-coloured dot beside it is gone, because a
 coloured dot on a row that also carries state reads as state.
 
 The header is one 44pt row: search, a filter funnel, and a compose menu holding
-**New chat** / **New lane**. The previous three-row header (a full-width
-"Start new chat" / "Add lane" hero pair and an `N waiting` chip) pushed the
-first session row most of a thumb down the screen. Both `N waiting` indicators —
-the top-bar pill and its duplicate chip — were removed: attention is stated per
-row, and the bell's Activity drawer remains the only rollup.
+**New chat** / **New lane**. There is no `N waiting` count: attention is
+stated per row, and the bell's Activity drawer is the only rollup.
 
 The long-press context menu matches desktop: destructive actions are fenced
 last, a `Lane ▸` submenu carries the lane actions the Lanes tab already sends,
@@ -4062,14 +4217,13 @@ the same short way at every Dynamic Type size and stays deterministic under
 test; a host clock running slightly ahead yields "now" rather than an error.
 
 Tapping a row opens `WorkProofViewer` full-screen: a `TabView` with **one page
-per artifact**, so the other captures are one swipe away — opened from a row it
-used to look like a single-artifact screen. Page dots appear only when there is
+per artifact**, so the other captures are one swipe away. Page dots appear only when there is
 somewhere to swipe to, in `.interactive` mode so they stay out of the way of the
 capture until the page actually moves. The caption position is 1-based and falls
 back to 1 when the selection has gone missing, so it can never contradict the
 page on screen. The nav bar floats over the capture (`ignoresSafeArea(.top)`)
-rather than shortening the screen the image is centred in, which used to push a
-tall screenshot's top edge under the title; images pinch/double-tap zoom on
+rather than shortening the screen the image is centred in, so a tall
+screenshot's top edge stays clear of the title; images pinch/double-tap zoom on
 black, and video pages get their own player.
 
 A stored video is read in 2 MiB slices (`readArtifactRange`) into a private
@@ -4093,7 +4247,7 @@ argument `ADEApp` is the normal app, and the whole branch is compiled out of
 release. `WorkToolsSheet` carries the matching `previewState` / `previewFrame`
 seam: when set, `refresh` installs them instead of asking the sync socket.
 
-### Shipped
+### Tabs
 
 Settings keeps the connection header outside four scope groups: Account,
 Preferences, this repository, and this device. Fresh access is account-required;
@@ -4101,9 +4255,9 @@ the existing paired-host recovery path is the only account-less continuation.
 
 | Tab | Icon | Desktop equivalent | Capabilities |
 |---|---|---|---|
-| **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/manage, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane detail screen (full-screen, custom tab bar hidden) is organized into collapsible sections (`LaneDetailSectionChrome`): each section auto-opens when it has content and auto-collapses when empty (`LaneSectionDisclosure`), and stays where the user last put it once they toggle it manually. Header chips and the git action buttons flow through `LaneChipFlowLayout`, a wrapping flow layout that wraps onto new lines instead of horizontally scrolling. Lane rows in the list carry a cheap render-relevant signature (mirroring the Hub row-signature pattern) so `.equatable()` re-renders only rows whose visible state changed. It embeds `LaneDetailGitActionsPane`, a port of desktop's git actions pane: commit message field with amend toggle, pull (rebase/merge mode) / push (with force-with-lease) / fetch, staged + unstaged file lists with per-file and bulk stage / unstage / discard / restore / open-diff / open-files, stash push/apply/pop/drop, recent-commit history with context-menu view-files / copy-message / revert / cherry-pick, and a "more actions" menu holding switch branch plus the destructive escape hatches (rebase lane, rebase and push, force push). A conflict banner offers rebase **and merge** continue/abort (`git.rebaseContinue`/`Abort`, `git.mergeContinue`/`Abort`), and the creation sheet copies uncommitted changes into a new lane. The lane options menu copies shareable deeplinks (`LaneDeeplinkHelpers`: `ade://lane/<id>`, `ade://repo/<owner>/<repo>/branch/<branch>`) and opens `LaneManageSheet`, a tabbed manage dialog (delete / appearance / archive) mirroring desktop's `ManageLaneDialog`. The sheet keeps the lane name in the nav bar with a pencil rename on the right (hidden for the primary lane and hosts that omit `lanes.rename`), drops the oversized body title, and shows branch and path as icon rows. Every lane is managed the same way regardless of where its worktree lives, so there is no adopt or "move into `.ade/worktrees`" action. The previous `LaneAdvancedScreen`, `LaneCommitSheet`, `LaneStashesScreen`, and `LaneCommitHistoryScreen` destinations were deleted in favor of this single pane. |
-| **Files** | `doc.text` | `/files` | Lane-backed workspace picker (`FilesWorkspacePickerDropdown`, a desktop-shaped searchable dropdown that replaced the horizontal workspace chip row), live file tree/read. Search is a single full-screen page (`FilesSearchScreen`) opened from the magnifying-glass button in the Files top bar (desktop `FilesSearchPanel` parity): one query searches file *names* (quick open) and file *contents* (text search) together — name matches surface first under "Files", content hits are grouped per file with collapsible line previews, and tapping a line opens the file at that line. The inline `FilesQueryCard` quick-open / text-search cards (and their 40-row caps) were removed. Files are freely editable — the mobile read-only file-mutation gate (`mobileReadOnly` / edit-protection) was removed on both the host and the phone, matching the desktop change. |
-| **Work** | `terminal` | `/work` | Terminal + chat session list (standalone CLI sessions stay listed after they end, matching desktop — `workSessionShouldAppearInWorkList` in `WorkBrowserHelpers.swift` hides orphaned chat-owned child shells that are no longer live), cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **Chat** and **CLI** via a compact nav-bar pill toggle (desktop `ModeSwitcherPills` parity); the lane is chosen through `WorkLanePickerDropdown` (searchable, with an auto-create-lane row), and in CLI mode the provider is derived from the picked model via `workResolveCliProvider` instead of a separate provider row — the explicit `workCliProviderOptions` picker (and its plain "Shell" launch option) was removed. The composer's `⋯` menu owns the launch options that are not the model: **Issue context** (Linear on both surfaces and GitHub in Chat mode only — a CLI start records Linear links only — each gated on the host advertising its attach command, with picked issues drawn as pills above the composer) and **Account** (a Claude or Codex launch on another signed-in account of the chosen machine; shown when there is a real choice, hidden when the only working login is the machine default, and never fed by the machine inventory's provider logins, which no launch can switch to). **Issue context** reads the focused machine's project: a new chat's issue picks ride its first message and are recorded on the session, and a running chat's attach writes the same session link; a chat on another machine, or in another project on this machine, keeps the section hidden rather than drawing links from the wrong tracker. The lane picker is **pinned** directly above the composer, so it stays reachable no matter how tall the composer grows or whether the keyboard is up; everything above it is a collapsible header that steps through `WorkNewChatHeaderTier` (`full` word-mark + tagline + chips + usage carousel -> `compact` chips + carousel -> `minimal` chips only -> `hidden`). The tier is resolved from the measured height actually left for the scroll area — never from keyboard notifications — so a grown composer collapses the header exactly like the keyboard does, and a small hysteresis on stepping *up* keeps it from oscillating once hidden content frees the height that would re-show it. The usage carousel stays mounted at every tier and collapses to zero height rather than leaving the tree: it owns fetched stats behind a `.task(id:)`, so unmounting it would refetch and flash an empty card each time the tier stepped back up. The picker presents its list as a **sheet** (medium/large detents, drag indicator, 16pt-class text, keyboard-dismissing scroll) rather than a popover, because UIKit squeezed a popover into whatever space the keyboard and a grown composer left and clipped the lane list to a few rows. The screen owns the composer's focus binding so it can park focus while that sheet is up and restore it from the sheet's `onDismiss` — restoring on the `isPresented` change instead would race the dismissal animation and lose the keyboard. The new-chat composer shares the in-session chat composer's `WorkComposerControlsRow` (the same controls strip used by `WorkComposerChipStrip`): a permission/access control that is a single tone-dot dropdown at every width (iPad and landscape included, so they match the phone), a model pill, and a fast-mode lightning toggle. The fast-mode toggle is shown only in **Chat** mode for fast-capable models (threaded into `chat.create` via `codexFastMode`) and is hidden in CLI mode, where the launcher has no fast-mode parameter. The composer's last-used selection (model + access mode + reasoning effort + fast mode) persists across surfaces through `WorkComposerPreferences` (App Group `UserDefaults`, versioned key): the New Chat screen seeds its initial state from the saved selection instead of hardcoded defaults, and every change or send — from the New Chat composer, the in-session inline picker (`WorkSessionDestinationView`), or the session settings sheet — writes it back. Because the inline picker is cross-provider, the persisted provider is re-derived from the picked model, and a provider change resets the coupled access mode / sub-settings to that provider's defaults. Droid (Factory) is in the new-chat provider allowlist (`workNormalizedNewChatProvider`), so Droid Core models (GLM / Kimi / MiniMax) keep the `droid` provider instead of silently collapsing to the Claude runtime. The new-chat send button is the shared `ADEComposerSendButton` (an arrow-in-circle disc matching the in-session composer), replacing the earlier paperplane capsule. The session list itself is described in [Work session list rows](#work-session-list-rows). Each row carries a minimal per-lane PR status indicator (`WorkLanePrIndicator`: a state-colored dot + `#num` + Open/Draft/Closed/Merged) beside its title. It and the Lanes tab chip both render the unified `LanePrTag` (`LaneHelpers.swift`, `selectLaneTabPrTag`, desktop parity), which merges ADE-mapped PRs (the synced `pull_requests` table) with GitHub PRs opened outside ADE — matched to a lane by branch and fetched into the shared `SyncService.laneGithubPrItems` cache (`refreshLaneGithubPrItems`, best-effort, throttled, reset on project switch / reconnect). When a row resolves a `LanePrTag` (mapped or GitHub-by-branch), its long-press context menu (`WorkSessionListRow`) also offers **"Open in PRs tab"**; `WorkRootScreen+Actions.openPullRequest` waits out the menu-dismiss animation, then publishes `syncService.requestedPrNavigation` (a `PrNavigationRequest` carrying the PR id + number + lane id, or just the GitHub PR number for an unmapped tag), and `ContentView`'s `onChange(of: requestedPrNavigation?.id)` flips the app to the PRs tab and opens that PR — the same cross-tab handoff the deep-link router and the in-chat PR menu use. CLI mode submits `work.startCliSession` with the resolved provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. Only real user drags can un-pin the viewport: layout-driven geometry changes (keyboard show/hide, key bar, pinch font changes) re-assert the live tail after the pass settles, so a pinned terminal with large scrollback keeps the prompt visible above the keyboard instead of stranding it (SwiftTerm only re-snaps when cols/rows change, and a mouse-mode TUI repainting in place emits no scroll events to self-heal). When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. In chat sessions, user-message attachments render through `WorkChatAttachmentTray` (image thumbnails embedded in the bubble, desktop `ChatAttachmentTray` parity, placeholder tiles when the image bytes have not synced from the host yet), and the chat header's PR menu opens the lane's open PR on GitHub, copies its link, or launches the create-PR wizard in `singleModeOnly` mode (eligibility read from `prs.getMobileSnapshot.createCapabilities`). Whether a chat resolves a lane PR at all is one policy object, `WorkChatLanePrPolicy`, read by the lookup, the task that runs it, and the badge alike. Before it, `showsLaneActions: false` hid only the header menu while the lane→PR lookup still ran — so the CTO chat, which reuses this view with a synthetic lane id, resolved the project's primary-lane PR and rendered it as its own badge (and did the network work on every mount). The lookup now bails before any request and clears the cached PR state, and `rendersPrBadge` folds in the subagent rule so both exclusions come from one place. The chat composer input is a `UITextView`-backed field (`WorkComposerTextView` in `WorkComposerTypedTriggers.swift`) rather than a plain SwiftUI `TextField`, because it needs the cursor position and inline styled runs. `WorkComposerTriggerDetector` runs the same cursor-relative regexes as the shared desktop `composerTriggers.ts` (slash `(?:^|\s)/([^\s/]*)$`, at `(?:^|\s)@([^\s@]*)$`), so a `/command` or `@file` trigger is detected anywhere in the draft, not just at position 0. `WorkComposerSuggestionController` drives an inline suggestion strip (`WorkComposerSuggestionStrip`) above the input — a curated per-provider slash catalog (`WorkComposerSlashCatalog`) resolved locally, and `@file` quick-open resolved over sync via `SyncService.quickOpen` against the lane's files workspace (40 ms debounce, workspace id cached per lane, invalidated on lane change). Its visibility derives purely from the active trigger match, never from `@FocusState`. Committing a suggestion splices exactly the trigger span on the live text view, and confirmed `/command` / `@path` tokens render as tinted chip pills drawn by a custom TextKit 1 `WorkComposerChipLayoutManager` (provider-accent tint, monospace for slash, semibold for at) while `draftState.text` stays the plain-text source of truth that is sent. `WorkSmartLinkDetector` styles GitHub, Linear, ADE, and generic web URLs with the same chip layout manager in both new-chat and in-session composers; Backspace/Delete removes an intersected URL atomically, and long press offers Copy link and Remove link. The raw URL remains the SwiftUI draft and sent prompt. This replaced the modal `WorkMentionsPickerSheet` and `WorkSlashCommandsSheet` (both deleted). |
+| **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/manage, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane detail screen (full-screen, custom tab bar hidden) is organized into collapsible sections (`LaneDetailSectionChrome`): each section auto-opens when it has content and auto-collapses when empty (`LaneSectionDisclosure`), and stays where the user last put it once they toggle it manually. Header chips and the git action buttons flow through `LaneChipFlowLayout`, a wrapping flow layout that wraps onto new lines instead of horizontally scrolling. Lane rows in the list carry a cheap render-relevant signature (mirroring the Hub row-signature pattern) so `.equatable()` re-renders only rows whose visible state changed. It embeds `LaneDetailGitActionsPane`, a port of desktop's git actions pane: commit message field with amend toggle, pull (rebase/merge mode) / push (with force-with-lease) / fetch, staged + unstaged file lists with per-file and bulk stage / unstage / discard / restore / open-diff / open-files, stash push/apply/pop/drop, recent-commit history with context-menu view-files / copy-message / revert / cherry-pick, and a "more actions" menu holding switch branch plus the destructive escape hatches (rebase lane, rebase and push, force push). A conflict banner offers rebase **and merge** continue/abort (`git.rebaseContinue`/`Abort`, `git.mergeContinue`/`Abort`), and the creation sheet copies uncommitted changes into a new lane. The lane options menu copies shareable deeplinks (`LaneDeeplinkHelpers`: `ade://lane/<id>`, `ade://repo/<owner>/<repo>/branch/<branch>`) and opens `LaneManageSheet`, a tabbed manage dialog (delete / appearance / archive) mirroring desktop's `ManageLaneDialog`. The sheet keeps the lane name in the nav bar with a pencil rename on the right (hidden for the primary lane and hosts that omit `lanes.rename`), drops the oversized body title, and shows branch and path as icon rows. Every lane is managed the same way regardless of where its worktree lives, so there is no adopt or "move into `.ade/worktrees`" action. |
+| **Files** | `doc.text` | `/files` | Lane-backed workspace picker (`FilesWorkspacePickerDropdown`, a desktop-shaped searchable dropdown), live file tree/read. Search is a single full-screen page (`FilesSearchScreen`) opened from the magnifying-glass button in the Files top bar (desktop `FilesSearchPanel` parity): one query searches file *names* (quick open) and file *contents* (text search) together — name matches surface first under "Files", content hits are grouped per file with collapsible line previews, and tapping a line opens the file at that line. Files are freely editable, as on the desktop. With no computer awake, a cloud lane's files come from GitHub (see [ADE Cloud on the phone](#ade-cloud-on-the-phone)). |
+| **Work** | `terminal` | `/work` | Terminal + chat session list (standalone CLI sessions stay listed after they end, matching desktop — `workSessionShouldAppearInWorkList` in `WorkBrowserHelpers.swift` hides orphaned chat-owned child shells that are no longer live), cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **Chat** and **CLI** via a compact nav-bar pill toggle (desktop `ModeSwitcherPills` parity); the lane is chosen through `WorkLanePickerDropdown` (searchable, with an auto-create-lane row), and in CLI mode the provider is derived from the picked model via `workResolveCliProvider` instead of a separate provider row. The composer's `⋯` menu owns the launch options that are not the model: **Issue context** (Linear on both surfaces and GitHub in Chat mode only — a CLI start records Linear links only — each gated on the host advertising its attach command, with picked issues drawn as pills above the composer) and **Account** (a Claude or Codex launch on another signed-in account of the chosen machine; shown when there is a real choice, hidden when the only working login is the machine default, and never fed by the machine inventory's provider logins, which no launch can switch to). **Issue context** reads the focused machine's project: a new chat's issue picks ride its first message and are recorded on the session, and a running chat's attach writes the same session link; a chat on another machine, or in another project on this machine, keeps the section hidden rather than drawing links from the wrong tracker. The lane picker is **pinned** directly above the composer, so it stays reachable no matter how tall the composer grows or whether the keyboard is up; everything above it is a collapsible header that steps through `WorkNewChatHeaderTier` (`full` word-mark + tagline + chips + usage carousel -> `compact` chips + carousel -> `minimal` chips only -> `hidden`). The tier is resolved from the measured height actually left for the scroll area — never from keyboard notifications — so a grown composer collapses the header exactly like the keyboard does, and a small hysteresis on stepping *up* keeps it from oscillating once hidden content frees the height that would re-show it. The usage carousel stays mounted at every tier and collapses to zero height rather than leaving the tree: it owns fetched stats behind a `.task(id:)`, so unmounting it would refetch and flash an empty card each time the tier stepped back up. The picker presents its list as a **sheet** (medium/large detents, drag indicator, 16pt-class text, keyboard-dismissing scroll) rather than a popover, because UIKit squeezed a popover into whatever space the keyboard and a grown composer left and clipped the lane list to a few rows. The screen owns the composer's focus binding so it can park focus while that sheet is up and restore it from the sheet's `onDismiss` — restoring on the `isPresented` change instead would race the dismissal animation and lose the keyboard. The new-chat composer shares the in-session chat composer's `WorkComposerControlsRow` (the same controls strip used by `WorkComposerChipStrip`): a permission/access control that is a single tone-dot dropdown at every width (iPad and landscape included, so they match the phone), a model pill, and a fast-mode lightning toggle. The fast-mode toggle is shown only in **Chat** mode for fast-capable models (threaded into `chat.create` via `codexFastMode`) and is hidden in CLI mode, where the launcher has no fast-mode parameter. The composer's last-used selection (model + access mode + reasoning effort + fast mode) persists across surfaces through `WorkComposerPreferences` (App Group `UserDefaults`, versioned key): the New Chat screen seeds its initial state from the saved selection instead of hardcoded defaults, and every change or send — from the New Chat composer, the in-session inline picker (`WorkSessionDestinationView`), or the session settings sheet — writes it back. Because the inline picker is cross-provider, the persisted provider is re-derived from the picked model, and a provider change resets the coupled access mode / sub-settings to that provider's defaults. Droid (Factory) is in the new-chat provider allowlist (`workNormalizedNewChatProvider`), so Droid Core models (GLM / Kimi / MiniMax) keep the `droid` provider instead of silently collapsing to the Claude runtime. The new-chat send button is the shared `ADEComposerSendButton` (an arrow-in-circle disc matching the in-session composer). The session list itself is described in [Work session list rows](#work-session-list-rows). Each row carries a minimal per-lane PR status indicator (`WorkLanePrIndicator`: a state-colored dot + `#num` + Open/Draft/Closed/Merged) beside its title. It and the Lanes tab chip both render the unified `LanePrTag` (`LaneHelpers.swift`, `selectLaneTabPrTag`, desktop parity), which merges ADE-mapped PRs (the synced `pull_requests` table) with GitHub PRs opened outside ADE — matched to a lane by branch and fetched into the shared `SyncService.laneGithubPrItems` cache (`refreshLaneGithubPrItems`, best-effort, throttled, reset on project switch / reconnect). When a row resolves a `LanePrTag` (mapped or GitHub-by-branch), its long-press context menu (`WorkSessionListRow`) also offers **"Open in PRs tab"**; `WorkRootScreen+Actions.openPullRequest` waits out the menu-dismiss animation, then publishes `syncService.requestedPrNavigation` (a `PrNavigationRequest` carrying the PR id + number + lane id, or just the GitHub PR number for an unmapped tag), and `ContentView`'s `onChange(of: requestedPrNavigation?.id)` flips the app to the PRs tab and opens that PR — the same cross-tab handoff the deep-link router and the in-chat PR menu use. CLI mode submits `work.startCliSession` with the resolved provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. Only real user drags can un-pin the viewport: layout-driven geometry changes (keyboard show/hide, key bar, pinch font changes) re-assert the live tail after the pass settles, so a pinned terminal with large scrollback keeps the prompt visible above the keyboard instead of stranding it (SwiftTerm only re-snaps when cols/rows change, and a mouse-mode TUI repainting in place emits no scroll events to self-heal). When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. Running chats show in the session list and in a Work tab badge bound to `SyncService.runningChatSessionCount`. In chat sessions, user-message attachments render through `WorkChatAttachmentTray` (image thumbnails embedded in the bubble, desktop `ChatAttachmentTray` parity, placeholder tiles when the image bytes have not synced from the host yet), and the chat header's PR menu opens the lane's open PR on GitHub, copies its link, or launches the create-PR wizard in `singleModeOnly` mode (eligibility read from `prs.getMobileSnapshot.createCapabilities`). Whether a chat resolves a lane PR at all is one policy object, `WorkChatLanePrPolicy`, read by the lookup, the task that runs it, and the badge alike. Before it, `showsLaneActions: false` hid only the header menu while the lane→PR lookup still ran — so the CTO chat, which reuses this view with a synthetic lane id, resolved the project's primary-lane PR and rendered it as its own badge (and did the network work on every mount). The lookup now bails before any request and clears the cached PR state, and `rendersPrBadge` folds in the subagent rule so both exclusions come from one place. The chat composer input is a `UITextView`-backed field (`WorkComposerTextView` in `WorkComposerTypedTriggers.swift`) rather than a plain SwiftUI `TextField`, because it needs the cursor position and inline styled runs. `WorkComposerTriggerDetector` runs the same cursor-relative regexes as the shared desktop `composerTriggers.ts` (slash `(?:^|\s)/([^\s/]*)$`, at `(?:^|\s)@([^\s@]*)$`), so a `/command` or `@file` trigger is detected anywhere in the draft, not just at position 0. `WorkComposerSuggestionController` drives an inline suggestion strip (`WorkComposerSuggestionStrip`) above the input — a curated per-provider slash catalog (`WorkComposerSlashCatalog`) resolved locally, and `@file` quick-open resolved over sync via `SyncService.quickOpen` against the lane's files workspace (40 ms debounce, workspace id cached per lane, invalidated on lane change). Its visibility derives purely from the active trigger match, never from `@FocusState`. Committing a suggestion splices exactly the trigger span on the live text view, and confirmed `/command` / `@path` tokens render as tinted chip pills drawn by a custom TextKit 1 `WorkComposerChipLayoutManager` (provider-accent tint, monospace for slash, semibold for at) while `draftState.text` stays the plain-text source of truth that is sent. `WorkSmartLinkDetector` styles GitHub, Linear, ADE, and generic web URLs with the same chip layout manager in both new-chat and in-session composers; Backspace/Delete removes an intersected URL atomically, and long press offers Copy link and Remove link. The raw URL remains the SwiftUI draft and sent prompt. |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, per-PR action capabilities. The PR detail screen (`PrDetailView`) is a single-column adaptation of the desktop Timeline+Rails layout — its Overview is emitted as sibling `List` rows so the list virtualizes offscreen content, and it stays live off a warm-cache freshness gate (see [PR detail screen](#pr-detail-screen)). |
 | **CTO** | `brain` | `/cto` | The CTO chat thread rendered inline as the tab body (single persistent session via `CtoSessionDestinationView`) with a compact one-line voice/send composer. The top-bar gear opens settings for the home machine, identity (name and standing instructions), live model/reasoning/Fast selection, read-only Linear status, and memory via `cto.getMemory`. What the tab shows is decided by the pure `ctoRootContent(identity:loadError:hostUnreachable:)`, mirroring desktop `CtoPage`'s order: loading / load error / **model pick** / thread. The model-pick state exists because `CtoIdentity.modelPreferences` is optional and the host normalizes a stored preference on a provider that cannot steer a live turn back to null; in that state the screen deliberately does not build `CtoSessionDestinationView`, so nothing ensures — and therefore nothing creates — a session on a provider the user has not chosen. Both CTO model pickers pass `modelFilter` into `WorkModelPickerSheet`, which prunes providers and groups that empty out so the provider rail never shows a tab with nothing behind it; the predicate is `providerSupportsLiveRedirect`, the hand mirror of `CTO_LIVE_REDIRECT_PROVIDERS` pinned by a parity test. `applyModelPick` writes identity preferences, then ensures the session, then pins the exact model, and publishes the refreshed snapshot only at the end — publishing earlier would drop the picker mid-flight and let a second concurrent ensure run. The composer never offers *Send after turn* on this thread: `liveRedirectOnlySends` is threaded from `CtoSessionDestinationView` through `WorkSessionDestinationView` into `workChatActiveSendCapability`, which filters `queue` out of `WorkActiveSendCapability.forProvider` (and, since the default is the first mode, moves the default with it). It is its own flag rather than a second meaning for `showsLaneActions` or `compactComposer`. The host enforces the rule regardless — the CTO session's steer queue cap is zero — so this only keeps the menu from offering a wait the host would not honor. The tab badges when the thread is blocked on the user: `SyncService.refreshCtoAttentionIfNeeded()` calls the optional `cto.getAttention` command (5 s debounce, gated on `supportsRemoteAction`) and publishes `ctoAttention`. It rides the change pulse that rebuilds the session roster, but is invoked *before* `refreshActiveSessionsAndSnapshot`'s roster-signature early return — the CTO is excluded from that roster, so a CTO-only change leaves the signature unchanged and a probe below the guard could never fire. `saveRemoteCommandDescriptors` also calls it with `force: true`, so the first probe after a (re)connect happens as soon as the host advertises the command. Transport failures and the host's explicit `unknown` status both keep the last known value; an older brain that does not advertise the action clears it. The decoded status is optional so a new phone still infers idle/waiting correctly from the legacy `awaitingInput` field. |
 | **Settings** | `gearshape` | `/settings` (sync subset) | Connections — account sign-in (primary, PIN-less directory + Relay adoption), account-wide machine rename/clear, scan the QR (`SettingsPairingScannerSheet`) + PIN, or Nearby + PIN — plus advanced SSH bootstrap, appearance, diagnostics, reconnect, forget, and a **Push delivery** panel (`SettingsPushDeliverySection`: registration/permission state, APNs environment, relay reachability from `push.getStatus`, and notification / Live-Activity / quiet-hours toggles). `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` / `SettingsPushDeliverySnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`, `SettingsPushDeliverySection`) instead of having them reach into `SyncService` directly. The About row formats the marketing and build versions together as `v<marketing> (<build>)`. Settings also hosts the full **Usage** page (`SettingsUsagePage`) and the **AI accounts** page (`SettingsProviderAccountsPage`), the phone's counterparts of desktop Settings > Usage and the hosted web client's AI accounts card. |
@@ -4193,12 +4347,6 @@ as desktop when Claude-family models are unavailable: a compact
 Call sites with lane context pass their lanes; otherwise the sheet
 fetches the current lane list before reporting that no active lane is
 available.
-
-### Planned
-
-- Automations and History tabs.
-- Full Settings parity with the desktop.
-- iPad adaptive layout, Spotlight.
 
 ## Lane data projection
 
@@ -4443,8 +4591,8 @@ does not jump into the final layout.
 ### PR detail screen
 
 Source: `apps/ios/ADE/Views/PRs/PrDetailScreen.swift` (the `PrDetailView`
-struct), with the timeline builder + commit-group folding in
-`PrDetailActivityTab.swift`, the compact header/description views in
+struct), with the conversation digest (pushes, bot groups and story events,
+ported from the desktop) in `PrConversationDigest.swift`, the compact header/description views in
 `PrDetailHeaderComponents.swift`, the embedded GitHub HTML normalizer in
 `PrGitHubDescriptionParser.swift`, and the remaining thread cards in
 `PrDetailOverviewTab.swift` / `PrHelpers.swift`.
@@ -4732,16 +4880,17 @@ the stats and shows update guidance.
 | Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`) with camera-roll and pasted-image prompts, external provider-session browse/preview/import (`work.listExternalSessions` / `work.getExternalSessionDetail` / `work.importExternalSession`), message-to-continue on ended agent CLI rows, cross-client activity carousel in the new-chat screen's collapsible header (kept mounted, collapsed rather than unmounted, when the header tier hides it) |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
-| Automations / History tabs | Planned |
-| Full Settings parity | Planned |
+| ADE Cloud with no computer (account scope, saved copies, server queue, at-rest lanes, lane and chat moves) | Implemented; see [ADE Cloud on the phone](#ade-cloud-on-the-phone) |
+| Automations / History tabs | Not built |
+| Full Settings parity | Not built |
 | Lock Screen widget | Implemented; one prioritized account status across signed-in machines/projects, agents, PRs, sync, offline, and idle states |
 | Push notifications (APNs alerts + exact cross-machine deep links) | Implemented (on-device E2E needs a physical iPhone) |
 | Account-wide Live Activity + Dynamic Island (`ADEAgentActivityWidget`) | Implemented; one prioritized activity per phone (push-to-start / background updates verifiable on-device only) |
 | Push delivery settings panel (`SettingsPushDeliverySection`) | Implemented |
 | Home Screen widgets (`ADEActivityHomeWidget`, small/medium/large) | Implemented; state-group header, per-row deep links, and an explicit staleness tag |
 | Control Center widgets | Not shipped |
-| iPad adaptive layout | Planned |
-| Spotlight indexing | Planned |
+| iPad and iPhone Duo adaptive layout | Implemented (`Views/Duo/`) |
+| Spotlight indexing | Not built |
 
 ## Gotchas
 
@@ -5140,8 +5289,8 @@ the stats and shows update guidance.
   honor it dispatches in the same round-trip and answers `queued: false`, so no
   queued transcript row is written and no optimistic staged entry is created.
   The mode is resolved once, before the send, so the branch that resends as a
-  steer after a "turn already active" rejection carries the same mode — losing
-  it there used to downgrade a *Send now* tap into a silently staged message.
+  steer after a "turn already active" rejection carries the same mode, so a
+  *Send now* tap never becomes a silently staged message.
   `workChatAtomicSteerDispatchMode` returns nil for **Send after turn**, for a
   provider with no such channel, and for a brain that does not advertise
   `chat.dispatchSteer` — the same gate the staged strip's buttons read, so the
@@ -5203,9 +5352,7 @@ the stats and shows update guidance.
   stale percentage. Exact post-compaction tokens or a later measured snapshot
   refill the meter immediately.
 - **Chat-info and PR badges float over the thread, they do not cost it
-  height.** The Chat Info count chip and the lane's PR chip used to be a fixed
-  44pt row inside the composer inset, which took that height off the
-  transcript on every chat that had one. They now render as a bottom-leading
+  height.** The Chat Info count chip and the lane's PR chip render as a bottom-leading
   overlay on the transcript behind a short scrim, so the thread scrolls
   underneath them — the same treatment as the "jump to latest" pill, which
   stacks above the chip band rather than colliding with it. Two things have to
@@ -5574,9 +5721,21 @@ the stats and shows update guidance.
   re-announces on a 30 s cadence; the runtime prunes stale entries at
   60 s. A phone that crashes without sending `lanes.presence.release`
   will disappear from `devicesOpen` one cycle later, not instantly.
-- **Phone file edits are no longer read-only-gated.** The old
-  `mobileReadOnly` / `isReadOnlyByDefault` write gate was removed on
-  both the phone and the host, matching the desktop edit-protection
-  removal, so a desktop-writable workspace is also editable from the
-  phone. The fields still ride the payload but no longer block `files.*`
-  mutating commands.
+- **Phone file edits have no read-only gate.** A workspace that the desktop
+  can write is editable from the phone. The `mobileReadOnly` and
+  `isReadOnlyByDefault` fields still ride the payload, but they do not block
+  `files.*` commands.
+- **A cloud open must not wake.** Code that opens a cloud chat, lane or copy
+  calls `MachineFleet.connect(…, wake: false)` or reads the account. Only a
+  doing action passes `wake: true`. A new read that wakes a cloud computer
+  costs the person money.
+- **Cloud rows have no live link.** A saved chat, a `cloud-copy:` row and a
+  `cloud-saved:` key have no host. Code that sends a host command for one of
+  them must take the queue path or the wake path first. In account scope,
+  `refuseAccountProjectScopeCommand` throws before the queue.
+- **Never show one cloud computer.** Name a cloud computer through
+  `CloudLaneComputerLabels.label` ("ADE Cloud"). Pickers and filters treat
+  every cloud computer as one ADE Cloud entry.
+- **A cloud send keeps its message id.** A retry after a network failure
+  sends the same `messageId`, so the server keeps one message. A refusal
+  clears it.
