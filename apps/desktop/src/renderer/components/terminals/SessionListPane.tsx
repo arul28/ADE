@@ -22,6 +22,7 @@ import {
 } from "../../lib/terminalAttention";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { isSavedTerminalSession } from "../../state/cloudSavedTerminals";
 import { foreignLaneKey, machineBlockedReason } from "../../state/laneMachineRouting";
 import { machineIdForBinding, machineIdOfSlot } from "../../../shared/machineIdentity";
 import { isAdeCloudComputer, useAdeCloudLaneComputers, useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
@@ -2821,8 +2822,10 @@ export const SessionListPane = React.memo(function SessionListPane({
             return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds);
           }
           // Reading never wakes: a resting cloud row opens its saved copy, and
-          // only an action in it (a send, a terminal) wakes the computer.
-          if (isChatToolType(session.toolType)) {
+          // only an action in it (a send, a terminal) wakes the computer. A
+          // saved CLI or shell copy opens read-only in place like a saved
+          // chat; the PTY handler would try to attach to it.
+          if (isChatToolType(session.toolType) || isSavedTerminalSession(session)) {
             return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds, foreignRow.binding);
           }
           if (foreignRow.binding && onSelectForeignRuntimeSession) {
