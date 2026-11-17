@@ -48,6 +48,7 @@ import {
   expiredLaunchMessagesStatement,
   failQueuedMessagesStatement,
   firstMessageDeliveredStatement,
+  chatMessagesDeliveredStatement,
   firstMessageStatement,
   refusedStartMessagesStatement,
   routeLaunchMessages,
@@ -108,6 +109,9 @@ export type LaunchRow = {
   approval_url: string | null;
   stages_json: string | null;
   error: string | null;
+  /** Migration 0039: the saved chat this launch continues (`continueChat`). */
+  continue_machine_key?: string | null;
+  continue_chat_id?: string | null;
   session_id: string | null;
   /** While `waiting_for_sign_in`: CloudLaunchSignIn as JSON (migration 0038). */
   sign_in_json: string | null;
@@ -611,11 +615,25 @@ async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: stri
   const refusal = await deps.refuseNewLaunch?.();
   if (refusal) return refusal;
   if (row.instance_id && !deps.provider) return fail("unavailable", "ADE Cloud can't delete the failed computer right now. Try again soon.", 503);
-  const claimed = await env.DB.prepare(`
+  // One live launch per continued chat: a newer send already started another one, and the chat's messages go there.
+  const continuing = () => fail("computer_busy", "This chat already continues on another new computer. Its messages go there.", 409);
+  if (row.continue_chat_id && row.lane_id) {
+    const other = await activeContinueLaunch(env, userId, row.lane_id, row.continue_chat_id);
+    if (other && other.launch_id !== row.launch_id) return continuing();
+  }
+  const claim = () => env.DB.prepare(`
     update cloud_launches set state = 'retrying', join_expires_at = null, join_used_at = null, join_rejoins = 0,
       join_user_code = null, approval_url = null, stages_json = null, error = null, session_id = null, sign_in_json = null, updated_at = ?, expires_at = ?
     where launch_id = ? and user_id = ? and updated_at = ? and state = ?
   `).bind(deps.now, deps.now + CLOUD_LAUNCH_RECORD_TTL_MS, launchId, userId, row.updated_at, row.state).run();
+  let claimed: Awaited<ReturnType<typeof claim>>;
+  try {
+    claimed = await claim();
+  } catch (error) {
+    // A send started the other launch between the read above and this claim (`cloud_launches_continue`).
+    if (row.continue_chat_id && error instanceof Error && /UNIQUE/i.test(error.message)) return continuing();
+    throw error;
+  }
   if ((claimed.meta?.changes ?? 0) !== 1) return null;
   if (row.instance_id) {
     try {
@@ -974,7 +992,11 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
   // that claimed the launch since this request read it.
   if ((written.meta?.changes ?? 0) !== 1) return fail("launch_closed", "This launch isn't running.", 409);
   // The chat exists: the computer started it with the first message.
-  if (sessionId) await firstMessageDeliveredStatement(env, row.launch_id, sessionId, now).run();
+  if (sessionId) {
+    await firstMessageDeliveredStatement(env, row.launch_id, sessionId, now).run();
+    // A chat's message this launch carries reads delivered, even after an earlier try marked it failed.
+    await chatMessagesDeliveredStatement(env, row.launch_id, now).run();
+  }
   // The computer gave up on the sign-in itself: its queued messages fail as with the server's
   // own timeout, and the minute cron deletes the computer (`failUnjoinedLaunches`).
   if (state === "failed" && error === SIGN_IN_NEVER_FINISHED) await failQueuedMessagesStatement(env, row.launch_id, SIGN_IN_NEVER_FINISHED, now).run();

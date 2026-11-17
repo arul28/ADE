@@ -652,7 +652,9 @@ export async function expireChatMessages(env: Pick<CloudEnv, "DB">, now = Date.n
     where rowid in (
       select m.rowid from cloud_chat_messages m
         join cloud_launch_messages lm on lm.launch_id = m.launch_id and lm.message_id = m.message_id
-      where m.state in ${OPEN_STATES} and m.via_launch = 1 and lm.state in ('delivered', 'failed') limit ?
+      where m.via_launch = 1
+        and ((m.state in ${OPEN_STATES} and lm.state in ('delivered', 'failed')) or (m.state = 'failed' and lm.state = 'delivered'))
+      limit ?
     )
   `).bind(now, CRON_BATCH).run();
   const neverSent = await env.DB.prepare(`
@@ -666,6 +668,7 @@ export async function expireChatMessages(env: Pick<CloudEnv, "DB">, now = Date.n
       where m.state in ${OPEN_STATES} and m.via_launch = 1
         and (l.launch_id is null or l.state in ('failed', 'cancelled')
           or (l.state in ('joining', 'needs_approval') and l.join_expires_at is not null and l.join_expires_at <= ?))
+        and not exists (select 1 from cloud_launch_messages lm where lm.launch_id = m.launch_id and lm.message_id = m.message_id and lm.state = 'delivered')
       limit ?
     )
   `).bind(LAUNCH_CANCELLED_SENTENCE, LAUNCH_FAILED_SENTENCE, now, now, CRON_BATCH).run();
@@ -673,7 +676,9 @@ export async function expireChatMessages(env: Pick<CloudEnv, "DB">, now = Date.n
   const expired = await env.DB.prepare(`
     update cloud_chat_messages set state = 'failed', error = ?, updated_at = ?
     where rowid in (
-      select rowid from cloud_chat_messages where state in ${OPEN_STATES} and updated_at < ? limit ?
+      select m.rowid from cloud_chat_messages m where m.state in ${OPEN_STATES} and m.updated_at < ?
+        and not exists (select 1 from cloud_launch_messages lm where lm.launch_id = m.launch_id and lm.message_id = m.message_id and lm.state = 'delivered')
+      limit ?
     )
   `).bind("This message waited more than a day and wasn't sent. Send it again.", now, now - CLOUD_CHAT_MESSAGE_TTL_MS, CRON_BATCH).run();
   const pruned = await env.DB.prepare(`

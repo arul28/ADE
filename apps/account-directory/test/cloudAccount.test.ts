@@ -2979,6 +2979,20 @@ describe("ADE Cloud without a computer", () => {
       { message_id: "m1", state: "failed", error: "The clone failed." },
       { message_id: "m2", state: "failed", error: "The clone failed." },
     ]);
+
+    // A Retry of the failed launch sends them after all: the computer's report wins over the failed mark, and the cron keeps it.
+    harness.exec("update cloud_launches set state = 'joined', error = null where launch_id = ?", wake.launchId);
+    expect((await harness.send(OWNER, "PUT", `/cloud/launches/${wake.launchId}/stages`, { state: "running", sessionId: "c1" })).status).toBe(200);
+    expect((await harness.send(OWNER, "POST", `/cloud/launches/${wake.launchId}/messages/m2/claim`, { claimId: "claim-cccccccccccccccc" })).status).toBe(200);
+    expect((await harness.send(OWNER, "PUT", `/cloud/launches/${wake.launchId}/messages/m2`, { claimId: "claim-cccccccccccccccc", state: "delivered" })).status).toBe(200);
+    expect(harness.rows("select message_id, state, error from cloud_chat_messages where message_id in ('m1', 'm2') order by seq")).toEqual([
+      { message_id: "m1", state: "delivered", error: null },
+      { message_id: "m2", state: "delivered", error: null },
+    ]);
+    harness.exec("update cloud_launches set state = 'failed', error = 'The computer stopped.' where launch_id = ?", wake.launchId);
+    clock += 25 * HOUR;
+    await harness.tick();
+    expect((await listed()).slice(0, 2)).toEqual([["m1", "delivered", null], ["m2", "delivered", null]]);
     // A send after it starts a new launch: the failed one no longer holds the chat.
     const third = await send("m3");
     expect([third.status, ((await third.json()) as { wake: { launchId: string } }).wake.launchId]).toEqual([201, expect.not.stringMatching(wake.launchId)]);

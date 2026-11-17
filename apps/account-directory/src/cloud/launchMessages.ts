@@ -69,6 +69,22 @@ export function dropFirstMessageStatement(env: CloudEnv, launchId: string, from:
 }
 
 /** The chat exists: the computer started it with the first message. */
+/**
+ * A chat's queued messages that this launch carries (`cloud_chat_messages`,
+ * `via_launch`) read delivered once the launch's own message is delivered.
+ * The computer's report wins over any failed mark: an earlier failed or
+ * timed-out try of the same launch, or the 24 h expiry. Only a delivered
+ * launch message moves a row, so this never makes a sent message look unsent.
+ */
+export function chatMessagesDeliveredStatement(env: CloudEnv, launchId: string, now: number): D1PreparedStatement {
+  return env.DB.prepare(`
+    update cloud_chat_messages set state = 'delivered', error = null, updated_at = ?
+    where launch_id = ? and via_launch = 1 and state <> 'delivered'
+      and exists (select 1 from cloud_launch_messages lm
+        where lm.launch_id = cloud_chat_messages.launch_id and lm.message_id = cloud_chat_messages.message_id and lm.state = 'delivered')
+  `).bind(now, launchId);
+}
+
 export function firstMessageDeliveredStatement(env: CloudEnv, launchId: string, sessionId: string, now: number): D1PreparedStatement {
   return env.DB.prepare(`
     update cloud_launch_messages set state = 'delivered', session_id = ?, updated_at = ? where launch_id = ? and seq = 1 and state in ('queued', 'sending')
@@ -248,6 +264,7 @@ async function handleReportMessage(request: Request, env: CloudEnv, launch: Laun
     update cloud_launch_messages set state = ?, session_id = ?, error = ?, updated_at = ?
     where launch_id = ? and message_id = ? and claim_id = ? and (state = 'sending' or state = ?)
   `).bind(state, state === "delivered" ? sessionId : null, error, now, launch.launch_id, messageId, claimId, state).run();
+  if ((written.meta?.changes ?? 0) === 1 && state === "delivered") await chatMessagesDeliveredStatement(env, launch.launch_id, now).run();
   const stored = await readMessage(env, launch.launch_id, messageId);
   if (!stored) return notFound();
   if ((written.meta?.changes ?? 0) !== 1) return fail("message_taken", "This message isn't this computer's to finish.", 409, { state: stored.state });
