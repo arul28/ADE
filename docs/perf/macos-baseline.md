@@ -193,6 +193,7 @@ Run without the app (`scripts/perf/service/`).
 | `machine_stats.get` (CPU over a 200 ms sample, memory, disk; `ps`, `pmset`, `vm_stat` at most every 15 s; CLIs, Xcode, simulators at most every 3 min, in the background) | one-off `tsx` call of `createMachineStatsReader` (no bench file yet) | — | cold 206 ms (the CPU sample), cached 0 ms; 0 runs while nobody asks (Mac Studio M4 Max, 2026-10-30, not the baseline machine) | not set yet; needs approval |
 | Android emulator sweep (each brain with an Android service, every 5 min: the owner file, the discovery folders, and one `ps` for start times only when there are records) and the memory guard before each emulator start (`sysctl`, two `vm_stat`s 2 s apart, `ps` + `footprint` for the running emulators) | one-off `tsx` loop over `createAndroidEmulatorLifecycle().sweep()` against this machine's real discovery folders (no bench file yet) | — (no sweep, no guard read) | sweep: 0.06 ms wall / 0.08 ms CPU with no records and 0 processes started; 2.4 ms wall / 2.0 ms CPU and 1 `ps` with a record; at most 12 sweeps per hour, so ≤ 1 extra process per 5 min (spawn row above: 293 → ≤ 294). Guard: 2.0 s wall (the paging sample), 0.1 s for the emulators' memory, once per start only. "Last used" writes the owner file at most once a minute per emulator; a touch costs < 1 µs (Mac Studio M4 Max dev build, 2026-11-06, branch `ade/unreleased-issues-triage-before-stable`, not the baseline machine) | not set yet; needs approval |
 | Lane status: comparing against `origin/<base>` when the local base only trails it (`resolveCompareBase` in `laneService.ts`) | one-off `git` timing in this repo, 20 runs (no bench file yet) | — | per lane-list refresh at most 1 extra `rev-parse` of `origin/<base>` for all lanes on that base (11.8 ms median, shared through the volatile git cache), plus 1 `rev-list --count` per new pair of base commits (12.6 ms, then memoized); 0 per lane (Mac Studio M4 Max, 2026-11-09, `ade/ade-mcp-client-fixes`, not the baseline machine) | not set yet; needs approval |
+| `.env` scan for the import tip (`listIgnoredDotenvFiles`, `projectRemovalState.ts`): one bounded `git ls-files --others --ignored --directory` plus the bounded walk. It runs in the brain, async, inside the cached, pinned `lane.getDependencyStatus` refresh, never per render | one-off timing loop on the ADE main checkout and on a small repo (no bench file yet). Mac Studio M4 Max dev build, 2026-11-17, commits `c3bf40cf4` and `40bf63a5d`, load average 28 (not the baseline machine) | — (new) | ADE main checkout: first run 276 ms, warm median 101 ms (58–214 ms), 1 file found; small repo 7 ms | not set yet; needs approval |
 | Files quick-open index build (this repo) | `file-index.bench.mts` | 17.5 s, ~540 git processes | 120–183 ms, 1 git process | 500 ms |
 | Quick-open lookup | `file-index.bench.mts` | — | 2–13 ms | 50 ms |
 | Project registry: one read per project (35) | `registry-read.bench.mts` | 360 ms | 0.3 ms | 5 ms |
@@ -1073,9 +1074,29 @@ New surfaces, signed in with a new account against a local account server
 | Surface / metric | Baseline | Ceiling | How |
 | --- | ---: | ---: | --- |
 | Web Home with no computer: account-server requests per idle minute | 0 | 0 | Network log, 2 min idle on Home with the Get started card |
-| Web account project page: account-server requests per idle minute | 0 | 1 | Network log, 2 min idle; the GitHub reads refresh every 60 s only while shown and only when GitHub is connected |
-| Web account project page chunk (KB raw / gzip) | 35.9 / 10.8 | 45 / 13.5 | `ProjectWelcomeNoMachine-*.js` in `dist/web-client/assets`; loads only when the tab opens |
 | Setup card: launch reads while a launch runs | 1 per 3–10 s | 1 per 3 s | Backoff from 3 s to 10 s in `renderer/state/accountCloudLaunches.ts`; paused while the page is hidden, stopped when no launch is in progress. From the code, not measured live (the local server has no cloud computer provider) |
+
+The account project page (`ProjectWelcomeNoMachine`) and its rows are gone: a
+project tab with no own computer online now binds to ADE Cloud and uses the
+normal tabs.
+
+Desktop route sweep with ADE Cloud as the tab's machine, 2026-11-17. This is a
+note, not a baseline: a small throwaway one-lane project, so the numbers sit
+below the ADE-repo rows above. `route-sweep.mjs` against the dev desktop, second
+warm pass, DevTools and the extra window closed, 10 s idle, nothing streaming,
+load average 5–8, no perf run (so no IPC numbers):
+
+| Route | Longest freeze after switch | Idle main-thread work | Page elements | Heap |
+| --- | ---: | ---: | ---: | ---: |
+| `/work` | 0 ms | 0.7 ms/s | 704 | 127 MB |
+| `/lanes` | 0 ms | 0.5 ms/s | 898 | 124 MB |
+| `/settings?tab=machines` | 0 ms | 0.5 ms/s | 935 | 126 MB |
+
+All are inside the ceilings (100 ms freeze, 30 ms/s idle, 3k/5k elements, 220
+MB heap). The new reads add no timers: one `accountSettings.get` per draft on
+focus or a settings change, one `serverLaunchStatus` per card event, one
+account key-names read per provider page open, and one `projectOverview` plus
+one `diff.getChanges` per resting lane open.
 
 ## Mac Studio (M4 Max), ADE-175 pass
 

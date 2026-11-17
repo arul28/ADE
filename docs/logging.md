@@ -878,6 +878,82 @@ passed another $50 below the limit: step, estimate, limit; one owner email),
 billed only up to the person's monthly limit), and
 `cloud.analytics_capture_failed`.
 
+#### ADE with no computer: log events
+
+These events serve ADE Cloud with no computer awake (see `docs/ARCHITECTURE.md`
+section 1.1). None of them logs chat text, a secret, a token, a file path, a
+lane name or an email subject; they carry ids, counts and closed codes.
+
+Account directory (`apps/account-directory/src/cloud/`, Worker logs):
+
+- The message queue: `cloud.chat_message_queued`, `cloud.chat_message_launch`,
+  `cloud.chat_message_wake_failed`, `cloud.chat_message_unreadable`,
+  `cloud.chat_message_rate_limited`; the sweep `cloud.chat_messages_swept`,
+  `cloud.chat_messages_sweep_failed`; the move `cloud.chat_moved`.
+- Saved copies: `cloud.session_account_full`, `cloud.session_bucket_missing`,
+  `cloud.session_copy_unreadable`, `cloud.git_summary_unreadable`,
+  `cloud.capsule_account_full`, `cloud.capsule_bucket_missing`,
+  `cloud.capsule_committed`, `cloud.capsule_part_unreadable`.
+- Idle cleanup's save step: `cloud.save_for_rest`,
+  `cloud.save_for_rest_unavailable`.
+- Email: `cloud.email_skipped` (warn; reason `no_resend_key`, `no_clerk_key`,
+  `no_recipient` or `no_alert_address`).
+- Timed wakes: `cloud.timed_wake_recorded`, `cloud.timed_wake_record_failed`.
+- The machine list: `directory.cloud_truth_read_failed`.
+- The lane index: `account_lanes.refused`,
+  `account_lanes.machine_lanes_delete_failed`.
+- Vault and account reads: `cloud.vault_item_read_refused`,
+  `cloud.vault_item_read_failed`, `cloud.vault_keys_read_refused`,
+  `cloud.vault_keys_read_failed`, `cloud.vault_read_refused`,
+  `cloud.vault_read_failed`, `cloud.vault_read_too_long`, `cloud.vault_write_*`,
+  `cloud.limits_saved` (field names only), `cloud.cto_copy_unreadable`.
+- Integrations: `cloud.integration_rate_limited`, `cloud.linear_needs_renewal`,
+  `cloud.linear_query_refused`, `cloud.linear_query_failed`, `cloud.jira_*`.
+- Linear renewal: `cloud.linear_lease_claimed`, `cloud.linear_lease_lost`
+  (reason), `cloud.linear_renewed` (via), `cloud.linear_renewal_superseded`,
+  `cloud.linear_renewal_invalid_grant`, `cloud.linear_renewal_refused`
+  (status), `cloud.linear_renewal_publish_failed`. Sentry:
+  `cloud.linear_renewal_failed`, `cloud.linear_lease_claim_failed`,
+  `cloud.linear_renewal_seal_failed`.
+- Event wakes: `cloud.event_wakes_set` (instanceId, count), `cloud.event_wake`
+  (userId, instanceId, topicKind, outcome). Sentry: `cloud.event_wake_failed`.
+
+Webhook relay (`apps/webhook-relay/`): `cloud_event_wake_sent`,
+`cloud_event_wake_refused`, `cloud_event_wake_failed`.
+
+The cloud computer's brain (`apps/ade-cli/src/services/cloudChats/`,
+`services/account/`, `services/github/cloudGitIdentity.ts`):
+
+- Save at rest: `cloud.rest_save`, `cloud.rest_save_git_failed`,
+  `cloud.rest_save_session_failed`, `cloud.rest_save_sessions_read_failed`,
+  `cloud.rest_save_lanes_read_failed`, `cloud.rest_save_chats_failed`,
+  `cloud.rest_save_subagents_failed`, `cloud.rest_save_state_write_failed`,
+  `cloud.rest_save_event_wakes_failed`, `cloud.rest_capsule_failed`,
+  `cloud.rest_capsule_over_cap`, `cloud.idle_rest_save_failed`,
+  `cloud.prepare_stop_rest_save_failed`, `cloud.subagent_copy_failed`.
+- The queue drain: `cloud.chat_queue_drain`, `cloud.chat_queue_drained`,
+  `cloud.chat_queue_read_failed`, `cloud.chat_queue_chat_failed`,
+  `cloud.chat_queue_sign_in_report_failed`, `cloud.on_woke_failed`,
+  `cloud.use_report_failed`.
+- Restore after a delete: `cloud.chat_restored` (with `kind: "cli"` for a CLI
+  session), `cloud.restore_capsule_read_failed`,
+  `cloud.restore_capsule_unreadable`, `cloud.restore_move_failed`,
+  `agent_chat.cloud_restored`, `agent_chat.cloud_restore_capsule_failed`,
+  `agent_chat.cloud_restored_cli`, `agent_chat.cloud_restore_cli_place_failed`,
+  `cloud_boot_launch.chat_continued`.
+- The lane index: `account.lanes_published`, `account.lanes_publish_failed`,
+  `account.lanes_read_failed`, `account.lanes_cache_write_failed`.
+- Git identity: `cloud.git_identity_written`, `cloud.git_identity_failed`,
+  `cloud.git_identity_app_read_failed`, `cloud.git_identity_user_read_failed`.
+
+Desktop main process (`apps/desktop/src/main/services/adeCloud/adeCloudReadIpc.ts`):
+`ade_cloud.account_read_failed` {channel, error class name, status},
+`ade_cloud.account_write_refused` {channel, code, status},
+`ade_cloud.account_write_failed` {channel, error}. The renderer logs
+`[cloud] the action after a wake failed` to the console from
+`renderer/lib/cloudMachineWake.ts`. The web client, the iPhone and the other renderer
+surfaces add no events for this work.
+
 The new product facts reuse `ade_feature_used`; they do not add an event name or
 raise a ceiling. The taxonomy is closed at the producer and again by
 `productAnalyticsPolicy.ts`:
