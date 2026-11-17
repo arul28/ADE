@@ -1540,7 +1540,10 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` and
   `ConnectionsPanel.tsx` — the single top-bar Connections control and its
   Machines, Phone, and Web tabs. The Web tab reports connected browser peers
-  and directs signed-out users to account sign-in.
+  and directs signed-out users to account sign-in. A saved machine's **Edit**
+  panel also carries this computer's **Slow connection mode** (Automatic,
+  Always on, Off) beside **Reconnect automatically**; see
+  [Remote runtime](../remote-runtime/README.md#a-slow-or-dropping-link).
 - `apps/desktop/src/renderer/components/usage/HeaderUsageControl.tsx`
   and `UsageLimitsBand.tsx` — header usage popup. Live provider quotas
   for Claude and Codex (tracked providers) and the automation budget

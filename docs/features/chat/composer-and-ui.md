@@ -1838,6 +1838,29 @@ allowing a cross-provider fork.
   attachment refs; provider-specific handling still happens inside
   `agentChatService.sendMessage`.
 
+### A slow or dropping link to the chat's machine
+
+The composer and the send path adapt to the chat's own machine
+(`shared/slowLinkMode.ts`; see
+[Remote runtime](../remote-runtime/README.md#a-slow-or-dropping-link)).
+With that machine's slow-connection mode on, a `Slow connection · <rtt> ms`
+chip sits in the composer's status strip and its hover says why pictures wait
+for a tap and why a terminal types ahead. A pasted picture appears in its
+pending tile at once, before the upload ends, and a paste over 128 KiB to a
+machine that announces `chatAttachmentParts` goes in parts that survive a
+drop; each part says where it starts, so the machine stages the file once
+(`chatAttachmentParts.ts`, `remoteAttachmentParts.ts`). A send carries a
+`clientSendId`: the composer keeps the id of a send whose arrival is not
+confirmed, keyed by chat and by the whole payload (words, file paths, issue
+context, review-comment selections), and reuses it if the same payload is sent
+to the same chat again, so a message the machine already took is not written
+twice. The id is forgotten when the answer or the transcript confirms it, so
+the same words sent later are a message of their own. A send whose call lost
+its answer shows "Sending is taking longer than expected" and keeps the words
+out of the composer for up to two minutes while it checks the chat, instead of
+handing them straight back with an error. An older machine keeps the previous
+paths: one upload request, and a new id per send.
+
 ## Voice conversations
 
 A voice conversation lets the user talk with any chat. Voice always runs on

@@ -39,6 +39,31 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   record per outage of why a dial failed: each route's kind, result, fixed
   error token and duration, matched to the other machine's report by hashed
   device ids. See [Logging](../../logging.md#error-tracking-sentry).
+- `apps/desktop/src/shared/slowLinkMode.ts` — the slow-connection rule (round
+  trips and drops, with hysteresis), the person's per-machine setting
+  (`auto`, `on`, `off`), the `slowLink` status on a connection, the percentile
+  helper and the link report a desktop sends on its maintenance ping.
+  `remoteConnectionService.ts` feeds it and puts the result in the connection
+  snapshot, so the composer chip, the machine row and the picture tiles read
+  one feed with no extra poll.
+- `apps/desktop/src/main/services/remoteRuntime/remoteLinkMeter.ts` — the
+  per-machine window that sizes bulk pieces by the measured delivery rate and
+  keeps enough of them in flight to cover the round trip; `linkWantsSlowPath`
+  decides whether a bulk transfer takes the slow path at all.
+- `apps/desktop/src/main/services/remoteRuntime/remoteAttachmentParts.ts` and
+  `apps/desktop/src/main/services/chat/chatAttachmentParts.ts` — a paste sent
+  in parts that are safe to send again (`chat.saveTempAttachmentPart`), with
+  the machine's own part store placing them in any order and staging once.
+- `apps/desktop/src/main/services/computerUse/artifactDisplayCopy.ts` — the
+  1920 px JPEG copy a transcript tile shows on a far link, kept in
+  `.ade/cache/artifact-display/` (at most 400, pruned after a minute of rest).
+- `apps/desktop/src/shared/backgroundActionJob.ts` and
+  `apps/ade-cli/src/backgroundActionJobs.ts` — long actions a caller follows by
+  id: started once per id, joined by a call sent again, the outcome kept ten
+  minutes, and the `backgroundJob` answer field that says "still running".
+- `apps/ade-cli/src/connectionLinkSummary.ts` — the brain's side of the link
+  lines (`rpc.link_summary`, `rpc.link_closed`), one per remote connection
+  every five minutes plus one when it closes.
 - `apps/desktop/src/main/services/remoteRuntime/remoteTerminalUpdate.ts` —
   `updateViaRemoteTerminal`, the terminal-driven `ade brain update` for a
   connected Windows machine on a build that cannot self-install.
@@ -1446,7 +1471,7 @@ WebSocket/auth wait is capped by the remaining budget and observes cancellation;
 authentication failure stops redundant channel-home probes for that route, and
 the final error aggregates the routes/runtimes that were actually attempted.
 
-After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. Each target also persists an explicit `autoConnect` preference: a successful Connect enables it, and Disconnect disables it. Only targets with that preference enabled reconnect at launch or after wake; an explicit failed Connect does not change the saved preference. Implicit retries use bounded exponential backoff from 30 s through 5 minutes and remain eligible after repeated failures. Pressing Connect bypasses the current backoff without bypassing SSH or pairing authentication. An unpackaged (development) desktop runs with `explicitConnectOnly`: it never reconnects saved targets at launch, after wake, or for implicit use, and connects only when the person presses Connect in it. A paired host keeps one connection per device and every ADE on a computer shares that device pairing, so a dev app reconnecting on its own took machines from the installed app (which then shows the superseded error and waits). `ADE_DEV_REMOTE_AUTOCONNECT=1` turns auto-connect back on for a dev app.
+After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. Each target also persists an explicit `autoConnect` preference: a successful Connect enables it, and Disconnect disables it. Only targets with that preference enabled reconnect at launch or after wake; an explicit failed Connect does not change the saved preference. Implicit retries use bounded exponential backoff from 30 s through 5 minutes and remain eligible after repeated failures. Pressing Connect bypasses the current backoff without bypassing SSH or pairing authentication. A target also persists this computer's `slowLinkMode` (`"on"`/`"off"`, absent for Automatic), which saving the machine's address again keeps; see [A slow or dropping link](#a-slow-or-dropping-link). An unpackaged (development) desktop runs with `explicitConnectOnly`: it never reconnects saved targets at launch, after wake, or for implicit use, and connects only when the person presses Connect in it. A paired host keeps one connection per device and every ADE on a computer shares that device pairing, so a dev app reconnecting on its own took machines from the installed app (which then shows the superseded error and waits). `ADE_DEV_REMOTE_AUTOCONNECT=1` turns auto-connect back on for a dev app.
 
 Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha` upload to `~/.ade-alpha/` instead of `~/.ade/` so a remote machine can host stable and alpha runtimes side by side. Beta is an update track of the normal install and uses `~/.ade/`. Runtime binaries, native deps, PTY workers, and bundled ADE agent skills all live under the selected home. Remote compatibility launches keep `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so remote probes do not fight the user's login service.
 
@@ -1858,6 +1883,71 @@ Local project bindings use the local ADE runtime for the same surfaces — agent
 
 Removing or disconnecting a machine never closes a project that exists elsewhere. A project tab is the repo (see `docs/plans/unified-machines.md`), so its remote binding is only a default: when the machine goes away, the tab falls back to another checkout of the same repo — the local checkout first, then another connected machine — and only a repo that lives nowhere else closes. A disconnect keeps the tab and its view state, with the disconnected machine's lanes, chats, and terminals simply gone from the project; a remove does the same but also forgets the machine's saved details and remembered route. The Connections confirmation names which open tabs stay and which close.
 
+## A slow or dropping link
+
+Every machine connection measures itself and adapts. Nothing here is global: a
+fast machine on the same LAN and a far one in the same window each get their
+own answer.
+
+**Slow-connection mode.** `shared/slowLinkMode.ts` turns the mode on when two
+of the last three round trips are 400 ms or more, or two connections dropped
+within five minutes. It turns off only after five round trips under 250 ms with
+no drop in five minutes, so a link near the line does not flicker. The samples
+are the dial's latency and the 30 s maintenance ping; the drops are connection
+evictions that are not a hand-over to another ADE. The result rides the
+existing connection snapshot as `slowLink: { active, reason, rttMs }` — no new
+poll, timer or IPC call. The person's own setting for the machine wins: **Slow
+connection mode** in the machine's **Edit** panel is **Automatic** (default),
+**Always on** or **Off**, saved on this computer's target record
+(`remoteRuntime.setSlowLinkMode(id, mode)`), so it applies per machine and per
+computer. With the mode on, a chat on that machine shows `Slow connection · <rtt>
+ms` in the composer's status strip, and the machine row reads `<route> · <rtt>
+ms · Slow connection`.
+
+What the mode changes is only what would be hidden or delayed: a transcript
+picture from that machine waits as a `Show picture · <size>` tile until it is
+clicked (a picture already shown stays), and a plain-shell terminal types
+ahead. Pictures in the proof drawer and the lightbox load as before. The
+always-on transport work below runs in every mode.
+
+**Bulk pieces, sized to the link.** A transcript picture is read from the other
+machine in pieces about 250 ms of the measured delivery rate (1 MiB on a fast
+link, 16-30 KiB at 1 Mbit/s), with enough in flight to cover the round trip, and
+a piece that times out or loses its connection is read again from the same
+offset — the bytes already pulled are kept. `linkWantsSlowPath` skips the slow
+path on a fast, near link. A paste over 128 KiB goes in parts of the same
+measure, each naming its offset, so a drop costs only the parts that were out;
+the picture appears in the composer at once, and a part that timed out is sent
+again in the size the meter now allows. A picture of more than 1920 px on its
+long edge also gets a display copy made on the machine that holds it: a JPEG
+the tile shows, while the lightbox, copy, save and what the model sees keep the
+original (see [Computer use](../computer-use/README.md)).
+
+**Long actions.** `lane.create`, `lane.importBranch`, `lane.switchBranch`, the
+archive and restore actions, `lane.initEnv`, `lane.applyTemplate`,
+`git.pull`, `git.checkoutBranch`, `pr.createLaneFromPrBranch`, `pr.land`,
+`archive.*`, `file.deletePath` and `lane.pushCloudStartBranch` go to a brain
+that announces `backgroundActionJobs` with `backgroundJob: { id, waitMs }`.
+The brain starts the action once per id, answers within 20 s ("still running"
+or the outcome), and keeps a finished outcome for ten minutes; a call sent
+again after a drop joins the same run. The desktop keeps asking with the same
+id until the action's own budget runs out, and stops as soon as the person
+disconnects. An older brain keeps the one-request path.
+
+**One send, one copy.** A chat send carries `clientSendId`. The desktop keeps
+the id of an unconfirmed send (per chat and payload), so the same message sent
+again after a drop reuses it; the pool sends it again after a reconnect only to
+a brain that announces `clientSendDedupe`; and the id is forgotten once the
+message is confirmed, so an identical message later is a message of its own.
+When one call loses a dropped connection, the other reads on that machine wait
+for the same redial and ask again, while a write still reports that its outcome
+is unknown.
+
+**Numbers on both ends.** `remote.link_summary` on the desktop and
+`rpc.link_summary` in the brain write one line per connection every five
+minutes (round trip percentiles, drops, bytes, route, mode), plus a switch line
+(`remote.slow_link_switch`) and a close line (`rpc.link_closed`).
+
 ## Mobile reachability
 
 iOS uses SSH only as an optional one-time pairing bootstrap. Routine mobile
@@ -1892,6 +1982,7 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 - `Remote machine was manually disconnected. Connect again to use this remote project.` — the user explicitly disconnected the target; ADE will not implicitly reconnect or restore it until Connect is pressed.
 - `Not connected · you disconnected it on <date>` — the row's line for a manual disconnect. The same rule applies: ADE waits for Connect.
 - `Not connected · Reconnect automatically is off` — the machine has connected before, but its **Reconnect automatically** checkbox (Edit) is off, so ADE does not reconnect it when the app opens. Connect makes a one-off connection and leaves the checkbox as it is. A machine that has never connected shows `Never connected` instead.
+- `Slow connection · <rtt> ms` in a chat's composer — slow-connection mode is on for that machine, so pictures wait for a click and a plain-shell terminal types ahead. **Slow connection mode** in the machine's **Edit** panel turns it off or forces it on. See [A slow or dropping link](#a-slow-or-dropping-link).
 - `Remote ADE service connection failed.` — the target is currently unreachable or its route failed. Automatic reconnects continue with bounded backoff; press Connect to bypass the current backoff when you want an immediate retry.
 - `SSH server at <host:port> closed the connection before ADE could finish the SSH handshake` — the TCP route opened but the server reset or closed the SSH handshake. Check Remote Login/sshd, firewall rules, and Tailscale SSH policy. An sshd that saw many refused sign-ins from this computer also does this for a while (OpenSSH source penalties).
 - `SSH authentication failed for user(s) … ADE won't retry on its own. Fix this, then press Try again.` — the server refused every key. ADE stops retrying so it does not repeat the refusal on a timer; fix the user or key, then press Try again or edit the machine.
