@@ -131,6 +131,50 @@ export function contentLengthExceedsLimit(headers: Headers, limit: number): bool
   }
 }
 
+const HEXTET = /^[0-9a-f]{1,4}$/;
+const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+/** The eight 16-bit groups of an IPv6 address, or null when it is not one. */
+function ipv6Groups(address: string): number[] | null {
+  const bare = address.trim().toLowerCase().split("%")[0]!;
+  if (!bare.includes(":")) return null;
+  const halves = bare.split("::");
+  if (halves.length > 2) return null;
+  const split = (part: string): string[] => (part ? part.split(":") : []);
+  const head = split(halves[0]!);
+  const tail = halves.length === 2 ? split(halves[1]!) : [];
+  // An embedded IPv4 tail (`::ffff:192.0.2.1`) is the last two groups.
+  const last = halves.length === 2 ? tail : head;
+  const dotted = last.length ? IPV4.exec(last[last.length - 1]!) : null;
+  const trailing: number[] = [];
+  if (dotted) {
+    const octets = dotted.slice(1).map(Number);
+    if (octets.some((octet) => octet > 255)) return null;
+    last.pop();
+    trailing.push((octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!);
+  }
+  const written = head.length + tail.length + trailing.length;
+  const missing = 8 - written;
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return null;
+  const parts = [...head, ...new Array<string>(halves.length === 2 ? missing : 0).fill("0"), ...tail];
+  if (!parts.every((part) => HEXTET.test(part))) return null;
+  return [...parts.map((part) => parseInt(part, 16)), ...trailing];
+}
+
+/**
+ * The address a per-caller quota counts, with an IPv6 address cut to its /64.
+ * One IPv6 customer is routinely handed a whole /64, so keying on the full
+ * address would give a single machine 2^64 fresh quotas. An IPv4 address, and
+ * anything that is not an address (`unknown`), is returned unchanged.
+ * Keep in step with apps/account-directory/src/sinkUtils.ts, which has the
+ * same parser for its own Worker.
+ */
+export function quotaAddress(address: string): string {
+  const groups = ipv6Groups(address);
+  if (!groups) return address;
+  return `${groups.slice(0, 4).map((group) => group.toString(16)).join(":")}::/64`;
+}
+
 /**
  * Reads the request body, stopping as soon as it would exceed `maxBytes` and
  * returning null so the caller can answer 413. A chunked body carries no
@@ -212,7 +256,7 @@ export function constantTimeEqual(left: string, right: string): boolean {
   return diff === 0;
 }
 
-export async function sha256Hex(value: string | ArrayBuffer | Uint8Array<ArrayBuffer>): Promise<string> {
+export async function sha256Hex(value: string | BufferSource): Promise<string> {
   return toHex(await crypto.subtle.digest("SHA-256", typeof value === "string" ? encoder.encode(value) : value));
 }
 
@@ -247,7 +291,7 @@ export function hasValidGitHubSignatureShape(signature: string): boolean {
   return /^sha256=[0-9a-f]{64}$/i.test(signature);
 }
 
-export async function signGitHubWebhookBody(secret: string, body: string | ArrayBuffer | Uint8Array<ArrayBuffer>): Promise<string> {
+export async function signGitHubWebhookBody(secret: string, body: string | BufferSource): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     encoder.encode(secret),
@@ -261,7 +305,7 @@ export async function signGitHubWebhookBody(secret: string, body: string | Array
 }
 
 
-export async function verifyGitHubSignature(secret: string, body: ArrayBuffer | Uint8Array<ArrayBuffer>, signature: string): Promise<boolean> {
+export async function verifyGitHubSignature(secret: string, body: BufferSource, signature: string): Promise<boolean> {
   if (!secret.trim()) return false;
   if (!signature.startsWith("sha256=")) return false;
   const expected = await signGitHubWebhookBody(secret, body);

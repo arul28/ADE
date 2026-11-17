@@ -49,7 +49,11 @@ function useGithubStars(): number | null {
       .then((res) => (res.ok ? res.json() : null))
       .then((data: { stargazers_count?: unknown } | null) => {
         if (typeof data?.stargazers_count !== "number") return;
-        sessionStorage.setItem(STARS_CACHE_KEY, String(data.stargazers_count));
+        try {
+          sessionStorage.setItem(STARS_CACHE_KEY, String(data.stargazers_count));
+        } catch {
+          // A browser that denies site data throws here too; the count still shows.
+        }
         setStars(data.stargazers_count);
       })
       .catch(() => undefined);

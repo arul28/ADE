@@ -10,7 +10,8 @@ import type {
 import { COLORS, MONO_FONT, SANS_FONT, recessedStyle } from "../lanes/laneDesignTokens";
 import { ModernRow, ModernRows, ModernSection, SettingsNumber, SettingsSelect, SettingsTextField } from "./primitives";
 import { useSettingsProjectPin, withProjectSettingsBound } from "./ProjectCopyScope";
-import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { useSettingsMachineScope, type SettingsMachineScope } from "./SettingsMachineScope";
+import { InlineErrorNotice } from "../ui/notice";
 
 /**
  * The spend cap editor. Mounted in settings and in the top-bar usage popup, so
@@ -116,9 +117,7 @@ export function BudgetCapEditor({
   if (!config && !onSave) {
     return (
       <div className={className}>
-        <ModernSection group="Budget" anchor="budget-cap" title="Spend cap" hint="No budget configuration loaded.">
-          {null}
-        </ModernSection>
+        <BudgetSection hint="No budget configuration loaded." />
       </div>
     );
   }
@@ -308,19 +307,7 @@ export function BudgetCapEditor({
             </div>
 
             {saveError ? (
-              <div
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 8,
-                  border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
-                  background: "color-mix(in srgb, var(--color-error) 15%, transparent)",
-                  color: COLORS.danger,
-                  fontFamily: SANS_FONT,
-                  fontSize: 11,
-                }}
-              >
-                {saveError}
-              </div>
+              <InlineErrorNotice id="settings-budget-cap-save" message={saveError} />
             ) : null}
 
             <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
@@ -422,41 +409,37 @@ export function BudgetCapSettings() {
     }
   }, [projectPin, scope.machineName, scope.isThisMachine, status]);
 
-  if (!projectPin) {
-    const hint = !scope.online
-      ? `${scope.machineName} is offline. Reconnect to set its spend cap.`
-      : scope.isThisMachine
-        ? "Open this project on this computer to set its spend cap."
-        : `${scope.machineName} has no copy of this project. Open the project there to set its spend cap.`;
-    return (
-      <ModernSection group="Budget" anchor="budget-cap" title="Spend cap" hint={hint}>
-        {null}
-      </ModernSection>
-    );
-  }
-
-  if (status === "loading") {
-    return (
-      <ModernSection group="Budget" anchor="budget-cap" title="Spend cap" hint="Loading the spend cap…">
-        {null}
-      </ModernSection>
-    );
-  }
-
+  if (!projectPin) return <BudgetSection hint={budgetCapUnavailableHint(scope)} />;
+  if (status === "loading") return <BudgetSection hint="Loading the spend cap…" />;
   if (status === "failed") {
     return (
-      <ModernSection
-        group="Budget"
-        anchor="budget-cap"
-        title="Spend cap"
-        hint={saveError ?? "ADE could not load the spend cap."}
-      >
+      <BudgetSection hint="Couldn't load the spend cap.">
+        <InlineErrorNotice
+          id="settings-budget-cap-load"
+          message={saveError ?? "ADE could not load the spend cap."}
+        />
         <button type="button" className="ade-modern-btn" onClick={() => setReloadNonce((value) => value + 1)}>
           Try again
         </button>
-      </ModernSection>
+      </BudgetSection>
     );
   }
 
   return <BudgetCapEditor config={config} saving={saving} saveError={saveError} onSave={onSave} />;
+}
+
+/** Why the spend cap cannot be reached on this page. */
+function budgetCapUnavailableHint(scope: SettingsMachineScope): string {
+  if (!scope.online) return `${scope.machineName} is offline. Reconnect to set its spend cap.`;
+  if (scope.isThisMachine) return "Open this project on this computer to set its spend cap.";
+  return `${scope.machineName} has no copy of this project. Open the project there to set its spend cap.`;
+}
+
+/** The spend cap's settings row, for the states before the editor can render. */
+function BudgetSection({ hint, children }: { hint: string; children?: React.ReactNode }) {
+  return (
+    <ModernSection group="Budget" anchor="budget-cap" title="Spend cap" hint={hint}>
+      {children ?? null}
+    </ModernSection>
+  );
 }

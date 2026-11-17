@@ -44,16 +44,15 @@ class FakeD1Statement {
     return { results: this.db.all<T>(this.sql, this.values) };
   }
 
-  async run(): Promise<{ success: boolean }> {
-    this.db.run(this.sql, this.values);
-    return { success: true };
+  async run(): Promise<{ success: boolean; meta?: { changes: number } }> {
+    return this.db.run(this.sql, this.values);
   }
 }
 
 class FakeCursorD1Database {
   secrets: StoredCursorSecret[] = [];
   events: StoredCursorEvent[] = [];
-  dailyCounts = new Map<string, number>();
+  dailyCounts = new Map<string, Map<string, number>>();
   nextEventSeq = 1;
 
   prepare(sql: string): FakeD1Statement {
@@ -61,10 +60,6 @@ class FakeCursorD1Database {
   }
 
   first<T>(sql: string, values: unknown[]): T | null {
-    if (sql.includes("select count from relay_daily_counts")) {
-      const key = `${String(values[0])}|${String(values[1])}`;
-      return ({ count: this.dailyCounts.get(key) ?? 0 } as T);
-    }
     if (sql.includes("from cursor_webhook_secrets where webhook_secret = ?")) {
       const row = this.secrets.find((entry) => entry.webhook_secret === values[0]);
       return row
@@ -128,18 +123,25 @@ class FakeCursorD1Database {
       } as T));
   }
 
-  run(sql: string, values: unknown[]): void {
+  run(sql: string, values: unknown[]): { success: boolean; meta?: { changes: number } } {
     if (sql.includes("insert into relay_daily_counts")) {
-      const key = `${String(values[0])}|${String(values[1])}`;
-      this.dailyCounts.set(key, (this.dailyCounts.get(key) ?? 0) + 1);
-      return;
+      const scope = String(values[0]);
+      const day = String(values[1]);
+      const limit = Number(values[2]);
+      const byDay = this.dailyCounts.get(scope) ?? new Map<string, number>();
+      const count = byDay.get(day) ?? 0;
+      if (count >= limit) return { success: true, meta: { changes: 0 } };
+      byDay.set(day, count + 1);
+      this.dailyCounts.set(scope, byDay);
+      return { success: true, meta: { changes: 1 } };
     }
     if (sql.includes("delete from relay_daily_counts")) {
       const cutoff = String(values[0]);
-      for (const key of [...this.dailyCounts.keys()]) {
-        if (key.split("|")[1]! < cutoff) this.dailyCounts.delete(key);
+      for (const [scope, byDay] of this.dailyCounts) {
+        for (const day of [...byDay.keys()]) if (day < cutoff) byDay.delete(day);
+        if (byDay.size === 0) this.dailyCounts.delete(scope);
       }
-      return;
+      return { success: true };
     }
     if (sql.includes("delete from cursor_events") && sql.includes("event_id not in")) {
       const secretId = String(values[0]);
@@ -152,7 +154,7 @@ class FakeCursorD1Database {
           .map((entry) => entry.event_id),
       );
       this.events = this.events.filter((entry) => entry.secret_id !== secretId || kept.has(entry.event_id));
-      return;
+      return { success: true };
     }
     if (sql.includes("update cursor_webhook_secrets set last_polled_at")) {
       const row = this.secrets.find((entry) => entry.id === String(values[1]));
@@ -200,6 +202,7 @@ class FakeCursorD1Database {
         if (event.secret_id === secretId && event.account_id == null) event.account_id = accountId;
       }
     }
+    return { success: true };
   }
 }
 

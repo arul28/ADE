@@ -26,8 +26,8 @@ import { useDocumentTitle } from "../../lib/useDocumentTitle";
  * it (`ade://invite/<code>` fills the code in Settings › Account).
  *
  * Opened from the link an account shares. The code never reaches
- * analytics (the screen is `invite`, the address `/invite`), session replay
- * masks this page's text, and the ad pixel doesn't load here.
+ * analytics (the screen is `invite`, the address `/invite`), and session
+ * replay masks this page's text.
  */
 export function InvitePage() {
   useDocumentTitle("You're invited to ADE");

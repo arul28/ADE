@@ -63,14 +63,17 @@ function replicasBest(hours: number): { price: number; usd: number } {
  * 300,000 (2,500). Past a plan, 60 machine minutes cost $0.10 of credits, which
  * is $0.20 an hour here. Credits without a plan cost the same, from a $5 top-up.
  */
+const CAPY_OVERAGE_USD_PER_HOUR = 0.2;
+const CAPY_PLANS = [
+  { plan: "$20 Lite plan", price: 20, hours: 250 },
+  { plan: "$100 Pro plan", price: 100, hours: 1_250 },
+  { plan: "$200 Max plan", price: 200, hours: 2_500 },
+] as const;
+
 function capyBest(hours: number): { plan: string; usd: number } {
-  let best = { plan: "Credits only", usd: hours * 0.2 };
-  for (const plan of [
-    { plan: "$20 Lite plan", price: 20, hours: 250 },
-    { plan: "$100 Pro plan", price: 100, hours: 1_250 },
-    { plan: "$200 Max plan", price: 200, hours: 2_500 },
-  ]) {
-    const usd = plan.price + Math.max(0, hours - plan.hours) * 0.2;
+  let best = { plan: "Credits only", usd: hours * CAPY_OVERAGE_USD_PER_HOUR };
+  for (const plan of CAPY_PLANS) {
+    const usd = plan.price + Math.max(0, hours - plan.hours) * CAPY_OVERAGE_USD_PER_HOUR;
     if (usd <= best.usd) best = { plan: plan.plan, usd };
   }
   return best;
@@ -82,11 +85,11 @@ export const RIVALS: Rival[] = [
     name: "Capy",
     logo: "/images/competitors/logo-capy.webp",
     machine: "2 vCPU · 8 GB",
-    plan: "$20 Lite plan",
+    plan: CAPY_PLANS[0].plan,
     rateKind: "overage",
     monthlyUsd: (hours) => capyBest(hours).usd,
     planFor: (hours) => capyBest(hours).plan,
-    perHourCents: 20,
+    perHourCents: Math.round(CAPY_OVERAGE_USD_PER_HOUR * 100),
     freeHours: 0,
     source: "https://capy.ai/pricing",
   },

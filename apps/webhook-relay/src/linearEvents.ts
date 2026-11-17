@@ -44,7 +44,7 @@ const MAX_LINEAR_REGISTRATION_BODY_BYTES = 16 * 1024;
 const MAX_LINEAR_WEBHOOK_SECRET_LENGTH = 512;
 const LINEAR_WEBHOOK_REPLAY_WINDOW_MS = 60_000;
 const linearWebhookAuthorityByTokenHash = new Map<string, { expiresAt: number }>();
-export async function signLinearWebhookBody(secret: string, body: string | ArrayBuffer | Uint8Array<ArrayBuffer>): Promise<string> {
+export async function signLinearWebhookBody(secret: string, body: string | BufferSource): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     encoder.encode(secret),
@@ -56,7 +56,7 @@ export async function signLinearWebhookBody(secret: string, body: string | Array
   return toHex(await crypto.subtle.sign("HMAC", key, data));
 }
 
-async function verifyLinearSignature(secret: string, body: ArrayBuffer | Uint8Array<ArrayBuffer>, signature: string): Promise<boolean> {
+async function verifyLinearSignature(secret: string, body: BufferSource, signature: string): Promise<boolean> {
   if (!secret.trim() || !/^[0-9a-f]{64}$/i.test(signature)) return false;
   const expected = await signLinearWebhookBody(secret, body);
   return constantTimeEqual(expected.toLowerCase(), signature.toLowerCase());

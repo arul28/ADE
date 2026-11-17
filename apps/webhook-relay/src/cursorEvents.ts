@@ -12,6 +12,7 @@ import {
   json,
   parseLimit,
   parseSequenceCursor,
+  quotaAddress,
   readBodyWithinLimit,
   readString,
   type RelayEnv,
@@ -52,7 +53,7 @@ const MAX_ANONYMOUS_CURSOR_REGISTRATIONS_PER_DAY = 2_000;
 const MAX_ANONYMOUS_CURSOR_REGISTRATIONS_PER_IP_PER_DAY = 20;
 const MAX_ANONYMOUS_CURSOR_EVENTS_PER_DAY = 50_000;
 
-export async function signCursorWebhookBody(secret: string, body: string | ArrayBuffer): Promise<string> {
+export async function signCursorWebhookBody(secret: string, body: string | BufferSource): Promise<string> {
   return signGitHubWebhookBody(secret, body);
 }
 
@@ -90,11 +91,6 @@ const MAX_LEGACY_OWNED_SECRETS_SCANNED = 200;
  * is gone and registers again.
  */
 const MAX_CURSOR_SECRETS_PER_ACCOUNT = 32;
-/**
- * Each scanned secret hashes the whole body once, so the legacy scan also takes
- * a smaller body. A Cursor status payload is a few KB.
- */
-const MAX_LEGACY_CURSOR_WEBHOOK_BODY_BYTES = 64 * 1024;
 
 // The legacy path, for webhook addresses created before they named their
 // secret (`?sid=`). Secrets in use: owned by an account, or polled recently.
@@ -136,7 +132,7 @@ async function listLegacyCursorWebhookSecrets(env: RelayEnv): Promise<CursorWebh
  */
 async function matchCursorWebhookSecret(
   env: RelayEnv,
-  body: ArrayBuffer | Uint8Array<ArrayBuffer>,
+  body: BufferSource,
   signature: string,
   secretId: string | null,
 ): Promise<CursorWebhookSecretRow | null> {
@@ -255,21 +251,20 @@ function utcDay(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-/** Count one use of `scope` today and answer whether it is still inside `limit`. */
+/** Count one use of `scope` today and answer whether it claimed a slot under `limit`. */
 async function bumpDailyCount(env: RelayEnv, scope: string, limit: number): Promise<boolean> {
   const day = utcDay();
-  await env.DB
+  // One atomic claim: the row is incremented only while it is under the cap,
+  // so a rejected request never writes and a burst cannot pass the cap.
+  const result = await env.DB
     .prepare(`
       insert into relay_daily_counts(scope, day, count) values (?, ?, 1)
       on conflict(scope, day) do update set count = count + 1
+      where relay_daily_counts.count < ?
     `)
-    .bind(scope, day)
+    .bind(scope, day, limit)
     .run();
-  const row = await env.DB
-    .prepare("select count from relay_daily_counts where scope = ? and day = ?")
-    .bind(scope, day)
-    .first<{ count: number }>();
-  return Number(row?.count ?? 0) <= limit;
+  return (result.meta?.changes ?? 0) > 0;
 }
 
 /** The caller's address, as Cloudflare reports it; a local or service-binding call shares one bucket. */
@@ -326,18 +321,22 @@ export async function handleCursorRegister(request: Request, env: RelayEnv): Pro
   // does not count; account-owned secrets are not capped here.
   if (!accountId && !existing) {
     const salt = env.CURSOR_WEBHOOK_SECRET?.trim() || env.GITHUB_WEBHOOK_SECRET?.trim() || "";
-    const ipKey = (await sha256Hex(`cursor-register:${salt}:${clientIp(request)}`)).slice(0, 24);
+    const ipKey = (await sha256Hex(`cursor-register:${salt}:${quotaAddress(clientIp(request))}`)).slice(0, 24);
     const ipAllowed = await bumpDailyCount(
       env,
       `cursor-register-ip:${ipKey}`,
       MAX_ANONYMOUS_CURSOR_REGISTRATIONS_PER_IP_PER_DAY,
     );
+    // A rejected address must not spend a shared slot.
+    if (!ipAllowed) {
+      return json({ ok: false, error: "too many registrations; try again tomorrow" }, { status: 429 });
+    }
     const globalAllowed = await bumpDailyCount(
       env,
       "cursor-register",
       MAX_ANONYMOUS_CURSOR_REGISTRATIONS_PER_DAY,
     );
-    if (!ipAllowed || !globalAllowed) {
+    if (!globalAllowed) {
       return json({ ok: false, error: "too many registrations; try again tomorrow" }, { status: 429 });
     }
   }
@@ -422,9 +421,6 @@ export async function handleCursorWebhook(request: Request, env: RelayEnv): Prom
     return json({ ok: false, error: "signature mismatch" }, { status: 401 });
   }
   const secretId = new URL(request.url).searchParams.get("sid")?.trim() || null;
-  if (!secretId && body.byteLength > MAX_LEGACY_CURSOR_WEBHOOK_BODY_BYTES) {
-    return json({ ok: false, error: "payload too large" }, { status: 413 });
-  }
   const matchedSecret = await matchCursorWebhookSecret(env, body, signature, secretId);
   if (!matchedSecret) {
     return json({ ok: false, error: "signature mismatch" }, { status: 401 });

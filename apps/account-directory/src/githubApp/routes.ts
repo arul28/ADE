@@ -2,7 +2,7 @@ import { authenticate } from "../callerToken";
 import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "../cloud/http";
 import { clerkAccount } from "../laneShares/clerkAccount";
 import { logGithubApp } from "../logging";
-import { readBoundedBody } from "../sinkUtils";
+import { readBoundedBody, readBoundedFormData } from "../sinkUtils";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import {
   GITHUB_APP_ADOPT_LIMIT_PER_HOUR,
@@ -535,11 +535,9 @@ async function handleConfirm(request: Request, env: GithubAppEnv, waitUntil?: Wa
   try {
     // Bounded like every other GitHub App body: request.formData() would buffer
     // an anonymous public form body of any size before the token check.
-    const read = await readBoundedBody(request, GITHUB_APP_MAX_BODY_BYTES);
-    if (!read.ok) return failurePage("unknown");
-    const headers = new Headers(request.headers);
-    headers.delete("content-length");
-    form = await new Request(request.url, { method: "POST", headers, body: read.text }).formData();
+    const parsed = await readBoundedFormData(request, GITHUB_APP_MAX_BODY_BYTES);
+    if (!parsed) return failurePage("unknown");
+    form = parsed;
   } catch {
     return failurePage("unknown");
   }
