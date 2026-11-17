@@ -24,6 +24,8 @@ import { ACCOUNT_PROJECTS_CURSOR_FIELD } from "./accountProjects/contract";
 import { deleteMachineCopies, readAccountProjectsCursor } from "./accountProjects/store";
 import { dropAccountLanes } from "./accountLanes/routes";
 import { reportCloudFailure } from "./cloud/store";
+import { computerStateOf } from "./cloud/projectOverview";
+import type { CloudComputerState } from "./cloud/contract";
 
 export type { ActivityRelayOptions } from "./activityRelay";
 
@@ -1291,7 +1293,6 @@ async function handleRename(
 }
 
 type CloudTruthRow = { machine_key: string; status: string; status_changed_at: number; idle_deleting_at: number | null };
-type CloudMachineState = "awake" | "waking" | "asleep" | "stopped" | "updating" | "deleting";
 
 /**
  * The account's ADE Cloud computers by machine key, from their own rows (one
@@ -1314,23 +1315,15 @@ async function cloudComputerTruth(env: Env, userId: string): Promise<Map<string,
   }
 }
 
-function cloudStateOf(row: CloudTruthRow): CloudMachineState {
-  if (row.idle_deleting_at != null) return "deleting";
-  if (row.status === "running" || row.status === "restarting") return "awake";
-  if (row.status === "waking" || row.status === "starting" || row.status === "provisioning") return "waking";
-  if (row.status === "updating") return "updating";
-  return row.status === "sleeping" ? "asleep" : "stopped";
-}
-
 /**
  * A resting ADE Cloud computer answers `online: false, sleepState: "asleep"`,
  * which every released client already reads as "asleep, wake to reach it".
  * `cloud.state` is additive, for clients that know it.
  */
-function withCloudTruth<T extends MachineRecord & { online: boolean }>(machine: T, cloud: Map<string, CloudTruthRow>): T & { cloud?: { state: CloudMachineState; stateAt: number } } {
+function withCloudTruth<T extends MachineRecord & { online: boolean }>(machine: T, cloud: Map<string, CloudTruthRow>): T & { cloud?: { state: CloudComputerState; stateAt: number } } {
   const row = cloud.get(machine.machineKey.toLowerCase());
   if (!row) return machine;
-  const state = cloudStateOf(row);
+  const state = computerStateOf(row);
   const resting = state === "asleep" || state === "stopped" || state === "deleting";
   return {
     ...machine,
