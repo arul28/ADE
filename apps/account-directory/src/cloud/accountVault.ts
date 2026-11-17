@@ -98,7 +98,8 @@ export function limitsOf(raw: unknown): CloudAgentLimits | null {
 }
 
 /** One vault row as the relay returns it. `value` is null for a tombstone or a row the relay can't open. */
-export type VaultRecord = { scope: string; kind: string; key: string; value: string | null; updatedAt: string; deleted?: boolean };
+/** `updatedAt` is the row's revision. `refreshOwner`: the device that renews a rotating grant (rotatingCredentialOwner.ts). */
+export type VaultRecord = { scope: string; kind: string; key: string; value: string | null; updatedAt: string; refreshOwner?: string | null; deleted?: boolean };
 /** One live key with no value (`GET vault/keys`). */
 export type VaultKeyRecord = { scope: string; kind: string; key: string; updatedAt: string };
 /** `no_route`: a relay from before the narrow reads (it answers 404), so the caller reads the old way. */
@@ -146,6 +147,7 @@ function vaultRecordOf(raw: unknown, scope?: string): VaultRecord | null {
     key: item.key,
     value: typeof item.value === "string" ? item.value : null,
     updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "",
+    refreshOwner: typeof item.refreshOwner === "string" && item.refreshOwner.trim() ? item.refreshOwner.trim() : null,
     ...(item.deleted === true ? { deleted: true } : {}),
   };
 }
@@ -221,7 +223,7 @@ const LEGACY_SCOPE_PAGES = 25;
 export async function writeVaultItem(
   env: RelayEnv,
   authorization: string,
-  item: { scope: string; kind: string; key: string; value: string; ifRevision: string },
+  item: { scope: string; kind: string; key: string; value: string; ifRevision: string; refreshOwner?: string | null },
   writer: string,
 ): Promise<"ok" | "stale" | "failed"> {
   const relay = relayFetch(env);
@@ -241,9 +243,12 @@ export async function writeVaultItem(
       return "failed";
     }
     const body = await response.json() as { results?: Array<{ status?: unknown }> };
+    // The relay answers `written` for a write that went in (`accountWriteResults`).
     const status = body.results?.[0]?.status;
-    if (status === "ok") return "ok";
-    return status === "stale" ? "stale" : "failed";
+    if (status === "written") return "ok";
+    if (status === "stale") return "stale";
+    logCloud("cloud.vault_write_refused", { status: typeof status === "string" ? status : "unknown" });
+    return "failed";
   } catch (error) {
     logCloud("cloud.vault_write_failed", { error: error instanceof Error ? error.name : "unknown" });
     return "failed";

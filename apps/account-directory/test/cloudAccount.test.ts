@@ -10,6 +10,7 @@ import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
 import { createCloudProvider } from "../src/cloud/provider";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
 import { runCloudMinuteCron } from "../src/cloud/cron";
+import { runLinearRenewalCron } from "../src/cloud/linearRenewal";
 import { nextFireAt } from "../src/cloud/automationSchedule";
 import { handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
@@ -2646,6 +2647,198 @@ describe("ADE Cloud account data and event wakes", () => {
     const response = await data.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/event-wakes`, { topics: [`hooks-account:${OTHER}`] });
     expect(response.status).toBe(400);
     expect(data.row("select count(*) as n from cloud_event_wakes").n).toBe(0);
+  });
+});
+
+/*
+ * The directory renews a Linear grant when no computer does (linearRenewal.ts):
+ * the lease and its conditional writes only. A rotated refresh token that the
+ * vault never receives signs the person out of Linear on every computer, so
+ * these pin: no exchange without a settled lease, one exchange per lease, a
+ * publish that names the lease revision, and a renewed grant that outlives a
+ * failed publish until the cron's lease route delivers it.
+ */
+describe("ADE Cloud Linear renewal", () => {
+  const ORIGIN = "https://github.com/acme/app";
+  const SCOPE = "repo:github.com/acme/app";
+  const ADE_CLIENT = "e552c738cd63ea5967f08bbc9c09b54c";
+  const MACHINE = "device-machine-a";
+  const SERVER = "ade-cloud-directory";
+  type Row = { value: string; updatedAt: string; refreshOwner: string | null; writer: string | null; deleted?: boolean };
+
+  let vault: Map<string, Row>;
+  let revisionClock: number;
+  let failVaultWrites: boolean;
+  let leaseCalls: Array<{ auth: string | null; body: Record<string, unknown> }>;
+  let tokenCalls: Array<{ refreshToken: string | null; clientId: string | null }>;
+  let tokenAnswer: () => Response;
+  let pending: Promise<unknown>[];
+  let beforeItemRead: Array<() => void>;
+  const itemKey = `${SCOPE}|integration|linear`;
+  const nextRevision = () => new Date(++revisionClock).toISOString();
+  const grant = (token: string, refresh: string, expiresAt: number, extra: Record<string, unknown> = { clientId: ADE_CLIENT }) =>
+    JSON.stringify({ v: 1, authMode: "oauth", token, refreshToken: refresh, expiresAt: new Date(expiresAt).toISOString(), ...extra });
+  const stored = () => JSON.parse(vault.get(itemKey)!.value) as Record<string, unknown>;
+
+  beforeEach(() => {
+    vault = new Map();
+    revisionClock = NOW - HOUR;
+    failVaultWrites = false;
+    leaseCalls = [];
+    tokenCalls = [];
+    pending = [];
+    beforeItemRead = [];
+    let issued = 0;
+    tokenAnswer = () => {
+      issued += 1;
+      return new Response(JSON.stringify({ access_token: `access-${issued}`, refresh_token: `refresh-${issued}`, expires_in: 86_399 }), { status: 200 });
+    };
+    Object.assign(harness.env, {
+      PUSH_RELAY_URL: "https://relay.test",
+      DIRECTORY_AUTH_SECRET: "directory-secret",
+      CLOUD_CHAT_MASTER_KEY: Buffer.alloc(32, 9).toString("base64"),
+      // The relay's vault, with its revision rule: a write names the revision it replaces, or this device wrote last.
+      ACTIVITY_RELAY: {
+        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = new URL(String(input));
+          const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+          if (url.pathname === "/attention/account/vault/item") {
+            beforeItemRead.shift()?.();
+            const row = vault.get(`${url.searchParams.get("scope")}|${url.searchParams.get("kind")}|${url.searchParams.get("key")}`);
+            return reply({ ok: true, item: row ? { scope: SCOPE, kind: "integration", key: "linear", ...row } : null });
+          }
+          if (url.pathname === "/attention/account/vault" && init?.method === "PUT") {
+            if (failVaultWrites) return reply({ ok: false }, 500);
+            const body = JSON.parse(String(init.body)) as { deviceId: string; items: Array<Record<string, string>> };
+            const item = body.items[0]!;
+            const key = `${item.scope}|${item.kind}|${item.key}`;
+            const row = vault.get(key);
+            if (row && row.updatedAt !== item.ifRevision && row.writer !== body.deviceId) return reply({ ok: true, results: [{ status: "stale" }] });
+            vault.set(key, { value: item.value!, updatedAt: nextRevision(), refreshOwner: item.refreshOwner ?? null, writer: body.deviceId });
+            return reply({ ok: true, results: [{ status: "written" }] });
+          }
+          const lease = url.pathname.match(/^\/directory\/accounts\/([^/]+)\/vault\/linear-lease$/);
+          if (lease && init?.method === "PUT") {
+            const body = JSON.parse(String(init.body)) as Record<string, string>;
+            leaseCalls.push({ auth: new Headers(init.headers).get("x-ade-directory-auth"), body });
+            const row = vault.get(`${body.scope}|integration|linear`);
+            if (!row || row.deleted || (JSON.parse(row.value) as { refreshToken?: string }).refreshToken !== body.spentRefreshToken) return reply({ ok: true, written: 0 });
+            vault.set(`${body.scope}|integration|linear`, { value: body.value!, updatedAt: nextRevision(), refreshOwner: body.refreshOwner!, writer: body.refreshOwner! });
+            return reply({ ok: true, written: 1 });
+          }
+          return reply({ ok: false }, 404);
+        },
+      },
+    });
+    const providerFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url === "https://api.linear.app/oauth/token") {
+        const form = new URLSearchParams(String(init?.body));
+        tokenCalls.push({ refreshToken: form.get("refresh_token"), clientId: form.get("client_id") });
+        return tokenAnswer();
+      }
+      if (url === "https://api.linear.app/graphql") {
+        return new Response(JSON.stringify({ data: { viewer: { id: "u1", authorization: new Headers(init?.headers).get("authorization") } } }), { status: 200 });
+      }
+      return providerFetch(input, init);
+    });
+    seedAccount(harness, OWNER);
+  });
+
+  const ask = async () => {
+    const response = await handleCloudRequest(new Request("https://directory.test/cloud/integrations/linear/query", {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json" },
+      body: JSON.stringify({ origin: ORIGIN, op: "identity" }),
+    }), harness.env, (promise) => { pending.push(promise); });
+    await Promise.all(pending.splice(0));
+    const body = await response.json() as { error?: { code: string }; data?: { viewer?: { authorization?: string } } };
+    return body.error?.code ?? body.data?.viewer?.authorization ?? `status ${response.status}`;
+  };
+
+  it("claims a quiet owner's grant, exchanges once after the claim settles, and publishes it against the lease revision", async () => {
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 20 * 60_000), updatedAt: new Date(NOW - 20 * 60_000).toISOString(), refreshOwner: MACHINE, writer: MACHINE });
+
+    expect(await ask()).toBe("linear_renewing");
+    expect(vault.get(itemKey)).toMatchObject({ refreshOwner: SERVER });
+    expect(stored().refreshToken).toBe("refresh-0");
+    clock = NOW + 10_000;
+    expect(await ask()).toBe("linear_renewing");
+    expect(tokenCalls).toEqual([]);
+
+    // Past the settle, two requests at once: one exchange.
+    clock = NOW + 31_000;
+    const both = await Promise.all([ask(), ask()]);
+    expect(both).toEqual(["linear_renewing", "linear_renewing"]);
+    expect(tokenCalls).toEqual([{ refreshToken: "refresh-0", clientId: ADE_CLIENT }]);
+    expect(stored()).toMatchObject({ token: "access-1", refreshToken: "refresh-1", clientId: ADE_CLIENT });
+    expect(vault.get(itemKey)!.refreshOwner).toBe(SERVER);
+    expect(harness.row("select count(*) as n from cloud_linear_renewals").n).toBe(0);
+    expect(await ask()).toBe("Bearer access-1");
+  });
+
+  it("lets go without exchanging when another device writes the item after the lease was read", async () => {
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 20 * 60_000), updatedAt: new Date(NOW - 20 * 60_000).toISOString(), refreshOwner: MACHINE, writer: MACHINE });
+    await ask();
+    clock = NOW + 31_000;
+    // The request reads the item; then the old owner wakes and publishes its own turn before the exchange looks again.
+    beforeItemRead.push(() => {}, () => {
+      vault.set(itemKey, { value: grant("access-m", "refresh-m", NOW + DAY), updatedAt: nextRevision(), refreshOwner: MACHINE, writer: MACHINE });
+    });
+    expect(await ask()).toBe("linear_renewing");
+    expect(tokenCalls).toEqual([]);
+    expect(stored()).toMatchObject({ refreshToken: "refresh-m" });
+    expect(vault.get(itemKey)!.refreshOwner).toBe(MACHINE);
+    expect(await ask()).toBe("Bearer access-m");
+  });
+
+  it("leaves an owner inside its grace, a grant of another client, and a dead grant alone", async () => {
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 2 * 60_000), updatedAt: new Date(NOW - 2 * 60_000).toISOString(), refreshOwner: MACHINE, writer: MACHINE });
+    const before = vault.get(itemKey);
+    expect(await ask()).toBe("linear_renewing");
+    expect(vault.get(itemKey)).toBe(before);
+
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 20 * 60_000, {}), updatedAt: new Date(NOW - 20 * 60_000).toISOString(), refreshOwner: MACHINE, writer: MACHINE });
+    expect(await ask()).toBe("linear_needs_renewal");
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 20 * 60_000, { clientId: "a-persons-own-client" }), updatedAt: new Date(NOW - 20 * 60_000).toISOString(), refreshOwner: MACHINE, writer: MACHINE });
+    expect(await ask()).toBe("linear_needs_renewal");
+    expect(tokenCalls).toEqual([]);
+
+    // Dead at Linear: the vault item is a computer's to remove, never the server's.
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 20 * 60_000), updatedAt: new Date(NOW - 20 * 60_000).toISOString(), refreshOwner: MACHINE, writer: MACHINE });
+    tokenAnswer = () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+    await ask();
+    clock = NOW + 31_000;
+    await ask();
+    expect(tokenCalls).toHaveLength(1);
+    expect(stored().refreshToken).toBe("refresh-0");
+    expect(vault.get(itemKey)!.deleted).toBeUndefined();
+    expect(harness.row("select count(*) as n from cloud_linear_renewals").n).toBe(0);
+  });
+
+  it("keeps a renewed grant sealed when its publish fails, uses it, and the cron delivers it through the lease route", async () => {
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 20 * 60_000), updatedAt: new Date(NOW - 20 * 60_000).toISOString(), refreshOwner: null, writer: MACHINE });
+    await ask();
+    clock = NOW + 31_000;
+    failVaultWrites = true;
+    expect(await ask()).toBe("linear_renewing");
+    expect(tokenCalls).toHaveLength(1);
+    expect(stored().refreshToken).toBe("refresh-0");
+    const row = harness.row("select state, sealed_grant from cloud_linear_renewals");
+    expect(row.state).toBe("publish");
+    expect(String(row.sealed_grant)).not.toMatch(/refresh-1|access-1/);
+
+    // The person keeps working on the renewed grant meanwhile; no second exchange.
+    clock = NOW + 45_000;
+    expect(await ask()).toBe("Bearer access-1");
+    expect(tokenCalls).toHaveLength(1);
+
+    clock = NOW + 2 * 60_000;
+    await runLinearRenewalCron(harness.env, clock);
+    expect(leaseCalls).toEqual([{ auth: "directory-secret", body: expect.objectContaining({ scope: SCOPE, spentRefreshToken: "refresh-0", refreshOwner: SERVER }) }]);
+    expect(stored()).toMatchObject({ token: "access-1", refreshToken: "refresh-1" });
+    expect(harness.row("select count(*) as n from cloud_linear_renewals").n).toBe(0);
   });
 });
 

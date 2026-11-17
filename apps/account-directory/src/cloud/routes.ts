@@ -1738,7 +1738,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (path === CLOUD_EDGE_PATHS.limits) return routeCloudLimits(request, env);
   if (path === CLOUD_EDGE_PATHS.accountSecrets) return routeAccountSecrets(request, url, env);
   if (path === CLOUD_EDGE_PATHS.cto) return routeCtoCopy(request, url, env);
-  if (path === CLOUD_EDGE_PATHS.linearQuery) return routeLinearQuery(request, env, caller.userId, now);
+  if (path === CLOUD_EDGE_PATHS.linearQuery) return routeLinearQuery(request, env, caller.userId, now, waitUntil);
   if (path === CLOUD_EDGE_PATHS.jiraSearch) return routeJiraSearch(request, env, caller.userId, now);
   if (path === CLOUD_EDGE_PATHS.jiraIssue) return routeJiraIssue(request, env, caller.userId, now);
   const eventWakes = /^\/cloud\/instances\/([^/]+)\/event-wakes$/.exec(path);

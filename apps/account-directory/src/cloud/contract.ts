@@ -2253,10 +2253,14 @@ export type CloudJiraIssueResult = { siteUrl: string; issue: Record<string, unkn
  */
 export const CLOUD_INTEGRATION_ERROR_CODES = {
   linear_not_connected: 409,
+  /** The server is renewing the project's Linear sign-in (`linearRenewal.ts`); try again in a minute. */
+  linear_renewing: 409,
   jira_not_connected: 409,
   jira_site_unsupported: 409,
   integration_failed: 502,
 } as const;
+
+export const CLOUD_LINEAR_RENEWING_MESSAGE = "Linear is renewing its sign-in. Try again in a minute.";
 
 /** Topics one computer may listen to. */
 export const CLOUD_EVENT_WAKE_MAX_TOPICS = 20;

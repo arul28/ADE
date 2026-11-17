@@ -1,7 +1,10 @@
 import { accountRepoScopeKey } from "../../../desktop/src/shared/accountSettingsScope";
+import type { CloudWaitUntil } from "./analytics";
+import { renewLinearGrant, type LinearRenewalEnv } from "./linearRenewal";
 import {
   CLOUD_INTEGRATION_REQUESTS_PER_MINUTE,
   CLOUD_LINEAR_OPS,
+  CLOUD_LINEAR_RENEWING_MESSAGE,
   type CloudJiraIssueResult,
   type CloudJiraSearchResult,
   type CloudLinearOp,
@@ -21,9 +24,11 @@ import { logCloud } from "./store";
  *
  * Linear runs fixed GraphQL documents only (`LINEAR_DOCUMENTS`), never a
  * caller's query. Its OAuth token rotates under the "one owner renews"
- * protocol (desktop `rotatingCredentialOwner.ts`); this server never renews
- * it, so an expired token answers `linear_needs_renewal` (see
- * `linearToken`). Jira calls go only to `https://<site>.atlassian.net`.
+ * protocol (desktop `rotatingCredentialOwner.ts`); when it has run out, this
+ * server renews it under that protocol (`linearRenewal.ts`) if the grant names
+ * ADE's own client, and the request answers `linear_renewing` meanwhile.
+ * Otherwise it answers `linear_needs_renewal`. Jira calls go only to
+ * `https://<site>.atlassian.net`.
  */
 
 const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
@@ -216,12 +221,7 @@ type LinearToken = { authorization: string; authMode: "manual" | "oauth" };
 
 /**
  * The header Linear takes, or why there is none. An OAuth token is used only
- * well inside its expiry: renewing it here would spend the rotating refresh
- * token outside the protocol every computer follows. Two facts rule that out:
- * the vault value does not say which OAuth client issued the grant (a person
- * may use their own), and a rotation this server could not publish back would
- * leave every computer holding a spent refresh token, with no local copy here
- * to retry from.
+ * well inside its expiry; past it, the caller asks `renewLinearGrant`.
  */
 export function linearToken(raw: string | null, now: number): LinearToken | "not_connected" | "needs_renewal" {
   if (!raw) return "not_connected";
@@ -327,7 +327,7 @@ async function prepare(request: Request, env: RelayEnv, userId: string, now: num
 }
 
 /** `POST /cloud/integrations/linear/query`. */
-export async function routeLinearQuery(request: Request, env: RelayEnv, userId: string, now: number): Promise<Response> {
+export async function routeLinearQuery(request: Request, env: LinearRenewalEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
   const prepared = await prepare(request, env, userId, now);
   if (!prepared.ok) return prepared.response;
   const { body, authorization, scope } = prepared;
@@ -339,9 +339,14 @@ export async function routeLinearQuery(request: Request, env: RelayEnv, userId: 
 
   const stored = await readConnection(env, authorization, scope, "linear");
   if (stored === undefined) return vaultUnavailable();
-  const token = linearToken(stored?.value ?? null, now);
+  let token = linearToken(stored?.value ?? null, now);
   if (token === "not_connected") {
     return fail("linear_not_connected", "Linear isn't connected for this project. Connect it in ADE on a computer.", 409);
+  }
+  if (token === "needs_renewal" && stored) {
+    const renewal = await renewLinearGrant(env, { authorization, userId, scope, item: stored, now, waitUntil });
+    if (renewal === "renewing") return fail("linear_renewing", CLOUD_LINEAR_RENEWING_MESSAGE, 409);
+    if (renewal !== "needs_renewal") token = { authorization: `Bearer ${renewal.grant.token}`, authMode: "oauth" };
   }
   if (token === "needs_renewal") {
     logCloud("cloud.linear_needs_renewal", {});
