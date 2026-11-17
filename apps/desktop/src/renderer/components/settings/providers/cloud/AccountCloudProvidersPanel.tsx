@@ -25,17 +25,28 @@ export function AccountCloudProvidersPanel() {
     void api.signIns().then(setSignIns, (error: unknown) => setSignInsError(extractError(error)));
   }, []);
   useEffect(() => reload(), [reload]);
-  // Rows save at the same time; each answer is the whole list, so an older answer never replaces a newer one.
-  const changeSeq = useRef(0);
-  const appliedSeq = useRef(0);
+  // Each answer is the whole list as the server had it then, and two rows can
+  // save at once: answers can arrive out of order. One change alone applies its
+  // answer; when changes overlapped, the list is read again after the last one.
+  const changesInFlight = useRef(0);
+  const changesOverlapped = useRef(false);
   const beginChange = useCallback(() => {
-    const seq = ++changeSeq.current;
-    return (next: CloudAccountSignIns) => {
-      if (seq < appliedSeq.current) return;
-      appliedSeq.current = seq;
-      setSignIns(next);
+    changesInFlight.current += 1;
+    if (changesInFlight.current > 1) changesOverlapped.current = true;
+    let settled = false;
+    return (next: CloudAccountSignIns | null) => {
+      if (settled) return;
+      settled = true;
+      changesInFlight.current -= 1;
+      if (changesInFlight.current > 0) return;
+      if (changesOverlapped.current) {
+        changesOverlapped.current = false;
+        reload();
+      } else if (next) {
+        setSignIns(next);
+      }
     };
-  }, []);
+  }, [reload]);
 
   const signInFor = (provider: string): CloudAccountSignIn | null =>
     signIns?.signIns.find((entry) => entry.providers.includes(provider)) ?? null;
@@ -124,8 +135,8 @@ function ProviderRow({
   provider: CloudCatalogProvider;
   signIn: CloudAccountSignIn | null;
   vaultUnknown: boolean;
-  /** Starts a change; the answer it returns applies the list the server sent back. */
-  beginChange: () => (next: CloudAccountSignIns) => void;
+  /** Starts a change; call what it returns once, with the list the server sent back (null: the change failed). */
+  beginChange: () => (next: CloudAccountSignIns | null) => void;
 }) {
   const kind = provider.remoteSignIn;
   const [editing, setEditing] = useState(false);
@@ -148,7 +159,10 @@ function ProviderRow({
         setValue("");
         setEditing(false);
       },
-      (failure: unknown) => setError(extractError(failure)),
+      (failure: unknown) => {
+        apply(null);
+        setError(extractError(failure));
+      },
     ).finally(() => setBusy(false));
   };
   const remove = async () => {
@@ -167,6 +181,7 @@ function ProviderRow({
     try {
       apply(await api.removeSignIn(signIn.id));
     } catch (failure) {
+      apply(null);
       setError(extractError(failure));
     } finally {
       setBusy(false);

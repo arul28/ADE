@@ -7588,10 +7588,14 @@ export function AgentChatPane({
     sessionsRef.current = sessions;
   }, [sessions]);
 
-  useEffect(() => () => {
-    paneMountedRef.current = false;
-    for (const timer of sendRecoveryTimersRef.current) window.clearTimeout(timer);
-    sendRecoveryTimersRef.current.clear();
+  useEffect(() => {
+    // Set again on mount: an effect re-run (a hot reload, a remount) ran the cleanup below first.
+    paneMountedRef.current = true;
+    return () => {
+      paneMountedRef.current = false;
+      for (const timer of sendRecoveryTimersRef.current) window.clearTimeout(timer);
+      sendRecoveryTimersRef.current.clear();
+    };
   }, []);
 
   const modelSelectionDiffersFromSession = Boolean(selectedSession && selectedSessionModelId && selectedSessionModelId !== modelId);
@@ -18477,6 +18481,9 @@ export function AgentChatPane({
    * The same card for a draft bound for ADE Cloud, asked of the account's ADE
    * Cloud sign-ins (`useAdeCloudSignInNeed`), not of this computer. Send stays
    * off until the provider is signed in there (or another model is picked).
+   * Not in ADE Web: there the account server starts the lane and its setup
+   * card signs the provider in (or asks for its key), as the project page's
+   * composer does; this read would ask the tab's computer, not the account.
    */
   const {
     need: adeCloudSignInNeed,
@@ -18484,7 +18491,7 @@ export function AgentChatPane({
     blockReason: adeCloudSignInBlockReason,
     openSignIn: openAdeCloudSignIn,
   } = useAdeCloudSignInNeed({
-    enabled: !selectedSessionId && adeCloudMode && !turnActive && !subagentView && !chatScope && !parallelDraftActive,
+    enabled: !isWebClientMode() && !selectedSessionId && adeCloudMode && !turnActive && !subagentView && !chatScope && !parallelDraftActive,
     provider: signInLoginProvider,
     navigate,
   });

@@ -44,6 +44,7 @@ import { CloudIdleCleanupNotices, idleRowTag } from "./CloudIdleCleanupNotice";
 import { CloudSizes } from "./CloudSizes";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
+import { useHasOwnComputer } from "../../../state/ownComputers";
 import {
   STATE_LABEL,
   dashLanes,
@@ -102,6 +103,7 @@ const errorText = (error: unknown) => ipcErrorMessage(error) || `${ADE_CLOUD_NAM
  * already holds; nothing wakes a computer to look.
  */
 export function CloudDashboard({ account, machines }: { account: CloudAccountState; machines: CloudMachinesState }) {
+  const ownComputer = useHasOwnComputer();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [insideKey, setInsideKey] = useState<string | null>(null);
   const { hash } = useLocation();
@@ -347,13 +349,19 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 
       {/* Sign-ins on the left; the shorter agent limits and the invite card
           stack on the right, so the two columns end near one height (B14-2). */}
-      <div className="adecd-pair">
-        <CloudSignIns />
-        <div className="adecd-stack">
-          <CloudAgentLimitsCard />
-          <CloudInviteCard account={account} onChanged={refresh} />
+      {/* With no computer of the person's own (ADE Web), both read a computer:
+          the sign-ins show as "Providers on ADE Cloud" below this page instead. */}
+      {ownComputer ? (
+        <div className="adecd-pair">
+          <CloudSignIns />
+          <div className="adecd-stack">
+            <CloudAgentLimitsCard />
+            <CloudInviteCard account={account} onChanged={refresh} />
+          </div>
         </div>
-      </div>
+      ) : (
+        <CloudInviteCard account={account} onChanged={refresh} />
+      )}
 
       {freeing ? (
         <CloudFreeUpSpace account={account} lanes={lanes} now={now} onClose={() => setFreeing(false)} onDone={refresh} />
