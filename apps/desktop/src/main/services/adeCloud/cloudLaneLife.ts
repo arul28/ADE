@@ -660,6 +660,10 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     await deps.client().then((client) => client.exec(job.instanceId, clearGrowNoteCommand(job.jobId), { timeoutMs: 20_000 })).catch((error: unknown) => {
       logger.warn?.("cloud.lane_job_grow_note_left", { jobId: job.jobId, error: getErrorMessage(error) });
     });
+    // The save wrote the note; without it that save no longer counts. A Retry
+    // saves again (writing the note again), or its restart isn't a disk grow
+    // and the chats it stops stay stopped when "Continue chats" is off.
+    setStage(record, "save", "pending");
   };
 
   const runJob = async (record: JobRecord): Promise<void> => {
