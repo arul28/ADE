@@ -1,6 +1,9 @@
 import Combine
+import OSLog
 import SwiftUI
 import UIKit
+
+private let cloudPaneLog = Logger(subsystem: "com.ade.ios", category: "cloud-pane")
 
 /// The phone's ADE Cloud page: the mirror of the desktop's Settings › ADE
 /// Cloud dashboard (`settings/cloudDashboard/CloudDashboard.tsx`), in the
@@ -262,8 +265,8 @@ final class CloudPaneStore: ObservableObject {
       phase = .failed("Sign in to ADE to see ADE Cloud.")
       return
     }
-    async let accountRead = try? client.account()
-    async let instancesRead = try? client.instances()
+    async let accountRead = Self.readDirect("account") { try await client.account() }
+    async let instancesRead = Self.readDirect("instances") { try await client.instances() }
     async let limitsRead = client.agentLimits()
     let (account, instances) = await (accountRead, instancesRead)
     now = Date()
@@ -282,10 +285,22 @@ final class CloudPaneStore: ObservableObject {
       let state = try await limitsRead
       limits = state.phoneLimits
       limitsRevision = state.revision
-    } catch {
+    } catch CloudServerClient.Failure.noAccess {
       // An older server has no limits route: the card says "Reading…" as before.
+    } catch {
+      cloudPaneLog.notice("cloud_pane read=limits failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }
     signIns = nil
+  }
+
+  /// One direct read of the page; a failure is logged and reads as nil.
+  private static func readDirect<T>(_ name: String, _ read: () async throws -> T) async -> T? {
+    do {
+      return try await read()
+    } catch {
+      cloudPaneLog.notice("cloud_pane read=\(name, privacy: .public) failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return nil
+    }
   }
 
   /// Lanes first (awake, then the most recent), then computers with no lane.

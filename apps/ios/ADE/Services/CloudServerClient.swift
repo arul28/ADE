@@ -33,7 +33,7 @@ enum CloudRefusalCode {
     "update_needed", "computer_busy", "creates_paused", "rate_limited",
     "needs_paid_plan", "disk_limit", "over_plan_limits", "git_credential_missing",
     "github_app_not_installed", "template_unset", "template_unavailable",
-    "linear_needs_renewal", "plan_past_due",
+    "linear_needs_renewal", "plan_past_due", "too_many_messages", "message_taken",
   ]
 
   /// Refusals of the Linear, Jira and limits routes (`CLOUD_INTEGRATION_ERROR_CODES`,
@@ -242,6 +242,8 @@ struct CloudChatQueuedMessage: Decodable, Equatable {
 
   /// Still on its way to the chat.
   var isOpen: Bool { state == "queued" || state == "sending" || state == "waiting_for_sign_in" }
+  /// Open and not waiting for the person: the server moves it on its own.
+  var isMoving: Bool { state == "queued" || state == "sending" }
 }
 
 /// The server's answer to a queued send: the message and what the wake did.
@@ -284,14 +286,6 @@ struct CloudServerClient {
   }
   private struct LanesWithoutComputer: Decodable { let lanes: [CloudLaneWithoutComputer] }
   private struct QueuedMessageList: Decodable { let messages: [CloudChatQueuedMessage] }
-  /// `{ error: { code, message } }` (`cloud/http.ts` `fail`).
-  private struct ErrorBody: Decodable {
-    struct Detail: Decodable {
-      let code: String?
-      let message: String?
-    }
-    let error: Detail?
-  }
 
   func instances() async throws -> [CloudServerInstance] {
     try decode(InstanceList.self, from: try await send("GET", "cloud/instances")).data
@@ -372,11 +366,13 @@ struct CloudServerClient {
     _ = try await send("DELETE", "cloud/chats/\(segment(machineKey))/\(segment(chatId))/messages/\(segment(messageId))")
   }
 
+  /// One path segment, with `/` encoded too. Every route file uses it.
   func segment(_ value: String) -> String {
     value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? value
   }
 
-  private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+  /// An answer's body as `T`; a body this app can't read is `.unreadable`.
+  func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
     do { return try JSONDecoder().decode(type, from: data) } catch { throw Failure.unreadable }
   }
 
@@ -429,6 +425,7 @@ struct CloudServerClient {
 /// a bad sign-in: its sentence is shown as it is. Only a 401, or a 403 with
 /// no refusal code, is a sign-in problem.
 func cloudServerFailure(status: Int, body: Data) -> CloudServerClient.Failure {
+  /// `{ error: { code, message } }` (`cloud/http.ts` `fail`).
   struct ErrorBody: Decodable {
     struct Detail: Decodable {
       let code: String?

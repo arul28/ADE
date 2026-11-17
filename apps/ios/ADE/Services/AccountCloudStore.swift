@@ -93,7 +93,7 @@ final class AccountCloudStore: ObservableObject {
   /// A read that fails keeps the last answer.
   func refresh(client: CloudServerClient, owner: AccountPairingAuthorization) async {
     let generation = accountGeneration
-    async let accessRead: Access? = try? decodeAccess(client)
+    async let accessRead = readAccess(client)
     async let accountRead = readAccount(client)
     async let lanesRead = readLanesWithoutComputer(client)
     let (nextAccess, nextAccount, nextLanes) = await (accessRead, accountRead, lanesRead)
@@ -103,9 +103,14 @@ final class AccountCloudStore: ObservableObject {
     if let nextLanes, nextLanes != lanesWithoutComputer { lanesWithoutComputer = nextLanes }
   }
 
-  private func decodeAccess(_ client: CloudServerClient) async throws -> Access {
-    let data = try await client.send("GET", "cloud/access")
-    return try JSONDecoder().decode(Access.self, from: data)
+  private func readAccess(_ client: CloudServerClient) async -> Access? {
+    do {
+      let data = try await client.send("GET", "cloud/access")
+      return try JSONDecoder().decode(Access.self, from: data)
+    } catch {
+      accountCloudLog.notice("cloud_store read=access failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return nil
+    }
   }
 
   private func readAccount(_ client: CloudServerClient) async -> CloudPhoneAccount? {
@@ -201,13 +206,16 @@ final class AccountCloudStore: ObservableObject {
     }
   }
 
-  func openMessages(machineKey: String, chatId: String) -> [CloudChatQueuedMessage] {
-    (queued[Self.chatKey(machineKey: machineKey, chatId: chatId)] ?? []).filter(\.isOpen)
+  /// The held messages the server moves on its own (not waiting for a sign-in).
+  func movingMessageCount(machineKey: String, chatId: String) -> Int {
+    (queued[Self.chatKey(machineKey: machineKey, chatId: chatId)] ?? []).filter(\.isMoving).count
   }
 
   /// Follows one chat's held messages while the chat is open and the app is
   /// in front: every 3 s, slowing to 10 s while nothing changes, until no
-  /// message waits. The view's task cancels it when the chat closes.
+  /// message moves on its own. A message that waits for a sign-in moves only
+  /// after the person signs in, and the sign-in step reads the list again.
+  /// The view's task cancels it when the chat closes.
   /// `onDelivered` runs when a message left the queue (the computer is up).
   func followQueue(machineKey: String, chatId: String, using sync: SyncService, onDelivered: @escaping @MainActor () async -> Void) async {
     let key = Self.chatKey(machineKey: machineKey, chatId: chatId)
@@ -215,7 +223,7 @@ final class AccountCloudStore: ObservableObject {
     // Read once at open: another device may have queued a message.
     await reconcile(machineKey: machineKey, chatId: chatId, using: sync)
     while !Task.isCancelled {
-      guard (queued[key] ?? []).contains(where: \.isOpen) else { return }
+      guard (queued[key] ?? []).contains(where: \.isMoving) else { return }
       try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
       if Task.isCancelled { return }
       guard UIApplication.shared.applicationState == .active else { delay = 10; continue }
@@ -238,8 +246,12 @@ final class AccountCloudStore: ObservableObject {
     let messages: [CloudChatQueuedMessage]
     do {
       messages = try await client.queuedMessages(machineKey: machineKey, chatId: chatId)
+    } catch CloudServerClient.Failure.noAccess {
+      // An older server has no queue route: nothing to show.
+      return
     } catch {
-      // An older server has no queue route; a failed read keeps the last list.
+      // A failed read keeps the last list.
+      accountCloudLog.notice("cloud_store read=queued_messages failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
       return
     }
     guard generation == accountGeneration else { return }

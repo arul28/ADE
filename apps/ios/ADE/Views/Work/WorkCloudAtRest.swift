@@ -51,8 +51,8 @@ struct CloudSessionCopyScreen: View {
 
   private var acceptsMessages: Bool { computerDeleted && !row.isShell }
 
-  private var openQueuedCount: Int {
-    cloudStore.openMessages(machineKey: row.machineKey, chatId: row.sessionId).count
+  private var movingQueuedCount: Int {
+    cloudStore.movingMessageCount(machineKey: row.machineKey, chatId: row.sessionId)
   }
 
   private var lines: [String] {
@@ -76,7 +76,7 @@ struct CloudSessionCopyScreen: View {
     }
     .task { await load() }
     // While a message waits for the new computer, follow it (the app in front only).
-    .task(id: "\(acceptsMessages)|\(openQueuedCount)|\(scenePhase == .active)") {
+    .task(id: "\(acceptsMessages)|\(movingQueuedCount)|\(scenePhase == .active)") {
       guard acceptsMessages, scenePhase == .active else { return }
       #if DEBUG
       if fixtureCopy != nil { return }

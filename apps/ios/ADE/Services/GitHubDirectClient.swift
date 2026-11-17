@@ -338,7 +338,7 @@ final class GitHubDirectClient {
   /// Fixture screens: canned answers instead of requests
   /// (`GitHubDirectPreviewAnswers`, `HubAccountPreviews.swift`).
   var preview: GitHubDirectPreviewAnswers?
-  /// Fixture screens: canned folders, files and commits (`CloudFilesPreviews.swift`).
+  /// Fixture screens: canned folders, files and commits (`CloudAtRestPreviews.swift`).
   var contentsPreview: GitHubContentsPreviewAnswers?
 #endif
 

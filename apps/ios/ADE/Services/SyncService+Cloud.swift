@@ -970,7 +970,7 @@ extension SyncService {
           title: nonEmptyTrimmed(copy.title) ?? (copy.isShell ? "Shell" : "CLI session"),
           provider: nil,
           model: nil,
-          toolType: copy.isShell ? "shell" : (nonEmptyTrimmed(copy.toolType) ?? "claude-code"),
+          toolType: copy.isShell ? "shell" : (nonEmptyTrimmed(copy.toolType) ?? "cli"),
           status: copy.status == "running" ? .idle : .ended,
           lastActivityAt: nonEmptyTrimmed(copy.lastActivityAt)
             ?? ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: copy.updatedAt / 1000))

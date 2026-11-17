@@ -616,7 +616,7 @@ struct SettingsMachineSections: View {
           }
         }
       }
-      SettingsCloudMachineRow(syncService: syncService)
+      SettingsCloudMachineRow()
     }
     .task { await account.loadMachines() }
     .onChange(of: machines.filter(\.isLive).map(\.id)) { _, liveIds in
@@ -1135,14 +1135,17 @@ func settingsPlatformName(_ raw: String) -> String {
 /// it has and how many are awake. Each lane's computer wakes when work is
 /// sent to it, so the row has no Connect.
 struct SettingsCloudMachineRow: View {
-  let syncService: SyncService
   @ObservedObject private var account = AccountService.shared
+  /// The sync service's changes (the computer list) redraw the row.
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   var body: some View {
     let computers = syncService.cloudServerInstances
     let lanes = account.machines.filter { settingsMachineIsCloud($0, syncService: syncService) }.count
     let count = max(computers.count, lanes)
-    if count > 0 || syncService.cloudAvailable {
+    // Every account has ADE Cloud, also before its first lane.
+    if account.isSignedIn {
       ADESettingsSection(ADECloudMachine.name, symbol: ADECloudMachine.symbol, tint: .slate) {
         ADESettingsRows {
           ADESettingsRow(ADECloudMachine.name, hint: hint(count: count, awake: computers.filter(\.isAwake).count), symbol: ADECloudMachine.symbol)

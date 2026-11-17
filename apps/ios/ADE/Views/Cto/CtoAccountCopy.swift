@@ -1,4 +1,7 @@
+import OSLog
 import SwiftUI
+
+private let ctoAccountCopyLog = Logger(subsystem: "com.ade.ios", category: "cto-account-copy")
 
 // The CTO's account copy (`GET /cloud/cto?origin=`): what its home saved
 // after its last turn (notes, open work, routines, the end of the last
@@ -19,7 +22,10 @@ final class CtoAccountCopyModel: ObservableObject {
       read = nil
       return
     }
-    guard readOrigin != origin || read == nil else { return }
+    // A failed read is read again on the next open.
+    if readOrigin == origin, let read {
+      if case .failed = read {} else { return }
+    }
     readOrigin = origin
     guard let client = await sync.cloudServerClient() else { return }
     do {
@@ -34,6 +40,7 @@ final class CtoAccountCopyModel: ObservableObject {
       read = .missing
     } catch {
       read = .failed(cloudServerFailureMessage(error))
+      ctoAccountCopyLog.notice("cto_account_copy read failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }
   }
 

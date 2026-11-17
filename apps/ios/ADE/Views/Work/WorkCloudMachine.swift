@@ -519,6 +519,8 @@ struct CloudQueuedMessagesView: View {
   @ObservedObject private var store = AccountCloudStore.shared
   private var syncService: SyncService { syncPublishes.service }
   @State private var cancelling: String?
+  /// Why the last Cancel did not work, by message id (the server's sentence).
+  @State private var cancelError: (messageId: String, message: String)?
 
   var body: some View {
     let messages = store.visibleMessages(machineKey: accountMachineKey, chatId: chatId)
@@ -558,8 +560,13 @@ struct CloudQueuedMessagesView: View {
         if message.state == "queued" {
           Button(cancelling == message.messageId ? "Cancelling…" : "Cancel") {
             cancelling = message.messageId
+            cancelError = nil
             Task {
-              _ = await store.cancelQueued(machineKey: accountMachineKey, chatId: chatId, messageId: message.messageId, using: syncService)
+              if let failure = await store.cancelQueued(machineKey: accountMachineKey, chatId: chatId, messageId: message.messageId, using: syncService) {
+                cancelError = (message.messageId, failure)
+                // The computer may have taken it meanwhile: show its state now.
+                await store.reconcile(machineKey: accountMachineKey, chatId: chatId, using: syncService)
+              }
               cancelling = nil
             }
           }
@@ -586,8 +593,14 @@ struct CloudQueuedMessagesView: View {
             .adeInspectable("CloudLane.Queued.Dismiss")
         }
       }
+      if let cancelError, cancelError.messageId == message.messageId {
+        Text(cancelError.message)
+          .font(.caption)
+          .foregroundStyle(ADEColor.danger)
+          .fixedSize(horizontal: false, vertical: true)
+      }
       if message.state == "waiting_for_sign_in", let signIn = message.signIn {
-        CloudSignInStepDetail(signIn: signIn, instanceId: syncService.cloudServerInstances.first { $0.machineKey == accountMachineKey }?.id) {
+        CloudSignInStepDetail(signIn: signIn, instanceId: syncService.cloudServerInstances.first { $0.machineKey?.lowercased() == accountMachineKey.lowercased() }?.id) {
           await store.reconcile(machineKey: accountMachineKey, chatId: chatId, using: syncService)
         }
         .padding(12)
@@ -639,8 +652,9 @@ private struct CloudQueueFollowModifier: ViewModifier {
           CloudQueuedMessagesView(accountMachineKey: accountKey, chatId: sessionId, onPutBack: onPutBack)
         }
       }
-      // Runs again when a send queues a message, and when the app comes back.
-      .task(id: "\(accountKey ?? "")|\(sessionId)|\(scenePhase == .active)|\(store.openMessages(machineKey: accountKey ?? "", chatId: sessionId).count)") {
+      // Runs again when a send queues a message, when a sign-in lets one
+      // move again, and when the app comes back.
+      .task(id: "\(accountKey ?? "")|\(sessionId)|\(scenePhase == .active)|\(store.movingMessageCount(machineKey: accountKey ?? "", chatId: sessionId))") {
         guard let accountKey, let fleetKey, scenePhase == .active else { return }
         let sync = syncPublishes.service
         await AccountCloudStore.shared.followQueue(machineKey: accountKey, chatId: sessionId, using: sync) {

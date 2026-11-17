@@ -6,7 +6,7 @@ private let cloudAtRestLog = Logger(subsystem: "com.ade.ios", category: "cloud-a
 // What the account server keeps for ADE Cloud lanes while no computer is
 // awake (contract.ts, "ADE without a computer"): one project's overview, the
 // Git summary of each lane, the copies of its CLI and shell sessions, the
-// CTO's account copy, the agent limits, and the Linear and Jira reads. The
+// CTO's account copy, the agent limits, and the Linear reads. The
 // phone reads them with its own account sign-in. A read never wakes a
 // computer.
 //
@@ -468,10 +468,6 @@ struct CloudLinearAnswer {
 // MARK: - Client
 
 extension CloudServerClient {
-  private func decodeAtRest<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
-    do { return try JSONDecoder().decode(type, from: data) } catch { throw Failure.unreadable }
-  }
-
   private func jsonObject(_ data: Data) throws -> [String: Any] {
     guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { throw Failure.unreadable }
     return object
@@ -479,7 +475,7 @@ extension CloudServerClient {
 
   /// One project's ADE Cloud view (`github.com/owner/repo`). Never wakes.
   func projectOverview(origin: String) async throws -> CloudProjectOverview {
-    try decodeAtRest(
+    try decode(
       CloudProjectOverview.self,
       from: try await send("GET", "cloud/projects/overview", query: [URLQueryItem(name: "origin", value: origin)], timeout: 20)
     )
@@ -487,12 +483,12 @@ extension CloudServerClient {
 
   /// One lane's Git summary, with its changed files.
   func gitSummary(machineKey: String, laneId: String) async throws -> CloudGitSummary {
-    try decodeAtRest(CloudGitSummary.self, from: try await send("GET", "cloud/git/\(segment(machineKey))/\(segment(laneId))"))
+    try decode(CloudGitSummary.self, from: try await send("GET", "cloud/git/\(segment(machineKey))/\(segment(laneId))"))
   }
 
   /// The copy of one CLI or shell session.
   func sessionCopy(machineKey: String, sessionId: String) async throws -> CloudSessionCopy {
-    try decodeAtRest(
+    try decode(
       CloudSessionCopy.self,
       from: try await send("GET", "cloud/sessions/\(segment(machineKey))/\(segment(sessionId))", timeout: 30)
     )
@@ -500,18 +496,18 @@ extension CloudServerClient {
 
   /// The project's CTO account copy.
   func ctoCopy(origin: String) async throws -> CloudCtoCopySummary {
-    try decodeAtRest(CloudCtoCopySummary.self, from: try await send("GET", "cloud/cto", query: [URLQueryItem(name: "origin", value: origin)]))
+    try decode(CloudCtoCopySummary.self, from: try await send("GET", "cloud/cto", query: [URLQueryItem(name: "origin", value: origin)]))
   }
 
   func agentLimits() async throws -> CloudAgentLimitsState {
-    try decodeAtRest(CloudAgentLimitsState.self, from: try await send("GET", "cloud/limits"))
+    try decode(CloudAgentLimitsState.self, from: try await send("GET", "cloud/limits"))
   }
 
   /// Changes only the fields sent. A write that names an older revision is
   /// refused with `limits_changed` (409): another device changed them first.
   func setAgentLimits(_ changes: [String: Any], ifRevision: String?) async throws -> CloudAgentLimitsState {
     let body = try JSONSerialization.data(withJSONObject: ["limits": changes, "ifRevision": ifRevision.map { $0 as Any } ?? NSNull()])
-    return try decodeAtRest(CloudAgentLimitsState.self, from: try await send("PUT", "cloud/limits", body: body))
+    return try decode(CloudAgentLimitsState.self, from: try await send("PUT", "cloud/limits", body: body))
   }
 
   /// One fixed Linear read (`CLOUD_LINEAR_OPS`) with the project's Linear connection.
@@ -520,26 +516,6 @@ extension CloudServerClient {
     let object = try jsonObject(try await send("POST", "cloud/integrations/linear/query", body: body, timeout: 20))
     guard let data = object["data"] as? [String: Any] else { throw Failure.unreadable }
     return CloudLinearAnswer(data: data, authMode: object["authMode"] as? String)
-  }
-
-  /// A Jira search with the project's Jira connection. Jira's own issue objects.
-  func jiraSearch(origin: String, jql: String, maxResults: Int = 25, nextPageToken: String? = nil) async throws -> (siteUrl: String, issues: [[String: Any]], nextPageToken: String?) {
-    let body = try JSONSerialization.data(withJSONObject: [
-      "origin": origin, "jql": jql, "maxResults": maxResults, "nextPageToken": nextPageToken ?? NSNull(),
-    ])
-    let object = try jsonObject(try await send("POST", "cloud/integrations/jira/search", body: body, timeout: 20))
-    return (
-      object["siteUrl"] as? String ?? "",
-      object["issues"] as? [[String: Any]] ?? [],
-      (object["nextPageToken"] as? String).flatMap { nonEmptyTrimmed($0) }
-    )
-  }
-
-  func jiraIssue(origin: String, key: String) async throws -> (siteUrl: String, issue: [String: Any]) {
-    let body = try JSONSerialization.data(withJSONObject: ["origin": origin, "key": key])
-    let object = try jsonObject(try await send("POST", "cloud/integrations/jira/issue", body: body, timeout: 20))
-    guard let issue = object["issue"] as? [String: Any] else { throw Failure.unreadable }
-    return (object["siteUrl"] as? String ?? "", issue)
   }
 }
 

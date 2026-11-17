@@ -204,60 +204,53 @@ extension CloudServerClient {
   private struct LaunchList: Decodable { let launches: [CloudLaunchRecord] }
 
   func modelCatalog() async throws -> CloudModelCatalog {
-    try decodeBody(CloudModelCatalog.self, from: try await send("GET", "cloud/models"))
+    try decode(CloudModelCatalog.self, from: try await send("GET", "cloud/models"))
   }
 
   /// 201 for a new launch; the same `launchId` again answers the same launch.
   func startLaunch(_ body: RemoteJSONValue) async throws -> CloudLaunchRecord {
     let data = try JSONEncoder().encode(body)
-    return try decodeBody(CloudLaunchRecord.self, from: try await send("POST", "cloud/launches", body: data, timeout: 48))
+    return try decode(CloudLaunchRecord.self, from: try await send("POST", "cloud/launches", body: data, timeout: 48))
   }
 
   /// Stops a launch before its agent starts; the server refuses once it has (`launch_started`).
   func cancelLaunch(_ launchId: String) async throws -> CloudLaunchRecord {
-    try decodeBody(CloudLaunchRecord.self, from: try await send("DELETE", "cloud/launches/\(pathSegment(launchId))"))
+    try decode(CloudLaunchRecord.self, from: try await send("DELETE", "cloud/launches/\(segment(launchId))"))
   }
 
   func launch(_ launchId: String) async throws -> CloudLaunchRecord {
-    try decodeBody(CloudLaunchRecord.self, from: try await send("GET", "cloud/launches/\(launchId)"))
+    try decode(CloudLaunchRecord.self, from: try await send("GET", "cloud/launches/\(launchId)"))
   }
 
   /// The account's launches still in progress, and failures of the last day.
   func activeLaunches() async throws -> [CloudLaunchRecord] {
-    try decodeBody(LaunchList.self, from: try await send("GET", "cloud/launches", query: [URLQueryItem(name: "active", value: "1")])).launches
+    try decode(LaunchList.self, from: try await send("GET", "cloud/launches", query: [URLQueryItem(name: "active", value: "1")])).launches
   }
 
   func accountSignIns() async throws -> CloudAccountSignIns {
-    try decodeBody(CloudAccountSignIns.self, from: try await send("GET", "cloud/sign-ins"))
+    try decode(CloudAccountSignIns.self, from: try await send("GET", "cloud/sign-ins"))
   }
 
   func saveAccountSignIn(_ signInId: String, key: String) async throws -> CloudAccountSignIns {
     let data = try JSONSerialization.data(withJSONObject: ["key": key])
-    return try decodeBody(CloudAccountSignIns.self, from: try await send("PUT", "cloud/sign-ins/\(pathSegment(signInId))", body: data))
+    return try decode(CloudAccountSignIns.self, from: try await send("PUT", "cloud/sign-ins/\(segment(signInId))", body: data))
   }
 
   func removeAccountSignIn(_ signInId: String) async throws -> CloudAccountSignIns {
-    try decodeBody(CloudAccountSignIns.self, from: try await send("DELETE", "cloud/sign-ins/\(pathSegment(signInId))"))
+    try decode(CloudAccountSignIns.self, from: try await send("DELETE", "cloud/sign-ins/\(segment(signInId))"))
   }
 
   /// A code pasted from the provider's page, for a sign-in on the computer.
   /// Answers the reason when the code did not work.
   func sendSignInCode(instanceId: String, jobId: String, code: String) async throws -> String? {
     let data = try JSONSerialization.data(withJSONObject: ["code": code])
-    let status = try decodeBody(
+    let status = try decode(
       CloudSignInCodeStatus.self,
-      from: try await send("POST", "cloud/instances/\(pathSegment(instanceId))/sign-ins/\(pathSegment(jobId))/code", body: data, timeout: 100)
+      from: try await send("POST", "cloud/instances/\(segment(instanceId))/sign-ins/\(segment(jobId))/code", body: data, timeout: 100)
     )
     return status.state == "failed" ? (status.reason ?? "The code didn't work. Open the page again for a new one.") : nil
   }
 
-  private func pathSegment(_ value: String) -> String {
-    value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? value
-  }
-
-  private func decodeBody<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
-    do { return try JSONDecoder().decode(type, from: data) } catch { throw Failure.unreadable }
-  }
 }
 
 /// One plain sentence for a failed account-server call.
@@ -390,8 +383,12 @@ final class AccountCloudLaunchStore: ObservableObject {
       catalogError = cloudServerFailureMessage(error)
     }
     // Whether a desktop-only sign-in (Antigravity) already reached ADE Cloud.
-    if let signIns = try? await client.accountSignIns(), generation == accountGeneration {
+    do {
+      let signIns = try await client.accountSignIns()
+      guard generation == accountGeneration else { return }
       carriedSignIns = signIns.carried
+    } catch {
+      cloudLaunchLog.notice("cloud_launches read=sign_ins failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }
   }
 

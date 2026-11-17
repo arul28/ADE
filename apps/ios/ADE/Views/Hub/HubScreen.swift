@@ -724,9 +724,9 @@ struct HubScreen: View {
     var ownChat = chat
     if let ownLane = owner.lane { ownChat.laneId = ownLane.id }
     let state = machineFleet.machine(for: owner.machineKey)?.state
-    // An ADE Cloud computer opens its chat at once, also while it is asleep:
-    // the chat wakes the computer and shows the wake until it answers.
-    if state == .live || state == .connecting || syncService.cloudMachineFleetKeys.contains(owner.machineKey) {
+    // An ADE Cloud chat opens at once, also while its computer is asleep or
+    // deleted: it reads its saved copy, and reading never wakes the computer.
+    if state == .live || state == .connecting || syncService.isCloudFleetKey(owner.machineKey) {
       openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat, machineKey: owner.machineKey)
       return
     }
@@ -737,14 +737,6 @@ struct HubScreen: View {
     let request = UUID()
     pendingHubChatOpen = request
     Task { @MainActor in
-      // An ADE Cloud chat opens from its saved copy: reading never wakes the
-      // computer. One the server lists awake connects on the way.
-      if syncService.isCloudFleetKey(owner.machineKey) {
-        _ = await machineFleet.connect(machineKey: owner.machineKey, timeout: .seconds(3), wake: false)
-        guard pendingHubChatOpen == request else { return }
-        openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat, machineKey: owner.machineKey)
-        return
-      }
       if state != .needsUpdate, await machineFleet.connect(machineKey: owner.machineKey, timeout: .seconds(8)) {
         guard pendingHubChatOpen == request else { return }
         openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat, machineKey: owner.machineKey)
