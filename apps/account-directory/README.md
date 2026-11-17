@@ -70,6 +70,15 @@ overrides, zero-width marks), folds whitespace, and cuts the text to a fixed
 length. It cleans rather than refuses, so an odd name never blocks the request
 that carried it.
 
+## A resting ADE Cloud computer in the machine list
+
+The machine list (`GET /account/machines`), the single machine read and the
+rename answer read each ADE Cloud computer's state from the server's own row
+(`cloudComputerTruth` in `src/directory.ts`). A resting computer reads
+`online: false`, `sleepState: "asleep"` and `cloud: { state, stateAt }`, so a
+client shows it as asleep, not offline. A failed read of those rows logs
+`directory.cloud_truth_read_failed` and leaves the fields out.
+
 ## Removing a machine
 
 `DELETE /account/machines/:machineKey` is not just a row delete. The machine's
@@ -202,8 +211,8 @@ its Activity is still the user's own.
 Every refusal on this Worker is a user who cannot get their computer back onto
 their account, and by the time they ask for help the request is gone. Each
 refusal path emits exactly one structured line to `console.log`. Workers
-observability keeps 10% of requests (`head_sampling_rate: 0.1` since
-2026-11-12, for the Workers Logs bill), so the line alone is often gone. Most
+observability keeps 10% of requests (`head_sampling_rate: 0.1`), so the line
+alone is often gone. Most
 refusals are therefore also a Sentry warning (`<event>: <code>`, one issue per
 event and code, tagged `refusal.code` and `correlation_id`, with the prefixes
 below and no account id), within the Worker's Sentry budget (`admitEvent`).
@@ -259,10 +268,8 @@ opaque metadata and rejects values longer than 128 characters.
 ## Diagnostic report uploads
 
 `POST /diagnostics/upload` is the destination for ADE's "Send to ADE" button and
-`ade report-issue --send`. It exists because support round-trips were the real
-cost of a broken install: the report is already built and fully redacted on the
-user's machine, and asking someone whose ADE will not start to run terminal
-commands and paste output is where most of them stalled.
+`ade report-issue --send`. The report is already built and redacted on the
+user's machine, so a person whose ADE does not start can still send it.
 
 **Contract**
 
@@ -305,13 +312,11 @@ acceptable slop for an abuse bound.
 Both halves count **stored objects**, never attempts, and the counter is
 advanced only after the `put` returns. The durable half cannot do otherwise —
 it is a listing of what is in the bucket — and the fast path has to agree with
-it or it is not a cache of it. Counting attempts let refusals the caller did
-not cause (a fleet budget that was out for the day, a bucket having a bad
-minute) lock an install out until UTC midnight having stored nothing, which is
-the same reasoning as the fleet budget's refund below.
+it or it is not a cache of it. So a refusal the caller did not cause (a spent
+fleet budget, a bucket error) never counts against the caller.
 
 The *fleet* budget answers a different question, and it is not allowed any slop
-at all, because it is the storage bill. ADE clients now send reports
+at all, because it is the storage bill. ADE clients send reports
 **automatically on failure**, so a single bug that fires for every install at
 once multiplies "five each" by the install base, and no per-caller limit can see
 that coming. `diagnostics_upload_days` (migration `0009`) holds one row per UTC
@@ -393,8 +398,7 @@ first arrival and `updated_at` moves.
 and report are byte-for-byte what the row already holds is answered from a
 single read. It writes nothing and claims no budget, so a client retrying a send
 whose response it lost costs nothing. A changed re-send is a real D1 write and
-counts like an insert. Counting only first inserts would have left a client
-stuck re-sending changed reports bounded only by the per-identity limit.
+counts like an insert.
 
 **Four bounds, and why the write cap alone is not enough.**
 
@@ -578,8 +582,8 @@ ADE machines. ADE's model router reads it to rate every route (harness × model
 
 **What a snapshot holds**
 
-- `models`: every Artificial Analysis model variant it lists (706 on
-  2026-10-20), one per effort level: Intelligence Index and its main evals,
+- `models`: every Artificial Analysis model variant it lists, one per
+  effort level: Intelligence Index and its main evals,
   cost and seconds per index task, output tokens per second, time to first
   token, list prices, and the optional profile below (`evals`, `domains`,
   `personality`, `modalities`, license, size, knowledge cutoff, answer
@@ -602,68 +606,37 @@ ADE machines. ADE's model router reads it to rate every route (harness × model
   to text, speech to speech), one per host + model, with the scores in
   `MODEL_REGISTRY_MEDIA_SCORES`. Speech models are mostly not LLMs, so a row
   stands on its own; `modelSlug` names an LLM variant only when its name or
-  short name is exactly the row's model name (4 of 218 rows on 2026-10-20).
+  short name is exactly the row's model name.
 - `prices`: models.dev per-token prices for each channel in
   `MODEL_REGISTRY_PRICE_CHANNELS`, keyed by the channel's own model id, with
   context tiers where models.dev lists them.
 - `sources`: for each source (`artificialAnalysis`, `modelsDev`, `media`),
   when its data was last read and whether the last read worked.
 
-**Compatibility.** Every field added on 2026-10-20 is optional and left out
+**Compatibility.** Every field past the first schema is optional and left out
 when there is no figure, and `schemaVersion` stays 1, so an older desktop
 reads a newer snapshot (it ignores what it does not know) and a newer desktop
 reads an older one. Bump `MODEL_REGISTRY_SCHEMA_VERSION` only for a change an
 older desktop would misread: it refuses any other version.
 
-**Inventory of Artificial Analysis data** (live pages read on 2026-10-20).
-Coverage is over the 273 current variants unless it says otherwise.
-
-| Field | Source page | Coverage | Units |
-|---|---|---|---|
-| Variant → family, release date, deprecated | `/leaderboards/models` (`modelsAndReleases` index) | 706 variants, 512 releases | slugs, ISO date |
-| `intelligenceIndex` | leaderboard row, model record | 268 | 0 to 100 |
-| `humanitysLastExam`, `longContextReasoning`, `gpqa`, `ifBench`, `sciCode`, `terminalBench40` | leaderboard row, model record | 267, 258, 220, 154, 142, 135 | fraction |
-| `evals.critPt`, `omniscienceIndex`, `omniscienceAccuracy`, `omniscienceHallucinationRate` | leaderboard row, model record | 262 to 264 | fraction; Omniscience index -100 to 100; hallucination lower is better |
-| `evals.gdpval`, `tau2Bench`, `terminalBenchHard`, `terminalBench21`, `mmmuPro`, `tauBanking` | leaderboard row, model record | 171, 152, 151, 128, 123, 103 | fraction |
-| `evals.analystAgent`, `itBenchSre`, `apexAgents` | leaderboard row, model record | 27, 18, 11 | fraction |
-| `evals.automationBench`, `gdpPdf`, `gdpvalElo`, `briefcaseElo`, `briefcaseRubricPassRate`, `frontierCode`, `terminalBenchScience`, `aa3dElo`, `mlcr`, `harveyLab`, `opennessIndex`, `enterpriseOpsGym` | model record only | 27 down to 7 | fraction; `…Elo` Elo; openness 0 to 100 |
-| `domains` (GDPval-AA by occupation: economics, engineering, finance and accounting, healthcare and medical, legal, strategy and ops) | model record only | 27 | 0 to 100 |
-| `personality` (PersonalityBench: conviction, expressiveness, imagination, informativeness, organization, slop, transparency, warmth) | model record only | 26 | 0 to 100 |
-| `modalities` (text, image, speech, video, in and out) | model record only | 27 (7 take speech, 6 video in) | lists |
-| `license`, `licenseCategory`, `parametersBillions`, `activeParametersBillions`, `knowledgeCutoff` | model record only | 12, 27, 13, 12, 1 | text; billions |
-| `sizeClass` | leaderboard row (`paramClass`), model record | 198 | `tiny`…`large` |
-| `outputTokensPerSecond`, `timeToFirstTokenSeconds`, `timeToFirstAnswerTokenSeconds`, `endToEndSeconds` | leaderboard row, model record | 167 | tokens/s, seconds |
-| `costPerIndexTaskUsd`, `secondsPerIndexTask`, `outputTokensPerIndexTask` | row and record; time and tokens record only | 120, 110, 27 | USD, seconds, tokens |
-| `price` | leaderboard row, model record | 174 | USD per 1M tokens |
-| Coding Agent Index (`agents`) | `/agents/coding-agents` | 42 rows | fraction, USD, minutes |
-| Text to speech (`media`) | `/text-to-speech/models` | 109 host rows | Elo, USD per 1M characters, characters/s |
-| Speech to text (`media`) | `/speech-to-text/non-streaming` | 62 host rows | word error rate (lower is better), USD per 1,000 min, speed factor |
-| Speech to speech (`media`) | `/speech-to-speech` | 47 host rows | quality index 0 to 100; Big Bench Audio, Full-Duplex-Bench, τ-Voice fractions; seconds to first audio; USD per hour |
-
-Published but not kept: the model records' raw PersonalityBench trait Elos
-and writing-style means, per-eval token and cost breakdowns, and speed
-percentiles (size, little routing value); the leaderboard's price and size
-classes. Not reachable within the fetch budget: `/leaderboards/providers`
-(518 provider endpoints with speed, price and function-calling / JSON-mode
-flags, a 4 MB page) and the per-model `/models/<slug>/providers` pages (one
-fetch per model is a crawl). The image and video arenas (`/image/arena`,
-`/video/arena`) render in the browser and carry no data in the page. The
-coding, agentic and math sub-indices the site once showed are not in any
-payload today; the Coding Agent Index rows stand in for coding.
+**Fields.** `src/modelRegistryContract.ts` names each field and its units.
+A field comes from a leaderboard row, a model record, the Coding Agent Index
+or a speech leaderboard. The Worker keeps no raw trait Elos, per-eval token
+and cost breakdowns, or speed percentiles. It does not read
+`/leaderboards/providers`, the per-model provider pages, or the image and
+video arenas.
 
 **Sources and attribution.** Artificial Analysis
-(`https://artificialanalysis.ai`) has no API for this data. Until October 2026
-every `/models/<slug>` page embedded all model records; it now embeds only the
-featured models' full records (27), so the refresh reads
+(`https://artificialanalysis.ai`) has no API for this data. A model page
+embeds only the featured models' full records, so the refresh reads
 `/leaderboards/models` (a row per current variant and the variant → family
 index), one model page (full records), `/agents/coding-agents`, and the three
 speech leaderboards: six page fetches on a successful refresh, retried with a
 bounded backoff only after a failure, with the user agent `ADE model registry
 (+https://ade-app.dev)`. The speech pages are skipped when neither model page
 answered. A leaderboard row names no effort: it comes from the previous
-snapshot's same slug, else from the name (`… (High, Default Fallback)`), which
-agreed with the records on 676 of 691 variants on 2026-10-20 and otherwise
-gives none, never a wrong level. Anything that shows the data carries
+snapshot's same slug, else from the name (`… (High, Default Fallback)`), else
+none, never a wrong level. Anything that shows the data carries
 `MODEL_REGISTRY_AA_ATTRIBUTION` ("Source: Artificial Analysis
 (artificialanalysis.ai)"). Prices come from `https://models.dev/api.json`.
 
@@ -698,20 +671,15 @@ site redesign that breaks the parser shows up there as
 previous data. A partly failed refresh still counts as the day's refresh, so
 the failed source is next retried a day later.
 
-**Size and CPU.** Measured on the live pages of 2026-10-20: the leaderboard
-page is 1.9 MB of HTML, the model page 1.6 MB, the agents page 1.0 MB, the
-speech pages 1.0 MB, 1.7 MB and 1.2 MB, models.dev 5.9 MB. The stored snapshot
-is 737,779 bytes of compact JSON (models 618 KB, media 69 KB, prices 28 KB,
-agents 22 KB), up from 529,320 bytes before the profile was added, under D1's
-2 MB row cap; the Worker refuses to store one over 1.9 MB. Seven are kept,
-about 5.2 MB. A whole refresh parse (every page and models.dev) takes about
-200 ms under Node on an Apple Silicon Mac, far inside the Workers Paid default
-of 30 s CPU per invocation, so `limits.cpu_ms` stays unset.
+**Size and CPU.** The stored snapshot is under 1 MB of compact JSON, and the
+Worker refuses to store one over 1.9 MB (D1's row cap is 2 MB). Seven are
+kept. A whole refresh parse takes well under a second of CPU, so
+`limits.cpu_ms` stays unset.
 
 **Deploying it.** `migrations/0013_model_registry.sql` creates both tables;
 apply it before the deploy, the same way as the usage research migration
-above. The October 2026 profile and speech rows need no migration: they live
-inside the stored snapshot body. Until the first refresh lands (at most a minute after a deploy with
+above. The profile and speech rows live inside the stored snapshot body and
+need no migration. Until the first refresh lands (at most a minute after a deploy with
 `MODEL_REGISTRY_REFRESH` on), the route answers `503`. To look at what is
 stored:
 
@@ -789,49 +757,73 @@ logged or stored. Failures that are ADE's to fix (no key, a refused key, the
 spend cap, the fleet cap, TypeSafe failing or throttling) are also Sentry
 issues, one per reason.
 
-## ADE Cloud timed wakes
+## ADE Cloud timed wakes and event wakes
 
-A sleeping ADE Cloud machine is frozen, so the timers ADE keeps on it (a chat's
-scheduled wake-up, an automation's cron) can't fire there. Before its ADE lets
-it sleep, it sends its next time here, and the minute cron wakes it two
-minutes early (`src/cloudWake.ts`, table `cloud_wakes`):
+A sleeping ADE Cloud computer is frozen, so the timers ADE keeps on it (a
+chat's scheduled wake-up, an automation's cron) can't fire there. Before its
+ADE lets it sleep, it sends its next time here, and the minute cron wakes it
+two minutes early (`src/cloudWake.ts`, table `cloud_wakes`):
 
 - `PUT /cloud/wake` `{instanceId, url, at}` with the account bearer records
-  or replaces the account's one row for that machine. `url` must be an
-  `https://<slug>.agent37.app` origin, the machine's own public address; `at`
-  is a time within the next 32 days. Fifty machines per account at most.
+  or replaces the account's one row for that computer. `url` must be an
+  `https://<slug>.agent37.app` origin, the computer's own public address; `at`
+  is a time within the next 32 days. Fifty computers per account at most.
 - `DELETE /cloud/wake` `{instanceId}` forgets it (nothing scheduled any more).
 - The cron requests `url` with a plain GET. Any answer, a 502 included,
-  reaches the machine and wakes it, so this Worker never holds an ADE Cloud
-  key. A woken row is deleted; one that didn't answer is retried each minute
-  and dropped 30 minutes after its time.
+  reaches the computer and wakes it, so this Worker never holds an ADE Cloud
+  key. The cron sets the computer's row to `waking` at once
+  (`cloud.timed_wake_recorded`), so the awake cap and every client see it. A
+  woken row is deleted; one that didn't answer is retried each minute and
+  dropped 30 minutes after its time.
 
-Nothing else about the machine is stored, and no request body is logged.
+Nothing else about the computer is stored, and no request body is logged.
+
+Event wakes (`src/cloud/eventWakes.ts`, migration `0040`):
+
+- `PUT /cloud/instances/:id/event-wakes {topics}` replaces the computer's list
+  of topics that wake it at rest: at most 20, each `linear-org:<id>`,
+  `linear-account:<id>` or `hooks-account:<id>`. An account topic must name
+  the caller's own user id (else 400). `[]` clears the list. Another
+  account's computer answers 404.
+- `POST /cloud/internal/event-wake {topic}` comes from the webhook relay with
+  the header `x-ade-event-wake-secret` (`CLOUD_EVENT_WAKE_SECRET`, checked in
+  constant time before auth). Unset, it answers 503; a wrong secret answers
+  404. It skips awake computers and computers that the idle cleanup claimed in
+  the last 20 minutes. A conditional upsert gives each computer one wake in 5
+  minutes, under the normal wake checks (block, hours, disk, awake cap). It
+  answers `{subscribed, woken}`.
 
 ## ADE Cloud account
 
 The server holds the provider key and owns every ADE Cloud computer
-(`src/cloud/`, migration `0018_cloud_account.sql`, secrets `AGENT37_API_KEY`
-and optional `RESEND_API_KEY`). `src/cloud/contract.ts` lists the routes and
-their shapes for a client to mirror. Every route takes the account bearer.
+(`src/cloud/`, migration `0018_cloud_account.sql`, secret `AGENT37_API_KEY`).
+`src/cloud/contract.ts` lists the routes and their shapes for a client to
+mirror. Every route takes the account bearer. The plan rules, the hours, the
+disk, the idle cleanup and the cheaper-plan cleanup are in
+[ADE Cloud](../../docs/features/ade-cloud/README.md); this section keeps the
+server facts.
 
-- ADE Cloud is open to every signed-in account, except one the owner blocked
-  (see "ADE Cloud safety" below). `GET /cloud/access` still answers
-  `{ enabled }` for older builds: `false` only for a blocked account; every
-  other `/cloud/*` route, including `/cloud/wake`, answers 403
-  `account_blocked` to it.
+- ADE Cloud is open to every signed-in account. `GET /cloud/access` answers
+  `{ enabled }` for older builds. A blocked account gets
+  `{ enabled: false, readOnly: true, reason }` (see "ADE Cloud safety").
 - `cloud_computers` records each computer's owner. Every call by instance id
   checks it, and not yours or unknown is 404. Provider errors become one plain
   sentence.
-- A create ignores any template from the client and uses `template_version` in
-  `cloud_settings` (an exact `ade@N`; unset refuses with a log line). Sizes are
-  the eight in `src/cloud/plans.ts`. Disk is 4 GB on create. Limits on create and
-  copy: free 3 computers, paid 10. Free computers stay at 4 GB; paid accounts
-  share 40 GB and grow in 4 GB steps, while the computer is idle.
+- Every wake, start, send and create refusal is `{ code, message }` with a
+  code from `CLOUD_REFUSAL_CODES` (`contract.ts`). Clients show `message`.
+- A create ignores any template from the client and uses the channel's image
+  in `cloud_settings` (an exact `ade@N`; unset refuses with a log line). Sizes
+  are the eight in `src/cloud/plans.ts`. Disk is 4 GB on create. No plan
+  limits how many computers an account has; about 25 may be awake at once
+  (`AWAKE_COMPUTER_CAP`).
 - Every delete, automatic ones included, writes `cloud_delete_log`, with the
   provider's start and sleep history read first. Every power change writes
   `cloud_power_log`.
 - `POST /cloud/instances/:id/idle` is the computer asking to be slept.
+  `POST /cloud/instances/:id/use` records a person's use while the idle
+  cleanup saves the computer (`last_active_at`); it answers 409
+  `computer_deleting` once the delete runs. `GET /cloud/instances` marks a
+  computer whose idle save runs with `idleSaving`.
 
 The minute cron reads the provider's list once, and only when a computer
 exists. It writes only on change: hours settle when a stretch of awake time
@@ -853,8 +845,15 @@ slept. Daily after 02:00 UTC, the cron compares each computer-day with the
 provider's `awake_minutes`, corrects the account to the provider's number, and
 alerts the owner to minutes the power log can't explain. Every 10 minutes it
 checks the wallet (`$15` floor, automatic top-up) and awake computers against
-the provider's limit (80%). A computer not awake for 30 days is deleted after
-7-day and 1-day warnings; the clock waits for an hours reset.
+the provider's limit (80%). The idle cleanup (`idleCleanup.ts`) deletes unused
+computers after its warnings.
+
+The cloud emails (`src/cloud/email.ts`) go through Resend (`RESEND_API_KEY`).
+The person's address comes from Clerk (`CLERK_SECRET_KEY`); owner alerts go
+to `CLOUD_ALERT_EMAIL`. An email the Worker can not send logs
+`cloud.email_skipped` at level warn with the reason (`no_resend_key`,
+`no_clerk_key`, `no_recipient`, `no_alert_address`). No email log line has the
+subject or a lane name.
 
 ### Payments
 
@@ -862,8 +861,8 @@ the provider's limit (80%). A computer not awake for 30 days is deleted after
 `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`; vars `STRIPE_PLAN_PRICE_ID`,
 `STRIPE_PRO_PRICE_ID`, `STRIPE_MAX_PRICE_ID`, one extra-hours price per plan
 `STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID` (2¢, 1.5¢, 1.2¢, flat, on one
-meter; the first, graduated `STRIPE_EXTRA_HOURS_PRICE_ID` stays for
-subscriptions made before Cloud 7 until their next renewal),
+meter; the older graduated `STRIPE_EXTRA_HOURS_PRICE_ID` stays for older
+subscriptions until their next renewal),
 `STRIPE_DISK_PRICE_ID` ($2 per 10 GB a month), `STRIPE_METER_EVENT`, from
 `scripts/stripe-setup.mjs`). Plus, Pro, Max, extra hours and extra disk are
 separate products, so Checkout names each line and shows its one-line
@@ -926,7 +925,15 @@ at least 30 days old, one free plan per GitHub account).
   policy didn't land (`cloud_computers.network_denied_at` empty): running ones
   first, stopped ones at most hourly (`network_deny_tried_at`), 10 a tick. A start, update, resize, exec wake, sign-in start or
   timed wake request (`PUT /cloud/wake`) reads the block fresh, not the
-  routes' 30-second cache. A blocked GitHub account
+  routes' 30-second cache.
+  A blocked account is read-only. It can read and export its saved chats and
+  everything else it can look at: the GET routes in
+  `CLOUD_BLOCKED_READ_ROUTES` (`contract.ts`, checked by `blockedMayRead` in
+  `routes.ts`), among them `/cloud/chats`, `/cloud/sessions`, `/cloud/git`,
+  `/cloud/limits`, `/cloud/account-secrets` and `/cloud/cto`. Every other
+  `/cloud/*` route, `/cloud/wake` included, answers 403 `account_blocked`:
+  wakes, creates, sends, the Linear and Jira POST reads and `PUT /cloud/limits`.
+  `GET /cloud/account` carries `blocked: true`. A blocked GitHub account
   on a new ADE account is held as `github_used` (the person isn't told about
   the block); a blocked card can't unlock free hours. Both alert the owner.
 - **One card, one free unlock** (`cloud_free_card_claims`, unique on the
@@ -977,8 +984,20 @@ at least 30 days old, one free plan per GitHub account).
   PostHog `ade_cloud_safety` records `first_chat` (once per account,
   `cloud_accounts.first_chat_at`), the cap steps and refusals, blocks,
   rate limits, kill-switch refusals and sign-up bursts.
-- The daily owner report adds the day's sign-ups, cloud hours, this month's
-  cost split into free and paid use, blocks, abuse events and alerts sent.
+- **The month's cost.** Every 10 minutes `costReport.ts` estimates this
+  month's ADE Cloud cost from awake time and disk at the provider's prices:
+  `cost_mtd_micros` (all use) and `free_cost_mtd_micros` (free-plan rules
+  only). The owner gets one email each time the month's estimate of all use
+  passes another $50 (`OWNER_COST_STEP_USD`): the step, the estimate, the cap
+  and the three accounts that cost the most. A jump over several steps sends
+  one email. `owner_cost_step_alert` keeps the month and the last step
+  (`2026-11:150`). Each email claims its key with a conditional write before
+  it sends, and a failed send gives the key back.
+- **The daily run** writes `cloud_account_days` (cost and income per
+  account), raises alarms (a paid account that costs more than it pays, a
+  free one past $3 a month, a day at twice the week's mean), and emails the
+  owner the daily report: the day's sign-ups, cloud hours, this month's cost
+  split into free and paid use, blocks, abuse events and alerts sent.
 - `GET /cloud/instances` reads the provider's list through a 5-second Cache
   API copy, skipped when the account's rows changed inside those 5 seconds
   (a create, a reservation in flight, a recorded start or sleep).
@@ -1016,6 +1035,17 @@ can't confirm is reported failed, never sent twice. A launch keeps at most 20
 messages before its chat starts. Message text is plain in D1, like the first
 message in `request_json`, and goes with the launch record.
 
+A launch with `continueChat { machineKey, chatId, kind?: "chat" | "cli" }`
+continues an existing chat on a new computer (see "The message queue of an
+existing chat or CLI"). Each lane and chat has one active continue launch
+(partial unique index `cloud_launches_continue`); a second start answers the
+running one. For a CLI, the agent comes from the session's tool type and
+`modelId` is "". A continue launch that fails, times out, is cancelled or is
+gone fails its queued messages with the launch's sentence, but a message the
+computer reported `delivered` stays delivered (`chatMessagesDeliveredStatement`
+in `launchMessages.ts`). A Retry of a failed continue launch answers 409
+`computer_busy` while a newer launch continues the same chat.
+
 A launch whose chat provider isn't signed in on the computer pauses at
 `waiting_for_sign_in` with `signIn` (`CloudLaunchSignIn`): a device code and
 link, a link and a pasted code (`url_paste`, sent to
@@ -1041,27 +1071,109 @@ binding with the caller's own bearer, so it only ever reaches the caller's
 vault, and the items are the desktop's (`integration/cloud-key-<id>`,
 `provider_login/claude-pass/<hex>`). A value passes through memory only.
 
-## Saved chats
+## Saved copies (read with no computer awake)
 
-ADE Cloud computers can't serve their chats while asleep, stopped, out of hours
-or deleted, so after each chat turn the computer saves the new part of the chat
-here (`src/cloud/chats.ts`, routes in `contract.ts`).
+ADE Cloud computers can't answer while asleep, stopped, out of hours or
+deleted. So each computer saves here what a person reads, and every client
+reads it with no wake. The R2 bucket behind `CLOUD_CHATS` holds all of it
+under the prefixes `chats/`, `sessions/` and `capsules/`.
 
-- Parts live in R2 (`CLOUD_CHATS`), one object per part, AES-GCM with one random
-  key per user. That key is sealed with `CLOUD_CHAT_MASTER_KEY` and kept in D1,
-  apart from the chats. Platform encryption, not end-to-end.
-- The list row's text (title, lane name, status, model) is sealed the same way;
-  only ids the list filters on are plain.
-- Parts append by sequence and every upload can be replayed: the same part
-  answers 200, the newest part may be resent with more text, anything else is
-  `409 sequence_conflict` and the computer starts that chat over. A part over
-  8 MiB is refused; an account past 2 GiB is refused and logged
-  (`cloud.chat_account_full`).
-- Every read checks the owner: another account's chat answers 404.
-- Deleting a computer keeps its chats. Deleting a chat, a lane, or the account
-  (Clerk `user.deleted`) removes them; deleting the account also removes the key.
-- Rollout: `wrangler r2 bucket create ade-cloud-chats` (and `-production`),
-  `wrangler secret put CLOUD_CHAT_MASTER_KEY` on both environments.
+- **Sealing** (`src/cloud/seal.ts`): AES-GCM with one random key per user.
+  That key is sealed with `CLOUD_CHAT_MASTER_KEY` and kept in D1, apart from
+  the data. The additional data names the row, so a copy can not move to
+  another row. Platform encryption, not end-to-end. List text (title, lane
+  name, status, model) is sealed too; only ids the lists filter on are plain.
+- **Owner checks.** Only a computer the account owns writes (the body
+  `instanceId` or the `x-ade-instance` header). Every read checks the owner:
+  another account's id answers 404.
+
+| Route | What it holds | Caps |
+| --- | --- | --- |
+| `GET/PUT/DELETE /cloud/chats[/:m/:c]` (`chats.ts`) | Saved chats, one R2 object per part. Parts append by sequence and every upload can be replayed: the same part answers 200, the newest part may be resent with more text, anything else is `409 sequence_conflict` and the computer starts that chat over. | 8 MiB a part; 2 GiB an account (`cloud.chat_account_full`) |
+| `POST /cloud/chats/:m/:c/move` (`chats.ts`) | From the new computer after a continue: the D1 row takes the new machine key and keeps its R2 key, so old parts stay readable. It records `forked_from_*`, deletes the old capsule, and moves the queued messages. A GET of the old key finds the moved row; a PUT to it answers 409. The same move again answers `moved: false`. | |
+| `GET/PUT/DELETE /cloud/sessions[/:m/:s]` (`sessionCopies.ts`) | CLI and shell copies, one sealed object each. A shell keeps its last 5,000 lines. | 2 MiB a copy; 512 MiB an account; 50 copies a computer |
+| `GET/PUT /cloud/git/:m/:lane` (`gitSummaries.ts`) | One sealed Git summary per lane. A PUT with an older `checkedAt` answers `kept: false`. | |
+| `PUT /cloud/capsules/:m/:c/parts/:n`, `POST .../commit`, `GET` (`forkCapsules.ts`) | A provider's native history for a continue on a new computer. Part 1 starts a new upload; parts come in order (409 `capsule_out_of_order`). The commit checks each part and deletes the old parts. | 6 MiB a part; 20 MiB a capsule; 1 GiB an account |
+| `GET /cloud/projects/overview?origin=` (`projectOverview.ts`) | One project's view: computers, lanes without a computer, the first 50 chats, 100 sessions and the Git summaries. One fixed set of indexed reads, no provider call. | |
+
+Deleting a computer keeps its copies. Deleting a chat removes its parts,
+messages and capsule. Deleting a lane removes its sessions, capsules and Git
+summaries. Deleting the account (Clerk `user.deleted`) removes the R2
+prefixes, the rows and the user key.
+
+Rollout: `wrangler r2 bucket create ade-cloud-chats` (and `-production`),
+`wrangler secret put CLOUD_CHAT_MASTER_KEY` on both environments, and
+migration `0039_cloud_no_computer.sql`.
+
+## The message queue of an existing chat or CLI
+
+A send to a chat or CLI whose computer rests or is gone goes here
+(`src/cloud/chatMessages.ts`, migration `0039`).
+
+| Route | Who calls it | What it does |
+| --- | --- | --- |
+| `POST /cloud/chats/:m/:c/messages` | web, phone, desktop | Queues `{ messageId, text, attachments?, provider?, modelId? }`. `messageId` is the client's `clientSendId`; the same id answers the same row and wakes nothing. A CLI session copy's id takes the chat id's place; a shell answers 404. |
+| `GET /cloud/chats/:m/:c/messages` | web, phone, desktop | The chat's messages, open ones first, at most 50. |
+| `DELETE /cloud/chats/:m/:c/messages/:msg` | web, phone, desktop | Takes back a queued message. Any other state answers 409 `message_taken`. |
+| `GET /cloud/instances/:id/messages` | the computer | Its queued messages, each with `targetKind` (`chat` or `cli`). |
+| `POST /cloud/instances/:id/messages/:msg/claim` | the computer | Takes one message with `{ claimId }` in one conditional update. |
+| `PUT /cloud/instances/:id/messages/:msg` | the computer | Reports `delivered` or `failed`. Only the claim that took the message can report; a final state stays final. |
+
+- **The checks.** The wake checks run before the insert, so a refusal stores
+  nothing: blocked, hours and disk (`wakeBlocker`), `update_in_progress`,
+  `update_needed` (an image below `CLOUD_CHAT_QUEUE_MIN_ADE_VERSION` that can
+  not update on wake), `plan_past_due`, the awake cap (a 12 s wait), and the
+  idle cleanup.
+- **The wake.** In `waitUntil`, the server starts an asleep computer and runs
+  `ade cloud messages drain --json` there over exec (120 s). The booted route
+  stores the computer's `ade_version`.
+- **A deleted computer.** The send starts a server launch with `continueChat
+  { machineKey, chatId, kind }` on the old lane and branch and answers
+  `wake.state: "launching"` with the `launchId`. The row is inserted only
+  after the launch answers, with `via_launch = 1`, and reads its state from
+  the launch's message. A second send while that launch runs joins it.
+- **Caps.** 60 sends a minute per account (429 `rate_limited`), 20 open
+  messages a chat and 200 an account (429 `too_many_messages`), 100,000
+  characters of text. An attachment must already be in R2 at
+  `launches/<user>/<launchId>/<fileId>`.
+- **The sweep.** The minute cron runs `expireChatMessages` first, before the
+  provider key check: it settles `via_launch` rows from their launch, fails
+  queued messages after 24 hours, and prunes final rows after 7 days, in
+  batches of 200.
+- The message text is sealed. Its additional data has no machine key, so a
+  chat move keeps it readable. No log line has the text.
+
+## Account reads for a client with no computer
+
+These routes let the web and the phone show account data with no computer
+online.
+
+| Route | What it does | Errors |
+| --- | --- | --- |
+| `GET/PUT /cloud/limits` (`limits.ts`) | The agent limits from the account vault. PUT takes `{ limits, ifRevision }` and writes conditionally. | 409 `limits_changed`, `limits_unreadable` |
+| `GET /cloud/account-secrets?kind=&origin=` (`accountSecrets.ts`) | Saved secret names and times, never a value. Only the kinds `secret`, `provider_api_key`, `provider_key`, `integration` and `project_secret`. | |
+| `GET /cloud/cto?origin=` (`ctoCopy.ts`) | The CTO account copy (at most 1 MB decoded, notes 20,000 characters, 50 routines). | `cloud.cto_copy_unreadable` in the log |
+| `POST /cloud/integrations/linear/query` (`integrations.ts`) | Fixed Linear documents only, with the account's Linear sign-in. The server renews a sign-in made with ADE's own Linear app (`linearRenewal.ts`, migration `0041`, off with `CLOUD_LINEAR_RENEWAL=0`). | 409 `linear_renewing`, `linear_needs_renewal`, `linear_not_connected` |
+| `POST /cloud/integrations/jira/search`, `.../jira/issue` | Jira through the account's Jira sign-in. Only `https://<label>.atlassian.net`, no redirects, answers capped at 4 MB. | `jira_not_connected`, `jira_site_unsupported`, `integration_failed` |
+
+The three integration routes share 30 requests a minute per account
+(`cloud_request_windows`, 429 `rate_limited`). Tokens stay in memory, and the
+logs carry the op name and status only.
+
+## The account lane index
+
+`GET/PUT /account/lanes` (`src/accountLanes/routes.ts`, migration `0039`)
+keeps each machine's lanes (name, branch, machine, PR) so a client can offer
+them as mentions with no computer awake.
+
+- A brain's PUT replaces the lanes of one machine. The same hash does nothing.
+  The caps are 500 lanes a machine and 5,000 an account. A browser PUT answers
+  403; CORS allows GET only.
+- GET filters by `project_id` or `project_key` and by `pr`. Each row has the
+  machine name, `online` (with the cloud state), and `cloud: true` for an ADE
+  Cloud computer.
+- The rows go when the machine leaves the account (`dropAccountLanes`, best
+  effort; a failure logs `account_lanes.machine_lanes_delete_failed`).
 
 ## Lane sharing
 
@@ -1374,8 +1486,8 @@ deployment:
    to send an account bearer to `GET /account/machines`. Set `PUSH_RELAY_URL`
    to the push relay origin; machine removal fails loudly without it. Set
    `CLERK_SECRET_KEY` (`npx wrangler secret put CLERK_SECRET_KEY`) to the Clerk
-   Backend API key of the same Clerk instance; it is optional, and only
-   `/device/approve` uses it. Set
+   Backend API key of the same Clerk instance. `/device/approve` uses it, and
+   the ADE Cloud emails use it to find the person's address. Set
    `DIRECTORY_AUTH_SECRET` (`npx wrangler secret put DIRECTORY_AUTH_SECRET`) to
    the same value configured on the push relay; machine removal and re-pairing
    both fail loudly without it.
@@ -1409,7 +1521,18 @@ deployment:
    Confirm with `npx wrangler r2 bucket lifecycle list <bucket>`. Thirty days is
    still far longer than any support thread; a report nobody has read in a month
    is not going to be read.
-5. Apply the remote migrations and deploy the Worker. Use
+5. Set the ADE Cloud secrets on each environment
+   (`npx wrangler secret put <NAME> [--env production]`; `wrangler.jsonc`
+   explains each one):
+   - `AGENT37_API_KEY` (required for ADE Cloud).
+   - `CLOUD_CHAT_MASTER_KEY` (saved copies, the queue, the per-computer free
+     plan key) and `CLOUD_LAUNCH_JOIN_KEY` (the server launcher).
+   - `RESEND_API_KEY` and `CLOUD_ALERT_EMAIL` for the emails. Without them the
+     Worker logs `cloud.email_skipped`.
+   - `CLOUD_EVENT_WAKE_SECRET`, the same value on the webhook relay. Unset, no
+     event wakes.
+   - `CLOUD_OWNER_TOKEN` for the owner routes, and the Stripe secrets.
+6. Apply the remote migrations and deploy the Worker. Use
    `npm run d1:migrate:production` and `npm run deploy:production` for the
    production environment. Each deploy script validates only the environment it
    is about to publish, so an unconfigured development Worker cannot block a
