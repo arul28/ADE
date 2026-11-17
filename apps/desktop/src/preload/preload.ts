@@ -35,6 +35,8 @@ import type {
   PasswordLoginSaveInput,
   PasswordSecretSaveInput,
   PasswordEnvFile,
+  PasswordLaneEnvImportInput,
+  PasswordLaneEnvPreview,
   PasswordSecretsExportResult,
   PasswordSecretsImportInput,
   PasswordSecretsImportResult,
@@ -12484,6 +12486,15 @@ const adeBridge = {
       callPasswords<PasswordSecretsExportResult>("exportSecrets", args),
     chooseEnvFile: (): Promise<PasswordEnvFile | null> =>
       ipcRenderer.invoke(IPC.passwordsChooseEnvFile),
+    /**
+     * A `.env` file in the main checkout on the machine the pin names: names
+     * and lengths only. The file is only there, so the call goes there.
+     */
+    previewLaneEnv: (args: { path: string }, pin: OpenProjectBinding): Promise<PasswordLaneEnvPreview> =>
+      callPinnedRuntimeAction<PasswordLaneEnvPreview>(pin, "passwords", "previewLaneEnv", { args: { ...args } }),
+    /** Saves the picked names of that file as secrets on that machine; no value comes back. */
+    importLaneEnv: (args: PasswordLaneEnvImportInput, pin: OpenProjectBinding): Promise<PasswordSecretsImportResult> =>
+      callPinnedRuntimeAction<PasswordSecretsImportResult>(pin, "passwords", "importLaneEnv", { args: { ...args } }),
     projects: (): Promise<PasswordsProject[]> =>
       ipcRenderer.invoke(IPC.passwordsProjects),
   },

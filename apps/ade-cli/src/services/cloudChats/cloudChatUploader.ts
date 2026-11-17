@@ -83,13 +83,33 @@ export type CloudChatUploader = {
 };
 
 const uploaders = new Set<CloudChatUploader>();
+/**
+ * Chats a fork-continue restores now. Their copy already moved here
+ * (`moveSavedChat`), so an upload before `adoptRestored` would start at seq 1
+ * and conflict with the moved copy. No upload starts for them until then.
+ */
+const restoringChats = new Set<string>();
+
+/** Holds back every upload of `sessionId` until `adoptRestoredCloudChat` or `releaseRestoringCloudChat`. */
+export function holdRestoringCloudChat(sessionId: string): void {
+  restoringChats.add(sessionId);
+}
+
+/** Ends the hold after a restore that failed: the chat uploads as usual again. */
+export function releaseRestoringCloudChat(sessionId: string): void {
+  restoringChats.delete(sessionId);
+}
 
 /** The restored chat's upload goes on from `seq` in the project that holds it (`CloudChatUploader.adoptRestored`). */
 export async function adoptRestoredCloudChat(sessionId: string, seq: number, laneId: string | null): Promise<boolean> {
-  for (const uploader of uploaders) {
-    if (await uploader.adoptRestored(sessionId, seq, laneId)) return true;
+  try {
+    for (const uploader of uploaders) {
+      if (await uploader.adoptRestored(sessionId, seq, laneId)) return true;
+    }
+    return false;
+  } finally {
+    restoringChats.delete(sessionId);
   }
-  return false;
 }
 
 /**
@@ -416,6 +436,8 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
   }
 
   function schedule(sessionId: string, mode: "turn" | "flush" = "turn"): Promise<void> {
+    // A chat being restored waits for `adoptRestored`; its dirty mark stays.
+    if (restoringChats.has(sessionId)) return Promise.resolve();
     const existing = running.get(sessionId);
     if (existing) {
       rerun.add(sessionId);

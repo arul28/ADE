@@ -49,6 +49,10 @@ export type CloudChatRestoreDeps = {
   }) => Promise<{ sessionId: string; restoredWith: "capsule" | "replay" | "earlier" }>;
   /** Lets this computer's uploader go on from `seq` (`adoptRestoredCloudChat`). */
   adopt: (sessionId: string, seq: number, laneId: string | null) => Promise<boolean>;
+  /** Holds back the chat's uploads until `adopt` (`holdRestoringCloudChat`). */
+  hold: (sessionId: string) => void;
+  /** Ends the hold after a failed restore (`releaseRestoringCloudChat`). */
+  release: (sessionId: string) => void;
 };
 
 export type CloudChatRestoreResult = {
@@ -168,28 +172,39 @@ export async function restoreCloudChat(
   const modelId = capsule?.target.targetModelId || args.modelId || saved.chat.model;
   if (!modelId) throw new Error("ADE can't tell which model this chat used, so it can't continue it here.");
   const envelopes = parseSavedTranscript(saved.texts);
-  const restored = await deps.restore({
-    sessionId: args.chatId,
-    laneId: args.laneId,
-    modelId,
-    title: saved.chat.title ?? null,
-    envelopes,
-    capsule,
-    olderPartLeftOut: saved.olderPartLeftOut,
-  });
-  let moved = from === machineKey;
+  // The copy moves to this computer's key BEFORE any part of this chat uploads
+  // here (CONTRACTS: moveSavedChat). A failed move stops the continue: a
+  // restored chat would otherwise upload as a second copy of the same chat.
   let lastSeq = saved.chat.lastSeq;
+  let moved = from === machineKey;
   if (!moved) {
     try {
       const answer = await api.moveSavedChat(from, args.chatId, { toMachineKey: machineKey, instanceId: deps.instanceId });
-      moved = true;
       lastSeq = answer.chat.lastSeq;
+      moved = answer.moved;
     } catch (error) {
-      // Not moved: this computer uploads the chat as a new copy under its own key.
       logger.warn("cloud.restore_move_failed", { chatId: args.chatId, error: errorText(error) });
+      throw new Error("ADE couldn't move this chat's saved copy to this computer, so it can't continue it here. Try again.");
     }
   }
-  if (moved) await deps.adopt(restored.sessionId, lastSeq, args.laneId);
+  // No upload of this chat until the uploader continues from the moved copy's sequence.
+  deps.hold(args.chatId);
+  let restored: Awaited<ReturnType<CloudChatRestoreDeps["restore"]>>;
+  try {
+    restored = await deps.restore({
+      sessionId: args.chatId,
+      laneId: args.laneId,
+      modelId,
+      title: saved.chat.title ?? null,
+      envelopes,
+      capsule,
+      olderPartLeftOut: saved.olderPartLeftOut,
+    });
+  } catch (error) {
+    deps.release(args.chatId);
+    throw error;
+  }
+  if (!(await deps.adopt(restored.sessionId, lastSeq, args.laneId))) deps.release(args.chatId);
   logger.info("cloud.chat_restored", {
     chatId: args.chatId,
     restoredWith: restored.restoredWith,

@@ -30798,7 +30798,9 @@ async function runServe(
     /** The server's idle cleanup runs here until this time (push-work, save-for-rest). */
     cleanupUntil: number;
     lastUseReportAt: number;
-  } = { save: null, queue: null, cleanupUntil: 0, lastUseReportAt: 0 };
+    /** The server answered `/use` with `computer_deleting`: remote work is refused. */
+    deleting: boolean;
+  } = { save: null, queue: null, cleanupUntil: 0, lastUseReportAt: 0, deleting: false };
   // The account server's typed client, as this brain's signed-in account. Null signed out.
   const accountCloudApi = async (): Promise<import("../../desktop/src/shared/cloudApiClient").CloudApiClient | null> => {
     if (!brainAccountAuthService.getStatus().signedIn) return null;
@@ -32338,7 +32340,7 @@ async function runServe(
         if (!chat) throw new Error("This ADE runtime has no chats.");
         const api = await accountCloudApi();
         if (!api) throw new Error("This computer isn't signed in to the account, so it can't read the saved chat.");
-        const [{ restoreCloudChat }, { adoptRestoredCloudChat }] = await Promise.all([
+        const [{ restoreCloudChat }, { adoptRestoredCloudChat, holdRestoringCloudChat, releaseRestoringCloudChat }] = await Promise.all([
           import("./services/cloudChats/cloudChatRestore"),
           import("./services/cloudChats/cloudChatUploader"),
         ]);
@@ -32349,6 +32351,8 @@ async function runServe(
           logger: headlessProjectLogger,
           restore: (restoreArgs) => chat.restoreSavedCloudChat(restoreArgs),
           adopt: adoptRestoredCloudChat,
+          hold: holdRestoringCloudChat,
+          release: releaseRestoringCloudChat,
         }, args);
       },
       // An automation's run (C9): its chat's turn ending is the run's end. Nobody
@@ -32513,13 +32517,33 @@ async function runServe(
     return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
       if (request.method === "ade/actions/call" && isRemoteWork(request.params)) {
         void keepAwake.noteUse();
-        // The server's idle cleanup may be saving this computer for its delete: tell it a person is here (`/use`).
+        // The server's idle cleanup may be saving this computer for its delete:
+        // tell it a person is here (`/use`). Once the delete has started, the
+        // work is refused, so nothing new is lost with the computer.
         const now = Date.now();
-        if (cloudInstanceId && now < cloudRest.cleanupUntil && now - cloudRest.lastUseReportAt > 30_000) {
-          cloudRest.lastUseReportAt = now;
-          void accountCloudApi().then((api) => api?.recordComputerUse(cloudInstanceId)).catch((error: unknown) => {
-            headlessProjectLogger.warn("cloud.use_report_failed", { error: error instanceof Error ? error.message : String(error) });
-          });
+        if (cloudInstanceId && now < cloudRest.cleanupUntil) {
+          if (!cloudRest.deleting && now - cloudRest.lastUseReportAt > 30_000) {
+            cloudRest.lastUseReportAt = now;
+            try {
+              const api = await accountCloudApi();
+              await Promise.race([
+                api?.recordComputerUse(cloudInstanceId),
+                new Promise((resolve) => {
+                  const timer = setTimeout(resolve, 5_000);
+                  timer.unref?.();
+                }),
+              ]);
+            } catch (error) {
+              if ((error as { code?: unknown } | null)?.code === "computer_deleting") cloudRest.deleting = true;
+              else headlessProjectLogger.warn("cloud.use_report_failed", { error: error instanceof Error ? error.message : String(error) });
+            }
+          }
+          if (cloudRest.deleting) {
+            throw new JsonRpcError(
+              JsonRpcErrorCode.policyDenied,
+              "This ADE Cloud computer is being deleted, so it can't take new work. Its lane is saved; continue it on another computer.",
+            );
+          }
         }
       }
       return await handler(request);

@@ -42,6 +42,8 @@ import type {
   PasswordLoginSaveInput,
   PasswordSecretSaveInput,
   PasswordEnvFile,
+  PasswordLaneEnvImportInput,
+  PasswordLaneEnvPreview,
   PasswordSecretsExportResult,
   PasswordSecretsImportInput,
   PasswordSecretsImportResult,
@@ -4453,6 +4455,10 @@ declare global {
         importSecrets: (args: PasswordSecretsImportInput) => Promise<PasswordSecretsImportResult>;
         exportSecrets: (args: { projectScope: string | null }) => Promise<PasswordSecretsExportResult>;
         chooseEnvFile: () => Promise<PasswordEnvFile | null>;
+        /** A `.env` file in the main checkout on the pin's machine: names and lengths only. */
+        previewLaneEnv: (args: { path: string }, pin: OpenProjectBinding) => Promise<PasswordLaneEnvPreview>;
+        /** Saves the picked names of that file as secrets on that machine. */
+        importLaneEnv: (args: PasswordLaneEnvImportInput, pin: OpenProjectBinding) => Promise<PasswordSecretsImportResult>;
         projects: () => Promise<PasswordsProject[]>;
       };
       providerInstances: {
