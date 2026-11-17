@@ -647,7 +647,7 @@ Renderer surfaces:
     session is dropped.
   - The empty new-chat surface paints `WorkToolPickerBackdrop` and marks the
     draft for the first-send handoff
-    ([Composer and Chat UI](../chat/composer-and-ui.md#composer-dock)).
+    ([Composer and Chat UI](../chat/composer-and-ui.md#new-lane-launches)).
   - The grid uses `PaneTilingLayout` seeded by `buildWorkSessionTilingTree`.
   - An ended tracked agent CLI keeps its transcript and gets a composer
     (`pty.sendToSession`) and a Resume button (`pty.resumeSession`). The
