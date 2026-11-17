@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { encodeDisplayImage } from "../chat/providerInlineImage";
+import { readArtifactFileBytes } from "./artifactByteRange";
 
 /**
  * The display copy of a proof picture: what a paired desktop shows in the
@@ -36,7 +37,14 @@ export function createArtifactDisplayCopies(cacheDir: string): ArtifactDisplayCo
   let queue: Promise<unknown> = Promise.resolve();
 
   const make = async (sourcePath: string, key: string, target: string): Promise<string | null> => {
-    const bytes = await fs.promises.readFile(sourcePath);
+    // The same no-follow, descriptor-checked read the range reader uses: a
+    // workspace process must not be able to point the conversion at another
+    // file between the jail check and this read.
+    const bytes = await readArtifactFileBytes(sourcePath, DISPLAY_SOURCE_MAX_BYTES);
+    if (!bytes) {
+      noCopy.add(key);
+      return null;
+    }
     const copy = await encodeDisplayImage(bytes, DISPLAY_EDGE_PX, DISPLAY_JPEG_QUALITY);
     if (!copy) {
       noCopy.add(key);

@@ -2799,6 +2799,9 @@ function rehydrateAfterFit(runtime: CachedRuntime): void {
   const queuedReplace = runtime.pendingReplaceData;
   const queuedReplaceIsScreen = runtime.pendingReplaceIsScreen;
   clearRuntimeHydrationTimers(runtime);
+  // A guess drawn on the old screen must not survive the reset: the hydration
+  // writes below do not go through `noteOutput`, so nothing else would clear it.
+  runtime.typeAhead?.reset();
   try {
     runtime.term.reset();
   } catch {

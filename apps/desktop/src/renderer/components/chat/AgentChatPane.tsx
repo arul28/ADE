@@ -244,6 +244,7 @@ import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeS
 import { ChatActionsToggleBadge } from "./ChatActionsToggleBadge";
 import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
 import { beginChatSendTiming, noteChatSendBubbleShown, noteChatSendTimingEvent, type ChatSendTimingHandle } from "./chatSendTiming";
+import { forgetUnconfirmedSend, rememberUnconfirmedSend, unconfirmedSendId } from "./chatUnconfirmedSends";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ChatMachineWakeBanner, ChatMachineWakeProvider } from "./useChatMachineWake";
 import { ChatSlowLinkChip } from "./ChatSlowLinkChip";
@@ -3062,26 +3063,6 @@ function sortedMatchKeys<T>(items: T[] | undefined, readKey: (item: T) => string
   return (items ?? []).map(readKey).sort((left, right) => left.localeCompare(right));
 }
 
-/** Unconfirmed sends remembered for a retry; the oldest goes first. */
-const UNCONFIRMED_SENDS_MAX = 8;
-
-/**
- * Remembers a send's client id for a retry of the same payload to the same
- * chat, keeping the map small: the person may move on to other chats.
- */
-function rememberUnconfirmedSend(
-  map: Map<string, string>,
-  identity: { identityKey: string; clientSendId: string },
-): void {
-  map.delete(identity.identityKey);
-  map.set(identity.identityKey, identity.clientSendId);
-  while (map.size > UNCONFIRMED_SENDS_MAX) {
-    const oldest = map.keys().next().value;
-    if (oldest === undefined) break;
-    map.delete(oldest);
-  }
-}
-
 function matchKeyLists(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false;
   return left.every((value, index) => value === right[index]);
@@ -5667,15 +5648,6 @@ export function AgentChatPane({
   const paneMountedRef = useRef(true);
   /** Pending checks for sends whose call timed out (see the submit path); cleared on unmount. */
   const sendRecoveryTimersRef = useRef<Set<number>>(new Set());
-  /**
-   * Sends whose arrival is not confirmed, by chat and payload: the client id
-   * each went out with. Sending the same payload to the same chat again reuses
-   * the id, so a message that did reach the chat's machine before the link
-   * dropped is not written twice there. An entry goes when its send is
-   * confirmed, by the answer or by the transcript, so a later identical
-   * message is a new send.
-   */
-  const unconfirmedSendsRef = useRef<Map<string, string>>(new Map());
   /**
    * A send's list update (the chat's recency and running state), held until
    * the frame with the bubble and the cleared composer is drawn. Anything that
@@ -16586,7 +16558,7 @@ export function AgentChatPane({
       const identityKey = `${sessionId}\u0000${sendKey}`;
       sendIdentity = {
         identityKey,
-        clientSendId: unconfirmedSendsRef.current.get(identityKey)
+        clientSendId: unconfirmedSendId(identityKey)
           ?? globalThis.crypto?.randomUUID?.()
           ?? `send-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
       };
@@ -16664,7 +16636,7 @@ export function AgentChatPane({
           }, chatPin));
           sendTiming.mark("sendResolved");
           // The answer confirms it: this message is not waiting to be retried.
-          unconfirmedSendsRef.current.delete(identityKey);
+          forgetUnconfirmedSend(identityKey);
         } catch (sendError) {
           // Race condition: the turn may have started between our state check
           // and the backend call. If so, automatically fall back to steer
@@ -16730,7 +16702,7 @@ export function AgentChatPane({
       // "Error invoking remote method '…': <Class>Error:" wrapper.
       const message = stripElectronErrorWrapper(submitError instanceof Error ? submitError.message : String(submitError));
       // Not confirmed: the same payload sent again to this chat reuses the id.
-      if (sendIdentity) rememberUnconfirmedSend(unconfirmedSendsRef.current, sendIdentity);
+      if (sendIdentity) rememberUnconfirmedSend(sendIdentity.identityKey, sendIdentity.clientSendId);
       // A timeout, or a link that dropped after the message left: the chat's
       // machine may still have it. Wait for it rather than handing it back now.
       if (handedOff && (isRuntimeTransportTimeoutError(submitError) || isRemoteOutcomeUnknownError(submitError))) {
@@ -16750,7 +16722,7 @@ export function AgentChatPane({
             if (arrived()) {
               // It did arrive after all: an identical message later today is a
               // message of its own, not a repeat of this one.
-              if (pending.identityKey) unconfirmedSendsRef.current.delete(pending.identityKey);
+              forgetUnconfirmedSend(pending.identityKey);
               setError((current) => (current === waitingMessage ? null : current));
               return;
             }

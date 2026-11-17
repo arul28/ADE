@@ -1105,7 +1105,11 @@ export class RemoteConnectionPool {
         }
         const lostLink = isRemoteRuntimeConnectionError(error)
           || isRuntimeTransportTimeoutError(error)
-          || error instanceof RemoteActionOutcomeUnknownError;
+          || error instanceof RemoteActionOutcomeUnknownError
+          // A dial that could not reach the machine (unreachable, timed out) is
+          // the link being down, not a refusal: keep asking. A sign-in or host
+          // key refusal needs the person, so it stays fatal.
+          || (error instanceof RemoteRuntimeConnectError && !isUserActionConnectFailure(target, error));
         // The action may still be running there: keep asking until its own
         // budget runs out, so a long outage does not send the person back with
         // a new job id and a second run.
@@ -1828,9 +1832,13 @@ export class RemoteConnectionPool {
     notePhase("connect");
     const entry = await this.connectEntry(target, { initiatedBy: "background" });
     if (options.phases) notePhase(options.phases.operation);
-    const retryOnConnectionError = typeof options.retryOnConnectionError === "function"
-      ? options.retryOnConnectionError(entry)
-      : options.retryOnConnectionError;
+    // Re-asked for every connection: a replacement brain may not have what the
+    // first one announced (a send's dedupe, say), and a replay it cannot take
+    // must not happen.
+    const mayRetryOn = (connection: PoolEntry): boolean => (typeof options.retryOnConnectionError === "function"
+      ? options.retryOnConnectionError(connection)
+      : options.retryOnConnectionError);
+    const retryOnConnectionError = mayRetryOn(entry);
     const disconnectGeneration =
       this.disconnectGenerationByTargetId.get(target.id) ?? 0;
     const droppedElsewhere = () =>
@@ -1863,6 +1871,7 @@ export class RemoteConnectionPool {
         notePhase("reconnect");
         const nextEntry = await redial;
         if (nextEntry === entry) throw error;
+        if (!mayRetryOn(nextEntry)) throw new RemoteActionOutcomeUnknownError(null);
         if (options.phases) notePhase(options.phases.operation);
         return await operation(nextEntry);
       }
@@ -1876,7 +1885,7 @@ export class RemoteConnectionPool {
         if (retryOnConnectionError) throw reconnectError;
         throw new RemoteActionOutcomeUnknownError(false);
       }
-      if (retryOnConnectionError) {
+      if (mayRetryOn(nextEntry)) {
         if (options.phases) notePhase(options.phases.operation);
         return await operation(nextEntry);
       }
