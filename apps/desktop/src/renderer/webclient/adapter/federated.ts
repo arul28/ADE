@@ -32,6 +32,7 @@ import { setProjectOpenWaking } from "../../state/projectOpenWaking";
 import { adeCloudBinding, isAccountAnsweredPin, isAdeCloudBinding, isAdeCloudTargetId } from "../../../shared/adeCloud/binding";
 import { createAdeCloudAccountReader } from "../../../shared/adeCloud/accountReader";
 import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
+import { runAdeCloudAccountCall, type AdeCloudAccountCallFn } from "../../../shared/adeCloud/accountCalls";
 import { createAdeCloudSyncClient } from "./adeCloudSyncClient";
 import type { AdeCloudBridge } from "../../../shared/adeCloud/chatQueue";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer, type CloudChatSendRequest } from "../../../shared/adeCloudMachine";
@@ -461,6 +462,7 @@ export function createFederatedWebAdapter({
   const adeCloudReader = createAdeCloudAccountReader({
     cloud: () => accountClient.cloudApi(),
     github: () => fallbackAdapter.ade.githubDirect?.request ?? null,
+    accountCall: () => ((call) => runAdeCloudAccountCall(accountClient.cloudApi(), call)) as AdeCloudAccountCallFn,
   });
 
   /** One adapter per binding the account answers, over a stand-in client that never dials. */
@@ -1190,6 +1192,7 @@ export function createFederatedWebAdapter({
       const api = accountClient.cloudApi();
       return api ? await api.savedSessions(args) : null;
     },
+    accountCall: ((call) => runAdeCloudAccountCall(accountClient.cloudApi(), call)) as AdeCloudAccountCallFn,
   };
   // The desktop's `cloud.sendChatMessage` and `cloud.serverLaunchStatus`
   // (`registerCloudIpc.ts`), the same answers from this browser.

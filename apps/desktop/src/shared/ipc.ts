@@ -1217,6 +1217,7 @@ export const IPC = {
   adeCloudSavedSessions: "ade.adeCloud.savedSessions",
   adeCloudChatMessages: "ade.adeCloud.chatMessages.list",
   adeCloudChatMessageCancel: "ade.adeCloud.chatMessages.cancel",
+  adeCloudAccountCall: "ade.adeCloud.accountCall",
   cloudListMachines: "ade.cloud.listMachines",
   cloudMachineAction: "ade.cloud.machineAction",
   cloudGetAgentLimits: "ade.cloud.getAgentLimits",

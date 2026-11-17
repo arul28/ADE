@@ -23,6 +23,7 @@ import { CloudApiError, createCloudApiClient, type CloudApiClient } from "../../
 import { adeCloudBinding, isAdeCloudBinding } from "../../../shared/adeCloud/binding";
 import type { RemoteOpenProjectBinding } from "../../../shared/types";
 import type { AdeCloudQueueSendAnswer } from "../../../shared/adeCloud/chatQueue";
+import { runAdeCloudAccountCall } from "../../../shared/adeCloud/accountCalls";
 import { getSignedInAccountAccessToken } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
@@ -145,6 +146,23 @@ export function registerAdeCloudReadIpc(args: {
       return { ok: false, code: "network", status: 0, message: "ADE couldn't reach your ADE account. Try again." };
     }
   };
+
+  /** Account data with no computer: CTO, automations, Linear, Jira and the rest (`accountCalls.ts`). It never throws. */
+  ipcMain.handle(IPC.adeCloudAccountCall, async (event, call: unknown) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.adeCloudAccountCall)) {
+      return { ok: false, code: "untrusted", status: 0, message: "Only the ADE window can read this." };
+    }
+    const answer = await runAdeCloudAccountCall(client(), call);
+    if (!answer.ok && answer.status !== 404) {
+      const name = (call as { call?: unknown } | null)?.call;
+      logger.warn("ade_cloud.account_call_refused", {
+        call: typeof name === "string" ? name.slice(0, 40) : "unknown",
+        code: answer.code,
+        status: answer.status,
+      });
+    }
+    return answer;
+  });
 
   ipcMain.handle(IPC.adeCloudChatMessageCancel, (event, arg: { machineKey?: unknown; chatId?: unknown; messageId?: unknown }) => {
     const machineKey = text(arg?.machineKey);

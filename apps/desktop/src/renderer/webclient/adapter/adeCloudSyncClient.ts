@@ -20,6 +20,7 @@ import {
   type AdeCloudReadScope,
 } from "../../../shared/adeCloud/accountReader";
 import type { AdeSyncClient, AdeSyncClientStatus } from "../sync";
+import { ADE_CLOUD_INTEGRATION_WEB_COMMANDS } from "../../../shared/adeCloud/integrationReads";
 
 /** Web command names, in the desktop runtime vocabulary the reader answers. */
 const COMMANDS: Readonly<Record<string, { domain: string; action: string }>> = {
@@ -30,6 +31,8 @@ const COMMANDS: Readonly<Record<string, { domain: string; action: string }>> = {
   "git.listRecentCommits": { domain: "git", action: "listRecentCommits" },
   "git.getSyncStatus": { domain: "git", action: "getSyncStatus" },
   "diff.getChanges": { domain: "diff", action: "getChanges" },
+  // Linear and Jira reads of the account (`integrationReads.ts`).
+  ...ADE_CLOUD_INTEGRATION_WEB_COMMANDS,
 };
 
 const DESCRIPTORS: SyncRemoteCommandDescriptor[] = Object.keys(COMMANDS).map((action) => ({

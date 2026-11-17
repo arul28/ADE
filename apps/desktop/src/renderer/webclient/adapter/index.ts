@@ -38,6 +38,7 @@ import { createGithubAccountAppWebMethods } from "./githubStub";
 import { createWebGithubDirectNamespace } from "../github/directAdapter";
 import type { AdapterEvents, AdapterInfra } from "./types";
 import { guardPreloadPassPinnedMembers } from "./preloadPassPins";
+import { createSearchNamespace } from "./search";
 
 export type AdeWebAdapter = {
   ade: Window["ade"];
@@ -141,7 +142,7 @@ export function createAdeWebAdapter(
   const surface = {
     app: createAppNamespace(infra),
     account: createAccountNamespace(accountClient),
-    accountSettings: createAccountSettingsNamespace(infra),
+    accountSettings: createAccountSettingsNamespace(infra, accountClient),
     attention: createAttentionNamespace(infra, accountClient),
     analytics,
     diagnostics: createDiagnosticsNamespace(analytics),
@@ -157,6 +158,7 @@ export function createAdeWebAdapter(
     terminal,
     diff,
     files: createFilesNamespace(infra),
+    search: createSearchNamespace(infra),
     git,
     conflicts,
     prs: createPrsNamespace(infra),

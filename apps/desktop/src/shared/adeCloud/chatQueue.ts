@@ -13,6 +13,7 @@ import type {
   CloudProjectOverview,
   CloudSessionRow,
 } from "../../../../account-directory/src/cloud/contract";
+import type { AdeCloudAccountCallFn } from "./accountCalls";
 
 /** A write's answer: the server's result, or its refusal as data (the code decides what else to offer). */
 export type AdeCloudQueueSendAnswer<T> =
@@ -35,6 +36,8 @@ export type AdeCloudBridge = {
   projectOverview: (args: { origin: string }) => Promise<CloudProjectOverview | null>;
   savedSessions: (args: { machineKey?: string | null; projectKey?: string | null; cursor?: string | null }) =>
     Promise<{ sessions: CloudSessionRow[]; nextCursor: string | null } | null>;
+  /** Account data with no computer (`shared/adeCloud/accountCalls.ts`). Optional: an older ADE has none. */
+  accountCall?: AdeCloudAccountCallFn;
   /**
    * The connections of ADE Cloud computers that rest now (asleep, or not
    * connected in this window), with the account key and repository address

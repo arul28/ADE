@@ -104,6 +104,7 @@ import { createRemoteTargetGate, type RemoteTargetGate } from "./remoteTargetGat
 import { adeCloudBinding, isAccountAnsweredPin, isAdeCloudBinding, isAdeCloudTargetId } from "../shared/adeCloud/binding";
 import { ADE_CLOUD_NEEDS_LANE_SENTENCE, createAdeCloudAccountReader, type AdeCloudAccountReaderDeps } from "../shared/adeCloud/accountReader";
 import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
+import type { AdeCloudAccountCallFn } from "../shared/adeCloud/accountCalls";
 import { markExpected } from "../shared/expectedError";
 import { savedChatsMachineKey } from "../shared/cloudSavedChats";
 import { IPC } from "../shared/ipc";
@@ -2103,6 +2104,7 @@ const adeCloudAccountReader = createAdeCloudAccountReader({
     gitSummary: (machineKey: string, laneId: string) => ipcRenderer.invoke(IPC.adeCloudGitSummary, { machineKey, laneId }),
   }) as ReturnType<AdeCloudAccountReaderDeps["cloud"]>,
   github: () => ((request, options) => ipcRenderer.invoke(IPC.githubDirectRequest, request, options ?? {})) as ReturnType<AdeCloudAccountReaderDeps["github"]>,
+  accountCall: () => ((call) => ipcRenderer.invoke(IPC.adeCloudAccountCall, call)) as AdeCloudAccountCallFn,
 });
 
 /**
@@ -2183,6 +2185,7 @@ const adeCloudBridge: AdeCloudBridge = {
   cancelChatMessage: (address) => ipcRenderer.invoke(IPC.adeCloudChatMessageCancel, address),
   projectOverview: (args) => ipcRenderer.invoke(IPC.adeCloudProjectOverview, args),
   savedSessions: (args) => ipcRenderer.invoke(IPC.adeCloudSavedSessions, args),
+  accountCall: ((call) => ipcRenderer.invoke(IPC.adeCloudAccountCall, call)) as AdeCloudAccountCallFn,
   setRestingTargets: (targets) => {
     restingCloudTargets.clear();
     for (const target of Array.isArray(targets) ? targets : []) {

@@ -19,6 +19,8 @@
 
 import type { CloudApiClient } from "../cloudApiClient";
 import { markExpected } from "../expectedError";
+import { createAdeCloudIntegrationReads } from "./integrationReads";
+import type { AdeCloudAccountCallFn } from "./accountCalls";
 import type { CloudGitSummary, CloudLaneOverview, CloudProjectOverview } from "../../../../account-directory/src/cloud/contract";
 import type {
   DiffChanges,
@@ -49,6 +51,8 @@ export type AdeCloudAccountReaderDeps = {
   /** The account server's client; null while signed out. */
   cloud: () => Pick<CloudApiClient, "projectOverview" | "gitSummary"> | null;
   github: () => AdeCloudGithubRequest | null;
+  /** Account calls (Linear and Jira reads). Optional: an older bridge has none. */
+  accountCall?: () => AdeCloudAccountCallFn | null;
   now?: () => number;
 };
 
@@ -184,6 +188,8 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
   const now = deps.now ?? (() => Date.now());
   const overviews = new Map<string, Cached<CloudProjectOverview | null>>();
   const summaries = new Map<string, Cached<CloudGitSummary | null>>();
+  // Linear and Jira reads of the account (`integrationReads.ts`); writes stay unhandled.
+  const integrations = createAdeCloudIntegrationReads(() => deps.accountCall?.() ?? null);
 
   /** One read in flight per key, kept a short while: every surface of a tab asks at once. */
   const cachedRead = <T>(cache: Map<string, Cached<T>>, key: string, ttlMs: number, run: () => Promise<T>): Promise<T> => {
@@ -413,7 +419,7 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
         return laneId ? { handled: true, result: await workingChanges(scope, laneId) } : { handled: false };
       }
       default:
-        return { handled: false };
+        return integrations.answer(scope, request);
     }
   };
 
