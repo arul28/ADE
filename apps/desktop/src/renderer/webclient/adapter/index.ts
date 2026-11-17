@@ -1,4 +1,4 @@
-import type { ProjectInfo } from "../../../shared/types";
+import type { AutoUpdateSnapshot, ProjectInfo } from "../../../shared/types";
 import type { UpdateTrack } from "../../../shared/updateTrack";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
@@ -135,6 +135,7 @@ export function createAdeWebAdapter(
   const { git, diff, conflicts } = createGitNamespaces(infra);
   const misc = createMiscNamespaces(infra);
   const accountClient = providedAccountClient ?? new BrowserAccountClient();
+  const updateListeners = new Set<(snapshot: AutoUpdateSnapshot) => void>();
   const analytics = createAnalyticsNamespace(infra);
   const githubDirect = createWebGithubDirectNamespace(accountClient);
 
@@ -259,7 +260,19 @@ export function createAdeWebAdapter(
     keepAwakeGet: webKeepAwakeMethods.keepAwakeGet,
     keepAwakeSetLevel: webKeepAwakeMethods.keepAwakeSetLevel,
     keepAwakeFixSystemSleep: webKeepAwakeMethods.keepAwakeFixSystemSleep,
-    updateGetState: webUpdateMethods.updateGetState,
+    // This tab installs nothing; the newest build on each track is only for
+    // "Update & restart" on the account's other machines (`machineUpdates.ts`).
+    // The last read answers at once and a fresh one arrives as an update
+    // event, so no Settings page waits on the account directory.
+    updateGetState: async () => {
+      const known = accountClient.peekLatestReleases();
+      void accountClient.readLatestReleases().then(async (latest) => {
+        if (latest.stable === known.stable && latest.beta === known.beta) return;
+        const next = { ...await webUpdateMethods.updateGetState(), latestByTrack: latest };
+        for (const listener of updateListeners) listener(next);
+      });
+      return { ...await webUpdateMethods.updateGetState(), latestByTrack: known };
+    },
     updateGetPreferences: webUpdateMethods.updateGetPreferences,
     updateSetPreferences: webUpdateMethods.updateSetPreferences,
     updateGetInstallImpact: webUpdateMethods.updateGetInstallImpact,
@@ -267,7 +280,12 @@ export function createAdeWebAdapter(
     updateCancelAutoApply: webUpdateMethods.updateCancelAutoApply,
     updateDismissInstalledNotice: async () => undefined,
     updateRelaunchApp: async () => false,
-    onUpdateEvent: () => () => {},
+    onUpdateEvent: (listener: (snapshot: AutoUpdateSnapshot) => void) => {
+      updateListeners.add(listener);
+      return () => {
+        updateListeners.delete(listener);
+      };
+    },
     perf: {
       getConfig: async () => ({
         active: false,

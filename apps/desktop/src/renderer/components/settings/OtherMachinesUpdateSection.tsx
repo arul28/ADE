@@ -14,6 +14,7 @@ import {
 import {
   connectedMachinesFromSnapshot,
   describeMachineUpdateAttempt,
+  machineBehindVersion,
   machineUpdateTrack,
   machinesBehindOnTheirTrack,
   newestKnownVersionOnTrack,
@@ -202,6 +203,8 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
                   <ArrowsClockwise size={13} weight="bold" className={updating ? "animate-spin" : undefined} />
                   {manual ? "Download update" : updating ? "Updating…" : checking ? "Checking…" : "Update & restart"}
                 </button>
+              ) : machineBehindVersion(machine, known) ? (
+                <span className="kit-tag">Update it on that machine</span>
               ) : machine.version && knowsTrack ? (
                 <span className="kit-tag" data-tone="ok">Up to date</span>
               ) : undefined}

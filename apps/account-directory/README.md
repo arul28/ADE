@@ -747,6 +747,20 @@ npm run deploy && npm run deploy:production
 Logs: one `music_developer_token_request` line per call with status, reason and
 duration, never the token.
 
+## Latest ADE releases
+
+`GET /releases/latest` returns `{ stable, beta }`: the newest published ADE
+build on each track, read by the desktop's own reader
+(`apps/desktop/src/shared/latestByTrack.ts`) from the same two release
+manifests (`release-manifest.json` of the latest stable release, and
+`beta.json` on the `beta-feed` release). A track only takes a build of that
+track. The phone and ADE Web use it for "Update & restart" on another machine;
+a browser cannot read GitHub's release downloads itself. It takes the account
+bearer, answers GET only, allows the web client's exact origin, and reuses one
+read for ten minutes in each isolate. A track whose manifest fails keeps its
+last value (null until it has one). Path and shape:
+`src/latestReleasesContract.ts`.
+
 ## Jev bonus
 
 `POST /jev/systemone` answers a signed-in ADE caller's Jev question with ADE's

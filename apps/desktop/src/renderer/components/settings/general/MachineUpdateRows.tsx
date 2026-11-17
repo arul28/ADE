@@ -17,6 +17,7 @@ import {
 } from "../../remoteTargets/machineUpdates";
 import {
   describeMachineUpdateAttempt,
+  machineBehindVersion,
   machineUpdateTargetVersion,
   machinesBehindOnTheirTrack,
   newestKnownVersionOnTrack,
@@ -212,9 +213,11 @@ function MachineUpdateRow({
   if (!action) {
     action = !machine.online && !machine.isThisMachine
       ? <span className="kit-tag">Offline</span>
-      : version && knowsTrack && !target
-        ? <span className="kit-tag" data-tone="ok">Up to date</span>
-        : null;
+      : fact?.connected && !target && machineBehindVersion(fact.connected, known)
+        ? <span className="kit-tag">Update it on that machine</span>
+        : version && knowsTrack && !target
+          ? <span className="kit-tag" data-tone="ok">Up to date</span>
+          : null;
   }
 
   const versionLine = (

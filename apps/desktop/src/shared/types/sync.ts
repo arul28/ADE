@@ -2967,6 +2967,10 @@ export type SyncRemoteCommandAction =
   | "usage.getModelPriceOverrides"
   | "usage.setModelPriceOverride"
   | "proxy.status"
+  // This machine's "Update & restart", from a phone or browser
+  // (`machineUpdateRemoteCommands.ts`).
+  | "machine.updateImpact"
+  | "machine.updateAndRestart"
   | PersonalChatRemoteCommandAction
   | "lanes.list"
   | "lanes.listDeleteProgress"

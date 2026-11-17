@@ -104,6 +104,14 @@ class FakeSyncClient {
     return this.status;
   }
 
+  getBrainAppVersion(): string | null {
+    return null;
+  }
+
+  getCommandDescriptors(): [] {
+    return [];
+  }
+
   getProjectCatalog = vi.fn(async () => ({
     projects: [
       this.project(`project-${this.status.selectedEnvId}`),

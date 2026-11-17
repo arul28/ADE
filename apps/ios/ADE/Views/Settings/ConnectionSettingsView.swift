@@ -161,6 +161,7 @@ struct ConnectionSettingsView: View {
       }
       .onAppear {
         machineController.bind(syncService: syncService, fleet: machineFleet)
+        MachineUpdateStore.shared.bind(syncService: syncService, fleet: machineFleet)
         presentationModel.bind(to: syncService)
         if let request = syncService.requestedPairingQrNavigation {
           syncService.requestedPairingQrNavigation = nil

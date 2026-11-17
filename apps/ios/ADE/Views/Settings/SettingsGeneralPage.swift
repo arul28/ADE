@@ -28,6 +28,7 @@ struct SettingsGeneralPage: View {
   let connection: (_ machineShownAbove: Bool) -> AnyView
 
   @ObservedObject private var account = AccountService.shared
+  @ObservedObject private var machineUpdates = MachineUpdateStore.shared
   @EnvironmentObject private var appUpdateAdvisor: AppUpdateAdvisor
   @State private var aiStatus: SettingsAiStatus?
   @State private var aiLoading = false
@@ -57,6 +58,8 @@ struct SettingsGeneralPage: View {
         advancedPage: advancedPage
       )
     }
+    .task { await machineUpdates.refreshLatestBuilds() }
+    .machineUpdateConfirmation(origin: SettingsAdeHeroCard.updateOrigin)
     .task(id: "\(syncService.connectionState.rawValue):\(primary?.id ?? "-")") {
       await load()
     }
@@ -219,6 +222,10 @@ struct SettingsGeneralPage: View {
     if let counts = providerCounts, counts.detected > counts.signedIn {
       let count = counts.detected - counts.signedIn
       items.append(.init(text: "\(count) \(count == 1 ? "provider needs" : "providers need") sign-in", tone: .warn))
+    }
+    for machine in machines where !machineUpdates.isBusy(machine) {
+      guard let target = machineUpdates.target(for: machine) else { continue }
+      items.append(.init(id: "machine-update:\(machine.id)", text: "\(machine.title) can update to \(target.targetVersion)", tone: .warn))
     }
     for machine in machines where !machine.isPrimary && machine.isConnectedSet && machine.subtitleIsProblem {
       // Two machines can share a name, so the machine's id keeps each row its own.
@@ -461,6 +468,7 @@ struct SettingsAdeHeroCard: View {
   let compatibility: SyncHostCompatibilityMode
   let advancedPage: () -> AnyView
   @EnvironmentObject private var appUpdateAdvisor: AppUpdateAdvisor
+  @ObservedObject private var machineUpdates = MachineUpdateStore.shared
   @Environment(\.openURL) private var openURL
 
   private var state: String {
@@ -474,10 +482,14 @@ struct SettingsAdeHeroCard: View {
       hero
       if !machines.isEmpty {
         VStack(alignment: .leading, spacing: 0) {
-          ADEEyebrow("Every machine")
-            .padding(.horizontal, ADEKit.inset)
-            .padding(.top, 14)
-            .padding(.bottom, 6)
+          HStack(spacing: 8) {
+            ADEEyebrow("Every machine")
+            Spacer(minLength: 8)
+            SettingsMachineUpdateAllButton(machines: machines, origin: Self.updateOrigin)
+          }
+          .padding(.horizontal, ADEKit.inset)
+          .padding(.top, 14)
+          .padding(.bottom, 6)
           ForEach(Array(machines.enumerated()), id: \.element.id) { index, machine in
             if index > 0 {
               Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, ADEKit.inset)
@@ -579,14 +591,18 @@ struct SettingsAdeHeroCard: View {
         .font(.adeMono(12))
         .foregroundStyle(ADEColor.textSecondary)
         .lineLimit(1)
-      if let status = status(machine) {
+      if machineUpdates.isBusy(machine) || machineUpdates.target(for: machine) != nil {
+        SettingsMachineUpdateControl(machine: machine, origin: Self.updateOrigin)
+      } else if let status = status(machine) {
         ADESettingsStatus(text: status.text, tone: status.tone)
       }
     }
     .padding(.horizontal, ADEKit.inset)
     .frame(minHeight: 46)
-    .accessibilityElement(children: .combine)
+    .accessibilityElement(children: .contain)
   }
+
+  static let updateOrigin = "settings.general"
 
   private func status(_ machine: SettingsMachine) -> (text: String, tone: ADEKitTone)? {
     if machine.isPrimary, compatibility == .limited { return ("Update", .warn) }

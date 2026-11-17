@@ -455,6 +455,10 @@ invoke it and therefore remain compatible. `chat.resumeUsageLimitNow` — the
 owner-only usage-limit **Resume now** — is optional for the same reason: the
 phone hides the button when the host does not advertise it, and an older phone
 that never calls it must not push a newer host into `limited`.
+`machine.updateImpact` and `machine.updateAndRestart` — "Update & restart" for a
+computer from a phone or ADE Web — are optional likewise: only a brain started
+by `ade serve` that can update itself registers them, and a client that does not
+see them keeps its "update ADE there" fallback instead of calling them.
 See `remote-commands.md` and `../linear-integration/README.md`.
 
 ## What syncs, what does not

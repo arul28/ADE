@@ -1204,7 +1204,14 @@ Tests:
 - **Native-only surfaces must stay unavailable in the web adapter.** OS
   notifications, external editor open, reveal in Finder, local directory
   picking, native shells, computer use, built-in browser, iOS Simulator,
-  updater, and transcription are not browser capabilities. App Control is the
+  installing an update of this browser tab's own app, and transcription are not
+  browser capabilities. Updating **another machine** is: a tab installs nothing
+  itself but calls `remoteRuntime.updateAndRestart` / `getUpdateImpact`, which
+  the federated adapter sends as that machine's `machine.updateAndRestart` /
+  `machine.updateImpact` sync commands
+  (`adapter/federated.ts`, `machineUpdateRemoteCommands.ts`). A machine whose
+  brain predates them reports `capabilities.remoteUpdate: false`, so its row
+  shows "Update it on that machine" and no Update button. App Control is the
   exception that is watch-only: its status and frames are served, and driving
   calls reject (see `adapter/appControl.ts`).
 - **Build output shape matters.** Cloudflare Pages serves from the output root;
