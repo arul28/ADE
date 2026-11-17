@@ -595,12 +595,17 @@ async function deleteObjectsUnder(bucket: R2Bucket, prefix: string): Promise<num
   }
 }
 
-/** Deletes one saved chat. A chat the account doesn't have is already deleted. */
-export async function deleteSavedChat(env: CloudEnv, userId: string, machineKey: string, chatId: string): Promise<boolean> {
+/**
+ * Deletes one saved chat. A chat the account doesn't have is already deleted.
+ * A client that still names the old machine key of a moved chat deletes it
+ * where it is now, as its read does (`handleGetChat`).
+ */
+export async function deleteSavedChat(env: CloudEnv, userId: string, namedMachineKey: string, chatId: string): Promise<boolean> {
   const bucket = bucketFor(env);
   if (!bucket) throw new Error("cloud_chats_bucket_missing");
-  const row = await copyRow(env, userId, machineKey, chatId);
+  const row = await copyRow(env, userId, namedMachineKey, chatId) ?? await movedRow(env, userId, namedMachineKey, chatId);
   if (!row) return false;
+  const machineKey = row.machine_key;
   await deleteObjectsUnder(bucket, row.r2_key);
   await env.DB.batch([
     env.DB.prepare("delete from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ?").bind(userId, machineKey, chatId),
