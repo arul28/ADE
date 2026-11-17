@@ -300,12 +300,13 @@ export async function routeAccountSignIns(request: Request, path: string, env: R
     } else {
       const held = await heldKeyOf(env, authorization, id);
       if (held === undefined) return unavailable();
-      if (!await deleteItem(env, authorization, KEY_KIND, cloudSignInVaultKey(id))) return unavailable();
-      // A copy left in the one store would still sign cloud computers in.
+      // A copy left in the one store would still sign cloud computers in. It goes
+      // first: the item names the key, so a failed removal can be tried again.
       if (!(await unmirrorCloudKeyFromApiStore(apiStoreOf(env, authorization), id, held))) {
         logCloud("cloud.cloud_key_unmirror_failed", { id });
         return unavailable();
       }
+      if (!await deleteItem(env, authorization, KEY_KIND, cloudSignInVaultKey(id))) return unavailable();
     }
     logCloud("cloud.sign_in_removed", { id });
     return json(await statusOf(env, authorization));

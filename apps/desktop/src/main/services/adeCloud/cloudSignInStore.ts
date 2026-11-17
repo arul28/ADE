@@ -103,16 +103,19 @@ export async function removeCloudSignIn(
 ): Promise<boolean> {
   const vault = vaults(cloudSignInVaultKey(id));
   if (!vault) return false;
-  // The key it held, so the one store's copy of the same key goes with it.
-  const held = id === "claude" ? null : await heldToken(vault, id);
-  const removed = await vault.remove().catch(() => {
+  // The key it held, so the one store's copy of the same key goes with it. The
+  // copy goes first: the item names the key, so a failed removal can be tried again.
+  if (id !== "claude") {
+    const held = await heldToken(vault, id);
+    if (!(await unmirrorCloudKeyFromApiStore(apiStoreOf(vaults, id, logger), id, held))) {
+      logger?.warn?.("cloud.cloud_key_unmirror_failed", { id });
+      return false;
+    }
+  }
+  return await vault.remove().catch(() => {
     logger?.warn?.("cloud.cloud_sign_in_remove_threw", { id, reason: "vault_remove_threw" });
     return false;
   });
-  if (removed && id !== "claude" && !(await unmirrorCloudKeyFromApiStore(apiStoreOf(vaults, id, logger), id, held))) {
-    logger?.warn?.("cloud.cloud_key_unmirror_failed", { id });
-  }
-  return removed;
 }
 
 type ReadResult = { id: CloudSignInId; stored: StoredCloudSignIn | null; readable: boolean; inApiStore?: boolean };

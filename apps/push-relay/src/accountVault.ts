@@ -252,9 +252,10 @@ const NEXT_UPDATED_AT =
  * the MCP server registry's `mcp/<server>/<env|header|oauth>/<name>`. No
  * segment is empty or starts with a dot, so a key never holds `..`, `//`, or a
  * leading or trailing `/`, and nothing reading one as a path can be walked out
- * of it.
+ * of it. A `#` names one credential of a provider (`openai#work`, and
+ * `openai#ade-cloud` for ADE Cloud's key), as the API key store writes it.
  */
-const ITEM_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9._:-]*)*$/;
+const ITEM_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:#-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9._:#-]*)*$/;
 
 function parseItemKey(value: unknown): string | null {
   const key = requiredString(value, MAX_ITEM_KEY_LENGTH);
