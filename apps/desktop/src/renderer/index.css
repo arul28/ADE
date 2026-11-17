@@ -5379,10 +5379,17 @@ button, [role="button"] {
   from { transform: translateX(0); }
   to { transform: translateX(calc(-80 * 1.3em)); }
 }
+/* The twinkle shows from 1.2 s to 2.8 s of its 4 s loop, 16 steps up and 16
+   down, one every 50 ms (the work beat). Each hidden hold is one `step-end`
+   step, 1.2 s long: a whole number of beats. A hold timed `steps(16)` (75 ms
+   steps) or the default `ease` put the loop's step instants or frame requests
+   off the beat, where they cost frames of their own. */
 @keyframes ade-thinking-twinkle {
-  0%, 30% { opacity: 0; transform: rotate(0deg) scale(0.2); animation-timing-function: steps(16, jump-none); }
+  0% { opacity: 0; transform: rotate(0deg) scale(0.2); animation-timing-function: step-end; }
+  30% { opacity: 0; transform: rotate(0deg) scale(0.2); animation-timing-function: steps(16, jump-none); }
   50% { opacity: 1; transform: rotate(90deg) scale(1); animation-timing-function: steps(16, jump-none); }
-  70%, 100% { opacity: 0; transform: rotate(0deg) scale(0.2); }
+  70% { opacity: 0; transform: rotate(0deg) scale(0.2); animation-timing-function: step-end; }
+  100% { opacity: 0; transform: rotate(0deg) scale(0.2); }
 }
 /* The window's -60% is the gradient's 100% `background-position` (its 250%
    width less the label's, 150% of the label); the copy's 150% undoes it. */

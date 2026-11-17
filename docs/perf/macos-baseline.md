@@ -749,6 +749,16 @@ you add a poll, a timer, a spawn, a read or a background job.
   unprefixed one), and that property paints the same blur. Read
   `getComputedStyle(el).webkitBackdropFilter` too, or count the declarations in
   the source.
+- **Loops that show together step together.** Each loop that a working chat
+  shows (the thinking glyph, sheen and twinkle, the context dial's pulse)
+  costs a frame per step of its own unless its steps land on the same
+  instants as the others. Step every 50 ms (`lib/workBeat.ts`), give every
+  segment a step timing whose steps are whole beats (a hold included: no
+  `ease`, no 75 ms steps), and start the loop on the beat with
+  `alignLoopsToBeat` when it mounts or comes back from a rest. A loop that
+  shows beside a compositor loop takes `data-loop-clock="off"`: the step clock
+  seeks it from a main-thread timer, and each seek is a main frame and a
+  commit (the dial's pulse cost about 5 main frames and 8 commits a second).
 - **No rotating box around a moving layer.** On macOS a compositor animation
   inside a rotating ancestor made every frame a full-window redraw: the
   thinking glyph's strip moved inside a box that turned. Put the turn into the

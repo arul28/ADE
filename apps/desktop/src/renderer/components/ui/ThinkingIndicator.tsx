@@ -1,5 +1,6 @@
-import { memo, useEffect, useId, useRef, useState, type RefObject } from "react";
+import { memo, useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { useWindowFocused } from "../../lib/windowFocus";
+import { alignLoopsToBeat } from "../../lib/workBeat";
 import { cn } from "./cn";
 
 /**
@@ -96,6 +97,14 @@ export const ThinkingIndicator = memo(function ThinkingIndicator({ label, classN
   const rootRef = useRef<HTMLSpanElement | null>(null);
   const onScreen = useOnScreen(rootRef);
   const resting = !focused || !onScreen;
+  // The loops start when the indicator mounts, when a new label slides in
+  // (its sheen starts again), and when the rest ends (they were `animation:
+  // none`). Each time they go on the 50 ms beat before their first frame, so
+  // their steps share frames with each other and with every other working
+  // loop (the context dial's pulse) instead of each drawing its own.
+  useLayoutEffect(() => {
+    if (!resting) alignLoopsToBeat(rootRef.current);
+  }, [resting, label]);
   return (
     <span
       ref={rootRef}
