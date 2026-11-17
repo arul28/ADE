@@ -389,6 +389,10 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const migrateLegacyProjectCredentialsIfNeeded = (): void => {
     if (!credentialStore) return;
+    // The migration ends in a write (the migrated-roots record), and a write
+    // through the lazy store throws while the OS credential store has not
+    // answered. Defer it: this runs on a read path, and the next read retries.
+    if (isSecureStorageCheckPending()) return;
     const projectRoot = path.resolve(path.dirname(args.adeDir));
     const migratedRoots = readMigratedProjectRoots();
     if (migratedRoots.has(projectRoot)) return;

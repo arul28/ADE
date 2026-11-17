@@ -4458,8 +4458,12 @@ export function createUsageTrackingService({
   const githubStatsInFlight = new Map<string, Promise<GitHubActivityStats>>();
   const statsRefreshInFlight = new Map<string, Promise<void>>();
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  /** A poll round finished, so an empty panel now means "nothing to show", not "not read yet". */
-  let hasCompletedPoll = false;
+  /**
+   * A poll round finished, so an empty panel now means "nothing to show", not
+   * "not read yet". A snapshot loaded from disk counts: its readings are a
+   * completed poll's, and a demand read must not start one at launch.
+   */
+  let hasCompletedPoll = lastSnapshot.windows.length > 0;
   let pollingEnabled = false;
   let inFlightPoll: Promise<UsageSnapshot> | null = null;
   let inFlightPollReason: UsageRefreshReason | null = null;
