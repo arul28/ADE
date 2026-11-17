@@ -117,6 +117,17 @@ export function noteUserClientClosed(kind: UserClientKind, sources: IdleMemorySo
 }
 
 /**
+ * Projects opened while no client is connected (the brain reopens the
+ * projects of chats that were running when the last brain stopped). No
+ * disconnect starts the unattended release then, so start it here; a client
+ * that connects first stops it as usual.
+ */
+export function noteProjectsOpenedWithoutClient(sources: IdleMemorySources): void {
+  latestSources = sources;
+  if (desktopClients === 0 && remoteClients === 0 && !agentTimer) scheduleUnattendedAgentRelease(RELEASE_DELAY_MS);
+}
+
+/**
  * Release the provider processes of finished chats while nobody is connected.
  * A device on a project's sync host counts as connected (it reads chats
  * through the sync host, not through a channel). Any client that connects

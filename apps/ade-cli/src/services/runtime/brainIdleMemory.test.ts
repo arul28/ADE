@@ -1,7 +1,7 @@
 import type { AdeRuntime } from "../../bootstrap";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { noteUserClientClosed, noteUserClientOpened } from "./brainIdleMemory";
+import { noteProjectsOpenedWithoutClient, noteUserClientClosed, noteUserClientOpened } from "./brainIdleMemory";
 
 /**
  * The brain's unattended release (`brainIdleMemory.ts`): while no desktop
@@ -54,5 +54,27 @@ describe("unattended agent release", () => {
     noteUserClientClosed("desktop", sources);
     await vi.advanceTimersByTimeAsync(20_000);
     expect(releaseUnattendedRuntimes.mock.calls.length).toBeGreaterThan(passesWhenTheWindowOpened);
+  });
+
+  it("starts when a restarted brain reopens projects before any client connects", async () => {
+    vi.useFakeTimers();
+    // A fresh brain: no client has connected or left, so no timer runs.
+    noteUserClientOpened("desktop");
+    noteUserClientClosed("desktop", null);
+    const releaseUnattendedRuntimes = vi.fn(() => ({ released: 0, kept: 0 }));
+    const runtime = {
+      agentChatService: { releaseUnattendedRuntimes },
+    } as unknown as AdeRuntime;
+
+    noteProjectsOpenedWithoutClient({ listRuntimes: vi.fn(() => [runtime]) });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(releaseUnattendedRuntimes).toHaveBeenLastCalledWith(30_000);
+
+    // A window that connects stops it, as after a disconnect.
+    noteUserClientOpened("desktop");
+    const passes = releaseUnattendedRuntimes.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(releaseUnattendedRuntimes.mock.calls.length).toBe(passes);
+    noteUserClientClosed("desktop", null);
   });
 });
