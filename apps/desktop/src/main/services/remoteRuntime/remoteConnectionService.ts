@@ -429,6 +429,20 @@ function sameStatusValue(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * A failure as a window acts on it: each dial gives its error a new
+ * diagnostic id and new route timings, so a redial every 2 s that fails the
+ * same way would otherwise count as a change and reach every window.
+ */
+function errorInfoForCompare(info: unknown): unknown {
+  if (info === null || typeof info !== "object") return info;
+  const { correlationId: _correlationId, attempts, ...rest } = info as RemoteRuntimeConnectErrorInfo;
+  return {
+    ...rest,
+    attempts: attempts?.map(({ startedAt: _startedAt, durationMs: _durationMs, ...attempt }) => attempt),
+  };
+}
+
+/**
  * After a wake, may this call go out again? Replay-safe actions may. A send may
  * when it carries a client id the brain recognizes a retry of (`isDedupedSend`),
  * so a message caught by a sleep is delivered, and never twice.
@@ -2965,9 +2979,14 @@ export class RemoteConnectionService {
     // A re-read project list or error is a fresh object even when nothing in
     // it changed, so structured fields compare by content.
     const previous: Record<string, unknown> = current;
-    const meaningful = Object.entries(next).some(
-      ([key, value]) => key !== "lastAttemptedAt" && !sameStatusValue(previous[key], value),
-    );
+    // A failure repeated by a redial (same kind, message and routes, new
+    // diagnostic id and timings) is not a change either; the status keeps
+    // the newest, and the next broadcast or read carries it.
+    const meaningful = Object.entries(next).some(([key, value]) => {
+      if (key === "lastAttemptedAt") return false;
+      if (key === "lastErrorInfo") return !sameStatusValue(errorInfoForCompare(previous[key]), errorInfoForCompare(value));
+      return !sameStatusValue(previous[key], value);
+    });
     if (meaningful) this.emit();
   }
 
