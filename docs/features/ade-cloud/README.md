@@ -660,19 +660,29 @@ OpenCode's sign-in (`providerLoginCarry.ts`, `openCodeCarryWriter.ts`):
 - Only the opencode.ai sign-in travels (OpenCode Go and Zen ride it): the
   `credential` row with `integration_id = 'opencode'` in ADE's own OpenCode
   store, the one in use. Other sign-ins made in OpenCode stay on the computer.
-  An Anthropic login held by OpenCode is never copied (the Claude rule).
+  An Anthropic login held by OpenCode is never copied (the Claude rule), and
+  an API key pasted into OpenCode stays too (ADE's saved keys carry keys).
 - Capture never reads the store file (it is large and changes on every
   turn). It asks SQLite for the row's id and last write only when the file or
   its WAL moved, and reads the row when that changed.
 - Apply writes the row through OpenCode's own `credential` API on the shared
   server, never by SQL, and makes it the one in use. A copy is access-only
   (the refresh token is empty), on ADE Cloud and on the person's other
-  computers alike. ADE never downloads OpenCode only to write a sign-in; it
-  waits until OpenCode is there.
+  computers alike. Each copy is a new row (`cred_ade…`): it is written and
+  made the one in use first, then the copy before is removed, so a failed
+  write never leaves no sign-in. ADE never downloads OpenCode only to write a
+  sign-in; it waits until OpenCode is there. On sign-out ADE removes its row
+  with OpenCode's API, or with one SQL delete when OpenCode is gone; a busy
+  store is tried again on the next pass.
+- A copy is replaced only while it is still the row OpenCode uses and nobody
+  changed it. A sign-in made in OpenCode on that computer afterwards is a new
+  row in use, so the copy stops there.
 - The computer that signed in renews it ahead: 270 s before expiry, ADE asks
   its OpenCode server to load a new, empty folder, which makes OpenCode 2.0.29
   renew the login (it renews only inside the last 5 minutes). No model
-  request. The renewed row is pushed by the next pass.
+  request. The renewed row is pushed by the next pass. A renewal timer more
+  than 24.8 days out (setTimeout's limit) wakes early and waits again; it
+  does not count as a try.
 - An access-only copy's OpenCode asks to renew in the last 5 minutes and is
   refused; the row stays and works until its own expiry, by which time the
   renewed copy has come down. A route (`--via opencode-go`) reads the access

@@ -40,6 +40,7 @@ import {
 import { takeCloudSignInEnv } from "./providerLoginBoot";
 import { carryRow, type CarryBundle, type ParsedLogin } from "./providerLoginCarry";
 import { copilotCarriedHash, setCopilotCarriedToken } from "./providerLoginCopilotEnv";
+import { readOpenCodeCarryMark } from "../opencode/openCodeCredentials";
 import { notifyProviderLoginsChanged, restartProviderRuntimesWhenIdle, type ProviderLoginRestartOptions } from "./providerLoginHooks";
 import { PROVIDER_LOGIN_VAULT_KIND, parseProviderLoginKey, readProviderLoginPayload, shortHash } from "./providerLoginPayload";
 import {
@@ -203,6 +204,12 @@ export function createApplyPass(s: SyncShared) {
    */
   function isAppliedBundle(provider: ProviderLoginProvider, bundle: CarryBundle): boolean {
     const entries = Object.values(s.appliedCache?.applied ?? {}).filter((entry) => entry.provider === provider);
+    // OpenCode's store: the row apply wrote is the one in use and nobody changed it.
+    const openCode = entries.find((entry) => entry.openCode);
+    if (openCode?.openCode && bundle.files.some((spec) => spec.store)) {
+      const inUse = readOpenCodeCarryMark(openCode.openCode.dbPath);
+      return inUse !== "unreadable" && inUse?.id === openCode.openCode.id && appliedEntryUnchanged({ ...openCode, files: [] });
+    }
     const files = entries.flatMap((entry) => entry.files);
     if (!files.length) return false;
     // Files apply only adds a part to (Kimi's config, Antigravity's settings) are left out.
@@ -571,7 +578,7 @@ export function createApplyPass(s: SyncShared) {
       const owned = want.kind === "signin" && want.owned;
       // The same copy, and the same owner: nothing to do. A change of owner (a takeover, or the origin's claim back) writes again.
       if (have && have.source === source && have.contentHash === want.contentHash && Boolean(have.owned) === owned) {
-        applyStates.set(place, { state: want.kind === "key" ? "key" : have.files.length || have.pi || have.qwen ? "applied" : "own", key: want.kind === "key" ? "key" : want.key });
+        applyStates.set(place, { state: want.kind === "key" ? "key" : have.files.length || have.pi || have.qwen || have.openCode ? "applied" : "own", key: want.kind === "key" ? "key" : want.key });
         continue;
       }
       if (want.kind === "signin" && want.own && isOwnLoginHere(provider, want.key)) {

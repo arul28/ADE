@@ -47,7 +47,7 @@ import type { ProviderLoginProvider } from "../../../shared/types/providerLogins
 import { writeFileAtomic } from "../state/durableFile";
 import { captureError } from "../../../shared/sentry/capture";
 import { isRecord } from "../shared/utils";
-import { readOpenCodeCredentialValue, type OpenCodeCarryCredential } from "../opencode/openCodeCredentials";
+import { readOpenCodeCarryMark, readOpenCodeCredentialValue, type OpenCodeCarryCredential } from "../opencode/openCodeCredentials";
 import {
   OPENCODE_DB_REL,
   accessOnlyFile,
@@ -239,6 +239,9 @@ export function appliedEntryUnchanged(entry: AppliedEntry): boolean {
     const current = readOpenCodeCredentialValue(entry.openCode.dbPath, entry.openCode.id);
     if (current === "unreadable") return false;
     if (current && shortHash(JSON.stringify(current)) !== entry.openCode.valueHash) return false;
+    // A sign-in made here after apply is another row, and OpenCode uses it: the copy is no longer the one in use.
+    const inUse = readOpenCodeCarryMark(entry.openCode.dbPath);
+    if (inUse === "unreadable" || (inUse && inUse.id !== entry.openCode.id)) return false;
   }
   return true;
 }

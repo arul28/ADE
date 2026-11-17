@@ -36,7 +36,7 @@ import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 import { SHARED_OPENCODE_PROFILE } from "./openCodeConfig";
 import { loadNodeSqlite } from "../projects/readOnlySqlite";
 import { credentialsChanged } from "./openCodeAccounts";
-import { readOpenCodeCredentials, resolveAdeOpenCodeDbPath } from "./openCodeCredentials";
+import { readOpenCodeCredentialValue, resolveAdeOpenCodeDbPath } from "./openCodeCredentials";
 import { acquireOpenCodeServer } from "./openCodeServer";
 
 const CARRY_OWNER_ID = "provider-login-carry";
@@ -61,9 +61,15 @@ async function withSharedClient<T>(logger: Logger | null, fn: (client: OpenCodeC
   }
 }
 
-/** The row is in the store now (read with SQL, read-only; no server needed). */
+/**
+ * The row is in the store now (read with SQL, read-only; no server needed).
+ * A store that cannot be read now throws EBUSY: the applied entry then stays
+ * and the next pass tries the removal again, never treating it as gone.
+ */
 function hasCredential(dbPath: string, id: string): boolean {
-  return readOpenCodeCredentials(dbPath).some((credential) => credential.id === id);
+  const value = readOpenCodeCredentialValue(dbPath, id);
+  if (value === "unreadable") throw Object.assign(new Error("OpenCode's store is busy."), { code: "EBUSY" });
+  return value !== null;
 }
 
 /** One row out by SQL, for a store with no OpenCode to ask. Nothing else is ever written by SQL. */

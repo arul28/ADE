@@ -360,12 +360,8 @@ function parseOpenCode(contents: ReadonlyMap<string, Buffer>): CarryParseResult 
       skipped: [],
     };
   }
-  if (value.type === "key") {
-    const key = str(value, "key");
-    if (!key) return { unreadable: true };
-    return { logins: [{ slot: "base", class: "fixed", familySecret: key, account: null, expiresAt: null, files: [], parts }], skipped: [] };
-  }
-  // An external login (a cloud provider's own sign-in) holds no secret; it has its own account sync.
+  // An API key pasted into OpenCode stays here (ADE's saved keys carry keys); an
+  // external login (a cloud provider's own sign-in) holds no secret.
   return { logins: [], skipped: [{ slot: "base", state: "not_checked" }] };
 }
 
