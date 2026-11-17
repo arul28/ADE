@@ -151,8 +151,16 @@ ADE Cloud, and ADE with no computer of your own:
   Settings › Providers for ADE Cloud: each provider's sign-in and the
   account's saved keys (`/cloud/sign-ins`).
 - `apps/desktop/src/renderer/webclient/adapter/search.ts` - web search asks
-  each online copy of the repository. The cloud rows that the page already
-  loaded match in the Work list. Nothing extra is saved for search.
+  each online copy of the repository. It asks a computer only when that
+  computer has `search.query` or `search.indexStatus`; else it answers null,
+  and the palette skips it. `rebuildIndex` answers `{ started: false }`.
+  - With no online copy, the palette makes no search call. It matches only
+    the Work rows that the page already loaded (saved chats, saved terminals,
+    cloud lanes).
+  - A result with no lane name gets one from the account lane index
+    (`withIndexedLaneName` in `commandPaletteSearch.tsx`, one index read each
+    time the palette opens).
+  - Nothing extra is saved for search.
 
 Build and static host:
 
@@ -361,6 +369,10 @@ Browser `window.ade` adapter:
   network errors included (5xx and 429 as transient, other 4xx faster). The
   backoff stops only the timed polls; a click always tries, and a success
   resumes polling.
+  - An item with a lane id and no lane name gets the name from the account
+    lane index (`accountLanes()`, `GET /account/lanes`). One index read is
+    used again for 60 s (`LANE_INDEX_REUSE_MS`). The index is for lane names
+    and mentions only.
 - `apps/desktop/src/renderer/webclient/adapter/analytics.ts` - the browser's
   analytics preference (on unless opted out), runtime-scoped capture, and the
   preference sent again on each connection. A failed opt-out ack closes the
@@ -1155,10 +1167,11 @@ A project tab binds to ADE Cloud when no own computer with a copy is online
 | Work: chats, subagents | Saved chats (`/cloud/chats`), nested by parent |
 | Work: CLI sessions, shells | Saved copies (`/cloud/sessions`; shells keep the last 5,000 lines) |
 | Lanes | The project overview (`/cloud/projects/overview`) |
-| Files | GitHub at the lane's branch; changed files from the Git summary |
+| Files | GitHub at the lane's branch, read-only; changed files from the Git summary. See [Files with no computer awake](../files-and-editor/README.md#with-no-computer-awake) |
+| PRs | GitHub with the account's sign-in (`direct` reader, `DirectPrsList`), read-only, with lane chips from the lane index. See [PRs with no computer awake](../pull-requests/README.md#with-no-computer-awake) |
 | Git panel, History | The Git summary (`/cloud/git`) and GitHub commits |
 | Linear, Jira | The account server (`/cloud/integrations/...`) |
-| Search | Each online computer, plus the cloud rows the page already loaded |
+| Search | Each online computer that has `search.query`, plus the Work rows the page already loaded; with no online copy, only those rows |
 
 A send to an asleep or deleted cloud chat goes to the account's queue
 (`POST /cloud/chats/:machineKey/:chatId/messages`, with a `clientSendId`). The
