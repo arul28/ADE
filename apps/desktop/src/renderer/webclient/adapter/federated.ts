@@ -37,7 +37,7 @@ import { createAdeCloudSyncClient } from "./adeCloudSyncClient";
 import type { AdeCloudBridge } from "../../../shared/adeCloud/chatQueue";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer, type CloudChatSendRequest } from "../../../shared/adeCloudMachine";
 import { CloudApiError } from "../../../shared/cloudApiClient";
-import { isCloudRefusalCode } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_CHAT_MESSAGE_MAX_CHARS, isCloudRefusalCode } from "../../../../../account-directory/src/cloud/contract";
 
 /** How long a person's connect keeps dialing a cloud computer it just woke. */
 const WOKEN_CONNECT_WAIT_MS = 120_000;
@@ -1199,16 +1199,23 @@ export function createFederatedWebAdapter({
   // (`registerCloudIpc.ts`), the same answers from this browser.
   const cloudQueueOverrides = {
     async sendChatMessage(request: CloudChatSendRequest): Promise<CloudChatSendAnswer> {
-      const text = typeof request?.text === "string" ? request.text : "";
-      if (!request?.machineKey || !request.chatId || !CLOUD_CHAT_MESSAGE_ID_PATTERN.test(request.messageId ?? "") || !text.trim()) {
+      // The same checks as the desktop's IPC handler.
+      const field = (value: unknown, max: number) => (typeof value === "string" && value.trim() && value.length <= max ? value : null);
+      const machineKey = field(request?.machineKey, 256)?.trim() ?? null;
+      const chatId = field(request?.chatId, 256)?.trim() ?? null;
+      const messageId = typeof request?.messageId === "string" && CLOUD_CHAT_MESSAGE_ID_PATTERN.test(request.messageId) ? request.messageId : null;
+      const text = field(request?.text, CLOUD_CHAT_MESSAGE_MAX_CHARS);
+      if (!machineKey || !chatId || !messageId || !text) {
         throw markExpected(new Error("A message needs its chat and some text."), "user");
       }
+      const provider = field(request.provider, 64);
+      const modelId = field(request.modelId, 256);
       try {
-        const result = await cloudApiOrThrow().sendChatMessage(request.machineKey, request.chatId, {
-          messageId: request.messageId,
+        const result = await cloudApiOrThrow().sendChatMessage(machineKey, chatId, {
+          messageId,
           text,
-          ...(request.provider ? { provider: request.provider } : {}),
-          ...(request.modelId ? { modelId: request.modelId } : {}),
+          ...(provider ? { provider } : {}),
+          ...(modelId ? { modelId } : {}),
         });
         return { state: "sent", messageId: result.message.messageId, wake: { state: result.wake.state, launchId: result.wake.launchId ?? null } };
       } catch (error) {
