@@ -12,7 +12,6 @@ import {
   type RemoteWorkChatEnded,
   type RemoteWorkTurnRelease,
 } from "../../../shared/chatRemoteWork";
-import { adeHostWithheldAgentSkills } from "../../../shared/agentSkillRoots";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
 import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
@@ -1463,7 +1462,7 @@ import {
   type DiscoveredLocalModelEntry,
   type OpenCodeAgentProfile,
 } from "../opencode/openCodeConfig";
-import { acquireOpenCodeServer } from "../opencode/openCodeServer";
+import { acquireOpenCodeServer, releaseUnusedOpenCodeServers } from "../opencode/openCodeServer";
 import { isOpenCodeProcessAlive, killOpenCodeShellProcessTree } from "../opencode/openCodeServerOrphans";
 import {
   createOpenCodeBackgroundShells,
@@ -1915,7 +1914,7 @@ import {
   stoppedForGoodListWriters,
   takeCarriedCliSessionsToReopen,
 } from "../runtime/liveTurnProjects";
-import { brainRestartCause, noteRestartContinuation } from "../runtime/brainUnplannedRestart";
+import { brainRestartCause, continueAfterRestartAllowed, noteRestartContinuation } from "../runtime/brainUnplannedRestart";
 import { providerFromTool } from "../../utils/terminalSessionSignals";
 import { createCliCardInputs } from "./cliCardInputs";
 import { createClaudeCliScheduleMirror } from "./claudeCliScheduledWork";
@@ -10154,11 +10153,6 @@ export function buildComputerUseDirective(
     windowsDesktopAvailable?: boolean;
     /** This host can give the lane a Linux screen (Linux Desktop). */
     linuxDesktopAvailable?: boolean;
-    /**
-     * This host can run `ade apple` (a Mac). Off on Windows and Linux, where
-     * the ade-apple skill is withheld too (`adeHostWithheldAgentSkills`).
-     */
-    appleAvailable?: boolean;
   } = {},
 ): string | null {
   const hasExternalBackends = backendStatus
@@ -10172,7 +10166,6 @@ export function buildComputerUseDirective(
   const hasLocalFallback = backendStatus?.localFallback.available ?? false;
 
   const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable || options.linuxDesktopAvailable);
-  const apple = options.appleAvailable !== false;
   // No backends, no local fallback and no lane screen → skip the directive
   // entirely. A headless Linux brain has neither of the first two, and its
   // lane screen is the only screen an agent there can use.
@@ -10182,26 +10175,23 @@ export function buildComputerUseDirective(
 
   const sections: string[] = [];
 
-  // The full manuals live in the ade-computer-use and ade-proof-artifacts
-  // skills; this block is only what must hold before the agent opens them. It
-  // rides the first turn of every chat on every provider, so every line here
-  // is paid by chats that never touch a screen (it was ~9.4k chars).
-  // --- Header (always when we have any capability) ---
+  // This block is only what must hold before the agent opens a skill. It rides
+  // the first turn of every chat on every provider, so every line here is paid
+  // by chats that never touch a screen. The surface list, browser profiles,
+  // the proof commands, `--real-screen`, the requested-backend rule and the
+  // full real-screen rule live in ade-computer-use and ade-proof-artifacts;
+  // the proof pointer and the `cite:` rule are in the `## ADE` image line.
+  // The 2026-11-16 discovery bench found no loss with this short form.
   sections.push(
     [
       "## Computer Use",
-      "Read the **ade-computer-use** skill before your first screen action; it picks the surface: "
-        + (apple ? "an iOS app → `ade apple`, " : "")
-        + "a dev Electron app's DOM → `ade app-control`, a web page or localhost → `ade browser` (shares the user's sign-ins; `--profile <name>` for another account; attach to the user's own browser only when they ask).",
-      "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task; act on the user's real screen only when the user explicitly asks.",
       ownScreen
-        ? "`mcp__computer_use`, `osascript`, `cliclick`, `screencapture` and any other tool outside `ade` that clicks, types or captures drive the user's real screen: use them only when the user asks you to operate their screen, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
-        : "When the `mcp__computer_use` tools are present, they drive the user's real screen: start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
-      // With no external backend there is no backend status to read: only
-      // the rule about a requested backend applies.
-      hasExternalBackends
-        ? "If `get_computer_use_backend_status` is exposed, call it before computer use; if it is not exposed, do not stall. Respect the backend the user requested: if it is unavailable, stop and report instead of switching."
-        : "If the user asks for a computer-use backend that is unavailable, stop and report instead of switching.",
+        ? "For any screen, app, simulator or browser work, read **ade-computer-use** first. The user's own screen and windows are not yours: never close, quit or hide an app you did not open; use `mcp__computer_use`, `osascript`, `cliclick` or `screencapture` only when asked, never `@oai/sky`."
+        : "For any screen, app, simulator or browser work, read **ade-computer-use** first. The user's own screen and windows are not yours: never close, quit or hide an app you did not open, and act on them only when asked. When the `mcp__computer_use` tools are present, they drive that screen: start with `list_apps` or `get_app_state`, honor their per-app approval prompts, and never use `@oai/sky`.",
+      // Only an external backend has a status to read.
+      ...(hasExternalBackends
+        ? ["If `get_computer_use_backend_status` is exposed, call it before computer use; if it is not exposed, do not stall. Respect the backend the user requested: if it is unavailable, stop and report instead of switching."]
+        : []),
     ].join("\n"),
   );
 
@@ -10227,21 +10217,6 @@ export function buildComputerUseDirective(
       ].join("\n"),
     );
   }
-
-  // --- Proof instructions (always) ---
-  sections.push(
-    [
-      "### Proof Capture",
-      "When the user asks for proof, capture visual proof first; logs are supporting diagnostics only. ADE does not passively ingest computer-use output: file each capture with the tool that shows the work (`ade browser proof`, `ade app-control proof`"
-        + (apple ? ", `ade apple proof`" : "")
-        + (options.windowsDesktopAvailable || options.linuxDesktopAvailable || options.macDesktopAvailable ? ", `ade screen proof`" : "")
-        + "), or `ade proof attach` / `ingest_computer_use_artifacts` for an existing file. "
-        + (ownScreen
-          ? "`ade proof capture/record` capture the lane's screen once it is started; `--real-screen` captures the user's whole real screen, only when the user asks."
-          : "`ade proof capture` and `ade proof record` are refused here unless you pass `--real-screen`, which captures the user's whole real screen — only when the user asks."),
-      "Every proof command prints a `cite:` line; paste it on its own line in your answer, directly under the claim it proves. Read the **ade-proof-artifacts** skill for before/after blocks, recordings, PR publishing and keeping the drawer clean.",
-    ].join("\n"),
-  );
 
   return sections.join("\n\n");
 }
@@ -23503,6 +23478,12 @@ export function createAgentChatService(args: {
     return projectConfigService.get().effective.ai?.chat?.continueAfterRestart !== false;
   };
   /**
+   * Whether the restart this brain started after continues what it stopped
+   * (`continueAfterRestartAllowed`). Only for the restart that already
+   * happened; what a coming update does reads the setting alone.
+   */
+  const continueAfterThisRestart = (): boolean => continueAfterRestartAllowed(continueAfterRestartEnabled);
+  /**
    * Cut off within `RESTART_RESUME_MAX_AGE_MS`. A chat first opened later than
    * that (it crashed long ago, maybe under an older build) keeps the closed
    * turn instead of resuming stale work. A chat at rest that waited on
@@ -23560,7 +23541,8 @@ export function createAgentChatService(args: {
    * for every kind of restart: an update the user accepted (`armUpdateResume`,
    * and the update dialog's line through `listInterruptedChats`) and a crash,
    * force quit or reboot (`recoverDetachedChatAfterRestart`). Continue chats
-   * after restarts is on, the chat is not archived (a settled chat resumes:
+   * after restarts is on (or an ADE disk grow made the restart this brain
+   * started after: `continueAfterThisRestart`), the chat is not archived (a settled chat resumes:
    * settling stops nothing), it is not
    * waiting on the user's answer, it was cut off recently, and it has not
    * resumed itself `MAX_CONSECUTIVE_RESTART_RESUMES` times in a row. An
@@ -23581,7 +23563,8 @@ export function createAgentChatService(args: {
     const managed = options.managed ?? managedSessions.get(sessionId) ?? null;
     const acceptedUpdate = options.acceptedUpdate || hasPendingAcceptedUpdateResume(sessionId);
     return restartResumeHold({
-      continueEnabled: continueAfterRestartEnabled(),
+      // An accepted update is its own restart: the setting alone decides it.
+      continueEnabled: options.acceptedUpdate ? continueAfterRestartEnabled() : continueAfterThisRestart(),
       recent: options.recent ?? withinRestartResumeAge(row?.endedAt),
       awaitingUser: options.awaitingUser
         ?? (managed?.awaitingInputAtLoad === true || readPersistedState(sessionId)?.awaitingInput === true),
@@ -23597,7 +23580,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     customResume?: { prompt: string; reason: string },
   ): void => {
-    if (!continueAfterRestartEnabled()) return;
+    if (!continueAfterThisRestart()) return;
     const restartContinue = customResume === undefined;
     const resume = customResume ?? {
       prompt: chatRestartResumePrompt(brainRestartCause()),
@@ -23660,6 +23643,24 @@ export function createAgentChatService(args: {
         });
       }
     })();
+  };
+
+  /**
+   * Reopen a chat's row for a turn this process is about to run, and stamp
+   * this process as its owner. The owner is stamped at creation, so after a
+   * restart the row still named the brain before it; once the registry forgot
+   * that brain, the next restart's stale-row rescan (which closes only rows of
+   * owners it knows are dead) left the row `running`, the restart sweep never
+   * loaded the chat, and its cut turn was never resumed.
+   */
+  const reopenSessionRowForThisProcess = (sessionId: string): void => {
+    sessionService.reopen(sessionId);
+    const startedAt = processRegistry?.startedAt ?? null;
+    if (!processRegistry || !startedAt) return;
+    const row = sessionService.get(sessionId);
+    if (row && (row.ownerPid !== processRegistry.pid || row.ownerProcessStartedAt !== startedAt)) {
+      sessionService.setOwnerPid(sessionId, processRegistry.pid, startedAt);
+    }
   };
 
   /**
@@ -23787,7 +23788,7 @@ export function createAgentChatService(args: {
     markSessionIdleWithFreshCache(managed);
     managed.closed = false;
     managed.endedNotified = false;
-    sessionService.reopen(managed.session.id);
+    reopenSessionRowForThisProcess(managed.session.id);
     persistChatState(managed);
     // The same decision the notice above told the user.
     if (unsettled) return resumeHold === null ? "resume" : null;
@@ -30263,7 +30264,10 @@ export function createAgentChatService(args: {
         // idle teardown set `runtimeInvalidated`, the next persist dropped
         // `providerSessionId`, and each follow-up message started a brand-new
         // OpenCode session that had to rediscover the whole thread.
-        || managed.runtime.kind === "opencode")
+        || managed.runtime.kind === "opencode"
+        // Droid resumes a session by id on a new worker (`resumeSessionId`);
+        // the same loss as OpenCode's applied here until it was listed.
+        || managed.runtime.kind === "droid")
       && reasonAllowsPreservation;
     // Codex keeps its thread id on the session, not in runtime state, and the
     // next send resumes that thread (a failed resume throws rather than opening
@@ -30467,6 +30471,7 @@ export function createAgentChatService(args: {
         rt,
         "Droid tool approval was cancelled because the session closed.",
       );
+      if (preserveProviderResumeState) persistChatState(managed);
       releaseDroidSdkConnection(rt.poolKey, rt.poolGeneration);
       managed.runtime = null;
     }
@@ -58884,9 +58889,6 @@ export function createAgentChatService(args: {
       macDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "darwin",
       windowsDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "win32",
       linuxDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "linux",
-      // The chat runs in this brain, on the lane's machine, so the skill rule
-      // for this host also decides whether `ade apple` can run.
-      appleAvailable: !adeHostWithheldAgentSkills().includes("ade-apple"),
     });
   };
 
@@ -59038,8 +59040,9 @@ export function createAgentChatService(args: {
     // in-memory status is active/idle, so the `=== "ended"` reset below never
     // fires for a row a liveness reconcile wrongly marked `detached`, and the
     // session shows "Ended" while the chat keeps streaming. Idempotent, so it
-    // is called unconditionally; the in-memory reset stays separate.
-    sessionService.reopen(sessionId);
+    // is called unconditionally; the in-memory reset stays separate. This
+    // process runs the turn, so it owns the row from here.
+    reopenSessionRowForThisProcess(sessionId);
 
     if (managed.session.status === "ended") {
       setSessionIdle(managed);
@@ -66335,6 +66338,12 @@ export function createAgentChatService(args: {
   ): Promise<void | AgentChatSteerResult> {
     assertChatNotMovedAway(args.sessionId, "send_message");
     assertPlainPromptText(args);
+    // A send is activity from the moment it arrives: the pre-steps below
+    // (taking the chat back, mention expansion, lane recovery) await while the
+    // chat still reads idle, and the unattended release reads this clock, so
+    // without it a release can tear down the runtime this send is about to use.
+    const sending = managedSessions.get(args.sessionId);
+    if (sending) sending.lastActivityTimestamp = Date.now();
     const { clientSubmittedAtMs, ...argsWithoutTiming } = args;
     args = argsWithoutTiming;
     const timedManaged = managedSessions.get(args.sessionId);
@@ -66635,7 +66644,9 @@ export function createAgentChatService(args: {
     rawArgs: AgentChatSendArgs,
     options?: SendMessageOptions,
   ): Promise<void | AgentChatSteerResult> {
-    // Its callers (`sendMessage`) already took the chat back.
+    // Its callers (`sendMessage`) already took the chat back and marked the
+    // send as activity; this is the same entry point every internal sender
+    // uses, so the clock is already right here.
     assertChatRuntimeOwnedHere(rawArgs.sessionId, "send to");
     // Composer @-mention chips expand here, before any routing decision, so a
     // fresh turn, a steer, and every provider all receive the same pointer
@@ -73307,7 +73318,7 @@ export function createAgentChatService(args: {
     } catch (error) {
       logger.warn("agent_chat.cli_reopen_read_failed", { source: "crash", error: errorText(error) });
     }
-    const hold = !continueAfterRestartEnabled()
+    const hold = !continueAfterThisRestart()
       ? "disabled"
       : args.isRuntimeInRestartLoop?.() === true ? "restart_loop" : null;
     if (plannedChats.length > 0) {
@@ -77414,6 +77425,67 @@ export function createAgentChatService(args: {
     chatLogStateFacts.clear();
   };
 
+  /**
+   * The brain calls this while no desktop window and no other machine is
+   * connected (`brainIdleMemory.ts`). Nobody can read a reply then, so a
+   * finished chat does not need its provider process for the full idle window:
+   * every runtime quiet for `idleMs` goes now, by the same `idle_ttl` teardown
+   * as the timed sweep, and its next send resumes the same conversation. The
+   * sweep's guards hold, and are stricter here: a running turn, a send whose
+   * turn has not started yet, a pending question or approval, and any claimed
+   * background work (stale or not) keep their process. Draft warmups go too:
+   * no window is left to send them.
+   * Returns how many went, and how many live runtimes stayed (the caller asks
+   * again while that is more than zero).
+   */
+  const releaseUnattendedRuntimes = (idleMs: number): { released: number; kept: number } => {
+    const now = Date.now();
+    let released = 0;
+    let kept = 0;
+    for (const [, managed] of managedSessions) {
+      if (!managed.runtime || managed.closed) continue;
+      if (
+        managed.session.status !== "idle"
+        // A send accepted here has not started its turn yet, so the chat can
+        // still read idle: releasing now would end the turn that send is
+        // starting (a scheduled or automated send can arrive with no window
+        // open). `releaseChatRuntime` refuses on the same marker.
+        || Boolean(managed.turnAcceptedAt)
+        || hasLivePendingInput(managed)
+        || hasRuntimeActiveWorkload(managed.runtime)
+        || now - managed.lastActivityTimestamp < idleMs
+      ) {
+        kept += 1;
+        continue;
+      }
+      try {
+        teardownRuntime(managed, "idle_ttl");
+        released += 1;
+      } catch (error) {
+        kept += 1;
+        logger.warn("agent_chat.unattended_teardown_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    for (const sessionId of [...draftWarmups.keys()]) {
+      releaseDraftWarmup(sessionId, "unattended");
+      released += 1;
+    }
+    // Shared provider processes no chat holds any more: OpenCode servers wait
+    // 10 min and ACP agents 60 s after their last chat before they exit. A
+    // hold released above that ends later goes at the next pass, or in its
+    // own window.
+    try {
+      released += releaseUnusedOpenCodeServers(logger);
+      released += (args.acpSessionPool ?? acpSessionPool).disposeIdle(null, "nobody connected");
+    } catch (error) {
+      logger.warn("agent_chat.unattended_pool_release_failed", { error: getErrorMessage(error) });
+    }
+    return { released, kept };
+  };
+
   // --- Session inactivity cleanup ---
   const sessionCleanupTimer = setInterval(() => {
     const now = Date.now();
@@ -77552,7 +77624,7 @@ export function createAgentChatService(args: {
   };
   const runRestartRecoverySweep = async (): Promise<void> => {
     await scheduledWorkReady;
-    if (restartRecoverySweepStopped || !continueAfterRestartEnabled()) return;
+    if (restartRecoverySweepStopped || !continueAfterThisRestart()) return;
     const rows = recentDetachedChatRows(Date.now() - RESTART_RESUME_MAX_AGE_MS)
       .slice(0, RESTART_RECOVERY_SWEEP_LIMIT);
     for (const row of rows) {
@@ -83941,6 +84013,7 @@ ${schedule.prompt}`
     applyFastModePolicy,
     releaseQuietChatHistory,
     releaseIdleStateCaches,
+    releaseUnattendedRuntimes,
     getPermissionCeiling: resolvePermissionCeiling,
     // A caller's request, never `automatic`: only this service starts those.
     regenerateSessionMetadata: (args: AgentChatRegenerateSessionMetadataArgs) => {

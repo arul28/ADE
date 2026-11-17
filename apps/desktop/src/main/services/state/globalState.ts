@@ -213,10 +213,17 @@ export function writeGlobalState(filePath: string, state: GlobalState): void {
   let tempPath: string | null = null;
   let fd: number | null = null;
   try {
+    const serialized = `${JSON.stringify(state, null, 2)}\n`;
+    // The file already holds this state (the window restores the tabs it
+    // saved): two fsyncs on the main process would change nothing on disk.
+    try {
+      if (fs.readFileSync(filePath, "utf8") === serialized) return;
+    } catch {
+      // Missing or unreadable: write it.
+    }
     const dir = path.dirname(filePath);
     fs.mkdirSync(dir, { recursive: true });
     tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
-    const serialized = `${JSON.stringify(state, null, 2)}\n`;
     fd = fs.openSync(tempPath, "w");
     fs.writeFileSync(fd, serialized, "utf8");
     fs.fsyncSync(fd);

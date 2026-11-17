@@ -16,7 +16,10 @@ import { showToast } from "./toast/toastStore";
 import { Dialog } from "../ui/dialog";
 import { openWhatsNewAfterUpdate } from "../announcements/whatsNewEvents";
 
-const RUNTIME_SKEW_REFRESH_MS = 15_000;
+// Main pushes a runtime status on every connect, reconnect and skew change,
+// and the skew is set only on those paths, so the push is what keeps this
+// current. The read on show and this slow backstop cover a missed push.
+const RUNTIME_SKEW_REFRESH_MS = 5 * 60_000;
 const RUNTIME_SKEW_TITLE = "ADE has an update. Update ADE before continuing.";
 // A check that fails before it reaches the network ends in milliseconds. Keep
 // "Checking…" up long enough to read, so Check again never looks like a no-op.
@@ -35,6 +38,15 @@ function progressLabel(progressPercent: number | null): string | null {
 function activeRuntimeVersionSkew(value: RuntimeVersionSkew | null | undefined): RuntimeVersionSkew | null {
   if (!value || value.state === "none") return null;
   return value;
+}
+
+function sameRuntimeVersionSkew(left: RuntimeVersionSkew | null, right: RuntimeVersionSkew | null): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return left.state === right.state
+    && left.appVersion === right.appVersion
+    && left.runtimeVersion === right.runtimeVersion
+    && left.message === right.message;
 }
 
 export function AutoUpdateControl() {
@@ -133,13 +145,19 @@ export function AutoUpdateControl() {
     let cancelled = false;
     let inFlight = false;
 
+    // The same skew again (each push and read is a new object) draws nothing new.
+    const applySkew = (value: RuntimeVersionSkew | null | undefined) => {
+      const next = activeRuntimeVersionSkew(value);
+      setRuntimeSkew((previous) => (sameRuntimeVersionSkew(previous, next) ? previous : next));
+    };
+
     const refresh = () => {
       if (cancelled || inFlight) return;
       inFlight = true;
       void window.ade.app.getInfo()
         .then((info) => {
           if (cancelled) return;
-          setRuntimeSkew(activeRuntimeVersionSkew(info.localRuntime?.versionSkew));
+          applySkew(info.localRuntime?.versionSkew);
         })
         .catch(() => {
           if (!cancelled) setRuntimeSkew(null);
@@ -157,11 +175,15 @@ export function AutoUpdateControl() {
       if (document.visibilityState === "visible") refresh();
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    const unsubscribeRuntimeStatus = window.ade.app.onRuntimeStatusChanged?.((status) => {
+      if (!cancelled) applySkew(status.versionSkew);
+    });
 
     return () => {
       cancelled = true;
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      unsubscribeRuntimeStatus?.();
     };
   }, []);
 

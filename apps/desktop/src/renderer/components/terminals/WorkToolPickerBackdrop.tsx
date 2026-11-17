@@ -3,6 +3,7 @@ import { selectEffectiveThemeId, useAppearanceStore, type ThemeId } from "../../
 import { resolveTheme, resolveThemeById, STYLESHEET_THEME_IDS } from "../../../shared/theme";
 import { cn } from "../ui/cn";
 import { createBackdropRenderer, type BackdropRenderer } from "./workToolPickerBackdropRenderer";
+import { acquireBackdropCanvas, returnBackdropCanvas } from "./backdropCanvasPool";
 import { useActiveScene } from "../../scene/useScene";
 import { backdropThemeFromScene, type ScenePalette } from "../../scene/scenePalette";
 import { SceneImageLayer } from "../../scene/SceneImageLayer";
@@ -79,7 +80,9 @@ export function WorkToolPickerBackdrop({
   /** The scene for a person who never picked one; see `useActiveScene`. */
   untouchedScene?: ScenePreferences;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // The canvas comes from the pool (`backdropCanvasPool.ts`) and is placed in
+  // this host, so a remount reuses the last backdrop's WebGL context.
+  const canvasHostRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<BackdropRenderer | null>(null);
   // The two stylesheet themes keep their hand-tuned ramps; every other theme
   // paints the mesh from its own accent, so the header and the start screen
@@ -129,8 +132,10 @@ export function WorkToolPickerBackdrop({
 
   useEffect(() => {
     if (webglRefused || showPicture || still || settling) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const host = canvasHostRef.current;
+    if (!host) return;
+    const canvas = acquireBackdropCanvas();
+    host.appendChild(canvas);
     const renderer = createBackdropRenderer({
       canvas,
       theme,
@@ -142,9 +147,16 @@ export function WorkToolPickerBackdrop({
       field,
       onRefused: () => setWebglRefused(true),
     });
+    if (!renderer) {
+      // Refused: the renderer has already released the context. A canvas with
+      // no context is a layer the compositor would carry for nothing.
+      canvas.remove();
+      return;
+    }
     rendererRef.current = renderer;
     return () => {
-      renderer?.dispose();
+      renderer.dispose({ keepContext: true });
+      returnBackdropCanvas(canvas);
       if (rendererRef.current === renderer) rendererRef.current = null;
     };
   }, [theme, palette, override, reduceMotion, clockOrigin, field, webglRefused, motionEpoch, showPicture, still, settling]);
@@ -166,12 +178,7 @@ export function WorkToolPickerBackdrop({
       {showPicture && scene.kind === "image" ? (
         <SceneImageLayer scene={scene} />
       ) : webglRefused || still || settling ? null : (
-        <canvas
-          ref={canvasRef}
-          data-backdrop-canvas=""
-          className="absolute inset-0"
-          style={{ display: "block", width: "100%", height: "100%" }}
-        />
+        <div ref={canvasHostRef} className="absolute inset-0" />
       )}
     </div>
   );

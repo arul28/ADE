@@ -327,6 +327,7 @@ import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
 import { claudePassVaultFromStore } from "../adeCloud/claudePassStore";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
 import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
+import { cloudDiskGrowHost } from "../adeCloud/cloudDiskGrowHost";
 import { createCloudBrainMaker, type CloudBrainMaker, type CloudBrainMakerBase } from "../adeCloud/cloudBrainMaker";
 import {
   cloudLaneLaunchRecordsDir,
@@ -2593,8 +2594,13 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     delete: async (args?: DeleteLaneArgs): Promise<DeleteLaneResult> => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const teardownEnv = await buildLaneEnvTeardown(runtime, laneId, { includeArchived: true });
+      const release = () => releaseLaneRuntimeResources(runtime, laneId);
+      // A background delete answers before it is done: release when it is.
+      if (args?.background === true) {
+        return runtime.laneService.delete({ ...args, laneId }, { teardownEnv, onDeleted: release });
+      }
       const result = await runtime.laneService.delete({ ...(args ?? {}), laneId }, { teardownEnv });
-      releaseLaneRuntimeResources(runtime, laneId);
+      release();
       return result;
     },
     getLeftoverWorktree: async (args?: { laneId?: string }) => {
@@ -4625,6 +4631,9 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
           },
         }
       : null,
+    // On an ADE Cloud computer: its own disk grower, registered by the brain.
+    diskGrow: cloudDiskGrowHost,
+    projectRoot: runtime.projectRoot ?? null,
     analytics: runtime.productAnalyticsService ?? null,
     logger: runtime.logger,
   });

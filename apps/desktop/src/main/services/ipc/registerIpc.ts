@@ -1187,8 +1187,8 @@ let appProcessMetricRowsCollector: ProcessMetricRowsCollector | null = null;
 /**
  * The machine-wide `ps` behind a resource sample costs Electron main about
  * 17 ms of CPU (a process spawn plus a parse of every process on the
- * machine). The top bar's calm check runs every 10 s only to decide whether
- * to show its pressure chip, so while the last sample's process trees were
+ * machine). The top bar's calm check runs on this same period only to decide
+ * whether to show its pressure chip, so while the last sample's process trees were
  * far below every pressure line (see `isCalmProcessSample`), a calm-ok caller
  * reuses that `ps` for this long. Electron's own numbers and system memory
  * are read fresh on every call; a fresh caller (Settings > Health) always

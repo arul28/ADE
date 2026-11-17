@@ -708,6 +708,7 @@ export function WorkSidebar({
       canChoose={catalogState.canChoose}
       viewOnly={catalogState.viewOnly}
       chooseUnavailableReason={catalogState.chooseUnavailableReason}
+      pendingMachineKey={openTile.kind ? catalogState.pendingMachineKeys[openTile.kind] ?? null : null}
       canTellAgent={handoff.canTellAgent}
       told={handoff.told}
       onChooseMachine={catalogState.chooseDeviceMachine}

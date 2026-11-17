@@ -29,6 +29,15 @@ import { summarizeRuntimeActivity } from "./runtimeWorkSummary";
  *    heap by itself: in a probe, an idle Node process kept every freed page
  *    for the whole minute, and one collection took it from 316 to 105 MB.
  *
+ * Beside the two stages, idle agent processes: while no desktop window and no
+ * other machine is connected (and no device is on a project's sync host), a
+ * chat whose turn ended at least `UNATTENDED_AGENT_IDLE_MS` ago gives back its
+ * provider process (`releaseUnattendedRuntimes`) instead of keeping it for the
+ * full three-minute idle window. Nobody can read or answer it then, and each
+ * process is a provider CLI or SDK worker of 100 to 500 MB. A running turn,
+ * a pending approval and background work keep theirs. The next send resumes
+ * the same conversation from a cold start.
+ *
  * Nothing here stops a service or drops data: project scopes stay open (their
  * PR polling, automations, Linear ingress, push and sync host keep working),
  * and every dropped piece rebuilds on its next use. Stage 2 waits while a
@@ -50,6 +59,14 @@ const RETRY_WHILE_BUSY_MS = 60_000;
  * background must not cost a full collection each time.
  */
 const MIN_IDLE_RELEASE_INTERVAL_MS = 10 * 60_000;
+/**
+ * How long a finished chat keeps its provider process once nobody is
+ * connected. Long enough for a window reload or a phone reconnect to come back
+ * first; short enough that 60 s after the app quits, no idle agent is left.
+ */
+const UNATTENDED_AGENT_IDLE_MS = 30_000;
+/** How often the unattended release looks again while a chat still runs. */
+const UNATTENDED_AGENT_RECHECK_MS = 15_000;
 /** `ADE_BRAIN_IDLE_MEMORY_RELEASE=0` turns stage 2 off, for a comparison run. */
 const IDLE_RELEASE_ENV = "ADE_BRAIN_IDLE_MEMORY_RELEASE";
 
@@ -57,6 +74,7 @@ let desktopClients = 0;
 let remoteClients = 0;
 let historyTimer: ReturnType<typeof setTimeout> | null = null;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
+let agentTimer: ReturnType<typeof setTimeout> | null = null;
 let latestSources: IdleMemorySources | null = null;
 let lastIdleReleaseAtMs = Number.NEGATIVE_INFINITY;
 let desktopLeftSinceIdleRelease = false;
@@ -73,6 +91,8 @@ export function noteUserClientOpened(kind: UserClientKind): void {
   }
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = null;
+  if (agentTimer) clearTimeout(agentTimer);
+  agentTimer = null;
 }
 
 /**
@@ -93,6 +113,61 @@ export function noteUserClientClosed(kind: UserClientKind, sources: IdleMemorySo
     historyTimer.unref?.();
   }
   if (desktopClients === 0 && remoteClients === 0 && !idleTimer) scheduleIdleRelease(RELEASE_DELAY_MS);
+  if (desktopClients === 0 && remoteClients === 0 && !agentTimer) scheduleUnattendedAgentRelease(RELEASE_DELAY_MS);
+}
+
+/**
+ * Projects opened while no client is connected (the brain reopens the
+ * projects of chats that were running when the last brain stopped). No
+ * disconnect starts the unattended release then, so start it here; a client
+ * that connects first stops it as usual.
+ */
+export function noteProjectsOpenedWithoutClient(sources: IdleMemorySources): void {
+  latestSources = sources;
+  if (desktopClients === 0 && remoteClients === 0 && !agentTimer) scheduleUnattendedAgentRelease(RELEASE_DELAY_MS);
+}
+
+/**
+ * Release the provider processes of finished chats while nobody is connected.
+ * A device on a project's sync host counts as connected (it reads chats
+ * through the sync host, not through a channel). Any client that connects
+ * stops it.
+ *
+ * The pass keeps looking while a project is open, because nothing else tells
+ * this file that a chat started: a scheduled wake, an automation or a webhook
+ * can run a chat with no window and no client, and that chat must get the same
+ * release as one that was already open. With no project open nothing can start
+ * a chat, so the timer stops there.
+ */
+function scheduleUnattendedAgentRelease(delayMs: number): void {
+  agentTimer = setTimeout(() => {
+    agentTimer = null;
+    if (desktopClients > 0 || remoteClients > 0 || !latestSources) return;
+    const runtimes = safeList(latestSources);
+    if (anySyncDeviceConnected(runtimes)) {
+      scheduleUnattendedAgentRelease(UNATTENDED_AGENT_RECHECK_MS);
+      return;
+    }
+    let released = 0;
+    let kept = 0;
+    for (const runtime of runtimes) {
+      try {
+        const result = runtime.agentChatService?.releaseUnattendedRuntimes?.(UNATTENDED_AGENT_IDLE_MS);
+        released += result?.released ?? 0;
+        kept += result?.kept ?? 0;
+      } catch {
+        // A scope mid-teardown keeps its processes until its own teardown; look again.
+        kept += 1;
+      }
+    }
+    if (released > 0) machineLogger()?.info("brain.unattended_agents_released", { released, kept });
+    // Look again while a project can still run a chat: the pass above also
+    // frees a shared provider process (an OpenCode server, an ACP agent) that
+    // the released chats held, and one released at the end of its hold goes at
+    // the next pass.
+    if (runtimes.length > 0) scheduleUnattendedAgentRelease(UNATTENDED_AGENT_RECHECK_MS);
+  }, delayMs);
+  agentTimer.unref?.();
 }
 
 function scheduleIdleRelease(delayMs: number): void {

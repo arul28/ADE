@@ -1,6 +1,6 @@
 ---
 name: ade-apple
-description: Use this skill when you need to see an iOS app or an iOS SwiftUI view actually running on a simulator — finding or creating the lane's device, booting and streaming it, driving it by element query, screenshotting, recording, capturing proof, or rendering a SwiftUI preview — via `ade apple`.
+description: "iOS app or SwiftUI view running on a simulator via `ade apple`: find or create the lane's device, boot and stream it, drive by element query, screenshots, recordings, proof, SwiftUI previews."
 ---
 
 # ADE Apple Development

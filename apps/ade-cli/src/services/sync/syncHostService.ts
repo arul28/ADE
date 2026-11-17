@@ -3702,10 +3702,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    * run. Because capability only ever begins at one of those call sites, the
    * wait from "this peer can receive" to "the pump ran for it" is at most one
    * active interval — the same bound the free-running interval gave.
+   *
+   * With no socket at all the pump walks an empty set, so no timer runs.
+   * A new socket and an adopted peer call this at once, which arms it again.
    */
   function wakePollPump(): void {
     // Guests never get changesets: a guests-only host has nothing to pump.
     if (disposed || guestsOnly) return;
+    if (peers.size === 0) {
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = null;
+      pollTimerIntervalMs = 0;
+      return;
+    }
     const intervalMs = pollPumpHasReceivableWork() ? pollIntervalMs : pollIdleIntervalMs;
     if (pollTimer && pollTimerIntervalMs === intervalMs) return;
     if (pollTimer) clearTimeout(pollTimer);
@@ -3797,23 +3806,66 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (dbVersionError) throw dbVersionError;
   }
   // Brain status never reaches a guest, so a guests-only host has none to send.
-  const brainStatusTimer = guestsOnly ? null : setInterval(() => {
-    broadcastBrainStatus({ periodic: true });
-  }, brainStatusIntervalMs);
+  // With no socket there is nobody to send it to, and a peer that connects gets
+  // a fresh status from its own handshake, so this timer runs only while a
+  // socket is connected (`wakePeerTimers`).
+  let brainStatusTimer: ReturnType<typeof setInterval> | null = null;
   // Each check reads the account status and asks for an access token. With a
   // peer connected it runs every second, so a sign-out or account switch
   // closes that peer at once. With none, nothing is held open by the lease:
   // every connect and pairing reads the lease itself first
   // (`refreshAccountLease`, `captureAccountAuthorization`), so the idle check
-  // only revokes account-owned pairings ahead of time and runs every 15 s.
+  // only revokes account-owned pairings ahead of time and runs every 15 s,
+  // on a timer of that period rather than a one-second timer that skips.
+  const accountLeasePollMs = Math.max(250, Math.floor(args.accountLeasePollMs ?? 1_000));
   let lastAccountLeaseCheckAtMs = 0;
-  const accountLeaseTimer = setInterval(() => {
-    const nowMs = Date.now();
-    if (peers.size === 0 && nowMs - lastAccountLeaseCheckAtMs < ACCOUNT_LEASE_IDLE_CHECK_MS) return;
-    lastAccountLeaseCheckAtMs = nowMs;
-    void refreshAccountLease();
-  }, Math.max(250, Math.floor(args.accountLeasePollMs ?? 1_000)));
-  accountLeaseTimer.unref?.();
+  let accountLeaseTimer: ReturnType<typeof setInterval> | null = null;
+  let accountLeaseTimerIdle = false;
+  function armAccountLeaseTimer(): void {
+    if (disposed) return;
+    const idle = peers.size === 0;
+    if (accountLeaseTimer && accountLeaseTimerIdle === idle) return;
+    if (accountLeaseTimer) clearInterval(accountLeaseTimer);
+    accountLeaseTimerIdle = idle;
+    accountLeaseTimer = setInterval(() => {
+      const nowMs = Date.now();
+      if (peers.size === 0 && !idle) {
+        // The last peer left: the idle cadence from here, and this check only
+        // when the idle period has passed since the last one.
+        armAccountLeaseTimer();
+        if (nowMs - lastAccountLeaseCheckAtMs < ACCOUNT_LEASE_IDLE_CHECK_MS) return;
+      } else if (peers.size > 0 && idle) {
+        armAccountLeaseTimer();
+      }
+      lastAccountLeaseCheckAtMs = nowMs;
+      void refreshAccountLease();
+    }, idle ? ACCOUNT_LEASE_IDLE_CHECK_MS : accountLeasePollMs);
+    accountLeaseTimer.unref?.();
+  }
+  /**
+   * Moves every per-peer timer to the cadence the connected sockets call for.
+   * A new socket and an adopted peer call it at once; each timer also calls it
+   * from its own tick when it finds the last socket gone.
+   */
+  function wakePeerTimers(): void {
+    wakePollPump();
+    armAccountLeaseTimer();
+    if (disposed || guestsOnly) return;
+    if (peers.size === 0) {
+      if (brainStatusTimer) clearInterval(brainStatusTimer);
+      brainStatusTimer = null;
+      return;
+    }
+    if (brainStatusTimer) return;
+    brainStatusTimer = setInterval(() => {
+      if (peers.size === 0) {
+        wakePeerTimers();
+        return;
+      }
+      broadcastBrainStatus({ periodic: true });
+    }, brainStatusIntervalMs);
+  }
+  armAccountLeaseTimer();
   lastAccountLeaseCheckAtMs = Date.now();
   void refreshAccountLease();
   const chatEventSubscription = args.agentChatService?.subscribeToEvents(
@@ -4003,8 +4055,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     peers.add(peer);
     // A new socket may become a receivable peer at its hello; wake the pump so
     // its first catch-up runs on the active cadence rather than waiting out an
-    // idle interval.
-    wakePollPump();
+    // idle interval. The first socket also starts the per-peer timers.
+    wakePeerTimers();
     peer.authTimeout = setTimeout(() => {
       if (disposed || peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) return;
       args.logger.warn("sync_host.auth_timeout", {
@@ -4383,8 +4435,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     runPollPump();
     // Adopted peers arrive already authenticated and subscribed; the cadence
-    // this host inherited may be the idle one.
-    wakePollPump();
+    // this host inherited may be the idle one, or no timer at all.
+    wakePeerTimers();
   }
 
   let detachSharedListener: (() => void) | null = null;
@@ -9876,9 +9928,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       pollTimer = null;
       clearInterval(heartbeatTimer);
       if (brainStatusTimer) clearInterval(brainStatusTimer);
+      brainStatusTimer = null;
       if (ackBrainStatusTimer) clearTimeout(ackBrainStatusTimer);
       ackBrainStatusTimer = null;
-      clearInterval(accountLeaseTimer);
+      if (accountLeaseTimer) clearInterval(accountLeaseTimer);
+      accountLeaseTimer = null;
       rosterFanout.dispose();
       unpublishLanDiscovery();
       unregisterTailnetRoute();

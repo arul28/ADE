@@ -1,6 +1,7 @@
 import type { ChatDeviceSources, DeviceKind } from "../../../shared/types/deviceSources";
 import { deviceKindRunsOnPlatform } from "../../../shared/types/deviceSources";
 import { sameMachineKey } from "../../../shared/machineAddress";
+import { compareTextInsensitive } from "../../../shared/formatting";
 import { remoteMachineHostPlatform } from "../../../shared/machineIdentity";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
 import { isRemoteWorkCopyUse, type RemoteWorkCopyUse, type RemoteWorkDeviceFlag } from "../../../shared/chatRemoteWork";
@@ -98,7 +99,18 @@ export function machinesForKind(
   const able = machines.filter((machine) => deviceKindRunsOnPlatform(kind, machine.platform)
     && (machine.online || Boolean(chosen && sameMachineKey(chosen.key, machine.key))));
   if (chosen && !chosen.isChat && !able.some((machine) => sameMachineKey(machine.key, chosen.key))) able.unshift(chosen);
-  return able;
+  // One order every time the tool opens: the chat's own machine first, then
+  // this computer, then the rest by name. The directory's order moves as
+  // machines report in, and the row moved with it.
+  const rank = (machine: ToolMachine) => (machine.isChat ? 0 : machine.isViewer ? 1 : 2);
+  return able
+    .map((machine, index) => ({ machine, index }))
+    .sort((a, b) => rank(a.machine) - rank(b.machine)
+      || compareTextInsensitive(a.machine.name, b.machine.name)
+      // Two machines with one name: their keys keep them in one order.
+      || (a.machine.key < b.machine.key ? -1 : a.machine.key > b.machine.key ? 1 : 0)
+      || a.index - b.index)
+    .map(({ machine }) => machine);
 }
 
 /** The machine this chat's device of `kind` is on: its choice, else the chat's own machine. */

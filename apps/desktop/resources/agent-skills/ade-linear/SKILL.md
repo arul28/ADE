@@ -1,6 +1,6 @@
 ---
 name: ade-linear
-description: Use this skill whenever your task is a Linear issue (or an ADE chat/lane launched with a Linear issue attached) and you need to read or update that issue — change its workflow state, comment progress, assign it, add a label, or read its comments. ADE routes all of this through its own Linear connection via the `ade linear` CLI, so you have effective Linear write access with no API key. If Linear is not connected, ask with `ade integrations connect linear`.
+description: "Any Linear issue task, also a chat or lane launched with one: read it or its comments, change its state, comment, assign, label, via `ade linear` (ADE's own connection, no API key). Not connected: `ade integrations connect linear`."
 ---
 
 # ADE Linear

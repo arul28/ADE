@@ -50,6 +50,17 @@ export type SharedSyncListenerPortChange = {
  * wildcard, at any time after startup. One local HTTP request per interval.
  */
 export const SYNC_LISTENER_SELF_HEAL_INTERVAL_MS = 30_000;
+/**
+ * After a program that is not ADE answers on 127.0.0.1:<port> (a dev server, a
+ * benchmark's replay server), the port is asked again only after these waits,
+ * one step longer each time the same program still answers. Every request is
+ * a request to that program, and while it holds the address the side door
+ * serves in its place, so asking every self-check changes nothing. A new bind
+ * on the port always asks. Another ADE (a stale brain, another channel's
+ * brain) and a silent port are asked every self-check, as before: the stale
+ * brain is expected to go, and a timeout says nothing about who owns the port.
+ */
+export const SYNC_LOOPBACK_FOREIGN_RECHECK_MS = [60_000, 5 * 60_000, 15 * 60_000] as const;
 /** Ports above the shadowed one a self-heal move tries before an OS-assigned one. */
 const SELF_HEAL_PORT_SCAN = SYNC_PORT_SCAN_ABOVE;
 
@@ -209,6 +220,9 @@ export function createSyncListenerPortController(
   // keep the public port; Tailscale Serve forwards here instead.
   // `mainPort` is the listener port it was opened for.
   let sideDoor: { port: number; mainPort: number; httpServer: http.Server; wsServer: WebSocketServer } | null = null;
+  // Per port, the last answer from a program that is not ADE and when to ask
+  // again (SYNC_LOOPBACK_FOREIGN_RECHECK_MS). Any other outcome clears it.
+  const foreignAnswers = new Map<number, { error: LoopbackShadowedError; step: number; recheckAtMs: number }>();
 
   /** Call every subscriber, from a snapshot; one that throws is logged, not fatal. */
   const emit = <T>(handlers: Iterable<(value: T) => void>, value: T, failureEvent: string): void => {
@@ -240,13 +254,37 @@ export function createSyncListenerPortController(
     }
   };
 
+  const rememberProbeOutcome = (port: number, error: LoopbackShadowedError | null): void => {
+    if (error?.answeredBy !== "foreign") {
+      foreignAnswers.delete(port);
+      return;
+    }
+    const previous = foreignAnswers.get(port);
+    const step = previous ? Math.min(previous.step + 1, SYNC_LOOPBACK_FOREIGN_RECHECK_MS.length - 1) : 0;
+    foreignAnswers.set(port, { error, step, recheckAtMs: Date.now() + SYNC_LOOPBACK_FOREIGN_RECHECK_MS[step]! });
+  };
+
+  /** The held answer of a program that is not ADE on `port`, while its wait runs. */
+  const heldForeignAnswer = (port: number): LoopbackShadowedError | null => {
+    const held = foreignAnswers.get(port);
+    return held && Date.now() < held.recheckAtMs ? held.error : null;
+  };
+
+  /** The identity probe of a listener port, remembering who answered. */
+  const probeListenerPort = async (port: number): Promise<SyncLoopbackProbeResult> => {
+    try {
+      const result = await assertAdeLoopbackListener(port, expectedLoopbackNonce, loopbackProbe);
+      rememberProbeOutcome(port, null);
+      return result;
+    } catch (error) {
+      if (isLoopbackShadowedError(error)) rememberProbeOutcome(port, error);
+      throw error;
+    }
+  };
+
   const validateLoopback = async (port: number): Promise<void> => {
     try {
-      const result = await assertAdeLoopbackListener(
-        port,
-        expectedLoopbackNonce,
-        loopbackProbe,
-      );
+      const result = await probeListenerPort(port);
       setLoopbackValidationStatus({
         port,
         loopbackAdeValidated: true,
@@ -338,7 +376,7 @@ export function createSyncListenerPortController(
     createServerPair,
     isClosed: () => closed,
     validateLoopback,
-    assertLoopback: (port) => assertAdeLoopbackListener(port, expectedLoopbackNonce, loopbackProbe),
+    assertLoopback: (port) => probeListenerPort(port),
     findShadowedLocalAddress: (port) => findShadowedLocalAddress(port),
     inspectPort,
     activeServicePid: deps.activeServicePid,
@@ -423,6 +461,12 @@ export function createSyncListenerPortController(
     if (closed || fromPort == null || server == null || httpServer == null) return null;
     const target = Math.max(1, Math.min(65_535, Math.floor(port)));
     if (fromPort === target) return fromPort;
+    // A program that is not ADE answered on the target lately: binding it
+    // again would only ask that program again. Wait out its recheck time.
+    if (heldForeignAnswer(target)) {
+      logger.debug?.("sync_listener.canonical_port_still_shadowed", { port: target, from: fromPort });
+      return null;
+    }
     const previousServer = server;
     const previousHttp = httpServer;
     let nextPort: number;
@@ -588,8 +632,12 @@ export function createSyncListenerPortController(
     // port is the expected state, and writing "not validated" for a moment on
     // every check would make Tailscale unpublish and republish each time.
     let shadow: LoopbackShadowedError;
+    const heldShadow = heldForeignAnswer(port);
     try {
-      const result = await assertAdeLoopbackListener(port, expectedLoopbackNonce, loopbackProbe);
+      // While a program that is not ADE holds the address, its last answer
+      // stands until its recheck time; the side door below is still checked.
+      if (heldShadow) throw heldShadow;
+      const result = await probeListenerPort(port);
       // A verdict about a port that is no longer live describes nothing.
       if (closed || currentPort() !== port) return false;
       setLoopbackValidationStatus({

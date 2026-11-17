@@ -21,6 +21,7 @@ import {
   type DiskPressureSnapshot,
   type DiskPressureThresholds,
 } from "../../../../desktop/src/main/services/storage/diskPressure";
+import type { CloudDiskGrowChat } from "../../../../desktop/src/main/services/adeCloud/cloudDiskGrowHost";
 
 /** After a grow started the computer restarts; a "growing" note older than this is over. */
 export const CLOUD_DISK_GROW_STARTED_COOLDOWN_MS = 10 * 60_000;
@@ -30,9 +31,31 @@ export const CLOUD_DISK_GROW_STARTED_COOLDOWN_MS = 10 * 60_000;
  * computer. Gone once the disk has room again.
  */
 export type CloudDiskGrowState =
-  /** `fromBytes`: the filesystem's size when the grow was asked for, so a later read can tell whether it grew yet. */
-  | { v: 1; state: "growing"; toGb: number; at: number; instanceId?: string; fromBytes?: number }
+  /**
+   * `fromBytes`: the filesystem's size when the grow was asked for, so a later read can tell whether it grew yet.
+   * `fromGb`, `origin`, `reason`: what asked for it. `chats`: the chats told before the restart, told
+   * again once the computer is back (`cloudDiskGrow.ts` `afterRestart`); gone once told.
+   */
+  | {
+    v: 1;
+    state: "growing";
+    toGb: number;
+    at: number;
+    instanceId?: string;
+    fromBytes?: number;
+    fromGb?: number;
+    origin?: CloudDiskGrowOrigin;
+    reason?: string;
+    chats?: CloudDiskGrowChat[];
+    /** The chats' grow card, updated in place after the restart. */
+    cardId?: string;
+    /** The lane size-change job that wrote this note (`noteOutsideGrow`): only that job's cleanup removes it. */
+    jobId?: string;
+  }
   | { v: 1; state: "refused"; reason: string; wayOut: string; at: number; instanceId?: string };
+
+/** What asked for a grow: the idle point or the guard (`auto`), a lane's setup, an agent, the Android emulator's first start. */
+export type CloudDiskGrowOrigin = "auto" | "setup" | "agent" | "android" | "person";
 
 export function cloudDiskGrowStatePath(adeHome: string): string {
   return path.join(adeHome, "cloud", "disk-grow.json");

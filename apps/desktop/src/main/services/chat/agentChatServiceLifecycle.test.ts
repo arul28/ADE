@@ -68,6 +68,161 @@ describe("createAgentChatService", () => {
     });
   });
 
+  describe("releaseUnattendedRuntimes", () => {
+    /**
+     * The brain calls this with a 30 s window while no window, remote client or
+     * paired device is connected. Each row puts one chat in the state a guard
+     * exists for, ages its activity past that window, and asks for the release
+     * at the exact moment the guard applies: only a finished chat may give its
+     * process back. A teardown here ends the turn, the question or the send the
+     * row set up, so a wrong answer loses work rather than time.
+     *
+     * The row owns the call, not the test body: the preparing row must release
+     * in the same task as its send, before any await lets the send dispatch.
+     */
+    type ReleaseResult = { released: number; kept: number };
+    type ReleaseContext = {
+      /** Move the activity clock past the release window, without touching timers. */
+      ageActivity: () => void;
+      release: (idleMs?: number) => ReleaseResult;
+    };
+    type ReleaseRow = {
+      name: string;
+      expects: ReleaseResult;
+      prepare: (
+        service: ReturnType<typeof createService>["service"],
+        sessionId: string,
+        context: ReleaseContext,
+      ) => Promise<{ result: ReleaseResult; cleanup: () => Promise<void> }>;
+    };
+    const RELEASE_WINDOW_MS = 30_000;
+
+    /** A Claude turn held open after dispatch: its stream finishes when `open` runs. */
+    function heldTurn() {
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => { open = resolve; });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await gate;
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      }) as any);
+      return { open };
+    }
+
+    it.each<ReleaseRow>([
+      {
+        name: "a finished chat",
+        expects: { released: 1, kept: 0 },
+        prepare: async (_service, _sessionId, { ageActivity, release }) => {
+          ageActivity();
+          return { result: release(), cleanup: async () => {} };
+        },
+      },
+      {
+        name: "a chat that has not been quiet long enough",
+        expects: { released: 0, kept: 1 },
+        prepare: async (_service, _sessionId, { ageActivity, release }) => {
+          ageActivity();
+          // The brain always asks for 30 s; a 60 s ask is how a longer quiet
+          // window is expressed without waiting.
+          return { result: release(60_000), cleanup: async () => {} };
+        },
+      },
+      {
+        name: "a chat with a question waiting on the person",
+        expects: { released: 0, kept: 1 },
+        prepare: async (service, sessionId, { ageActivity, release }) => {
+          const controller = new AbortController();
+          void service.requestChatInput({
+            chatSessionId: sessionId,
+            title: "Which one?",
+            body: "Pick one.\n1. Alpha\n2. Beta",
+            signal: controller.signal,
+          }).catch(() => {});
+          await vi.waitFor(() => {
+            expect(service.listPendingInputs({ sessionId }).requests.length).toBeGreaterThan(0);
+          });
+          // The card is up and its own event is old, so only the pending-input
+          // guard can keep this chat.
+          ageActivity();
+          return { result: release(), cleanup: async () => controller.abort() };
+        },
+      },
+      {
+        name: "a chat whose turn is running",
+        expects: { released: 0, kept: 1 },
+        prepare: async (service, sessionId, { ageActivity, release }) => {
+          const { open } = heldTurn();
+          const send = service.sendMessage(
+            { sessionId, text: "Work while nobody is connected." },
+            { awaitDispatch: true },
+          );
+          await send;
+          // Dispatched and reading as active, not merely accepted: this row
+          // must be kept by the running turn, not by the send's clock.
+          const summary = await service.getSessionSummary(sessionId);
+          expect(summary?.status).toBe("active");
+          ageActivity();
+          return {
+            result: release(),
+            cleanup: async () => {
+              open();
+              await send.catch(() => {});
+            },
+          };
+        },
+      },
+      {
+        name: "a chat whose send is still preparing its turn",
+        expects: { released: 0, kept: 1 },
+        prepare: async (service, sessionId, { ageActivity, release }) => {
+          expect((await service.getSessionSummary(sessionId))?.status).toBe("idle");
+          expect((await service.getSessionSummary(sessionId))?.turnAcceptedAt).toBeUndefined();
+          const { open } = heldTurn();
+          ageActivity();
+          // Called and released in one task, with no await between: the send
+          // has started and its pre-steps are still running, so the chat reads
+          // idle with no accepted turn — the window that used to be released.
+          const send = service.sendMessage({
+            sessionId,
+            text: "Send while nobody is connected.",
+          }).catch(() => {});
+          const result = release();
+          return {
+            result,
+            cleanup: async () => {
+              open();
+              await send;
+            },
+          };
+        },
+      },
+    ])("keeps the process for $name", async (row) => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      // Only the clock moves: the service's own timers stay real, and the held
+      // stream above never needs one to finish.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      let cleanup: () => Promise<void> = async () => {};
+      try {
+        const prepared = await row.prepare(service, session.id, {
+          ageActivity: () => vi.setSystemTime(Date.now() + RELEASE_WINDOW_MS + 10_000),
+          release: (idleMs = RELEASE_WINDOW_MS) => service.releaseUnattendedRuntimes(idleMs),
+        });
+        cleanup = prepared.cleanup;
+        expect(prepared.result).toEqual(row.expects);
+      } finally {
+        vi.useRealTimers();
+        await cleanup();
+      }
+    });
+  });
+
   describe("dispose", () => {
     it("only writes the persisted chat summary when the session is explicitly disposed", async () => {
       vi.mocked(streamText).mockReturnValue({
@@ -1277,8 +1432,11 @@ describe("createAgentChatService", () => {
       claimedAt: "2026-10-09T03:00:00.000Z",
     };
 
-    const secondBrainOnChat = async (ownerAlive: boolean) => {
-      const first = createService();
+    const secondBrainOnChat = async (ownerAlive: boolean, options: { ownerMadeTheRow?: boolean } = {}) => {
+      // The row then names the owner too, as one made by that brain does.
+      const first = options.ownerMadeTheRow
+        ? createService({ processRegistry: { pid: OWNER.pid, startedAt: OWNER.startedAt, isProcessIdentityLive: () => true } })
+        : createService();
       const session = await first.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
       first.service.forceDisposeAll();
       writePersistedChatState(session.id, {
@@ -1291,7 +1449,7 @@ describe("createAgentChatService", () => {
         isProcessIdentityLive: (pid: number) => ownerAlive && pid === OWNER.pid,
       };
       const second = createService({ processRegistry, runtimeSocketPath: "/tmp/second-brain.sock" });
-      return { service: second.service, sessionId: session.id };
+      return { service: second.service, sessionService: second.sessionService, sessionId: session.id };
     };
 
     it.each([
@@ -1384,8 +1542,12 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("adopts the chat once its owner is gone", async () => {
-      const { service, sessionId } = await secondBrainOnChat(false);
+    it("adopts the chat once its owner is gone, and takes over its session row", async () => {
+      const { service, sessionService, sessionId } = await secondBrainOnChat(false, { ownerMadeTheRow: true });
+      // The restart's rescan closed the dead owner's row; the restart sweep
+      // loads the chat (its recovery reopens the row), then a message arrives.
+      sessionService.end({ sessionId, status: "detached" });
+      await service.getChatTranscript({ sessionId });
 
       await service.sendMessage({ sessionId, text: "continue" }, { awaitDispatch: true });
 
@@ -1395,6 +1557,14 @@ describe("createAgentChatService", () => {
         const owner = readPersistedChatState(sessionId).runtimeOwner;
         expect(owner?.brainId).not.toBe(OWNER.brainId);
         expect(owner?.socketPath).toBe("/tmp/second-brain.sock");
+      });
+      // If this brain dies mid-turn (a restart), the next brain's registry
+      // knows it, not the brain before it: the row must name this brain, or the
+      // stale-row rescan keeps it `running` and the restart never continues it.
+      expect(sessionService.get(sessionId)).toMatchObject({
+        status: "running",
+        ownerPid: process.pid,
+        ownerProcessStartedAt: "2026-10-09T03:30:00.000Z",
       });
       service.forceDisposeAll();
     });

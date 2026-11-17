@@ -438,6 +438,8 @@ struct CloudPhoneLimits: Decodable, Equatable {
   let machinesPerDay: Int
   let maxShape: String
   let preset: String
+  /// Paid extra disk agents nobody watches may use a month, in cents. Nil: up to the account's own extra-disk limit.
+  let extraDiskMonthCents: Int?
 }
 
 /// A make, copy or move the phone started in the background (`make_status`).

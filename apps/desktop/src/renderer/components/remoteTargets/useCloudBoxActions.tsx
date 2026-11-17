@@ -490,6 +490,8 @@ export function useCloudBoxActions(args: {
     pendingById,
     errorById,
     dismissError: (instanceId: string) => setError(instanceId, null),
+    /** Shows a failure of an action run outside this hook (a lane job) where its own failures show. */
+    reportError: (instanceId: string, message: string) => setError(instanceId, { message, blocker: null }),
     actionsFor,
     wake: (ctx: CloudBoxContext) => run(ctx, "wake"),
     /** The person's update, with its confirm: Retry on a failed update line. */

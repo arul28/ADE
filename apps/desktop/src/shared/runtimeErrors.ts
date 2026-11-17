@@ -45,6 +45,16 @@ export function isRemoteOutcomeUnknownError(error: unknown): boolean {
     || isRuntimeTransportTimeoutError(error);
 }
 
+/**
+ * True when the other machine is away: its link dropped, it is not connected,
+ * or ADE can't reach it (asleep, restarting). The call did not reach it, or
+ * its answer was lost.
+ */
+export function isRemoteMachineAwayError(error: unknown): boolean {
+  return isRemoteOutcomeUnknownError(error)
+    || /Can't reach .+ it may be asleep|Remote target is not connected/i.test(errorMessage(error));
+}
+
 export function isRuntimeTransportTimeoutError(error: unknown): boolean {
   return /IPC handler for .+ timed out after \d+ms|Remote ADE service timed out waiting for method/i.test(
     errorMessage(error),

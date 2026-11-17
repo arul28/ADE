@@ -35,7 +35,7 @@ enum CloudPreviews {
       break
     }
     guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(listJSON.utf8)) else { return nil }
-    let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced")
+    let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced", extraDiskMonthCents: nil)
     // `duo-cloud-upgraded`: this phone last saw the account on Free, a period ago, with 79.1 hours left.
     // Only the fixture account's entry changes: every other account's record on this device stays.
     if name == "duo-cloud-upgraded", let code = list.account?.referral?.code {

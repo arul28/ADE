@@ -100,6 +100,8 @@ export type CloudLaneLaunchStartInput = {
   madeByChat?: string | null;
   /** The kind of agent that started it, also with no chat (an automation, ADE MCP); null for a person. */
   madeByAgent?: CloudAgentMaker | null;
+  /** This computer's copies of the launch's files from another machine (`CloudLaneLaunchRecord.localCopies`). */
+  localCopies?: Record<string, string>;
 };
 
 export const MAX_QUEUED_MESSAGES = 10;
@@ -142,7 +144,7 @@ export class LaunchStepError extends Error {}
 
 export const requireLaunchId = (value: unknown): string => requireNormalizedUuid(value, "launchId must be a UUID.");
 
-export function isFinished(stage: ChatLaunchStage | null | undefined): boolean {
+export function isFinished(stage: Pick<ChatLaunchStage, "status"> | null | undefined): boolean {
   return stage?.status === "done" || stage?.status === "skipped" || stage?.status === "warning";
 }
 

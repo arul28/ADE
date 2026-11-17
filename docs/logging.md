@@ -377,6 +377,16 @@ precedent cuts the same way: the settle-with-residue event exists because a
 human pressed Settle and the stop could not be confirmed. If a future change
 ever makes this reclaim user-initiated, revisit the decision then.
 
+The same reasoning covers the **unattended release** (`brainIdleMemory.ts`:
+while no window, remote client or sync device is connected, a finished chat
+gives its provider process back after 30 s instead of the three-minute
+window). It writes one local line per pass that released something,
+`brain.unattended_agents_released` (info, on the machine log: `released`,
+`kept`), and `agent_chat.unattended_teardown_failed` (warn, `sessionId`, the
+error) when a chat's teardown threw, so a brain that keeps failing to release
+is visible. Each single teardown is already attributable by that chat's own
+`idle_ttl` path. It captures nothing: nobody did anything, the timer fired.
+
 A fresh Codex process's first turn waits up to 1.5 s for its skill list
 (`settleCodexSkillCatalog`). When the list stays short it writes
 `agent_chat.codex_skill_catalog_settle_timeout` (info, `sessionId`, `expected`,
@@ -2023,7 +2033,13 @@ too), `kept` (they ticked "Keep its chats"), `partial` (ADE couldn't delete
 all its chats) or `failed`; it tells whether deleting the chats is the right
 default. `cloud_clear_caches`: the computer's own
 brain clears its caches, `completed`, `failed`, or `denied` (an agent's ask
-declined or unanswered). `cloud_default_size`: the person picked another size
+declined or unanswered). `cloud_disk_grow`: an agent's grow of the
+disk of the computer it runs on (`cloud.grow_disk`, from that computer's brain):
+`completed` (a grow was asked), `denied` (the person or the agent limits said
+no), `rejected` (the account's storage limit) or `failed` (busy, or the grow
+couldn't run); a disk that already has the room sends nothing. The grows
+themselves are counted by the account directory (`ade_cloud_action` `grow`).
+`cloud_default_size`: the person picked another size
 for new lanes, `size_small` to `size_xlarge` (a value another computer synced
 is not counted again). No lane, project, computer, branch, prompt, size of a
 computer or error travels. Each is a person's decision or a launch that makes

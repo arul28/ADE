@@ -159,9 +159,11 @@ const RESOURCE_PRESSURE_SAMPLE_MS = 2_000;
 /** How long a connected computer's list must lack an open tab's copy before the tab moves off it. */
 const COPY_REMOVED_SETTLE_MS = 3_000;
 // While the indicator is hidden, a sample only decides whether to show it.
-// Each one runs a machine-wide `ps` in Electron main (about 17 ms of CPU), so a
-// calm app checks every 10 s and speeds up once there is load to track.
-const RESOURCE_PRESSURE_CALM_SAMPLE_MS = 10_000;
+// Each one reads every Electron process's metrics and the running sessions in
+// Electron main, and main reuses a calm `ps` of the brain and terminals for
+// 30 s anyway, so a calm app checks at that same period and speeds up once
+// there is load to track. Focus and showing the window still sample at once.
+const RESOURCE_PRESSURE_CALM_SAMPLE_MS = 30_000;
 let recentProjectsCache:
   | { rows: RecentProjectSummary[]; fetchedAtMs: number }
   | null = null;

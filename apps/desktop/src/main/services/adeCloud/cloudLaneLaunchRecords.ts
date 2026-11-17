@@ -44,6 +44,14 @@ export type CloudLaneLaunchRecord = {
   /** Files from this computer already sent to the server launcher: local path to the file there. */
   serverFiles?: Record<string, CloudLaunchAttachment>;
   /**
+   * Files named in the launch that were on the machine the project is open
+   * on, not here: the path there to this computer's copy
+   * (`cloudLaunchFileCopies.ts`). Every read of a launch file goes through it.
+   */
+  localCopies?: Record<string, string>;
+  /** The same for a message queued before the hand-off, by message id. */
+  messageCopies?: Record<string, Record<string, string>>;
+  /**
    * The local sequence at the hand-off. The brain counts its own sequence from
    * 1, so every brain snapshot is served above this to stay newer for clients.
    */
@@ -66,6 +74,11 @@ export type CloudLaneLaunchRecord = {
   branchRecorded?: string | null;
 };
 
+/** This computer's copies of a launch's files from another machine; removed with the record. */
+export function cloudLaunchFilesDir(recordsDir: string, launchId: string): string {
+  return path.join(recordsDir, "files", launchId);
+}
+
 export function createCloudLaneLaunchRecordStore(args: {
   recordsDir: string;
   logger: { warn: (event: string, meta?: Record<string, unknown>) => void };
@@ -86,7 +99,17 @@ export function createCloudLaneLaunchRecordStore(args: {
     }
   };
 
+  const removeFiles = (launchId: string): void => {
+    try {
+      fs.rmSync(cloudLaunchFilesDir(recordsDir, launchId), { recursive: true, force: true });
+    } catch (error) {
+      // The sweep in `loadAll` tries again at the next start.
+      logger.warn("cloud_lane_launch.files_remove_failed", { launchId, error: getErrorMessage(error) });
+    }
+  };
+
   const unpersist = (launchId: string): void => {
+    removeFiles(launchId);
     try {
       fs.rmSync(recordPath(launchId), { force: true });
     } catch (error) {
@@ -129,6 +152,16 @@ export function createCloudLaneLaunchRecordStore(args: {
       } catch (error) {
         logger.warn("cloud_lane_launch.load_failed", { file, error: getErrorMessage(error) });
       }
+    }
+    // Copies with no record left: a finished launch, or a start that failed before it saved one.
+    let copied: string[] = [];
+    try {
+      copied = fs.readdirSync(path.join(recordsDir, "files"));
+    } catch {
+      // No copies yet.
+    }
+    for (const launchId of copied) {
+      if (!fs.existsSync(recordPath(launchId))) removeFiles(launchId);
     }
     return loaded;
   };

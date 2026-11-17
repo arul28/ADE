@@ -21,6 +21,7 @@
 import type { ReactNode } from "react";
 import { cn } from "../ui/cn";
 import { PaneTooltip } from "../ui/PaneTooltip";
+import { Spinner } from "../ui/Spinner";
 
 /**
  * 40px. The one chrome-row height in the app.
@@ -185,17 +186,27 @@ export function WorkToolEmptyLine({
   title,
   action,
   testId,
+  busy = false,
 }: {
   title: string;
   action?: ReactNode;
   testId?: string;
+  /** Still reading: the line gets the device tools' spinner. */
+  busy?: boolean;
 }) {
   return (
     <div
       data-testid={testId}
       className="flex h-full min-h-0 flex-col items-center justify-center gap-3 px-5 text-center"
     >
-      <p className="font-sans text-[14px] font-medium text-fg/85">{title}</p>
+      {busy ? (
+        <p role="status" aria-live="polite" className="inline-flex items-center gap-2 font-sans text-[14px] font-medium text-fg/85">
+          <Spinner />
+          {title}
+        </p>
+      ) : (
+        <p className="font-sans text-[14px] font-medium text-fg/85">{title}</p>
+      )}
       {action}
     </div>
   );

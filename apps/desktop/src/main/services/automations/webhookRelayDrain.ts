@@ -166,6 +166,9 @@ export function createWebhookRelayDrain(deps: {
   /** Open the wake socket if it is not open yet, and drain now. */
   const ensureConnected = (): void => {
     if (stopped) return;
+    // A socket that found no hook waits a while before it asks again; a hook
+    // that was just registered should not wait for that.
+    wakeSocket?.retryNow();
     if (!wakeSocket) {
       wakeSocket = createRelayWakeSocket({
         resolveTarget: resolveWakeTarget,

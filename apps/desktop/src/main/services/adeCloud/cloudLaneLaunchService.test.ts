@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCloudLaneLaunchService, type CloudLaneLaunchDeps, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
-import { COMPUTER_DELETED_SENTENCE } from "./cloudLaneLaunchSteps";
+import { CANCEL_PIPELINE_WAIT_MS, COMPUTER_DELETED_SENTENCE } from "./cloudLaneLaunchSteps";
 import HANDED_OFF_RECORD from "./__fixtures__/handedOffCloudLaunch.json";
 import { encodeRoutePresetId } from "../../../shared/harnessRoutes";
 
@@ -85,6 +85,90 @@ describe("a cloud lane launch whose computer is gone", () => {
     const cancelled = await service.cancel({ launchId: LAUNCH_ID });
     expect(cancelled?.phase).toBe("cancelled");
     expect(callChatAction.mock.calls.map(([, action]) => action)).not.toContain("cancelLaunch");
+  });
+});
+
+describe("a cloud lane launch whose computer still clones", () => {
+  it("pairs during the clone, finds the project only after it, and a cancel deletes the computer after the pairing lands", async () => {
+    const recordsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud-lane-launch-"));
+    // The same launch before its hand-off: in the account, its machine key read, still cloning.
+    const stages = HANDED_OFF_RECORD.snapshot.stages.map((stage) => ({
+      ...stage,
+      ...(["computer", "join"].includes(stage.id)
+        ? { startedAt: "2026-11-16T01:08:00.000Z" }
+        : { status: stage.id === "clone" ? "running" : "pending", startedAt: null, endedAt: null, detail: null }),
+    }));
+    fs.writeFileSync(path.join(recordsDir, `${LAUNCH_ID}.json`), JSON.stringify({
+      ...HANDED_OFF_RECORD,
+      targetId: null,
+      sequenceBase: 0,
+      snapshot: { ...HANDED_OFF_RECORD.snapshot, stages, cloud: { ...HANDED_OFF_RECORD.snapshot.cloud, binding: null, handedOff: false } },
+    }));
+    const server = {
+      launchId: LAUNCH_ID, state: "joined", kind: "chat", sizeId: "medium", projectOrigin: "github.com/arul28/ade", laneId: null, laneName: null,
+      instanceId: INSTANCE_ID, request: null, approval: null, sessionId: null, error: null, createdAt: 1, updatedAt: 1, expiresAt: 0,
+      stages: [{ id: "computer", status: "done" }, { id: "join", status: "done" }, { id: "clone", status: "running", detail: "arul28/ade" }],
+    };
+    let statusReads = 0;
+    let afterReads: { count: number; resolve: () => void } | null = null;
+    const fetch = vi.fn(async (_url: string, init: { method: string }) => {
+      if (init.method === "GET" && afterReads && ++statusReads >= afterReads.count) afterReads.resolve();
+      return new Response(JSON.stringify(init.method === "DELETE" ? { ...server, state: "cancelled" } : server), { status: 200 });
+    });
+    const order: string[] = [];
+    let release: () => void = () => undefined;
+    let pairCalled: () => void = () => undefined;
+    const pairing = new Promise<void>((resolve) => { pairCalled = resolve; });
+    let deleted = false;
+    const instance = () => ({ id: INSTANCE_ID, status: deleted ? "deleted" : "running", metadata: { ade_request_id: LAUNCH_ID } });
+    const deps = {
+      recordsDir,
+      logger: quiet,
+      // The pairing lands only a while after the cancel aborted the run, later than a cleanup that didn't wait for it.
+      emit: (event: { type: string; launch?: { phase: string } }) => {
+        if (event.launch?.phase === "cancelled") setTimeout(release, 50);
+      },
+      creator: {
+        client: async () => ({
+          getInstance: async () => instance(),
+          listInstances: async () => [instance()],
+          deleteInstance: async () => { deleted = true; },
+        }),
+        directoryBaseUrl: () => "https://account.test",
+        getAccountToken: async () => "token",
+        fetch,
+      },
+      removeAccountMachine: async () => undefined,
+      forgetMachineConnections: vi.fn(() => { order.push("forgot"); }),
+      pairMachine: vi.fn(async (machineKey: string) => {
+        pairCalled();
+        await new Promise<void>((resolve) => { release = resolve; });
+        order.push("paired");
+        return { targetId: machineKey };
+      }),
+      connect: async () => true,
+      listProjects: vi.fn(async () => []),
+      resolveBinding: vi.fn(),
+      callChatAction: vi.fn(),
+      subscribeChatLaunchEvents: async () => () => undefined,
+      // Polls and retries go at once; a cancel waits for the run as long as it takes.
+      sleep: (ms: number) => new Promise<void>((resolve) => { if (ms !== CANCEL_PIPELINE_WAIT_MS) setTimeout(resolve, 1); }),
+      resumeDelayMs: 0,
+    };
+    const service = createCloudLaneLaunchService(deps as unknown as CloudLaneLaunchDeps);
+    services.push(service);
+
+    await pairing;
+    // Several more reads of the server while the clone runs: its project is not looked for yet.
+    await new Promise<void>((resolve) => { afterReads = { count: statusReads + 3, resolve }; });
+    expect(deps.listProjects).not.toHaveBeenCalled();
+
+    const cancelled = await service.cancel({ launchId: LAUNCH_ID });
+
+    expect(cancelled?.phase).toBe("cancelled");
+    expect(deleted).toBe(true);
+    expect(order).toEqual(["paired", "forgot"]);
+    expect(deps.listProjects).not.toHaveBeenCalled();
   });
 });
 

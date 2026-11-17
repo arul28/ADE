@@ -229,6 +229,9 @@ export function createAccountVaultStore(args: {
     credentialsPath: cachePath,
     machineKeyPath: path.join(args.adeDir, "secrets", ".machine-key"),
     lockPath: `${cachePath}.lock`,
+    // The account cache parses this payload once and keeps the rows; a
+    // settled-read copy would be a second decrypted vault, never read again.
+    cacheSettledReads: false,
   });
   let legacyCacheLoaded = false;
 

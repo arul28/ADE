@@ -36,7 +36,19 @@ const ACCOUNT_SIGNED_OUT_BY_USER_KEY = "account.signed-out-by-user.v1";
 export { ACCOUNT_SESSION_ROTATION_JOURNAL_KEY } from "./accountSessionRotationJournal";
 
 const LOOPBACK_HOST = "127.0.0.1";
-const LOGIN_SESSION_TTL_MS = 5 * 60_000;
+/**
+ * How long a browser sign-in waits for its callback. A new account signs up in
+ * that window too (an email code, a password, a second factor), so 5 minutes
+ * expired during sign-ups. The PKCE verifier and state stay in this process, so
+ * a longer wait does not make a late code any easier to use.
+ */
+const LOGIN_SESSION_TTL_MS = 15 * 60_000;
+/**
+ * After a browser sign-in expires, its loopback port keeps answering this long
+ * with a page that says what to do, instead of a browser error for a port that
+ * is gone. A sign-in that completes, is cancelled or is replaced closes at once.
+ */
+const EXPIRED_CALLBACK_PAGE_MS = 30 * 60_000;
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
 const MAX_PENDING_LOGIN_SESSIONS = 5;
 const DEVICE_BRIDGE_REQUEST_TIMEOUT_MS = 15_000;
@@ -102,6 +114,21 @@ const FAILURE_HTML = `<!doctype html>
     <main>
       <h1>ADE sign-in failed</h1>
       <p>Return to ADE and try signing in again.</p>
+    </main>
+  </body>
+</html>`;
+
+const EXPIRED_HTML = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ADE sign-in timed out</title>
+  </head>
+  <body>
+    <main>
+      <h1>This ADE sign-in timed out</h1>
+      <p>Return to ADE and choose Sign in again. Your account is ready in this browser, so the next sign-in finishes at once.</p>
     </main>
   </body>
 </html>`;
@@ -1182,6 +1209,20 @@ export function createAccountAuthService(args: {
   );
   const resolveRefreshBroker = (): AccountRefreshBroker | null => args.getRefreshBroker?.() ?? null;
   const pendingSessions = new Map<string, PendingLoginSession>();
+  /**
+   * Expired browser sign-ins whose port still shows the expired page
+   * (`EXPIRED_CALLBACK_PAGE_MS`), with the timer that closes them. Closing one
+   * early clears its timer too: the timer holds the `Server` and the sign-in's
+   * closure, and an expired session leaves the map people poll.
+   */
+  const expiredCallbackServers = new Map<Server, ReturnType<typeof setTimeout>>();
+  const closeExpiredCallbackServers = (): void => {
+    for (const [server, timer] of expiredCallbackServers) {
+      clearTimeout(timer);
+      closeServer(server);
+    }
+    expiredCallbackServers.clear();
+  };
   const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
   const devicePollsInFlight = new Map<string, Promise<AccountDeviceLoginPollResult>>();
   let refreshInFlight: Promise<AccountSessionRecord | null> | null = null;
@@ -1764,6 +1805,8 @@ export function createAccountAuthService(args: {
     session.phase = phase;
     session.message = message;
     clearTimeout(session.expiryTimer);
+    // An expired session is in the map with a wait; ending it early drops both.
+    expiredCallbackServers.delete(session.server);
     closeServer(session.server);
   };
 
@@ -1776,6 +1819,8 @@ export function createAccountAuthService(args: {
    * it, because the machine is signed in; a device sign-in is forgotten.
    */
   const endOtherSignIns = (completed: PendingLoginSession | string): void => {
+    // The machine is signed in now, so "timed out, sign in again" is wrong.
+    closeExpiredCallbackServers();
     for (const pending of pendingSessions.values()) {
       if (pending === completed) continue;
       if (pending.phase === "pending" || pending.phase === "exchanging") {
@@ -1789,7 +1834,20 @@ export function createAccountAuthService(args: {
 
   const expirePendingSession = (session: PendingLoginSession): void => {
     if (session.phase !== "pending" && session.phase !== "exchanging") return;
-    finishPendingSession(session, "expired", "ADE account sign-in expired.");
+    session.phase = "expired";
+    session.message = "ADE account sign-in timed out. Choose Sign in again.";
+    clearTimeout(session.expiryTimer);
+    // The browser may still come back to this port (a sign-up that took
+    // longer): answer it with the expired page for a while, then close. The
+    // port must not keep the process alive for that.
+    const { server } = session;
+    server.unref();
+    session.expiryTimer = setTimeout(() => {
+      expiredCallbackServers.delete(server);
+      closeServer(server);
+    }, EXPIRED_CALLBACK_PAGE_MS);
+    session.expiryTimer.unref?.();
+    expiredCallbackServers.set(server, session.expiryTimer);
   };
 
   const pruneFinishedSessions = (): void => {
@@ -1961,9 +2019,9 @@ export function createAccountAuthService(args: {
       respondHtml(response, 404, FAILURE_HTML);
       return;
     }
-    if (session.expiresAtMs <= now()) {
-      expirePendingSession(session);
-      respondHtml(response, 410, FAILURE_HTML);
+    if (session.expiresAtMs <= now()) expirePendingSession(session);
+    if (session.phase === "expired") {
+      respondHtml(response, 410, EXPIRED_HTML);
       return;
     }
     if (!isMatchingState(requestUrl.searchParams.get("state"), session.oauthState)) {
@@ -2024,6 +2082,8 @@ export function createAccountAuthService(args: {
       throw new Error("ADE_ACCOUNT_TOKEN is already providing account authentication; no interactive sign-in is required.");
     }
     pruneFinishedSessions();
+    // A new attempt replaces the expired pages: their tabs now have a sign-in to go back to.
+    closeExpiredCallbackServers();
     while (pendingSessions.size >= MAX_PENDING_LOGIN_SESSIONS) {
       const oldestId = pendingSessions.keys().next().value as string | undefined;
       if (!oldestId) break;
@@ -3073,6 +3133,7 @@ export function createAccountAuthService(args: {
       closeServer(session.server);
     }
     pendingSessions.clear();
+    closeExpiredCallbackServers();
     pendingDeviceSessions.clear();
     if (credentialChangeTimer) clearTimeout(credentialChangeTimer);
     credentialChangeTimer = null;

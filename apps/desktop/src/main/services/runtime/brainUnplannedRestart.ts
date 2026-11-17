@@ -58,6 +58,8 @@ type BrainRunRecord = {
   stoppedBy?: string;
   /** The intent of an orderly stop (`noteBrainStopIntent`); absent on older records. */
   stopIntent?: BrainStopIntent;
+  /** When the computer had booted as this brain started; absent on older records. */
+  bootedAt?: string;
 };
 
 type OwnRun = { filePath: string; pid: number; startedAt: string };
@@ -186,11 +188,15 @@ export function recordBrainRunStart(args: {
           stopIntent: previous.stopIntent === "accepted_update" || previous.stopIntent === "stop_for_good"
             ? previous.stopIntent
             : null,
+          bootedAtMs: typeof previous.bootedAt === "string" && Number.isFinite(Date.parse(previous.bootedAt))
+            ? Date.parse(previous.bootedAt)
+            : null,
         },
         lastHeartbeatMs: heartbeat && heartbeat.pid === previous.pid ? heartbeat.ts : null,
         wedge: args.causeFacts.wedge,
         memoryPressure: args.causeFacts.memoryPressure,
         updateRequest: args.causeFacts.updateRequest,
+        diskGrow: args.causeFacts.diskGrow ?? null,
       });
     }
     if (
@@ -209,7 +215,12 @@ export function recordBrainRunStart(args: {
         writeRecord(filePath, { ...previous, stoppedAt: startedAt, stoppedBy: "next_brain_started" });
       }
     } else {
-      writeRecord(filePath, { pid: process.pid, startedAt, build: args.build });
+      writeRecord(filePath, {
+        pid: process.pid,
+        startedAt,
+        build: args.build,
+        ...(Number.isFinite(bootMs) ? { bootedAt: new Date(bootMs).toISOString() } : {}),
+      });
       state.own = { filePath, pid: process.pid, startedAt };
     }
   } catch (error) {
@@ -311,6 +322,29 @@ export function brainUnplannedRestart(): BrainUnplannedRestart | null {
 export function brainRestartCause(): RestartCause | null {
   const cause = holder().cause;
   return cause ? { ...cause } : null;
+}
+
+/**
+ * Whether this brain started after the computer restart an ADE disk grow made
+ * (cause `disk_grow`). That restart continues every chat and agent CLI it
+ * stopped whatever "Continue chats after restarts" says: ADE chose to restart
+ * the computer, the person did not. The setting still decides after updates,
+ * crashes and reboots, and for any restart after this one (an update this
+ * brain accepts is not this restart). Decided once at start from this
+ * restart's own facts (`deriveBrainRestartCause`), so a grow file left from an
+ * older grow never counts.
+ */
+function brainRestartedForDiskGrow(): boolean {
+  return holder().cause?.kind === "disk_grow";
+}
+
+/**
+ * Whether the restart this brain started after continues what it stopped:
+ * an ADE disk grow's restart always does; any other follows the setting
+ * ("Continue chats after restarts"), read only when needed.
+ */
+export function continueAfterRestartAllowed(readSetting: () => boolean): boolean {
+  return brainRestartedForDiskGrow() || readSetting();
 }
 
 /**

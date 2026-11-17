@@ -372,7 +372,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: [
       "create", "sleep", "wake", "resize", "copy", "move", "delete", "invite_redeem",
       "update", "set_limits", "lane_launch", "lane_launch_cancel", "tier_request",
-      "clear_caches",
+      "clear_caches", "grow_disk",
       "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
       "cloud_sign_in_keep",
     ],
@@ -871,6 +871,10 @@ const REPLAY_SAFE_WRITES = new Set<string>([
   "chat.prepareCrossMachineHandoff",
   "chat.validateCrossMachineSource",
   "chat.markCrossMachineHandoff",
+  // Writes the given choice for one device kind; the same choice twice leaves
+  // it as it was (only its `chosenAt` moves). A cloud computer restarting
+  // drops the link mid-call, and a replay beats an "outcome unknown" error.
+  "chat.setDeviceSource",
   "file.refreshGitDecorations",
   "lane.portGetLease",
   // Single-flighted and throttled on the host; a second run is a no-op sync.

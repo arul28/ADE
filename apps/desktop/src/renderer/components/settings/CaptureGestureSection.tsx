@@ -63,6 +63,13 @@ export function CaptureGestureSection() {
     try {
       const updated = await window.ade?.captureGesture?.updateSettings({ enabled: next });
       if (mounted.current && updated) setHealth(updated);
+      // Turning it on is the person's own action, so this is the moment to ask
+      // for any permission the gesture needs (Input Monitoring on macOS 27).
+      // A plain launch never asks; see the helper's `installChordMonitor`.
+      if (next) {
+        const asked = await window.ade?.captureGesture?.retry();
+        if (mounted.current && asked) setHealth(asked);
+      }
     } catch {
       void refreshHealth();
     } finally {

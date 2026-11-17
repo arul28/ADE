@@ -1,6 +1,6 @@
 ---
 name: ade-harnesses
-description: Use this skill to run a chat, CLI session or subagent on a specific setup: any model inside any harness (`--via`), a saved Custom provider (`--custom-provider`), one provider account (`--instance`), or one stored API key (`--credential`). Covers `ade harness routes`, `ade harness providers`, `ade harness test` and `ade harness env`. Every launch passes `--model`.
+description: "Run a chat, CLI session or subagent on a chosen setup: any model in any harness (`--via`), a saved Custom provider (`--custom-provider`), one provider account (`--instance`), or one stored API key (`--credential`); `ade harness routes`, `providers`, `test` and `env`. Every launch passes `--model`."
 ---
 
 # ADE harnesses: picking what a session runs on

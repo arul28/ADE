@@ -59,6 +59,20 @@ export {
 } from "../../../account-directory/src/cloud/contract";
 
 export { formatCloudCents };
+/** The disk-grow rules and the agents' extra disk live in `cloudDiskGrowRules.ts`. */
+export {
+  CLOUD_AGENT_EXTRA_DISK_CHOICES,
+  CLOUD_AGENT_EXTRA_DISK_MAX_CENTS,
+  cloudAgentExtraDiskCentsOf,
+  cloudAgentExtraDiskLooser,
+  cloudAgentExtraDiskRefusal,
+  cloudDiskGrowFit,
+  cloudDiskGrowPlan,
+  cloudDiskLanesSentence,
+  cloudDiskLimitNamesLanes,
+  describeCloudAgentExtraDisk,
+} from "./cloudDiskGrowRules";
+export type { CloudDiskGrowExtra, CloudDiskGrowFit, CloudDiskGrowPlan, CloudDiskLaneUse, CloudDiskLimitReason } from "./cloudDiskGrowRules";
 
 /**
  * Stamped on every ADE Cloud approval card (`providerMetadata`). Only the
@@ -624,102 +638,6 @@ export function cloudDiskGrowRefusedWayOut(
   return null;
 }
 
-
-/** Room beyond what is asked for, for the filesystem's share of a grown disk. */
-const CLOUD_DISK_GROW_MARGIN_MB = 256;
-
-/** What a disk grow would do under the plan rules; `settings` sends the person to turn on extra disk. */
-export type CloudDiskGrowPlan =
-  | { grow: false; sentence: string; settings?: boolean }
-  | { grow: true; sentence: string; toGb: number };
-
-/**
- * Whether a computer's disk can grow by `shortMb` (to the smallest whole
- * number of steps that frees it), and the sentence that says so, by the plan
- * rules: the disk all the account's computers have at one time, the size's
- * own disk cap, and extra disk on a paid plan. The server checks all of it
- * again on the grow.
- */
-export function cloudDiskGrowPlan(box: CloudMachine, account: CloudAccountState | null, shortMb: number): CloudDiskGrowPlan {
-  const catalog = cloudCatalogOf(account);
-  const resources = box.resources;
-  const currentGb = resources?.diskGb ?? null;
-  if (!resources || currentGb == null || currentGb <= 0) {
-    return { grow: false, sentence: "ADE Cloud didn't say how big this computer's disk is, so ADE can't offer a bigger one." };
-  }
-  const stepGb = catalog.diskStepGb;
-  const toGb = currentGb + stepGb * Math.max(1, Math.ceil((shortMb + CLOUD_DISK_GROW_MARGIN_MB) / (stepGb * 1024)));
-  const type = cloudInstanceType(cloudMachineKindOf(box.type));
-  const maxGb = catalog.sizes.find((size) => size.type === type && size.cpu === resources.cpu && size.memoryGb === resources.memoryGb)?.diskMaxGb;
-  if (maxGb != null && toGb > maxGb) {
-    return { grow: false, sentence: "This size can't have a disk that big. Move it to a bigger size." };
-  }
-  const growTo = `Grow this computer's disk from ${currentGb} GB to ${toGb} GB.`;
-  if (!account) return { grow: true, toGb, sentence: `${growTo} The computer restarts.` };
-  const free = account.rules === "free" || cloudPlanIdOf(account) === "free";
-  const limitGb = account.disk.limitGb;
-  if (limitGb == null) {
-    // An older server gives no account limit only on a free account, whose computers stay at their first disk.
-    return { grow: false, sentence: `Free computers stay at ${catalog.plans.free.diskGb} GB each; a paid plan lets it grow.` };
-  }
-  const afterGb = account.disk.usedGb - currentGb + toGb;
-  const pastGb = afterGb - limitGb;
-  if (pastGb <= 0) {
-    return { grow: true, toGb, sentence: `${growTo} Your computers then have ${afterGb} GB of your plan's ${limitGb} GB at one time. The computer restarts.` };
-  }
-  if (free) {
-    const upgrade = cloudCatalogHasPro(catalog) ? "get Plus" : "get a paid plan";
-    return { grow: false, sentence: `Free computers have ${catalog.plans.free.diskGb} GB of disk at one time. Delete a computer, or ${upgrade}.` };
-  }
-  const extra = account.extraDisk;
-  const extraPrice = catalog.extraDiskCentsPer10GbMonth;
-  if (!extra || extraPrice == null) {
-    // An older paid server: no extra disk to offer or price.
-    return {
-      grow: false,
-      sentence: `A ${toGb} GB disk would pass the ${limitGb} GB your computers have at one time. Delete a computer you no longer use, then try again.`,
-    };
-  }
-  if (extra.state === "on") {
-    const limitCents = extra.monthlyLimitCents;
-    if (limitCents == null) {
-      // The server asks before any extra disk while no monthly limit is set.
-      return {
-        grow: false,
-        settings: true,
-        sentence: `A ${toGb} GB disk goes ${pastGb} GB past your plan's ${limitGb} GB at one time. Set a monthly limit for extra disk in Settings, or delete a computer.`,
-      };
-    }
-    // The server's rule: the extra disk, kept for a full month, must cost no more than the limit.
-    if ((pastGb * extraPrice) / 10 > limitCents) {
-      return {
-        grow: false,
-        settings: true,
-        sentence: `A ${toGb} GB disk would pass the ${formatCloudCents(limitCents)} a month you set for extra disk. Raise the limit in Settings, or delete a computer you no longer use.`,
-      };
-    }
-    const monthCents = Math.ceil((pastGb / 10) * extraPrice);
-    return {
-      grow: true,
-      toGb,
-      sentence: `${growTo} That is ${pastGb} GB past your plan, about ${formatCloudCents(monthCents)} a month, inside your ${formatCloudCents(limitCents)} monthly limit. The computer restarts.`,
-    };
-  }
-  if (extra.state === "asked") {
-    return {
-      grow: false,
-      settings: true,
-      sentence: `A ${toGb} GB disk goes ${pastGb} GB past your plan's ${limitGb} GB at one time. Turn on extra disk in Settings or delete a computer.`,
-    };
-  }
-  // `off`: never decided; the server asks once, on the grow.
-  return {
-    grow: true,
-    toGb,
-    sentence: `${growTo} It goes ${pastGb} GB past your plan's ${limitGb} GB at one time. Extra disk costs ${formatCloudCents(extraPrice)} for each 10 GB a month. The computer restarts.`,
-  };
-}
-
 /**
  * - `auto`: sleeps a few minutes after nothing runs on it.
  * - `pending`: ADE has not turned sleep on yet: the box's ADE predates it, or
@@ -752,21 +670,40 @@ export type CloudAgentLimits = {
   machinesPerDay: number;
   /** The largest size an unattended agent may pick. */
   maxShape: CloudShapeId;
+  /**
+   * Paid extra disk an unattended agent may grow a disk into: the most the
+   * account's extra disk may cost a month after the grow, in cents. 0: none.
+   * Null or left out (the default, and every limits saved before it): up to
+   * the account's own monthly extra-disk limit, so agents use the extra disk
+   * the person turned on with no more setup. The account's extra disk being
+   * off or turned down still means none, for everyone.
+   */
+  extraDiskMonthCents?: number | null;
+  /**
+   * Set when ADE couldn't read the account's copy: these are this computer's
+   * copy or the default, and may be out of date. An unattended agent uses no
+   * paid extra disk then (`cloudAgentExtraDiskRefusal`).
+   */
+  fallback?: true;
 };
 
 export type CloudLimitsPreset = "ask" | "balanced" | "hands_off";
 export const CLOUD_LIMITS_PRESETS: Readonly<Record<CloudLimitsPreset, CloudAgentLimits>> = {
-  ask: { unattendedSpend: false, machinesPerDay: 1, maxShape: "4x8" },
-  balanced: { unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16" },
-  hands_off: { unattendedSpend: true, machinesPerDay: 10, maxShape: "4x32" },
+  ask: { unattendedSpend: false, machinesPerDay: 1, maxShape: "4x8", extraDiskMonthCents: null },
+  balanced: { unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", extraDiskMonthCents: null },
+  hands_off: { unattendedSpend: true, machinesPerDay: 10, maxShape: "4x32", extraDiskMonthCents: null },
 };
 export const CLOUD_DEFAULT_AGENT_LIMITS: CloudAgentLimits = CLOUD_LIMITS_PRESETS.balanced;
 export const CLOUD_MACHINES_PER_DAY_CHOICES = [1, 3, 5, 10] as const;
-
 /** The preset these limits match, or null (Custom). */
 export function cloudLimitsPresetOf(limits: CloudAgentLimits): CloudLimitsPreset | null {
   for (const [id, preset] of Object.entries(CLOUD_LIMITS_PRESETS) as Array<[CloudLimitsPreset, CloudAgentLimits]>) {
-    if (preset.unattendedSpend === limits.unattendedSpend && preset.machinesPerDay === limits.machinesPerDay && preset.maxShape === limits.maxShape) {
+    if (
+      preset.unattendedSpend === limits.unattendedSpend
+      && preset.machinesPerDay === limits.machinesPerDay
+      && preset.maxShape === limits.maxShape
+      && (preset.extraDiskMonthCents ?? null) === (limits.extraDiskMonthCents ?? null)
+    ) {
       return id;
     }
   }

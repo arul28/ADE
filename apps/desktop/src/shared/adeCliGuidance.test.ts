@@ -58,28 +58,23 @@ describe("ADE bootstrap guidance", () => {
 });
 
 describe("Work board status guidance", () => {
-  it("keeps the board rule OUT of this guidance, which is emitted under a hard budget", () => {
+  it("keeps the board and settle rules OUT of this guidance, which is emitted under a hard budget", () => {
     // The Cursor SDK prompt emits this constant whole inside a 3 KB budget that
     // truncates from the END, and it already sits at ~100% of it. A board line
     // here cost that prompt its subagent routing contract and its project
-    // rules, with nothing failing except two assertions in that file. The rule
-    // lives in the ade-cli-control-plane skill's "Board and status" section
-    // instead, which every agent reads and which no budget clips.
+    // rules, with nothing failing except two assertions in that file. The rules
+    // — the derived board column, and that only the user settles — live in the
+    // ade-cli-control-plane skill's "Board and status" section instead, which
+    // every agent reads and which no budget clips.
     const guidance = buildAdeBootstrapGuidance([]);
     expect(guidance).not.toContain("Work board is derived");
     expect(guidance).not.toContain("Work-board column is derived");
+    expect(guidance).not.toContain("moveOnBoard");
     // The mechanics an agent does need here are still present.
     expect(guidance).toContain("ade chat note");
     expect(guidance).toContain("ade chat ask");
-  });
-
-  it("never tells an agent it can set its own board column", () => {
-    // Settling is the user's call (or the PR-merge policy's), and there is no
-    // "move my card" action. Guidance that implied otherwise would send the
-    // agent hunting for one.
-    const guidance = buildAdeBootstrapGuidance([]);
-    expect(guidance).not.toContain("moveOnBoard");
-    expect(guidance).toContain("You cannot settle a session");
+    // ...and so is the index that names the skill carrying the rest.
+    expect(guidance).toContain("`ade-cli-control-plane`");
   });
 });
 
@@ -123,10 +118,13 @@ describe("ADE session activity guidance", () => {
     expect(posixGuidance).toContain(
       "ADE_DEFAULT_ROLE='agent' ADE_CHAT_SESSION_ID='chat-1' ADE_RPC_URL='/Users/admin/.ade-beta/sock/ade.sock' ADE_RPC_SOCKET_PATH='/Users/admin/.ade-beta/sock/ade.sock' ADE_RUNTIME_SOCKET_PATH='/Users/admin/.ade-beta/sock/ade.sock' '/Applications/ADE Beta.app/bin/ade' chat activity debugging --session 'chat-1'",
     );
-    expect(posixGuidance).toContain("chat activity clear --session 'chat-1'");
+    // The label is reset through the same command: `clear` takes the value's
+    // place, so the guidance names it with the closed value set rather than as
+    // a second full command line.
+    expect(posixGuidance).toMatch(/or clear/);
     // The example value is a placeholder the agent replaces: the line names the
-    // closed set it may choose from.
-    expect(posixGuidance).toContain(`values: ${SESSION_ACTIVITY_VALUES.join(", ")}`);
+    // closed set it may choose from, with `clear` as the reset.
+    expect(posixGuidance).toContain(SESSION_ACTIVITY_VALUES.join(", "));
     expect(posixGuidance).not.toContain("$ADE_CLI_PATH");
     expect(powershellGuidance).toContain(
       "$env:ADE_DEFAULT_ROLE = 'agent'; $env:ADE_CHAT_SESSION_ID = 'chat-1'; $env:ADE_RPC_URL = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; $env:ADE_RPC_SOCKET_PATH = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; $env:ADE_RUNTIME_SOCKET_PATH = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; & 'C:\\Program Files\\ADE Beta\\ade.exe' chat activity debugging --session 'chat-1'",
@@ -153,10 +151,11 @@ describe("ADE session activity guidance", () => {
       "chat note --personal --session 'chat-9'",
       "chat ask --personal --session 'chat-9'",
       "chat activity debugging --personal --session 'chat-9'",
-      "chat activity clear --personal --session 'chat-9'",
     ]) {
       expect(guidance).toContain(`'/Applications/ADE.app/bin/ade' ${command}`);
     }
+    // `clear` resets the label through the same command, named with its values.
+    expect(guidance).toMatch(/or clear/);
     expect(guidance).not.toMatch(/ADE_RPC_URL|ADE_RUNTIME_SOCKET_PATH|\$ADE_CLI_PATH/);
   });
 });

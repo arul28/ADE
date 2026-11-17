@@ -1,6 +1,6 @@
 ---
 name: ade-pr-workflows
-description: Use this skill before you open a pull request or write its description, and when working with ADE PR workflows including PR tab data, GitHub stacked PRs, checks/comments, rebase resolution, CI fixes, or landing a PR.
+description: "Before you open a PR or write its description, and for PR tab data, stacked PRs, checks and comments, rebase conflicts, CI fixes or merging (`ade prs`)."
 ---
 
 # ADE PR workflows

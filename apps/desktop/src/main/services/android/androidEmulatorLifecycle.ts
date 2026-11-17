@@ -8,6 +8,7 @@ import type {
   AndroidSdkStatus,
 } from "../../../shared/types/androidEmulator";
 import { androidAvdDisplayName } from "../../../shared/androidDevicePresentation";
+import { androidLowDiskSentence } from "../../../shared/androidDisk";
 import { captureError } from "../../../shared/sentry/capture";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
@@ -88,7 +89,7 @@ export type AndroidEmulatorSlotHooks = {
 export type AndroidStartOptions = { force?: boolean; restartAdb?: boolean; chatSessionId?: string | null };
 
 export type AndroidEmulatorLifecycleContext = {
-  deps: Pick<AndroidEmulatorServiceDeps, "laneDevices" | "dataDir" | "captureAnalytics" | "handOffOnDispose" | "bootTimeoutMs" | "projectRoot">;
+  deps: Pick<AndroidEmulatorServiceDeps, "laneDevices" | "dataDir" | "captureAnalytics" | "handOffOnDispose" | "bootTimeoutMs" | "projectRoot" | "diskGrow">;
   env: AndroidEnv;
   platform: NodeJS.Platform;
   logger: Logger | null;
@@ -428,6 +429,58 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
   };
 
   /**
+   * The disk guard on an ADE Cloud computer: a first start the disk can't
+   * hold asks the computer's grower for the room (`cloudDiskGrowHost.ts`)
+   * before it refuses. Inside the plan's disk the grow needs no yes; paid
+   * extra disk is never used from here (the agent asks with `ade cloud
+   * resize --free`, which can ask the person). The grow restarts the
+   * computer and this call waits for it, so the asking chat's turn is cut
+   * there and continued after it (restart cause `disk_grow`). Anything else
+   * is the guard's own refusal, with what the grower said.
+   */
+  const growCloudDiskForStart = async (laneId: string, avd: AndroidAvd, chatSessionId: string | null): Promise<void> => {
+    try {
+      assertAndroidDiskForStart({ laneId, avd, logger });
+      return;
+    } catch (error) {
+      const host = deps.diskGrow?.() ?? null;
+      if (!(error instanceof AndroidEmulatorFailure) || error.code !== "ANDROID_LOW_DISK" || !error.disk || !host) throw error;
+      const disk = error.disk;
+      const answer = await host.growToFit({
+        needFreeBytes: disk.neededMb * 1024 * 1024,
+        reason: `the Android device ${androidAvdDisplayName(avd.name)} needs ${(disk.neededMb / 1024).toFixed(1)} GB free for its first start`,
+        origin: "android",
+        chat: chatSessionId ? { chatSessionId, projectRoot: deps.projectRoot ?? null } : null,
+      }).catch((growError: unknown) => {
+        logger?.warn("android.start_disk_grow_failed", { laneId, error: getErrorMessage(growError) });
+        return null;
+      });
+      logger?.info("android.start_disk_grow", { laneId, avdName: avd.name, state: answer?.state ?? "failed" });
+      // Grew in place, or there was room after all: the start goes on, once the room is really there
+      // (other work can write into the new space while the grow waits).
+      if (answer?.state === "grown" || answer?.state === "fits") {
+        assertAndroidDiskForStart({ laneId, avd, logger });
+        return;
+      }
+      if (answer?.state === "growing") {
+        // No disk numbers: the pane offers no Grow for a grow already asked for.
+        throw new AndroidEmulatorFailure(
+          "ANDROID_LOW_DISK",
+          `ADE is growing this computer's disk to ${answer.toGb} GB for this device's first start. The computer restarts in a moment and ADE continues the chat; start the device again then.`,
+        );
+      }
+      const said = answer ? ` ${answer.message}` : "";
+      throw new AndroidEmulatorFailure(
+        "ANDROID_LOW_DISK",
+        `${androidLowDiskSentence(disk.neededMb, disk.freeMb)}${said}`,
+        null,
+        false,
+        disk,
+      );
+    }
+  };
+
+  /**
    * Starts one device through the memory guard (`force` starts it past a
    * refusal), then boots it. The caller holds the device's queue and read its
    * AVD. A call that names its chat is an agent's over RPC, which the
@@ -443,9 +496,25 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     const force = options.force === true;
     const chatSessionId = options.chatSessionId?.trim() || null;
     // On an ADE Cloud computer the disk is small (4 GB at first): a first start
-    // that can't make its data partition is refused here, not by the emulator.
-    // `force` passes the memory guard only; no start fits on a full disk.
-    if (process.env.ADE_CLOUD_INSTANCE_ID?.trim()) assertAndroidDiskForStart({ laneId: slot.laneId, avd, logger });
+    // that can't make its data partition grows the disk first, or is refused
+    // here, not by the emulator. `force` passes the memory guard only; no
+    // start fits on a full disk.
+    if (process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
+      // A grow can wait minutes: the device reads as starting meanwhile, so a Stop reaches it
+      // (`interruptSlot`) and no emulator boots after it.
+      slot.stopRequested = false;
+      slot.transient = "starting";
+      try {
+        await growCloudDiskForStart(slot.laneId, avd, chatSessionId);
+      } finally {
+        slot.transient = null;
+      }
+      if (slot.stopRequested) {
+        slot.error = null;
+        hooks.onStoppedWhileStarting();
+        throw stoppedWhileStarting();
+      }
+    }
     const reservation = await reserveAndroidMemoryForStart({
       laneId: slot.laneId,
       avd,

@@ -1,6 +1,6 @@
 ---
 name: ade-computer-use
-description: Use this skill for any computer use — driving an app, a screen, a simulator or a web page; clicking, typing, screenshotting, recording, or proving a UI change works. It picks the right ADE surface (`ade apple`, `ade screen` — Mac Desktop on a Mac, Windows Desktop on Windows, Linux Desktop on Linux — `ade app-control`, `ade browser`) and covers the lane's own screen on every machine, so you never drive the user's screen by accident.
+description: "Any computer use: drive an app, screen, simulator or web page; click, type, screenshot, record, or prove a UI change works. Picks the ADE surface (`ade apple`, `ade screen` for the lane's own desktop, `ade app-control`, `ade browser`), so you never drive the user's screen."
 ---
 
 # ADE computer use
@@ -364,6 +364,9 @@ do not pipe the command into `tail` or `head` without `set -o pipefail`.
 
 ## Rules that will bite you
 
+- **A backend the user asked for is a requirement.** If the user names a
+  computer-use backend (Ghost OS, a lane screen, their own browser) and it is
+  unavailable, stop and report it instead of switching to another one.
 - **Never quit an app, and never touch a window you did not open.** An app
   like Safari, TextEdit or Finder is one process for all its windows, on every
   screen. ⌘Q on the lane screen also closes the user's own windows of that app.

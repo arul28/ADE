@@ -750,7 +750,9 @@ reaches no computer that exists. Another value, a list, `--all-machines`,
 `--machine-project`, or `chat launch-cancel` is refused. A start needs full
 access; a read-only connection can follow a launch. An app is an unattended
 agent there: held to the agent limits, and a size change, a delete and a
-cancel are declined. See
+cancel are declined. A disk grow on the computer the brain runs on
+(`cloud.grow_disk`, `ade cloud resize --free`) is answered by the agent limits'
+paid extra disk; inside the plan's disk it needs no yes. See
 [Guidance for agents](../ade-cloud/README.md#guidance-for-agents).
 
 ## Chat turns from an app

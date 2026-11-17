@@ -254,8 +254,11 @@ export type CloudLaneLaunchCallRequest = {
     gitOriginUrl: string | null;
     /** A project on this computer whose binding has no origin yet: main reads it from the checkout. */
     localRootPath?: string | null;
-    /** A tab bound to a copy on another machine: main asks that machine's brain. */
-    remote?: { targetId: string; projectId: string } | null;
+    /**
+     * A tab bound to a copy on another machine: main asks that machine's
+     * brain, for the origin and for the launch's files saved there.
+     */
+    remote?: { targetId: string; projectId: string; rootPath?: string } | null;
   } | null;
 };
 

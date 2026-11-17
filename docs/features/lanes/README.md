@@ -230,7 +230,8 @@ Runtime services (`apps/ade-cli/src/services/lanes/` and friends):
   `lane.delete` action validates `laneId`, resolves the lane overlay
   context before teardown, injects lane environment cleanup when an
   env-init config applies, delegates to `laneService.delete`, and
-  releases any leased port range for the deleted lane.
+  releases any leased port range for the deleted lane when the delete
+  finishes, including a background delete whose caller has gone.
 
 Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 
@@ -981,6 +982,20 @@ changed after the brain checked it. A file still held open is retried in a new
 child, never in the brain. The Files tab's Delete (which waits up to 31 minutes
 for the removal on every transport) and Storage's worktree cleanup use the same
 removal.
+
+A delete of a lane on another machine answers once its safety checks pass
+(`DeleteLaneArgs.background`), and the machine finishes it even if the window
+disconnects. A repeated delete of the same lane joins the running one instead
+of failing as "already running", and a lane that is already gone answers
+`alreadyDeleted`. The window starts the delete, sends the start again if an
+answer was lost, and follows `lane.listDeleteProgress` on the same machine with
+short reads that retry on their own. A refusal from the checks (unsaved work,
+the primary lane, a lock) still fails at once, and a local lane keeps the old
+single call. Older ADE on either side keeps the old one-request behavior. When
+the delete also removes the remote branch and the caller does not require it
+(`requireRemoteBranchDelete`), that network step runs after the lane is gone: a
+failure is a warning and ADE tries again after 1 and 5 minutes, only while the
+remote still holds the commit the delete saved.
 
 Rails checked before `git worktree remove`, for every lane:
 

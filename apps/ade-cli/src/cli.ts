@@ -23,7 +23,7 @@ import {
 } from "../../desktop/src/shared/laneShareRights";
 import { LANE_SHARE_GRANT_ID_PATTERN } from "../../desktop/src/shared/laneShareDirectory";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
-import { CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
+import { CLOUD_AGENT_EXTRA_DISK_MAX_CENTS, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
@@ -731,7 +731,7 @@ import {
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
-import { cloudDiskGuardOptions } from "./services/power/cloudDiskGuard";
+import { cloudDiskGrowStatePath, cloudDiskGuardOptions, readCloudDiskGrowState } from "./services/power/cloudDiskGuard";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
@@ -740,6 +740,7 @@ import {
   addBrainRunStopIntent,
   brainRestartCause,
   brainUnplannedRestart,
+  continueAfterRestartAllowed,
   markBrainRunStoppedCleanly,
   readBrainUpdateRequest,
   recordBrainRunStart,
@@ -4195,8 +4196,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                      in a terminal on that machine); never restart adb yourself
     ANDROID_NOT_RUNNING              ade android start first
     ANDROID_LOW_MEMORY               free memory, or ask the user, then start --force
-    ANDROID_LOW_DISK                 the disk can't hold a new device's data; tell the user
-                                     (where the Android pane offers Grow the disk, they use it)
+    ANDROID_LOW_DISK                 the disk can't hold a new device's data. On ADE Cloud ADE
+                                     grows it itself (start again after the restart), or run
+                                     ade cloud resize --free 8 --reason "..."; elsewhere tell the user
     ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again
     ANDROID_BUILD_FAILED             read the Gradle output, fix the build
     ANDROID_SYSTEM_IMAGE_IN_USE      an AVD uses that image; stop its emulator first
@@ -5135,12 +5137,21 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
     $ ade cloud resize --request --size large --reason "Android needs it"
                                                     An agent asks the person (a card in its chat); nothing changes until they confirm
+    $ ade cloud resize --free 8 --reason "the build needs 8 GB"
+                                                    On a cloud computer: grow its own disk to fit 8 GB free (--disk <GB>: to that size).
+                                                    Inside the plan's disk it grows with no card (agents, unattended too); paid
+                                                    extra disk asks the person in a watched chat, and follows the agent limits
+                                                    (--extra-disk) with nobody watching; at a limit a card names what holds
+                                                    the disk. It restarts the computer; the call waits, and ADE continues your
+                                                    chat after the restart. Use it instead of asking the person to grow it.
     $ ade cloud update <machine>                  Move to its channel's image now and restart; files stay
                                                     (each computer also updates itself when idle or asleep)
     $ ade cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy)
     $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat
     $ ade cloud delete <machine>                  Gone for good, files and all
-    $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off)
+    $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off,
+                                                    --extra-disk <dollars a month>|none|limit: paid extra disk they may grow into;
+                                                    limit, the default, is up to your monthly extra-disk limit)
     $ ade chat create --machine cloud --size medium --provider <p> --model <id> --prompt "…"
                                                     A new lane on its own new computer (sizes: small, medium,
                                                     large, xlarge); the chat starts there
@@ -21775,10 +21786,18 @@ function buildCloudPrepareStopPlan(args: string[]): CliPlan {
   const raw = readValue(args, ["--timeout"]);
   const seconds = raw == null ? 40 : Number(raw);
   if (!Number.isFinite(seconds) || seconds <= 0) throw new CliUsageError("ade cloud prepare-stop --timeout <seconds>");
+  // A disk-only grow (the lane's size-change job): keep the turns, note the restart as a disk grow.
+  const growRaw = readValue(args, ["--disk-grow"]);
+  const growId = readValue(args, ["--grow-id"]);
+  if (growId != null && !/^[A-Za-z0-9_-]{1,80}$/.test(growId)) throw new CliUsageError("ade cloud prepare-stop --disk-grow <GB> --grow-id <job id>");
+  const diskGrowToGb = growRaw == null ? null : Number(growRaw);
+  if (diskGrowToGb != null && (!Number.isFinite(diskGrowToGb) || diskGrowToGb <= 0)) {
+    throw new CliUsageError("ade cloud prepare-stop --timeout <seconds> --disk-grow <GB>");
+  }
   return {
     kind: "execute",
     label: "cloud prepare-stop",
-    steps: [{ key: "result", method: "cloud.prepareStop", params: { timeoutMs: Math.round(seconds * 1000) } }],
+    steps: [{ key: "result", method: "cloud.prepareStop", params: { timeoutMs: Math.round(seconds * 1000), ...(diskGrowToGb != null ? { diskGrowToGb, ...(growId ? { growId } : {}) } : {}) } }],
     machineOnly: true,
     minTimeoutMs: Math.round(seconds * 1000) + 15_000,
   };
@@ -21835,6 +21854,21 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "start":
       return cloudStep("wake", "wake", { machine: target() });
     case "resize": {
+      // The disk of the cloud computer this runs on: grows on its own inside the plan.
+      const free = readValue(args, ["--free", "--need-free"]);
+      const disk = readValue(args, ["--disk"]);
+      if (free != null || disk != null) {
+        if (!reason) throw new CliUsageError("ade cloud resize --free <GB> | --disk <GB> --reason \"why\"");
+        // It grows only the computer it runs on: a machine named here would be ignored, and the wrong one would grow.
+        if (firstPositional(args)) {
+          throw new CliUsageError("ade cloud resize --free|--disk grows the disk of the ADE Cloud computer this runs on. Leave out the machine name, and run it on that computer.");
+        }
+        return cloudStep("disk grow", "grow_disk", {
+          ...(free != null ? { needFreeGb: Number(free) } : {}),
+          ...(disk != null ? { toGb: Number(disk) } : {}),
+          reason,
+        }, "cloud-result", true);
+      }
       // An agent asks; the person confirms on the card in its chat.
       if (args.includes("--request")) {
         const size = shape;
@@ -21862,16 +21896,19 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "update":
       return cloudStep("update", "update", { machine: target() }, "cloud-result", true);
     case "limits": {
-      const preset = firstPositional(args);
+      // The value flags first: `--extra-disk 10` would hand `10` to the preset otherwise.
       const perDay = readValue(args, ["--per-day"]);
       const maxShape = readValue(args, ["--max-shape"]);
       const unattended = readValue(args, ["--unattended"]);
-      if (!preset && perDay == null && maxShape == null && unattended == null) return cloudStep("limits", "limits", {});
+      const extraDisk = readValue(args, ["--extra-disk"]);
+      const preset = firstPositional(args);
+      if (!preset && perDay == null && maxShape == null && unattended == null && extraDisk == null) return cloudStep("limits", "limits", {});
       return cloudStep("limits", "set_limits", {
         ...(preset ? { preset } : {}),
         ...(perDay != null ? { machinesPerDay: Number(perDay) } : {}),
         ...(maxShape != null ? { maxShape } : {}),
         ...(unattended != null ? { unattendedSpend: unattended === "on" || unattended === "yes" || unattended === "true" } : {}),
+        ...(extraDisk != null ? { extraDiskMonthCents: cloudExtraDiskFlagCents(extraDisk) } : {}),
       }, "cloud-result", true);
     }
     case "ready":
@@ -21946,6 +21983,21 @@ function formatCloudInvite(value: unknown): string {
     lines.push(`You can still enter a friend's invite until ${new Date(referral.enterCodeUntil).toISOString().slice(0, 10)}. ${CLOUD_ENTER_INVITE_HINT}`);
   }
   return lines.join("\n");
+}
+
+/**
+ * `ade cloud limits --extra-disk`: dollars a month (`10`, `$10`, `7.50`),
+ * `none` (0), or `limit` (null: up to the account's own extra-disk limit).
+ */
+function cloudExtraDiskFlagCents(raw: string): number | null {
+  const value = raw.trim().toLowerCase();
+  if (value === "none" || value === "off" || value === "no") return 0;
+  if (value === "limit" || value === "account" || value === "on" || value === "yes") return null;
+  const dollars = Number(value.replace(/^\$/, ""));
+  if (!Number.isFinite(dollars) || dollars < 0 || dollars * 100 > CLOUD_AGENT_EXTRA_DISK_MAX_CENTS) {
+    throw new CliUsageError("ade cloud limits --extra-disk <dollars a month> | none | limit (up to your extra-disk limit)");
+  }
+  return Math.round(dollars * 100);
 }
 
 function formatCloudResult(value: unknown): string {
@@ -30090,7 +30142,13 @@ async function runServe(
     wedge: null,
     memoryPressure: null,
     updateRequest: readBrainUpdateRequest(layout.runtimeDir),
+    diskGrow: null,
   };
+  // On an ADE Cloud computer: the disk grow the previous brain asked for (a grow restarts the computer).
+  if (isAdeCloudComputer()) {
+    const grow = readCloudDiskGrowState(cloudDiskGrowStatePath(layout.adeDir), process.env.ADE_CLOUD_INSTANCE_ID?.trim() || null);
+    if (grow?.state === "growing") restartCauseFacts.diskGrow = { atMs: grow.at, fromGb: grow.fromGb ?? null, toGb: grow.toGb };
+  }
   const { memoryBreachForRestartCause, readResourcePressureRecord } = await import("./services/runtime/resourcePressureMonitor");
   restartCauseFacts.memoryPressure = memoryBreachForRestartCause(readResourcePressureRecord(layout.runtimeDir));
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
@@ -30529,6 +30587,108 @@ async function runServe(
         },
       })
     : null;
+  // A grow an agent or the Android emulator's first start asks for
+  // (`cloudDiskGrowHost.ts`): a running chat turn or an agent CLI session
+  // ADE tracks doesn't hold it back (ADE continues them after the restart,
+  // with the cause), but a command in a terminal (an agent CLI started by
+  // hand in a shell too), a setup, a copy or move, or a chat waiting on the
+  // person's answer does: the restart would cut them.
+  const growMayRestartNow = async (): Promise<boolean> => {
+    if (!readCloudBusy) return false;
+    const busy = await readCloudBusy();
+    // What continues after the restart (chats, ADE's agent CLIs), and the `ade` command that asked for the grow.
+    const cut = busy.reasons.filter((reason) => reason !== "chat" && reason !== "agent_cli" && reason !== "disk_grow_command");
+    if (cut.length || busy.waitingOnPerson) {
+      headlessProjectLogger.info("cloud.disk_grow_to_fit_busy", { reasons: cut, waitingOnPerson: Boolean(busy.waitingOnPerson) });
+      return false;
+    }
+    return true;
+  };
+  if (cloudDiskGrower && readCloudBusy) {
+    const [{ setCloudDiskGrowHost }, { buildCloudDiskGrowCard, buildCloudDiskLimitCard }] = await Promise.all([
+      import("../../desktop/src/main/services/adeCloud/cloudDiskGrowHost"),
+      import("../../desktop/src/shared/cloudDiskGrowCard"),
+    ]);
+    type GrowChat = import("../../desktop/src/main/services/adeCloud/cloudDiskGrowHost").CloudDiskGrowChat;
+    type GrowCard = import("../../desktop/src/shared/adeCard").AdeCardPayload;
+    // A grow's card goes to its chat through that chat's project here.
+    const postGrowCard = async (chat: GrowChat, card: GrowCard): Promise<boolean> => {
+      try {
+        const root = chat.projectRoot ? path.resolve(chat.projectRoot) : null;
+        const project = root ? projectRegistry.list().find((entry) => path.resolve(entry.rootPath) === root) : null;
+        if (!project) return false;
+        const chatService = (await scopeRegistry.get(project.projectId)).runtime.agentChatService;
+        if (!chatService) return false;
+        if (typeof chatService.emitAdeCard === "function") await chatService.emitAdeCard({ sessionId: chat.chatSessionId, card });
+        else chatService.recordSystemNotice({ sessionId: chat.chatSessionId, message: card.fallbackText });
+        return true;
+      } catch (error) {
+        headlessProjectLogger.warn("cloud.disk_grow_card_failed", { error: error instanceof Error ? error.message : String(error) });
+        return false;
+      }
+    };
+    setCloudDiskGrowHost({
+      growToFit: async (ask) => {
+        const chat = ask.chat ?? null;
+        // The "growing" card, once it went up: an ask that then doesn't grow updates it in place.
+        const shown: { card: { cardId: string; fromGb: number; toGb: number } | null } = { card: null };
+        const answer = await cloudDiskGrower.growToFit({
+          ...ask,
+          stillIdle: growMayRestartNow,
+          // Before the restart: awaited, so the card is saved before the computer goes down.
+          onGrowing: chat
+            ? async ({ fromGb, toGb, cardId, extra }) => {
+              shown.card = { cardId, fromGb, toGb };
+              await postGrowCard(chat, buildCloudDiskGrowCard({ cardId, fromGb, toGb, reason: ask.reason, phase: "growing", extra }));
+            }
+            : undefined,
+        });
+        if (!chat || answer.state === "growing" || answer.state === "grown") return answer;
+        const card = shown.card;
+        if (answer.state === "limit") {
+          await postGrowCard(chat, buildCloudDiskLimitCard({
+            cardId: card?.cardId ?? `cloud-disk-limit:${cloudInstanceId}:${Date.now()}`,
+            toGb: answer.toGb,
+            reason: answer.reason,
+            sentence: answer.sentence,
+            lanes: answer.lanes,
+          }));
+        } else if (card) {
+          await postGrowCard(chat, buildCloudDiskGrowCard({ ...card, reason: ask.reason, phase: "failed", detail: answer.message }));
+        }
+        return answer;
+      },
+    });
+    // The chats the last boot's grow told before its restart: their card says
+    // how it went, once their project is open here. The continue itself is the
+    // chat's own restart resume, which names the grow (restart cause `disk_grow`).
+    // A chat whose project isn't open yet is tried again a few times; the
+    // state file keeps the chats until at least one card went out.
+    const told = cloudDiskGrower.afterRestart();
+    if (told && !told.cardId) cloudDiskGrower.noticesSent();
+    if (told?.cardId) {
+      const card = buildCloudDiskGrowCard({ cardId: told.cardId, fromGb: told.fromGb, toGb: told.toGb, reason: told.reason, phase: told.grew === false ? "same" : "grew", freeGb: told.freeGb });
+      let pending = told.chats;
+      let sent = 0;
+      const attempt = async (left: number): Promise<void> => {
+        const still: typeof pending = [];
+        for (const chat of pending) {
+          if (await postGrowCard(chat, card)) sent += 1;
+          else still.push(chat);
+        }
+        pending = still;
+        if (pending.length && left > 0) {
+          const timer = setTimeout(() => void attempt(left - 1), 30_000);
+          timer.unref?.();
+          return;
+        }
+        headlessProjectLogger.info("cloud.disk_grow_after_restart", { chats: told.chats.length, sent, grew: told.grew });
+        if (sent > 0) cloudDiskGrower.noticesSent();
+      };
+      const timer = setTimeout(() => void attempt(5), 10_000);
+      timer.unref?.();
+    }
+  }
   const laneSetupDisk = cloudDiskGrower && readCloudBusy
     ? {
         ...cloudDiskGrower.setupDisk(laneSetupOnlyRuns),
@@ -32122,13 +32282,16 @@ async function runServe(
           }
         : null,
       prepareCloudStop: cloudKeepAwake
-        ? async ({ timeoutMs }) => {
+        ? async ({ timeoutMs, diskGrowToGb, growId }) => {
             const { prepareCloudComputerToStop } = await import("./services/power/cloudPrepareStop");
+            // A disk grow's restart continues the turns it cuts (`continueAfterRestartAllowed`): keep them
+            // running, once the note that marks the restart is written. No note: stop them, as before.
+            const keepTurns = diskGrowToGb != null && (cloudDiskGrower?.noteOutsideGrow(diskGrowToGb, growId ?? null) ?? false);
             const booted = await Promise.all(projectRegistry.list().map(async (record) =>
               (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null));
             const personal = await personalChatScope.bootedRuntime().catch(() => null);
             const runtimes = [...booted, personal].filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
-            return await prepareCloudComputerToStop({ runtimes, timeoutMs, logger: headlessProjectLogger });
+            return await prepareCloudComputerToStop({ runtimes, timeoutMs, logger: headlessProjectLogger, keepTurns });
           }
         : null,
       serverVersion: VERSION,
@@ -32853,6 +33016,28 @@ async function runServe(
     if (restartCause) headlessProjectLogger.info("brain.restart_cause", restartCauseLogFields(restartCause));
     if (writesBrainRun) enableLiveTurnProjectsRecord({ runtimeDir, socketPath: serveSocketPath });
   }
+  // A signal means launchd/systemd or an installer wants this brain gone.
+  // Graceful disposal can wedge on live agent/PTY children; a wedged brain
+  // outlives its service registration and squats on the channel socket and
+  // sync singleton, so force the exit if disposal does not finish in time.
+  const finishFromSignal = () => {
+    finish({ requested: true });
+    const timer = setTimeout(() => process.exit(0), 10_000);
+    timer.unref();
+  };
+  let stopSignalsHandled = false;
+  const handleStopSignals = () => {
+    if (stopSignalsHandled) return;
+    stopSignalsHandled = true;
+    process.once("SIGINT", finishFromSignal);
+    process.once("SIGTERM", finishFromSignal);
+  };
+  // A brain that writes its own run record takes the signals from now on: a
+  // stop during the rest of the start would otherwise end it with the default
+  // action, leave the record unmarked, and the next start would show the
+  // restart banner for a stop ADE asked for. The start code already handles a
+  // stop under way (`done`); the wait below then disposes at once.
+  if (writesBrainRun) handleStopSignals();
 
   let tcpUrl: string | null = null;
   if (port != null) {
@@ -33263,7 +33448,8 @@ async function runServe(
      * continue within seconds instead of when a window or phone next opens
      * the project. Only those projects: no other project database is opened.
      * Nothing opens in a restart loop or with "Continue chats after restarts"
-     * off; the files are claimed either way.
+     * off (unless an ADE disk grow made this restart); the files are claimed
+     * either way.
      */
     const runtimeDir = path.dirname(lastFailurePathForMachine());
     const roots = takeLiveTurnProjectsFromStoppedBrains({
@@ -33277,7 +33463,10 @@ async function runServe(
       },
     });
     if (roots.length > 0) {
-      const hold = brainStartIsInRestartLoop() ? "restart_loop" : !resolveContinueAfterRestart() ? "disabled" : null;
+      // An ADE disk grow's restart continues whatever the setting says (`continueAfterRestartAllowed`).
+      const hold = brainStartIsInRestartLoop()
+        ? "restart_loop"
+        : !continueAfterRestartAllowed(() => resolveContinueAfterRestart()) ? "disabled" : null;
       if (hold) {
         headlessProjectLogger.info("brain.projects_after_crash_skipped", { reason: hold, projects: roots.length });
         dropLiveTurnProjectsAfterCrash();
@@ -33311,6 +33500,10 @@ async function runServe(
             opened,
             durationMs: Date.now() - startedMs,
           });
+          if (opened > 0) {
+            const { noteProjectsOpenedWithoutClient } = await import("./services/runtime/brainIdleMemory");
+            noteProjectsOpenedWithoutClient({ listRuntimes: () => scopeRegistry.listReady().map((scope) => scope.runtime) });
+          }
         })();
       }
     }
@@ -33583,17 +33776,7 @@ async function runServe(
         return;
       }
       resolveDone = resolve;
-      // A signal means launchd/systemd or an installer wants this brain gone.
-      // Graceful disposal can wedge on live agent/PTY children; a wedged brain
-      // outlives its service registration and squats on the channel socket and
-      // sync singleton, so force the exit if disposal does not finish in time.
-      const finishFromSignal = () => {
-        finish({ requested: true });
-        const timer = setTimeout(() => process.exit(0), 10_000);
-        timer.unref();
-      };
-      process.once("SIGINT", finishFromSignal);
-      process.once("SIGTERM", finishFromSignal);
+      handleStopSignals();
     });
   } finally {
     stopParentMonitor();

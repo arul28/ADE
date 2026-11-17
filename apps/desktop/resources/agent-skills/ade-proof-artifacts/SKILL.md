@@ -1,6 +1,6 @@
 ---
 name: ade-proof-artifacts
-description: Use this skill when the user asks for proof, a demo, screenshots, video, something to post or show off, artifacts, test evidence, computer-use capture, or when work should appear in ADE's proof drawer. Read it before capturing anything a person will see.
+description: "Proof, a demo, screenshots, video, an image to show in your answer, something to post or show off, test evidence, computer-use captures, or work for ADE's proof drawer. Read it before capturing anything a person will see."
 ---
 
 # ADE proof and artifacts

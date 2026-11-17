@@ -119,6 +119,13 @@ export type CloudAccountStatus = {
     newComputersLeftToday: number;
     /** The lane sizes agents nobody watches may pick on their own. */
     sizesAllowed: CloudTierId[];
+    /**
+     * Paid extra disk agents nobody watches may grow a disk into: the most
+     * the account's extra disk may cost a month (cents), 0 for none, or null
+     * for up to the account's own monthly extra-disk limit (the default).
+     * Optional: an older ADE sends none.
+     */
+    extraDiskMonthCents?: number | null;
     preset: CloudLimitsPreset | "custom";
     /** Where the person changes these. */
     setting: string;
@@ -233,6 +240,7 @@ export function buildCloudAccountStatus(input: {
             const shape = cloudShapeFor({ cpu: tier.cpu, memoryGb: tier.memoryGb });
             return shape != null && cloudShapeWithin(shape.id, limits.maxShape);
           }).map((tier) => tier.id),
+          extraDiskMonthCents: limits.unattendedSpend ? limits.extraDiskMonthCents ?? null : 0,
           preset: cloudLimitsPresetOf(limits) ?? "custom",
           setting: CLOUD_DAILY_LIMIT_SETTING,
         }

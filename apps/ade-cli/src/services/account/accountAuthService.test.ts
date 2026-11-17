@@ -605,7 +605,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
     const verifier = verifierBytes.toString("base64url");
 
     expect(start.sessionId).toBe("login-session-1");
-    expect(start.expiresAt).toBe("2026-07-14T12:05:00.000Z");
+    expect(start.expiresAt).toBe("2026-07-14T12:15:00.000Z");
     expect(authorizeUrl.origin + authorizeUrl.pathname).toBe("https://clerk.example.test/oauth/authorize");
     expect(Object.fromEntries(authorizeUrl.searchParams)).toEqual({
       response_type: "code",

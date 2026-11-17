@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { cloudCatalogOf } from "../../../shared/adeCloud";
+import { isChatLaunchCloudStageId } from "../../../shared/chatLaunch";
 import { cloudTier, type CloudTier } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { cloudLaunchAppArgs, cloudLaunchLaneFields } from "../../../shared/cloudLaneLaunch";
@@ -22,20 +23,23 @@ import type {
   CloudServerLaunchRequest,
 } from "../../../../../account-directory/src/cloud/contract";
 import { getErrorMessage } from "../shared/utils";
-import { waitForCloudAccountRow } from "./cloudMachineCreator";
+import { CloudCreateCancelled, waitForCloudAccountRow } from "./cloudMachineCreator";
 import type { CloudLaneLaunchRecord } from "./cloudLaneLaunchRecords";
 import {
   CREATE_IN_PROGRESS_POLL_MS,
   CREATE_IN_PROGRESS_WAIT_MS,
+  LaunchCancelled,
   LaunchStepError,
   SERVER_LAUNCH_POLL_MS,
   SERVER_LAUNCH_SLOW_POLL_MS,
   SERVER_LAUNCH_BIND_WAIT_MS,
   clip,
+  isFinished,
   type CloudLaneLaunchDeps,
   type Logger,
 } from "./cloudLaneLaunchSteps";
 import { deleteComputersForRequest, pairAndConnectWithRetry } from "./cloudComputerSteps";
+import { launchFileName } from "./cloudLaunchFileCopies";
 import type { CloudProvider } from "./cloudProvider";
 
 /**
@@ -48,9 +52,10 @@ import type { CloudProvider } from "./cloudProvider";
  * approval from here, ever.
  *
  * This side shows the server's stages on the `computer`, `join` and `clone`
- * rows, and once the computer is in the account it pairs with it, finds the
- * project there and the brain's launch, which it follows from then on (the
- * service's hand-off). A cancel before the agent starts deletes the computer
+ * rows (then the brain's rows the computer reports), and once the computer
+ * is in the account it pairs with it while it clones, then finds the project
+ * there and the brain's launch, which it follows from then on (the service's
+ * hand-off). A cancel before the agent starts deletes the computer
  * (the server's cancel, and this app's own delete of computers with the
  * launch's request id).
  */
@@ -88,11 +93,15 @@ const CONTENT_TYPES: Record<string, string> = {
   ".csv": "text/csv",
 };
 
-function contentTypeOf(file: AgentChatFileRef): string {
-  const known = CONTENT_TYPES[path.extname(file.path).toLowerCase()];
+function contentTypeOf(file: AgentChatFileRef, readPath: string): string {
+  const known = CONTENT_TYPES[path.extname(readPath).toLowerCase()];
   if (known) return known;
   return file.type === "image" ? "image/png" : "application/octet-stream";
 }
+
+/** The rows the computer's brain runs after the clone, in order: the server's record carries them once it reports them. */
+const BRAIN_STAGE_IDS = ["fetch", "checkout", "environment", "agent"] as const satisfies readonly ChatLaunchStageId[];
+const STAGE_STATUSES: ReadonlySet<string> = new Set<ChatLaunchStageStatus>(["pending", "running", "done", "skipped", "warning", "failed"]);
 
 /** After the hand-off, how often the size is read from the server while the brain says setup moved the computer up. */
 const SIZE_REFRESH_MIN_MS = 60_000;
@@ -191,11 +200,12 @@ export function createCloudLaneComputerStages(
         out.push(known);
         continue;
       }
-      const name = path.basename(file.path) || "attachment";
+      const readPath = record.localCopies?.[file.path] ?? file.path;
+      const name = launchFileName(file.path, readPath);
       try {
-        const bytes = await fs.readFile(file.path);
+        const bytes = await fs.readFile(readPath);
         const fileId = `f${index}-${record.snapshot.launchId.slice(0, 8)}`;
-        const contentType = contentTypeOf(file);
+        const contentType = contentTypeOf(file, readPath);
         const uploaded = await api.uploadLaunchFile(record.snapshot.launchId, fileId, new Uint8Array(bytes), contentType);
         const attachment: CloudLaunchAttachment = { fileId, name, contentType, sizeBytes: uploaded.sizeBytes };
         sent[file.path] = attachment;
@@ -276,20 +286,34 @@ export function createCloudLaneComputerStages(
     }
   };
 
-  /** The server's rows for this app's three: what the computer reported, else what the launch's state says. */
+  /**
+   * The server's rows on this app's card: what the computer reported, else
+   * what the launch's state says. Past the clone, the computer's brain reports
+   * its own rows (fetch, checkout, environment, agent) here too, so the card
+   * moves while this app still pairs and finds the launch there. The brain's
+   * snapshot at the hand-off replaces them all; it is never behind what it
+   * reported, so no row goes back.
+   */
   const showServerRecord = (record: CloudLaneLaunchRecord, server: CloudLaunchRecord): void => {
     const reported = new Map<string, CloudLaunchStage>(server.stages.map((stage) => [stage.id, stage]));
-    const show = (id: ChatLaunchCloudStageId, status: ChatLaunchStageStatus, detail: string | null) => {
+    const show = (id: ChatLaunchStageId, status: ChatLaunchStageStatus, detail: string | null, error: string | null = null) => {
       const row = stageOf(record, id);
       if (!row) return;
-      if (row.status === status && (row.detail ?? null) === detail) return;
-      if (status === "done") {
+      if (row.status === status && (row.detail ?? null) === detail && (row.error ?? null) === error) return;
+      if (status === "done" && isChatLaunchCloudStageId(id)) {
         finishStage(record, id, detail);
         return;
       }
-      if (row.status !== status) setStage(record, id, status, { detail });
-      else row.detail = detail;
-      publish(record, { persist: false });
+      if (row.status !== status) {
+        // A row the 3 s read never saw running starts where the row before it ended, not now (0 s).
+        const before = record.snapshot.stages[record.snapshot.stages.indexOf(row) - 1];
+        const startedAt = row.status === "pending" && status !== "running" && before?.endedAt ? { startedAt: before.endedAt } : {};
+        setStage(record, id, status, { detail, error, ...startedAt });
+      } else {
+        row.detail = detail;
+        row.error = error;
+      }
+      publish(record, { persist: status !== "running" });
     };
     const repository = record.project.identity.replace(/^github\.com\//i, "");
     const state = server.state;
@@ -319,6 +343,24 @@ export function createCloudLaneComputerStages(
       else delete record.snapshot.cloud.signIn;
       publish(record, { persist: false });
     }
+    // The brain's rows show once its launch reports them (it lists every row it has).
+    if (clone?.status !== "done" || !BRAIN_STAGE_IDS.some((id) => reported.has(id))) return;
+    for (const id of BRAIN_STAGE_IDS) {
+      const row = stageOf(record, id);
+      if (!row) continue;
+      const stage = reported.get(id);
+      // A row this app guessed that the brain doesn't have (no environment to set up for this lane).
+      if (!stage) {
+        if (row.status === "pending") show(id, "skipped", null);
+        continue;
+      }
+      if (!STAGE_STATUSES.has(stage.status)) continue;
+      const status = stage.status as ChatLaunchStageStatus;
+      // Never back: a row shown finished stays so until the hand-off's snapshot.
+      if (isFinished(row) && !isFinished({ status })) continue;
+      const failure = stage.status === "failed" || stage.status === "warning" ? stage.error?.trim() || null : null;
+      show(id, status, stage.detail?.trim() || null, failure);
+    }
   };
 
   /** The sentence for a launch the server or its computer ended, from the computer's own words when it has them. */
@@ -342,12 +384,66 @@ export function createCloudLaneComputerStages(
       logFields: { launchId: record.snapshot.launchId },
     });
 
+  /** The computer's project is there once its clone is done (or the launch went on past it). */
+  const isCloned = (server: CloudLaunchRecord): boolean =>
+    server.state !== "joined" || server.stages.some((stage) => stage.id === "clone" && stage.status === "done");
+
+  /**
+   * One pass of finding the launch on the computer, run beside the server's
+   * poll so the card keeps moving while it pairs. `wake` settles only on a
+   * snapshot (the hand-off can go now); a null or a failure is read at the
+   * next poll, so a pass that ends at once never spins.
+   */
+  type BindPass = {
+    abort: AbortController;
+    /** The clone was done when the pass began, so its failure is the launch's (pairing then never ran beside the clone). */
+    afterClone: boolean;
+    outcome: { snapshot: ChatLaunchSnapshot | null } | { error: unknown } | null;
+    done: Promise<void>;
+    wake: Promise<void>;
+  };
+
+  const startBindPass = (record: CloudLaneLaunchRecord, current: () => CloudLaunchRecord, signal: AbortSignal): BindPass => {
+    const abort = new AbortController();
+    const stop = () => abort.abort();
+    if (signal.aborted) abort.abort();
+    else signal.addEventListener("abort", stop, { once: true });
+    let wakeUp: () => void = () => undefined;
+    const pass: BindPass = {
+      abort,
+      afterClone: isCloned(current()),
+      outcome: null,
+      done: Promise.resolve(),
+      wake: new Promise<void>((resolve) => { wakeUp = resolve; }),
+    };
+    pass.done = bindToComputer(record, current, abort.signal)
+      .then(
+        (snapshot) => {
+          pass.outcome = { snapshot };
+          if (snapshot) wakeUp();
+        },
+        (error: unknown) => { pass.outcome = { error }; },
+      )
+      .finally(() => signal.removeEventListener("abort", stop));
+    return pass;
+  };
+
+  /** Stops a pass and waits until nothing of it runs: a pairing in flight lands before a cancel's cleanup forgets it. */
+  const stopBindPass = async (pass: BindPass): Promise<void> => {
+    pass.abort.abort();
+    await pass.done;
+  };
+
   /**
    * The launch on the server until the computer's brain holds it: the
    * server's stages on the rows, then the computer in the account, paired,
    * its project found and the brain's launch read. Answers that snapshot
    * (the service adopts it as the hand-off). Safe to run again (Retry, ADE
    * opening after a quit): the same id answers the same launch.
+   *
+   * Pairing starts as soon as the computer joined, while it still clones, and
+   * runs beside the poll, so the card shows the brain's rows meanwhile and the
+   * hand-off comes when its launch is there, not 5-30 s after.
    */
   const runServerLaunch = async (record: CloudLaneLaunchRecord, signal: AbortSignal): Promise<ChatLaunchSnapshot> => {
     const launchId = record.snapshot.launchId;
@@ -356,74 +452,109 @@ export function createCloudLaneComputerStages(
     await resolveTier(record);
     let server = await startOnServer(record, signal);
     await adoptServerSize(record, server);
-    let joinedAt: number | null = null;
+    /** When the clone was done: the time to find the launch there counts from it, not from the join (a clone can take minutes). */
+    let clonedAt: number | null = null;
     let lastProgress = Date.now();
-    for (;;) {
-      assertActive(record, signal);
-      if (server.instanceId && record.snapshot.cloud.instanceId !== server.instanceId) {
-        const earlier = record.snapshot.cloud.instanceId;
-        if (earlier) {
-          // A Retry began again on a new computer (the server deleted the failed one): nothing of the old one is kept.
-          try {
-            deps.forgetMachineConnections?.({ machineKey: record.snapshot.cloud.machineKey, instanceId: earlier });
-          } catch (error) {
-            logger.warn("cloud_lane_launch.connection_left", { launchId, error: getErrorMessage(error) });
-          }
-          record.snapshot.cloud.machineKey = null;
-          record.snapshot.cloud.binding = null;
-          record.targetId = null;
-          for (const id of ["join", "clone"] as const) setStage(record, id, "pending");
-        }
-        record.snapshot.cloud.instanceId = server.instanceId;
-        deps.onComputerCreated?.();
-        logger.info("cloud_lane_launch.computer_created", { launchId, instanceId: server.instanceId, tier: record.tier?.id ?? null });
-        persist(record);
-      }
-      showServerRecord(record, server);
-      if (server.state === "failed" && record.snapshot.cloud.instanceId && server.stages.some((stage) => stage.id === "agent" && stage.status !== "pending")) {
-        // The computer's own launch failed after its agent began: that launch
-        // is the one to hold, so Retry reaches the computer's retry instead
-        // of a server that leaves a started launch as it is.
-        const snapshot = await bindToComputer(record, server, signal).catch((error: unknown) => {
-          logger.info("cloud_lane_launch.failed_launch_bind_failed", { launchId, error: getErrorMessage(error) });
-          return null;
-        });
+    const current = () => server;
+    let bind: BindPass | null = null;
+    /** A finished pass: its snapshot, else null for another pass. A failure past the clone ends the launch, as it always did. */
+    const takeBindPass = (): ChatLaunchSnapshot | null => {
+      const pass = bind;
+      if (!pass?.outcome) return null;
+      bind = null;
+      if ("snapshot" in pass.outcome) return pass.outcome.snapshot;
+      const error = pass.outcome.error;
+      if (pass.afterClone || error instanceof LaunchCancelled || error instanceof CloudCreateCancelled) throw error;
+      // Its time ran beside the clone, which the computer still did: the next pass tries again.
+      logger.info("cloud_lane_launch.bind_during_clone_failed", { launchId, error: getErrorMessage(error) });
+      return null;
+    };
+    try {
+      for (;;) {
         assertActive(record, signal);
-        if (snapshot) return snapshot;
-      }
-      if (server.state === "failed" || server.state === "cancelled") throw serverFailure(server);
-      const signedIn = server.state === "joined" || server.state === "running" || server.state === "done";
-      if (signedIn && record.snapshot.cloud.instanceId) {
-        joinedAt ??= Date.now();
-        const snapshot = await bindToComputer(record, server, signal);
-        if (snapshot) return snapshot;
-        // Signed in, yet no project or launch shows up there: say so instead of waiting forever.
-        if (Date.now() - joinedAt > SERVER_LAUNCH_BIND_WAIT_MS && server.state !== "joined") {
-          throw new LaunchStepError("The new computer started the lane, but ADE can't find it there. Retry to look again.");
+        if (server.instanceId && record.snapshot.cloud.instanceId !== server.instanceId) {
+          const earlier = record.snapshot.cloud.instanceId;
+          if (earlier) {
+            // A pass for the old computer stops before its facts are cleared.
+            if (bind) await stopBindPass(bind);
+            bind = null;
+            // A Retry began again on a new computer (the server deleted the failed one): nothing of the old one is kept.
+            try {
+              deps.forgetMachineConnections?.({ machineKey: record.snapshot.cloud.machineKey, instanceId: earlier });
+            } catch (error) {
+              logger.warn("cloud_lane_launch.connection_left", { launchId, error: getErrorMessage(error) });
+            }
+            record.snapshot.cloud.machineKey = null;
+            record.snapshot.cloud.binding = null;
+            record.targetId = null;
+            for (const id of ["join", "clone", ...BRAIN_STAGE_IDS] as const) setStage(record, id, "pending");
+          }
+          record.snapshot.cloud.instanceId = server.instanceId;
+          deps.onComputerCreated?.();
+          logger.info("cloud_lane_launch.computer_created", { launchId, instanceId: server.instanceId, tier: record.tier?.id ?? null });
+          persist(record);
         }
+        showServerRecord(record, server);
+        if (server.state === "failed" && record.snapshot.cloud.instanceId && server.stages.some((stage) => stage.id === "agent" && stage.status !== "pending")) {
+          // The computer's own launch failed after its agent began: that launch
+          // is the one to hold, so Retry reaches the computer's retry instead
+          // of a server that leaves a started launch as it is.
+          if (bind) await bind.done;
+          let snapshot: ChatLaunchSnapshot | null = null;
+          try {
+            snapshot = takeBindPass() ?? await bindToComputer(record, current, signal);
+          } catch (error) {
+            logger.info("cloud_lane_launch.failed_launch_bind_failed", { launchId, error: getErrorMessage(error) });
+          }
+          bind = null;
+          assertActive(record, signal);
+          if (snapshot) return snapshot;
+        }
+        if (server.state === "failed" || server.state === "cancelled") throw serverFailure(server);
+        // A provider sign-in waits on a person: the time to find the launch starts again after it.
+        if (server.state === "waiting_for_sign_in") clonedAt = null;
+        const signedIn = server.state === "joined" || server.state === "running" || server.state === "done";
+        if (signedIn && record.snapshot.cloud.instanceId) {
+          if (isCloned(server)) clonedAt ??= Date.now();
+          const snapshot = takeBindPass();
+          if (snapshot) return snapshot;
+          bind ??= startBindPass(record, current, signal);
+          // Signed in, yet no project or launch shows up there: say so instead of waiting forever.
+          if (clonedAt != null && Date.now() - clonedAt > SERVER_LAUNCH_BIND_WAIT_MS && server.state !== "joined") {
+            throw new LaunchStepError("The new computer started the lane, but ADE can't find it there. Retry to look again.");
+          }
+        }
+        const pause = sleep(Date.now() - lastProgress > 60_000 ? SERVER_LAUNCH_SLOW_POLL_MS : SERVER_LAUNCH_POLL_MS);
+        // Waiting on the chat's provider sign-in: the card shows the server's link, so the hand-off
+        // waits for it to end (a pass that found the launch already is taken after).
+        const signingIn = server.state === "waiting_for_sign_in";
+        await (bind && !signingIn ? Promise.race([pause, bind.wake]) : pause);
+        assertActive(record, signal);
+        const ready = signingIn ? null : takeBindPass();
+        if (ready) return ready;
+        const before = server.updatedAt;
+        server = await launcher().launchStatus(launchId).catch((error: unknown) => {
+          // A read that didn't land is read again; the server's own refusal ends the launch here.
+          if (error instanceof CloudApiError && error.status === 404) throw new LaunchStepError("ADE Cloud no longer has this launch. Cancel it and send again.");
+          logger.info("cloud_lane_launch.server_read_failed", { launchId, error: getErrorMessage(error) });
+          return server;
+        });
+        if (server.updatedAt !== before) lastProgress = Date.now();
+        await adoptServerSize(record, server);
       }
-      const polledAt = Date.now();
-      await sleep(polledAt - lastProgress > 60_000 ? SERVER_LAUNCH_SLOW_POLL_MS : SERVER_LAUNCH_POLL_MS);
-      assertActive(record, signal);
-      const before = server.updatedAt;
-      server = await launcher().launchStatus(launchId).catch((error: unknown) => {
-        // A read that didn't land is read again; the server's own refusal ends the launch here.
-        if (error instanceof CloudApiError && error.status === 404) throw new LaunchStepError("ADE Cloud no longer has this launch. Cancel it and send again.");
-        logger.info("cloud_lane_launch.server_read_failed", { launchId, error: getErrorMessage(error) });
-        return server;
-      });
-      if (server.updatedAt !== before) lastProgress = Date.now();
-      await adoptServerSize(record, server);
+    } finally {
+      // Nothing of a pass outlives the launch's run here (a cancel, a failure, the hand-off).
+      if (bind) await stopBindPass(bind);
     }
   };
 
   /**
    * Once the computer signed in: its account row (named as the lane),
-   * pairing, the project there and the brain's launch. Null while one isn't
-   * there yet (the computer still clones); each step is kept on the record,
-   * so the next pass goes on from it.
+   * pairing (while the computer still clones), then, once the clone is done,
+   * the project there and the brain's launch. Null while one isn't there
+   * yet; each step is kept on the record, so the next pass goes on from it.
    */
-  const bindToComputer = async (record: CloudLaneLaunchRecord, server: CloudLaunchRecord, signal: AbortSignal): Promise<ChatLaunchSnapshot | null> => {
+  const bindToComputer = async (record: CloudLaneLaunchRecord, current: () => CloudLaunchRecord, signal: AbortSignal): Promise<ChatLaunchSnapshot | null> => {
     const launchId = record.snapshot.launchId;
     const instanceId = record.snapshot.cloud.instanceId!;
     if (!record.snapshot.cloud.machineKey) {
@@ -434,12 +565,14 @@ export function createCloudLaneComputerStages(
       persist(record);
     }
     if (!record.snapshot.cloud.binding) {
-      // The computer clones the repository itself; its project shows once the clone is done.
-      const cloned = server.state !== "joined" || server.stages.some((stage) => stage.id === "clone" && stage.status === "done");
-      if (!cloned) return null;
       const targetId = await pairAndConnect(record, record.snapshot.cloud.machineKey!, signal);
       persist(record);
       assertActive(record, signal);
+      // The computer clones the repository itself; its project shows once the clone is done.
+      while (!isCloned(current())) {
+        await sleep(SERVER_LAUNCH_POLL_MS);
+        assertActive(record, signal);
+      }
       const identity = record.project.identity;
       const project = (await deps.listProjects(targetId)).find((entry: RemoteRuntimeProjectRecord) =>
         entry.exists !== false && normalizeGitRemoteIdentity(entry.gitOriginUrl) === identity) ?? null;

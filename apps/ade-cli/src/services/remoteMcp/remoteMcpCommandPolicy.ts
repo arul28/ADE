@@ -662,11 +662,17 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   if ((command === "lanes" || command === "lane") && sub === "share" && !isLaneShareListForm(args.slice(2))) {
     return refuse();
   }
+  // `cloud limits` reads what agents may do alone; a preset or a value flag
+  // (`--extra-disk`, `--per-day`) sets it, which is full access.
+  if (command === "cloud" && sub === "limits" && args.slice(2).some((word) => !CLOUD_LIMITS_READ_FLAGS.has(word))) return refuse();
   // `actions run` passed checkActionsCommand's read-only test before getting here.
   if (command === "actions" && sub === "run" && words[0] === "run") return { ok: true, args };
   if (sub && allowed.has(sub)) return { ok: true, args };
   return refuse();
 }
+
+/** The only words the read form of `ade cloud limits` takes: output flags. */
+const CLOUD_LIMITS_READ_FLAGS: ReadonlySet<string> = new Set(["--text", "--json", "--pretty", "--compact"]);
 
 /** The flags of the read form of `ade lanes share`, and whether each takes a value. */
 const LANE_SHARE_LIST_FLAGS: ReadonlyMap<string, boolean> = new Map([
