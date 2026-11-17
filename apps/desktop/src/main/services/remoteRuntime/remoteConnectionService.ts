@@ -1285,14 +1285,17 @@ export class RemoteConnectionService {
     // lands during the ownership check still stops this attempt.
     const disconnectGeneration = this.getDisconnectGeneration(target.id);
     await this.assertAccountOwnershipAuthorized(target);
+    const explicit = options.explicit === true;
+    const unattended = explicit && options.background === true;
+    // Only a person's connect dials a machine that waits for them to fix it.
+    const personFixGate = !explicit || unattended ? this.personFixGate(target.id) : null;
+    if (personFixGate) await personFixGate;
     if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
       throw new Error(
         "Remote target was disconnected before ADE finished connecting.",
       );
     }
     this.pairedFallbackSshTrustByTargetId.delete(target.id);
-    const explicit = options.explicit === true;
-    const unattended = explicit && options.background === true;
     if (unattended) {
       // Nobody asked: the person's Disconnect stands, and a build that dials
       // only what the person connected here (`explicitConnectOnly`) does not
@@ -2394,6 +2397,8 @@ export class RemoteConnectionService {
   ): Promise<unknown> {
     await this.assertAccountOwnershipAuthorized(target);
     await this.waitForHeldReconnect(target.id);
+    const personFixGate = this.personFixGate(target.id);
+    if (personFixGate) await personFixGate;
     this.assertImplicitReconnectAllowed(target.id);
     try {
       const result = await this.pool.callMachineForTarget(
@@ -2450,6 +2455,8 @@ export class RemoteConnectionService {
     const disconnectGeneration = this.getDisconnectGeneration(target.id);
     await this.assertAccountOwnershipAuthorized(target);
     await this.waitForHeldReconnect(target.id);
+    const personFixGate = this.personFixGate(target.id);
+    if (personFixGate) await personFixGate;
     const current = this.requireTarget(target.id);
     if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
       throw new Error(
@@ -2638,6 +2645,31 @@ export class RemoteConnectionService {
   }
 
   /**
+   * A call or implicit connect to a machine whose last connect failed in a way
+   * only the person can fix (`waitsForPersonFix`) throws that failure without
+   * dialing: a pinned poll would otherwise redial a broken pairing every few
+   * seconds. Explicit connects (Try again, Pair again) skip this. Null (no
+   * wait at all) for a machine with no such failure, the common case.
+   */
+  private personFixGate(targetId: string): Promise<void> | null {
+    if (this.pool.hasEntry(targetId)) return null;
+    const status = this.statusById.get(targetId);
+    const failure = status?.state === "error" ? status.lastErrorInfo?.failure : undefined;
+    if (!isPersonFixFailure(failure)) return null;
+    return (async () => {
+      // Only a sign-in failure is released by the account changing.
+      const currentOwnerUserId = failure === "authentication" && this.options.getAuthorizedAccountOwnerId
+        ? (await this.options.getAuthorizedAccountOwnerId().catch(() => null))?.trim() || null
+        : null;
+      if (!this.waitsForPersonFix(targetId, currentOwnerUserId)) return;
+      throw new RemoteConnectBackoffError(
+        status?.lastErrorInfo?.message ?? status?.lastError ?? "the machine refused this device",
+        null,
+      );
+    })();
+  }
+
+  /**
    * The 30 s saved-connection maintenance redials this machine on its own
    * (installed apps), with the automatic-reconnect backoff and no time limit.
    */
@@ -2730,7 +2762,7 @@ export class RemoteConnectionService {
     error: unknown,
     failure = this.statusById.get(targetId)?.lastErrorInfo?.failure,
   ): boolean {
-    if (isConnectionBackoffThrottle(error)) return !this.pool.needsUserAction(targetId);
+    if (isConnectionBackoffThrottle(error)) return !this.pool.needsUserAction(targetId) && !isPersonFixFailure(failure);
     if (error instanceof PairedRuntimeRelayAuthRequiredError) return false;
     if (!this.isConnectionFailure(targetId, error) || this.pool.needsUserAction(targetId)) return false;
     return !isPersonFixFailure(failure);

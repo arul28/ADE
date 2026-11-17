@@ -969,6 +969,21 @@ describe("RemoteConnectionService", () => {
       }
       expect(vi.mocked(pool.connect).mock.calls.length).toBe(beforeRejection + 1);
 
+      // Calls pinned to the machine, a window's background connect and an
+      // implicit connect say why without dialing it either.
+      const callMachineForTarget = vi.fn(async () => ({}));
+      (pool as unknown as { callMachineForTarget: typeof callMachineForTarget }).callMachineForTarget = callMachineForTarget;
+      for (const attempt of [
+        () => service.callMachineMethod(saved.id, "ping"),
+        () => service.connect(saved.id, { explicit: true, background: true }),
+        () => service.connect(saved.id),
+      ]) {
+        await expect(attempt()).rejects.toBeInstanceOf(RemoteConnectBackoffError);
+      }
+      expect(callMachineForTarget).not.toHaveBeenCalled();
+      expect(vi.mocked(pool.connect).mock.calls.length).toBe(beforeRejection + 1);
+      expect(status()?.lastErrorInfo?.failure).toBe("pairing");
+
       // The person presses Connect: it dials now, and the machine answers.
       failure = null;
       await service.connect(saved.id, { explicit: true });

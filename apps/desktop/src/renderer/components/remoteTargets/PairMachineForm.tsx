@@ -42,6 +42,8 @@ type PairMachineFormProps = {
   defaultDeviceName: string;
   /** The canonical pairing URL synthesized from the discovered nearby machine. */
   initialInput: string | null;
+  /** The machine turned away this computer's saved pairing; this replaces it. */
+  pairingAgain?: boolean;
   busy?: boolean;
   /** Runs after pairing succeeds; parent connects on the returned target id. */
   onPaired: (targetId: string) => void | Promise<void>;
@@ -56,6 +58,7 @@ type PairMachineFormProps = {
 export function PairMachineForm({
   defaultDeviceName,
   initialInput,
+  pairingAgain = false,
   busy = false,
   onPaired,
 }: PairMachineFormProps) {
@@ -128,7 +131,9 @@ export function PairMachineForm({
   return (
     <form onSubmit={handleSubmit} style={{ display: "grid", gap: 12 }}>
       <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.45 }}>
-        You haven't connected to this computer before. Enter the pairing code shown in ADE on that computer.
+        {pairingAgain
+          ? "This computer's pairing is out of date there. Enter the pairing code shown in ADE on that computer to pair again."
+          : "You haven't connected to this computer before. Enter the pairing code shown in ADE on that computer."}
       </div>
       <div style={{ display: "grid", gap: 6 }}>
         <span style={LABEL_STYLE}>Nearby computer</span>
