@@ -526,7 +526,9 @@ export class RemoteConnectionService {
       this.dialTelemetry.noteConnected(targetId, result.route);
       // The machine is back, whoever dialed it.
       this.hostReturnWatches.stop(targetId);
-      this.endDropRecovery(targetId);
+      // A connect() in flight ends the hold when it writes "connected";
+      // ending it here showed its "connecting" for a moment first.
+      if (this.statusById.get(targetId)?.state !== "connecting") this.endDropRecovery(targetId);
       // A connect that finishes after the machine was removed or disconnected
       // by hand must not write it back.
       if (!this.registry.get(targetId) || this.manuallyDisconnectedTargetIds.has(targetId)) return;
@@ -1280,11 +1282,14 @@ export class RemoteConnectionService {
     } else {
       this.assertImplicitReconnectAllowed(target.id);
     }
-    this.mergeStatus(target.id, {
-      state: "connecting",
-      lastAttemptedAt: Date.now(),
-      lastError: null,
-    });
+    // A background redial of a dropped link keeps showing "reconnecting":
+    // every 2 s it would otherwise flip the windows to "connecting" and back.
+    const quietRedial = (!explicit || unattended)
+      && this.inFastRedial(target.id)
+      && this.statusById.get(target.id)?.state === "error";
+    this.mergeStatus(target.id, quietRedial
+      ? { lastAttemptedAt: Date.now() }
+      : { state: "connecting", lastAttemptedAt: Date.now(), lastError: null });
     try {
       // Asked even with a pool entry: a sleeping box's relay tunnel can look
       // open until a call times out. Only cloud boxes cost a lookup.
