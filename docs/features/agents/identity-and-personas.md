@@ -2,7 +2,7 @@
 
 The CTO carries a persistent identity that survives across provider threads, context compactions, and model switches. This doc explains how that identity is stored, how each turn is reconstructed from it, how the single immutable doctrine shapes behavior, and how the notes and open work keep the thread grounded.
 
-There is one persistent identity: the CTO. The former worker/hiring agent identities were removed, and `AgentChatIdentityKey` is now just `"cto"`.
+There is one persistent identity: the CTO. `AgentChatIdentityKey` is `"cto"`.
 
 ## Source file map
 
