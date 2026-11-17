@@ -19,7 +19,6 @@ import { handleInternalEventWake, isInternalEventWakeRequest, routeEventWakeSubs
 import { routeJiraIssue, routeJiraSearch, routeLinearQuery } from "./integrations";
 import { routeCloudLimits } from "./limits";
 import { routeChatMessages, routeComputerMessages, type ChatWake } from "./chatMessages";
-import { ROW_ID } from "./http";
 import { routeSessionCopies } from "./sessionCopies";
 import { routeGitSummaries } from "./gitSummaries";
 import { routeForkCapsules } from "./forkCapsules";
@@ -64,7 +63,7 @@ import { ACCOUNT_BLOCKED_MESSAGE, accountBlocked, isCloudBlocked, isCloudBlocked
 import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
 import { INSTANCE_LIST_TTL_S, listInstancesCached } from "./instanceListCache";
 import { boundedDisplayText } from "../displayText";
-import { UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson, tooManyRequests } from "./http";
+import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson, tooManyRequests } from "./http";
 import {
   AWAKE_COMPUTER_CAP,
   DISK_ON_CREATE_GB,
@@ -1575,9 +1574,9 @@ function chatWakeFor(env: CloudEnv, userId: string, provider: CloudProvider | nu
       const { blocked } = await wakeBlocker(env, computer.user_id, now);
       if (blocked) return blocked.response;
       if (computer.update_state === "updating") return fail("update_in_progress", new CloudUpdateInProgressError().message, 409);
-      // A computer that never reported `chat_queue` can't drain: fine when its wake updates it, else it must update first.
-      if (!computer.ade_features?.split(",").includes("chat_queue")
-        && !isBehindAutomatic(computer, await readUpdateTargets(env), now)) {
+      // A computer that never reported `chat_queue` can't drain, and the image a
+      // wake would update it to may have no drain either: the client wakes it and sends.
+      if (!computer.ade_features?.split(",").includes("chat_queue")) {
         return fail("update_needed", UPDATE_NEEDED_MESSAGE, 409);
       }
       const awake = isMeteredStatus(computer.status);

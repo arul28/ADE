@@ -647,8 +647,8 @@ A send to a chat or CLI whose computer rests or is gone goes here
 
 - **The checks.** The wake checks run before the insert, so a refusal stores
   nothing: blocked, hours and disk (`wakeBlocker`), `update_in_progress`,
-  `update_needed` (a computer whose boot report did not list `chat_queue` and
-  that can not update on wake), `plan_past_due`, the awake cap (a 12 s wait), and the
+  `update_needed` (a computer whose boot report did not list `chat_queue`; the
+  client then wakes it and sends), `plan_past_due`, the awake cap (a 12 s wait), and the
   idle cleanup.
 - **The wake.** In `waitUntil`, the server starts an asleep computer and runs
   `ade cloud messages drain --json` there over exec (120 s). The booted route

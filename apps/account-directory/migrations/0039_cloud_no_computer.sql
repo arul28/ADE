@@ -125,8 +125,8 @@ create index if not exists cloud_fork_capsules_lane on cloud_fork_capsules (user
 -- The ADE version and features each computer last reported at brain start
 -- (`POST .../booted`). `ade_features` is a comma list of
 -- `CLOUD_COMPUTER_FEATURES`, null for an image that sends none: the queue
--- answers `update_needed` for a computer without `chat_queue` that won't
--- update itself.
+-- answers `update_needed` for a computer without `chat_queue`, and the
+-- client wakes it and sends.
 alter table cloud_computers add column ade_version text;
 alter table cloud_computers add column ade_version_at integer;
 alter table cloud_computers add column ade_features text;
