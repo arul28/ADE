@@ -629,7 +629,12 @@ private struct CloudQueueFollowModifier: ViewModifier {
           sync.refreshCloudServerIfStale(force: true)
           await sync.cloudServerReadTask?.value
           if sync.cloudServerInstance(fleetKey: fleetKey)?.isAwake == true {
-            _ = await sync.machineFleet?.connect(machineKey: fleetKey, timeout: .seconds(20), wake: false)
+            if fleetKey == sync.focusedMachineKey {
+              // The phone's own link: the fleet never dials it.
+              await sync.reconnectIfPossible()
+            } else {
+              _ = await sync.machineFleet?.connect(machineKey: fleetKey, timeout: .seconds(20), wake: false)
+            }
           }
           if let key = sync.chatThreadKey(for: sessionId) {
             sync.chatThreadRequestSnapshot(key, reason: "cloud queue delivered")

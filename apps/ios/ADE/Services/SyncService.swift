@@ -16882,11 +16882,11 @@ final class SyncService: ObservableObject {
       case .refused(let message), .failed(let message):
         throw NSError(domain: "ADE", code: 46, userInfo: [NSLocalizedDescriptionKey: message])
       case .routeMissing:
-        _ = await machineFleet?.connect(machineKey: key.machineKey, timeout: Self.cloudWakeConnectTimeout)
+        await wakeSavedCloudChatComputer(key)
       }
     } else if let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil {
       // Files ride a live link only: wake the computer first.
-      _ = await machineFleet?.connect(machineKey: key.machineKey, timeout: Self.cloudWakeConnectTimeout)
+      await wakeSavedCloudChatComputer(key)
     }
     let response = try await sendCommand(
       action: chatActionName("chat.send", sessionId: sessionId),
@@ -28982,12 +28982,28 @@ extension SyncService: ChatThreadTransport {
 
   /// The account machine key of a chat whose ADE Cloud computer has no live
   /// link to this phone (asleep, or deleted): its transcript is the saved
-  /// copy on the account server. Nil for any other chat.
+  /// copy on the account server. Nil for any other chat. The focused
+  /// computer counts too: its own link is down while it sleeps.
   func savedCloudChatAccountKey(forThreadKey key: ChatThreadKey) -> String? {
-    guard key.machineKey != focusedMachineKey, isCloudFleetKey(key.machineKey),
-          fleetConnection(forThreadKey: key)?.isLive != true
-    else { return nil }
+    guard isCloudFleetKey(key.machineKey) else { return nil }
+    if key.machineKey == focusedMachineKey {
+      guard connectionState != .connected else { return nil }
+    } else if fleetConnection(forThreadKey: key)?.isLive == true {
+      return nil
+    }
     return cloudAccountMachineKey(fleetKey: key.machineKey)
+  }
+
+  /// A send to a cloud chat with no live link that can't go through the
+  /// server's queue (an older server, or files): wake the chat's own
+  /// computer and wait for it. The focused computer wakes through its own
+  /// link; the fleet never dials it.
+  func wakeSavedCloudChatComputer(_ key: ChatThreadKey) async {
+    if key.machineKey == focusedMachineKey {
+      _ = await wakeFocusedCloudMachineIfAsleep()
+    } else {
+      _ = await machineFleet?.connect(machineKey: key.machineKey, timeout: Self.cloudWakeConnectTimeout)
+    }
   }
 
   func chatThreadRequestSnapshot(_ key: ChatThreadKey, reason: String) {
