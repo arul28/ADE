@@ -4318,6 +4318,11 @@ function isLikelyMacRenderer(): boolean {
   return /\bMac\b/i.test(navigator.platform) || /\bMac OS X\b/i.test(navigator.userAgent);
 }
 
+/** A message put back in the composer: words the person is typing stay, and the message goes after them. */
+function draftWithPutBack(current: string, text: string): string {
+  return current.trim().length ? `${current.replace(/\s+$/, "")}\n${text}` : text;
+}
+
 export function AgentChatPane({
   laneId,
   laneLabel,
@@ -21655,7 +21660,7 @@ export function AgentChatPane({
             send={cloudQueueSend}
             style={RUNTIME_BANNER_STYLE}
             onDone={() => setCloudQueueSend(null)}
-            onRestore={(text) => setDraft((current) => (current.trim().length ? current : text))}
+            onRestore={(text) => setDraft((current) => draftWithPutBack(current, text))}
           />
         ) : null}
         {renderedSessionId === selectedSessionId ? (
@@ -21666,8 +21671,7 @@ export function AgentChatPane({
             style={RUNTIME_BANNER_STYLE}
             onCancel={cloudQueue.cancel}
             onPutBack={(message) => {
-              // Words the person is typing stay; the message goes after them.
-              setDraft((current) => (current.trim().length ? `${current.replace(/\s+$/, "")}\n${message.text}` : message.text));
+              setDraft((current) => draftWithPutBack(current, message.text));
               cloudQueue.dismiss(message.messageId);
             }}
             onDismiss={cloudQueue.dismiss}
