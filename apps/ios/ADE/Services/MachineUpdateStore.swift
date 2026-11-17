@@ -274,6 +274,8 @@ final class MachineUpdateStore: ObservableObject {
   @Published private(set) var updatingKeys: Set<String> = []
   @Published private(set) var attempts: [String: MachineUpdateAttempt] = [:]
   @Published var confirmation: MachineUpdateConfirmation?
+  /// The newest ask; a slower, older ask's answers never replace its question.
+  private var latestRequest = UUID()
   /// Moves when an in-flight update's wait ends, so its row re-reads it.
   @Published private(set) var clock = Date()
 
@@ -474,6 +476,8 @@ final class MachineUpdateStore: ObservableObject {
     let idle = targets.filter { !checkingKeys.contains($0.id) && !updatingKeys.contains($0.id) }
     guard !idle.isEmpty else { return }
     checkingKeys.formUnion(idle.map(\.id))
+    let requestId = UUID()
+    latestRequest = requestId
     Task { @MainActor in
       // Every machine is asked at once; each answers within its own deadline.
       let impacts = await withTaskGroup(of: (String, MachineUpdateImpact).self) { group -> [String: MachineUpdateImpact] in
@@ -490,6 +494,7 @@ final class MachineUpdateStore: ObservableObject {
       }
       let rows = idle.map { MachineUpdateConfirmation.Row(target: $0, impact: impacts[$0.id] ?? .unknown) }
       checkingKeys.subtract(idle.map(\.id))
+      guard latestRequest == requestId else { return }
       confirmation = MachineUpdateConfirmation(origin: origin, rows: rows)
     }
   }

@@ -39,7 +39,11 @@ async function fetchManifestJson(url: string): Promise<unknown | null> {
 
 const reader = createLatestByTrackReader({
   fetchJson: fetchManifestJson,
-  fetchStableFallback: async () => (await fetchAdeLatestRelease())?.version ?? null,
+  // Bounded like the manifests: a hung fallback must not hold every later
+  // request on this isolate's one in-flight read.
+  fetchStableFallback: async () => (await fetchAdeLatestRelease({
+    fetchImpl: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }),
+  }))?.version ?? null,
   logger: { warn: (event, data) => console.warn(event, JSON.stringify(data)) },
   minIntervalMs: READ_INTERVAL_MS,
 });
