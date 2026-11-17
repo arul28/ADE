@@ -18134,8 +18134,8 @@ export function AgentChatPane({
     keepLaneOnMachine(null);
     handleDraftMachineChange(machineId);
   }, [handleDraftMachineChange, keepLaneOnMachine]);
-  // Machines one step away: one without this repository (clone it there), or
-  // a cloud machine that is asleep or not connected (wake and connect it).
+  // Machines one step away: a connected own machine without this repository
+  // (clone it there).
   const draftMachineSetup = useDraftMachineSetup({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
