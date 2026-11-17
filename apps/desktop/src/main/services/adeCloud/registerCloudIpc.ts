@@ -26,7 +26,7 @@ import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
 import { CloudApiError, createCloudApiClient } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
-import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode, type CloudAgentLimitsUpdate, type CloudCarriedSignIns, type CloudLaunchRecord } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode, type CloudCarriedSignIns, type CloudLaunchRecord } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudRemoteSignInStatus } from "../../../shared/accountCloudLaunches";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
 import type { CloudSignInEnd } from "../../../shared/cloudSignIns";
@@ -348,6 +348,7 @@ export function registerCloudIpc(args: {
   const agentLimits = createCloudAgentLimitsStore({
     vault: () => (credentials.signedIn() ? cloudVaultFromBridge(args.vaultBridge, CLOUD_AGENT_LIMITS_VAULT_KEY) : null),
     machineStore: getMachineStore,
+    accountApi: () => (credentials.signedIn() && directoryBaseUrl() ? accountApi() : null),
     logger,
   });
 
@@ -558,38 +559,10 @@ export function registerCloudIpc(args: {
     return (await serverAgentLimits()) ?? await agentLimits.read();
   });
 
-  /**
-   * Saves the changed limits on the account server, which merges them into
-   * the stored value (a newer ADE's fields stay) and refuses a change made
-   * in between (`ifRevision`). Null: signed out, or an older server without
-   * the route, so the caller saves the old way. A refusal or a failure
-   * throws the sentence, and nothing is saved here.
-   */
-  const saveLimitsOnServer = async (changes: Partial<CloudAgentLimits>): Promise<CloudAgentLimits | null> => {
-    if (!credentials.signedIn() || !directoryBaseUrl()) return null;
-    const api = accountApi();
-    try {
-      const current = await api.agentLimits();
-      if (!current) return null;
-      const saved = await api.saveAgentLimits({
-        limits: changes as CloudAgentLimitsUpdate["limits"],
-        ifRevision: current.revision,
-      });
-      return saved ? agentLimits.keepHere({ ...saved.limits } as CloudAgentLimits) : null;
-    } catch (error) {
-      if (error instanceof CloudApiError && error.status >= 400 && error.status < 500 && error.message) {
-        // The server's own sentence (`limits_changed`, `limits_unreadable`, a blocked account): no Report.
-        throw Object.assign(new AdeExpectedError(error.message, "user"), { code: error.code || null });
-      }
-      logger.warn("cloud.agent_limits_server_write_failed", { error: getErrorMessage(error) });
-      throw new AdeExpectedError("ADE couldn't reach your ADE account to save your agent limits. Try again.", "network");
-    }
-  };
-
   ipcMain.handle(IPC.cloudSetAgentLimits, async (event, arg: { limits?: Partial<CloudAgentLimits> }): Promise<CloudAgentLimits | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetAgentLimits)) return null;
     const changes = { ...(arg?.limits ?? {}) };
-    const onServer = await saveLimitsOnServer(changes);
+    const onServer = await agentLimits.save(changes);
     // Signed out or an older server: this computer's copy and the account vault item, as before.
     const answer = onServer ?? await agentLimits.write({ ...(await agentLimits.read()), ...changes });
     logger.info("cloud.agent_limits_set", { unattendedSpend: answer.unattendedSpend, machinesPerDay: answer.machinesPerDay, onServer: Boolean(onServer) });

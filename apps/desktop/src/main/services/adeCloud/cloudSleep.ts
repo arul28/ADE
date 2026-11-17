@@ -14,7 +14,9 @@
  * No Electron here: the desktop and the brain's `cloud` actions share it.
  */
 
-import { CLOUD_PLAN_PAST_DUE_SENTENCE, isCloudRefusalCode } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_PLAN_PAST_DUE_SENTENCE, isCloudRefusalCode, type CloudAgentLimitsUpdate } from "../../../../../account-directory/src/cloud/contract";
+import { CloudApiError, type CloudApiClient } from "../../../shared/cloudApiClient";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   CLOUD_BACKSTOP_SLEEP_MINUTES,
   CLOUD_DEFAULT_AGENT_LIMITS,
@@ -223,18 +225,30 @@ function parseStoredLimits(raw: string | null | undefined): CloudAgentLimits | n
 
 export type CloudAgentLimitsStore = {
   read(): Promise<CloudAgentLimits>;
+  /** The whole value to the account vault item and this computer's copy: for a signed-out ADE or an older server. */
   write(limits: CloudAgentLimits): Promise<CloudAgentLimits>;
+  /**
+   * Saves only the changed fields on the account server (`PUT /cloud/limits`),
+   * which merges them into the stored value (a newer ADE's fields stay) and
+   * refuses a change made in between (`ifRevision`). This computer's copy
+   * changes only after the server accepts. Null: signed out, or an older
+   * server without the route, so the caller uses `write`. A refusal or a
+   * failure throws the sentence (an expected error), and nothing is saved.
+   */
+  save?(changes: Partial<CloudAgentLimits>): Promise<CloudAgentLimits | null>;
 };
+
+/** The account server's limits routes; null when signed out or with no account service here. */
+type CloudAgentLimitsApi = Pick<CloudApiClient, "agentLimits" | "saveAgentLimits">;
 
 /** From the account when it answers, else this computer's copy, else the default (marked `fallback` when the account didn't answer). */
 export function createCloudAgentLimitsStore(deps: {
   vault: () => CloudVault | null;
   machineStore: () => { getSync(key: string): string | null; setSync(key: string, value: string): void } | null;
+  /** The account server, for `save`; null signed out. Left out: `save` always answers null. */
+  accountApi?: () => CloudAgentLimitsApi | null;
   logger?: CloudLogger;
-}): CloudAgentLimitsStore & {
-  /** This computer's copy only, after the account server saved the value itself (`PUT /cloud/limits`). */
-  keepHere(limits: CloudAgentLimits): CloudAgentLimits;
-} {
+}): Required<CloudAgentLimitsStore> {
   const local = () => {
     try {
       return deps.machineStore();
@@ -242,6 +256,17 @@ export function createCloudAgentLimitsStore(deps: {
       deps.logger?.warn?.("cloud.agent_limits_local_unavailable", { error: getErrorMessage(error) });
       return null;
     }
+  };
+  /** This computer's copy only, after the account server saved the value itself. */
+  const keepHere = (limits: CloudAgentLimits): CloudAgentLimits => {
+    const next = parseAgentLimits(limits);
+    try {
+      local()?.setSync(CLOUD_AGENT_LIMITS_MACHINE_CREDENTIAL_KEY, JSON.stringify({ v: 3, agents: next }));
+    } catch (error) {
+      // The account holds the value; this copy only answers while the account can't.
+      deps.logger?.warn?.("cloud.agent_limits_local_write_failed", { error: getErrorMessage(error) });
+    }
+    return next;
   };
   return {
     async read() {
@@ -281,15 +306,37 @@ export function createCloudAgentLimitsStore(deps: {
       if (!saved && !savedHere) throw new Error("ADE couldn't save that to your account or this computer. Try again.");
       return next;
     },
-    keepHere(limits) {
-      const next = parseAgentLimits(limits);
+    async save(changes) {
+      const api = deps.accountApi?.() ?? null;
+      if (!api) return null;
       try {
-        local()?.setSync(CLOUD_AGENT_LIMITS_MACHINE_CREDENTIAL_KEY, JSON.stringify({ v: 3, agents: next }));
+        const current = await api.agentLimits();
+        if (!current) return null;
+        // Nothing changed: the stored value is the answer (the server refuses an empty change).
+        if (Object.keys(changes).length === 0) return keepHere({ ...current.limits } as CloudAgentLimits);
+        const saved = await api.saveAgentLimits({
+          limits: changes as CloudAgentLimitsUpdate["limits"],
+          ifRevision: current.revision,
+        });
+        return saved ? keepHere({ ...saved.limits } as CloudAgentLimits) : null;
       } catch (error) {
-        // The account holds the value; this copy only answers while the account can't.
-        deps.logger?.warn?.("cloud.agent_limits_local_write_failed", { error: getErrorMessage(error) });
+        if (error instanceof CloudApiError && error.status >= 400 && error.status < 500 && error.message) {
+          // The server's own sentence (`limits_changed`, `limits_unreadable`, a blocked account): no Report.
+          throw Object.assign(new AdeExpectedError(error.message, "user"), { code: error.code || null });
+        }
+        deps.logger?.warn?.("cloud.agent_limits_server_write_failed", { error: getErrorMessage(error) });
+        throw new AdeExpectedError("ADE couldn't reach your ADE account to save your agent limits. Try again.", "network");
       }
-      return next;
     },
   };
+}
+
+/** The fields of `next` that differ from `current`: what a save sends, so the server keeps every other field. */
+export function cloudAgentLimitsChanges(current: CloudAgentLimits, next: CloudAgentLimits): Partial<CloudAgentLimits> {
+  const changes: Partial<CloudAgentLimits> = {};
+  if (next.unattendedSpend !== current.unattendedSpend) changes.unattendedSpend = next.unattendedSpend;
+  if (next.machinesPerDay !== current.machinesPerDay) changes.machinesPerDay = next.machinesPerDay;
+  if (next.maxShape !== current.maxShape) changes.maxShape = next.maxShape;
+  if ((next.extraDiskMonthCents ?? null) !== (current.extraDiskMonthCents ?? null)) changes.extraDiskMonthCents = next.extraDiskMonthCents ?? null;
+  return changes;
 }
