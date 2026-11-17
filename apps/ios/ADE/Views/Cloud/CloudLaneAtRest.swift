@@ -71,6 +71,12 @@ struct CloudLaneAtRestScreen: View {
     return nil
   }
 
+  /// The account keeps at least one chat of this lane.
+  private var hasSavedChats: Bool {
+    let machine = subject.accountMachineKey.lowercased()
+    return syncService.cloudSavedChats.contains { $0.laneId == subject.laneId && $0.machineKey.lowercased() == machine }
+  }
+
   private var branch: String? {
     summary?.branch.flatMap { nonEmptyTrimmed($0) }
       ?? store.lane(machineKey: subject.accountMachineKey, laneId: subject.laneId)?.branch.flatMap { nonEmptyTrimmed($0) }
@@ -111,10 +117,13 @@ struct CloudLaneAtRestScreen: View {
         .accessibilityLabel("Wake the lane's computer")
         .adeInspectable("CloudLane.AtRest.Wake")
       }
-      // The system puts a secondary action in the bar's ⋯ menu.
-      ToolbarItem(placement: .secondaryAction) {
-        Button("Move to…", systemImage: "arrow.right.circle") { movePresented = true }
-          .adeInspectable("CloudLane.AtRest.Move")
+      // The system puts a secondary action in the bar's ⋯ menu. A lane
+      // moves only with its chats, so a lane with no saved chat has no item.
+      if hasSavedChats {
+        ToolbarItem(placement: .secondaryAction) {
+          Button("Move to…", systemImage: "arrow.right.circle") { movePresented = true }
+            .adeInspectable("CloudLane.AtRest.Move")
+        }
       }
     }
     .sheet(isPresented: $movePresented) {

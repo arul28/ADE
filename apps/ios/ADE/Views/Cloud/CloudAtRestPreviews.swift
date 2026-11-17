@@ -65,8 +65,6 @@ enum CloudAtRestPreviews {
       ))
     case "duo-lane-move":
       return AnyView(LaneMoveFixture(chats: Data.laneChats, options: Data.moveOptions))
-    case "duo-lane-move-no-chats":
-      return AnyView(LaneMoveFixture(chats: [], options: Data.moveOptions))
     case "duo-lane-move-asleep":
       return AnyView(CloudLaneMoveFixture(deleted: false))
     case "duo-lane-move-deleted":

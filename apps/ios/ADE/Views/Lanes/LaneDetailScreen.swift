@@ -208,7 +208,9 @@ struct LaneDetailScreen: View {
     // "Wake and move" on the lane at rest: the computer is up, so the move
     // sheet opens once the lane's chats are read.
     .onChange(of: detail != nil, initial: true) { _, loaded in
-      if loaded, LaneMoveAfterWake.take(laneId: laneId) { movePresented = true }
+      if loaded, LaneMoveAfterWake.take(laneId: laneId), !laneMoveChats(detail?.chatSessions ?? []).isEmpty {
+        movePresented = true
+      }
     }
     .sheet(isPresented: $showBranchPicker) {
       if let detail {
@@ -410,7 +412,8 @@ struct LaneDetailScreen: View {
       onManage: { managePresented = true },
       onCopyLaneLink: copyLaneLink,
       onCopyBranchLink: copyBranchLink,
-      onMove: canRunLiveActions ? { movePresented = true } : nil,
+      // A lane moves only with its chats, so a lane with none has no item.
+      onMove: canRunLiveActions && !laneMoveChats(detail?.chatSessions ?? []).isEmpty ? { movePresented = true } : nil,
       forcesGit: inlineDiffRequest != nil
     ) {
       LaneDuoDashboard(
