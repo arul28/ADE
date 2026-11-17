@@ -26,7 +26,7 @@ import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
 import { CloudApiError, createCloudApiClient } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
-import { CLOUD_CHAT_MESSAGE_MAX_CHARS, isCloudRefusalCode, type CloudAgentLimitsUpdate, type CloudCarriedSignIns, type CloudLaunchRecord } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode, type CloudAgentLimitsUpdate, type CloudCarriedSignIns, type CloudLaunchRecord } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudRemoteSignInStatus } from "../../../shared/accountCloudLaunches";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
 import type { CloudSignInEnd } from "../../../shared/cloudSignIns";
@@ -94,8 +94,13 @@ type Logger = {
 /** Set while the app is up: re-asks ADE Cloud's access after a sign-in or sign-out. */
 let recheckCloudAccess: (() => void) | null = null;
 
-/** The ADE account on this computer changed: ask the server again, and tell every window if the answer moved. */
+/**
+ * The ADE account on this computer changed: every window drops what it read
+ * for the account before (`accountReader.clear` in the preload), and the
+ * server is asked again (every window hears again if the answer moved).
+ */
 export function cloudAccountChanged(): void {
+  sendToAllWindows(IPC.cloudStatusChanged);
   recheckCloudAccess?.();
 }
 
@@ -273,12 +278,14 @@ export function registerCloudIpc(args: {
     if (!machineKey || !chatId || !messageId || !body) throw new AdeExpectedError("A message needs its chat and some text.", "user");
     const provider = text(arg?.provider, 64);
     const modelId = text(arg?.modelId, 256);
+    const settings = cloudChatMessageSettingsOf(arg?.settings);
     try {
       const result = await accountApi().sendChatMessage(machineKey, chatId, {
         messageId,
         text: body,
         ...(provider ? { provider } : {}),
         ...(modelId ? { modelId } : {}),
+        ...(settings ? { settings } : {}),
       });
       logger.info("cloud.chat_message_sent", { wake: result.wake.state });
       if (result.wake.state !== "awake") sendToAllWindows(IPC.cloudStatusChanged);

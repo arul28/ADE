@@ -5351,6 +5351,10 @@ const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
 // its own callback, so two subscriptions of one function stay two.
 const laneLifecycleEventFanout = createIpcEventFanout<LaneLifecycleEvent>(IPC.lanesLifecycleEvent);
 const cloudStatusChangedFanout = createIpcEventFanout<unknown>(IPC.cloudStatusChanged);
+// A sign-in or sign-out, another account, or a computer that rested and saved
+// again: the ADE Cloud reads kept for this window are stale. The one fanout
+// listener serves this and every `onChanged` subscriber.
+cloudStatusChangedFanout(() => adeCloudAccountReader.clear());
 const updateEventFanout = createIpcEventFanout<AutoUpdateSnapshot>(IPC.updateEvent);
 const projectChangedFanout = createIpcEventFanout<ProjectInfo | null>(
   IPC.appProjectChanged,
