@@ -789,7 +789,7 @@ struct AccountProjectHomeScreen: View {
       if cloudChats, project.host == "github.com" {
         AccountProjectCloudComposer(project: project)
         ForEach(launches.entries(forOrigin: "\(project.host)/\(project.owner)/\(project.name)")) { entry in
-          AccountProjectCloudSetupCard(entry: entry) { openCloudChat(project) }
+          AccountProjectCloudSetupCard(entry: entry) { openCloudChat(project, instanceId: entry.record?.instanceId) }
         }
       }
 
@@ -874,15 +874,26 @@ struct AccountProjectHomeScreen: View {
   }
 
   /// The chat runs on its cloud computer, which holds a copy once it joined:
-  /// open the project there, where the chat lists. The list is read again
-  /// first when this phone has not seen that copy yet.
-  private func openCloudChat(_ project: AccountProject) {
+  /// open the project there, where the chat lists, never on another lane's
+  /// computer. The list is read again first when this phone has not seen
+  /// that copy yet.
+  private func openCloudChat(_ project: AccountProject, instanceId: String?) {
     Task {
-      var held = accountProjectCopyMachines(project, machines: account.machines)
+      let syncService = syncPublishes.service
+      if instanceId != nil, syncService.cloudServerInstances.first(where: { $0.id == instanceId }) == nil {
+        await syncService.refreshCloudServerInstances()
+      }
+      let machineKey = syncService.cloudServerInstances.first { $0.id == instanceId }?.machineKey?.lowercased()
+      // Only the launch's own computer: an unknown one opens nothing rather than a different lane.
+      guard let machineKey else { return }
+      let onLaunchComputer = { (held: [(copy: AccountProjectCopy, machine: AccountMachine?)]) in
+        held.filter { $0.copy.machineKey.lowercased() == machineKey }
+      }
+      var held = onLaunchComputer(accountProjectCopyMachines(project, machines: account.machines))
       if accountProjectOpenCopy(held) == nil {
         await store.refresh()
         let fresh = store.liveProjects.first { $0.id == project.id } ?? project
-        held = accountProjectCopyMachines(fresh, machines: account.machines)
+        held = onLaunchComputer(accountProjectCopyMachines(fresh, machines: account.machines))
       }
       guard let open = accountProjectOpenCopy(held) else { return }
       dismiss()

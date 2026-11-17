@@ -2,6 +2,14 @@ import { useMemo } from "react";
 import { hideAccountCloudLaunch, launchInProgress, launchesForOrigin, useAccountCloudLaunches } from "../../../state/accountCloudLaunches";
 import { CloudSetupCard } from "../../projects/CloudSetupCard";
 import { cn } from "../../ui/cn";
+import { navigateToAppTarget } from "../../../lib/openExternal";
+import type { CloudLaunchRecord } from "../../../../shared/accountCloudLaunches";
+
+/** The chat on its lane's computer: Work opens it on the machine that holds it, as a link to it does. */
+function openLaunchChat(record: CloudLaunchRecord): void {
+  if (!record.sessionId) return;
+  navigateToAppTarget({ kind: "chat", sessionId: record.sessionId, laneId: record.laneId ?? null });
+}
 
 /**
  * ADE Web's chats on new ADE Cloud computers for this project, above the Work
@@ -26,7 +34,9 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
   if (shown.length === 0) return null;
   return (
     <div className={cn("flex flex-col gap-2 text-left", className)} data-testid="web-cloud-setup-cards">
-      {shown.map((entry) => <CloudSetupCard key={entry.launchId} entry={entry} onHide={() => hideAccountCloudLaunch(entry.launchId)} />)}
+      {shown.map((entry) => (
+        <CloudSetupCard key={entry.launchId} entry={entry} onOpenChat={openLaunchChat} onHide={() => hideAccountCloudLaunch(entry.launchId)} />
+      ))}
     </div>
   );
 }

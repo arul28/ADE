@@ -848,6 +848,12 @@ extension SyncService {
     }
   }
 
+  /// Reads the account's ADE Cloud computers now and waits for the answer (a launch's new computer).
+  func refreshCloudServerInstances() async {
+    refreshCloudServerIfStale(force: true)
+    await cloudServerReadTask?.value
+  }
+
   private func readCloudServer() async {
     guard let client = await cloudServerClient(),
           let owner = AccountService.shared.currentPairingAuthorization else { return }

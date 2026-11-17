@@ -171,6 +171,9 @@ struct AccountProjectCloudSetupCard: View {
   @ObservedObject private var launches = AccountCloudLaunchStore.shared
   private var syncService: SyncService { syncPublishes.service }
   @State private var retrying = false
+  @State private var cancelling = false
+  @State private var cancelError: String?
+  @Environment(\.openURL) private var openURL
 
   private var record: CloudLaunchRecord? { entry.record }
   private var steps: CloudSetupStepStates {
@@ -194,6 +197,17 @@ struct AccountProjectCloudSetupCard: View {
 
       VStack(alignment: .leading, spacing: 2) {
         stepRow("Computer started", steps.computer)
+        if record?.state == "needs_approval", let link = record?.approvalUrl.flatMap(URL.init(string:)) {
+          HStack(spacing: 8) {
+            Text("Confirm the computer's sign-in to your account.")
+              .font(.system(size: 12))
+              .foregroundStyle(ADEColor.textSecondary)
+            Button("Confirm") { openURL(link) }
+              .buttonStyle(ADEKitButtonStyle())
+          }
+          .padding(.leading, 30)
+          .padding(.vertical, 4)
+        }
         stepRow("Cloned repo", steps.repo)
         stepRow("Sign in to \(providerLabel)", steps.signIn)
         if steps.signIn == .waiting, let signIn = record?.signIn {
@@ -243,6 +257,26 @@ struct AccountProjectCloudSetupCard: View {
           .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)
+        if record != nil, record?.state != "cancelled" {
+          Button {
+            cancelling = true
+            cancelError = nil
+            Task {
+              cancelError = await launches.cancel(entry.launchId, using: syncService)
+              cancelling = false
+            }
+          } label: {
+            if cancelling { ProgressView().controlSize(.small) } else { Text("Cancel") }
+          }
+          .buttonStyle(ADEKitButtonStyle())
+          .disabled(cancelling)
+        }
+        if let cancelError {
+          Text("The chat wasn't cancelled. \(cancelError)")
+            .font(.system(size: 12))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
     }
     .padding(14)

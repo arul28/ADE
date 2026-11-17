@@ -29,7 +29,9 @@ export type MachineLaneSelectGroup = {
 /** "name · branch", the one label format both lane pickers use. */
 export function laneOptionLabel(lane: { name: string; branchRef?: string | null; kind?: string | null; laneType?: string | null }): string {
   const branch = (lane.branchRef ?? "").replace(/^refs\/heads\//, "") || lane.kind || "worktree";
-  return `${laneDisplayName(lane)} · ${branch}`;
+  // A Files workspace names the main checkout by `kind`, a lane by `laneType`.
+  const laneType = lane.laneType ?? (lane.kind === "primary" ? "primary" : null);
+  return `${laneDisplayName({ name: lane.name, laneType })} · ${branch}`;
 }
 
 export function MachineLaneSelect({

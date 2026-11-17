@@ -12,6 +12,7 @@ import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
 import { createBackoffPoller, type BackoffPoller } from "../lib/backoffPoller";
 import { isAdeAvailable } from "../lib/adeAvailability";
 import { refreshCloudMachines } from "../components/remoteTargets/useCloudMachines";
+import { onAccountProjectListAccountChange } from "./accountProjectListClient";
 
 /**
  * Chats started on ADE Cloud from the account server (`window.ade.cloudLaunches`),
@@ -51,6 +52,22 @@ let snapshot: Snapshot = { entries: [], known: false };
 const listeners = new Set<() => void>();
 let poller: BackoffPoller | null = null;
 let discovered = false;
+/** Bumped when the account changes: a read the last account started lands nowhere. */
+let accountEpoch = 0;
+
+// Another account here: the last account's launches and messages go, and the new one is looked up.
+onAccountProjectListAccountChange(() => {
+  accountEpoch += 1;
+  poller?.stop();
+  poller = null;
+  discovered = false;
+  snapshot = { entries: [], known: false };
+  emit();
+  if (listeners.size > 0) {
+    discovered = true;
+    void discover();
+  }
+});
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -203,8 +220,10 @@ async function discover(): Promise<void> {
     setEntries(snapshot.entries, true);
     return;
   }
+  const epoch = accountEpoch;
   try {
     const { launches } = await api.active();
+    if (epoch !== accountEpoch) return;
     const known = new Map(snapshot.entries.map((entry) => [entry.launchId, entry]));
     const added: AccountCloudLaunchEntry[] = [];
     for (const summary of launches) {
@@ -218,6 +237,7 @@ async function discover(): Promise<void> {
       void api.messages(entry.launchId).then(({ messages }) => patchEntry(entry.launchId, { messages }), (error: unknown) => noteReadFailed("messages", error));
     }
   } catch (error) {
+    if (epoch !== accountEpoch) return;
     noteReadFailed("active", error);
     // Look again on the next subscriber (a page that opens later).
     discovered = false;

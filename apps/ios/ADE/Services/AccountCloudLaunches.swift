@@ -80,10 +80,13 @@ struct CloudLaunchRecord: Decodable, Equatable {
   let prompt: String?
   /// The start as the server keeps it: a Retry from any device sends it again.
   let request: RemoteJSONValue?
+  /// `needs_approval`: the page that confirms the computer's sign-in to the account.
+  let approvalUrl: String?
 
   private enum CodingKeys: String, CodingKey {
-    case launchId, state, projectOrigin, laneId, laneName, instanceId, stages, sessionId, error, signIn, provider, modelId, request
+    case launchId, state, projectOrigin, laneId, laneName, instanceId, stages, sessionId, error, signIn, provider, modelId, request, approval
   }
+  private struct Approval: Decodable { let url: String? }
   private struct Request: Decodable {
     struct Chat: Decodable {
       let provider: String?
@@ -111,6 +114,7 @@ struct CloudLaunchRecord: Decodable, Equatable {
     modelId = c.lenient(String.self, forKey: .modelId) ?? chatRequest?.chat?.modelId
     prompt = chatRequest?.chat?.prompt
     request = c.lenient(RemoteJSONValue.self, forKey: .request)
+    approvalUrl = c.lenient(Approval.self, forKey: .approval)?.url
   }
 
   /// Still on its way to a running chat.
@@ -203,6 +207,11 @@ extension CloudServerClient {
   func startLaunch(_ body: RemoteJSONValue) async throws -> CloudLaunchRecord {
     let data = try JSONEncoder().encode(body)
     return try decodeBody(CloudLaunchRecord.self, from: try await send("POST", "cloud/launches", body: data, timeout: 48))
+  }
+
+  /// Stops a launch before its agent starts; the server refuses once it has (`launch_started`).
+  func cancelLaunch(_ launchId: String) async throws -> CloudLaunchRecord {
+    try decodeBody(CloudLaunchRecord.self, from: try await send("DELETE", "cloud/launches/\(pathSegment(launchId))"))
   }
 
   func launch(_ launchId: String) async throws -> CloudLaunchRecord {
@@ -458,6 +467,18 @@ final class AccountCloudLaunchStore: ObservableObject {
     } catch {
       let message = cloudServerFailureMessage(error)
       patch(launchId) { $0.startError = message }
+    }
+  }
+
+  /// Cancels a launch still on its way. Answers the server's reason when it refused.
+  func cancel(_ launchId: String, using sync: SyncService) async -> String? {
+    guard let client = await sync.cloudServerClient() else { return "Sign in to ADE to cancel this chat." }
+    do {
+      let record = try await client.cancelLaunch(launchId)
+      patch(launchId) { $0.record = record }
+      return nil
+    } catch {
+      return cloudServerFailureMessage(error)
     }
   }
 

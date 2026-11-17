@@ -74,7 +74,6 @@ function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
 }
 
-
 export function ProjectWelcomePage() {
   const navigate = useNavigate();
   const workspace = useOptionalWebWorkspace();
@@ -595,12 +594,11 @@ export function ProjectWelcomePage() {
   // none it is hidden (nothing says a computer is needed).
   const hasOwnComputer = useHasOwnComputer();
   const getStarted = useGetStartedState({
-    priorWork: webMode ? hasOwnComputer && webRecents.length > 0 : !recentsLoaded || recentProjects.length > 0,
+    // Desktop: unknown until the recents are read, so a list still loading never finishes the card.
+    priorWork: webMode ? hasOwnComputer && webRecents.length > 0 : recentsLoaded ? recentProjects.length > 0 : null,
   });
   const showChatWithoutProject = !webMode || (hasOwnComputer && activeWebMachine != null);
   useDesktopFirstAccountTab({ enabled: !webMode && recentsLoaded, hasLocalProjects: recentProjects.length > 0 });
-
-
 
   // The page's own card look, when the user set one in edit mode. Scoped to
   // this page: the same tokens drive every other kit card in the app.
@@ -661,7 +659,6 @@ export function ProjectWelcomePage() {
     webMachineByKey,
     webMode,
   ]);
-
 
   const { homeData, headline, openHeadlineTarget, renderWidget } = useHomePageWiring({
     navigate,

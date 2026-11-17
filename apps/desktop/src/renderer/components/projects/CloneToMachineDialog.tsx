@@ -133,7 +133,8 @@ export function CloneToMachineDialog({
     return list.slice(0, 5);
   }, [defaultFolder, machine.machineId, otherProjectPaths]);
 
-  const folder = (otherOpen ? otherValue.trim() : null) || picked || rows[0]?.folder || null;
+  // "Other folder…" with nothing typed has no folder: Clone stays off.
+  const folder = otherOpen ? otherValue.trim() || null : picked || rows[0]?.folder || null;
   useEffect(() => {
     if (!picked && rows[0]) setPicked(rows[0].folder);
   }, [picked, rows]);

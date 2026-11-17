@@ -21,7 +21,7 @@ import {
   type CloudModelPick,
 } from "../../state/cloudModelCatalog";
 import { Banner } from "../ui/notice";
-import { SetupSteps, type SetupStep } from "./SetupSteps";
+import { SetupSteps, type SetupStep, type SetupStepState } from "./SetupSteps";
 
 /* ---- GitHub access ---- */
 
@@ -32,15 +32,20 @@ import { SetupSteps, type SetupStep } from "./SetupSteps";
  * - `no_access`: the ADE app is not on the owner, or this repository is not in it;
  * - `ok`: reads and clones work.
  */
-export type GithubAccess = { state: "unknown" | "no_github" | "no_access" | "ok"; installUrl: string };
+export type GithubAccess = {
+  /** `failed`: the access check itself didn't answer; `retry` reads it again. */
+  state: "unknown" | "no_github" | "no_access" | "ok" | "failed";
+  installUrl: string;
+  retry?: () => void;
+};
 
 export function useGithubAccess(repo: GithubDirectRepoRef | null): GithubAccess {
   const github = useGithubAccountApp();
-  const { diagnosis } = useAccountGithubDiagnosis(github.connected ? repo : null);
+  const { diagnosis, error, refresh } = useAccountGithubDiagnosis(github.connected ? repo : null);
   if (!repo) return { state: "unknown", installUrl: ADE_GITHUB_APP_INSTALL_URL };
   if (!github.connected) return { state: github.loaded ? "no_github" : "unknown", installUrl: ADE_GITHUB_APP_INSTALL_URL };
   const installUrl = diagnosis?.error?.manageUrl ?? ADE_GITHUB_APP_INSTALL_URL;
-  if (!diagnosis) return { state: "unknown", installUrl };
+  if (!diagnosis) return error ? { state: "failed", installUrl, retry: () => void refresh() } : { state: "unknown", installUrl };
   switch (diagnosis.state) {
     case "ok":
     case "rights_not_accepted":
@@ -55,6 +60,12 @@ export function useGithubAccess(repo: GithubDirectRepoRef | null): GithubAccess 
 }
 
 /* ---- Steps strip ---- */
+
+function githubAccessStepState(state: GithubAccess["state"]): SetupStepState {
+  if (state === "ok") return "done";
+  if (state === "unknown") return "running";
+  return state === "failed" ? "failed" : "todo";
+}
 
 /**
  * The project page's slim steps strip: GitHub access, the first chat, lanes.
@@ -78,8 +89,12 @@ export function AccountProjectSteps({
     {
       id: "access",
       title: "GitHub access",
-      state: access.state === "ok" ? "done" : access.state === "unknown" ? "running" : "todo",
-      action: access.state === "no_github" ? (
+      state: githubAccessStepState(access.state),
+      action: access.state === "failed" && access.retry ? (
+        <button type="button" className="kit-btn" data-size="sm" onClick={access.retry}>
+          Check again
+        </button>
+      ) : access.state === "no_github" ? (
         <button type="button" className="kit-btn" data-size="sm" onClick={() => void startGithubAccountAppSignIn(() => undefined)}>
           Connect GitHub
         </button>

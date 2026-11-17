@@ -4,6 +4,7 @@ import { SetupSteps, type SetupStep } from "./SetupSteps";
 import { startGithubAccountAppSignIn, useGithubAccountApp } from "../../lib/useGithubAccountApp";
 import { useAccountGithubRepositories } from "../../lib/useAccountGithubReads";
 import { useAccountProjectList } from "../../state/useRepositoryCopies";
+import { accountProjectListUserId } from "../../state/accountProjectListClient";
 import { useAccountCloudLaunches } from "../../state/accountCloudLaunches";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { useAppStore } from "../../state/appStore";
@@ -44,22 +45,25 @@ function openAccountProject(project: { id: string; name: string }): void {
  * `priorWork` counts as a first chat already sent (someone with projects on
  * a computer of their own never sees the card).
  */
-export function useGetStartedState({ priorWork }: { priorWork: boolean }) {
+export function useGetStartedState({ priorWork }: { priorWork: boolean | null }) {
   const github = useGithubAccountApp();
   const list = useAccountProjectList();
   const launches = useAccountCloudLaunches();
   const cloudLanes = useAdeCloudLaneComputers();
-  const [doneBefore] = useState(() => readFlag(DONE_KEY));
+  // Finished once per account: another account in this browser starts over.
+  const doneKey = `${DONE_KEY}:${accountProjectListUserId() ?? "unknown"}`;
+  const doneBefore = useMemo(() => readFlag(doneKey), [doneKey]);
   const projects = list.state === "ready" ? list.projects : [];
   const githubDone = github.connected;
   const projectDone = projects.length > 0;
-  const chatDone = priorWork || launches.entries.length > 0 || cloudLanes.computers.length > 0;
+  const chatDone = priorWork === true || launches.entries.length > 0 || cloudLanes.computers.length > 0;
   const allDone = githubDone && projectDone && chatDone;
-  useEffect(() => {
-    if (allDone) writeFlag(DONE_KEY);
-  }, [allDone]);
   // Unknown is not "to do": the card waits for the reads before it shows.
-  const known = github.loaded && list.state === "ready" && launches.known;
+  const known = github.loaded && list.state === "ready" && launches.known && priorWork != null;
+  useEffect(() => {
+    // Only once every read is in: a step still loading never counts as done for good.
+    if (allDone && known && accountProjectListUserId()) writeFlag(doneKey);
+  }, [allDone, doneKey, known]);
   return {
     github,
     projects,

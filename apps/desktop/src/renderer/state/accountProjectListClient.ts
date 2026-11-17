@@ -164,6 +164,27 @@ async function readMachineNames(projects: readonly AccountProjectView[], known: 
   writeCache({ v: 1, userId: currentUserId, projects: [...current.projects], machineNames: names });
 }
 
+const accountChangeListeners = new Set<() => void>();
+
+/**
+ * Runs when another account signs in on this client, or the account signs
+ * out: state kept for the last account (its ADE Cloud launches, its Get
+ * started progress) goes. Answers the unsubscribe.
+ */
+export function onAccountProjectListAccountChange(listener: () => void): () => void {
+  accountChangeListeners.add(listener);
+  return () => accountChangeListeners.delete(listener);
+}
+
+/** The account the list is for, once a read named it; null before that and when signed out. */
+export function accountProjectListUserId(): string | null {
+  return currentUserId;
+}
+
+function noteAccountChanged(): void {
+  for (const listener of accountChangeListeners) listener();
+}
+
 /**
  * Drops the list another account left: the one in memory and the copy in
  * localStorage. A browser can be shared, so on the web a new account must
@@ -175,6 +196,7 @@ function forgetOtherAccount(userId: string | null): void {
   pendingChanges.clear();
   writeCache(null);
   publish({ state: "unknown", projects: [] });
+  noteAccountChanged();
 }
 
 async function readList(): Promise<void> {
@@ -191,10 +213,12 @@ async function readList(): Promise<void> {
   });
   if (!answer) return;
   if (answer.state === "signed_out") {
+    const wasSignedIn = currentUserId != null;
     currentUserId = null;
     pendingChanges.clear();
     writeCache(null);
     publish({ state: "signed_out", projects: [] });
+    if (wasSignedIn) noteAccountChanged();
     return;
   }
   if (answer.state === "not_loaded") {
