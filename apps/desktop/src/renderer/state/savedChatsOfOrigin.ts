@@ -35,7 +35,9 @@ function read(projectKey: string): void {
   const next: CacheEntry = { at: Date.now(), rows: entry?.rows ?? [], reading: null };
   next.reading = list({ projectKey: projectKey === WHOLE_ACCOUNT ? null : projectKey, limit: 50 }).then(
     (answer) => {
-      next.rows = answer?.chats ?? next.rows;
+      // No answer (nothing to ask yet): keep the rows, and let the next look read again.
+      if (answer) next.rows = answer.chats;
+      else next.at = 0;
     },
     () => {
       // A failed read keeps the last rows; the next page that asks tries again.
@@ -63,7 +65,19 @@ function useSavedChats(projectKey: string | null): readonly CloudSavedChatRow[] 
   // first read reads again under its own key.
   const key = projectKey ? cacheKey(projectKey) : null;
   useEffect(() => {
-    if (projectKey) read(projectKey);
+    if (!projectKey) return;
+    read(projectKey);
+    // Coming back to the window reads again (at most once a minute): a chat
+    // saved from another device since then shows, and a failed read retries.
+    const again = () => {
+      if (document.visibilityState === "visible") read(projectKey);
+    };
+    window.addEventListener("focus", again);
+    document.addEventListener("visibilitychange", again);
+    return () => {
+      window.removeEventListener("focus", again);
+      document.removeEventListener("visibilitychange", again);
+    };
   }, [key, projectKey]);
   return key ? cache.get(key)?.rows ?? [] : [];
 }

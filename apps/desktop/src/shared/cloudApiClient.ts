@@ -23,6 +23,7 @@ import {
   type CloudAutomationRun,
   type CloudAutomationSummary,
   type CloudChatRow,
+  type CloudChatTranscriptPage,
   type CloudInstance,
   type CloudLaunchJoinRequest,
   type CloudLaunchJoinResult,
@@ -214,6 +215,22 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
         return await request<{ chats: CloudChatRow[]; nextCursor: string | null }>("GET", `${CLOUD_PATHS.chats}${suffix}`);
       } catch (error) {
         if (error instanceof CloudApiError && error.status === 404) return { chats: [], nextCursor: null };
+        throw error;
+      }
+    },
+    /** One saved chat's transcript page; null when the server has no such chat. */
+    savedChat: async (args: { machineKey: string; chatId: string; before?: number | null; limit?: number }) => {
+      const query = new URLSearchParams();
+      if (args.before != null) query.set("before", String(args.before));
+      if (args.limit) query.set("limit", String(args.limit));
+      const suffix = query.size ? `?${query.toString()}` : "";
+      try {
+        return await request<CloudChatTranscriptPage>(
+          "GET",
+          `${CLOUD_PATHS.chats}/${encodeURIComponent(args.machineKey)}/${encodeURIComponent(args.chatId)}${suffix}`,
+        );
+      } catch (error) {
+        if (error instanceof CloudApiError && error.status === 404) return null;
         throw error;
       }
     },

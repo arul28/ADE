@@ -214,6 +214,7 @@ export function CloudSetupCardList({
   openingLaunchId?: string | null;
   onHide?: (launchId: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const now = Date.now();
   const earlier = entries.filter((entry) => isEarlierFailure(entry, now));
   const current = entries.filter((entry) => !isEarlierFailure(entry, now));
@@ -236,35 +237,56 @@ export function CloudSetupCardList({
         />
       ))}
       {newest ? (
-        <section
-          className="kit-panel flex w-full items-center gap-2 px-3 py-1.5 text-[12.5px]"
-          aria-label="Earlier ADE Cloud launches"
-          data-testid="ade-cloud-earlier-failures"
-        >
-          <span className="shrink-0" style={{ color: "var(--kit-text-2)" }}>
-            {earlier.length === 1 ? "Earlier launch failed" : `${earlier.length} earlier launches failed`}
-          </span>
-          <span
-            className="min-w-0 flex-1 truncate"
-            style={{ color: "var(--kit-text-3)" }}
-            title={newest.startError?.trim() || newest.record?.error?.trim() || newestName}
-          >
-            {newestName}
-          </span>
-          <button type="button" className="kit-btn" data-size="sm" onClick={() => void retryAccountCloudLaunch(newest.launchId)}>
-            {earlier.length === 1 ? "Retry" : "Retry latest"}
-          </button>
-          {onHide && hideable.length > 0 ? (
-            <button
-              type="button"
-              className="kit-btn kit-btn-ghost"
-              data-size="sm"
-              onClick={() => {
-                for (const entry of hideable) onHide(entry.launchId);
-              }}
-            >
-              {hideable.length === 1 ? "Hide" : "Hide all"}
-            </button>
+        <section className="kit-panel flex w-full flex-col text-[12.5px]" aria-label="Earlier ADE Cloud launches" data-testid="ade-cloud-earlier-failures">
+          <div className="flex items-center gap-2 px-3 py-1.5">
+            <span className="shrink-0" style={{ color: "var(--kit-text-2)" }}>
+              {earlier.length === 1 ? "Earlier launch failed" : `${earlier.length} earlier launches failed`}
+            </span>
+            <span className="min-w-0 flex-1 truncate" style={{ color: "var(--kit-text-3)" }} title={failureOf(newest) ?? newestName}>
+              {expanded ? "" : newestName}
+            </span>
+            {earlier.length > 1 ? (
+              <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
+                {expanded ? "Less" : "Show"}
+              </button>
+            ) : null}
+            {expanded ? null : (
+              <button type="button" className="kit-btn" data-size="sm" onClick={() => void retryAccountCloudLaunch(newest.launchId)}>
+                {earlier.length === 1 ? "Retry" : "Retry latest"}
+              </button>
+            )}
+            {onHide && hideable.length > 0 ? (
+              <button
+                type="button"
+                className="kit-btn kit-btn-ghost"
+                data-size="sm"
+                onClick={() => {
+                  for (const entry of hideable) onHide(entry.launchId);
+                }}
+              >
+                {hideable.length === 1 ? "Hide" : "Hide all"}
+              </button>
+            ) : null}
+          </div>
+          {expanded ? (
+            <ul className="m-0 flex list-none flex-col p-0" aria-label="Earlier failed launches">
+              {earlier.map((entry) => (
+                <li key={entry.launchId} className="flex items-center gap-2 border-t px-3 py-1.5" style={{ borderColor: "var(--kit-rule)" }}>
+                  <span className="min-w-0 flex-1 truncate" title={failureOf(entry) ?? undefined}>
+                    {launchCardName(entry)}
+                    {failureOf(entry) ? <span style={{ color: "var(--kit-text-3)" }}> · {failureOf(entry)}</span> : null}
+                  </span>
+                  <button type="button" className="kit-btn" data-size="sm" onClick={() => void retryAccountCloudLaunch(entry.launchId)}>
+                    Retry
+                  </button>
+                  {onHide && accountCloudLaunchHideable(entry) ? (
+                    <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={() => onHide(entry.launchId)}>
+                      Hide
+                    </button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
           ) : null}
         </section>
       ) : null}
@@ -300,6 +322,11 @@ function CompactSteps({ rows }: { rows: readonly SetupStep[] }) {
       </span>
     </div>
   );
+}
+
+/** What a failed launch said went wrong, if anything. */
+function failureOf(entry: AccountCloudLaunchEntry): string | null {
+  return entry.startError?.trim() || entry.record?.error?.trim() || null;
 }
 
 /** The card's name: the lane's, or the first words of the first message. */

@@ -290,7 +290,9 @@ export function createWebCloudNamespace(
       list: async (args) => await savedChatRead<CloudSavedChatList>("saved_chats_list", { ...args })
         ?? await accountClient.cloudApi()?.savedChats(args).catch(() => null)
         ?? null,
-      read: async (args) => await savedChatRead<CloudSavedChatPage>("saved_chats_read", { ...args }),
+      read: async (args) => await savedChatRead<CloudSavedChatPage>("saved_chats_read", { ...args })
+        ?? await accountClient.cloudApi()?.savedChat(args).catch(() => null)
+        ?? null,
       delete: async () => {
         throw new Error("Delete a saved chat in the ADE desktop app.");
       },
