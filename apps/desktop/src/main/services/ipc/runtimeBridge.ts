@@ -97,7 +97,11 @@ import { isWindowsSelfInstallBlocked } from "../../../shared/updateVersions";
 import { DesktopPairedMachineStore } from "../remoteRuntime/syncPairedMachineStore";
 import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
-import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
+import {
+  openRemotePtyDataFilter,
+  ptyDataIdsForSender,
+  shouldSendPtyDataToWebContents,
+} from "../pty/ptyDataSubscriptions";
 import { shouldSendAppControlFrameToWebContents } from "../appControl/appControlFrameSubscriptions";
 import { adeActionAccess, isBackgroundAdeWrite } from "../../../shared/adeActionAccess";
 import { goneTargetMachineKey, noteGoneTarget, reachGoneTarget } from "../machines/goneTargets";
@@ -2277,25 +2281,40 @@ export function registerRuntimeBridge({
       // the machine is asked by the id it lists, found at each (re)subscribe.
       const bindingKey = remoteProjectBindingKey(target.id, projectId);
       const requestKey = runtimeEventRequestKey(bindingKey, request);
-      const subscribe = (
+      // Terminal output crosses the link only for the terminals this window
+      // shows; it drops the rest itself (`shouldForwardRuntimeEvent`).
+      const carriesPtyData = request.category === undefined || request.category === "pty";
+      const sender = event.sender;
+      const subscribe = async (
         onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
         onEnded: () => void,
         onSubscribed?: (result: RuntimeEventSubscriptionInit) => void,
-      ) =>
-        remoteConnectionService.subscribeEvents(
-          target.id,
-          projectId,
-          {
-            cursor: request.cursor,
-            limit: request.limit,
-            category: request.category,
-            replay: request.replay,
-          },
-          onEvent,
-          onEnded,
-          onSubscribed,
-          { projectRootPath },
-        );
+      ) => {
+        const ptyFilter = carriesPtyData ? openRemotePtyDataFilter(sender, bindingKey) : null;
+        try {
+          const cleanup = await remoteConnectionService.subscribeEvents(
+            target.id,
+            projectId,
+            {
+              cursor: request.cursor,
+              limit: request.limit,
+              category: request.category,
+              replay: request.replay,
+            },
+            onEvent,
+            onEnded,
+            onSubscribed,
+            { projectRootPath, ...(ptyFilter ? { ptyDataFilter: ptyFilter.filter } : {}) },
+          );
+          return () => {
+            ptyFilter?.release();
+            cleanup();
+          };
+        } catch (error) {
+          ptyFilter?.release();
+          throw error;
+        }
+      };
       if (request.replay === false) {
         const subscriptionInit = await ensureRuntimeEventSubscription(
           event.sender,
@@ -2313,8 +2332,14 @@ export function registerRuntimeBridge({
           ...(typeof subscriptionInit?.oldestCursor === "number" ? { oldestCursor: subscriptionInit.oldestCursor } : {}),
         };
       }
+      const ptyDataIds = carriesPtyData ? ptyDataIdsForSender(sender) : null;
       const result = withRendererVisibleEvents(
-        await remoteConnectionService.streamEvents(target.id, projectId, request, { projectRootPath }),
+        await remoteConnectionService.streamEvents(
+          target.id,
+          projectId,
+          ptyDataIds ? { ...request, ptyDataIds } : request,
+          { projectRootPath },
+        ),
       );
       // A pump that started live already has a push stream for this binding and
       // category. A second, replaying one would send every event over the wire

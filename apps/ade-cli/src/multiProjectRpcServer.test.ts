@@ -3941,6 +3941,94 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  it("sends terminal output only for the terminals a subscription lists", async () => {
+    // A desktop window drops the output of terminals it does not show, so the
+    // brain must not send it across the link. A list change applies before its
+    // answer: a window reads a returning terminal's screen after the answer,
+    // so nothing printed in between is lost.
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const eventBuffer = createEventBuffer();
+    const scopeRegistry = {
+      get: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: { eventBuffer, dispose: vi.fn() },
+        dispose: vi.fn(),
+      })),
+      ensureSyncHost: vi.fn(),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    const notify = vi.fn();
+    handler.setNotifier(notify);
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    const listed = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runtimeEvents.subscribe",
+      params: { projectId: added.projectId, ptyDataIds: ["pty-shown"] },
+    }) as { subscriptionId: string };
+    const everything = await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runtimeEvents.subscribe",
+      params: { projectId: added.projectId },
+    }) as { subscriptionId: string };
+
+    const push = (payload: Record<string, unknown>) => eventBuffer.push({
+      timestamp: "2026-05-10T00:00:00.000Z",
+      category: "pty",
+      payload,
+    });
+    const received = (subscriptionId: string) => notify.mock.calls
+      .filter(([, params]) => (params as { subscriptionId: string }).subscriptionId === subscriptionId)
+      .map(([, params]) => {
+        const payload = (params as { event: { payload: { type: string; event: { ptyId: string; data?: string } } } }).event.payload;
+        return `${payload.type}:${payload.event.ptyId}:${payload.event.data ?? ""}`;
+      });
+
+    push({ type: "pty_data", event: { ptyId: "pty-shown", data: "a" } });
+    push({ type: "pty_data", event: { ptyId: "pty-hidden", data: "b" } });
+    push({ type: "pty_exit", event: { ptyId: "pty-hidden", exitCode: 0 } });
+    expect(received(listed.subscriptionId)).toEqual(["pty_data:pty-shown:a", "pty_exit:pty-hidden:"]);
+    expect(received(everything.subscriptionId)).toHaveLength(3);
+
+    expect(await handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "runtimeEvents.setPtyDataFilter",
+      params: { subscriptionId: listed.subscriptionId, ptyDataIds: ["pty-shown", "pty-hidden"] },
+    })).toEqual({ applied: true });
+    push({ type: "pty_data", event: { ptyId: "pty-hidden", data: "c" } });
+    expect(received(listed.subscriptionId)).toContain("pty_data:pty-hidden:c");
+
+    // The poll takes the same list, and its cursor moves past what it skipped.
+    const polled = await handler({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "ade/actions/call",
+      params: {
+        projectId: added.projectId,
+        name: "stream_events",
+        arguments: { cursor: 0, limit: 100, ptyDataIds: ["pty-shown"] },
+      },
+    }) as { events: Array<{ payload: { type: string; event: { ptyId: string } } }>; nextCursor: number };
+    expect(polled.events.map((event) => `${event.payload.type}:${event.payload.event.ptyId}`)).toEqual([
+      "pty_data:pty-shown",
+      "pty_exit:pty-hidden",
+    ]);
+    expect(polled.nextCursor).toBe(eventBuffer.latestCursor());
+
+    handler.dispose();
+  });
+
   it("does not replay buffered screencast frames to a subscriber that did not ask", async () => {
     const { projectRoot, registry } = createRegistry();
     const added = registry.add(projectRoot);

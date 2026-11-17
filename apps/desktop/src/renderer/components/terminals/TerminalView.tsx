@@ -341,6 +341,13 @@ const pinnedPtyExitUnsubs = new Map<string, () => void>();
 let pinnedPtyRuntimeCount = 0;
 let ptyDataSubscriptionSignature: string | null = null;
 const pinnedPtyDataSubscriptionSignatures = new Map<string, string>();
+/**
+ * The terminal list each machine is still taking, by pin. A machine that
+ * sends output by list sends a terminal's output only once it has the list,
+ * so a terminal there that comes back reads its screen after that
+ * (`hydrateTranscript`); output printed in between would be lost.
+ */
+const pinnedPtyDataSubscriptionUpdates = new Map<string, Promise<void>>();
 
 function terminalRuntimeKey(args: {
   sessionId: string;
@@ -1268,7 +1275,11 @@ function updatePtyDataSubscriptions(removedRuntime?: CachedRuntime): void {
     if (signature === pinnedPtyDataSubscriptionSignatures.get(key)) continue;
     pinnedPtyDataSubscriptionSignatures.set(key, signature);
     if (typeof setDataSubscriptions === "function") {
-      setDataSubscriptions({ ptyIds: next }, group.pin).catch(() => {});
+      const update = setDataSubscriptions({ ptyIds: next }, group.pin).catch(() => {});
+      pinnedPtyDataSubscriptionUpdates.set(key, update);
+      void update.then(() => {
+        if (pinnedPtyDataSubscriptionUpdates.get(key) === update) pinnedPtyDataSubscriptionUpdates.delete(key);
+      });
     }
   }
 
@@ -1343,12 +1354,14 @@ function resumeRuntimePtyStream(runtime: CachedRuntime): void {
 
 function syncRuntimePtyDataStreaming(runtime: CachedRuntime, wasReceiving: boolean): void {
   const isReceiving = shouldRuntimeReceivePtyData(runtime);
+  // The list goes out first, so a terminal that comes back finds the update
+  // its screen read waits for.
+  updatePtyDataSubscriptions();
   if (wasReceiving && !isReceiving) {
     pauseRuntimePtyStream(runtime);
   } else if (!wasReceiving && isReceiving) {
     resumeRuntimePtyStream(runtime);
   }
-  updatePtyDataSubscriptions();
 }
 
 function setRuntimeVisibilityState(runtime: CachedRuntime, visible: boolean) {
@@ -3086,10 +3099,17 @@ function startHydration(runtime: CachedRuntime) {
   };
 
   const hydrateTranscript = () => {
-    readInitialHydrationData(runtime)
-      .then((data) => normalizeHydrationData(runtime, data))
-      .then(finalizeHydration)
-      .catch(() => finalizeHydration({ source: "empty", text: "" }));
+    const read = () => {
+      readInitialHydrationData(runtime)
+        .then((data) => normalizeHydrationData(runtime, data))
+        .then(finalizeHydration)
+        .catch(() => finalizeHydration({ source: "empty", text: "" }));
+    };
+    const listUpdate = runtime.runtimePin
+      ? pinnedPtyDataSubscriptionUpdates.get(runtimePinSubscriptionKey(runtime.runtimePin))
+      : undefined;
+    if (listUpdate) void listUpdate.then(read);
+    else read();
   };
 
   const waitForFitThenHydrate = (attempt: number) => {

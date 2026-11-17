@@ -3737,7 +3737,7 @@ const REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS = 2_500;
 const pinnedRuntimeEvents = createPinnedRuntimeEvents({
   ipcRenderer,
   toWrappedEvent,
-  syncPtyDataSubscriptions: () => syncPtyDataSubscriptions(),
+  syncPtyDataSubscriptions: (settleBindingKey) => syncPtyDataSubscriptions(settleBindingKey),
   isPtyDataFilteringConfigured: () => ptyDataSubscriptionsConfigured,
   isRemoteTargetOffline: (targetId) => remoteTargetGate.isOffline(targetId),
   activePumpKeepsSubscription: (pin) => activeRuntimeEventPumpKeepsSubscription(pin),
@@ -3827,13 +3827,14 @@ function collectPtyDataSubscriptionIds(): string[] {
   return [...ids];
 }
 
-function syncPtyDataSubscriptions(): Promise<void> {
+function syncPtyDataSubscriptions(settleBindingKey?: string | null): Promise<void> {
   // Until the active path opts into filtering, main-process delivery is
   // intentionally unrestricted. A pinned view must not narrow that legacy
   // stream merely by mounting; its own filter still applies in preload.
   if (!ptyDataSubscriptionsConfigured) return Promise.resolve();
   return ipcRenderer.invoke(IPC.ptyDataSubscriptions, {
     ptyIds: collectPtyDataSubscriptionIds(),
+    ...(settleBindingKey ? { settleBindingKey } : {}),
   });
 }
 
@@ -3853,7 +3854,7 @@ async function setPtyDataSubscriptions(
     pinnedRuntimeEvents.updateOpenPinnedPtyDataSubscriptions(pin, ptyIds);
   } else subscribedPtyDataIds = ptyIds;
   ensureRemoteRuntimeEventPump();
-  await syncPtyDataSubscriptions();
+  await syncPtyDataSubscriptions(pin?.kind === "remote" ? pin.key : null);
 }
 
 function ensureRemoteRuntimeEventPump(): void {

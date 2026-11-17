@@ -34,6 +34,7 @@ import {
 import { ATTACHMENT_PARTS_MIN_BYTES, createAttachmentUploadMeter, sendAttachmentInParts } from "./remoteAttachmentParts";
 import { linkWantsSlowPath, type LinkMeter } from "./remoteLinkMeter";
 import type { RuntimeRpcClient } from "./runtimeRpcClient";
+import type { RemotePtyDataFilter } from "../pty/ptyDataSubscriptions";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
@@ -1586,6 +1587,9 @@ export class RemoteConnectionPool {
         ...(isRemoteRuntimeEventCategory(request.category)
           ? { category: request.category }
           : {}),
+        ...(request.ptyDataIds && entry.result.capabilities?.ptyDataFilter === true
+          ? { ptyDataIds: request.ptyDataIds }
+          : {}),
       },
     }, {
       timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS,
@@ -1667,7 +1671,7 @@ export class RemoteConnectionPool {
   ): Promise<() => void> {
     const entry = await this.requireEntry(targetId);
     return await subscribeToRuntimeEvents(
-      entry.client,
+      entry,
       projectId,
       request,
       onEvent,
@@ -1683,18 +1687,22 @@ export class RemoteConnectionPool {
     onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
     onEnded?: () => void,
     onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
-    options: { onPhase?: (phase: RemoteEventSetupPhase) => void } = {},
+    options: {
+      onPhase?: (phase: RemoteEventSetupPhase) => void;
+      ptyDataFilter?: RemotePtyDataFilter;
+    } = {},
   ): Promise<() => void> {
     return await this.withEntryForTarget(
       target,
       (entry) =>
         subscribeToRuntimeEvents(
-          entry.client,
+          entry,
           projectId,
           request,
           onEvent,
           onEnded,
           onSubscribed,
+          options.ptyDataFilter,
         ),
       {
         retryOnConnectionError: true,
@@ -2162,13 +2170,18 @@ function normalizeAdeActionRegistry(value: unknown): AdeActionRegistryEntry[] {
 }
 
 async function subscribeToRuntimeEvents(
-  client: RuntimeRpcClient,
+  entry: Pick<PoolEntry, "client" | "result">,
   projectId: string,
   request: RemoteRuntimeStreamEventsRequest,
   onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
   onEnded?: () => void,
   onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
+  ptyDataFilter?: RemotePtyDataFilter,
 ): Promise<() => void> {
+  const client = entry.client;
+  // Only a brain that takes a list gets one; an older one sends everything.
+  const filter = entry.result.capabilities?.ptyDataFilter === true ? ptyDataFilter : undefined;
+  const initialPtyDataIds = filter?.current() ?? null;
   const pendingNotifications: RuntimeEventNotification[] = [];
   let closed = false;
   let subscriptionId: string | null = null;
@@ -2212,10 +2225,26 @@ async function subscribeToRuntimeEvents(
         ? { category: request.category }
         : {}),
       ...(typeof request.replay === "boolean" ? { replay: request.replay } : {}),
+      ...(initialPtyDataIds ? { ptyDataIds: initialPtyDataIds } : {}),
     }, {
       timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS,
     });
     subscriptionId = readSubscriptionId(value);
+    if (filter && !closed) {
+      const id = subscriptionId;
+      let sent = ptyDataIdsSignature(initialPtyDataIds);
+      filter.onChange = async (ptyIds) => {
+        const signature = ptyDataIdsSignature(ptyIds);
+        if (closed || signature === sent) return;
+        sent = signature;
+        await client.call("runtimeEvents.setPtyDataFilter", {
+          subscriptionId: id,
+          ptyDataIds: ptyIds,
+        }, { timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS });
+      };
+      // The window may have changed its list while the subscribe was in flight.
+      void filter.onChange(filter.current()).catch(() => {});
+    }
     onSubscribed?.(normalizeRuntimeEventsSubscribeResult(value, request.cursor));
     for (const notification of pendingNotifications) {
       if (closed) break;
@@ -2225,6 +2254,7 @@ async function subscribeToRuntimeEvents(
     }
   } catch (error) {
     closed = true;
+    if (filter) filter.onChange = null;
     removeNotificationListener();
     removeDisconnectListener();
     throw error;
@@ -2233,6 +2263,7 @@ async function subscribeToRuntimeEvents(
   return () => {
     if (closed) return;
     closed = true;
+    if (filter) filter.onChange = null;
     removeNotificationListener();
     removeDisconnectListener();
     const id = subscriptionId;
@@ -2242,6 +2273,10 @@ async function subscribeToRuntimeEvents(
         .catch(() => {});
     }
   };
+}
+
+function ptyDataIdsSignature(ptyIds: string[] | null): string | null {
+  return ptyIds ? ptyIds.join("\0") : null;
 }
 
 function normalizeRuntimeEventsSubscribeResult(

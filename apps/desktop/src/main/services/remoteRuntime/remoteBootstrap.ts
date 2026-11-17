@@ -217,6 +217,7 @@ export function validateRemoteRuntimeInitializeResult(args: {
       machineProjects: normalizedMachineProjects,
       ...(capabilities.clientSendDedupe === true ? { clientSendDedupe: true } : {}),
       ...(capabilities.agentCliTypeNow === true ? { agentCliTypeNow: true } : {}),
+      ...(capabilities.ptyDataFilter === true ? { ptyDataFilter: true } : {}),
       ...(capabilities.chatAttachmentParts === true ? { chatAttachmentParts: true } : {}),
       ...(capabilities.backgroundActionJobs === true ? { backgroundActionJobs: true } : {}),
       ...(capabilities.chatCreateAndSend === true ? { chatCreateAndSend: true } : {}),

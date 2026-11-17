@@ -323,6 +323,7 @@ projects.getHandoffStoragePreflight
 projects.create  projects.clone    projects.listMyGitHubRepos
 personalChats.call                 personalChats.streamEvents
 runtimeEvents.subscribe   runtimeEvents.unsubscribe
+runtimeEvents.setPtyDataFilter
 sync.getStatus            sync.refreshDiscovery
 sync.listDevices          sync.updateLocalDevice
 sync.connectToBrain       sync.disconnectFromBrain

@@ -54,6 +54,7 @@ import type {
 } from "../../../shared/types";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
+import type { RemotePtyDataFilter } from "../pty/ptyDataSubscriptions";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   MAX_CHAT_ATTACHMENT_BYTES,
@@ -1993,6 +1994,8 @@ export class RemoteConnectionService {
       request.limit ?? null,
       request.category ?? null,
       request.replay ?? null,
+      // Windows that show different terminals do not share a filtered read.
+      request.ptyDataIds ?? null,
     ]);
     const inFlight = this.inFlightStreamEvents.get(key);
     if (inFlight) return inFlight;
@@ -2081,7 +2084,7 @@ export class RemoteConnectionService {
     onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
     onEnded?: () => void,
     onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
-    options?: { projectRootPath?: string | null },
+    options?: { projectRootPath?: string | null; ptyDataFilter?: RemotePtyDataFilter },
   ): Promise<() => void> {
     // A subscription acknowledged after the deadline is closed again
     // (`onLateResult`): the caller gave up on it and holds no handle to it.
@@ -2104,7 +2107,7 @@ export class RemoteConnectionService {
             (result) => {
               if (!gaveUp()) onSubscribed?.(result);
             },
-            { onPhase: notePhase },
+            { onPhase: notePhase, ptyDataFilter: options?.ptyDataFilter },
           );
           if (gaveUp()) return cleanup;
           this.mergeStatus(targetId, {

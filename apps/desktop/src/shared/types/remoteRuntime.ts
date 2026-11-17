@@ -511,6 +511,13 @@ export type RemoteRuntimeCapabilities = {
    * older brain, which keeps the local line off.
    */
   agentCliTypeNow?: boolean;
+  /**
+   * `runtimeEvents.subscribe` and `stream_events` take `ptyDataIds`, and
+   * `runtimeEvents.setPtyDataFilter` changes a subscription's list: the brain
+   * sends only the output of the terminals a window shows. Absent on an older
+   * brain, which sends every terminal's output.
+   */
+  ptyDataFilter?: boolean;
   /** The brain runs `chat.saveTempAttachmentPart` (a paste in parts). Absent on an older brain. */
   chatAttachmentParts?: boolean;
   /** `ade/actions/call` takes `backgroundJob` (a long action followed by id). Absent on an older brain. */
@@ -621,6 +628,11 @@ export type RemoteRuntimeStreamEventsRequest = {
   limit?: number;
   category?: RemoteRuntimeEventCategory;
   replay?: boolean;
+  /**
+   * Main only: the terminals whose `pty_data` the window shows. Main sets it
+   * from the window's own list; a brain without `ptyDataFilter` never sees it.
+   */
+  ptyDataIds?: string[];
 };
 
 export type RemoteRuntimeStreamEventsResult = {

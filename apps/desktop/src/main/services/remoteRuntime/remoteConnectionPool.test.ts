@@ -52,6 +52,7 @@ import { ipcInvokeTimeoutMs } from "../ipc/ipcTimeouts";
 import { IPC } from "../../../shared/ipc";
 import { conditionalActionResult } from "../../../../../ade-cli/src/conditionalActionResult";
 import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
+import type { RemotePtyDataFilter } from "../pty/ptyDataSubscriptions";
 
 type DisconnectListener = (error: Error) => void;
 
@@ -2312,5 +2313,49 @@ describe("RemoteConnectionPool", () => {
       },
     });
     expect(onEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { brainTakesList: true },
+    { brainTakesList: false },
+  ])("sends a window's terminal list only to a brain that takes one ($brainTakesList)", async ({ brainTakesList }) => {
+    const client = createClient();
+    client.call.mockImplementation(async (method: string) => {
+      if (method === "runtimeEvents.subscribe") return { subscriptionId: "runtime-events-9", nextCursor: 0, hasMore: false };
+      if (method === "ade/actions/call") return { events: [], nextCursor: 0, hasMore: false };
+      return { applied: true };
+    });
+    const result = connectResult("1.0.0");
+    if (brainTakesList && result.capabilities) result.capabilities = { ...result.capabilities, ptyDataFilter: true };
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({ client, ssh: createSsh(), result });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    let shown: string[] | null = ["pty-a"];
+    const filter: RemotePtyDataFilter = { current: () => shown, onChange: null };
+
+    const cleanup = await pool.subscribeEventsForTarget(
+      target, "project-1", { replay: false }, vi.fn(), undefined, undefined, { ptyDataFilter: filter },
+    );
+    shown = ["pty-a", "pty-b"];
+    await filter.onChange?.(shown);
+    await pool.streamEventsForTarget(target, "project-1", { cursor: 3, ptyDataIds: ["pty-a"] });
+
+    const subscribeParams = client.call.mock.calls.find(([method]) => method === "runtimeEvents.subscribe")?.[1];
+    const pollArgs = (client.call.mock.calls.find(([method]) => method === "ade/actions/call")?.[1] as { arguments: Record<string, unknown> }).arguments;
+    const listChanges = client.call.mock.calls.filter(([method]) => method === "runtimeEvents.setPtyDataFilter");
+    if (brainTakesList) {
+      expect(subscribeParams).toMatchObject({ ptyDataIds: ["pty-a"] });
+      expect(listChanges.map(([, params]) => params)).toEqual([
+        { subscriptionId: "runtime-events-9", ptyDataIds: ["pty-a", "pty-b"] },
+      ]);
+      expect(pollArgs.ptyDataIds).toEqual(["pty-a"]);
+    } else {
+      // An older brain checks its params strictly in places: it gets none.
+      expect(subscribeParams).not.toHaveProperty("ptyDataIds");
+      expect(filter.onChange).toBeNull();
+      expect(listChanges).toHaveLength(0);
+      expect(pollArgs).not.toHaveProperty("ptyDataIds");
+    }
+    cleanup();
+    expect(filter.onChange).toBeNull();
   });
 });
