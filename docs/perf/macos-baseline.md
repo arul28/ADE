@@ -732,12 +732,20 @@ you add a poll, a timer, a spawn, a read or a background job.
   `backdrop-filter` anywhere on the page, even an invisible one, makes
   Chromium redraw the whole window for every change: a streamed word, a caret,
   a timer. A long chat had about 100 (one per code block's hidden Copy
-  button), so every frame of a stream or of typing was a full 1600 x 1000
-  redraw instead of the changed strip. Put the blur only on a surface that is
-  open for a short time (a menu, a popover, a hover state), and give the blur
-  the same condition that shows the element. A blur over a solid surface shows
-  nothing; use a solid colour there. Check with the harness dirty rects or
-  Quartz Debug's flash screen updates.
+  button), plus one on each of its always-on surfaces: the composer, every
+  message and tool card, the attachment chips, the new-chat shelf, a floating
+  tip. So every frame of a stream or of typing was a full 1600 x 1000 redraw
+  instead of the changed strip. Put the blur only on a surface that is open for
+  a short time (a menu, a popover, a hover state), and give the blur the same
+  condition that shows the element. A blur over a solid surface shows nothing;
+  use a solid colour there. Check with the harness dirty rects or Quartz
+  Debug's flash screen updates.
+  A computed `backdrop-filter` of `none` does not prove the element has no
+  blur: the renderer's CSS build keeps only the prefixed
+  `-webkit-backdrop-filter` for a hand-written rule (lightningcss drops the
+  unprefixed one), and that property paints the same blur. Read
+  `getComputedStyle(el).webkitBackdropFilter` too, or count the declarations in
+  the source.
 - **A prewarm starts on intent, not on focus.** Start a provider prewarm on the
   first keystroke. A prewarm on focus holds 150-420 MB for a chat that the user
   never writes in.

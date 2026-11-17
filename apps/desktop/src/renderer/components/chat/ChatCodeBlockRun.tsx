@@ -486,7 +486,7 @@ export function ShellCodeBlockRunButton({ code, language }: { code: string; lang
   return (
     <button
       type="button"
-      className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} opacity-0 group-hover:opacity-100 group-hover:backdrop-blur-sm group-focus-within:opacity-100 group-focus-within:backdrop-blur-sm [@media(hover:none)]:opacity-100 [@media(hover:none)]:backdrop-blur-sm ${reason ? "cursor-not-allowed" : ""}`}
+      className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} opacity-0 group-hover/code:opacity-100 group-hover/code:backdrop-blur-sm group-focus-within/code:opacity-100 group-focus-within/code:backdrop-blur-sm [@media(hover:none)]:opacity-100 [@media(hover:none)]:backdrop-blur-sm ${reason ? "cursor-not-allowed" : ""}`}
       style={reason ? { ...CODE_BLOCK_ACTION_BUTTON_STYLE, color: "color-mix(in srgb, var(--chat-copy-button-fg) 55%, transparent)" } : CODE_BLOCK_ACTION_BUTTON_STYLE}
       aria-disabled={reason ? true : undefined}
       onClick={handleClick}

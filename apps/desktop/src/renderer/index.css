@@ -3428,17 +3428,18 @@ button, [role="button"] {
   border: 1px solid var(--chat-glass-border);
   border-top: 0;
   border-radius: 0 0 var(--chat-radius-shell) var(--chat-radius-shell);
-  /* A drawer tucked under the composer: frosted like the composer so it reads
-     on a picture as well as on the gradient, a touch darker so it sits behind
-     it, and a soft shadow at its top edge where the composer overlaps it. */
+  /* A drawer tucked under the composer: the composer's tint, a touch darker so
+     it sits behind it, and a soft shadow at its top edge where the composer
+     overlaps it. Flattened over the canvas instead of frosted: the blur showed
+     only that solid colour, and it stays on the page while a new chat is being
+     written, where a backdrop-filter makes Chromium on macOS draw the whole
+     window again for every keystroke. */
   background:
     linear-gradient(
       to bottom,
-      color-mix(in srgb, var(--chat-panel-bg) 86%, transparent) 0%,
-      color-mix(in srgb, var(--chat-panel-bg) 72%, transparent) 100%
+      color-mix(in srgb, var(--chat-panel-bg) 86%, var(--chat-canvas-bg)) 0%,
+      color-mix(in srgb, var(--chat-panel-bg) 72%, var(--chat-canvas-bg)) 100%
     );
-  backdrop-filter: blur(18px) saturate(1.3);
-  -webkit-backdrop-filter: blur(18px) saturate(1.3);
   box-shadow:
     inset 0 14px 14px -14px rgb(0 0 0 / 55%),
     inset 0 -1px 0 color-mix(in srgb, var(--chat-glass-highlight, white) 60%, transparent),
@@ -3482,6 +3483,16 @@ button, [role="button"] {
   z-index: 1;
 }
 
+/* Glass that sits on the flat chat canvas. A card there has a solid colour
+   behind it (`--chat-canvas-bg`), so its blur shows nothing, but a
+   backdrop-filter that stays on the page makes Chromium on macOS draw the
+   whole window again for every change (a streamed word, a caret). Keep the
+   gradient, border and shadow; only the blur goes. */
+.ade-liquid-glass-flat {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .ade-liquid-glass-strong {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--chat-panel-bg-strong) 92%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 94%, transparent) 100%);
@@ -3494,8 +3505,14 @@ button, [role="button"] {
 }
 
 /* Composer chrome: drop the bright liquid-glass border + outer ring so the
-   prompt box reads as a clean, calm surface (no white outline). */
+   prompt box reads as a clean, calm surface (no white outline). The card is
+   opaque: at 92–94 % the frost showed a smear of the text scrolling behind it
+   rather than the words, and a blur that stays on screen makes Chromium on
+   macOS draw the whole window again for every change. */
 [data-chat-composer-mode] {
+  background: linear-gradient(180deg, var(--chat-panel-bg-strong) 0%, var(--chat-panel-bg) 100%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border-color: rgba(255, 255, 255, 0.05);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
@@ -3683,6 +3700,9 @@ button, [role="button"] {
     0 0 0 1px color-mix(in srgb, var(--chat-liquid-highlight, var(--chat-glass-sheen)) 12%, transparent);
 }
 
+/* The attachment chips and the draft-mode switch. They sit on the composer's
+   own surface (a flat tint), where a blur showed nothing; it only made
+   Chromium on macOS draw the whole window again for every change. */
 .ade-liquid-glass-pill {
   position: relative;
   overflow: hidden;
@@ -3692,8 +3712,6 @@ button, [role="button"] {
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 82%, transparent),
     0 8px 22px -18px rgba(0, 0, 0, 0.48);
-  backdrop-filter: blur(20px) saturate(145%);
-  -webkit-backdrop-filter: blur(20px) saturate(145%);
 }
 
 .ade-chat-timeline-pane {
@@ -3758,6 +3776,8 @@ button, [role="button"] {
     0 16px 32px -26px rgba(0, 0, 0, 0.5);
 }
 
+/* Work-log rows (tool calls, subagents). They sit on the flat chat canvas, so
+   the frost showed nothing and only cost a full-window redraw on macOS. */
 .ade-chat-work-card {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--chat-panel-bg-strong) 78%, transparent) 0%, color-mix(in srgb, var(--chat-panel-bg) 74%, transparent) 100%);
@@ -3765,8 +3785,6 @@ button, [role="button"] {
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 55%, transparent),
     0 10px 24px -22px rgba(0,0,0,0.58);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
 }
 
 .ade-chat-recessed {
@@ -5008,7 +5026,8 @@ button, [role="button"] {
    — thinking, subagents, task rows
    ═══════════════════════════════════════════════════════════ */
 
-/* Subagent card — idle glass, subtle border */
+/* Subagent card — idle tint, subtle border. It sits on the flat chat canvas, so
+   the frost showed nothing and only cost a full-window redraw on macOS. */
 .ade-chat-subagent-card {
   position: relative;
   border-radius: 14px;
@@ -5017,8 +5036,6 @@ button, [role="button"] {
     color-mix(in srgb, var(--chat-panel-bg-strong) 60%, transparent) 0%,
     color-mix(in srgb, var(--chat-panel-bg) 46%, transparent) 100%);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--chat-glass-highlight) 50%, transparent);
-  backdrop-filter: blur(18px) saturate(145%);
-  -webkit-backdrop-filter: blur(18px) saturate(145%);
   transition: border-color 160ms ease, box-shadow 200ms ease;
 }
 
