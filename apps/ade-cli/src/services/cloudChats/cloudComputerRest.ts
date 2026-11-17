@@ -42,9 +42,8 @@ const IDLE_SAVE_BUDGET_MS = 60_000;
 const CLEANUP_SAVE_BUDGET_MS = 200_000;
 const CLEANUP_SAVE_HOLD_MS = 5 * 60_000;
 
-/** Said to a person whose work reaches the computer after the server started its delete. */
-export const CLOUD_COMPUTER_DELETING_SENTENCE =
-  "This ADE Cloud computer is being deleted, so it can't take new work. Its lane is saved; continue it on another computer.";
+/** Said to a person whose work reaches the computer after the server started its delete; a later send continues the lane. */
+const CLOUD_COMPUTER_DELETING_SENTENCE = "ADE Cloud is saving this lane. Send it again in a moment; it continues where it left off.";
 
 export type CloudComputerRestDeps = {
   instanceId: string;
