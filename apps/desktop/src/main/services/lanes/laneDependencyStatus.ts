@@ -364,7 +364,7 @@ export async function readLaneDependencyStatus(
     templateCount: deps.getTemplateCount(),
     checkedAt: new Date().toISOString(),
     // One bounded git read, inside this cached call (never per render).
-    envFiles: await listIgnoredDotenvFiles(deps.projectRoot),
+    envFiles: await listIgnoredDotenvFiles(deps.projectRoot, deps.logger),
   };
   statusCache.set(deps.projectRoot, { at: Date.now(), status });
   return status;

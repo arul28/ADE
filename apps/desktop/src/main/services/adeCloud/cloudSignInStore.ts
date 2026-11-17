@@ -40,15 +40,27 @@ function apiStoreKeysFor(id: CloudSignInId): { own: string; cloud: string } | nu
   return provider ? { own: provider, cloud: `${provider}#ade-cloud` } : null;
 }
 
-async function readApiStore(vaults: CloudSignInVaults, key: string): Promise<string | null | undefined> {
+/** One row of the one key store; undefined when the vault can't answer (logged by id, never the key). */
+async function readApiStore(vaults: CloudSignInVaults, key: string, id: CloudSignInId, logger?: Logger): Promise<string | null | undefined> {
   const vault = vaults(key, "provider_api_key");
   if (!vault) return undefined;
   try {
     const read = await vault.get();
-    return read.ok ? (read.value?.trim() || null) : undefined;
+    if (read.ok) return read.value?.trim() || null;
+    logger?.warn?.("cloud.cloud_key_store_read_failed", { id, reason: "vault_read_failed" });
+    return undefined;
   } catch {
+    // The vault's own error can name the item; a fixed reason only.
+    logger?.warn?.("cloud.cloud_key_store_read_failed", { id, reason: "vault_read_threw" });
     return undefined;
   }
+}
+
+/** Removes one row of the one key store; a failure is logged by id. */
+async function removeApiStoreRow(vaults: CloudSignInVaults, key: string, id: CloudSignInId, logger?: Logger): Promise<boolean> {
+  const removed = await vaults(key, "provider_api_key")?.remove().catch(() => false);
+  if (!removed) logger?.warn?.("cloud.cloud_key_unmirror_failed", { id });
+  return removed === true;
 }
 
 /**
@@ -62,7 +74,7 @@ async function readApiStore(vaults: CloudSignInVaults, key: string): Promise<str
 async function mirrorToApiStore(vaults: CloudSignInVaults, id: CloudSignInId, token: string, logger?: Logger): Promise<void> {
   const keys = apiStoreKeysFor(id);
   if (!keys) return;
-  const own = await readApiStore(vaults, keys.own);
+  const own = await readApiStore(vaults, keys.own, id, logger);
   if (own === undefined) return;
   if (own !== null && own !== token) {
     // A different key of a computer's own: this one goes beside it.
@@ -75,20 +87,18 @@ async function mirrorToApiStore(vaults: CloudSignInVaults, id: CloudSignInId, to
     return;
   }
   // The provider's row holds this key now: an older copy beside it would shadow it on cloud computers.
-  if ((await readApiStore(vaults, keys.cloud)) != null) await vaults(keys.cloud, "provider_api_key")?.remove().catch(() => false);
+  if ((await readApiStore(vaults, keys.cloud, id, logger)) != null) await removeApiStoreRow(vaults, keys.cloud, id, logger);
 }
 
 /** Removes ADE Cloud's copy from the one store: its `#ade-cloud` row, and the provider's row when it holds the same key. */
 async function unmirrorFromApiStore(vaults: CloudSignInVaults, id: CloudSignInId, token: string | null, logger?: Logger): Promise<void> {
   const keys = apiStoreKeysFor(id);
   if (!keys) return;
-  const cloud = await readApiStore(vaults, keys.cloud);
-  if (cloud) await vaults(keys.cloud, "provider_api_key")?.remove().catch(() => false);
+  const cloud = await readApiStore(vaults, keys.cloud, id, logger);
+  if (cloud) await removeApiStoreRow(vaults, keys.cloud, id, logger);
   if (!token) return;
-  const own = await readApiStore(vaults, keys.own);
-  if (own === token && !(await vaults(keys.own, "provider_api_key")?.remove().catch(() => false))) {
-    logger?.warn?.("cloud.cloud_key_unmirror_failed", { id });
-  }
+  const own = await readApiStore(vaults, keys.own, id, logger);
+  if (own === token) await removeApiStoreRow(vaults, keys.own, id, logger);
 }
 
 // The stored form (vault keys, values, the token pattern) is shared with the account server (shared/cloudSignIns.ts).
@@ -149,7 +159,7 @@ async function readAll(vaults: CloudSignInVaults | null, logger: Logger): Promis
       // A key saved on a computer's Providers page is ADE Cloud's key too (the one store).
       const keys = stored || id === "claude" ? null : apiStoreKeysFor(id);
       const inApiStore = keys
-        ? Boolean((await readApiStore(vaults, keys.cloud)) || (await readApiStore(vaults, keys.own)))
+        ? Boolean((await readApiStore(vaults, keys.cloud, id, logger)) || (await readApiStore(vaults, keys.own, id, logger)))
         : false;
       return { id, stored, readable: true, inApiStore };
     } catch {
