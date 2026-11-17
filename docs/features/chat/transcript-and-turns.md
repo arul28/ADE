@@ -530,1662 +530,1010 @@ Droid, or another provider when the host has no explicit recovery in flight.
 
 ## Render pipeline
 
-`apps/desktop/src/renderer/components/chat/chatTranscriptRows.ts`
-implements a two-layer transform:
+`apps/desktop/src/renderer/components/chat/chatTranscriptRows.ts` turns raw
+envelopes into rows in five steps.
 
-1. **Render events.** Raw envelopes become `ChatTranscriptRenderEvent`
-   values:
-   - Tool, command, file-change, and web-search events collapse into
-     `ChatWorkLogEntry` objects (status, label, tone, diff stats, and
-     web-search action metadata for result chips).
-   - Text, reasoning, plan, status, pending input, and user-message
-     events pass through as visible rows. Before a synthetic scheduled
-     `user_message` carrying `metadata.scheduledWake`, the transform inserts a
-     `scheduled_wake_divider` keyed
-     `scheduled-wake:<scheduleId>:<turnId>` with fire time, reason, and late
-     state; the compact while-you-were-away card scrolls to these stable keys.
-   - `subagent_started` / `subagent_progress` / `subagent_result`
-     events collapse per agent (keyed by `agentId ?? taskId`) into ONE
-     row: a `subagent_spawn_anchor` while the agent is running, which the
-     terminal event converts IN PLACE into a `subagent_result_card` when
-     the agent completes, fails, or stops. The row keeps its position and
-     its key, so a card never moves when it finishes: three
-     running cards side by side become finished cards one by one in the
-     same row. A late result (after the parent's `done`, even during a
-     later turn) settles the card in place the same way. Only a result
-     whose spawn row is not in the window (its start sits in an unloaded
-     older page, or the result is the agent's only lifecycle event) appends
-     a card where it arrives; loading the older page replays it into its
-     spawn slot, because the layout is a pure function of the events. A
-     settled card is never reopened by a late progress tick. A mass stop of more than
-     `SUBAGENT_CARD_GRID_MAX_COLUMNS` (three) adjacent report-less
-     stopped cards folds into one `subagent_stopped_group`; fewer stay
-     cards (see Side-by-side grids). Backgrounded
-     shell commands collapse to a single `background_job_line`, pushed on
-     the job's first sighting (so a running job is visible in the thread)
-     and mutated in place through to its terminal state, which is never
-     reopened by a late progress tick. Two producers feed that one row and
-     share its key space: the LIVE runtime, which reports background
-     shells only as `scheduled_work_update {kind:"background_task"}`
-     (`emitClaudeBackgroundTaskUpdate` — it emits no subagent lifecycle
-     events for them at all), and legacy `subagent_*` events carrying
-     `taskType: background`, which is all older persisted transcripts
-     hold. Other scheduled kinds are unaffected. Classification can
-     legitimately flip mid-task, so both directions are guarded: once a
-     task has opened a job line it stays a background job (a late
-     `agentType` cannot strand the running line and push a card pair for
-     the same task), and a task that proves itself a real subagent has
-     its job line spliced out before the spawn anchor lands — the
-     level-set path gates only on task type, so an agent that reports
-     none falls through to the background emitter and would otherwise
-     render as a line *and* a card pair. The
-     anchor keys (`subagent-spawn:` / `subagent-result:` /
-     `background-chip:<agentKey>`, the last kept from the finish-chip era
-     on purpose) never change on rebind so the
-     virtualizer's measured heights survive. A card's key is fixed when its
-     row is pushed (`cardKey`): `subagent-spawn:<agentKey>` for the normal
-     case, kept through settling, and `subagent-result:<agentKey>` only for
-     a card appended without its spawn. A jump that names either key lands
-     on the card (`subagentCardRowKeyCandidates`, used by
-     `subagentCardGridKeyByMemberKey`), so an older `subagent-result:` jump
-     target still resolves. An event anchor on a progress or result event
-     lands on the card it updated (`subagentCardKeyForLifecycleEvent`), not
-     on the last row. A `transcript_retraction` splice repairs each stored
-     row index, including the `backgroundJobRowIndexByKey` map that
-     resolves job lines. Raw lifecycle events are then hidden.
+### 1. Render events
 
-     **Card names.** A card is titled with the agent's name, never its
-     path or its current activity. `deriveSubagentCardName`
-     (`shared/chatSubagents.ts`) applies one rule to every provider: the
-     spawn's `description` (Claude's Task description, OpenCode's session
-     title, Cursor's and Droid's task description, the agent path Codex
-     chose), then the explicit `label` (Claude's Task `name`, a Codex
-     nickname, Cursor's label), then `agentType` (Claude's
-     `subagent_type`). A path or snake_case id is humanized from its last
-     segment (`/root/desktop_scan` reads `Desktop scan`,
-     `/ROOT/SHIP_POLL_927` reads `Ship poll #927`). OpenCode appends the
-     agent to a child session's title (`Explore renderer UI (@explore
-     subagent)`); a trailing `(@<agent> subagent)` or `(@<agent>)` is
-     dropped, so the card reads `Explore renderer UI`. Sentence case keeps
-     known acronyms (iOS, CLI, UI, UX, API, IPC, PR, CI, SDK, MCP,
-     DB, JSON, URL, HTTP, SQL, CSS, HTML, AI, ID), so
-     `/root/ios_shared_scan` reads `iOS shared scan` and `cli_tui_scan`
-     reads `CLI TUI scan`; the iOS mirror in
-     `WorkStatusAndFormattingHelpers.swift` does not have the acronym map
-     yet. Placeholders
-     (`Subagent task`, `Delegated task`, `Background work`, `subagent`,
-     `opencode-subagent`) are skipped, and nothing usable reads
-     `Subagent`. The collapse pass takes the title from
-     `subagent_started` only (`nextSubagentTitle`): Claude's
-     `task_progress` frames carry the current activity in `description`
-     (`Running …`, `Reading <path>`), and the old longest-description
-     rule promoted that to the title. A repeated start replaces the title
-     only when it names the same task more fully (`Find` → `Find update
-     modal component`) or the title is a placeholder. When the start sits
-     in an unloaded older page, the label or agent type names the card
-     before any progress description does. The longest description still
-     drives classification and background job labels. The stopped-group
-     items, the `spawned by` parent label, and the Chat Info subagents
-     row (`chatSubagentDisplayName`) use the same name, so a Codex agent
-     never shows its raw `/root/...` path there either. Chat Info keeps
-     the start's description as the name: a later progress frame only
-     fills it in when no start named the agent.
+Raw envelopes become `ChatTranscriptRenderEvent` values:
 
-     **Card layout.** `SubagentSpawnCard` and `SubagentResultCard` share
-     one frame and one container (`SUBAGENT_CARD_CHROME`: the same border,
-     background, radius, and padding), so running and settled cards in one
-     grid look alike and only the badge and the status line tell them
-     apart. A spawned chat's kind shows only as its `SUBAGENT` / `PEER`
-     chip, never as a tinted frame. Inside the frame: the agent's identicon on the left, the name (truncated),
-     one mono status line, then the body, with open/Stop controls and the
-     provider mark on the right. While running, the identicon wears its
-     spinning ring and the status line reads `running · <activity> ·
-     <N> tools · <elapsed>`. Once settled, the identicon wears a solid
-     badge: a green check (finished), a red X (failed), or a neutral
-     square (stopped). The status line reads `ran for 1m · 12 tools ·
-     34k tokens`, prefixed `failed` or `stopped · <who stopped it>`, and
-     the report follows as plain text, clamped to three lines. Both status
-     lines name the agent's own model and effort (`Claude Opus 5.5 · Low`)
-     when it reported them, never the parent's: Claude reports a native
-     child's effort only through its PostToolUse and SubagentStop hooks
-     (`effort.level`), which `noteClaudeSubagentEffort` turns into a
-     `subagent_progress` row (a progress row never renames the agent), and
-     the result reads it from `subagentEffortById` because terminal paths
-     delete the active entry first. Opening a subagent's thread swaps the
-     composer's model chip and effort to the agent's own, locked; a Claude
-     native subagent with no report shows the session effort, which it
-     shares. Reports are
-     markdown, so the card reads them through `subagentSummaryPlainText`
-     (`shared/chatSubagents.ts`): headings, list, quote, and table markers,
-     rules, and fence lines drop; emphasis, code spans, and links keep their
-     text; lines join into one paragraph, and a heading or list item with no
-     closing punctuation gets `:` / `;` (`## Summary` + `**ADE** is…` reads
-     `Summary: ADE is…`). The stopped group's rows (title and last
-     activity) and the Chat Info subagent drawer (also clamped to three
-     lines) read the same way. The stored report is unchanged. An OpenCode child's
-     diff-stat summary with every count at zero (`+0 −0 · 0 files`) is not
-     a report and is not shown (`isEmptyDiffStatSummary`); a stat with any
-     non-zero count is. A stopped card shows a
-     summary only when it says something of its own
-     (`meaningfulStoppedSummary`): a stop sentence (`Interrupted`,
-     `Stopped: the ADE brain restarted`) or runtime filler (`Agent
-     active`) restates the status line. Without one, the body reads the
-     agent's last activity and whether its work survived
-     (`stoppedResultOutcome`: `work lost` or `report landed`), so a grid
-     cell is never an empty frame. A failure keeps its full
-     error behind a quiet `Details`, and a worktree result keeps its
-     copy-worktree button. Clicking a card (or its caret button, the
-     keyboard path) opens a spawned chat, or opens the agent's transcript
-     in Chat Info for a runtime-native agent. That transcript is offered
-     only inside a host that listens for `ade:chat:open-info`
-     (`ChatInfoHostContext`). There is no separate "view transcript"
-     link. A click that is a text selection, or a click on a control
-     inside the card, does not open it. The spawn-kind chip (`SUBAGENT`
-     / `PEER`) and the `background` chip stay. The agent-type pill is
-     gone because its text is now the title.
+- **Work entries.** Tool, command, file-change and web-search events collapse
+  into `ChatWorkLogEntry` objects (status, label, tone, diff stats, web-search
+  result chips). Each entry has a `collapseKey` from `turnId`,
+  `logicalItemId` (else `itemId`) and the tool or command identity, so
+  streaming updates of one call merge into one entry. `withLocalhostUrls`
+  stamps `entry.localUrls` when the entry mentions a `localhost`,
+  `127.0.0.1`, `0.0.0.0` or `[::1]` URL (`extractLocalhostUrlsFromText`:
+  trims trailing punctuation, normalizes the host to `localhost`, dedupes by
+  `href`). `ChatToolActivityDetails` draws them as chips that open the
+  in-app browser.
+- **Visible rows.** Text, reasoning, plan, status, pending input and user
+  messages pass through. Before a scheduled `user_message`
+  (`metadata.scheduledWake`) the transform inserts a `scheduled_wake_divider`
+  keyed `scheduled-wake:<scheduleId>:<turnId>` (fire time, reason, late
+  state); the while-you-were-away card scrolls to these keys.
+- **Hidden rows.** `pending_input_resolved`, `activity`, `step_boundary`, raw
+  tool/command/file-change events, standalone reasoning events and
+  `scheduled_work_update` feed other derivations. `transcript_retraction` is
+  hidden too, and removes earlier assistant `text` rows whose provider
+  `messageId` was retracted or superseded.
+- **Errors.** Exact duplicate `error` rows (same turn id, message, detail and
+  `errorInfo`) collapse into one.
 
-     **Side-by-side grids.** Consecutive subagent cards of ANY state
-     (running, finished, failed, stopped) join a single
-     `subagent_card_grid` row (`groupSubagentCardGrids`). Cards settle in
-     place, so a grid keeps its cards, its order, and its key while agents
-     finish one by one; each card keeps its own status badge. A
-     `subagent_stopped_group` ends a run.
-     The only rows a run steps over are `subagent_spawned` notices with
-     `hasInlineCard`, which draw nothing; they move ahead of the grid.
-     `SubagentCardGrid` lays the cards out on a six-track CSS grid (the
-     least common multiple of one, two, and three columns). Rows fill left
-     to right at up to three cards; each card in a full row spans one
-     column, and the cards of a short last row share the full width
-     equally (`subagentCardGridSpan`): 5 cards read 3 + 2 wide, 4 read 3 + 1
-     full width, 7 read 3 + 3 + 1. Full rows are never rebalanced, so a new
-     spawn never moves an earlier card to another row. The column count
-     comes from a container query on the grid's own width, at the
-     breakpoints `subagentCardGridColumns` uses for height estimates (cards
-     never narrower than 232px): three columns from 712px, two from 472px,
-     else one, each with the same fill rule. The span classes are literal
-     strings in `subagentCardGridCellClass`; a count change only rewrites
-     them on the keyed cells, so no card remounts. Grid cells stretch, so
-     cards in one grid row are equally tall.
-     The grid row's key is its first member's own row key, and it lists
-     `memberKeys`. A lone card renders through the same grid component
-     with one member. So when a second card joins, the first stays
-     mounted and keeps its measured height, since a side-by-side row is
-     about as tall as one card. Only a grid whose first member leaves (into
-     a stopped group) takes the next member's key.
+#### Subagent cards
 
-     **Stopped-group fold.** `groupStoppedSubagentResultCards` folds a
-     run of more than `SUBAGENT_CARD_GRID_MAX_COLUMNS` consecutive result
-     cards that share a cause and attribution. A stopped card joins a run
-     only when it has nothing of its own to say: no report landed before
-     the stop (`resultLanded`) and no meaningful summary
-     (`stoppedGroupCauseOf`). A run of three or fewer stays cards for the
-     grid. The fold runs inside `groupChatTranscriptRows`, before the
-     presentation filter, so it steps over rows the timeline never draws
-     (`work_log_group`, and `subagent_spawned` notices with
-     `hasInlineCard`) itself: a tool burst between two casualties does
-     not split a mass stop. When the run folds, those hidden rows move
-     ahead of the group; when it does not, every row keeps its place. The
-     group lists `memberKeys` (the folded cards' own keys, normally
-     `subagent-spawn:`), and jumps resolve them, and their
-     `subagent-result:` aliases, to the group row the same way they resolve
-     grid members. Because cards settle in place, a folded run can sit
-     inside a longer run of cards in other states. Only the CONTIGUOUS
-     casualties fold, and the group takes their place: no card moves past
-     another, and the cards before and after it form their own grids. So
-     `A` running, `B`–`E` stopped with no report, `F` finished reads `A`,
-     `4 agents stopped`, `F`, in that order. Gathering casualties from
-     across the run into one group would reorder the cards around it; two
-     separate folded runs read as two groups. `SubagentStoppedGroupCard` shows each agent's
-     `stoppedGroupItemOutcome` (`work lost` / `report landed`) at the
-     right of its row.
+`subagent_started` / `subagent_progress` / `subagent_result` collapse per
+agent (`agentId ?? taskId`) into one row:
 
-     The grid pass runs in `AgentChatMessageList`'s `presentedRows`, in this
-     order: second-layer grouping (`groupChatTranscriptRows`, including
-     the stopped-group fold), then the presentation filter (drops
-     `work_log_group` and covered `turn_diff_summary`), then
-     `mergeAdjacentActivityBundleRows`, then `groupSubagentCardGrids`,
-     then `groupBackgroundJobRuns`, then the turn fold, then
-     `mergeAdjacentThoughtRows` (see "Thought runs" under Reasoning merging). Grouping after the filter means rows the
-     timeline never draws cannot split a run. Grouping before the fold
-     means the fold sees one grid row. The fold classifier does not know
-     that row type, so it keeps the row visible, exactly like the cards
-     it replaces. Grids, running, settled, or mixed, stay visible below
-     the fold row, in their place above the answer; a card that settles
-     after the turn ended keeps that status (both states are kept, so the
-     sticky decision never changes). A grid never straddles a span,
-     because user messages and answers end runs. The turn-end snapshot's subagent
-     count reads the collapse rows, so it counts each agent. A jump,
-     highlight, or event anchor that names a member card resolves to its
-     grid row (`subagentCardGridKeyByMemberKey` in `scrollToRowKey`;
-     member keys in `resolveAnchoredChatRowIndex`), and a folded
-     casualty resolves to its `subagent_stopped_group` the same way.
+- A running agent is a `subagent_spawn_anchor`. Its terminal event turns that
+  row **in place** into a `subagent_result_card`, with the same position and
+  key, also when the result arrives after the parent's `done`. A settled card
+  is never reopened by a late progress tick.
+- Only a result whose spawn row is not in the window (an unloaded older page,
+  or a result with no start) appends a card where it arrives. Loading the
+  older page moves it into its spawn slot: the layout is a pure function of
+  the events.
+- Keys never change on rebind, so measured heights survive:
+  `subagent-spawn:<agentKey>` normally, `subagent-result:<agentKey>` only for
+  a card appended without its spawn. A jump that names either key lands on
+  the card (`subagentCardRowKeyCandidates`). An event anchor on a progress or
+  result event lands on the card it updated
+  (`subagentCardKeyForLifecycleEvent`).
+- A `transcript_retraction` splice repairs every stored row index, including
+  `backgroundJobRowIndexByKey`.
 
-     **Background job runs.** Consecutive `background_job_line` rows,
-     whatever their labels and statuses, join ONE `background_job_group`
-     row (`groupBackgroundJobRuns` in `chatBackgroundJobRuns.ts`). The
-     pass runs in `presentedRows` right after `groupSubagentCardGrids`,
-     so rows the timeline never draws (tool groups between the jobs)
-     cannot split a run, and `subagent_spawned` notices with
-     `hasInlineCard` move ahead of the group. The group's key is its
-     first member's own row key and it lists `memberKeys`, so a lone job
-     line that gains a neighbour stays mounted with its measured height.
-     A run also splits where the turn fold would split it: a job still
-     running when its turn ended (in any turn-end snapshot's
-     `liveRowKeys`) never shares a row with jobs that finished before
-     then. A live turn's jobs have no snapshot yet, so they always share
-     one row. Jumps (`scrollToRowKey`), event anchors
-     (`resolveAnchoredChatRowIndex`), and a scroll-memory anchor that
-     names a member resolve to the group row
-     (`backgroundJobGroupKeyByMemberKey`).
+**Card names.** `deriveSubagentCardName` (`shared/chatSubagents.ts`) names a
+card the same way for every provider:
 
-     `BackgroundJobRunRow` draws both shapes as one compact, left-aligned
-     line in thread text size — deliberately not a card or a centered
-     divider, because background jobs are frequent and rarely the point
-     of the turn. A single job reads `$ <command> · <duration> ·
-     <status>` (`done`, `failed`, `stopped`, or `running` with a
-     once-per-second ticker anchored to the real start timestamp), with
-     Stop while it runs and `open ›`. A run reads `$ 5 background jobs ·
-     1 running 47s · 3 done · 1 failed ›` (the failed count in red, the
-     running count ticking from the oldest running job); clicking it
-     lists each job inline with a status icon, the truncated label, its
-     duration, `failed`/`stopped` when it did not finish, Stop while it
-     runs, and `open ›`. The scheduled-work wire format carries no exit
-     code, so a job reported only through the live producer shows a
-     duration measured from its own first sighting. `open` dispatches
-     `ade:chat:open-info` with the job's task id to reveal the chat
-     actions pane, where the job's full state and output live, and is
-     omitted where no host registered a listener for that event. In an
-     ended session a job still marked `running` shows no duration and
-     no Stop.
+1. The spawn's `description` (Claude's Task description, OpenCode's session
+   title, Cursor's and Droid's task description, Codex's agent path).
+2. The explicit `label` (Claude's Task `name`, a Codex nickname, Cursor's
+   label).
+3. `agentType` (Claude's `subagent_type`).
 
-     **Scheduled work.** A wake-up, cron, loop, or remote trigger
-     (`scheduled_work_update` other than `background_task`) is one entry per
-     schedule id across the whole transcript (`foldScheduledWorkRows` in
-     `chatScheduledWorkRows.ts`): later updates, from the provider's
-     inventory snapshot, the fire, or a cancel, patch the entry where the
-     schedule was created instead of adding rows in later turns. A one-shot
-     `cancelled` at or after its fire time reads as fired, so transcripts
-     from older brains (which recorded fired wake-ups as cancelled) tell the
-     truth. Once the turn ends, its schedules move onto its turn-end line
-     (`moveScheduledWorkToTurnEnds`) as small chips in the line's own mono
-     type: `⏰ wakes in 2m` (amber while pending), `woke at 9:50 PM`, or
-     `⟳ cron · every 30m`, with the reason in the tooltip. A pending wake-up
-     more than a minute past due reads `was due 9:29`, never `wakes now`.
-     Clicking a chip opens the chat actions pane. A turn still running keeps
-     its schedule as a `ScheduledWorkLine` row until its `done` arrives.
-     Task lists are never bundled; they are the chat's one `task_list` row.
+A path or snake_case id is humanized from its last segment
+(`/ROOT/SHIP_POLL_927` reads `Ship poll #927`). A trailing `(@<agent>
+subagent)` or `(@<agent>)` from OpenCode is dropped. Sentence case keeps known
+acronyms (iOS, CLI, UI, UX, API, IPC, PR, CI, SDK, MCP, DB, JSON, URL, HTTP,
+SQL, CSS, HTML, AI, ID); the iOS mirror (`WorkStatusAndFormattingHelpers.swift`)
+has no acronym map yet. Placeholders (`Subagent task`, `Delegated task`,
+`Background work`, `subagent`, `opencode-subagent`) are skipped; with nothing
+usable the card reads `Subagent`.
 
-     **Self-paced wake loops.** A turn the agent started from its own
-     wake-up (no user message, after a turn that scheduled one, or opened by
-     a `Woke on schedule` divider) is a wake turn (`deriveWakeTurnIds`). A
-     wake turn has no `Worked for …` fold row: the `ran 2.2s ›` time on its
-     turn-end line opens the fold, and its tool count stays on that line. A
-     run of consecutive wake turns folds every check but the latest
-     (`deriveWakeChains` / `applyWakeChains`): `+3 more checks ›` sits at the
-     end of the turn-end line just above them, so they open directly below
-     it, and the open state shares the turn folds' memory. A turn the user
-     started ends the run. When that line is not drawn, the chain falls back
-     to a slim `3 earlier checks` row (`wake_chain`).
-   - `ade_card` collapses per `cardId` into ONE permanent chronological row
-     keyed `ade-card:<cardId>`. A repeat emit mutates that row in place — a new
-     object under the same key, merged over the previous payload, so an update
-     that omits `rows`/`metrics` patches rather than blanks them — which keeps
-     the row at its original position and preserves the virtualizer's measured
-     height as a long-running card (CI, a build, an artifact pull) progresses.
-     When a detail refresh fails, `degradedReason` does not destructively
-     replace an earlier rich payload: rows/progress/metrics survive with
-     `stale: true`, and a first-time empty failure renders `detail unavailable`
-     plus its retry action instead of a false-green zero-count card. Emitters
-     may provide `durationMs` only for a real measured run; the renderer labels
-     the card update span as `tracked` so it is never presented as work time.
-     `rowsTruncated` becomes a compact `+N more` summary.
-     It is deliberately NOT activity: it is never classified by
-     `classifyActivityPhaseRow` and never bundled, so an interleaved
-     reasoning/work phase cannot swallow it. The payload contract and its
-     helpers live in `apps/desktop/src/shared/adeCard.ts`, iOS mirrors it. Every surface renders `fallbackText` + the `navTarget`
-     deeplink for a `variant` it does not recognize, which is what makes one
-     wire contract safe across three independent release trains. There is no
-     red tone in the vocabulary — failures are amber, per the house policy in
-     `SubagentActivityCards.tsx`.
-   - `pending_input_resolved`, `activity`, `step_boundary`, raw tool/
-     command/file-change events, standalone reasoning events, and
-     `scheduled_work_update` are hidden (consumed by other derivations).
-   - `transcript_retraction` is also hidden, but mutates the accumulated
-     rows by removing prior assistant `text` rows whose provider
-     `messageId` was retracted or superseded.
-   - `turn_diagnostics` snapshots and the turn's recovery receipt
-     (`turn_recovery`, or the legacy `codex_turn_recovery` alias, which never
-     replaces a provider-neutral receipt) merge into ONE `turn_details` row
-     per turn, drawn as a single `Turn details` line whose summary adds the
-     counts up (`Recovered · 2 safety checks · 3 optional integration
-     warnings`) and whose body lists everything. Codex files diagnostics under
-     two keys — its session-startup key (MCP startup, before the turn has an
-     id) and the turn id — so an id-less snapshot joins the details row of the
-     window it arrived in (since the last user message or own `done`), and a
-     snapshot naming a turn joins that turn's row or the window's row that has
-     no turn yet. The row is created where the turn's first contribution
-     lands and keeps that position and its key (`turn-details:<turnId>`, or
-     `turn-details:<first event's row key>` when that contribution had no
-     id), so live, incremental, and reload collapses agree. Integrations are
-     deduped by name; checks are summed across the two keys.
-   - Warning notices (`severity: "warning"` or `noticeKind: "warning"`, other
-     than usage and sign-in notices) render as one text-sized line: an amber
-     warning icon and the message on one truncated line, without the
-     provider's leading `⚠`. Clicking it shows the full message and any
-     detail. Error notices keep their cards. Warnings stay separate rows
-     rather than entries of the Turn details row: a warning after the answer
-     must stay visible outside the fold, and folding it into a details row
-     created earlier in the turn would hide it.
-   - Receipt notices — `info`, `config`, `hook` and `file_persist`, with no
-     error or warning severity and no dedicated row status — render as one
-     muted line: a glyph chosen by meaning (a compass for a plan transition,
-     a tray for a queued message, a plug for a reconnect, a brain for a
-     recalled memory), the message, and a chevron when there is a detail to
-     open. There is no `INFO` chip and no card; a status that changed nothing
-     is not an answer. Neighbouring receipts from the same turn share one line
-     with a trailing `+N` count, folded by `foldQuietNoticeLines` in
-     `filterVisibleTranscriptRows`; the line expands to every member. The
-     statuses with their own rows (model switch, spawn, host sleep, reset
-     credit, voice) and every actionable or failing notice keep their
-     existing treatment.
-   - Exact duplicate `error` rows are collapsed by turn id, message, detail,
-     and semantic `errorInfo`. This replay guard handles historical
-     transcripts written before provider-side dedupe without hiding distinct
-     failures from the same turn.
+- The title comes from `subagent_started` only (`nextSubagentTitle`), because
+  Claude's `task_progress` frames carry the current activity in
+  `description`. A repeated start replaces the title only when it names the
+  same task more fully or the title is a placeholder.
+- With the start in an unloaded page, the label or agent type names the card
+  before any progress description does.
+- The longest description still drives classification and background job
+  labels.
+- Stopped-group items, the `spawned by` label and the Chat Info subagents row
+  (`chatSubagentDisplayName`) use the same name. Chat Info keeps the start's
+  description; a progress frame fills it in only when no start named the
+  agent.
 
-2. **Grouped envelopes.** Adjacent work-log render events in the same
-   turn merge into `work_log_group` blocks. When a `tool_use_summary`
-   event immediately follows a group from the same turn, its summary
-   and tool-use IDs are absorbed into the group instead of rendering
-   as a separate row. This keeps the transcript compact when the agent
-   runs many tools in a single turn.
+**Card layout.** `SubagentSpawnCard` and `SubagentResultCard` share one frame
+(`SUBAGENT_CARD_CHROME`), so only the badge and status line tell running and
+settled cards apart. The spawn kind shows only as a `SUBAGENT` / `PEER` chip.
 
-3. **Activity phase collapse.** After work-log grouping, contiguous runs
-   of `reasoning` + `work_log_group` rows within the same turn (unbroken
-   by assistant text, user messages, plans, pending inputs, or other hard
-   boundaries) can merge again when the phase is noisy: at least three rows,
-   or at least two reasoning rows, or at least two work groups. The pass
-   emits one merged `Thought` row and one merged work-log group in
-   chronological first-occurrence order. Simple one-thought + one-tool
-   turns stay as two grouped envelopes. Shared logic lives in
-   `apps/desktop/src/shared/chatActivityPhase.ts`; desktop wires it through
-   `groupChatTranscriptRows()`
-   and iOS through `collapseActivityPhaseTimelineEntries()`. Rows that the
-   client never draws (automatic `context_usage` snapshots, same-provider
-   handoffs) are removed before grouping on desktop, so a hidden row cannot
-   split one thinking run into two `Thought` rows.
+- Inside the frame: the identicon, the name (truncated), one mono status line,
+  the body, open/Stop controls and the provider mark.
+- Running: a spinning ring, and `running · <activity> · <N> tools ·
+  <elapsed>`.
+- Settled: a green check (finished), red X (failed) or neutral square
+  (stopped), and `ran for 1m · 12 tools · 34k tokens`, prefixed `failed` or
+  `stopped · <who stopped it>`. The report follows as plain text, three lines
+  at most.
+- Both status lines name the agent's own model and effort when it reported
+  them, never the parent's. Claude reports a native child's effort only
+  through its PostToolUse and SubagentStop hooks (`effort.level`);
+  `noteClaudeSubagentEffort` turns it into a `subagent_progress` row, and the
+  result reads `subagentEffortById` because terminal paths delete the active
+  entry first. Opening a subagent's thread locks the composer's model and
+  effort to the agent's own.
+- Reports are markdown. `subagentSummaryPlainText` drops heading, list, quote
+  and table markers, rules and fences, keeps the text of emphasis, code and
+  links, joins lines into one paragraph, and ends a heading or list item with
+  `:` / `;`. The stopped group and the Chat Info drawer read reports the same
+  way. The stored report is unchanged.
+- An OpenCode diff-stat summary with every count at zero is not a report
+  (`isEmptyDiffStatSummary`).
+- A stopped card shows a summary only when it says something of its own
+  (`meaningfulStoppedSummary`). Otherwise the body reads the last activity
+  and `work lost` or `report landed` (`stoppedResultOutcome`).
+- A failure keeps its full error behind `Details`. A worktree result keeps its
+  copy-worktree button.
+- A click on the card (or its caret, the keyboard path) opens a spawned chat,
+  or the agent's transcript in Chat Info for a runtime-native agent, only
+  inside a host that listens for `ade:chat:open-info` (`ChatInfoHostContext`).
+  A text selection or a click on a control inside does not open it.
 
-4. **Client presentation.** Grouping remains lossless, but normalized tool,
-   command, hook, and web-search groups no longer occupy permanent transcript
-   rows. During a live turn they are available from the expandable working
-   status; after `done` they collapse into one `N tools · M files` summary
-   stacked immediately above the turn's existing time/usage line, left-aligned
-   with Thought. Expanding lists the tools and files between that summary and
-   the time/usage line, which stays last. On desktop the `work_log_group` envelopes are filtered out of the
-   rendered timeline entirely rather than rendered empty, so they do not
-   consume row gaps. File changes share that same combined summary (unless a
-   checkpoint `turn_diff_summary` already covers the turn), instead of once per uninterrupted burst of tool
-   entries — a turn whose bursts were broken up by prose used to stack six
-   near-identical panels through one reply. Assistant narration is unchanged.
+**Side-by-side grids.** Consecutive subagent cards of any state join one
+`subagent_card_grid` row (`groupSubagentCardGrids`):
 
-   **The live turn's tools.** The working status names the running tool and
-   its dropdown lists the open turn's tools (`deriveTranscriptToolActivity` in
-   `chatTranscriptPresentation.ts`). The open turn ends at `done`, or at a user
-   message that starts a new one. A message that carries the open turn's id
-   (Codex's `!` shell command sent mid-turn) never starts one. A steer the live
-   turn took in (`accepted`, `inline`, `processed`, `unprocessed`) or that went
-   nowhere (`failed`) never starts one either, so it does not cut the
-   activity. The rule is `userMessageStartsTurn` in `shared/chatTranscript.ts`. A queued steer is still in the composer
-   and is ignored.
+- A `subagent_stopped_group` ends a run. A run steps over only
+  `subagent_spawned` notices with `hasInlineCard`, which move ahead of it.
+- `SubagentCardGrid` uses a six-track CSS grid. Rows fill left to right, up to
+  three cards; the cards of a short last row share the full width
+  (`subagentCardGridSpan`: 5 cards read 3 + 2, 4 read 3 + 1). Full rows are
+  never rebalanced, so a new spawn never moves an earlier card.
+- A container query sets the columns (`subagentCardGridColumns`; cards never
+  under 232px): three from 712px, two from 472px, else one. Span classes are
+  literal strings in `subagentCardGridCellClass`, so a count change remounts
+  no card. Cells stretch to equal height.
+- The grid's key is its first member's key, and it lists `memberKeys`. A lone
+  card renders through the same component, so a card stays mounted when a
+  second one joins. Only a grid whose first member leaves (into a stopped
+  group) takes the next member's key.
 
-   **Desktop and hosted web** implement this in `AgentChatMessageList` through
-   `ChatTurnWorkSummary` on the done divider: one expandable `N tools · M files`
-   row sits immediately above the turn's existing time/usage cutout, left-aligned
-   with Thought; expanding lists tools (`ChatToolActivityDetails`) and files
-   between that summary and the footer, which stays last. The list filters
-   `work_log_group` envelopes out of the rendered timeline entirely so grouped
-   tools never occupy a second inline row. When the turn folds (step 5), the
-   tool and file counts and their disclosure move to the fold row, and the done
-   divider keeps time, usage, the proof count, and the checkpoint diff.
+**Stopped-group fold.** `groupStoppedSubagentResultCards` folds a run of more
+than `SUBAGENT_CARD_GRID_MAX_COLUMNS` (three) consecutive stopped cards that
+share a cause and attribution and have nothing of their own to say (no report
+before the stop, `resultLanded`; no meaningful summary, `stoppedGroupCauseOf`).
 
-   **iOS** puts the same counts on `WorkTurnEndMarkerView` at each
-   `turnEndMarker`, including turns that pause at a usage limit (the marker
-   shows the work summary and folds usage into the marker instead of a separate
-   usage row beside it). Tapping opens that turn's tool/file activity in a
-   sheet. `workPresentedTimelineEntries` drops `.toolGroup` and `.changedFiles`
-   rows only when `workTurnToolActivityIndex` attached them to a completed
-   turn; a markerless or unterminated cluster that a later turn-end never
-   claimed stays inline. Chat Info still retains the underlying events.
+- It runs inside `groupChatTranscriptRows`, before the presentation filter,
+  and steps over rows the timeline never draws (`work_log_group`, inline-card
+  spawn notices). Those rows move ahead of a group that folds; otherwise
+  nothing moves.
+- Only **contiguous** casualties fold, and the group takes their place, so no
+  card moves past another: `A` running, `B`–`E` stopped, `F` finished reads
+  `A`, `4 agents stopped`, `F`.
+- Jumps to a member key or its `subagent-result:` alias resolve to the group.
+  `SubagentStoppedGroupCard` shows each agent's `stoppedGroupItemOutcome`.
 
-   **Computer-use action rows (desktop, hosted web, iOS).** The one exception
-   to "tool groups are not drawn": a group holding ADE computer-use shell
-   commands (`ade screen|mac-desktop|desk …`, `ade app-control …`,
-   `ade browser …`, `ade apple …`, `ade proof …`, also through
-   `"$ADE_CLI_PATH"`, from any provider's shell tool) stays in the thread and
-   draws only those commands, as sentences naming what they acted on:
-   "Clicked “Checkout” on localhost:5173", "Pressed “Escape” in ADE". `shared/computerUseActionSummary.ts` reads the command,
-   and `shared/computerUseActionOutput.ts` its output (the CLI's `hit:` /
-   `effect:` lines, key-value rows, the Mac Desktop windows footer, `ade:`
-   errors, the `attached:` / `target:` lines from `shared/userBrowserLabels.ts`,
-   `--json` results); the summary returns null
-   whenever it is unsure (unknown verb, two acting commands in one call, shell
-   control flow), which keeps the plain shell row. The tokenizer splits shell
-   redirections (`2>&1`, `>out`, `> out`, `&>log`, `*>$null`, and `snapshot>out`
-   with no space) off the words, but only the unquoted ones, so a redirection
-   is never a flag's value or a click target (`click --text 2>&1` has none), and
-   a quoted `"<x>"` stays an argument.
+#### Background jobs
 
-   A row names the app it touched ("in TextEdit"). A surface names itself only
-   when no app says where: a screen or simulator for a screen-level action
-   ("Pressed “cmd+space” on Mac Desktop", "Looked at iPhone 17"), a page by its
-   site, and the user's own browser always, in amber. App Control never names
-   itself: one App Control session drives one app, so a run carries the last
-   window title forward to the steps that printed none. `app-control launch`
-   (alias `open`) reads as the app's label or title, or "the app", never the
-   shell command it ran. Consecutive actions with the same words, outcome and
-   proof records merge into one line with a count ("Looked at ADE ×3"). An
-   element with no name is named by its role or tag (`hit: button (…)` reads
-   "Clicked a button", `AXPopUpButton` "a pop-up button"), and a click on a
-   bare point by the point, so no line reads a bare "Clicked".
+Backgrounded shell commands collapse to one `background_job_line`, pushed on
+the job's first sighting and changed in place to its terminal state, which a
+late progress tick never reopens.
 
-   A proof call (`proof capture` / `attach`, `app-control proof`, …) counts as
-   filed only when its output names the record: a `cite:` line, the JSON
-   record, or the filed table above `Attached N artifact(s) to …`. A call that
-   printed output without one reads "Couldn't file proof" (the exit code can
-   belong to a later command in the same call); output a pipe or redirect cut
-   off reads as unconfirmed; no output at all stays neutral. A later
-   `proof publish` adds "· posted to PR #N" to the lines whose records it
-   reports posted, instead of a row of its own.
+- Two producers share one key space: the live runtime, which reports
+  background shells only as `scheduled_work_update {kind:"background_task"}`
+  (`emitClaudeBackgroundTaskUpdate`), and older transcripts' `subagent_*`
+  events with `taskType: background`.
+- Once a task opened a job line it stays a job. A task that proves to be a
+  real subagent has its job line removed before the spawn anchor lands, so it
+  never draws as a line and a card.
+- The key `background-chip:<agentKey>` never changes on rebind.
 
-   An image the agent opens (a `codex_image_view`) whose file a computer-use
-   action of the same turn printed — the screenshot it took, the picture its
-   observation saved — joins that action's line instead of drawing a row
-   (`foldImageViewIntoAction` in `chatTranscriptRows.ts`; the match allows
-   macOS `/private` and Windows slash spellings, and compares a Windows drive or
-   UNC path case-insensitively, as a tool may print `c:\users\…` where the event
-   says `C:\Users\…`). A screenshot line then moves
-   on: "Taking a screenshot", "Took a screenshot", "Viewing a screenshot" while
-   the agent opens it, "Viewed a screenshot". A line with pictures — the proof
-   it filed, else the images its actions wrote — is a button with a small
-   caret: a click opens the pictures small under it, flush with the thread's
-   left edge, and a click on one enlarges it. Pictures start closed: the
-   reader gets the turn's proof at its end.
+Consecutive job lines join one `background_job_group`
+(`groupBackgroundJobRuns` in `chatBackgroundJobRuns.ts`), right after the
+grid pass. The group's key is its first member's, with `memberKeys`. A run
+splits where the turn fold would: a job still running at turn end (in that
+turn's `liveRowKeys`) never shares a row with jobs that finished before. Jumps,
+event anchors and scroll memory resolve members to the group
+(`backgroundJobGroupKeyByMemberKey`).
 
-   The latest action of a run draws in a stronger colour, with the "no change
-   seen" note when ADE could not confirm it. Earlier ones are one muted line.
-   Only a warning (amber) or a failure (red) gets a mark, the same on every
-   line; success has none, since the words already say what happened. A
-   failure always says why under its line, newest or not. Every line is the
-   same size, so the newest stands out by colour, not by size. A running
-   action shimmers
-   as one sweep across the line. App icons come from `app.getAppIcon` (macOS,
-   cached per name in both processes); browsers use the installed-browser
-   icons; everything else draws a glyph. In the tools list the same commands
-   read as their sentence.
-   A finished turn's fold hides them with the rest of its work (desktop and
-   iOS), as it hides the image-view lines: the folded turn is the view most
-   readers see, so it reads as the answer. Opening the fold shows them.
-   `shared/computerUseActionPresentation.ts` turns a summary into words, and
-   `chat/chatComputerUseRows.ts` decides which entries are actions and how runs
-   sit in the timeline (`ChatComputerUseActions.tsx` draws them). A run that is
-   not the turn's last one draws all compact (`computerUseCompact` on the work
-   log group). iOS ports the parser to
-   `WorkComputerUseSummary.swift`, the words to
-   `WorkComputerUsePresentation.swift` (rows in `WorkComputerUseActions.swift`) and
-   keeps the cluster in `workPresentedTimelineEntries` with
-   `computerUseActions` set.
+`BackgroundJobRunRow` draws one compact left-aligned line, not a card:
 
-   This is capability preserving: clients show only events and file data the
-   selected provider actually emitted, without synthesizing Claude-style file
-   histories for other runtimes.
+- One job: `$ <command> · <duration> · <status>`, with a once-per-second
+  ticker from the real start while it runs, Stop, and `open ›`.
+- A run: `$ 5 background jobs · 1 running 47s · 3 done · 1 failed ›` (failed
+  in red). A click lists each job with its status, label, duration, Stop and
+  `open ›`.
+- The wire format has no exit code, so a job seen only through the live
+  producer measures from its first sighting.
+- `open` sends `ade:chat:open-info` with the task id, and is left out where no
+  host listens. In an ended session a job still marked `running` has no
+  duration and no Stop.
 
-   **One-line previews strip inline Markdown.** `summarizeInlineText`
-   (`chatTranscriptRows.ts`) collapses whitespace and now also strips the
-   inline punctuation a collapsed preview would otherwise show literally —
-   bold/italic, inline code, Markdown links, strikethrough, and leading
-   heading/quote/list markers — via `stripInlineMarkdown`. It is used by the
-   collapsed work-log entry args, the tool-summary header, the minimap prompt
-   and reply previews; the expanded render is
-   unchanged. It is a small conservative scanner, not a parser: markers are
-   removed only in pairs and `_`/`*` only at word boundaries, so `snake_case`,
-   a shell glob, and a lone `*` survive. Internal status/delegation
-   normalization uses `normalizeInlineText` (whitespace only) so grouping logic
-   is unaffected. iOS mirrors it in `workStripInlineMarkdown`.
+#### Scheduled work and wake loops
 
-5. **Turn fold (desktop, hosted web, and iOS).** Once a
-   turn has its `done` row, the rows between
-   its user message and its answer fold into one row, so a finished turn reads
-   user message → `Worked for 4m 12s · 18 tools · 3 files · 2 subagents` →
-   answer → done divider. The rules are pure and UI-free in
-   `apps/desktop/src/shared/chatTurnFold.ts`;
-   `deriveChatTranscriptTurnFolds()` / `applyChatTranscriptTurnFolds()`
-   in `chatTranscriptRows.ts` adapt them to desktop's grouped rows, and iOS
-   mirrors them in `WorkTimelineHelpers.swift` (`workTurnFoldPlan`). It is
-   presentation only: events, storage, sync, and canonical text are unchanged.
+- A wake-up, cron, loop or remote trigger is one entry per schedule id across
+  the transcript (`foldScheduledWorkRows` in `chatScheduledWorkRows.ts`).
+  Later updates patch the entry where the schedule was made.
+- A one-shot `cancelled` at or after its fire time reads as fired.
+- When the turn ends, its schedules move onto its turn-end line
+  (`moveScheduledWorkToTurnEnds`) as chips: `⏰ wakes in 2m` (amber while
+  pending), `woke at 9:50 PM`, `⟳ cron · every 30m`. A pending wake-up more
+  than a minute late reads `was due 9:29`. A click opens the chat actions
+  pane. A running turn keeps a `ScheduledWorkLine` row until its `done`.
+- Task lists are never bundled; they are the chat's one `task_list` row.
+- A turn the agent started from its own wake-up is a wake turn
+  (`deriveWakeTurnIds`). It has no `Worked for …` row: the `ran 2.2s ›` time
+  on its turn-end line opens the fold. Consecutive wake turns fold every
+  check but the latest (`deriveWakeChains` / `applyWakeChains`) behind `+3
+  more checks ›` on the turn-end line above them; without that line a slim
+  `3 earlier checks` row (`wake_chain`) shows. A turn the user started ends
+  the run.
 
-   - **Live turns never fold.** Until `done` arrives the thread looks exactly
-     as described above: interim text, Thought rows, cards in order, the
-     working indicator.
-   - **The answer** is the turn's last `text` row, or its last
-     `phase: "final_answer"` row when the provider labelled one; a
-     `commentary` row is never the answer. A `phase: "partial_answer"` row is
-     an answer candidate — the last one wins if no `final_answer` follows —
-     but never displaces a `final_answer`. Codex emits it for a finished
-     statement it may follow with more output, and the terminal answer usually
-     restates only its own part. When the provider labels none
-     (Claude), the last text can be a postscript to an earlier answer: if the
-     previous non-empty text of the same turn is at least 400 characters and
-     at least three times as long as the last text, and no more than three
-     non-trivial drawn rows sit between them, that earlier text is the answer
-     and the postscript draws below it. The last text has no length cap of its
-     own; a paragraph of status after an in-depth answer is a postscript too.
-     The search
-     steps over empty text and rows of another turn, and stops at a
-     `commentary` row. A turn with no answer (tool-only,
-     interrupted before any text, an error) does not fold. Neither does a turn
-     whose fold would hide nothing, or only trivial rows: status and
-     diagnostics receipts (`status`, `activity`, `step_boundary`,
-     `turn_details`, `turn_diagnostics`, `turn_health`, a subagent's `done`)
-     and text or thought rows with no visible content
-     (`isTrivialTurnFoldEvent`). Those rows then draw in place, with no
-     `Worked for …` row over them.
-   - **The span** is the rows strictly between the turn's user message and the
-     answer. A turn with no user message (a scheduled wake, a background
-     completion) starts after the previous `done`; a steer's user message
-     starts a new span. Rows after the answer never fold — late proof,
-     new PR/CI cards, the done divider. A late subagent result updates its
-     card in place inside the span, where it is kept visible; only a result
-     whose spawn is not in the window lands after the answer.
-   - **Whose turn a `done` ends.** A `done` whose turn id appears on none of
-     the window's rows, while other rows there do name a turn, is a
-     subagent's (`isForeignTurnEnd`): it neither ends the window nor folds a
-     turn of its own, and inside the span it folds as history. So the parent
-     turn folds whether its subagents' `done` events arrive before or after
-     its own. A `done` with no turn id folds under the id on the window's user
-     message, else the id on its last assistant text (`inferTurnEndTurnId`).
-     A cancellation's consecutive interrupted/failed `status` + `done` rows
-     (parent plus subagents) still merge into one row, and that row is the
-     parent's (`resolveTerminusParent`): its turn id, terminal reason, and
-     model come from the `done` whose id matches the turn's user message, else
-     the first id the turn's own rows carry, else a `status` row in the
-     cluster, else an id-less `done` (given the inferred id). Only when none of
-     that exists does the most-tokens `done` win. Usage and cost are still
-     summed across the cluster.
-   - **Narration folds; substance stays.** A non-answer text row folds only
-     when it is narration ("Now I'll scroll to the DRM section."). It stays
-     visible below the fold row when it embeds proof or any markdown image
-     (`ade-proof://…`), is at least 400 UTF-16 code units, or has markdown
-     structure (a list item, heading, fenced code, or table separator) —
-     typically the reply to a question the user asked alongside the work,
-     written before the agent went off to work and ended on a status message
-     (`proseStaysVisible`). A `commentary` row is narration by the provider's
-     own label and folds unless it embeds proof. A `partial_answer` row is the
-     provider's own label for content, so it stays visible however short it
-     is: the terminal answer does not repeat it, and folding it away would
-     hide an answer the user asked for. A text that repeats the
-     answer word for word still folds, however long. The decision reads only
-     the row's own prose, so replays reproduce it.
-   - **Only history folds.** Thought rows, interim narration text, a Codex
-     plan-mode proposal card, finished activity bundles, the Turn details row,
-     spawned chips, completion lines, compaction dividers, goal pills, the host-sleep
-     chip, a finished stall card, and warning, info, hook, and config notices
-     (including a usage notice marked `warning`/`info`) fold: they have nothing
-     to act on. These stay visible below the fold row, in order, above the
-     answer: subagent spawn, result, and stopped-group cards and their
-     side-by-side grids; `ade_card` rows
-     (PR/CI/review/merge/conflict, proof, quota, and any variant this build
-     does not know); errors (`TurnFailureLine` /
-     `AgentCliAuthCard` / the `ProviderSignInReceipt` line); continuity-recovery and reset-credit notices; error,
-     sign-in (`auth`), provider-health, thread-error, and limit-reached usage
-     notices; interrupt receipts and queue-recovery cards; model-switch/handoff
-     dividers; cloud status/artifact rows; completion reports; generated
-     images; and any row type the classifier does not know. Background job
-     lines and groups, lane-setup cards, approvals, structured questions, task
-     lists, and scheduled work stay visible only if they were still live when
-     the turn ended; a job group is live when any member was, and its members
-     always share that fate (see Background job runs).
-   - **Sticky.** Liveness is read from a snapshot the collapse pass takes when
-     the `done` event is appended (`recordTurnEndSnapshot`, keyed by turn id,
-     first `done` wins): the rows of that turn in their state at that moment,
-     plus which approvals had a `pending_input_resolved` so far. A background
-     job still running at turn end therefore stays visible after it exits, and
-     one that finished before the turn ended folds. The snapshot's window
-     follows the same rules as the fold: it steps over a subagent's `done`
-     (recorded in `foreignTurnEndKeys`, no snapshot of its own), and an id-less
-     `done` files its snapshot under the inferred turn id. Because the snapshot
-     is a step of replaying events in order, the incremental live collapse and
-     a full reload produce the same folds.
-   - **The fold row** reads `Worked for <duration>` — the same measured
-     duration as the done divider's `ran …`, shown whenever one is known —
-     then non-zero tool, file,
-     subagent, background-job, and source counts, each behind a small colored
-     icon (wrench, diff, robot, terminal, globe). The source count is the
-     turn's entry in `deriveChatSources(events).byTurn` (see Sources below),
-     the same number the turn-end chip shows. The job count covers every job in the
-     span, folded or kept, and reads `5 jobs (1 failed)` in red when any
-     failed. Every count is pluralized (`1 tool`, `2 tools`, `1 job`) through
-     `pluralCount`, and so are the open fold's tool and file toggles. The
-     fold row and those toggles draw their focus ring for keyboard focus only
-     (`focus-visible`); a mouse click leaves no outline.
-     A duration under a second reads `<1s` (never milliseconds) on both
-     (`formatTurnDuration`). A turn runs from its user message; a turn with
-     none (a Claude internal follow-up after background subagents, a
-     scheduled wake) runs from its own `status: started` event
-     (`deriveTurnStartedAtMs`, `deriveTurnEndDurations`). A turn with neither
-     has no known start, so both lines omit the duration (the fold reads
-     `Worked`) rather than measure from whatever row came first.
-     An interrupted turn reads `Stopped after <duration>`; the `done` event
-     does not say who stopped it, so the row never says "you". Opening the
-     fold lists the turn's tools and files through `ChatTurnWorkSummary`
-     with `align="start"` (the checkpoint diff stays on the done divider), and
-     then every row of the span in its original order — kept rows included,
-     so a kept row sits between the rows around it, not under the fold row.
-     A closed fold shows its kept rows right after the fold row. An open fold
-     still hides an earlier text row of the turn whose trimmed prose is
-     byte-identical to the answer (`TurnFold.duplicateAnswerKeys`): some
-     models answer, call a tool, then generate the same answer again (Grok
-     4.7 on Cursor does; the Cursor SDK run log shows two separate token
-     streams, so it is the model, not a re-send), and the open fold would
-     otherwise show it twice. The canonical transcript keeps both. With the
-     copy (and the tools, which live in the tool toggle) gone, the Thought
-     rows on either side of it sit next to each other and draw as one Thought
-     row (see "Thought runs" under Reasoning merging). The fold
-     label, the tool/file toggles, the tool list, and the Turn details and
-     warning lines all start at the same left inset. Each fold is closed by
-     default; open/closed is remembered per turn for the transcript view (in
-     memory, bounded like the scroll memory).
-   - **Scrolling.** Toggling a fold pins the fold row's on-screen position and
-     suspends bottom-follow for that one change. Afterwards the view follows
-     the bottom again if it ends there: after any toggle that suspended
-     following, and after a close even from a scrolled-up view, since closing
-     can reveal the end without a scroll event. Opening a fold at the bottom
-     never chases the new bottom. A turn that folds while the view follows the
-     bottom is re-pinned in the same commit, so no frame shows the shortened
-     list off the bottom. A turn that folds while the reader is scrolled up
-     keeps the first visible row where it was, or the fold row that swallowed
-     it. That row is placed by its DOM position, or by the height model when
-     it is no longer mounted (a long fold closing above a virtualized window).
-     The virtualization threshold counts unfolded rows, so a fold never flips
-     the list between its plain and virtualized render paths. Measured row
-     heights are kept for rows hidden in a closed fold, so reopening it lays
-     out on real heights.
-   - **Jumps open the fold first.** A deep link or ⌘K search result
-     (`setPendingSessionAnchor`), a `scrollToRowKey` jump (subagent "jump to
-     result", the wake digest), and a minimap tick whose row is folded all
-     resolve their target on the unfolded rows, open the fold hiding it, and
-     finish on the next commit. They land on the row, highlight it, and
-     re-land on the next two frames while the revealed rows measure. A target
-     that is the answer, or sits in a live turn, is never hidden and jumps
-     directly. A target that no longer exists is dropped. A scroll-memory
-     restore whose anchor row folded while the chat was closed opens that fold
-     and restores the exact row and offset; if the fold cannot be opened it
-     lands on the fold row.
-   - **Other row-indexed features read the unfolded rows.** The minimap
-     collects its items and reply previews from the unfolded rows, so a fold
-     never removes one, and an item hidden in a closed fold sits on the fold
-     row (`placeMinimapEntriesOnVisibleRows`). The fork-history divider is
-     computed on the unfolded rows; while its row is hidden it draws on the
-     fold row, which takes the place of the span's first row, and it returns
-     to its row when the fold opens. The jump pill's "N new" count places its
-     anchor on the unfolded order and counts only drawn rows after it
-     (`countVisibleRowsAppendedSince`). A turn folding the anchor row away
-     therefore neither zeroes the count nor counts hidden rows. Inline proof
-     anchors on the unfolded rows and draws on the fold row while its row is
-     hidden. "Copy turn" sits on the turn-end row and copies assistant text
-     outside the fold, leaving folded narration out of the clipboard.
+#### ADE cards
 
-Each work-log entry carries a `collapseKey` built from `turnId`,
-`logicalItemId` (preferred) or `itemId`, and tool/command identity.
-Streaming updates for the same tool call merge into the existing entry
-instead of appending a new row.
+`ade_card` collapses per `cardId` into one permanent row keyed
+`ade-card:<cardId>`:
 
-`withLocalhostUrls(entry)` runs at every emit/merge step and stamps
-`entry.localUrls?: ChatLocalhostUrl[]` whenever the entry's
-command/output/args/result/label/detail mention a `localhost`,
-`127.0.0.1`, `0.0.0.0`, or `[::1]` URL. The extractor (also exported as
-`extractLocalhostUrlsFromText`) trims trailing punctuation, normalises
-the host to `localhost` for the canonical `href`, and dedupes by
-`href`. Downstream `ChatWorkLogBlock` (specifically the
-`ChatToolActivityDetails` view reachable from the working indicator and the
-done divider) consumes `entry.localUrls` to render the localhost-strip chips
-that route into the in-app browser.
+- A repeat emit merges over the previous payload in place, so an update that
+  leaves out `rows`/`metrics` patches them, and the row keeps its position and
+  height.
+- A failed detail refresh keeps the earlier rows with `stale: true`. A first
+  empty failure shows `detail unavailable` and its retry action.
+- `durationMs` only for a real measured run; the update span reads `tracked`.
+  `rowsTruncated` becomes `+N more`.
+- It is never activity: `classifyActivityPhaseRow` never classifies it, so a
+  reasoning or work phase cannot swallow it.
+- The contract is `shared/adeCard.ts`; iOS mirrors it. Every surface renders
+  `fallbackText` and the `navTarget` deeplink for an unknown `variant`. There
+  is no red tone: failures are amber.
+
+#### Turn details, warnings and receipts
+
+- `turn_diagnostics` snapshots and the turn's recovery receipt
+  (`turn_recovery`, or the alias `codex_turn_recovery`, which never replaces a
+  provider-neutral receipt) merge into one `turn_details` row per turn: one
+  `Turn details` line with summed counts. Codex files diagnostics under its
+  session-startup key and the turn id; an id-less snapshot joins the details
+  row of its window (since the last user message or own `done`). The row sits
+  where the first contribution landed, keyed `turn-details:<turnId>` (or the
+  first event's row key), so live and reload collapses agree. Integrations
+  dedupe by name; checks sum.
+- Warning notices (other than usage and sign-in) draw as one amber line
+  without the provider's leading `⚠`; a click shows the full message. They
+  stay separate rows, so a warning after the answer stays outside the fold.
+- Receipt notices (`info`, `config`, `hook`, `file_persist`, no error or
+  warning, no own row status) draw as one muted line with a glyph by meaning
+  and a chevron for detail. Neighbouring receipts of one turn share a line
+  with `+N` (`foldQuietNoticeLines`). Model switch, spawn, host sleep, reset
+  credit, voice, and every actionable or failing notice keep their own rows.
+
+### 2. Grouped envelopes
+
+Adjacent work-log events of one turn merge into `work_log_group` blocks. A
+`tool_use_summary` right after a group of the same turn is absorbed into it.
+
+### 3. Activity phase collapse
+
+A noisy run of `reasoning` + `work_log_group` rows in one turn (three rows or
+more, or two reasoning rows, or two work groups, with no hard boundary between)
+merges into one `Thought` row and one work-log group, in first-occurrence
+order. The logic is `shared/chatActivityPhase.ts` (desktop:
+`groupChatTranscriptRows()`; iOS: `collapseActivityPhaseTimelineEntries()`).
+Desktop removes rows it never draws (automatic `context_usage`, same-provider
+handoffs) first, so a hidden row cannot split a thinking run.
+
+### 4. Client presentation
+
+Tool, command, hook and web-search groups have no permanent rows:
+
+- **Live turn.** The working status names the running tool, and its dropdown
+  lists the open turn's tools (`deriveTranscriptToolActivity`). The open turn
+  ends at `done` or at a user message that starts a new one
+  (`userMessageStartsTurn` in `shared/chatTranscript.ts`): a message with the
+  open turn's id (Codex's mid-turn `!` command) or a steer the turn took or
+  that failed never starts one.
+- **Finished turn.** Desktop and hosted web draw one `N tools · M files` row
+  (`ChatTurnWorkSummary`) right above the time/usage line, left-aligned with
+  Thought; expanding lists tools and files above that line. File changes share
+  this summary unless a checkpoint `turn_diff_summary` covers the turn.
+  `work_log_group` envelopes are filtered out of the timeline. When the turn
+  folds (step 5), the counts move to the fold row.
+- **iOS** puts the counts on `WorkTurnEndMarkerView`, also for a turn paused at
+  a usage limit, and a tap opens a sheet. `workPresentedTimelineEntries` drops
+  `.toolGroup` / `.changedFiles` rows only when `workTurnToolActivityIndex`
+  attached them to a finished turn.
+- Clients show only what the provider emitted; they never make up file
+  histories.
+
+**One-line previews strip inline Markdown.** `summarizeInlineText` uses
+`stripInlineMarkdown` for collapsed tool args, the tool-summary header and
+minimap previews: markers come off only in pairs, and `_`/`*` only at word
+boundaries, so `snake_case` and globs survive. Grouping uses
+`normalizeInlineText` (whitespace only). iOS: `workStripInlineMarkdown`.
+
+#### Computer-use action rows (desktop, hosted web, iOS)
+
+A group with ADE computer-use shell commands (`ade screen|mac-desktop|desk`,
+`ade app-control`, `ade browser`, `ade apple`, `ade proof`, also through
+`"$ADE_CLI_PATH"`, from any provider) stays in the thread and draws those
+commands as sentences: "Clicked “Checkout” on localhost:5173".
+
+- `shared/computerUseActionSummary.ts` reads the command and
+  `shared/computerUseActionOutput.ts` its output (`hit:` / `effect:` lines,
+  key-value rows, the Mac Desktop windows footer, `ade:` errors, the
+  `attached:` / `target:` lines, `--json`). The summary returns null when
+  unsure (an unknown verb, two acting commands, shell control flow), which
+  keeps the plain shell row.
+- The tokenizer splits only unquoted redirections (`2>&1`, `>out`, `&>log`,
+  `*>$null`, `snapshot>out`) off the words, so a redirection is never a value
+  or a target.
+- A row names the app it touched. A surface names itself only when no app
+  does (a screen or simulator, a page by its site, the user's own browser
+  always, in amber). App Control never names itself and carries the last
+  window title forward. `app-control launch` reads as the app's label or
+  "the app".
+- Consecutive actions with the same words, outcome and proof merge with a
+  count ("Looked at ADE ×3"). An unnamed element is named by its role
+  ("Clicked a button"), a bare point by the point.
+- A proof call counts as filed only when its output names the record (a
+  `cite:` line, the JSON record, or the filed table). Output without one
+  reads "Couldn't file proof"; cut-off output reads as unconfirmed; no output
+  stays neutral. A later `proof publish` adds "· posted to PR #N".
+- An image the agent opens (`codex_image_view`) whose file an action of the
+  same turn printed joins that action's line (`foldImageViewIntoAction`;
+  macOS `/private` and Windows spellings match, drive and UNC paths
+  case-insensitively). The line then reads "Taking / Took / Viewing / Viewed
+  a screenshot". A line with pictures is a button: the pictures open small
+  under it and enlarge on click. They start closed.
+- The latest action draws in a stronger colour, with "no change seen" when ADE
+  could not confirm it. Only a warning (amber) or failure (red) gets a mark,
+  and a failure always says why. A running action shimmers once across the
+  line. App icons come from `app.getAppIcon` (macOS, cached).
+- A finished turn's fold hides these lines with the rest of its work.
+- Files: `shared/computerUseActionPresentation.ts` (words),
+  `chat/chatComputerUseRows.ts` (which entries are actions; a run that is not
+  the turn's last draws compact, `computerUseCompact`),
+  `ChatComputerUseActions.tsx` (drawing). iOS: `WorkComputerUseSummary.swift`,
+  `WorkComputerUsePresentation.swift`, `WorkComputerUseActions.swift`.
+
+### 5. Turn fold (desktop, hosted web, iOS)
+
+Once a turn has its `done`, the rows between its user message and its answer
+fold into one row: user message → `Worked for 4m 12s · 18 tools · 3 files · 2
+subagents` → answer → done divider. The rules are pure in
+`shared/chatTurnFold.ts`; `deriveChatTranscriptTurnFolds()` /
+`applyChatTranscriptTurnFolds()` adapt them on desktop, and iOS mirrors them
+in `WorkTimelineHelpers.swift` (`workTurnFoldPlan`). Events, storage, sync and
+canonical text do not change.
+
+- **Live turns never fold.**
+- **The answer** is the turn's last `text` row, or its last
+  `phase: "final_answer"` row. A `commentary` row is never the answer. A
+  `partial_answer` row is a candidate (the last wins) but never displaces a
+  `final_answer`. With no labels (Claude), an earlier text is the answer and
+  the last text is a postscript when the earlier one is at least 400
+  characters and three times as long, with at most three non-trivial rows
+  between. The search skips empty text and other turns' rows and stops at a
+  `commentary` row.
+- **No fold** for a turn with no answer, or whose fold would hide only trivial
+  rows (`isTrivialTurnFoldEvent`: status and diagnostics receipts, a
+  subagent's `done`, empty text or thought rows).
+- **The span** is the rows strictly between the user message and the answer.
+  A turn with no user message starts after the previous `done`; a steer starts
+  a new span. Rows after the answer never fold.
+- **Whose turn a `done` ends.** A `done` whose turn id is on none of the
+  window's rows, while other rows name a turn, is a subagent's
+  (`isForeignTurnEnd`): it ends nothing and folds as history. An id-less
+  `done` takes the id of the window's user message, else its last assistant
+  text (`inferTurnEndTurnId`). A cancellation's interrupted `status` + `done`
+  rows merge into one row that is the parent's (`resolveTerminusParent`);
+  usage and cost sum across the cluster.
+- **Narration folds; substance stays.** A non-answer text folds only when it
+  is narration. It stays visible when it embeds proof or a markdown image, is
+  at least 400 UTF-16 code units, or has markdown structure
+  (`proseStaysVisible`). A `commentary` row folds unless it embeds proof. A
+  `partial_answer` row always stays. A text that repeats the answer word for
+  word folds.
+- **What folds:** Thought rows, interim narration, a Codex plan-mode proposal
+  card, finished activity bundles, Turn details, spawned chips, completion
+  lines, compaction dividers, goal pills, the host-sleep chip, a finished
+  stall card, and warning, info, hook and config notices.
+- **What stays visible** below the fold row, in order: subagent cards, grids
+  and stopped groups; `ade_card` rows; errors (`TurnFailureLine`,
+  `AgentCliAuthCard`, `ProviderSignInReceipt`); continuity-recovery and
+  reset-credit notices; error, sign-in, provider-health, thread-error and
+  limit-reached notices; interrupt receipts and queue-recovery cards;
+  model-switch dividers; cloud status rows; completion reports; generated
+  images; any unknown row type. Background jobs, lane-setup cards, approvals,
+  questions, task lists and scheduled work stay only if they were live when
+  the turn ended (a job group goes with its members).
+- **Sticky.** Liveness comes from a snapshot taken when the `done` is appended
+  (`recordTurnEndSnapshot`, first `done` wins), with the approvals resolved so
+  far. It skips a subagent's `done` (`foreignTurnEndKeys`). Live collapse and
+  a full reload give the same folds.
+- **The fold row** reads `Worked for <duration>` (the done divider's measured
+  duration), then non-zero tool, file, subagent, background-job and source
+  counts with icons. Sources come from `deriveChatSources(events).byTurn`. The
+  job count reads `5 jobs (1 failed)` in red when one failed. Counts use
+  `pluralCount`. Focus rings are `focus-visible` only.
+  - A duration under a second reads `<1s` (`formatTurnDuration`). A turn runs
+    from its user message, else from its `status: started`
+    (`deriveTurnStartedAtMs`); with neither it reads `Worked`.
+  - An interrupted turn reads `Stopped after <duration>`, never "you".
+  - Opening the fold lists tools and files (`ChatTurnWorkSummary`,
+    `align="start"`), then every span row in order, kept rows included.
+  - An open fold hides an earlier text whose trimmed prose equals the answer
+    (`TurnFold.duplicateAnswerKeys`); some models repeat the answer after a
+    tool call. The Thought rows on either side then draw as one.
+  - Each fold starts closed; open state is kept per turn in memory.
+- **Scrolling.** A toggle pins the fold row's position and suspends
+  bottom-follow for that change; afterwards the view follows the bottom again
+  if it ends there. A turn that folds while following is re-pinned in the
+  same commit. A turn that folds while the reader is scrolled up keeps the
+  first visible row (or the fold row that took it) in place. The
+  virtualization threshold counts unfolded rows. Heights of hidden rows are
+  kept.
+- **Jumps open the fold first.** A deep link or ⌘K result
+  (`setPendingSessionAnchor`), a `scrollToRowKey` jump and a minimap tick
+  resolve on the unfolded rows, open the fold, land and highlight, and land
+  again on the next two frames. A missing target is dropped. A scroll-memory
+  anchor in a fold opens it; if it can't, it lands on the fold row.
+- **Row-indexed features read the unfolded rows.** Minimap items in a closed
+  fold sit on the fold row (`placeMinimapEntriesOnVisibleRows`). The
+  fork-history divider and inline proof draw on the fold row while their row
+  is hidden. The jump pill's "N new" counts only drawn rows
+  (`countVisibleRowsAppendedSince`). "Copy turn" copies text outside the fold.
+
+### Order of the presentation passes
+
+`AgentChatMessageList`'s `presentedRows` runs, in order:
+
+1. `groupChatTranscriptRows` (with the stopped-group fold).
+2. The presentation filter (drops `work_log_group` and covered
+   `turn_diff_summary`).
+3. `mergeAdjacentActivityBundleRows`.
+4. `groupSubagentCardGrids`.
+5. `groupBackgroundJobRuns`.
+6. The turn fold.
+7. `mergeAdjacentThoughtRows` (see Thought runs).
+
+Grouping after the filter keeps undrawn rows from splitting a run. Grouping
+before the fold lets the fold see one grid row, which it keeps visible. A grid
+never crosses a span, because user messages and answers end runs. The
+turn-end snapshot counts each agent. Jumps and anchors to a member card
+resolve to its grid (`subagentCardGridKeyByMemberKey`,
+`resolveAnchoredChatRowIndex`) or stopped group.
 
 ## Assistant text hover actions (desktop and hosted web)
 
-Every assistant text row has a compact icon-only `Copy` action beside its
-timestamp. On hover-capable displays, interim rows float this footer below the
-prose without reserving another line; their row clips horizontally while
-leaving the footer visible. The turn-end row has one compact `Copy turn` action
-that joins the assistant text outside the fold with blank lines. It excludes
-the user prompt, reasoning, tool output, and narration hidden by the turn fold.
-Message Copy always copies that row's stored text, never a paced prefix.
+Each assistant text row has an icon-only `Copy` beside its timestamp. On a
+hover display an interim row floats this footer below the prose without a new
+line. The turn-end row has one `Copy turn`, which joins the assistant text
+outside the fold with blank lines (no prompt, reasoning, tool output or folded
+narration). Copy always copies the stored text, never a paced prefix.
 
 ## Text merging
 
 Adjacent `text` events merge via `shouldMergeTextRows()`:
 
-- Events with matching `messageId` always merge, unless both carry a
-  `phase` and the phases differ. ADE reuses one `messageId` for consecutive
-  assistant text until a tool call flushes it, so a Codex `commentary` message
-  and its `final_answer` can share an id; they stay separate rows so the turn
-  fold can pick the answer. A `partial_answer` stays separate from both for
-  the same reason — merging it into the narration that follows it would leave
-  it wearing the narration's label, which the fold then hides. A merged row adopts a later fragment's `phase`
-  when its first fragment had none.
-- Events without `messageId` fall back to matching `turnId` and
-  `itemId`.
+- Events with the same `messageId` merge, unless both carry a `phase` and the
+  phases differ. ADE reuses one `messageId` for consecutive text until a tool
+  call, so a Codex `commentary` and its `final_answer` can share an id; they
+  stay separate so the turn fold can pick the answer. A `partial_answer`
+  stays separate from both. A merged row takes a later fragment's `phase`
+  when the first had none.
+- Events without `messageId` match on `turnId` and `itemId`.
 
-This prevents duplicate rows when the provider streams fragmented text.
-For Claude SDK rows, `messageId` is the provider message UUID/id so a
-later `transcript_retraction` can remove the exact assistant text that a
-model refusal fallback or `supersedes` message invalidated. When a reader
-never saw a message's `message_start` (the idle reader that picks up
-Claude's internal follow-up turn right after the foreground turn ends),
-it latches the first delta frame's wire `uuid` as the message id until the
-next `message_start`. Each frame has its own `uuid`, so using it per delta
-gave every delta its own id and its own row, and the turn fold then hid
-all but the last fragment behind `Worked for …`.
+For Claude SDK rows, `messageId` is the provider message id, so a later
+`transcript_retraction` removes the exact text a refusal fallback or
+`supersedes` message invalidated. A reader that never saw a message's
+`message_start` (the idle reader that picks up Claude's internal follow-up
+turn) uses the first delta's wire `uuid` as the id until the next
+`message_start`. Each delta has its own `uuid`, so a per-delta id would split
+the message into rows.
 
-A `text` event can carry an optional `phase` (`"commentary"`,
-`"partial_answer"`, or `"final_answer"`): the provider's own label for interim
-narration, a finished statement more output may follow, or the turn's terminal
-answer. `partial_answer` arrived with Codex 0.162. Only Codex sends any of
-them, on the `agentMessage` item in
-`item/started` / `item/completed` rather than on the text deltas, and not for
-every model, so an absent `phase` means unknown. The Codex handler records the
-phase per item id (cleared when the item or the turn ends) and stamps it on
-that item's deltas. The 100ms text buffer closes at each new `agentMessage`
-item and never folds two different phases into one event. A phase first seen
-at `item/completed` labels only text still in that buffer. No extra event is
-emitted for text that already flushed, because every client drops empty
-`text` events. The field only labels text and never changes it, so the stored
-transcript stays byte-identical. It survives storage and sync compaction and
-also appears on Codex imports, thread-read recovery, and Codex subagent
-transcripts. Clients that do not know the field ignore it.
+**`phase`.** A `text` event can carry `"commentary"`, `"partial_answer"` or
+`"final_answer"`: interim narration, a finished statement more output may
+follow, or the terminal answer. Only Codex sends it (not for every model), on
+the `agentMessage` item in `item/started` / `item/completed`; an absent phase
+means unknown.
 
-`plan_text` merging uses `shouldMergePlanTextRows()` with the same
-heuristic. When a final `plan` event arrives for a turn, any preceding
-`plan_text` rows for that turn are discarded and replaced with the
-single `plan` row.
+- The Codex handler records the phase per item id and stamps it on that
+  item's deltas. The 100 ms text buffer closes at each new `agentMessage`
+  item and never mixes two phases.
+- A phase first seen at `item/completed` labels only text still in the
+  buffer. No extra event is emitted for flushed text.
+- The field only labels text, so the stored transcript stays byte-identical.
+  It survives storage and sync compaction, Codex imports, thread-read recovery
+  and Codex subagent transcripts. Clients that do not know it ignore it.
+
+`plan_text` merges the same way (`shouldMergePlanTextRows()`). A final `plan`
+event for a turn replaces that turn's `plan_text` rows.
 
 ## Reasoning merging
 
-Adjacent `reasoning` events in the same turn merge into one `Thought` row
-even when the provider gave them different `itemId`s, and the merged text
-never repeats a fragment the provider re-sent. Providers persist one thought
-more than once — Claude emits the streamed block under the stream content
-index and the SDK snapshot under the block index (the two differ when a
-redacted/empty thinking block was stripped from the snapshot), and Cursor
-re-sends a run's text — so without duplicate-aware merging a turn renders as
-two `Thought` rows or as one row with the paragraph doubled.
+Adjacent `reasoning` events of one turn merge into one `Thought` row even with
+different `itemId`s, and the text never repeats a re-sent fragment. Claude
+emits a thought under the stream content index and again under the snapshot
+block index, and Cursor re-sends a run's text.
 
-The merge helpers live in `apps/desktop/src/shared/chatActivityPhase.ts`:
-`mergeReasoningFragment()` folds streaming fragments (exact/suffix re-emits and
-cumulative snapshots collapse to the text once) and
-`mergeReasoningTextFragments()` deduplicates fragment lists while keeping the
-`---` separator between genuinely distinct blocks. The Claude producer also
-skips a snapshot whose full text was already streamed, matched by text rather
-than by content index.
+- `mergeReasoningFragment()` (`shared/chatActivityPhase.ts`) folds streaming
+  fragments: exact and suffix re-emits and cumulative snapshots collapse to
+  the text once.
+- `mergeReasoningTextFragments()` dedupes fragment lists and keeps `---`
+  between distinct blocks.
+- The Claude producer skips a snapshot whose text already streamed, matched by
+  text.
 
-That `---` is a display join, not stored text. Thought text renders through
-`MarkdownBlock` with `tone="thought"`, which draws a thematic break as a quiet
-paragraph gap (`data-thought-fragment-gap`, 0.6 of a line) instead of a rule.
-The same tone sets thought text one step smaller and quieter than the
-assistant's prose (12/14 of the chat font size, 1.65 leading, the foreground
-at 62%). It applies to the live block and to every open Thought block. A
-thematic break the model wrote itself inside a thought draws the same gap.
+The `---` is a display join, not stored text. `MarkdownBlock` with
+`tone="thought"` draws a thematic break as a 0.6-line gap
+(`data-thought-fragment-gap`), and sets thought text smaller and quieter
+(12/14 of the chat font size, 1.65 leading, foreground at 62%).
 
 ### Thought runs (desktop and hosted web)
 
-Grouping merges reasoning only when the rows are adjacent in the grouped list.
-Rows the timeline does not draw can still sit between two thoughts: the tool
-group of a thought → tool → thought phase that stopped at a hidden row, or the
-duplicate answer copy an open fold hides. On screen the two Thought rows would
-then be next to each other, each with its own grey block.
-`mergeAdjacentThoughtRows` (`chatThoughtRuns.ts`) runs on the drawn rows in
-`AgentChatMessageList`, right after the turn fold is applied, and merges each
-run of Thought rows of one turn that are next to each other into ONE Thought
-row, in the open fold and in unfolded views alike.
+Rows the timeline does not draw can sit between two thoughts (a hidden tool
+group, or the duplicate answer an open fold hides). `mergeAdjacentThoughtRows`
+(`chatThoughtRuns.ts`) runs on the drawn rows after the turn fold and merges
+each run of adjacent Thought rows of one turn into one.
 
-- **What ends a run.** Any drawn row: text, a card, a divider, a fold row,
-  or a Thought of another turn. Rows that stay in the list but draw nothing
-  (`drawsNothingBetweenThoughts`: a `subagent_spawned` notice with
-  `hasInlineCard`, the "Promoted to Cursor Cloud" marker, a queued-command
-  lifecycle that did not cancel, a conversation reset, an empty non-failure
-  status) are stepped over and move ahead of the merged row.
+- **A run ends** at any drawn row. Rows that draw nothing
+  (`drawsNothingBetweenThoughts`: an inline-card spawn notice, the "Promoted
+  to Cursor Cloud" marker, a queued-command lifecycle that did not cancel, a
+  conversation reset, an empty non-failure status) move ahead of the merged
+  row.
 - **Keys.** The merged row takes its first member's key and lists
-  `thoughtMemberKeys`, so the first Thought row stays mounted with its
-  measured height and open state when a later one joins it.
-  `thoughtRunKeyByMemberKey` maps each member to the merged row. Jumps
-  (`scrollToRowKey`, including one that has to open a fold first), event
-  anchors, a scroll-memory anchor, the fork-history divider, and inline proof
-  that name a member all resolve through it to the merged row.
-- **The live thought.** The reasoning row that is still streaming
-  (`deriveLiveThinkingRowKey`) never joins an earlier run, because that would
-  give it the earlier row's key and remount it mid-stream. Once something
-  follows it, it joins like any other thought.
-- **Text and duration.** The text is `mergeReasoningTextFragments` over the
-  members. The row reads `Thought for Ns` only when every member has a
-  measured duration, and N is their sum. If any member has none (one chunk, a
-  sub-second span, or an activity-phase merge that also covers tool time), the
-  merged row shows no duration.
-- **Identity.** An unchanged run reuses the previous pass's merged envelope,
-  so a streaming delta elsewhere does not re-render it, and the member map
-  keeps its identity while its contents are unchanged.
+  `thoughtMemberKeys`. `thoughtRunKeyByMemberKey` resolves jumps, anchors,
+  scroll memory, the fork divider and inline proof to it.
+- **The live thought** (`deriveLiveThinkingRowKey`) never joins an earlier
+  run, so it is not remounted mid-stream.
+- **Duration.** `Thought for Ns` shows only when every member has a measured
+  duration (N is the sum).
+- An unchanged run reuses the previous merged envelope.
 
 ### Live thinking preview (desktop and hosted web)
 
-Every provider's thinking (Claude SDK thinking, Codex reasoning and summaries,
-Cursor thinking, OpenCode/Droid reasoning, ACP `agent_thought_chunk`) arrives
-as `reasoning` events, so one presentation covers all of them
-(`ThinkingPreview.tsx`, wired through `MinimalThought` in
-`AgentChatMessageList.tsx`).
+Every provider's thinking arrives as `reasoning` events, so one presentation
+covers all (`ThinkingPreview.tsx`, through `MinimalThought` in
+`AgentChatMessageList.tsx`). iOS keeps its own Thought rendering.
 
-- **Which row is live.** `deriveLiveThinkingRowKey()` picks at most one row per
-  list: while the turn is streaming and the session has not ended, the newest
-  grouped row of the active turn, if it is a `reasoning` row. It reads the
-  grouped rows *before* `work_log_group` rows leave the drawn timeline, so a
-  tool starting after the thought collapses the preview even though the tool
-  row is never drawn. A noisy activity phase (thought → tool → thought) merges
-  into one Thought row placed before one merged work row; that row stays live
-  only while its latest fragment is newer than the merged work row.
-- **Live look.** A header with a spinner, a shimmering `Claude is thinking`
-  (the chat's assistant label; plain `Thinking` when the label is only
-  `Assistant`), and an elapsed `· 12s` counter. Under it is a compact block of
-  the streamed text, indented to the heading, with no box. It uses the thought
-  tone (smaller and muted) and streams at the assistant text's pace: the same
-  `useRevealedLength` reveal, with a settled prefix and a growing tail. The
-  block grows with the text up to four lines. Its viewport
-  (`.ade-thinking-live-viewport`) has the thought text's font size and line
-  height and `max-height: calc(4 * 1lh)`, so a one-line thought is a one-line
-  block with no empty space. Past four lines the newest line stays at the
-  bottom, older lines scroll up, and a top fade (`mask-image`, on only while
-  lines are out of view) covers them. The block scrolls only inside itself.
-  The counter starts at the thought's first fragment, or at the start of the
-  latest thinking run for a phase-merged row (`latestStartTimestamp`), so tool
-  time before it is not counted. A thought that arrives in one chunk (Claude
-  summarized thinking) simply shows its text.
-- **Collapse.** As soon as any other row follows the thought, or the turn ends,
-  the same row (same key) draws the compact `Thought` row. It shows
-  `Thought for 12s` when the row has a real measured span (first to last
-  fragment, at least 1s). A phase-merged row shows no duration because its
-  span also covers tool work. The label is plain text with nothing after
-  it; only the live `… is thinking` header carries a spinner and shimmer.
-- **Opening.** Clicking a `Thought` row opens the full text inside the grey
-  block, at full height, with no fade and no auto-scroll. Clicking the live
-  block (or its header) expands it the same way while it streams, and
-  clicking the grey block collapses it back to the four-line live view. It
-  stays expanded until clicked again, and stays open when the thought settles.
-  A click that ends a text selection or lands on a link does not toggle. Thought
-  rows inside an open turn fold behave the same way. They never show the live
-  preview.
-- **Performance.** The header's elapsed leaf subscribes to the renderer's shared
-  1s timer (one timer for every subscriber), so a tick never re-renders the
-  text. The paced reveal re-renders only the `LiveThoughtText` leaf.
-  Tail-following is at most one `scrollTop` write
-  per frame, coalesced through a ref and `requestAnimationFrame`. A layout
-  effect triggers it when the text changes, and a `ResizeObserver` on the
-  content triggers it as the reveal grows the text between deltas. The same
-  frame sets `data-overflowing`, which turns the fade on, without a React
-  render. The block keeps the last ~4,000 characters of the revealed text
-  mounted, cut on a paragraph boundary (an unclosed code fence is reopened), so
-  markdown cost stays bounded on long thoughts.
-- **Row height.** The live row grows from one line to four while it streams
-  and then stays the same height. It is always the list's newest row, so its
-  growth is below any scroll anchor: a reader scrolled up is not moved, and
-  the content `ResizeObserver` re-runs bottom-follow for a reader at the
-  bottom. When the preview collapses, the row shrinks. The browser clamps
-  `scrollTop` to the new maximum, the scroll handler sees distance 0 and stays
-  pinned, and bottom-follow runs again.
-- **Reduced motion.** Under `prefers-reduced-motion` the header drops the
-  shimmer and spinner animation, and the live block drops smooth scrolling. This is
-  done in the component (`usePrefersReducedMotion`) and again in the CSS.
-- **Other clients.** iOS keeps its existing Thought rendering.
+- **Which row is live.** `deriveLiveThinkingRowKey()` picks at most one: while
+  the turn streams, the newest grouped row of the active turn if it is
+  `reasoning`. It reads the rows before `work_log_group` rows leave the
+  timeline, so a tool after the thought ends the preview. A phase-merged row
+  stays live only while its latest fragment is newer than the merged work row.
+- **Live look.** A spinner, a shimmering `Claude is thinking` (the chat's
+  assistant label; `Thinking` for plain `Assistant`), and `· 12s`. Below, the
+  streamed text in the thought tone at the assistant's reveal pace
+  (`useRevealedLength`), growing up to four lines
+  (`.ade-thinking-live-viewport`, `max-height: calc(4 * 1lh)`). Past four lines
+  the newest line stays at the bottom under a top fade. The counter starts at
+  the first fragment, or the latest thinking run of a phase-merged row
+  (`latestStartTimestamp`).
+- **Collapse.** When another row follows or the turn ends, the same row draws
+  `Thought`, with `for 12s` only for a measured span of at least 1 s (never
+  for a phase-merged row).
+- **Opening.** A click opens the full text at full height. A click on the live
+  block expands it while it streams; it stays open until clicked again. A
+  click that ends a selection or hits a link does not toggle.
+- **Performance.** The elapsed leaf uses the shared 1 s timer; the reveal
+  re-renders only `LiveThoughtText`. Tail-following is at most one
+  `scrollTop` write per frame (layout effect and a content `ResizeObserver`),
+  which also sets `data-overflowing`. Only the last ~4,000 characters stay
+  mounted, cut on a paragraph boundary.
+- **Row height.** The live row is always the newest, so its growth never moves
+  a reader scrolled up, and bottom-follow re-runs for a reader at the bottom.
+- **Reduced motion** drops the shimmer, spinner and smooth scrolling
+  (`usePrefersReducedMotion` and CSS).
 
 ## Turn diff summaries
 
-When a turn completes on a lane and the service can compute a diff
-between the before and after SHAs, the service emits
-`turn_diff_summary` with per-file add/delete counts. The
-`ChatTurnDiffPanel` component renders the summary inline; individual
-file diffs are fetched lazily via `ade.agentChat.getTurnFileDiff`. This is
-the only summary that can offer real git diffs and a SHA-scoped revert.
-
-A turn that changed files without moving HEAD emits no such event — no lane,
-a runtime with no git integration, or edits that never reached a checkpoint.
-Those turns fall back to `ChatTurnFilesChangedSummary`, derived purely from
-work-log entries and therefore available for every runtime (see
-[composer-and-ui.md](composer-and-ui.md#file-changes-panel)). Exactly one of
-the two renders per turn: the desktop message list suppresses the fallback for
-any done row whose turn id appears in the session's `turn_diff_summary` set.
+When a turn on a lane moved HEAD, the service emits `turn_diff_summary` with
+per-file counts. `ChatTurnDiffPanel` draws it and fetches file diffs lazily
+(`ade.agentChat.getTurnFileDiff`); only this summary offers real diffs and a
+SHA-scoped revert. Other turns that changed files fall back to
+`ChatTurnFilesChangedSummary`, built from work-log entries for every runtime
+(see [composer-and-ui.md](composer-and-ui.md#file-changes-panel)). The desktop
+list draws only one of the two per turn.
 
 ## Claude tool-use tracking
 
-The Claude SDK runtime tracks individual tool invocations via the SDK's
-`toolUseID`:
+The Claude SDK runtime tracks each invocation by `toolUseID`:
 
-1. On `tool_use_start` the service records the invocation as
-   in-progress.
-2. When the SDK returns a `tool_use_summary` with
-   `preceding_tool_use_ids`, each ID is matched back to its pending
-   invocation and marked complete, emitting `tool_use_complete` with
-   the summary text.
-3. `AskUserQuestion` is special: when the SDK invokes it, the service
-   builds a `PendingInputRequest`, attaches the `toolUseID`, and emits
-   the request inline. When the user responds, a `tool_result` goes
-   back to the SDK with the answer text, and `pending_input_resolved`
-   clears the UI. There is no idle timer to suspend for human
-   deliberation: Claude's time-based idle watchdog was removed because
-   long tool calls emit no stream events, and
-   `pauseIdleWatchdog` / `resumeIdleWatchdog` survive only as no-op
-   stubs so approval and elicitation callers did not have to change.
-4. `resolvedToolUseIds` tracks already-resolved tool uses so double
-   resolutions (UI double-click, interrupted turn, stale state) are
-   swallowed rather than throwing.
+1. `tool_use_start` records it as in progress.
+2. A `tool_use_summary` with `preceding_tool_use_ids` completes each one and
+   emits `tool_use_complete`.
+3. `AskUserQuestion` builds a `PendingInputRequest` with the `toolUseID`. The
+   answer goes back as a `tool_result`, and `pending_input_resolved` clears
+   the UI. Claude has no time-based idle watchdog (long tool calls emit no
+   stream events); `pauseIdleWatchdog` / `resumeIdleWatchdog` are no-ops.
+4. `resolvedToolUseIds` swallows a second resolution.
 
 ## Text batching
 
-`apps/desktop/src/main/services/chat/chatTextBatching.ts` accumulates
-streaming text fragments for up to 100 ms before flushing as a single
-assistant-text event. This reduces renderer re-render frequency during
-fast streams.
+`main/services/chat/chatTextBatching.ts` holds streaming text for up to
+100 ms before one flush.
 
-Critical invariant: the buffer **must** be flushed immediately on every
-non-text event (tool call, turn boundary, error) to preserve ordering.
-`shouldFlushBufferedAssistantTextForEvent()` is the gate. Any new event
-type added to the union must be considered for this check.
-
-`getRecentEntries` (used by auto-title and compaction flush) calls the
-flush helper first so reads always reflect the latest streamed content.
-
-Every flush is labelled with why it happened — `timer` (the 100 ms
-window elapsed), `identityBreak` (the incoming fragment could not be
-appended to the buffered one), `interleave` (a non-text event forced the
-ordering flush) — and, while `ADE_PERF_RUN_ID` is set, recorded as a
-`chatTextFlush` perf event by `services/perf/chatTextProbe.ts`. That probe
-is what measures the real cadence the renderer has to absorb (flush count,
-characters per flush, deltas coalesced, gap since the previous flush). It
-is a no-op with no allocations when no run id is set. Note that
-`agentChatService` is not Electron-only: in a normal dev session the `ade`
-runtime daemon hosts the chat sessions, so it — not Electron main — is the
-process that emits these events, and both may append to the same log at
-once. See [ARCHITECTURE.md](../../ARCHITECTURE.md).
-
-The renderer paints each flush when it arrives. Its paced text reveal can
-type the lumps out instead, but it is off by default; see
-[composer-and-ui.md](composer-and-ui.md#paced-text-reveal). The store
-receives each flush whole and immediately either way. In the renderer,
-`AgentChatPane` applies a burst of chat events at the start of the next
-animation frame (a 16 ms timer is the fallback for a window that draws no
-frames), so streamed text shows in the first frame after it arrives.
+- **Invariant:** flush at once on every non-text event, to keep the order.
+  `shouldFlushBufferedAssistantTextForEvent()` is the gate; consider it for
+  every new event type.
+- `getRecentEntries` (auto-title, compaction) flushes first.
+- Each flush has a reason (`timer`, `identityBreak`, `interleave`). With
+  `ADE_PERF_RUN_ID` set, `services/perf/chatTextProbe.ts` records a
+  `chatTextFlush` perf event; with no run id it does nothing. The `ade`
+  runtime daemon, not Electron main, hosts chats in a normal dev session.
+- The renderer paints each flush when it arrives (the paced reveal is off by
+  default; see [composer-and-ui.md](composer-and-ui.md#paced-text-reveal)).
+  `AgentChatPane` applies a burst of events on the next animation frame (a
+  16 ms timer when no frames draw).
 
 ## Virtual scrolling and message-list layout
 
-`AgentChatMessageList.tsx` keeps render cost proportional to the visible
-viewport rather than total message count using its **own** virtualizer —
-not `@tanstack/react-virtual`. The pieces:
+`AgentChatMessageList.tsx` has its own virtualizer (not
+`@tanstack/react-virtual`):
 
-- `measuredHeights`: a `Map` from stable row key to last measured DOM
-  height. A row that has never been rendered uses a per-kind estimate
-  (`estimateTranscriptRowHeight`): a fold row or chip is a single line,
-  user and assistant text scale with their length across the measured
-  content column, and cards get a card height. Each estimate is computed once
-  per key (again only when the column width moves a full 64px step), so an
-  unmeasured row's model height never drifts.
-- Spacer divs: a top spacer offsets the rendered window to its correct
-  scroll position and a bottom spacer fills the remaining scroll area,
-  both sized from that map.
-- `MeasuredEventRow`: wraps each rendered row and reports its real height
-  through a `ResizeObserver`; `handleMeasure` writes the map and calls
-  `reconcileMeasuredScrollTop`, which adjusts `scrollTop` when a row
-  that starts above the viewport top changed height — including one
-  straddling the top edge — so the visible content stays still.
+- `measuredHeights` maps a row key to its measured height. An unmeasured row
+  uses `estimateTranscriptRowHeight` (per kind and text length), computed once
+  per key and again only when the column width moves a 64px step.
+- A top and a bottom spacer size the window from that map.
+- `MeasuredEventRow` reports heights through a `ResizeObserver`;
+  `reconcileMeasuredScrollTop` adjusts `scrollTop` when a row above (or
+  across) the viewport top changes height.
 
-Below `VIRTUALIZATION_THRESHOLD` rows the list skips all of this and
-renders every row directly. The transcript has one responsive content-width
-contract: `chatAppearance.ts` publishes `--chat-content-width` as
-`min(100%, clamp(720px, 62vw, 1180px))` and aliases the older
-`--chat-column` variable to it. Prose, composer, cards, plans, file changes,
-activity details, and pills all use that token, while the JS
-`resolveChatContentWidthPx()` mirror supplies floating-pane layout math.
+Below `VIRTUALIZATION_THRESHOLD` rows every row renders directly. One content
+width applies to every transcript element: `chatAppearance.ts` publishes
+`--chat-content-width` = `min(100%, clamp(720px, 62vw, 1180px))` (alias
+`--chat-column`); `resolveChatContentWidthPx()` mirrors it for layout math.
 
-Card rows compose `chatCardPrimitives.tsx`: a fixed 16 px glyph column,
-flexible title/content column, and auto-sized meta/action column. Passing
-one-line facts use a hairline row, live/detail-bearing work uses an inset, and
-failures use an amber rail. The same primitives back `AdeCard`,
-`CodexPlanCard`, files changed, tool/work rows, and the stopped-agents group
-card. Running and finished subagent cards share their own frame and
-container instead (see Card layout above).
+Card rows compose `chatCardPrimitives.tsx` (a 16 px glyph column, a flexible
+content column, an auto meta/action column; a hairline row for passing facts,
+an inset for live work, an amber rail for failures). `AdeCard`,
+`CodexPlanCard`, files changed, tool rows and the stopped-agents group use
+them; subagent cards have their own frame.
 
-Notable rendering rules:
+Other rules:
 
-- Assistant messages and transcript cards share the responsive content width.
-- Completed-turn dividers show local time and measured duration. Chat-owned
-  proof is bucketed into turns by `artifact.createdAt` and shows as a
-  "N proof filed ›" count on the divider and, compact ("▣ N proof ›"), at the
-  end of the turn's fold line, where it never wraps: the fold's other counts
-  truncate first. The count opens the proof drawer narrowed to exactly those
-  records. Proof filed between rows (mid-turn, or idle between turns) is the
-  same one-line count at that point, minus any record a "Filed proof" row
-  already pictures. Proof an answer cites is left out of every count.
-- Code blocks in assistant messages render through `HighlightedCode`.
-- User messages animate in with a `motion/react` spring transition and
-  render in full, however long; there is no length-based clamp.
-- Tables use rounded borders and a subtle inset-shadow treatment.
-- System notices render compact inline rather than as pill badges.
-- Plan approval bodies render whole inside the transcript. Only the pinned
-  `ChatProposedPlanCard` above the composer caps its body
-  (`min(52vh, 560px)`), so a long plan cannot push its own Implement / Keep
-  planning buttons out of the viewport.
+- Completed-turn dividers show local time and measured duration. Proof is
+  bucketed into turns by `artifact.createdAt`: "N proof filed ›" on the
+  divider, and "▣ N proof ›" at the end of the fold line, which never wraps.
+  It opens the proof drawer on those records. Proof filed between rows is the
+  same count at that point, minus records a "Filed proof" row shows. Proof an
+  answer cites is not counted.
+- Code renders through `HighlightedCode`. User messages animate in and render
+  in full.
+- Plan approval bodies render whole. Only the pinned `ChatProposedPlanCard`
+  caps its body (`min(52vh, 560px)`), so its buttons stay on screen.
 
 ### Row keys
 
-Every row key is built from the event's identity, never from its position in
-the loaded window (`allocateTranscriptEventRowKey` in `chatTranscriptRows.ts`).
-The base is `<sessionId>:<type>:m:<messageId>[:<phase>]` when the event names
-a message, `<sessionId>:<type>:i:<turnId>:<logicalItemId or itemId>` when it
-names an item, and `<sessionId>:<type>@<timestamp>` otherwise; a `#n` suffix
-counts earlier events in the window with the same base. Derived keys
-(`work-log:`, `activity:`, `reasoning-group:`, `activity-phase-*:`,
-`terminus:`) wrap a row key and inherit its stability; subagent, card,
-host-sleep, wake, and `turn-fold:` keys were already identity-based. A
-`subagent_card_grid` or `background_job_group` row reuses its first member's
-key and lists every member in `memberKeys`.
+A row key comes from the event's identity, never its position
+(`allocateTranscriptEventRowKey`):
 
-So a prepended older page, a background chat trimmed to its newest events, a
-snapshot merge, or a late mid-list insert leaves every surviving row's key
-alone: measured heights, mounted rows (no replayed fade-ins or
-re-highlighting), scroll memory, the "N new" anchor, fold open state, fold
-hidden keys, the turn-end snapshot, highlights, proof anchors, and the minimap
-all carry across. The incremental collapse and a full recollapse assign the
-same keys, and `buildTranscriptEventRowKeys` replays the assignment without a
-collapse (the fork divider uses it). Keys only move when two events with the
-same base are split by a page boundary — two id-less events of one type in the
-same millisecond. `sceneRowIdentity` stays separate: it names scene stills on
-disk and keeps its own frozen format.
+- `<sessionId>:<type>:m:<messageId>[:<phase>]` when the event names a message.
+- `<sessionId>:<type>:i:<turnId>:<logicalItemId or itemId>` when it names an
+  item.
+- `<sessionId>:<type>@<timestamp>` otherwise.
+- A `#n` suffix counts earlier events in the window with the same base.
+
+Derived keys (`work-log:`, `activity:`, `reasoning-group:`,
+`activity-phase-*:`, `terminus:`) wrap a row key. Grid and job-group rows
+reuse their first member's key. So a prepended page, a trim, a snapshot merge
+or a late insert keeps every surviving key, and with it heights, mounts,
+scroll memory, the "N new" anchor, fold state, snapshots, highlights, proof
+anchors and the minimap. `buildTranscriptEventRowKeys` replays the assignment
+without a collapse. Keys move only when a page boundary splits two id-less
+events of one type in the same millisecond. `sceneRowIdentity` keeps its own
+frozen format.
 
 ### Anchoring the reader
 
-The chat list owns scroll anchoring (`overflow-anchor: none` on the pane):
+The list owns scroll anchoring (`overflow-anchor: none`):
 
-- **Row-list changes.** When the drawn row keys change while the reader is
-  scrolled up — an older page, a trim, a merge, a regroup or removal above
-  them — the render pass reads up to four on-screen rows and their tops from
-  the DOM before the commit. The list anchor layout effect reads the first of
-  them that is still mounted and moves `scrollTop` by exactly how far it moved,
-  in both the plain and virtualized paths. In the virtualized path the window
-  for that commit is computed from where the anchor row is about to be, so it
-  stays mounted; a row that did unmount is placed by the height model. The
-  anchor stands down while following the bottom, while a fold toggle or a
-  turn folding pins its own row, and during a jump or a scroll restore.
-- **Scroll memory.** Leaving a chat detached saves the first on-screen row,
-  how far into it the viewport sat (read from the DOM, the height model when
-  nothing is laid out), and the distance from the bottom. Returning puts that
-  row back at that offset — by its DOM position once mounted — and re-applies
-  every frame until the position holds for two frames in a row. A wheel,
-  touch, press, or scroll key cancels it. When the row no longer exists, the
-  view lands the saved distance from the bottom.
-- **Older history.** Older pages load automatically as the reader nears the
-  top (two viewport heights of runway), with no button. Nothing loads while a
-  scroll restore is landing. Automatic triggers — the sentinel, the re-arm
-  after a page lands, a settled restore — get one page between two reader
-  scrolls, so pages never chain on their own; an underfilled pane with no
-  scrollbar keeps backfilling until it fills, and a failure still offers
-  Retry. The main Work pane also fills the rest of a local chat's history on
-  its own, 1.5 s after the open (at once when the reader scrolls up, opens
-  find, or uses the prompt rail), in 512 KiB pages that never rebuild the rows
-  already on screen. A chat on another machine fills only on demand, so a
-  switch never pulls its whole history across the link.
+- **Row-list changes.** When drawn keys change while the reader is scrolled
+  up, the render pass reads up to four on-screen rows and their tops before
+  the commit, and the layout effect moves `scrollTop` by how far the first
+  mounted one moved. In the virtualized path the window keeps that row
+  mounted. The anchor stands down while following the bottom, during a fold
+  pin, a jump or a scroll restore.
+- **Scroll memory.** Leaving a chat saves the first on-screen row, the offset
+  into it and the distance from the bottom. Returning puts the row back and
+  re-applies each frame until it holds for two frames; a wheel, touch, press
+  or scroll key cancels. A missing row lands the saved distance from the
+  bottom.
+- **Older history** loads near the top (two viewports of runway), with no
+  button, and never during a restore. Automatic triggers get one page between
+  two reader scrolls; an underfilled pane keeps backfilling; a failure offers
+  Retry. The main Work pane fills a local chat's history 1.5 s after the open
+  (at once on scroll-up, find or the prompt rail), in 512 KiB pages. A chat
+  on another machine fills only on demand.
 - **Code blocks.** `HighlightedCode` renders a cached highlight on the first
-  frame, and the plain fallback and Shiki's `<pre>` share one font size, line
-  height, and wrapping, so highlighting never changes a measured row's height.
-- **Run on shell code blocks** (`ChatCodeBlockRun.tsx`, rules in
-  `shellCodeBlockRun.ts`). A settled assistant reply's `bash`, `sh`, `zsh`,
-  `shell` and `console` blocks, and `powershell`/`pwsh`/`ps1` blocks, offer
-  Run beside Copy. `MarkdownBlock` passes `runnableCode` only from
-  `AssistantTextBody` and never while the reply's turn is live; user bubbles
-  and reasoning never get it. The control mounts when the block is first
-  pointed at or focused, so an untouched block pays one flag. A click opens a
-  confirm with the exact script, the chat's machine and the lane folder;
-  confirm calls `pty.create` with the chat's runtime pin, owned by the chat
-  (`chatSessionId`), running the interpreter directly with the script as an
-  argument (`bash -c <script>`, `powershell.exe -EncodedCommand`). That keeps
-  heredocs and multi-line scripts byte-exact whatever the login shell is,
-  and the PTY's exit is the command's exit code. It runs with
-  `SHELL_BLOCK_RUN_ENV` (`PAGER=cat`, `GIT_PAGER=cat`), so `git log` or
-  `git diff` ends instead of waiting at a `less` prompt. A `console` block runs only
-  its `$ `/`% ` prompt lines (with `\` continuations). The chat's machine is
-  Windows when its lane folder is a Windows path: there PowerShell blocks run
-  and bash blocks are disabled with a reason; elsewhere the reverse. `cmd`
-  and `bat` blocks never run (cmd cannot take a multi-line script as one
-  argument). A personal chat, an archived lane, an offline machine, hidden
-  control characters and over-long scripts disable Run with a reason; a lane
-  whose folder is gone is refused by the brain (`resolveLaneLaunchContext`),
-  and the block shows that error. The new terminal opens in the chat's tools
-  pane through `ChatTerminalRevealContext` plus `requestChatTerminalFocus`,
-  which hands the drawer the terminal itself so it can show one that already
-  ended; the pane opens it only while it still shows the chat that started
-  the run. The run settles on the PTY's exit event, or on the session's own
-  status (`sessions.get`, read at start and then at a slow pace while it
-  runs) when the event feed misses it: a remote machine's feed can start
-  late, and the hosted web reports an exit only to a subscribed view. After the exit the block offers "Send output to the agent", which
-  reads what the terminal shows: the host's terminal snapshot
-  (`terminal.preview`), replayed into an offscreen xterm and read back as
-  lines, scrollback included. Not the raw transcript, because a Windows
-  terminal (ConPTY) repaints its screen with cursor moves, and its raw output
-  holds every repaint (blank rows, repeated lines). Without a snapshot (an
-  older host, the hosted web) it falls back to the raw transcript, with escapes
-  stripped and carriage-return redraws collapsed. It sends command, exit code
-  and the last 20,000 characters as a normal user message on the chat's pin.
-  Nothing is sent without that click. Windows PowerShell 5.1 itself drops
-  table output still waiting to print when a script ends in `exit` or `throw`
-  (as `powershell -Command` does anywhere); that output never reaches the
-  terminal.
-  Runs live in a module store keyed by chat and block, so a row that scrolls
-  away keeps its result. The hosted web client sends the same launch as
-  `work.runShellBlock`; a host that does not advertise it gets an "update
-  ADE" refusal.
+  frame, and the fallback and Shiki share one font, line height and wrap, so
+  highlighting never changes a row's height.
+
+### Run on shell code blocks
+
+`ChatCodeBlockRun.tsx`, rules in `shellCodeBlockRun.ts`.
+
+- **Which blocks.** A settled assistant reply's `bash`, `sh`, `zsh`, `shell`,
+  `console`, `powershell`, `pwsh` and `ps1` blocks offer Run beside Copy.
+  `MarkdownBlock` passes `runnableCode` only from `AssistantTextBody`, never
+  while the turn is live. The control mounts on first hover or focus.
+- **Run.** A confirm shows the script, the chat's machine and the lane folder.
+  Confirm calls `pty.create` on the chat's pin, owned by the chat
+  (`chatSessionId`), running the interpreter with the script as one argument
+  (`bash -c <script>`, `powershell.exe -EncodedCommand`), with
+  `SHELL_BLOCK_RUN_ENV` (`PAGER=cat`, `GIT_PAGER=cat`). A `console` block runs
+  only its `$ `/`% ` lines.
+- **Platform.** A Windows lane folder runs PowerShell blocks and disables bash
+  blocks with a reason; elsewhere the reverse. `cmd`/`bat` never run.
+- **Disabled with a reason:** a personal chat, an archived lane, an offline
+  machine, hidden control characters, an over-long script. The brain refuses
+  a lane whose folder is gone (`resolveLaneLaunchContext`).
+- The terminal opens in the chat's tools pane (`ChatTerminalRevealContext`,
+  `requestChatTerminalFocus`) only while the pane still shows that chat.
+- The run settles on the PTY exit event, or on `sessions.get` status when the
+  feed misses it (a remote feed can start late; the hosted web reports exits
+  only to a subscribed view).
+- **Send output to the agent** (after exit, only on click) reads the host's
+  terminal snapshot (`terminal.preview`) through an offscreen xterm, because
+  raw ConPTY output holds every repaint. Without a snapshot it uses the raw
+  transcript with escapes stripped. It sends command, exit code and the last
+  20,000 characters as a user message on the chat's pin.
+- Windows PowerShell 5.1 drops pending table output when a script ends in
+  `exit` or `throw`; that output never reaches the terminal.
+- Runs live in a module store keyed by chat and block. The hosted web sends
+  `work.runShellBlock`; a host without it gets an "update ADE" refusal.
 
 ## History snapshots, scroll-back, and misses
 
 A chat pane hydrates from `ade.agentChat.getEventHistory`
-(`AgentChatEventHistorySnapshot`) and pages backwards with
-`ade.agentChat.getEventHistoryPage` (`AgentChatEventHistoryPage`). Both DTOs
-live in `apps/desktop/src/shared/types/chat.ts`. Three fields carry the whole
-contract, and each exists because the obvious substitute is wrong.
-
-Runtime callers send both actions as one object envelope
-(`{ sessionId, beforeOffset?, maxBytes? }`). The desktop preload
-uses that canonical shape; the runtime registry still accepts the legacy
-positional form while older packaged clients age out. This matters because a
-one-argument runtime wrapper silently discards a second positional options
-argument before validation, making every older-page request fail even though
-the initial snapshot succeeds.
+(`AgentChatEventHistorySnapshot`) and pages back with
+`ade.agentChat.getEventHistoryPage` (`AgentChatEventHistoryPage`), both in
+`shared/types/chat.ts`. Callers send one object
+(`{ sessionId, beforeOffset?, maxBytes? }`); the registry still accepts the
+legacy positional form. A one-argument runtime wrapper drops a second
+positional argument, so every older-page request would fail.
 
 ### Resume — reopening a chat sends only what is new
 
-Every snapshot carries `tailEndOffset` (the byte where the tail read ended)
-and `historyGeneration` (moves when a rewind or import rewrites
-the file in place). A reopened chat passes both back as `afterOffset` and
-`historyGeneration`; when the generation still matches, the reply holds the
-seam event plus everything newer and sets `resumedFromOffset`, and the client
-merges it into the window it kept. A mismatch, or a host that does not know
-the arguments, answers with the full window, so old brains and old clients
-keep today's behavior. On a remote machine this is what makes a warm switch
-cost kilobytes instead of the whole window.
+Every snapshot carries `tailEndOffset` and `historyGeneration` (moves when a
+rewind or import rewrites the file). A reopened chat passes them back as
+`afterOffset` and `historyGeneration`. When the generation matches, the reply
+holds the seam event and everything newer with `resumedFromOffset`, and the
+client merges it. A mismatch, or a host that does not know the arguments,
+answers with the full window. On a remote machine a warm switch costs
+kilobytes.
 
 ### `hasOlderHistory` — is there anything to scroll back to?
 
-`agentChatService` derives it from the **tail read** (`transcriptTruncated ||
-windowTruncated`), never from envelope object identity, so it stays correct when
-a snapshot was served entirely from the in-memory ring buffer or the envelopes
-were re-created by the coalescing/subagent pipeline (which loses identity).
-
-Clients must gate the "load earlier messages" head slot on this field, **not**
-on `tailStartOffset > 0`. `resolveSnapshotHistoryCursor` in `AgentChatPane`
-enforces that: a `hasOlderHistory === false` returns cursor `0` even when a
-non-zero `tailStartOffset` is reported, because otherwise the list offers a
-scroll-back affordance that can only ever fail — which is exactly what produced
-the false `couldn't load earlier messages` banner. The field is optional for
-compatibility; older runtimes that omit it fall back to the legacy offset-only
-rule.
+`agentChatService` derives it from the tail read (`transcriptTruncated ||
+windowTruncated`), never from envelope identity, which the ring buffer and the
+coalescing pipeline lose. Gate the "load earlier" slot on this field, not on
+`tailStartOffset > 0`: `resolveSnapshotHistoryCursor` returns cursor `0` when
+it is `false`. Older runtimes that omit it use the offset-only rule.
 
 ### `tailStartOffset` — the paging cursor, in three tiers
 
-`tailStartOffset` is the `beforeOffset` a client passes to
-`getChatEventHistoryPage`. It is resolved in strict precedence:
+`tailStartOffset` is the `beforeOffset` for the next page, in this order:
 
-1. **Exact.** The oldest returned event maps to a physical transcript line —
-   use that line's byte offset.
-2. **Identity lost, window complete.** Nothing was dropped from the head of the
-   merged window (`!windowTruncated`), so everything at or after the tail read's
-   `startOffset` is already in this response and paging from `startOffset` is
-   still exact. A tail that started at byte 0 yields a `null` cursor: there is
-   nothing older.
-3. **Degraded.** Identity was lost *and* the merged window dropped events, so
-   ADE cannot name the byte offset of the oldest returned event. It pages from
-   `endOffset` (the end of the transcript), gated on `hasOlderHistory`. Pages
-   then re-deliver events the client already shows — which the client dedupes —
-   but scroll-back still reaches the head. This fallback must survive: removing
-   it strands truncated transcripts whose snapshot came entirely from the ring
-   buffer with no way to scroll back at all.
+1. **Exact.** The oldest returned event maps to a transcript line: use its
+   byte offset.
+2. **Identity lost, window complete** (`!windowTruncated`): page from the tail
+   read's `startOffset`. A tail from byte 0 gives `null` (nothing older).
+3. **Degraded.** Identity lost and the window dropped events: page from
+   `endOffset`, gated on `hasOlderHistory`. Pages then repeat events, which the
+   client dedupes, but scroll-back still reaches the head. Keep this fallback:
+   without it a truncated transcript served from the ring buffer cannot scroll
+   back.
 
-`advanceOlderHistoryCursor` requires `hasMore` **and** a strictly decreasing
-`startOffset` before it advances, which mirrors the service guarantee and makes
-client paging loops provably terminating. A page that claims `hasMore` without
-decreasing the cursor is a retryable protocol failure, not evidence that the
-head was reached.
+`advanceOlderHistoryCursor` advances only on `hasMore` **and** a strictly
+smaller `startOffset`, so paging loops end. A page that claims `hasMore`
+without a smaller cursor is a retryable protocol failure.
 
 ### A row too large to page
 
-A transcript row larger than the 2 MB page cap (a huge tool result, say) never
-blocks scroll-back. `chatTranscriptHistoryPager.ts` returns that one row as its
-own page whose `startOffset` is the row's start, carrying in the row's place a
-display-only `system_notice` with `status: "history_row_omitted"` and **no
-`sequence`**, and the cursor continues from there. Every client already draws a
-`system_notice` as a quiet info line, so older desktops, the web client and the
-phone show it with no new code. A row up to 8 MB (`SEQUENCE_PROBE_MAX_ROW_BYTES`)
-is read and parsed so the notice can name its size and kind and keep its
-timestamp; a larger row is not parsed and gets a generic notice dated from its
-leading fields (or the epoch). A row that belongs to another chat, or is
-malformed, is dropped as it always was. Because the notice has no sequence, a
-durable log keyed on sequence never stores it as the real row.
+A row over the 2 MB page cap never blocks scroll-back.
+`chatTranscriptHistoryPager.ts` returns it as its own page with, in its place,
+a display-only `system_notice` (`status: "history_row_omitted"`, **no
+`sequence`**). Every client draws it as an info line.
 
-A reply to a sequence cursor (`beforeSequence`, `chat.getChatEvents`) always
-holds a sequenced row older than the cursor that the caller will show, or
-`hasMore: false`. It keeps reading older pages past oversized rows (without
-parsing the later ones), past legacy rows with no sequence, and past rows the
-service hides (Codex subagent rows, through the `isVisible` filter the service
-passes in). If the file shrinks while an oversized row is being read, the page
-fails with the retryable `chat_history_changed_during_read`; the caller's
-cursor has not moved.
+- A row up to 8 MB (`SEQUENCE_PROBE_MAX_ROW_BYTES`) is parsed so the notice
+  names its size, kind and time; a larger row gets a generic notice.
+- The notice carries `omittedRow: { offset, bytes, eventType? }`; the offset
+  is its identity on desktop and the phone.
+- With no sequence, a durable log keyed on sequence never stores it as the
+  row.
+- A sequence-cursor reply (`beforeSequence`, `chat.getChatEvents`) always
+  holds a shown sequenced row older than the cursor, or `hasMore: false`. It
+  reads past oversized, unsequenced and hidden rows (Codex subagent rows,
+  `isVisible`). A file that shrinks mid-read fails with the retryable
+  `chat_history_changed_during_read`.
+- A transcript read (`getChatTranscript`, `ade chat read`, handoff briefs)
+  reports `truncated: true` when the omitted row may have held a message.
+- `getChatEventHistoryPage` returns `envelopeStartOffsets` lined up with its
+  events.
 
-The notice carries `omittedRow: { offset, bytes, eventType? }`. The offset is
-its identity: the renderer and the phone key on it, so two notices with the
-same text or timestamp stay separate. `eventType` is missing when the row was
-too large to parse. A transcript read (`getChatTranscript`,
-`getChatTranscriptPage`, and so `ade chat read` and handoff briefs) reports
-`truncated: true` when the omitted row may have held a message (a user
-message, a text reply, or an unknown kind) inside the returned window; an
-omitted tool result does not, because it is never a transcript entry.
-`getChatEventHistoryPage` returns `envelopeStartOffsets` lined up with the
-events it returns.
+### Paging and caches
 
-Desktop and personal chat request 256 KiB pages; the desktop
-background fill requests 512 KiB. Desktop and
-personal-chat selected views keep at most 60,000 events / 32 MiB resident; a
-background personal-chat view keeps 1,000 events / 2 MiB. Page responses are
-committed only while the selected session, bound runtime, request generation,
-and requested cursor still match.
-
-One user-visible "load earlier" is one *batch*, not one page. `readOlderHistoryBatch`
-keeps pulling pages until the accumulated span contains a `user_message`,
-because pages are cut by bytes: a single page of a long streamed reply can be
-hundreds of superseded `text` delta rows that fold to one rendered line, so a
-page-per-trigger design reads as "load earlier did nothing". The same loop also
-continues through empty-but-progressing pages, so sparse transcript regions do
-not look exhausted. Two bounds keep it terminating: `maxPages` (default 8,
-shared by both behaviours) and `maxAnchorEvents` (default 400, for a turn that
-legitimately spans many pages). Hitting either is not an error — the reader has
-real content and the next scroll continues. Pages already collected in a batch
-are returned even if a later read reports `sessionFound === false`, which would
-otherwise latch "no older history" and drop them until a reload. An overlapping snapshot
-may preserve an exhausted cursor only when its oldest retained event survived
-the merge; a replacement snapshot or cap eviction re-arms paging.
-
-History hydration and live delivery have separate authority. The history API
-owns the ordered range it returns; the live stream owns only events outside
-that range. `shared/chatHistoryMerge.ts` applies that contract for desktop: exact/semantic duplicates are removed, delayed live rows are
-inserted by timestamp before later terminal rows, and a replayed old turn can
-never be appended after the authoritative tail. Event identity is cached by
-envelope object so a 60,000-event resident window does not re-serialize every
-payload on each streaming flush. Desktop installs the live listener before its
-passive history read, while the local runtime pump replays the narrow handoff
-window and filters older buffered events by subscription start time. The hosted
-web adapter consumes `chat_subscribe` snapshots only as stream watermarks and
-hydrates visible history through `chat.getChatEventHistory`; it does not
-re-emit snapshot rows as new live messages. iOS continues to sort and dedupe its materialized event set by
-the same lifecycle contract.
-
-The renderer keeps a bounded per-session view cache so switching back can paint
-immediately. Its bound is bytes (128 MB of cached events, 32 MB for one chat)
-and not a number of chats, so a return to any recent chat is warm while the
-cache has room. A hidden chat's retention subscription captures the concrete
-outgoing project binding, even when that binding was the active unpinned path,
-so a later project switch cannot silently retarget the retained stream.
-Returning adopts that subscription synchronously, renders the cached tail, and
-reconciles against authoritative history without blanking the list. Composer
-controls are withheld for the one-frame interval where the incoming transcript
-id and internal selected-session id differ; an outgoing Stop button or pending
-input can therefore never appear over a settled incoming transcript.
-
-An unchanged transcript reconciles to the same list. The history read that
-follows a switch must hand back the event list the pane already holds when
-nothing changed, or the transcript renders a second time after every switch.
-Two things used to break that. A tool call that a provider sends twice is
-stored as one envelope with the first send's time and the resend's payload;
-neither snapshot row has that identity, so `mergeAgentChatHistorySnapshot`
-maps the envelope it rebuilds back to the held one. And the desktop's
-`RuntimeRpcClient` decodes the reply stream with a `StringDecoder`: decoding
-each socket read alone turned a multi-byte character at a read boundary into
-U+FFFD, at a different place on every read of the same history.
+- Desktop and personal chats request 256 KiB pages; the background fill
+  512 KiB. A selected view keeps at most 60,000 events / 32 MiB; a background
+  personal view 1,000 events / 2 MiB. A page commits only while the session,
+  runtime, request generation and cursor still match.
+- One "load earlier" is one batch (`readOlderHistoryBatch`): pages until the
+  span holds a `user_message` (one page can be hundreds of text deltas that
+  fold to one line), also through empty pages that still progress. Bounds:
+  `maxPages` 8 and `maxAnchorEvents` 400; hitting one is not an error. Pages
+  already collected are kept even if a later read says `sessionFound ===
+  false`.
+- An overlapping snapshot keeps an exhausted cursor only when its oldest event
+  survived the merge.
+- **History and live stream.** The history API owns the range it returns; the
+  live stream owns only events outside it. `shared/chatHistoryMerge.ts`
+  removes duplicates, inserts delayed live rows by time before later terminal
+  rows, and never appends a replayed old turn after the tail. Identity is
+  cached per envelope object. Desktop installs the live listener before the
+  history read. The hosted web uses `chat_subscribe` snapshots only as
+  watermarks and hydrates through `chat.getChatEventHistory`. iOS sorts and
+  dedupes by the same rules.
+- **View cache.** A per-session cache (128 MB, 32 MB per chat) paints a
+  return at once. A hidden chat's retention subscription keeps the concrete
+  binding it had, so a project switch cannot retarget it. Composer controls
+  are withheld for the one frame where the incoming transcript and selected
+  session differ.
+- **An unchanged transcript reconciles to the same list.**
+  `mergeAgentChatHistorySnapshot` maps a rebuilt envelope (a tool call the
+  provider sent twice) back to the held one. `RuntimeRpcClient` decodes the
+  reply stream with a `StringDecoder`, so a multi-byte character at a read
+  boundary stays whole.
 
 ### What one streamed event costs
 
-A streamed event must cost that event, not the transcript. Four mechanisms
-keep it so; each falls back to the full computation when its shortcut does
-not apply, and the full computation is the definition of the result.
+A streamed event must cost that event, not the transcript. Each shortcut falls
+back to the full computation, which defines the result:
 
-- **The live merge carries its indexes.** `mergeAgentChatLiveEvents` hands
-  the list it returns the set of identity keys and the position of every tool
-  call (`liveMergeIndexByList`), and the next merge takes them. A provider
-  resend of a tool call (Claude sends each call twice) updates the stored
-  envelope in place through that index.
-- **A merged list knows what it extended.** `agentChatLiveAppendOf(list)`
-  names the list an append extended, where the new events start, and which
-  positions a resend replaced. Folds that keep their answer per list
-  (`deriveRuntimeState` in `chatRuntimeState.ts`, the active turn, its start time, the turn-start map)
-  read only the appended events, and fold again only when one of them can
-  change the answer.
-- **The display filter extends its previous answer** (`chatDisplayEvents` in
-  `chatHistoryWindow.ts`) and records the same relation for the filtered list
-  (`recordAgentChatLiveAppend`), so the folds above work on it too. A batch
-  that shows nothing new (dotted `subagent.*` twins) returns the previous
-  list and the transcript does not render.
-- **The row builder replays from a checkpoint.** A replaced envelope used to
-  mean a full pass over the transcript. The collapse context keeps its two
-  most recent checkpoints (one each 128 events, and two left behind by every
-  full pass) and replays from the newest one that ends before the replaced
-  event. Its row indexes are complete after a full pass
-  (`rowIndexesComplete`), so a key with no entry means no such row and no
-  scan. `cloneCollapseTranscriptContext` copies the context field by field;
-  a new field does not compile until it is copied.
+- `mergeAgentChatLiveEvents` passes its identity keys and tool-call positions
+  to the next merge (`liveMergeIndexByList`); a provider resend updates the
+  stored envelope in place.
+- `agentChatLiveAppendOf(list)` names what an append extended. Folds that keep
+  an answer per list (`deriveRuntimeState`, the active turn, its start, the
+  turn-start map) read only the new events.
+- `chatDisplayEvents` extends its previous answer and records the relation
+  (`recordAgentChatLiveAppend`). A batch that shows nothing returns the old
+  list, so nothing renders.
+- The row builder replays from the newest of two checkpoints before a
+  replaced event. Row indexes are complete after a full pass
+  (`rowIndexesComplete`). `cloneCollapseTranscriptContext` copies field by
+  field, so a new field does not compile until copied.
 
-`scripts/perf/service/chat-transcript.bench.mts` runs this pipeline on real
-transcripts and checks the incremental rows against a full pass.
+`scripts/perf/service/chat-transcript.bench.mts` checks incremental rows
+against a full pass on real transcripts.
 
 ### `unavailable` — "could not reach the runtime", not "no such session"
 
-`sessionFound: false` is an authoritative answer: this project runtime has no
-such session. `unavailable: true` is not — it means the bound runtime could not
-be reached (remote hop down, machine asleep, project switch in flight), so no
-history could be read at all. Clients must never clear, tombstone, or blank a
-chat on it.
+`sessionFound: false` is authoritative. `unavailable: true` means the runtime
+could not be reached (remote hop down, machine asleep, project switch). Never
+clear or blank a chat on it.
 
-It is produced at every boundary that can fail to reach a runtime:
-
-- **Preload** (`apps/desktop/src/preload/preload.ts`) returns it for
-  `getEventHistory` / `getEventHistoryPage` when the call was left unhandled
-  during a project transition **and** the window's runtime context is remote.
-  Falling through to the local main-process chat service there was the bug: the
-  local service has never heard of a remote session id, so it answers a *false*
-  `sessionFound: false` that the renderer treats as authoritative and uses to
-  wipe the transcript and its cache. Local bindings still fall through to IPC,
-  because there the local service **is** the right answer. The page variant also
-  echoes the caller's cursor back as `startOffset` so it does not additionally
-  claim the head of the transcript was reached. See
+- **Preload** returns it for `getEventHistory` / `getEventHistoryPage` when the
+  call was unhandled during a project switch **and** the window's runtime is
+  remote. The local service would answer a false `sessionFound: false` for a
+  remote id. Local bindings still go to IPC. The page variant echoes the
+  caller's cursor. See
   [Remote runtime internals](../remote-runtime/internal-architecture.md#local-runtime-routing).
-- **The web-client adapter** (`renderer/webclient/adapter/agentChat.ts`,
-  `personalChats.ts`) sets it on the fallback value used when the host command
-  could not be reached or dispatched.
+- **The web adapter** (`webclient/adapter/agentChat.ts`, `personalChats.ts`)
+  sets it when the host command could not be reached.
 
-`resolveChatHistoryMissAction` in `AgentChatPane` turns a miss into one of three
-actions:
+`resolveChatHistoryMissAction` in `AgentChatPane`:
 
 | Result | Action | Meaning |
 |---|---|---|
-| `unavailable: true` | `sync-pending` | Keep everything, retry later, raise the catch-up hairline. |
-| `sessionFound: false`, events rendered | `keep-missing` | Authoritative miss, but blanking a transcript the user is reading is strictly worse than leaving a stale-but-real one on screen. Marked for a later "chat no longer exists" pass. |
-| `sessionFound: false`, nothing rendered | `clear` | Safe to drop the empty view. |
+| `unavailable: true` | `sync-pending` | Keep everything, retry later, show the catch-up hairline. |
+| `sessionFound: false`, events rendered | `keep-missing` | Keep the real transcript on screen; mark it for a later "chat no longer exists" pass. |
+| `sessionFound: false`, nothing rendered | `clear` | Drop the empty view. |
 
 ## Persisted transcript
 
-Sessions persist the transcript to disk under the `.ade` layout, in one file:
-the dedicated per-session JSONL at `.ade/transcripts/chat/<sessionId>.jsonl`.
-The session row still names the legacy `.ade/transcripts/<sessionId>.chat.jsonl`
-(that column syncs to peers and older builds), but chats no longer write it.
-Readers that start from the row resolve it to the dedicated file through
-`resolveChatTranscriptReadPath`. Older builds wrote an 8 MB-capped copy there,
-which the storage doctor removes once its content is proven to be in the
-dedicated file (see storage-and-recovery). When multiple transcript candidates are present, recovery first
-prefers files that contain real chat event envelopes, then uncapped files, then
-newer readable candidates with file size only as a tie-breaker, so header-only
-or capped files do not hide compacted chat history.
+A chat writes one file: `.ade/transcripts/chat/<sessionId>.jsonl`. The session
+row still names `.ade/transcripts/<sessionId>.chat.jsonl` (that column syncs
+to peers and older builds); `resolveChatTranscriptReadPath` maps it to the
+dedicated file. The storage doctor removes an old 8 MB-capped copy once its
+content is in the dedicated file. Recovery prefers files with real chat
+envelopes, then uncapped files, then newer readable files (size breaks ties).
 
-Persisted chat events keep the same public `AgentChatEvent` shape, but bulky
-payloads are compacted before storage for rows users rarely need in full after
-the turn is over. Large command output, tool results (both `result` and the
-provider's raw `structured` payload), file diffs, reasoning text, and inline
-image data URIs are replaced with a short preview (or no inline media) plus
-original/omitted-byte metadata on the event (`outputOriginalBytes`,
-`resultOmittedBytes`, `diffOmittedBytes`, `textOmittedBytes`,
-`urlOmittedBytes`, etc.). Desktop/runtime live subscribers still receive the
-original event while a turn is active. Persisted-history consumers see the
-stored preview on replay.
+**Compaction.** Stored events keep the `AgentChatEvent` shape, but large
+command output, tool results (`result` and `structured`), diffs, reasoning
+text and inline image data URIs become a preview plus omitted-byte metadata
+(`outputOriginalBytes`, `resultOmittedBytes`, …). Live subscribers get the
+original during the turn.
 
-Codex command output is not one event per delta. A busy command sends many
-deltas a second, and they are joined per command into one `command` event,
-emitted at most ten times a second (or sooner at 64 KiB). Any other event of the
-chat flushes the waiting chunk first, so the order and the final output are
-unchanged, and the stored copy goes through the same compaction.
+- Codex command deltas join per command into one `command` event, at most ten
+  a second (or at 64 KiB). Any other event flushes the chunk first.
+- The policy is one module, `shared/chatEventCompaction.ts`, for the stored
+  transcript (`compactChatEventForStorage`) and the sync wire
+  (`compactChatEventForWire`). The wire runs storage compaction first, so a
+  live push and a re-read are byte-identical, then drops
+  `tool_result.structured` and `tool_result.toolResultMeta`, which no client
+  reads.
+- **Compaction must stay idempotent.** A re-wrapped preview grows past the
+  cap. The module recognizes its own wrapper by shape (`summary` starting
+  `[ADE] Large `, with `preview` / `originalBytes` / `omittedBytes`), not by a
+  marker key, up to 2× the cap.
+- `summarizeDiffStats` matches the current and the older shortened-diff
+  notice, so an old shortened diff is still counted as shortened.
 
-The policy — every cap, every wrapper shape — lives in one module,
-`apps/desktop/src/shared/chatEventCompaction.ts`, because it has two consumers
-that must never disagree: the stored transcript
-(`compactChatEventForStorage`) and the mobile/web sync wire
-(`compactChatEventForWire`). The wire variant runs storage compaction first, so
-a live push and the same event re-read after reconnect hydration are
-byte-identical, then drops `tool_result.structured` and
-`tool_result.toolResultMeta` outright — no client decodes either field, so
-phones and web clients paid a download and a JSON parse for something they
-immediately discarded. Removing a field no client reads is backward-compatible
-by construction and needs no capability gate; adding or reshaping one still
-does.
-
-Compaction must stay **idempotent**. The wire applies it to events that already
-came off disk compacted (hydration and the replay ring), and re-wrapping is not
-a harmless no-op: the wrapper's newline-dense `preview` re-serializes with JSON
-escaping and comes out *bigger* than the cap, so each pass grew the payload
-while overwriting `originalBytes` with the previous pass's size. The module
-recognizes its own wrapper by shape (`summary` starting with `[ADE] Large `,
-plus `preview` / `originalBytes` / `omittedBytes`) rather than by a marker key,
-because every surface that renders an object-shaped tool result dumps it as
-JSON, so an added key would become the first line the user reads — and shape
-detection also recognizes wrappers written by builds that predate the check.
-The recognition is size-bounded at 2× the cap so a provider payload cannot
-coincidentally buy itself an exemption.
-
-The shortened-payload notices are user-facing copy now (the same compaction
-feeds phones), so they no longer mention "stored chat history". Transcripts
-already on disk carry the old wording; `summarizeDiffStats` in
-`chatTranscriptRows.ts` matches both so an old shortened diff is still counted
-as shortened rather than parsed as real diff lines.
-
-`agentChatService.ts` (`PersistedChatState`) implements version-2
-reconstruction:
-
-- Recent entries (bounded) are parsed back into envelopes.
-- A continuity summary is injected into the new runtime context on
-  resume.
-- Provider-native runtime state (Claude session id, Codex app-server
-  socket path, OpenCode runtime ids) is rehydrated so the next turn
-  can use the same session instead of creating a new one.
+`agentChatService.ts` (`PersistedChatState`) rebuilds a session (version 2):
+recent entries become envelopes, a continuity summary goes into the new
+runtime context, and provider-native state (Claude session id, Codex
+app-server socket, OpenCode runtime ids) comes back so the next turn uses the
+same session.
 
 ### Claude restart and Stop recovery
 
-Every parent turn must finish with both a terminal `status` and a matching
-`done` event. A process crash can occur after the user message or
-`status: "started"` has been persisted but before that pair is written. When a
-Claude runtime is created, `agentChatService` therefore checks the latest
-non-steer parent turn even when the previous process never persisted an SDK
-session id. It fills in only the missing member of the terminal pair, preserves
-an already-written terminal status, marks the session idle, and persists the
-repair. A newer complete parent turn makes an older incomplete turn irrelevant;
-restart recovery never rewrites historical turns.
+Every parent turn ends with a terminal `status` and a matching `done`.
 
-A subagent whose terminal result is already in the stream is never closed
-again. Codex delivers each `subAgentActivity` item twice (item/started, then
-item/completed with the same `kind`), and the second delivery can land after
-the child's own `turn/completed` settled it. The service acts only on the first
-delivery: a `started` kind opens the thread only then, an `interrupted` kind
-closes only a running thread, and other kinds emit `subagent_progress` only for
-a running thread, so an echo never re-marks a finished child `running` or writes
-"Agent active" after its result. Three backstops cover transcripts written
-before that: `subagentSnapshotsFromEvents` ignores a progress tick after a
-terminal result (only a fresh `subagent_started` reopens an agent), the stale
-run sweep skips any snapshot with an `endedAt`, and the renderer drops a
-`system` / `foreign-brain` stop for an agent that already settled, so it cannot
-turn a finished card into `stopped · the ADE brain restarted` or stretch its
-duration. Runtime filler (`Agent active`, `Agent received input`, `Status: …`,
-`Task updated`; `SUBAGENT_PLACEHOLDER_SUMMARY`) is never saved as a report by
-the orphan reconcile.
+- **Restart.** When a Claude runtime is created, `agentChatService` checks the
+  latest non-steer parent turn (also with no saved SDK session id), adds only
+  the missing member of the pair, marks the session idle and saves. It never
+  rewrites older turns.
+- **Order.** Reconciliation closes orphaned background and subagent rows
+  first, then appends the parent pair, because turn state is derived in event
+  order. Stop on an idle Claude runtime runs the same repair. Both are
+  idempotent.
+- **Settled subagents stay settled.** Codex delivers each `subAgentActivity`
+  item twice; the service acts only on the first (a `started` kind opens,
+  `interrupted` closes only a running thread, other kinds give progress only
+  for a running thread). Backstops: `subagentSnapshotsFromEvents` ignores
+  progress after a result, the stale-run sweep skips snapshots with
+  `endedAt`, and the renderer drops a `system` / `foreign-brain` stop for a
+  settled agent. Runtime filler (`SUBAGENT_PLACEHOLDER_SUMMARY`) is never
+  saved as a report.
+- **Bounded control calls.** `interrupt()` gets 2.5 s; `stopTask()` calls 2 s
+  each, at the same time. A hung control channel is logged and local cleanup
+  continues; an interrupt-and-replace that needs the provider's answer fails
+  within the bound. A steer to an idle Claude session waits only for input
+  acceptance.
+- **Queues on Stop.** `stop_and_clear` (**Turn + queue**, the default) uses
+  `cancel_queued: true` when Claude supports it, else interrupts and cancels
+  each provider-queued message (`cancelAsyncMessage`), and clears local
+  steers. `stop_only` keeps queues and background jobs.
+  `stop_and_background` / `stop_and_clear_and_background` also stop Claude
+  tasks. A clear snapshots the steers it cancelled, emits `queue_recovery`,
+  and accepts one `restoreCancelledQueue` for eight seconds; expiry and
+  restore are saved as terminal events.
 
-Restart reconciliation first closes orphaned background and subagent rows, then
-appends the parent terminal pair last. This ordering is deliberate: renderer
-turn state is derived in event order, so a cleanup row must not make a repaired
-turn look active again. Pressing Stop on an already-idle Claude runtime runs the
-same parent-turn repair, which lets a stale red Stop state settle without
-requiring a live Claude process. Repeated reconciliation and repeated Stop calls
-are idempotent because an already-complete `status` + `done` pair is no longer an
-unsettled turn.
+**Codex staged messages.** Codex stages a rejected steer on the app-server's
+queue (`thread/queue/add`). The `steerId` → `submissionId` map lives only on
+the runtime, so `cancelSteer` re-reads the server queue, where each entry
+carries the `steerId` as `clientUserMessageId`:
 
-Live Claude control calls are bounded independently of the desktop action
-timeout. Provider `interrupt()` gets 2.5 seconds; active `stopTask()` calls get
-2 seconds each and run concurrently. During ordinary Stop, a hung SDK control
-channel is logged and local interruption cleanup continues rather than holding
-the action bridge until its 30-second request timeout; an interrupt-and-replace
-request that requires provider acknowledgement fails within the control-call
-bound instead of sending the replacement ambiguously. Likewise, a steer sent to
-an idle or stale Claude session waits only for input-dispatch acceptance; the
-provider turn keeps streaming asynchronously instead of making the steer action
-wait for the full answer.
+- A failed `thread/queue/delete` raises; the chip stays.
+- An unreadable queue raises; the chip stays.
+- A submission found nowhere clears the chip with `Queued message cancelled.`
+- A cancel with no runtime also drops the steer from saved `pendingSteers`,
+  which `persistChatState` otherwise carries forward.
+- `requireQueued: true` (the composer's Edit) refuses instead of clearing.
 
-Queue handling is explicit at this boundary. `stop_and_clear` (**Turn + queue**) is the
-backward-compatible default and uses `cancel_queued: true` when the Claude
-session advertises the capability; otherwise ADE interrupts first and cancels
-each attributed provider-queued message through `cancelAsyncMessage`. Local
-pending steers are cleared in the same operation. `stop_only` interrupts the
-turn but preserves the local/provider queues **and** background jobs.
-`stop_and_background` / `stop_and_clear_and_background` also stop running
-Claude tasks. A successful clear snapshots only
-the queued steers the runtime actually cancelled, emits `queue_recovery`, and
-accepts one `restoreCancelledQueue` call for eight seconds; expiry and restore
-are persisted as terminal recovery events so replay cannot resurrect Undo.
+**Codex turn ends.** Every path that ends a Codex turn (Stop, local interrupt,
+`turn/aborted`, teardown, `thread/deleted`, an app-server crash) runs
+`settleCodexPendingInputs`, because a Codex plan approval is raised after
+`turn/completed`. It empties the approvals map, so a later `turn/aborted` is a
+no-op. Settle teardown's `stop_only` leaves the cards.
 
-Codex stages a mid-turn message on the app-server's own queue
-(`thread/queue/add`) whenever the live turn rejects a steer — during compaction
-or a review turn — and ADE keeps the `steerId` -> `submissionId` mapping on the
-runtime object only. That mapping does not survive a runtime restart, a
-rehydration, or a cancel routed in from another machine, while the transcript
-still renders the staged chip, so `cancelSteer` re-reads the server queue first:
-every entry carries the ADE `steerId` ADE sent as `clientUserMessageId`, which
-makes the app-server the durable half of the mapping. Three rules follow:
-
-- A `thread/queue/delete` that **fails** raises. The submission is still queued
-  and will run, so clearing the chip would report a cancellation that did not
-  happen.
-- If ADE cannot read the app-server queue during recovery, it also raises and
-  leaves the chip in place. A failed lookup is not evidence that the submission
-  disappeared; the user can retry after the temporary failure clears.
-- A submission that is recoverable **nowhere** — no mapping, nothing on the
-  server — still clears the chip and emits the `Queued message cancelled.`
-  notice. Nothing can deliver that message, and the old silent return left a
-  control that did nothing every time it was pressed.
-- A cancel on a session with **no runtime** clears the chip and also drops the
-  steer from the persisted `pendingSteers`. `persistChatState` carries the
-  previous file's list forward verbatim whenever the live runtime is not Claude,
-  so without that the next runtime hydrated the steer straight back and sent the
-  message the user had just cancelled.
-
-`requireQueued: true` (the composer's Edit path) still refuses rather than
-clearing, because Edit must not lose a message it cannot first take back.
-
-A Codex turn ends through several paths — Stop, the local interrupt finish, the
-app-server's `turn/aborted`, runtime teardown, `thread/deleted`, an app-server
-crash — and every one of them runs `settleCodexPendingInputs` so the turn cannot
-leave a plan, exec, or permission card behind. That matters more for Codex than
-for the other providers because a Codex plan approval is raised *after* the turn
-completes, when `activeTurnId` is already null: Stop's "nothing to interrupt"
-arms are the common case for the one card that blocks every later send. The
-helper empties the approvals map as it settles, so the app-server's own
-`turn/aborted` arriving after a local interrupt is a no-op rather than a second
-receipt. Settle teardown's `stop_only` interrupt is the deliberate exception and
-leaves the cards for the user.
-
-Codex adapters deduplicate repeated lifecycle notifications before
-converting them to envelope events. Terminal app-server failures use a
-bounded semantic key (turn id + message + detail + error identity) shared by
-the early notification and failed completion path; retrying notifications stay
-non-terminal provider-health notices. The renderer applies the same exact
-identity rule while replaying persisted history, so older transcripts do not
-regain duplicate visible failures after restart.
+Codex adapters dedupe repeated lifecycle notifications. Terminal app-server
+failures share one key (turn id + message + detail + error identity);
+retrying notifications stay provider-health notices. The renderer applies the
+same rule on replay.
 
 ## Gotchas
 
-- **`messageId` is preferred over turn/item identity for merging.** If a
-  provider adapter stops emitting `messageId`, the fallback path is
-  correct but noisier. Track regressions in `shouldMergeTextRows` when
+- **`messageId` before turn/item identity.** A provider that stops sending
+  `messageId` merges correctly but noisier; watch `shouldMergeTextRows` when
   swapping SDKs.
-- **Hidden event types drop silently.** Adding a new event type that
-  should still be grouped into the work log requires plumbing through
-  `chatTranscriptRows.ts` and `HiddenTranscriptEvent`.
-- **Row keys never carry an index.** A key built from an event's position in
-  the loaded window changes on every prepend or trim, which drops measured
-  heights, remounts rows, and loses the reader's place. Build new row keys
-  from the event's identity (or wrap an existing row key); see
+- **Hidden event types drop silently.** A new event type for the work log
+  needs plumbing in `chatTranscriptRows.ts` and `HiddenTranscriptEvent`.
+- **Row keys never carry an index.** Build keys from identity; see
   [Row keys](#row-keys).
-- **`logicalItemId` vs `itemId`.** Collapse keys prefer `logicalItemId`
-  so streaming updates of the same logical tool merge even when the
-  provider re-emits with a new physical `itemId`. Missing this breaks
-  into duplicate rows.
-- **Turn diff emission depends on lane context.** If a session is
-  disassociated from a lane, `turn_diff_summary` will not emit. Do not
-  rely on it for non-lane surfaces.
-- **The turn fold's keep-visible decision is taken once, at `done`.** Do not
-  re-derive liveness from a row's current state (a CI or lane-setup card, a
-  background job): rows would jump into the fold as they settle, and a reload
-  would disagree with the live session. New row types default to visible; add
-  a type to `classifyTurnFoldEvent`'s history or keep-if-live sets
-  deliberately, and give a grouped keep-if-live row its member keys
-  (`liveKeys`) the way activity bundles and background-job groups do.
+- **`logicalItemId` before `itemId`** in collapse keys, or re-emits become
+  duplicate rows.
+- **Turn diffs need a lane.** No lane, no `turn_diff_summary`.
+- **The fold's keep-visible decision is taken once, at `done`.** New row types
+  default to visible; add a type to `classifyTurnFoldEvent`'s sets on
+  purpose, and give a grouped keep-if-live row its `liveKeys`.
 - **Timeline rows are the folded list.** In `AgentChatMessageList`,
-  `presentedRows` / `presentedRowKeys` are the unfolded timeline and
-  `groupedRows` / `groupedRowKeys` have the folds applied. Rendering,
-  virtualization, and scroll offsets work on `groupedRows`. Anything that
-  resolves a target or position from events or keys (jumps, minimap, fork
-  divider, "N new", inline proof, scroll restore) must look it up in the
-  unfolded rows. It then either opens the fold (`revealTurnFoldRow`) before
-  scrolling or maps the row to its fold row (`foldIdByHiddenRowKey`). The
-  measured-height cache is pruned against the unfolded keys plus fold ids,
-  never against the drawn keys alone.
-- **A subagent card in a grid is not a row.** Only the first card's key is a
-  row key; the other members exist only in `memberKeys`. Anything that
-  targets a card by key (`subagent-result:<agentKey>` jumps, event anchors)
-  maps it through `subagentCardGridKeyByMemberKey` first. The same holds for
-  a card folded into a `subagent_stopped_group`, which has no row of its own.
-- **A settled card keeps its spawn key.** The result converts the spawn row
-  in place, so `subagent-result:<agentKey>` names no row in the normal case.
-  Resolve a card key through `subagentCardRowKeyCandidates` (or the member
-  map, which already does), never by string-matching one prefix. Never splice
-  the spawn row out on settle: that is what moved finished cards to a new row
-  under the running ones.
-- **Claude parent terminal events are an ordered pair.** Restart and idle-Stop
-  repair must leave the parent `status` + `done` pair after any orphan cleanup.
-- **A terminal turn does not clear a Codex card; a receipt does.** A Codex plan
-  approval is raised after `turn/completed`, so the renderer intentionally keeps
-  plan-approval and question inputs across a `done: completed`. The only thing
-  that retires such a card is an explicit `pending_input_resolved` — which is
-  why every Codex turn-ending path has to emit one. On runtime death the receipt
-  is deliberately *withheld* for a plan approval
-  (`planApprovals: "preserve-cards"`) so `respondToInput` can rebuild the card
-  from the transcript; withholding it for anything else strands the composer.
-  See [README › Fragile and tricky wiring](README.md#fragile-and-tricky-wiring).
-- **Claude idle turns close on an SDK event, never on a timer.** An idle turn is
-  opened by background/subagent output that has no result envelope of its own,
-  so its only authoritative end is the `system` / `session_state_changed`
-  message with `state: "idle"`, which the SDK sends after `heldBackResult`
-  flushes and the background-agent loop exits. `finishClaudeIdleTurn` no-ops
-  when no idle turn is open, so handling every idle transition is safe. Do not
-  reintroduce a time-based idle watchdog to cover this — the previous one fired
-  false positives during long tool calls. New Claude `system` subtypes are
-  caught by a compile-time exhaustiveness guard rather than by review; see
+  `presentedRows` are unfolded and `groupedRows` folded. Rendering and scroll
+  use `groupedRows`; anything that resolves a target from events or keys looks
+  in the unfolded rows, then opens the fold (`revealTurnFoldRow`) or maps to
+  the fold row (`foldIdByHiddenRowKey`). Prune the height cache against
+  unfolded keys plus fold ids.
+- **A card in a grid or stopped group is not a row.** Map card keys through
+  `subagentCardGridKeyByMemberKey` / `subagentCardRowKeyCandidates`, never by
+  one prefix. Never splice the spawn row out on settle.
+- **Claude parent terminal events are an ordered pair**, after any orphan
+  cleanup.
+- **A terminal turn does not clear a Codex card; a receipt does.** Every Codex
+  turn-ending path emits `pending_input_resolved`, except on runtime death for
+  a plan approval (`planApprovals: "preserve-cards"`), so `respondToInput` can
+  rebuild the card. See
   [README › Fragile and tricky wiring](README.md#fragile-and-tricky-wiring).
-  Emitting later lifecycle rows can resurrect a stopped renderer state.
-- **A failed history read is not evidence that a chat is gone.** Never infer
-  `sessionFound: false` from a connection or dispatch failure — set
-  `unavailable: true` instead. Every new code path that can answer a chat
-  history read without reaching the bound runtime has to make that distinction,
-  or it will blank a healthy transcript. See
-  [History snapshots, scroll-back, and misses](#history-snapshots-scroll-back-and-misses).
-- **`tailStartOffset > 0` does not mean older history exists.** In the degraded
-  tier it is a conservative end-of-file cursor. Gate scroll-back UI on
+- **Claude idle turns close on an SDK event, never on a timer:** the
+  `session_state_changed` message with `state: "idle"`. `finishClaudeIdleTurn`
+  no-ops with no idle turn open. Do not add a time-based idle watchdog (long
+  tool calls emit nothing). New Claude `system` subtypes hit a compile-time
+  exhaustiveness guard.
+- **A failed history read is not a missing chat.** Set `unavailable: true`,
+  never `sessionFound: false`, for a connection or dispatch failure.
+- **`tailStartOffset > 0` does not mean older history.** Gate on
   `hasOlderHistory`.
-- **Subscribed mobile history pages do not activate project runtimes.**
-  Modern sync hosts advertise `chatHistoryPaging`; the `chat_subscribe` ack
-  carries `cursorKind: "byte"`, `tailStartOffset`, and `hasOlderHistory`, and
-  the phone requests `chat_history` pages against the already-authorized
-  subscription. The host reads the same local, personal, or foreign quick-look
-  transcript path already bound to that subscription. A scope mismatch or
-  transient read failure returns `unavailable: true` with the caller's cursor
-  intact; only an authoritative missing session or a strictly decreasing page
-  that reaches zero exhausts history.
+- **Subscribed mobile history pages do not start project runtimes.** Hosts
+  with `chatHistoryPaging` answer `chat_history` pages on the authorized
+  subscription's transcript path. A scope mismatch or read failure returns
+  `unavailable: true` with the cursor intact.
