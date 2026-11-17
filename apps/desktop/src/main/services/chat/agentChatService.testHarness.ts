@@ -1223,6 +1223,7 @@ import {
 import { createChatRuntimeBudget } from "./chatRuntimeBudget";
 import { readThreadPointerLedger } from "./threadPointerLedger";
 import { SESSION_STALE_AFTER_MS } from "../../../shared/sessionCanonicalState";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import {
   enforceCrossMachineForkEncodedBudget,
   gunzipFromBase64,
@@ -1767,7 +1768,7 @@ function createMockSessionService() {
         if (row.status !== "running") continue;
         if (!owners.some((owner) => owner.pid === row.ownerPid && owner.startedAt === row.ownerProcessStartedAt)) continue;
         if (options.sessionIds && !options.sessionIds.includes(row.id)) continue;
-        const resting = (row.toolType === "cursor" || String(row.toolType ?? "").endsWith("-chat"))
+        const resting = isChatToolType(row.toolType)
           && options.isRestingChat?.({ id: row.id, lastActivityAt: row.lastOutputAt ?? row.startedAt }) === true;
         row.status = resting ? "completed" : "detached";
         row.endedAt = new Date().toISOString();

@@ -72465,7 +72465,9 @@ export function createAgentChatService(args: {
       const live = managedSessions.get(row.id)?.session;
       const running = live?.currentTurnStartedAt != null;
       if (!running) {
-        if (row.status === "disposed" || row.status === "detached") continue;
+        // `completed` is a chat a clean stop found at rest: it is not loaded,
+        // so it reserves no account room either.
+        if (row.status === "disposed" || row.status === "detached" || row.status === "completed") continue;
         // Mirror canonicalSessionState: an explicit "active" pin overrides a
         // settledAt column, and a settle only counts at rest.
         if (isSettleTupleSettled(row)) continue;
@@ -77668,21 +77670,38 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Whether this process owns a chat's row: the exact identity a clean stop
+   * writes. A chat loaded here whose runtime another brain holds is not this
+   * process's to end as `completed`; ending it would hide that brain's live
+   * chat from every other client. A row with no owner was stamped at creation
+   * here (the service writes whatever registry it has), so it is this
+   * process's when there is no registry identity to compare against.
+   */
+  const ownsChatRow = (sessionId: string): boolean => {
+    const row = sessionService.get(sessionId);
+    if (!row) return false;
+    const startedAt = processRegistry?.startedAt ?? null;
+    if (!processRegistry || !startedAt) return row.ownerPid == null;
+    return row.ownerPid === processRegistry.pid && row.ownerProcessStartedAt === startedAt;
+  };
+
   const disposeAll = async (): Promise<void> => {
-    // Decided before anything below changes a chat's state.
-    const endStatusBySession = new Map(
-      [...managedSessions].map(([sessionId, managed]) => [
-        sessionId,
-        chatHasWorkInFlightAtStop(managed) ? "detached" as const : "completed" as const,
-      ]),
-    );
     unregisterProviderAccountChatLoad();
     beginDispose();
     disposeModelManifestListener();
     unsubscribeRecordingStatus();
     for (const sessionId of [...managedSessions.keys()]) {
+      // Decided per chat, right before its own disposal: an earlier chat's
+      // disposal awaits, and a send can start a turn here meanwhile. Only a
+      // chat at rest that this process owns ends `completed`; anything else
+      // ends `detached`, which restart recovery loads.
+      const managed = managedSessions.get(sessionId);
+      const terminalStatus = managed && ownsChatRow(sessionId) && !chatHasWorkInFlightAtStop(managed)
+        ? "completed"
+        : "detached";
       try {
-        await disposeManagedSession({ sessionId }, endStatusBySession.get(sessionId) ?? "detached");
+        await disposeManagedSession({ sessionId }, terminalStatus);
       } catch {
         // ignore shutdown errors
       }

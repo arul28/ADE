@@ -427,6 +427,11 @@ function normalizeOwnerProcessStartedAt(startedAt: unknown): string | null {
   return normalized.length ? normalized : null;
 }
 
+/** One key for one owner identity: a pid means nothing without the process start time. */
+function ownerIdentityKey(pid: number, startedAt: string): string {
+  return `${pid}\0${startedAt}`;
+}
+
 /**
  * Normalize a persisted timestamp column to a valid ISO string or null, so
  * downstream idle-age math never keys off an empty/garbage string (which would
@@ -476,7 +481,7 @@ export function createSessionService({
   listSubagentLinks,
 }: {
   db: AdeDb;
-  /** Optional: only the delete cascade's best-effort PR-link purge reports through it. */
+  /** Optional: the delete cascade's best-effort PR-link purge and the clean-stop owner scan report through it. */
   logger?: Logger;
   /**
    * Refuses a settle while the session's turn is running (`settleTurnCheck.ts`).
@@ -723,22 +728,23 @@ export function createSessionService({
   };
 
   /**
-   * The owners of `running` rows that this database wrote itself: the
-   * owner columns and the status were last written by this computer, not
-   * merged from another machine by sync.
+   * The `running` rows whose owner columns and status this database wrote
+   * itself, never merged from another machine by sync.
    *
    * Rows synced from another machine carry that machine's pids, which mean
    * nothing here. That is why the rescan closes only rows of owners in this
    * computer's registry. Before clean stops ended their rows, a stopped
    * process left rows `running` with an owner the registry no longer knows.
-   * This list proves such an owner is from this computer, so
-   * `closeStrandedLocalSessions` can check whether the process is gone.
+   * These rows prove such an owner is from this computer, so
+   * `closeStrandedLocalSessions` can check whether the process is gone. They
+   * name the rows too: an owner's other rows may carry a status a peer wrote
+   * last, and those are not this computer's to end.
    *
    * The proof is the cr-sqlite clock: site ordinal 0 is this database's own
    * writes. A database that is not set up for sync has no clock, so it
    * proves nothing and the list is empty.
    */
-  const listRunningOwnersWrittenHere = (): Array<{ pid: number; startedAt: string }> => {
+  const listRunningRowsWrittenHere = (): Array<{ id: string; pid: number; startedAt: string }> => {
     const hasClock = db.get<{ present: number }>(
       "select 1 as present from sqlite_master where type = 'table' and name = 'terminal_sessions__crsql_clock' limit 1",
     );
@@ -751,9 +757,9 @@ export function createSessionService({
        where c.key = p.__crsql_key and c.col_name = '${column}' and c.site_id = 0
     )`;
     try {
-      const rows = db.all<{ pid: number; startedAt: string }>(
+      const rows = db.all<{ id: string; pid: number; startedAt: string }>(
         `
-          select distinct s.owner_pid as pid, s.owner_process_started_at as startedAt
+          select s.id as id, s.owner_pid as pid, s.owner_process_started_at as startedAt
             from terminal_sessions s
             join terminal_sessions__crsql_pks p on p.id = s.id
            where s.status = 'running'
@@ -766,12 +772,19 @@ export function createSessionService({
       );
       return rows
         .map((row) => ({
+          id: typeof row.id === "string" ? row.id.trim() : "",
           pid: normalizeOwnerPid(row.pid),
           startedAt: normalizeOwnerProcessStartedAt(row.startedAt),
         }))
-        .filter((row): row is { pid: number; startedAt: string } => row.pid != null && row.startedAt != null);
-    } catch {
-      // A clock this cr-sqlite version lays out differently proves nothing.
+        .filter((row): row is { id: string; pid: number; startedAt: string } => (
+          row.id.length > 0 && row.pid != null && row.startedAt != null
+        ));
+    } catch (error) {
+      // A clock this cr-sqlite version lays out differently proves nothing, but
+      // a database that cannot answer this is a fault, not a quiet empty answer.
+      logger?.warn("sessions.local_owner_scan_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return [];
     }
   };
@@ -1998,9 +2011,11 @@ export function createSessionService({
      *
      * Exact owner identity only (pid and registry start time): another
      * process on this computer, or a row synced from another machine, never
-     * matches. `sessionIds` limits the call to those rows. `endedAt:
-     * "last-activity"` stamps each row with its own last output instead of
-     * now, for owners whose stop time is not known.
+     * matches. The identity is re-checked in the update, so a chat another
+     * brain takes over between the select and the write is left alone.
+     * `sessionIds` limits the call to those rows. `endedAt: "last-activity"`
+     * stamps each row with its own last output instead of now, for owners
+     * whose stop time is not known.
      */
     endRunningSessionsOwnedBy(
       owners: ReadonlyArray<{ pid: number; startedAt: string | null }>,
@@ -2023,26 +2038,35 @@ export function createSessionService({
         .filter((id) => id.length > 0);
       if (sessionIds && !sessionIds.length) return result;
       const ownerSql = identities.map(() => "(owner_pid = ? and owner_process_started_at = ?)").join(" or ");
-      const params: Array<string | number> = identities.flatMap((owner) => [owner.pid, owner.startedAt]);
+      const ownerParams = identities.flatMap((owner) => [owner.pid, owner.startedAt]);
       const idSql = sessionIds ? ` and id in (${sessionIds.map(() => "?").join(", ")})` : "";
-      if (sessionIds) params.push(...sessionIds);
-      const rows = db.all<{ id: string; toolType: string | null; lastActivityAt: string }>(
-        `select id, tool_type as toolType, coalesce(last_output_at, started_at) as lastActivityAt
+      const rows = db.all<{
+        id: string;
+        toolType: string | null;
+        resumeCommand: string | null;
+        lastActivityAt: string;
+      }>(
+        `select id, tool_type as toolType, resume_command as resumeCommand,
+                coalesce(last_output_at, started_at) as lastActivityAt
            from terminal_sessions
           where status = 'running' and (${ownerSql})${idSql}`,
-        params,
+        [...ownerParams, ...(sessionIds ?? [])],
       );
       const nowIso = new Date().toISOString();
       for (const row of rows) {
         if (typeof row.id !== "string" || !row.id.trim().length) continue;
-        const resting = isChatToolType(row.toolType) && options.isRestingChat?.(row) === true;
+        // The row mapper's chat test, so a legacy row whose tool type is "other"
+        // and whose resume command names a chat counts as one.
+        const toolType = inferToolTypeFromResumeCommand(normalizeToolType(row.toolType), row.resumeCommand);
+        const resting = isChatToolType(toolType) && options.isRestingChat?.(row) === true;
         const status: TerminalSessionStatus = resting ? "completed" : "detached";
         const endedAt = options.endedAt === "last-activity"
           ? normalizeIsoTimestamp(row.lastActivityAt) ?? nowIso
           : options.endedAt ?? nowIso;
         const changed = db.runChanged(
-          "update terminal_sessions set ended_at = ?, exit_code = null, status = ?, pty_id = null where id = ? and status = 'running'",
-          [endedAt, status, row.id],
+          `update terminal_sessions set ended_at = ?, exit_code = null, status = ?, pty_id = null
+            where id = ? and status = 'running' and (${ownerSql})`,
+          [endedAt, status, row.id, ...ownerParams],
         );
         if (changed <= 0) continue;
         result[status === "completed" ? "completed" : "detached"] += 1;
@@ -2053,9 +2077,16 @@ export function createSessionService({
 
     /**
      * End the rows that earlier clean stops left `running` on this computer
-     * (`listRunningOwnersWrittenHere`), once their owner process is gone.
+     * (`listRunningRowsWrittenHere`), once their owner process is gone.
      * Runs at every start and rescan, so rows from older builds that share
      * this database are cleaned too.
+     *
+     * Only owners the registry does not list. A listed owner is a crash, not a
+     * clean stop: `stop()` removes its row on the way out, so its rows are
+     * untidy data. `reconcileStaleRunningSessions` closes those `detached`
+     * (the state a crash leaves) and restart recovery resumes them; deciding
+     * from an old last output that such work is stale would skip a chat that
+     * was cut off seconds ago.
      *
      * The owner's stop time is not known, so each row ends at its own last
      * output. A chat whose last output is older than the restart resume
@@ -2064,13 +2095,37 @@ export function createSessionService({
      * restart recovery can still resume a turn the stop cut off.
      */
     closeStrandedLocalSessions(
-      registry: Pick<ProcessRegistryService, "listDeadProcessIdentities">,
+      registry: Pick<ProcessRegistryService, "listDeadProcessIdentities" | "listKnownProcessIdentities">,
       nowMs = Date.now(),
     ): { detached: number; completed: number } {
-      const strandedOwners = registry.listDeadProcessIdentities(listRunningOwnersWrittenHere());
-      if (!strandedOwners.length) return { detached: 0, completed: 0 };
+      const localRows = listRunningRowsWrittenHere();
+      if (!localRows.length) return { detached: 0, completed: 0 };
+      // An owner the registry still lists crashed; `reconcileStaleRunningSessions`
+      // closes its rows `detached`, and restart recovery resumes them.
+      const knownOwnerKeys = new Set(
+        registry.listKnownProcessIdentities().map((identity) => ownerIdentityKey(identity.pid, identity.startedAt)),
+      );
+      const strandedRows = localRows.filter((row) => !knownOwnerKeys.has(ownerIdentityKey(row.pid, row.startedAt)));
+      if (!strandedRows.length) return { detached: 0, completed: 0 };
+      const strandedOwnerByIdentity = new Map(
+        strandedRows.map((row) => [ownerIdentityKey(row.pid, row.startedAt), { pid: row.pid, startedAt: row.startedAt }]),
+      );
+      const strandedOwners = Array.from(strandedOwnerByIdentity.values());
+      const deadOwnerKeys = new Set(
+        registry.listDeadProcessIdentities(strandedOwners)
+          .map((identity) => ownerIdentityKey(identity.pid, identity.startedAt)),
+      );
+      if (!deadOwnerKeys.size) return { detached: 0, completed: 0 };
+      const deadOwners = strandedOwners
+        .filter((owner) => deadOwnerKeys.has(ownerIdentityKey(owner.pid, owner.startedAt)));
+      // The rows themselves, not every row of a dead owner: a row a peer wrote
+      // the status of last is that peer's, and stays `running` here.
+      const sessionIds = strandedRows
+        .filter((row) => deadOwnerKeys.has(ownerIdentityKey(row.pid, row.startedAt)))
+        .map((row) => row.id);
       const resumeWindowStartMs = nowMs - RESTART_RESUME_MAX_AGE_MS;
-      return this.endRunningSessionsOwnedBy(strandedOwners, {
+      return this.endRunningSessionsOwnedBy(deadOwners, {
+        sessionIds,
         endedAt: "last-activity",
         isRestingChat: (row) => {
           const lastActivityMs = Date.parse(row.lastActivityAt);

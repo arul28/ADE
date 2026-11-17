@@ -514,6 +514,14 @@ describe("createAgentChatService", () => {
         sessionId: session.id,
         text: "Schedule work across restart.",
       });
+      // Loaded here, but its runtime is another brain's: not this process's to
+      // end as completed, so it keeps the state a stop has always left it.
+      const elsewhere = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      sessionService.setOwnerPid(elsewhere.id, 9_999, "2026-11-17T04:00:00.000Z");
 
       await service.disposeAll();
 
@@ -522,7 +530,8 @@ describe("createAgentChatService", () => {
         status: "completed",
         endedAt: expect.any(String),
       }));
-      expect(scheduledWork.readState()?.schedules).toEqual([
+      expect(sessionService.get(elsewhere.id)?.status).toBe("detached");
+      expect(scheduledWork.readState()?.schedules.filter((row) => row.sessionId === session.id)).toEqual([
         expect.objectContaining({ sessionId: session.id, status: "scheduled" }),
       ]);
     });

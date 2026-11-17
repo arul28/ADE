@@ -8096,8 +8096,11 @@ app.whenReady().then(async () => {
           startedAt: ctx.processRegistry.startedAt,
         }]);
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      // The next start's stranded scan closes what this could not write.
+      ctx.logger.warn("sessions.detach_own_on_stop_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     try {
       ctx.processRegistry?.stop();

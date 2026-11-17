@@ -1174,6 +1174,7 @@ describe("sessionService resume metadata", () => {
     const OLD_BRAIN = 1_111;
     const NEW_BRAIN = 3_333;
     const SIBLING = 4_444;
+    const CRASHED_BRAIN = 5_555;
     const livePids = new Set([NEW_BRAIN, SIBLING]);
     const registryFor = (pid: number) => createProcessRegistryService({
       db,
@@ -1202,17 +1203,36 @@ describe("sessionService resume metadata", () => {
     createChat(service, "stranded-old-chat", { pid: OLD_BRAIN, startedAt: oldBrain.startedAt });
     createChat(service, "stranded-recent-chat", { pid: OLD_BRAIN, startedAt: oldBrain.startedAt });
     db.run("update terminal_sessions set last_output_at = ? where id = ?", ["2026-03-17T11:00:00.000Z", "stranded-recent-chat"]);
+    // A second row of that owner whose status a peer wrote last: the owner
+    // columns are this computer's, the status is not, so this computer does not
+    // end it. The clock per column, not the owner alone, decides.
+    const oldBrainIdentity = { pid: OLD_BRAIN, startedAt: oldBrain.startedAt };
     oldBrain.stop();
+    createChat(service, "stranded-peer-status-chat", oldBrainIdentity);
+    db.run(
+      `update terminal_sessions__crsql_clock set site_id = 9
+        where col_name = 'status'
+          and key = (select __crsql_key from terminal_sessions__crsql_pks where id = ?)`,
+      ["stranded-peer-status-chat"],
+    );
     // Another machine's chat arrives by sync. Its owner pid is not running here, and that proves nothing.
     createChat(otherMachine, "other-machine-chat", { pid: OLD_BRAIN, startedAt: "2026-03-17T00:01:00.000Z" });
     db.sync!.applyChanges(otherMachineDb.sync!.exportChangesSince(0).filter((change) => change.table === "terminal_sessions"));
     const sibling = registryFor(SIBLING);
     sibling.start();
     createChat(service, "sibling-chat", { pid: SIBLING, startedAt: sibling.startedAt });
+    // A brain that crashed keeps its registry row. Its chat went quiet long
+    // before the resume window, but the crash is what cut it off, so the
+    // clean-stop pass leaves it to the rescan (which closes it `detached`).
+    const crashedBrain = registryFor(CRASHED_BRAIN);
+    crashedBrain.start();
+    createChat(service, "crashed-brain-chat", { pid: CRASHED_BRAIN, startedAt: crashedBrain.startedAt });
 
     const newBrain = registryFor(NEW_BRAIN);
     newBrain.start();
     service.closeStrandedLocalSessions(newBrain, NEXT_START_MS);
+    // The crash owner's row is still `running` here, untouched by the clean-stop pass.
+    expect(service.get("crashed-brain-chat")?.status).toBe("running");
     service.reconcileStaleRunningSessions({ status: "detached", ...newBrain.staleSessionOwnerScope() });
 
     // Idle for longer than the window: restart recovery skips it, and its end is its last output.
@@ -1225,6 +1245,8 @@ describe("sessionService resume metadata", () => {
       status: "detached",
       endedAt: "2026-03-17T11:00:00.000Z",
     }));
+    expect(service.get("stranded-peer-status-chat")?.status).toBe("running");
+    expect(service.get("crashed-brain-chat")?.status).toBe("detached");
     expect(service.get("other-machine-chat")?.status).toBe("running");
     expect(service.get("sibling-chat")?.status).toBe("running");
 
