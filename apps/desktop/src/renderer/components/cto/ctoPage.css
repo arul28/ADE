@@ -708,6 +708,12 @@
   outline-offset: 2px;
 }
 
+.ade-cto-copy-lanes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .ade-cto-copy-routines {
   display: flex;
   flex-direction: column;

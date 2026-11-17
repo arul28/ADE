@@ -1896,6 +1896,20 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "Passwords & Secrets",
   },
+  // The web client opens no vault: its Passwords page only says where to see
+  // and change them (`WEB_PASSWORDS_SENTENCE`). This entry puts the page in
+  // the web nav; the desktop never offers it.
+  {
+    id: "passwords.web",
+    label: "Passwords & Secrets",
+    keywords: ["password", "passwords", "secret", "secrets", "login", "vault", "api key", "token"],
+    tab: "passwords",
+    anchor: "passwords-web",
+    scope: "account",
+    web: "account",
+    group: "Passwords & Secrets",
+    webOnly: true,
+  },
 
   // ── Stats ────────────────────────────────────────────────────────────────
   {

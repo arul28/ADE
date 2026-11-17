@@ -13,6 +13,8 @@ import type { CloudSignInStatus } from "../../../shared/cloudSignIns";
 import { createWebCloudBilling, type CloudBillingAccountClient } from "./cloudBilling";
 import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { AdapterInfra } from "./types";
+import { runAdeCloudAccountCall } from "../../../shared/adeCloud/accountCalls";
+import type { CloudAgentLimitsState } from "../../../../../account-directory/src/cloud/contract";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { UnsupportedRemoteCommandError } from "./infra/commandCaller";
 import type { AccountCloudLaunchesBridge } from "../../../shared/accountCloudLaunches";
@@ -390,8 +392,26 @@ export function createWebCloudNamespace(
         cb();
       });
     },
-    getAgentLimits: async () => await commands.call<CloudAgentLimits | null>("cloud.read", { action: "limits" }, { fallback: null, retainLastRead: false }),
-    setAgentLimits: async (limits) => await commands.call<CloudAgentLimits | null>("cloud.write", { action: "set_limits", args: limits }, { idempotent: false }),
+    // A connected computer answers for the account. With none, the account
+    // server does (`GET/PUT /cloud/limits`). The Settings card sends
+    // `ifRevision` itself (`CloudAgentLimitsCard`); this path is last-writer-wins.
+    getAgentLimits: async () => {
+      if (commands.hasAction("cloud.read")) {
+        return await commands.call<CloudAgentLimits | null>("cloud.read", { action: "limits" }, { fallback: null, retainLastRead: false });
+      }
+      const answer = await runAdeCloudAccountCall(accountClient.cloudApi(), { call: "limits" });
+      if (!answer.ok) throw new Error(answer.message);
+      return (answer.result as CloudAgentLimitsState | null)?.limits ?? null;
+    },
+    setAgentLimits: async (limits) => {
+      if (commands.hasAction("cloud.write")) {
+        return await commands.call<CloudAgentLimits | null>("cloud.write", { action: "set_limits", args: limits }, { idempotent: false });
+      }
+      const { fallback: _fallback, ...value } = limits;
+      const answer = await runAdeCloudAccountCall(accountClient.cloudApi(), { call: "saveLimits", update: { limits: value } });
+      if (!answer.ok) throw new Error(answer.message);
+      return (answer.result as CloudAgentLimitsState | null)?.limits ?? null;
+    },
     // The saved ADE Cloud keys and Claude passes, as names and states only (no key). An older brain has no
     // such read: then the sign-ins card shows the account's sign-ins without them.
     cloudSignInStatus: async () => {

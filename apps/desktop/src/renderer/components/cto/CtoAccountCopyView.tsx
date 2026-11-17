@@ -2,6 +2,8 @@ import { useMemo } from "react";
 import type { CloudCtoCopy } from "../../../../../account-directory/src/cloud/contract";
 import { savedAgoLabel, useAdeCloudAccountRead } from "../../lib/adeCloudAccountRead";
 import { AccountReadFailed } from "../adeCloud/AccountReadFailed";
+import { LaneMentionChip } from "../prs/LaneMentionChip";
+import { lanesNamedInText, useLaneMentions } from "../prs/state/accountLaneMentions";
 
 /**
  * The CTO's account copy (`GET /cloud/cto`), read-only, for a CTO whose home
@@ -22,7 +24,7 @@ export function CtoAccountCopyView({ origin, active }: { origin: string | null; 
   }
   const copy = state.data?.available ? state.data.copy : null;
   if (!copy) return null;
-  return <CtoCopyBody copy={copy} />;
+  return <CtoCopyBody copy={copy} origin={origin} active={active} />;
 }
 
 /** The name the copy saved for the CTO, for the page header while no home answers. */
@@ -31,8 +33,15 @@ export function ctoCopyName(copy: CloudCtoCopy | null | undefined): string | nul
   return typeof name === "string" && name.trim() ? name.trim() : null;
 }
 
-function CtoCopyBody({ copy }: { copy: CloudCtoCopy }): JSX.Element {
+function CtoCopyBody({ copy, origin, active }: { copy: CloudCtoCopy; origin: string | null; active: boolean }): JSX.Element {
   const saved = savedAgoLabel(copy.savedAt);
+  // The lanes the CTO's open work and last turns name, from one read of the
+  // account lane index while this copy shows: each opens on its own machine.
+  const { mentions } = useLaneMentions(origin, active);
+  const named = useMemo(
+    () => lanesNamedInText([copy.story?.summary ?? "", copy.openWork ?? "", copy.tail].join("\n"), mentions),
+    [copy.openWork, copy.story?.summary, copy.tail, mentions],
+  );
   const notes = useMemo(
     () => [copy.projectNotes, copy.userNotes].map((note) => note.trim()).filter(Boolean),
     [copy.projectNotes, copy.userNotes],
@@ -52,6 +61,13 @@ function CtoCopyBody({ copy }: { copy: CloudCtoCopy }): JSX.Element {
       {copy.openWork?.trim() ? (
         <CopyPart title="Open work">
           <p className="ade-cto-copy-text">{copy.openWork.trim()}</p>
+        </CopyPart>
+      ) : null}
+      {named.length ? (
+        <CopyPart title="Lanes it names">
+          <div className="ade-cto-copy-lanes">
+            {named.map((mention) => <LaneMentionChip key={mention.key} mention={mention} />)}
+          </div>
         </CopyPart>
       ) : null}
       {tail ? (

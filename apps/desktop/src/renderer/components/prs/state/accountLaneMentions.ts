@@ -65,30 +65,81 @@ export function laneOfflineSentence(mention: Pick<LaneMention, "machineName">): 
   return `This lane is on ${mention.machineName}, which is offline. Open it when ${mention.machineName} is on.`;
 }
 
-/**
- * The repository's lane mentions by PR number, from one read of the index
- * (never one read per row). `failed` keeps the rows read before it.
- */
-export function useLaneMentionsByPr(origin: string | null | undefined, active: boolean): {
+type LaneMentionsRead = {
+  /** Every lane of the repository in the index, in the server's order. */
+  mentions: readonly (LaneMention & { prNumber: number | null })[];
   byPr: ReadonlyMap<number, readonly LaneMention[]>;
   failed: { code: string; message: string } | null;
   retry: () => void;
-} {
+};
+
+/**
+ * The repository's lane mentions, from one read of the index while `active`
+ * (never one read per row). A surface reads it once when it opens. `failed`
+ * keeps the rows read before it.
+ */
+export function useLaneMentions(origin: string | null | undefined, active: boolean): LaneMentionsRead {
   const project = laneIndexProjectKey(origin);
   const { state, retry } = useAdeCloudAccountRead(active && project ? { call: "accountLanes" as const, project } : null);
   const cloudIndex = useAdeCloudLaneComputers();
-  const byPr = useMemo(() => {
-    const map = new Map<number, LaneMention[]>();
+  const { mentions, byPr } = useMemo(() => {
     const rows = state.data?.lanes ?? [];
     const isCloud = (machineKey: string) => isAdeCloudComputer({ machineKey }, cloudIndex);
-    for (const row of rows) {
-      if (row.prNumber == null) continue;
-      const list = map.get(row.prNumber) ?? [];
-      list.push(laneMentionOf(row, isCloud));
-      map.set(row.prNumber, list);
+    const all = rows.map((row) => ({ ...laneMentionOf(row, isCloud), prNumber: row.prNumber ?? null }));
+    const map = new Map<number, LaneMention[]>();
+    for (const mention of all) {
+      if (mention.prNumber == null) continue;
+      const list = map.get(mention.prNumber) ?? [];
+      list.push(mention);
+      map.set(mention.prNumber, list);
     }
-    return map;
+    return { mentions: all, byPr: map };
   }, [cloudIndex, state.data]);
   const failed = state.status === "failed" ? { code: state.code, message: state.message } : null;
+  return { mentions, byPr, failed, retry };
+}
+
+/** The repository's lane mentions by PR number (`useLaneMentions`). */
+export function useLaneMentionsByPr(origin: string | null | undefined, active: boolean): Omit<LaneMentionsRead, "mentions"> {
+  const { byPr, failed, retry } = useLaneMentions(origin, active);
   return { byPr, failed, retry };
+}
+
+/** Shortest lane name a free text is matched against: shorter names match too many words. */
+const MIN_NAMED_LANE_CHARS = 4;
+
+/**
+ * The lanes a free text (a CTO message) names by their full name, as whole
+ * words, case-insensitive, in the order of the index. The main checkout is
+ * never matched: its name is a common phrase.
+ */
+export function lanesNamedInText<M extends LaneMention>(text: string, mentions: readonly M[]): M[] {
+  const haystack = text.toLowerCase();
+  if (!haystack.trim()) return [];
+  const found: M[] = [];
+  const seen = new Set<string>();
+  for (const mention of mentions) {
+    const name = mention.laneName.trim().toLowerCase();
+    if (name.length < MIN_NAMED_LANE_CHARS || name === PRIMARY_LANE_DISPLAY_NAME.toLowerCase()) continue;
+    if (seen.has(mention.key)) continue;
+    let from = 0;
+    for (;;) {
+      const at = haystack.indexOf(name, from);
+      if (at < 0) break;
+      const before = at === 0 ? "" : haystack[at - 1]!;
+      const after = haystack[at + name.length] ?? "";
+      if (!/[\p{L}\p{N}_-]/u.test(before) && !/[\p{L}\p{N}_-]/u.test(after)) {
+        found.push(mention);
+        seen.add(mention.key);
+        break;
+      }
+      from = at + 1;
+    }
+  }
+  return found;
+}
+
+/** How a search row names a lane on another machine: "<lane> on <machine>". */
+export function laneMentionLabel(mention: Pick<LaneMention, "laneName" | "machineName">): string {
+  return `${mention.laneName} on ${mention.machineName}`;
 }

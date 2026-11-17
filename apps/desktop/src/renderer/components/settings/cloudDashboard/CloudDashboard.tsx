@@ -45,7 +45,7 @@ import { CloudIdleCleanupNotices, idleRowTag } from "./CloudIdleCleanupNotice";
 import { CloudSizes } from "./CloudSizes";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
-import { useHasOwnComputer } from "../../../state/ownComputers";
+import { useHasOwnComputer, useOwnWebComputers } from "../../../state/ownComputers";
 import { useWebMachines } from "../../../webclient/workspace/WebWorkspaceContext";
 import {
   STATE_LABEL,
@@ -105,7 +105,10 @@ const errorText = (error: unknown) => ipcErrorMessage(error) || `${ADE_CLOUD_NAM
  * already holds; nothing wakes a computer to look.
  */
 export function CloudDashboard({ account, machines }: { account: CloudAccountState; machines: CloudMachinesState }) {
-  const ownComputer = useHasOwnComputer();
+  // On the web, only a connected computer of the person's own answers for the
+  // sign-ins; with all of them offline the account's cards show instead.
+  const ownComputerOn = useOwnWebComputers().some((machine) => machine.status === "live");
+  const ownComputer = useHasOwnComputer() && (!isWebClientMode() || ownComputerOn);
   // ADE Web with no computer of its own still reads and sets the agent limits
   // through a connected ADE Cloud computer, when one is connected.
   const connectedMachine = useWebMachines().some((machine) => machine.status === "live");

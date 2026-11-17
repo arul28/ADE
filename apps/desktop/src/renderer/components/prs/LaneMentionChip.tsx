@@ -1,8 +1,7 @@
-import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Cloud, Desktop, GitBranch } from "@phosphor-icons/react";
 import { SAVED_CHATS_MACHINE_PREFIX } from "../../../shared/cloudSavedChats";
-import { useCloudMachineWakeFailure, useCloudMachineWakeInFlight, wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
+import { useCloudMachineWakeInFlight, wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
 import { showToast } from "../app/toast/toastStore";
 import { laneOfflineSentence, type LaneMention } from "./state/accountLaneMentions";
 
@@ -18,15 +17,8 @@ export function LaneMentionChip({ mention }: { mention: LaneMention }): JSX.Elem
   const navigate = useNavigate();
   const MachineIcon = mention.cloud ? Cloud : Desktop;
   const wakeKey = mention.resting ? mention.machineKey : null;
+  // A failed wake says so itself (`wakeRestingCloudMachine` shows the server's sentence).
   const waking = useCloudMachineWakeInFlight(wakeKey);
-  const wakeFailure = useCloudMachineWakeFailure(wakeKey);
-  // Only a wake this chip started says it failed; another surface's failed wake is its own to show.
-  const startedWake = useRef(false);
-  useEffect(() => {
-    if (!wakeFailure || !startedWake.current) return;
-    startedWake.current = false;
-    showToast({ id: `lane-wake-${mention.machineKey}`, tone: "error", title: "ADE Cloud didn't wake", message: wakeFailure });
-  }, [mention.machineKey, wakeFailure]);
   const openLane = () => navigate(`/lanes?laneId=${encodeURIComponent(mention.laneId)}&focus=single`);
   const open = () => {
     if (!mention.online) {
@@ -35,7 +27,6 @@ export function LaneMentionChip({ mention }: { mention: LaneMention }): JSX.Elem
     }
     if (mention.resting) {
       if (waking) return;
-      startedWake.current = true;
       wakeRestingCloudMachine(
         { machineId: `${SAVED_CHATS_MACHINE_PREFIX}${mention.machineKey}`, machineName: "your ADE Cloud computer", hostname: null },
         openLane,
