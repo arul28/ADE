@@ -196,6 +196,11 @@ export function dismissAdeCloudFailedMessage(machineKey: string, chatId: string,
   if (current) publish(key, { ...current, failed: current.failed.filter((message) => message.messageId !== messageId) });
 }
 
+/** Whether the person put back or dismissed this failed message in this browser (a CLI copy's send box filters by it). */
+export function adeCloudFailedMessageDismissed(messageId: string): boolean {
+  return dismissedIds().has(messageId);
+}
+
 /** What `withSavedChatReads` does with a send to a chat whose cloud computer is asleep. */
 export type SavedChatQueueSend = (location: SavedChatLocation, args: AgentChatSendArgs) => Promise<"sent" | "unsupported">;
 

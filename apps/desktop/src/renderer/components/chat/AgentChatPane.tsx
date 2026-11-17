@@ -486,7 +486,7 @@ import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
 import { SAVED_CHAT_COMPUTER_GONE_MESSAGE, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
 import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
 import { adeCloudQueueHoldsMessage, markAdeCloudQueuedMessageDelivered, noteAdeCloudQueuedSend, useAdeCloudChatQueue } from "../../state/adeCloudChatQueue";
-import { CloudQueuedMessages } from "./CloudQueuedMessages";
+import { CloudQueuedMessages, draftWithPutBack } from "./CloudQueuedMessages";
 import { CloudQueueSendCard, type CloudQueueSend } from "./CloudQueueSendCard";
 import { isAdeCloudComputer, useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
@@ -4317,11 +4317,6 @@ export function resetChatBootModelRefreshMemoForTests(): void {
 function isLikelyMacRenderer(): boolean {
   if (typeof navigator === "undefined") return false;
   return /\bMac\b/i.test(navigator.platform) || /\bMac OS X\b/i.test(navigator.userAgent);
-}
-
-/** A message put back in the composer: words the person is typing stay, and the message goes after them. */
-function draftWithPutBack(current: string, text: string): string {
-  return current.trim().length ? `${current.replace(/\s+$/, "")}\n${text}` : text;
 }
 
 export function AgentChatPane({

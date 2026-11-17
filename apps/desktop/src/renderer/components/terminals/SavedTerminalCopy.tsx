@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowClockwise, PaperPlaneRight, Play, Terminal as TerminalIcon } from "@phosphor-icons/react";
 import type { CloudChatQueuedMessage } from "../../../../../account-directory/src/cloud/contract";
 import type { TerminalSessionSummary } from "../../../shared/types";
+import { adeCloudFailedMessageDismissed, dismissAdeCloudFailedMessage } from "../../state/adeCloudChatQueue";
+import { draftWithPutBack } from "../chat/CloudQueuedMessages";
 import { captureError } from "../../../shared/sentry/capture";
 import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
 import { stripAnsi } from "../../../shared/ansiStrip";
@@ -128,7 +130,13 @@ function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessio
     if (!read) return;
     try {
       const next = await read({ machineKey, chatId: sessionId });
-      if (next) setMessages(next.filter((message) => SHOWN_STATES.has(message.state)).sort((a, b) => a.seq - b.seq).slice(-5));
+      // A failed message the person put back or dismissed stays away (per browser, as in a chat).
+      if (next) {
+        setMessages(next
+          .filter((message) => SHOWN_STATES.has(message.state) && !(message.state === "failed" && adeCloudFailedMessageDismissed(message.messageId)))
+          .sort((a, b) => a.seq - b.seq)
+          .slice(-5));
+      }
     } catch (error) {
       // The rows stay as they were; the next focus or send reads again.
       captureError(error, { level: "warning", handled: true, fingerprint: ["ade-cloud", "saved-cli-queue-read"] });
@@ -195,6 +203,16 @@ function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessio
     void refresh();
   };
 
+  // A failed message: its text goes back in the box, or it is dismissed.
+  const dismiss = (messageId: string) => {
+    dismissAdeCloudFailedMessage(machineKey, sessionId, messageId);
+    setMessages((current) => current.filter((message) => message.messageId !== messageId));
+  };
+  const putBack = (message: CloudChatQueuedMessage) => {
+    setDraft((current) => draftWithPutBack(current, message.text));
+    dismiss(message.messageId);
+  };
+
   if (unsupported) {
     return (
       <div className="shrink-0 border-t border-border/40 px-4 py-2.5 text-[11.5px] text-muted-fg/75">
@@ -215,6 +233,11 @@ function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessio
               </span>
               {message.state === "queued" ? (
                 <Button size="sm" variant="ghost" onClick={() => void takeBack(message.messageId)}>Take back</Button>
+              ) : message.state === "failed" ? (
+                <>
+                  <Button size="sm" variant="ghost" onClick={() => putBack(message)}>Put back</Button>
+                  <Button size="sm" variant="ghost" onClick={() => dismiss(message.messageId)}>Dismiss</Button>
+                </>
               ) : null}
             </li>
           ))}

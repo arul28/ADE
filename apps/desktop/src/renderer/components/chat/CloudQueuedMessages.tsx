@@ -10,6 +10,12 @@ function rowState(message: CloudChatQueuedMessage): string {
 }
 
 const FAILED_FALLBACK = "ADE couldn't send this message.";
+
+/** A failed message put back in a message box: words the person is typing stay, and the message goes after them. */
+export function draftWithPutBack(current: string, text: string): string {
+  return current.trim().length ? `${current.replace(/\s+$/, "")}\n${text}` : text;
+}
+
 const ROW_BUTTON = "shrink-0 underline-offset-2 hover:underline disabled:opacity-50";
 
 /**
