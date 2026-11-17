@@ -255,6 +255,10 @@ function scopeOf(element: Element, route: Element): Pick<EarlyComposerPiece, "sc
 }
 
 function sanitizeClone(root: Element): void {
+  // A fake frost (`SceneFrost`) holds this launch's picture file, which a user
+  // picture names by a blob URL that is gone by the next launch. The copy
+  // shows the box's plain tint instead until the real one takes over.
+  for (const frost of Array.from(root.querySelectorAll(".ade-scene-frost"))) frost.remove();
   for (const node of [root, ...Array.from(root.querySelectorAll("*"))]) {
     for (const attribute of Array.from(node.attributes)) {
       if (STRIPPED_ATTRIBUTES.has(attribute.name) || attribute.name.startsWith("on")) {

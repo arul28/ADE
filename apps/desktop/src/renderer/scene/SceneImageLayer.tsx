@@ -68,6 +68,35 @@ function waitForFirstPicture(): Promise<void> {
 }
 
 /**
+ * Where a box rests in the window: its layout position, without the
+ * transforms of it and the boxes around it (an entrance slide, a scale).
+ * Offsets are whole pixels, so it can be off by under a pixel per offset
+ * parent; under a frost blur that does not show.
+ */
+function restingOffset(el: HTMLElement): { left: number; top: number } {
+  let left = 0;
+  let top = 0;
+  let node: HTMLElement | null = el;
+  while (node) {
+    left += node.offsetLeft;
+    top += node.offsetTop;
+    const parent = node.offsetParent as HTMLElement | null;
+    // The body, or a fixed box: its offsets are already from the window.
+    if (!parent) break;
+    // Scrolled boxes between this one and its offset parent (that one too).
+    for (let box: HTMLElement | null = node.parentElement; box; box = box.parentElement) {
+      left -= box.scrollLeft;
+      top -= box.scrollTop;
+      if (box === parent) break;
+    }
+    left += parent.clientLeft;
+    top += parent.clientTop;
+    node = parent;
+  }
+  return { left, top };
+}
+
+/**
  * One box's slice of a window-sized picture.
  *
  * Every surface that paints the window field (the top bar, the welcome
@@ -79,8 +108,16 @@ function waitForFirstPicture(): Promise<void> {
  *
  * It is a plain <img> and a few gradients: no canvas, no animation, nothing
  * to pause when the window blurs.
+ *
+ * `variant="frost"` is the slice inside a frosted box (`SceneFrost`). Such a
+ * box moves without changing size (the prompt box above it grows a line and
+ * pushes it down), so the layer also re-measures when any box around it
+ * changes size, measures at once instead of on the next frame, and reads
+ * the box's resting place, not its place mid-animation (an entrance slide
+ * would leave the slice off by the slide's distance). It never fades.
  */
-export function SceneImageLayer({ scene }: { scene: ImageScene }) {
+export function SceneImageLayer({ scene, variant = "page" }: { scene: ImageScene; variant?: "page" | "frost" }) {
+  const frost = variant === "frost";
   const hostRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const [frame, setFrame] = useState({ left: 0, top: 0, width: 0, height: 0 });
@@ -109,19 +146,35 @@ export function SceneImageLayer({ scene }: { scene: ImageScene }) {
     if (!host) return;
     let raf = 0;
     const measureNow = () => {
-      const rect = host.getBoundingClientRect();
-      setFrame((prev) => {
-        const next = { left: rect.left, top: rect.top, width: window.innerWidth, height: window.innerHeight };
-        return prev.left === next.left && prev.top === next.top && prev.width === next.width && prev.height === next.height
+      const rect = frost ? restingOffset(host) : host.getBoundingClientRect();
+      const next = { left: rect.left, top: rect.top, width: window.innerWidth, height: window.innerHeight };
+      if (frost) {
+        // Called from the resize observer, after layout and before paint:
+        // place the frame now so the move and the slice land in one frame.
+        // The state below keeps the next render at the same place.
+        const frameEl = frameRef.current;
+        if (frameEl) {
+          frameEl.style.left = `${-next.left}px`;
+          frameEl.style.top = `${-next.top}px`;
+          frameEl.style.width = `${next.width}px`;
+          frameEl.style.height = `${next.height}px`;
+        }
+      }
+      setFrame((prev) =>
+        prev.left === next.left && prev.top === next.top && prev.width === next.width && prev.height === next.height
           ? prev
-          : next;
-      });
+          : next,
+      );
     };
-    const measure = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(measureNow);
-    };
-    if (shownOnMount) {
+    const measure = frost
+      ? measureNow
+      : () => {
+          cancelAnimationFrame(raf);
+          raf = requestAnimationFrame(measureNow);
+        };
+    if (frost) {
+      measureNow();
+    } else if (shownOnMount) {
       // Visible from the first frame, so it must sit at its window offset
       // from the first frame too; the deferred measure would show one frame
       // of the picture shifted by this box's offset.
@@ -135,6 +188,13 @@ export function SceneImageLayer({ scene }: { scene: ImageScene }) {
     }
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
     observer?.observe(host);
+    if (frost) {
+      // A box moves when a box around it changes size. Watching each one
+      // costs nothing at rest: the observer only calls back on a change.
+      for (let node = host.parentElement; node && node !== document.body; node = node.parentElement) {
+        observer?.observe(node);
+      }
+    }
     window.addEventListener("resize", measure);
     return () => {
       cancelAnimationFrame(raf);
@@ -158,6 +218,7 @@ export function SceneImageLayer({ scene }: { scene: ImageScene }) {
       <div
         ref={frameRef}
         className="ade-scene-frame"
+        data-variant={frost ? "frost" : undefined}
         data-texture={scene.texture}
         style={{
           left: -frame.left,

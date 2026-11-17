@@ -46,6 +46,7 @@ import { CliLaunchChips } from "./CliLaunchChips";
 import { WorkStartSurface } from "./WorkStartSurface";
 import { hasPendingComposerDock } from "../chat/launch/chatLaunchDock";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
+import { SceneFrost } from "../../scene/SceneFrost";
 import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
 import { CliActionsScope, CliActionsSidePane, CliActionsToggle, CliPromptSlot } from "./CliAgentPane";
@@ -1204,6 +1205,8 @@ function ModeSwitcherPills({
 }) {
   return (
     <div className="ade-liquid-glass-pill inline-flex items-center gap-1 rounded-full p-1" data-onboarding-anchor="draft-mode-switch">
+      {/* On the page, over the scene picture: frosted without a live blur. */}
+      <SceneFrost />
       {MODE_OPTIONS.map((opt) => {
         const active = draftKind === opt.kind;
         const Icon = opt.Icon;
