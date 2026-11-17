@@ -420,9 +420,9 @@ describe("modelRegistry", () => {
     expect(byId).toBe("anthropic/claude-opus-5");
     expect(resolveModelSlug("gpt-5.4")).toBe("openai/gpt-5.4");
     expect(resolveModelSlug("gpt-5.5")).toBe("openai/gpt-5.5");
-    expect(resolveModelSlug("sol", "codex")).toBe("openai/gpt-6.1-sol");
+    expect(resolveModelSlug("sol", "codex")).toBe("openai/gpt-6.2-sol");
     expect(resolveModelSlug("gpt-5.6-sol", "codex")).toBe("openai/gpt-5.6-sol");
-    expect(resolveModelSlug("astra", "codex")).toBe("openai/gpt-6-astra");
+    expect(resolveModelSlug("astra", "codex")).toBe("openai/gpt-6.2-astra");
     expect(resolveModelSlug("gpt-5.4", "codex")).toBeUndefined();
     expect(resolveModelSlug("gpt-5.5", "codex")).toBe("openai/gpt-5.5");
     expect(resolveModelSlug("")).toBeUndefined();

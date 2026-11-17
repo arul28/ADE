@@ -29,6 +29,20 @@ approvals, identity continuity and handoff on top.
   provider state alone. Only `auth` marks the sign-in failed. A usage limit is
   never `plan`: it keeps its card, reset time and auto-resume.
 
+## Codex models and runtime
+
+ADE uses Codex app-server 0.169.0 for chats and the same pinned Codex build for
+terminal sessions. New Codex chats default to GPT-6.2 Sol; GPT-6.2 Astra is
+available alongside it. Explicit older model IDs keep their original routing.
+The desktop, hosted web, CLI and iOS catalogs offer the same new model IDs and
+Low, Medium, High, Extra High, Max and Ultra reasoning settings. Fast and
+Ultrafast remain subject to the signed-in account's live model catalog.
+
+The registry records each model's maximum supported context of 1,050,000 tokens.
+Codex's default context is smaller: 500,000 tokens for 6.2 Sol and 272,000 for
+6.2 Astra. The running thread's reported limit is authoritative; selecting a
+model does not raise its configured context limit.
+
 ## Source file map
 
 | Path | Role |

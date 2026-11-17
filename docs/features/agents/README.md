@@ -41,8 +41,12 @@ One persistent project-level identity. The CTO carries a structured `CtoIdentity
 ### Regular chat agents
 
 Ephemeral sessions bound to a lane. They have no persistent identity document; the session state lives in the transcript and resumes across restarts.
-New Codex agents default to GPT-6.1 Sol, with GPT-6 Astra, GPT-6.1 Terra and the
-other GPT-6 and GPT-5.6 models below it and GPT-5.5 retained. Provider-native web, MCP/connector, image, and
+New Codex agents default to GPT-6.2 Sol, with GPT-6.2 Astra, GPT-6.1 Sol, GPT-6 Astra,
+GPT-6.1 Terra and the other GPT-6 and GPT-5.6 models below it and GPT-5.5 retained.
+The `sol` and `astra` aliases select the 6.2 models; explicit older model IDs
+keep their original meaning. Both 6.2 models support text and image input, up to a
+1,050,000-token context, up to 128,000 output tokens, reasoning from Low through
+Ultra, and Fast mode when the signed-in account offers it. Provider-native web, MCP/connector, image, and
 subagent activity is normalized into compact transcript events so every client
 can show what the agent did without dumping raw SDK/app-server envelopes.
 
