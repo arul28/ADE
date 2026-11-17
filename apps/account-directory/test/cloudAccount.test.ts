@@ -1003,15 +1003,17 @@ describe("ADE Cloud account", () => {
       await costChecks([[null, 2]]);
       expect(stepEmails()[1]).toContain("$50");
     }],
-    ["at the limit the limit's own email goes, not a step email", async () => {
+    ["the cap counts free use only: paid use past it sends the step email and no cap email", async () => {
       harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "100", updated_at: NOW });
       await costChecks([[120, 1]]);
-      expect(stepEmails()).toEqual(["ADE Cloud reached your cost limit"]);
+      expect(stepEmails()).toEqual(["ADE Cloud passed $100 this month"]);
     }],
-    ["a limit email that fails is sent again by the next check", async () => {
-      harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "100", updated_at: NOW });
+    ["free use past 50% of the cap emails once; a cap email that fails is sent again by the next check", async () => {
+      harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "60", updated_at: NOW });
       harness.net.once.push({ match: /POST https:\/\/api\.resend\.com\/emails$/, reply: harness.net.reply({ message: "busy" }, 503) });
-      await costChecks([[120, 1], [120, 2]]);
+      setMonthCost(40, 40);
+      await costChecks([[null, 1], [null, 2], [null, 2]]);
+      expect(stepEmails()).toEqual(["ADE Cloud free use passed 50% of your cap", "ADE Cloud free use passed 50% of your cap"]);
     }],
     ["Plus to Pro moves extra hours to Pro's own price at once, uncharged; a move down keeps it until the renewal", async () => {
       Object.assign(harness.env, EXTRA_PRICES);
@@ -1140,12 +1142,12 @@ describe("ADE Cloud account", () => {
   // The owner's alert emails (steps and the limit): every email but the daily report (the day's run is marked done, so only a new day sends one).
   const stepEmails = () => providerCalls(harness, /POST https:\/\/api\.resend\.com\/emails$/)
     .map((call) => String(call.body?.subject)).filter((subject) => !/daily report/i.test(subject));
-  /** This month's settled cost, all on day one. */
-  function setMonthCost(usd: number): void {
+  /** This month's settled cost, all on day one, of which `freeUsd` ran on free-plan rules. */
+  function setMonthCost(usd: number, freeUsd = 0): void {
     if (!harness.rows("select 1 from cloud_accounts where user_id = ?", OWNER).length) seedAccount(harness, OWNER, plusAccount);
     if (!harness.rows("select 1 from cloud_settings where key = 'last_daily_day'").length) harness.insert("cloud_settings", { key: "last_daily_day", value: DAY_ONE, updated_at: NOW });
     harness.exec("delete from cloud_computer_days where day = ?", DAY_ONE);
-    harness.insert("cloud_computer_days", { instance_id: INSTANCE, day: DAY_ONE, user_id: OWNER, multiplier_milli: 1000, cost_micros: usd * 1_000_000 });
+    harness.insert("cloud_computer_days", { instance_id: INSTANCE, day: DAY_ONE, user_id: OWNER, multiplier_milli: 1000, cost_micros: usd * 1_000_000, free_cost_micros: freeUsd * 1_000_000 });
   }
   /** One owner check (ten minutes on) per step, each with the step emails expected after it; null keeps the cost. */
   async function costChecks(steps: Array<[number | null, number]>): Promise<void> {
@@ -1157,25 +1159,28 @@ describe("ADE Cloud account", () => {
     }
   }
 
-  it.each<[string, string, string, Row, number, string | null, RegExp]>([
-    ["a new computer", "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } }, 503, "unavailable", /POST .*\/instances$/],
-    ["a copy", "POST", `/cloud/instances/${INSTANCE}/fork`, {}, 503, "unavailable", /POST .*\/fork$/],
-    ["a move", "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, moveFromInstanceId: INSTANCE }, 503, "unavailable", /POST .*\/instances$/],
-    ["a disk grow", "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 2, memory: 4, disk: 8 }, 403, "disk_limit", /POST .*\/resize$/],
-    ["a wake still works", "POST", `/cloud/instances/${INSTANCE}/start`, {}, 200, null, /POST .*\/start$/],
-  ])("owner's cost limit reached: %s", async (_label, method, url, body, status, code, providerCall) => {
-    seedAccount(harness, OWNER, plusAccount);
+  // The owner's cap counts free use only: at it, an account on free-plan rules gets no new computer and no disk growth.
+  it.each<[string, Row, string, string, Row, number, string | null, RegExp]>([
+    ["a free account's new computer", {}, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } }, 503, "unavailable", /POST .*\/instances$/],
+    ["a free account's copy", {}, "POST", `/cloud/instances/${INSTANCE}/fork`, {}, 503, "unavailable", /POST .*\/fork$/],
+    ["a free account's move", {}, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, moveFromInstanceId: INSTANCE }, 503, "unavailable", /POST .*\/instances$/],
+    ["a free account's disk grow", {}, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 2, memory: 4, disk: 8 }, 403, "disk_limit", /POST .*\/resize$/],
+    ["a past-due account is on free rules", { ...plusAccount, stripe_status: "past_due" }, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } }, 503, "unavailable", /POST .*\/instances$/],
+    ["a free account's wake still works", {}, "POST", `/cloud/instances/${INSTANCE}/start`, {}, 200, null, /POST .*\/start$/],
+    ["a paid account's new computer is never refused", plusAccount, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } }, 201, null, /POST .*\/instances$/],
+  ])("owner's cap reached by free use: %s", async (_label, account, method, url, body, status, code, providerCall) => {
+    seedAccount(harness, OWNER, account);
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
     harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "10", updated_at: NOW });
-    harness.insert("cloud_settings", { key: "cost_mtd_micros", value: "10000000", updated_at: NOW });
+    harness.insert("cloud_settings", { key: "free_cost_mtd_micros", value: "10000000", updated_at: NOW });
     seedStopped([4]);
 
     const response = await harness.send(OWNER, method, url, body);
 
     expect(response.status).toBe(status);
-    expect(status === 200 ? null : (await errorOf(response))?.code).toBe(code);
+    expect(code ? (await errorOf(response))?.code : null).toBe(code);
     expect(providerCalls(harness, providerCall)).toHaveLength(code ? 0 : 1);
-    expect(harness.rows("select instance_id from cloud_computers where deleted_at is null order by instance_id")).toEqual([{ instance_id: INSTANCE }]);
+    expect(harness.rows("select instance_id from cloud_computers where deleted_at is null")).toHaveLength(status === 201 ? 2 : 1);
     expect(computer(harness).disk_gb).toBe(4);
   });
 
@@ -1692,7 +1697,8 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     }), harness.env);
   }
 
-  it("a card saved with no charge unlocks a new GitHub account's free hours; a card that didn't save unlocks nothing", async () => {
+  it("a card saved with no charge unlocks a new GitHub account's free hours, once per card; a card that didn't save unlocks nothing", async () => {
+    Object.assign(harness.env, { RESEND_API_KEY: "resend-key", CLOUD_ALERT_EMAIL: "owner@example.test" });
     withGithub();
     seedAccount(harness, OWNER, { stripe_customer_id: "cus_1" });
     await connectGithub(OWNER, 77, 10);
@@ -1708,17 +1714,77 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     expect(included()).toBe(0);
 
     const session = { id: "cs_1", object: "checkout.session", mode: "setup", status: "complete", setup_intent: "seti_1", client_reference_id: OWNER, metadata: { ade_user_id: OWNER, ade_purpose: "free_unlock" } };
-    harness.net.once.push({ match: /GET .*\/setup_intents\/seti_1$/, reply: harness.net.reply({ id: "seti_1", status: "requires_payment_method" }) });
+    harness.net.once.push({ match: /GET .*\/setup_intents\/seti_1\?expand/, reply: harness.net.reply({ id: "seti_1", status: "requires_payment_method" }) });
     expect((await stripeWebhook({ id: "evt_unlock_failed", type: "checkout.session.completed", data: { object: session } })).status).toBe(200);
     expect([harness.row("select free_card_unlocked_at from cloud_accounts where user_id = ?", OWNER).free_card_unlocked_at, included()]).toEqual([null, 0]);
 
-    harness.net.once.push({ match: /GET .*\/setup_intents\/seti_1$/, reply: harness.net.reply({ id: "seti_1", status: "succeeded" }) });
+    // The card comes with the intent (`expand[]=payment_method`): its fingerprint is what one free unlock is held against.
+    const card = (pm: string) => ({ id: pm, object: "payment_method", card: { fingerprint: "fp_card_1" } });
+    harness.net.once.push({ match: /GET .*\/setup_intents\/seti_1\?expand/, reply: harness.net.reply({ id: "seti_1", status: "succeeded", payment_method: card("pm_1") }) });
     expect((await stripeWebhook({ id: "evt_unlock", type: "checkout.session.completed", data: { object: session } })).status).toBe(200);
 
     expect(harness.row("select free_card_unlocked_at, free_github_hold from cloud_accounts where user_id = ?", OWNER)).toEqual({ free_card_unlocked_at: clock, free_github_hold: null });
     expect([included(), githubClaims()]).toEqual([100_000, [{ github_user_id: 77, user_id: OWNER }]]);
     // A card already unlocked: the route says so and opens nothing.
     expect(await (await harness.send(OWNER, "POST", "/cloud/billing/free-unlock", {})).json()).toEqual({ url: null, unlocked: true });
+
+    // The same card on a second new account unlocks nothing, comes off that customer, and alerts the owner once,
+    // also when Stripe sends the completion again.
+    seedAccount(harness, OTHER, { stripe_customer_id: "cus_2" });
+    await connectGithub(OTHER, 88, 10);
+    expect((await stateOf(OTHER)).freePlan?.github?.state).toBe("too_new");
+    const otherSession = { ...session, id: "cs_2", setup_intent: "seti_2", client_reference_id: OTHER, metadata: { ade_user_id: OTHER, ade_purpose: "free_unlock" } };
+    for (const eventId of ["evt_reuse", "evt_reuse_again"]) {
+      harness.net.once.push({ match: /GET .*\/setup_intents\/seti_2\?expand/, reply: harness.net.reply({ id: "seti_2", status: "succeeded", payment_method: card("pm_2") }) });
+      expect((await stripeWebhook({ id: eventId, type: "checkout.session.completed", data: { object: otherSession } })).status).toBe(200);
+    }
+    expect([harness.row("select free_card_unlocked_at from cloud_accounts where user_id = ?", OTHER).free_card_unlocked_at, included(OTHER), (await stateOf(OTHER)).freePlan?.github?.state])
+      .toEqual([null, 0, "too_new"]);
+    expect(providerCalls(harness, /POST .*\/payment_methods\/pm_2\/detach$/).length).toBeGreaterThan(0);
+    expect(harness.rows("select card_fingerprint, user_id from cloud_free_card_claims")).toEqual([{ card_fingerprint: "fp_card_1", user_id: OWNER }]);
+    expect(providerCalls(harness, /POST https:\/\/api\.resend\.com\/emails$/).map((call) => String(call.body?.subject)).filter((subject) => /used again/.test(subject)))
+      .toEqual(["ADE Cloud: a card was used again for free hours"]);
+  });
+
+  it("the owner's block: only the owner token reaches it; it cuts off, stops and cancels the account, and puts its GitHub account and saved card on the block list until unblocked", async () => {
+    withGithub();
+    harness.env.CLOUD_OWNER_TOKEN = "owner-token-test";
+    const owner = (path: string, body: Row, bearer = "owner-token-test") => handleCloudRequest(new Request(`https://directory.test/cloud/owner/${path}`, {
+      method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" }, body: JSON.stringify(body),
+    }), harness.env);
+    const blocks = () => harness.rows("select user_id, github_user_id, card_fingerprint from cloud_blocks order by card_fingerprint");
+    seedAccount(harness, OWNER, plus);
+    harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: [] } });
+    await connectGithub(OWNER, 77, 400);
+    seedComputer(harness);
+    provide(harness);
+    expect((await harness.send(OWNER, "GET", "/cloud/account")).status).toBe(200);
+
+    // An account's own sign-in is not the owner's token.
+    expect([(await owner("block", { userId: OWNER }, tokens[OWNER]!)).status, (await owner("block", { userId: OWNER }, "wrong")).status]).toEqual([401, 401]);
+    expect(blocks()).toEqual([]);
+
+    harness.net.once.push({ match: /GET .*\/customers\/cus_1\/payment_methods/, reply: harness.net.reply({ data: [{ id: "pm_9", card: { fingerprint: "fp_saved" } }] }) });
+    expect((await owner("block", { userId: OWNER, reason: "spam" })).status).toBe(200);
+    expect(blocks()).toEqual([{ user_id: OWNER, github_user_id: 77, card_fingerprint: "fp_saved" }]);
+    expect(providerCalls(harness, new RegExp(`PATCH .*/instances/${INSTANCE}$`)).map((call) => call.body)).toEqual([{ network: "deny-all" }]);
+    expect(providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/stop$`))).toHaveLength(1);
+    expect(providerCalls(harness, /DELETE .*\/subscriptions\/sub_1$/).map((call) => call.body)).toEqual([{ prorate: "false", invoice_now: "false" }]);
+    const refused = await harness.send(OWNER, "GET", "/cloud/account");
+    expect([refused.status, ((await refused.json()) as { error?: { code?: string } }).error?.code]).toEqual([403, "account_blocked"]);
+
+    // The blocked GitHub account on a new ADE account gets no free plan.
+    seedAccount(harness, OTHER);
+    await connectGithub(OTHER, 77, 400);
+    expect([(await stateOf(OTHER)).freePlan?.github?.state, included(OTHER)]).toEqual(["used", 0]);
+
+    // Unblocked: the account's rows go with its GitHub account and card, the account works again,
+    // and its computer gets the internet back but stays stopped (the person starts it).
+    expect((await owner("unblock", { userId: OWNER })).status).toBe(200);
+    expect(blocks()).toEqual([]);
+    expect((await harness.send(OWNER, "GET", "/cloud/account")).status).toBe(200);
+    expect(providerCalls(harness, new RegExp(`PATCH .*/instances/${INSTANCE}$`)).map((call) => call.body)).toEqual([{ network: "deny-all" }, { network: "allow-all" }]);
+    expect(computer(harness).status).toBe("stopped");
   });
 
   it.each<[string, number, string[]]>([
@@ -2123,6 +2189,31 @@ describe("ADE Cloud server launcher", () => {
     // Another account sees no such launch.
     expect((await harness.send(OTHER, "GET", `/cloud/launches/${LAUNCH}`)).status).toBe(404);
     expect((await harness.send(OTHER, "DELETE", `/cloud/launches/${LAUNCH}`)).status).toBe(404);
+  });
+
+  it("a message queued before the chat exists is sent once: one claim takes it, a lost answer retried gets it back, only that claim finishes it", async () => {
+    const messages = `/cloud/launches/${LAUNCH}/messages`;
+    const claim = (claimId: string) => harness.send(OWNER, "POST", `${messages}/m2/claim`, { claimId });
+    const report = (claimId: string, state: string) => harness.send(OWNER, "PUT", `${messages}/m2`, { claimId, state });
+    const [CLAIM_A, CLAIM_B] = ["claim-aaaaaaaaaaaaaaaa", "claim-bbbbbbbbbbbbbbbb"];
+    await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+
+    // The same id twice is one message; another account sees no such launch.
+    expect((await harness.send(OWNER, "POST", messages, { messageId: "m2", text: "Also fix the footer." })).status).toBe(201);
+    expect((await harness.send(OWNER, "POST", messages, { messageId: "m2", text: "Also fix the footer." })).status).toBe(200);
+    expect((await harness.send(OTHER, "GET", messages)).status).toBe(404);
+    // Nothing is claimed before the chat exists: the computer would send it into no chat.
+    expect((await claim(CLAIM_A)).status).toBe(409);
+
+    expect((await harness.send(OWNER, "PUT", `/cloud/launches/${LAUNCH}/stages`, { state: "running", sessionId: "chat-1" })).status).toBe(200);
+    expect([(await claim(CLAIM_A)).status, (await claim(CLAIM_B)).status, (await claim(CLAIM_A)).status]).toEqual([200, 409, 200]);
+    expect([(await report(CLAIM_B, "delivered")).status, (await report(CLAIM_A, "delivered")).status, (await report(CLAIM_A, "delivered")).status]).toEqual([409, 200, 200]);
+    // Delivered stays delivered: no later claim sends it again, and a new message goes to the chat itself.
+    expect((await claim(CLAIM_B)).status).toBe(409);
+    expect((await harness.send(OWNER, "POST", messages, { messageId: "m3", text: "And the header." })).status).toBe(409);
+
+    const listed = await (await harness.send(OWNER, "GET", messages)).json() as { messages: Array<{ messageId: string; state: string }> };
+    expect(listed.messages.map((message) => [message.messageId, message.state])).toEqual([[expect.any(String), "delivered"], ["m2", "delivered"]]);
   });
 
   it.each<[string, (code: string) => Promise<Response>, number]>([

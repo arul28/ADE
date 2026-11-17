@@ -2709,6 +2709,41 @@ describe("createSyncRemoteCommandService", () => {
       laneId: "lane-1",
     }))).resolves.toEqual([{ issue }]);
   });
+
+  it("routes Linear session attach through the lane service", async () => {
+    const issue = {
+      id: "issue-1",
+      identifier: "ENG-1",
+      title: "Wire Linear attach",
+      projectId: "project-1",
+      projectSlug: "eng",
+      teamId: "team-1",
+      teamKey: "ENG",
+      stateId: "state-1",
+      stateName: "Todo",
+      stateType: "unstarted",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    };
+    const attachLinearIssueToSession = vi.fn().mockReturnValue([{ issue }]);
+    const { service } = createService({
+      laneService: { attachLinearIssueToSession },
+    });
+
+    await expect(service.execute(makePayload("lanes.attachLinearIssueToSession", {
+      issues: [issue],
+    }))).rejects.toThrow("lanes.attachLinearIssueToSession requires chatSessionId.");
+    expect(attachLinearIssueToSession).not.toHaveBeenCalled();
+
+    await expect(service.execute(makePayload("lanes.attachLinearIssueToSession", {
+      chatSessionId: " chat-1 ",
+      issues: [issue, { id: "missing-required-fields" }],
+    }))).resolves.toEqual([{ issue }]);
+    expect(attachLinearIssueToSession).toHaveBeenCalledWith({
+      chatSessionId: "chat-1",
+      issues: [expect.objectContaining({ id: "issue-1", identifier: "ENG-1" })],
+    });
+  });
 });
 
 describe("mobile CTO identity updates", () => {

@@ -5,7 +5,8 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { getModelById, resolveChatProviderForDescriptor } from "../../../shared/modelRegistry";
 import {
   isProviderInstanceProvider,
-  providerAccountName,
+  providerAccountCanTakeChats,
+  providerAccountDisplayName,
   type ProviderInstance,
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
@@ -37,7 +38,7 @@ export function useCtoAccounts(
     let cancelled = false;
     void window.ade.providerInstances.list({ provider }, pin ?? null).then(
       (rows) => {
-        if (!cancelled) setAccounts(rows.filter((row) => row.provider === provider && row.signedIn && !row.sameLoginAs));
+        if (!cancelled) setAccounts(rows.filter((row) => row.provider === provider && providerAccountCanTakeChats(row)));
       },
       () => {
         if (!cancelled) setAccounts(null);
@@ -74,7 +75,7 @@ export function CtoAccountPicker({
   if (!provider || !accounts || accounts.length < 2) return null;
   const fallback = accounts.find((account) => account.isDefault) ?? accounts[0]!;
   const selected = (value ? accounts.find((account) => account.id === value) : null) ?? fallback;
-  const nameOf = (account: ProviderInstance) => providerAccountName(account);
+  const nameOf = (account: ProviderInstance) => providerAccountDisplayName(account);
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild disabled={disabled}>

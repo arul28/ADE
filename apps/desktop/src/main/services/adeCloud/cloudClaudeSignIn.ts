@@ -33,7 +33,7 @@ import {
   writeLoginCode,
 } from "../shared/cliLoginPty";
 import type { AgentCliLoginCliState, AgentCliLoginPty } from "../ai/agentCliLoginRunner";
-import { COMPLETE_CLAUDE_TOKEN_PATTERN, CLAUDE_TOKEN_PATTERN } from "./cloudSignInStore";
+import { COMPLETE_CLAUDE_TOKEN_PATTERN, CLAUDE_TOKEN_PATTERN } from "../../../shared/cloudSignIns";
 import type { ClaudePassVerifyResult } from "./claudePassVerify";
 
 const AUTH_HOSTS = ["claude.ai", "anthropic.com", "claude.com"];

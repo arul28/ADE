@@ -681,6 +681,19 @@ describe("account scope through the usage service", () => {
     }
   }
 
+  /**
+   * Let the first read's own background work land: its ledger scan and GitHub
+   * scan each emit an update, through real work that a loaded runner can stretch
+   * past `quiesce`. A test that counts updates starts counting after this.
+   */
+  async function settleFirstRead(service: ReturnType<typeof createService>) {
+    await vi.waitFor(async () => {
+      const stats = await service.getAdeUsageStats({ preset: "7d", scope: "machine" });
+      expect(stats.freshness?.state).toBe("fresh");
+    });
+    await quiesce();
+  }
+
   function createLogger() {
     return {
       debug: () => undefined,
@@ -1100,7 +1113,7 @@ describe("account scope through the usage service", () => {
       // Warm-up: let the first ledger scan and its own updates settle, so what
       // is measured below is only the account refresh.
       await service.getAdeUsageStats({ preset: "7d", scope: "account" });
-      await quiesce();
+      await settleFirstRead(service);
 
       // Genuinely new history: the page must be told.
       published = [laptop];
@@ -1136,7 +1149,7 @@ describe("account scope through the usage service", () => {
     service.setAccountRollupFetcher(async () => ({ rollups: [], failures: [failure] }));
     try {
       await service.getAdeUsageStats({ preset: "7d", scope: "account" });
-      await quiesce();
+      await settleFirstRead(service);
 
       // A permanently unreachable machine reports the same failure forever.
       // Reading that as a change would keep the page emitting news it already

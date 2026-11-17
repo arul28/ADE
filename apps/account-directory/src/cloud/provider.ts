@@ -374,6 +374,15 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
       await api("PATCH", instancePath(id), { metadata });
     },
 
+    /**
+     * Where the computer may connect out: the whole internet or nothing (DNS
+     * too). Applies within seconds with no restart. A `503 try_again` means the
+     * policy is saved and lands within two minutes; the caller may send it again.
+     */
+    async setNetworkPolicy(id: string, policy: "allow-all" | "deny-all"): Promise<void> {
+      await api("PATCH", instancePath(id), { network: policy });
+    },
+
     /** How long each instance was awake over a window; deleted instances stay in it. */
     async usage(window: { from: string; to?: string }): Promise<CloudUsageWindow> {
       const query = new URLSearchParams({ from: window.from, ...(window.to ? { to: window.to } : {}) });

@@ -2995,7 +2995,10 @@ because only a plain invocation can be redirected) and:
    2.0-rejected flags (`--agent`, `--model`/`-m`, `--variant`, `--mini`,
    `--replay*`, a stray `--server`/`--standalone`) are stripped from a
    persisted 1.x-era resume command, which would otherwise make the 2.0 TUI
-   exit on launch.
+   exit on launch. On macOS and Linux a resume runs through a login shell
+   (`/bin/bash --noprofile --norc -lc '<line>'`), so the rewrite replaces that
+   shell's `-c` string too; rewriting only the stored startup command would
+   leave the shell running the old line against OpenCode's own store.
 
 The server URL and password change on every server start, so neither is ever
 persisted — the stored startup command stays a plain

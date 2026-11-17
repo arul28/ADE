@@ -824,6 +824,22 @@ client version and for work nobody watches
   `unclaimed_use` (free hours used with no computer seen: phone or MCP only),
   with `platform` (`darwin`, `win32`, `linux`) when known. One per account,
   step and day.
+- **`ade_cloud_safety`** (`blocks.ts`, `safety.ts`, `costReport.ts`,
+  `chats.ts`): `step` is `first_chat` (the account's first saved cloud chat,
+  once), `free_cap_50`, `free_cap_80`, `free_cap_100` (free use passed that
+  share of the owner's cap; owner-wide, distinct id `ade-cloud-server`),
+  `free_cap_refused`, `blocked`, `unblocked`, `card_reused`,
+  `blocked_returned` (a blocked GitHub account or card on a new account),
+  `rate_limited`, `creates_paused` or `signup_burst`. One per account, step,
+  key (hashed into the uuid, never sent) and hour. Server log lines:
+  `cloud.first_chat`, `cloud.free_cap_refused`, `cloud.free_cap_step`,
+  `cloud.block_computer_stopped`, `cloud.account_unblocked`,
+  `cloud.free_unlock_card_refused`, `cloud.stripe_test_event_dropped`. Abuse
+  (`reportCloudAbuse`) is `cloud.abuse.<kind>` in the log, a Sentry error
+  every time (tag `area: cloud-abuse`) and a `cloud_abuse_events` row; kinds:
+  `account_blocked`, `identity_blocked`, `blocked_computer_made`,
+  `card_reused`, `blocked_card_returned`, `blocked_github_returned`,
+  `signup_burst`, `rate_limited`.
 
 Never an instance id, a name, a size in numbers, a price, an amount, a
 message, a Stripe id, an invite code or link, an email, a computer id, or the

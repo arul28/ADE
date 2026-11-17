@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import { resolveUserOpenCodeDataRoot } from "../../../shared/opencodeDataHome";
+import { resolveAdeOpenCodeStoreDir, resolveUserOpenCodeDataRoot } from "../../../shared/opencodeDataHome";
 import { hasTable } from "../projects/readOnlySqlite";
 import {
   closeExternalSessionDb,
@@ -63,12 +63,18 @@ export function resolveUserOpenCodeDbPath(
   return root ? path.join(root, "opencode.db") : null;
 }
 
-export function openUserOpenCodeStore(
-  args: Pick<ExternalSessionDiscoveryArgs, "homeDir" | "env" | "logger"> = {},
+/** `opencode.db` of ADE's own managed store, where every ADE-launched session lives. */
+export function resolveAdeOpenCodeDbPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveAdeOpenCodeStoreDir(env), "opencode.db");
+}
+
+/** Open one OpenCode SQLite store by its exact database path. */
+export function openOpenCodeStoreAt(
+  dbPath: string | null,
+  logger?: ExternalSessionDiscoveryArgs["logger"],
 ): OpenCodeStoreHandle | null {
-  const dbPath = resolveUserOpenCodeDbPath(args);
   if (!dbPath) return null;
-  const db = openExternalSessionDb(dbPath, args.logger);
+  const db = openExternalSessionDb(dbPath, logger);
   if (!db) return null;
   try {
     // A running OpenCode may hold the write lock; answer at once rather than wait.
@@ -84,13 +90,26 @@ export function openUserOpenCodeStore(
     }
     return { db, schema, close: () => closeExternalSessionDb(db) };
   } catch (error) {
-    args.logger?.warn?.("external_sessions.opencode_store_unreadable", {
+    logger?.warn?.("external_sessions.opencode_store_unreadable", {
       dbPath,
       error: error instanceof Error ? error.message : String(error),
     });
     closeExternalSessionDb(db);
     return null;
   }
+}
+
+export function openUserOpenCodeStore(
+  args: Pick<ExternalSessionDiscoveryArgs, "homeDir" | "env" | "logger"> = {},
+): OpenCodeStoreHandle | null {
+  return openOpenCodeStoreAt(resolveUserOpenCodeDbPath(args), args.logger);
+}
+
+/** ADE's own managed store; only the discovery path opts into it. */
+export function openAdeOpenCodeStore(
+  args: Pick<ExternalSessionDiscoveryArgs, "env" | "logger"> = {},
+): OpenCodeStoreHandle | null {
+  return openOpenCodeStoreAt(resolveAdeOpenCodeDbPath(args.env), args.logger);
 }
 
 function numberOrNull(value: unknown): number | null {

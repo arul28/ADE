@@ -202,7 +202,7 @@ async function codexAuthFilePresent(env: NodeJS.ProcessEnv): Promise<boolean> {
  * (`detectCliAuthStatuses`) and for this connection row's own evidence.
  */
 export async function savedSignInPresent(provider: "claude" | "codex", env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
-  if (provider === "codex") return Boolean(await readCodexCredentials()) || await codexAuthFilePresent(env);
+  if (provider === "codex") return Boolean(await readCodexCredentials(codexConfigHome({ env }))) || await codexAuthFilePresent(env);
   if (CLAUDE_AUTH_ENV_KEYS.some((key) => Boolean(env[key]?.trim())) || await readClaudeCredentials()) return true;
   return process.platform === "darwin" && (await probeClaudeKeychainLogin()) === "present";
 }

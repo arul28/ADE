@@ -36,6 +36,7 @@
 		CA1A00000000000000000019 /* WorkLaneSetupTranscriptCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000009 /* WorkLaneSetupTranscriptCard.swift */; };
 		CA1A0000000000000000001A /* WorkChatLaunchListProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A0000000000000000000A /* WorkChatLaunchListProjection.swift */; };
 		CA1A00000000000000000015 /* ChatLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000005 /* ChatLaunchTests.swift */; };
+		CA1A0000000000000000001B /* WorkLaunchIssuePromptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A0000000000000000000B /* WorkLaunchIssuePromptTests.swift */; };
 		CA1A00000000000000000014 /* WorkChatLaunchViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000004 /* WorkChatLaunchViews.swift */; };
 		CA1A00000000000000000013 /* WorkChatLaunchPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000003 /* WorkChatLaunchPresentation.swift */; };
 		CA1A00000000000000000012 /* ChatLaunchStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1A00000000000000000002 /* ChatLaunchStore.swift */; };
@@ -464,6 +465,8 @@
 		E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000090 /* WorkComposerTypedTriggers.swift */; };
 		E10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift */; };
 		E10000000000000000C0A7C1 /* WorkComposerModelChips.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7C1 /* WorkComposerModelChips.swift */; };
+		E10000000000000000C0A7C3 /* WorkLaunchIssues.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7C3 /* WorkLaunchIssues.swift */; };
+		E10000000000000000C0A7C4 /* WorkLaunchAccountState.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7C4 /* WorkLaunchAccountState.swift */; };
 		E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000045 /* WorkSelectionActionBar.swift */; };
 		E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000046 /* WorkRootScreen+Selection.swift */; };
 		E10000000000000000000048 /* WorkTerminalEmulatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000048 /* WorkTerminalEmulatorView.swift */; };
@@ -589,6 +592,7 @@
 		CA1A00000000000000000009 /* WorkLaneSetupTranscriptCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaneSetupTranscriptCard.swift; path = ADE/Views/Work/WorkLaneSetupTranscriptCard.swift; sourceTree = "<group>"; };
 		CA1A0000000000000000000A /* WorkChatLaunchListProjection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchListProjection.swift; path = ADE/Views/Work/WorkChatLaunchListProjection.swift; sourceTree = "<group>"; };
 		CA1A00000000000000000005 /* ChatLaunchTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatLaunchTests.swift; path = ADETests/ChatLaunchTests.swift; sourceTree = "<group>"; };
+		CA1A0000000000000000000B /* WorkLaunchIssuePromptTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaunchIssuePromptTests.swift; path = ADETests/WorkLaunchIssuePromptTests.swift; sourceTree = "<group>"; };
 		CA1A00000000000000000004 /* WorkChatLaunchViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchViews.swift; path = ADE/Views/Work/WorkChatLaunchViews.swift; sourceTree = "<group>"; };
 		CA1A00000000000000000003 /* WorkChatLaunchPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatLaunchPresentation.swift; path = ADE/Views/Work/WorkChatLaunchPresentation.swift; sourceTree = "<group>"; };
 		CA1A00000000000000000002 /* ChatLaunchStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatLaunchStore.swift; path = ADE/Services/ChatLaunchStore.swift; sourceTree = "<group>"; };
@@ -801,6 +805,8 @@
 		D20000000000000000000090 /* WorkComposerTypedTriggers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTypedTriggers.swift; path = ADE/Views/Work/WorkComposerTypedTriggers.swift; sourceTree = "<group>"; };
 		D10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerSuggestionStrip.swift; path = ADE/Views/Work/WorkComposerSuggestionStrip.swift; sourceTree = "<group>"; };
 		D10000000000000000C0A7C1 /* WorkComposerModelChips.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerModelChips.swift; path = ADE/Views/Work/WorkComposerModelChips.swift; sourceTree = "<group>"; };
+		D10000000000000000C0A7C3 /* WorkLaunchIssues.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaunchIssues.swift; path = ADE/Views/Work/WorkLaunchIssues.swift; sourceTree = "<group>"; };
+		D10000000000000000C0A7C4 /* WorkLaunchAccountState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaunchAccountState.swift; path = ADE/Views/Work/WorkLaunchAccountState.swift; sourceTree = "<group>"; };
 		D10000000000000000000045 /* WorkSelectionActionBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSelectionActionBar.swift; path = ADE/Views/Work/WorkSelectionActionBar.swift; sourceTree = "<group>"; };
 		D10000000000000000000046 /* WorkRootScreen+Selection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkRootScreen+Selection.swift"; path = "ADE/Views/Work/WorkRootScreen+Selection.swift"; sourceTree = "<group>"; };
 		D10000000000000000000048 /* WorkTerminalEmulatorView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTerminalEmulatorView.swift; path = ADE/Views/Work/WorkTerminalEmulatorView.swift; sourceTree = "<group>"; };
@@ -1466,6 +1472,8 @@
 				D20000000000000000000090 /* WorkComposerTypedTriggers.swift */,
 				D10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift */,
 				D10000000000000000C0A7C1 /* WorkComposerModelChips.swift */,
+				D10000000000000000C0A7C3 /* WorkLaunchIssues.swift */,
+				D10000000000000000C0A7C4 /* WorkLaunchAccountState.swift */,
 				D10000000000000000000045 /* WorkSelectionActionBar.swift */,
 				D10000000000000000000046 /* WorkRootScreen+Selection.swift */,
 				D10000000000000000000047 /* ADEInspectable.swift */,
@@ -1851,6 +1859,7 @@
 				AC7500000000000000000007 /* WorkPendingInputRescueTests.swift */,
 				AC7500000000000000000003 /* WorkSessionGroupingTests.swift */,
 				CA1A00000000000000000005 /* ChatLaunchTests.swift */,
+				CA1A0000000000000000000B /* WorkLaunchIssuePromptTests.swift */,
 				AC750000000000000000000A /* LaneManageRenameTests.swift */,
 				AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */,
 				AC7500000000000000000002 /* HubProjectPresentationTests.swift */,
@@ -2512,6 +2521,8 @@
 				E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */,
 				E10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift in Sources */,
 				E10000000000000000C0A7C1 /* WorkComposerModelChips.swift in Sources */,
+				E10000000000000000C0A7C3 /* WorkLaunchIssues.swift in Sources */,
+				E10000000000000000C0A7C4 /* WorkLaunchAccountState.swift in Sources */,
 				E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */,
 				E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */,
 				E10000000000000000000048 /* WorkTerminalEmulatorView.swift in Sources */,
@@ -2640,6 +2651,7 @@
 				AC7600000000000000000007 /* WorkPendingInputRescueTests.swift in Sources */,
 				AC7600000000000000000003 /* WorkSessionGroupingTests.swift in Sources */,
 				CA1A00000000000000000015 /* ChatLaunchTests.swift in Sources */,
+				CA1A0000000000000000001B /* WorkLaunchIssuePromptTests.swift in Sources */,
 				AC760000000000000000000A /* LaneManageRenameTests.swift in Sources */,
 				AC7600000000000000000004 /* ActivityWidgetPresentationTests.swift in Sources */,
 				AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */,

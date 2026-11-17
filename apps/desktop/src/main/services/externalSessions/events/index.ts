@@ -202,6 +202,7 @@ async function loadOpenCodePage(args: {
     sessionId: args.sessionId,
     options: args.options,
     fallbackBaseMs: args.fallbackBaseMs,
+    ...(args.record?.adeOwned ? { adeOwned: true } : {}),
     ...(args.homeDir ? { homeDir: args.homeDir } : {}),
     ...(args.env ? { env: args.env } : {}),
   });

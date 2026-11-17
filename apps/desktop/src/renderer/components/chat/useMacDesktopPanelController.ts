@@ -709,6 +709,9 @@ export function useMacDesktopPanelController({
           chatSessionId: sessionId,
           caption: macDesktopPaneCaption("recording", laneName, desktopProductName(status?.platform)),
         }, pinRef.current);
+      // A read sent before this answer (a focus or runtime re-read) saw the
+      // old recorder and would put the Recording pill back over the receipt.
+      discardReadsInFlight();
       setStatus((current) => (current ? { ...current, recording: next } : current));
       setCaptureError(null);
       if (!next.running && next.proofArtifactId) {
@@ -728,7 +731,7 @@ export function useMacDesktopPanelController({
     } finally {
       setBusy(false);
     }
-  }, [display, errorText, laneId, laneName, recording?.running, sessionId, setStatus, status?.platform]);
+  }, [discardReadsInFlight, display, errorText, laneId, laneName, recording?.running, sessionId, setStatus, status?.platform]);
 
   /** Save screenshot: one picture of the lane's screen, filed as proof. */
   const saveScreenshot = useCallback(async () => {

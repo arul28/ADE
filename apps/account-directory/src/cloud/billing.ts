@@ -2,6 +2,7 @@ import { trustedHttpsOrigin } from "../trustedOrigin";
 import { captureCloudAction, captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
 import { CLOUD_WEB_BILLING_RETURN_PARAM, formatCloudCents, type CloudBillingReturnOutcome, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
 import { unlockFreePlanWithCard } from "./freePlanGithub";
+import { claimCardForFreeUnlock, isCloudBlocked } from "./blocks";
 import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
 import { cloudReturnPageHtml } from "./returnPage";
@@ -24,6 +25,7 @@ import {
   listComputers,
   liveUsedMilli,
   loadAccount,
+  isProduction,
   logCloud,
   reportCloudFailure,
   type AccountRow,
@@ -278,11 +280,38 @@ export async function createCheckoutUrl(
 /** `metadata[ade_purpose]` of the setup-mode Checkout that unlocks the free hours early. */
 const FREE_UNLOCK_PURPOSE = "free_unlock";
 
-/** Whether the Stripe customer already has a card saved (a former paid customer, a card added before). */
-async function customerHasCard(env: CloudEnv, customerId: string): Promise<boolean> {
-  const cards = await stripeRequest(env, "GET", `/customers/${encodeURIComponent(customerId)}/payment_methods?type=card&limit=1`);
-  return Array.isArray(cards.data) && cards.data.length > 0;
+/** The cards saved on a Stripe customer (at most 10), newest first: each one's id and fingerprint. */
+async function savedCards(env: Pick<CloudEnv, "STRIPE_SECRET_KEY">, customerId: string): Promise<Array<{ id: string; fingerprint: string }>> {
+  const cards = await stripeRequest(env, "GET", `/customers/${encodeURIComponent(customerId)}/payment_methods?type=card&limit=10`);
+  const list = Array.isArray(cards.data) ? cards.data : [];
+  return list.flatMap((entry) => {
+    const card = objectOf(entry);
+    const id = textOf(card?.id);
+    const fingerprint = textOf(objectOf(card?.card)?.fingerprint);
+    return id && fingerprint ? [{ id, fingerprint }] : [];
+  });
 }
+
+/** The fingerprints of the cards saved on a Stripe customer (at most 10), for the block list. */
+export async function savedCardFingerprints(env: Pick<CloudEnv, "STRIPE_SECRET_KEY">, customerId: string): Promise<string[]> {
+  return [...new Set((await savedCards(env, customerId)).map((card) => card.fingerprint))];
+}
+
+/**
+ * Takes a card that can't unlock free hours off the Stripe customer, so the
+ * next try goes through Checkout with another card. Best effort: a failure
+ * is reported and the refusal stands.
+ */
+async function detachRefusedCard(env: CloudEnv, userId: string, paymentMethodId: string): Promise<void> {
+  try {
+    await stripeRequest(env, "POST", `/payment_methods/${encodeURIComponent(paymentMethodId)}/detach`);
+  } catch (error) {
+    reportCloudFailure("cloud.free_unlock_card_detach_failed", { userId, status: error instanceof StripeRequestError ? error.status : 0 });
+  }
+}
+
+const CARD_USED_MESSAGE = "This card already unlocked free hours on another ADE account. Pick a plan, or wait until your GitHub account is 30 days old.";
+const CARD_REFUSED_MESSAGE = "This card can't unlock free hours. Pick a plan, or wait until your GitHub account is 30 days old.";
 
 /**
  * `POST /cloud/billing/free-unlock`: a card saved with no charge starts the
@@ -303,7 +332,14 @@ export async function createFreeUnlockUrl(env: CloudEnv, userId: string, back: B
     throw unavailable();
   }
   try {
-    if (account.stripe_customer_id && await customerHasCard(env, account.stripe_customer_id)) {
+    const savedCard = account.stripe_customer_id ? (await savedCards(env, account.stripe_customer_id))[0] ?? null : null;
+    if (savedCard) {
+      const claim = await claimCardForFreeUnlock(env, userId, savedCard.fingerprint, { now: ctx.now, waitUntil });
+      if (claim !== "claimed") {
+        // Off the customer, so the next try can pick another card in Checkout.
+        await detachRefusedCard(env, userId, savedCard.id);
+        throw new CloudBillingError("card_refused", claim === "taken" ? CARD_USED_MESSAGE : CARD_REFUSED_MESSAGE, 409);
+      }
       await unlockFreePlanWithCard(env, account, "card_on_file", { now: ctx.now, waitUntil });
       return { url: null, unlocked: true };
     }
@@ -319,6 +355,9 @@ export async function createFreeUnlockUrl(env: CloudEnv, userId: string, back: B
       "metadata[ade_purpose]": FREE_UNLOCK_PURPOSE,
       "setup_intent_data[metadata][ade_user_id]": userId,
       "setup_intent_data[metadata][ade_purpose]": FREE_UNLOCK_PURPOSE,
+      // A card only: its fingerprint is what limits one free unlock per card. 3D Secure whenever the card supports it.
+      "payment_method_types[0]": "card",
+      "payment_method_options[card][request_three_d_secure]": "any",
       success_url: back("card"),
       cancel_url: back("card_cancelled"),
     });
@@ -335,7 +374,11 @@ export async function createFreeUnlockUrl(env: CloudEnv, userId: string, back: B
   }
 }
 
-/** A setup-mode Checkout finished: the card is saved (its SetupIntent succeeded), so the free hours unlock. */
+/**
+ * A setup-mode Checkout finished: the card is saved (its SetupIntent
+ * succeeded), so the free hours unlock, if the card's fingerprint isn't
+ * already another account's free unlock or on the block list.
+ */
 async function onFreeUnlockCompleted(env: CloudEnv, session: StripeObject, now: number, waitUntil: CloudWaitUntil): Promise<void> {
   const metadata = objectOf(session.metadata);
   const userId = textOf(session.client_reference_id) ?? textOf(metadata?.ade_user_id);
@@ -345,12 +388,31 @@ async function onFreeUnlockCompleted(env: CloudEnv, session: StripeObject, now: 
     return;
   }
   const setupIntentId = idOf(session.setup_intent);
-  if (setupIntentId) {
-    const intent = await stripeRequest(env, "GET", `/setup_intents/${encodeURIComponent(setupIntentId)}`);
-    if (intent.status !== "succeeded") {
-      logCloud("cloud.free_unlock_not_succeeded", { userId, status: textOf(intent.status) });
-      return;
-    }
+  if (!setupIntentId) {
+    reportCloudFailure("cloud.free_unlock_no_setup_intent", { userId });
+    return;
+  }
+  const intent = await stripeRequest(env, "GET", `/setup_intents/${encodeURIComponent(setupIntentId)}?expand[]=payment_method`);
+  if (intent.status !== "succeeded") {
+    logCloud("cloud.free_unlock_not_succeeded", { userId, status: textOf(intent.status) });
+    return;
+  }
+  const paymentMethod = objectOf(intent.payment_method);
+  const fingerprint = textOf(objectOf(paymentMethod?.card)?.fingerprint);
+  if (!fingerprint) {
+    // Checkout takes cards only, so this is Stripe answering something new: nothing unlocks until a person looks.
+    reportCloudFailure("cloud.free_unlock_no_fingerprint", { userId });
+    return;
+  }
+  const claim = await claimCardForFreeUnlock(env, userId, fingerprint, { now, waitUntil });
+  if (claim !== "claimed") {
+    logCloud("cloud.free_unlock_card_refused", { userId, claim });
+    // Off the customer, so the next try can pick another card in Checkout.
+    const paymentMethodId = textOf(paymentMethod?.id);
+    if (paymentMethodId) await detachRefusedCard(env, userId, paymentMethodId);
+    // Told why only when the card is another account's: a blocked card is never named as blocked.
+    await sendCloudEmail(env, { userId, subject: "Your card didn't unlock ADE Cloud free hours", text: claim === "taken" ? CARD_USED_MESSAGE : CARD_REFUSED_MESSAGE });
+    return;
   }
   const account = await loadAccount(env, userId, now);
   await unlockFreePlanWithCard(env, account, "checkout", { now, waitUntil });
@@ -812,17 +874,26 @@ export async function setExtraDisk(
     .bind(now, now, userId).run();
 }
 
-/** Ends the account's subscription now, for a deleted account. Already gone counts as done. */
-export async function cancelAccountSubscription(env: Pick<CloudEnv, "DB" | "STRIPE_SECRET_KEY">, account: Pick<AccountRow, "user_id" | "stripe_subscription_id">, now: number): Promise<void> {
+/**
+ * Ends the account's subscription now, for a deleted or blocked account:
+ * no proration credit and no refund (`prorate=false`), and no final invoice
+ * for usage not yet billed (`invoice_now=false`). Already gone counts as done.
+ */
+export async function cancelAccountSubscription(
+  env: Pick<CloudEnv, "DB" | "STRIPE_SECRET_KEY">,
+  account: Pick<AccountRow, "user_id" | "stripe_subscription_id">,
+  now: number,
+  reason: "deleted_account" | "blocked_account" = "deleted_account",
+): Promise<void> {
   if (!account.stripe_subscription_id) return;
   try {
-    await stripeRequest(env, "DELETE", `/subscriptions/${encodeURIComponent(account.stripe_subscription_id)}`);
+    await stripeRequest(env, "DELETE", `/subscriptions/${encodeURIComponent(account.stripe_subscription_id)}`, { prorate: "false", invoice_now: "false" });
   } catch (error) {
     if (!(error instanceof StripeRequestError && error.status === 404)) throw error;
   }
   await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, extra_disk_state = 'off', cancel_at_period_end = 0, updated_at = ? where user_id = ?")
     .bind(now, account.user_id).run();
-  logCloud("cloud.subscription_cancelled_for_deleted_account", { userId: account.user_id });
+  logCloud(reason === "blocked_account" ? "cloud.subscription_cancelled_for_blocked_account" : "cloud.subscription_cancelled_for_deleted_account", { userId: account.user_id });
 }
 
 /* ---- Webhook ---- */
@@ -1063,6 +1134,13 @@ async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: nu
   const userId = textOf(session.client_reference_id) ?? textOf(metadata?.ade_user_id);
   if (session.mode !== "subscription" || !subscriptionId || !userId) return;
   const subscription = await readSubscription(env, subscriptionId);
+  // A Checkout opened before the owner blocked the account: the block had no subscription to
+  // cancel then, so this one is cancelled now (no proration) instead of joining a blocked account.
+  if (await isCloudBlocked(env, userId)) {
+    await stripeRequest(env, "DELETE", `/subscriptions/${encodeURIComponent(subscription.id)}`, { prorate: "false", invoice_now: "false" });
+    logCloud("cloud.subscription_cancelled_for_blocked_account", { userId, via: "checkout" });
+    return;
+  }
   if (subscription.status === "incomplete") {
     // Payment still pending: remember the subscription so its `active` event starts the plan.
     const pending = await loadAccount(env, userId, now);
@@ -1149,6 +1227,11 @@ async function handleStripeWebhook(request: Request, env: CloudEnv, waitUntil: C
   const type = textOf(event.type);
   const object = objectOf(objectOf(event.data)?.object);
   if (!eventId || !type || !object) return json({ error: "invalid event" }, 400);
+  // Production takes live events only: a test-mode event (a test key's webhook pointed here by mistake) is dropped. Other environments keep them.
+  if (event.livemode === false && isProduction(env)) {
+    logCloud("cloud.stripe_test_event_dropped", { type });
+    return json({ received: true, ignored: "test_mode" });
+  }
 
   const claim = await claimStripeEvent(env, eventId, type, now);
   if (claim === "duplicate") return json({ received: true, duplicate: true });

@@ -166,6 +166,123 @@ export function cloudSignInKeyFor(provider: ProviderLoginProvider): CloudSignInI
   return CLOUD_SIGN_INS.find((spec) => spec.method === "key" && spec.providers.includes(provider))?.id ?? null;
 }
 
+/* ---- How the account vault stores them (the desktop, every brain and the account server share it) ---- */
+
+/**
+ * Where the vault keeps them: scope `all`; a pasted key is kind `integration`,
+ * key `cloud-key-<id>`; a Claude pass is kind `provider_login`, key
+ * `claude-pass/<12 hex>` (`CLAUDE_PASS_KEY_PREFIX` in types/providerLogins.ts).
+ */
+export const CLOUD_SIGN_IN_VAULT_SCOPE = "all";
+export const CLOUD_SIGN_IN_KEY_KIND = "integration";
+export const CLAUDE_PASS_VAULT_KIND = "provider_login";
+/** The single Claude item of older versions (kind `integration`); still read as saved. */
+export const LEGACY_CLAUDE_SIGN_IN_KEY = "cloud-claude-token";
+
+/** One sign-in's vault key. Claude's keeps the name it had when it was the only one. */
+export function cloudSignInVaultKey(id: CloudSignInId): string {
+  return id === "claude" ? LEGACY_CLAUDE_SIGN_IN_KEY : `cloud-key-${id}`;
+}
+
+/** Claude Code's subscription token (`sk-ant-oat01-…`), found anywhere in text. */
+export const CLAUDE_TOKEN_PATTERN = /\bsk-ant-oat\d{2}-[A-Za-z0-9_-]{20,}/;
+/**
+ * The same, only once something follows it: output arrives in chunks, and a
+ * token cut at a chunk's end must not be saved half. Claude Code ends the
+ * line after it; at exit the plain pattern reads a token printed last.
+ */
+export const COMPLETE_CLAUDE_TOKEN_PATTERN = /\bsk-ant-oat\d{2}-[A-Za-z0-9_-]{20,}(?=[^A-Za-z0-9_-])/;
+const PASTED_CLAUDE_TOKEN = /^sk-ant-oat\d{2}-[A-Za-z0-9_-]{20,}$/;
+
+/** Whether a pasted value is a Claude pass and nothing else (the whole value is the token). */
+export function isPastedClaudeToken(value: string): boolean {
+  return PASTED_CLAUDE_TOKEN.test(value);
+}
+
+/**
+ * A pasted key, trimmed, or why it can't be one. Formats change, so only what
+ * can never be a key is refused: nothing, spaces inside, or a whole file.
+ */
+export function cleanCloudCloudKey(raw: unknown): { ok: true; key: string } | { ok: false; message: string } {
+  const key = typeof raw === "string" ? raw.trim() : "";
+  if (!key) return { ok: false, message: "Paste the key first." };
+  if (/\s/.test(key)) return { ok: false, message: "That has spaces in it. Paste only the key." };
+  if (key.length < 8 || key.length > 4096) return { ok: false, message: "That doesn't look like a key. Paste only the key." };
+  return { ok: true, key };
+}
+
+/** A pasted key's stored value. */
+export type StoredCloudSignIn = { v: 1; token: string; savedAt: number };
+
+export function encodeCloudSignIn(token: string, savedAt: number): string {
+  const stored: StoredCloudSignIn = { v: 1, token, savedAt };
+  return JSON.stringify(stored);
+}
+
+/**
+ * A stored value's token and when it was saved (a pass's renew or creation
+ * time when it has no save time; null when it has none), or null when it
+ * isn't a usable sign-in. `accept` checks the token. Never throws.
+ */
+export function parseCloudSignIn(raw: unknown, accept: (token: string) => boolean = () => true): { token: string; savedAt: number | null } | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown> | null;
+    if (parsed?.v !== 1 || typeof parsed.token !== "string" || !parsed.token || !accept(parsed.token)) return null;
+    const at = parsed.savedAt ?? parsed.renewedAt ?? parsed.createdAt;
+    return { token: parsed.token, savedAt: typeof at === "number" && Number.isFinite(at) ? at : null };
+  } catch {
+    return null;
+  }
+}
+
+/** A pass lasts about a year; ADE's estimate until Claude Code reports the date. */
+export const CLAUDE_PASS_LIFETIME_MS = 365 * 24 * 60 * 60_000;
+
+/** The vault value of one Claude pass. */
+export type ClaudePassPayload = {
+  v: 1;
+  kind: "claude_pass";
+  token: string;
+  account: { email: string | null; check: ClaudePassCheck; labelSource: ClaudePassLabelSource };
+  createdAt: number;
+  renewedAt: number | null;
+  madeOn: { machineKey12: string; label: string } | null;
+  expiresAt: number;
+  expiresAtSource: "estimate" | "claude";
+  /**
+   * When Claude refused this token as no longer valid (claudePassSync.ts
+   * `endPass`). Absent while it works; a Renew writes a new payload without it.
+   */
+  endedAt?: number;
+};
+
+/**
+ * A new pass's value, its end estimated a year from its last save (its
+ * renew, else its creation). Left out, the account is unchecked and the
+ * computer unknown.
+ */
+export function claudePassPayload(args: {
+  token: string;
+  createdAt: number;
+  renewedAt?: number | null;
+  account?: ClaudePassPayload["account"];
+  madeOn?: ClaudePassPayload["madeOn"];
+}): ClaudePassPayload {
+  const renewedAt = args.renewedAt ?? null;
+  return {
+    v: 1,
+    kind: "claude_pass",
+    token: args.token,
+    account: args.account ?? { email: null, check: "unchecked", labelSource: "none" },
+    createdAt: args.createdAt,
+    renewedAt,
+    madeOn: args.madeOn ?? null,
+    expiresAt: (renewedAt ?? args.createdAt) + CLAUDE_PASS_LIFETIME_MS,
+    expiresAtSource: "estimate",
+  };
+}
+
 /**
  * One approve, in order: `running` (Claude Code's sign-in waits for the
  * browser), `verifying` (ADE asks Claude Code which account the new pass is

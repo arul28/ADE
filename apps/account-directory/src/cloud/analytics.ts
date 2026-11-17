@@ -50,7 +50,10 @@ const CAPTURE_TIMEOUT_MS = 2_000;
 const HOUR_MS = 60 * 60_000;
 const MINUTE_MS = 60_000;
 
-async function send(env: CloudEnv, body: Record<string, unknown>): Promise<void> {
+/** What a capture reads: PostHog's token and host. */
+type AnalyticsEnv = Pick<CloudEnv, "POSTHOG_PROJECT_TOKEN" | "POSTHOG_HOST">;
+
+async function send(env: AnalyticsEnv, body: Record<string, unknown>): Promise<void> {
   const token = env.POSTHOG_PROJECT_TOKEN?.trim();
   if (!token) return;
   const host = (env.POSTHOG_HOST?.trim() || "https://us.i.posthog.com").replace(/\/+$/, "");
@@ -283,6 +286,43 @@ export function captureCloudIdleCleanup(env: CloudEnv, waitUntil: CloudWaitUntil
         ...(event.how ? { how: event.how } : {}),
         $geoip_disable: true,
       },
+    });
+  })());
+}
+
+/* ---- Safety (`blocks.ts`, `safety.ts`, `costReport.ts`) ---- */
+
+/**
+ * - `first_chat`: the account's first saved cloud chat part (once).
+ * - `free_cap_50` / `free_cap_80` / `free_cap_100`: free use this month passed that share of the owner's cap (owner-wide, once a month each).
+ * - `free_cap_refused`: a free account's new computer or disk grow was refused at the cap.
+ * - `blocked` / `unblocked`: the owner blocked or unblocked the account.
+ * - `card_reused`: a card that already unlocked free hours on another account was tried again.
+ * - `blocked_returned`: a blocked GitHub account or card came back on this account.
+ * - `rate_limited`: too many new computers or launches in an hour.
+ * - `creates_paused`: a new computer or launch refused by the owner's kill switch.
+ * - `signup_burst`: sign-ups from one address reached the hourly alarm.
+ */
+export type CloudSafetyStep =
+  | "first_chat"
+  | "free_cap_50" | "free_cap_80" | "free_cap_100" | "free_cap_refused"
+  | "blocked" | "unblocked" | "card_reused" | "blocked_returned"
+  | "rate_limited" | "creates_paused" | "signup_burst";
+
+/** The distinct id for an owner-wide event that belongs to no account (a cap threshold). */
+const SERVER_DISTINCT_ID = "ade-cloud-server";
+
+/** One `ade_cloud_safety` per account (or the server), step, `key` (hashed into the uuid, never sent) and hour. */
+export function captureCloudSafety(env: AnalyticsEnv, waitUntil: CloudWaitUntil, userId: string | null, step: CloudSafetyStep, key: string, now: number): void {
+  if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
+  const bucket = Math.floor(now / HOUR_MS) * HOUR_MS;
+  hold(waitUntil, (async () => {
+    await send(env, {
+      event: "ade_cloud_safety",
+      distinct_id: userId ? await accountDistinctId(userId) : SERVER_DISTINCT_ID,
+      uuid: await uuidFromSeed(`ade-cloud-safety-v1:${userId ?? SERVER_DISTINCT_ID}:${step}:${key}:${bucket}`),
+      timestamp: new Date(now).toISOString(),
+      properties: { client: "account", step, $geoip_disable: true },
     });
   })());
 }
