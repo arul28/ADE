@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { encodeCodedErrorMessage } from "../../../shared/codedError";
 import { hostname } from "node:os";
 import path from "node:path";
 import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
@@ -562,7 +563,13 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudSetAgentLimits, async (event, arg: { limits?: Partial<CloudAgentLimits> }): Promise<CloudAgentLimits | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetAgentLimits)) return null;
     const changes = { ...(arg?.limits ?? {}) };
-    const onServer = await agentLimits.save(changes);
+    const onServer = await agentLimits.save(changes).catch((error: unknown) => {
+      // IPC keeps only the message: a refusal carries a code, so the card shows it with no Report.
+      if (error instanceof AdeExpectedError && error.adeExpected === "user") {
+        throw new AdeExpectedError(encodeCodedErrorMessage("limits_refused", error.message), "user");
+      }
+      throw error;
+    });
     // Signed out or an older server: this computer's copy and the account vault item, as before.
     const answer = onServer ?? await agentLimits.write({ ...(await agentLimits.read()), ...changes });
     logger.info("cloud.agent_limits_set", { unattendedSpend: answer.unattendedSpend, machinesPerDay: answer.machinesPerDay, onServer: Boolean(onServer) });
