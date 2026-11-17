@@ -2210,10 +2210,9 @@ export type CloudAutomationSummary = {
   runs: CloudAutomationRun[];
 };
 
-// --- server-edge ---
 /*
  * Account data and integrations for a client with no computer, and wakes
- * from events (owner: the server-edge track). Every route takes the Clerk
+ * from events. Every route takes the Clerk
  * bearer and reaches only the caller's own account; none returns a secret
  * value.
  *

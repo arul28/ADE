@@ -18,7 +18,7 @@ import {
   type CloudLaunchSignIn,
   type CloudWakeOutcome,
 } from "./contract";
-import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
+import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
 import { addLaunchMessage, cancelLaunchMessageStatement, LAUNCH_MESSAGE_ID, launchMessageOf } from "./launchMessages";
 import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
@@ -47,7 +47,6 @@ import { cliSessionCopy } from "./sessionCopies";
  */
 
 const CLAIM_ID = /^[A-Za-z0-9_-]{16,80}$/;
-const SESSION_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const OPEN_STATES = "('queued', 'sending', 'waiting_for_sign_in')";
 
 const notFound = () => fail("not_found", "That saved chat doesn't exist.", 404);
@@ -614,7 +613,7 @@ export async function routeComputerMessages(request: Request, env: CloudEnv, com
   if (!state) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const signIn = state === "waiting_for_sign_in" ? parseSignIn(body?.signIn) : null;
   if (state === "waiting_for_sign_in" && !signIn) return badRequest("A sign-in wait needs the sign-in.");
-  const sessionId = typeof body?.sessionId === "string" && SESSION_ID.test(body.sessionId) ? body.sessionId : null;
+  const sessionId = typeof body?.sessionId === "string" && ROW_ID.test(body.sessionId) ? body.sessionId : null;
   const error = state === "failed" ? clippedText(body?.error, 300) ?? "ADE couldn't send this message to the chat." : null;
   // Only the claim that took it; a final state is final (the same report again answers the same).
   const written = await env.DB.prepare(`

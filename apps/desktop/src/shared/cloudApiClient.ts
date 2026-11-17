@@ -69,7 +69,6 @@ import {
   type CloudServerLaunchRequest,
 } from "../../../account-directory/src/cloud/contract";
 import type { CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
-// --- server-edge ---
 import {
   CLOUD_EDGE_PATHS,
   cloudInstanceEventWakesPath,
@@ -435,7 +434,6 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     putAccountLanes: (index: AccountLaneIndexPut) =>
       orNullOn404(() => request<AccountLaneIndexPutResult>("PUT", CLOUD_PATHS.accountLanes, { body: index })),
 
-    // --- server-edge ---
     /* Account data and integrations with no computer. Null: an older server without the route (keep today's behavior). */
     /** The account's agent limits. 409 `limits_unreadable` when a newer ADE saved them. */
     agentLimits: () => orNullOn404(() => request<CloudAgentLimitsState>("GET", CLOUD_EDGE_PATHS.limits)),
@@ -467,7 +465,6 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
         body: { topics } satisfies CloudEventWakesRequest,
         headers: { [CLOUD_INSTANCE_HEADER]: instanceId },
       })),
-    // --- end server-edge ---
   };
 }
 
