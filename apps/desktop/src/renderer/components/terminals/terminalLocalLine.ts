@@ -35,6 +35,8 @@ export type TerminalLocalLine = {
   newline: () => boolean;
   /** Pasted text joins the line. */
   paste: (text: string) => void;
+  /** Text joins the line after what is already in it (a queued line its send skipped). */
+  append: (text: string) => void;
   /** The line as keys for the CLI (the line turned off): typed, or a paste with line breaks. */
   takeForHandOver: () => string;
   /** A submit that failed: its text goes back in front of what came since. */
@@ -115,6 +117,9 @@ export function createTerminalLocalLine(onChange: () => void): TerminalLocalLine
         .replace(/\x1b/g, "\u241b")
         .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
       if (lines) set(text + lines);
+    },
+    append(added) {
+      if (added) set(text + added);
     },
     takeForHandOver: () => localLineAsKeys(take()),
     restore(failed) {

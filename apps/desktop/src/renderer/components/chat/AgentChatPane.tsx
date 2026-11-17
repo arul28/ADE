@@ -12565,16 +12565,21 @@ export function AgentChatPane({
     const saved = readComposerDraftSnapshot(storageKey, initialNativeControls)
       ?? normalizeStoredComposerDraft({ text: "" }, initialNativeControls);
     if (!saved) return;
-    // A newer draft, by words, files, or a device/browser selection, stays as
-    // it is.
-    if (
-      saved.text.trim().length
-      || saved.attachments.length
-      || saved.contextAttachments.length
-      || saved.iosContextItems.length
-      || saved.appControlContextItems.length
-      || saved.builtInBrowserContextItems.length
-    ) return;
+    // A newer draft stays as it is. Content the send itself left behind (the
+    // device and browser selections are cleared only on success) is the same
+    // content and does not count as newer.
+    const hasNewerContent =
+      (saved.text.trim().length > 0 && saved.text !== restore.text)
+      || (saved.attachments.length > 0 && JSON.stringify(saved.attachments) !== JSON.stringify(restore.attachments))
+      || (saved.contextAttachments.length > 0
+        && JSON.stringify(saved.contextAttachments) !== JSON.stringify(restore.contextAttachments))
+      || (saved.iosContextItems.length > 0
+        && JSON.stringify(saved.iosContextItems) !== JSON.stringify(restore.iosContextItems))
+      || (saved.appControlContextItems.length > 0
+        && JSON.stringify(saved.appControlContextItems) !== JSON.stringify(restore.appControlContextItems))
+      || (saved.builtInBrowserContextItems.length > 0
+        && JSON.stringify(saved.builtInBrowserContextItems) !== JSON.stringify(restore.builtInBrowserContextItems));
+    if (hasNewerContent) return;
     writeComposerDraftSnapshot(storageKey, {
       ...saved,
       text: restore.text,
@@ -17146,8 +17151,10 @@ export function AgentChatPane({
         return null;
       }
       // A pane that moved on to another chat does not get this send's words
-      // and files in its composer: they go to the chat the send was for.
-      const submittingChatOpen = draftStorageKeyAtSend === composerDraftStorageKeyRef.current;
+      // and files in its composer: they go to the chat the send was for. A
+      // first send that created the chat is that chat, not a switch.
+      const submittingChatOpen = draftStorageKeyAtSend === composerDraftStorageKeyRef.current
+        || (handedOff != null && selectedSessionIdRef.current === handedOff.sessionId);
       if (!submittingChatOpen) putUnsentSendInSavedDraft(draftStorageKeyAtSend, unsentRestoreAtSend);
       if (submittingChatOpen) {
         setDraft((current) => (current.trim().length ? current : draftSnapshot));

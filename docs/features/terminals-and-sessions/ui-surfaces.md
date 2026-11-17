@@ -820,7 +820,9 @@ the same shape as the box's; `agentCliTypeSend.ts` classifies it for both.
   machine types it once. When the answer was lost (the connection dropped), the
   line stays in the line and is never handed to the CLI as keys — that path has
   no id — until Enter sends it again with the same id, or editing it makes it a
-  new line.
+  new line. A line typed while another was still out waits behind it; if the
+  first fails, the second is kept after it in the line rather than sent out of
+  order.
 - **The switch** in the corner turns the line off for that session
   (`ade.terminal.localLineOff`, most recent 200 sessions) and hands any text
   already in it to the CLI as keys. With the line off, a fast link's type-ahead

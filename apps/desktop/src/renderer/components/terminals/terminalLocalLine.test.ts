@@ -44,5 +44,10 @@ describe("the terminal's local line", () => {
     expect(line.input("\t", { handOver: false })).toEqual([{ kind: "write", data: "\t" }]);
     expect(line.text()).toBe("retry me");
     expect(line.input("\r")).toEqual([{ kind: "submit", text: "retry me" }]);
+
+    // A line typed behind a failed one keeps its place after it.
+    line.restore("first");
+    line.append("second");
+    expect(line.text()).toBe("firstsecond");
   });
 });

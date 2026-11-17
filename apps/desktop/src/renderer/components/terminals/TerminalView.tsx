@@ -1473,8 +1473,11 @@ function applyLocalLineActions(runtime: CachedRuntime, actions: TerminalLocalLin
  * already has only once.
  */
 async function submitLocalLine(runtime: CachedRuntime, text: string): Promise<void> {
+  // A line typed while an earlier one is still out keeps its place behind it:
+  // if that one fails, this one waits instead of overtaking the restored text.
+  const queued = runtime.localLineFlight != null;
   const previous = runtime.localLineFlight ?? Promise.resolve();
-  const flight = previous.catch(() => undefined).then(() => sendLocalLine(runtime, text));
+  const flight = previous.catch(() => undefined).then(() => sendLocalLine(runtime, text, queued));
   runtime.localLineFlight = flight;
   try {
     await flight;
@@ -1483,7 +1486,16 @@ async function submitLocalLine(runtime: CachedRuntime, text: string): Promise<vo
   }
 }
 
-async function sendLocalLine(runtime: CachedRuntime, text: string): Promise<void> {
+async function sendLocalLine(runtime: CachedRuntime, text: string, queued: boolean): Promise<void> {
+  // The line ahead failed: stop here and keep this text after it, in the order
+  // the person typed it. Enter sends the restored line as one message.
+  if (queued && runtime.localLineFailed) {
+    if (!runtime.disposed) {
+      runtime.localLine?.append(text);
+      notifyRuntime(runtime);
+    }
+    return;
+  }
   const pin = runtime.runtimePin;
   if (!pin) {
     runtime.localLine?.restore(text);

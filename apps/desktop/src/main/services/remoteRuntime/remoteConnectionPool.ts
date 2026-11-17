@@ -2249,14 +2249,16 @@ async function subscribeToRuntimeEvents(
     if (filter && !closed) {
       const id = subscriptionId;
       let sent = ptyDataIdsSignature(initialPtyDataIds);
-      let pending: Promise<void> | null = null;
+      // Calls still out, by list. An identical list waits for its own call
+      // even after a later list replaced `sent` and failed back to it.
+      const inFlight = new Map<string | null, Promise<void>>();
       filter.onChange = (ptyIds) => {
         const signature = ptyDataIdsSignature(ptyIds);
         if (closed) return Promise.resolve();
         // The same list asked for again while its call is out waits for that
         // call: `sent` records a request, and a settle must not pass before
         // the brain has it.
-        if (signature === sent) return pending ?? Promise.resolve();
+        if (signature === sent) return inFlight.get(signature) ?? Promise.resolve();
         const previous = sent;
         sent = signature;
         const call: Promise<void> = client.call("runtimeEvents.setPtyDataFilter", {
@@ -2271,11 +2273,11 @@ async function subscribeToRuntimeEvents(
             throw error;
           },
         );
-        pending = call;
-        const settlePending = () => {
-          if (pending === call) pending = null;
+        inFlight.set(signature, call);
+        const settleInFlight = () => {
+          if (inFlight.get(signature) === call) inFlight.delete(signature);
         };
-        void call.then(settlePending, settlePending);
+        void call.then(settleInFlight, settleInFlight);
         return call;
       };
       // The window may have changed its list while the subscribe was in flight.

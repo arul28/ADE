@@ -9481,25 +9481,34 @@ export function createPtyService({
       // Enter in a CLI chat is a message sent: remember which desktop sent it
       // (or that nobody can tell, when it came without a stamp).
       if (/[\r\n]/.test(data)) noteSessionInputOrigin(entry.sessionId, inputOrigin);
+      // A terminal's own reply (a CLI's startup query, a focus change) is
+      // passed through but is not the user typing.
+      const terminalReport = writeIsTerminalReport(data);
       try {
-        // A terminal's own reply (a CLI's startup query, a focus change) is
-        // passed through but is not the user typing.
-        if (writeIsTerminalReport(data)) {
+        if (terminalReport) {
           entry.pty.write(data);
-          return true;
+        } else {
+          markPtyUserInput(entry, data);
+          claimAgentShellForUser(entry, data);
+          entry.pty.write(data);
         }
-        markPtyUserInput(entry, data);
-        claimAgentShellForUser(entry, data);
-        entry.pty.write(data);
-        clearCommittedCliActivity(entry, data);
-        tryCliUserTitleFromWrite(entry, data);
-        setRuntimeState(entry.sessionId, "running");
-        scheduleIdleTransition(entry.sessionId);
-        return true;
       } catch (err) {
         logger.warn("pty.write_failed", { ptyId, err: String(err) });
         return false;
       }
+      if (!terminalReport) {
+        // The bytes are out. What follows is bookkeeping, and a database or
+        // title failure here must not report the user's line as not sent.
+        try {
+          clearCommittedCliActivity(entry, data);
+          tryCliUserTitleFromWrite(entry, data);
+          setRuntimeState(entry.sessionId, "running");
+          scheduleIdleTransition(entry.sessionId);
+        } catch (err) {
+          logger.warn("pty.write_bookkeeping_failed", { ptyId, err: String(err) });
+        }
+      }
+      return true;
     },
 
     typeLineIntoAgentCli,
