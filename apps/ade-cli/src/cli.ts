@@ -33359,6 +33359,10 @@ async function runServe(
             opened,
             durationMs: Date.now() - startedMs,
           });
+          if (opened > 0) {
+            const { noteProjectsOpenedWithoutClient } = await import("./services/runtime/brainIdleMemory");
+            noteProjectsOpenedWithoutClient({ listRuntimes: () => scopeRegistry.listReady().map((scope) => scope.runtime) });
+          }
         })();
       }
     }
