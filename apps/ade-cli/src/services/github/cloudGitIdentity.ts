@@ -51,9 +51,6 @@ export type CloudGitIdentityDeps = {
   readAppUser: () => Promise<GithubUser | null>;
   /** The GitHub token this computer's git uses, or null. Used only when the App has no user. */
   readGithubToken: () => Promise<string | null>;
-  /** Runs `git <args>`; never throws. Tests replace it. */
-  git?: (args: string[]) => Promise<{ exitCode: number; stdout: string }>;
-  fetch?: typeof fetch;
   /** Called after a write, so cached `git config` reads in this process see the new value. */
   onWritten?: () => void;
   logger?: { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
@@ -108,8 +105,8 @@ export function validGithubUser(login: unknown, id: unknown): GithubUser | null 
   return { login, id };
 }
 
-async function readUserWithToken(token: string, doFetch: typeof fetch): Promise<GithubUser | null> {
-  const response = await doFetch("https://api.github.com/user", {
+async function readUserWithToken(token: string): Promise<GithubUser | null> {
+  const response = await fetch("https://api.github.com/user", {
     headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "ADE" },
     signal: AbortSignal.timeout(GITHUB_USER_TIMEOUT_MS),
   });
@@ -128,7 +125,7 @@ async function resolveGithubUser(deps: CloudGitIdentityDeps): Promise<GithubUser
   try {
     const token = await deps.readGithubToken();
     if (!token) return null;
-    return await readUserWithToken(token, deps.fetch ?? globalThis.fetch);
+    return await readUserWithToken(token);
   } catch (error) {
     deps.logger?.warn("cloud.git_identity_user_read_failed", { error: error instanceof Error ? error.name : "unknown" });
     return null;
@@ -141,7 +138,7 @@ async function resolveGithubUser(deps: CloudGitIdentityDeps): Promise<GithubUser
  * GitHub identity is already in place. Never throws.
  */
 export async function ensureCloudGitIdentity(deps: CloudGitIdentityDeps): Promise<CloudGitIdentityOutcome> {
-  const git = deps.git ?? runGitGlobal;
+  const git = runGitGlobal;
   try {
     const read = async (key: string): Promise<string> => {
       const result = await git(["config", "--global", "--get", key]);
