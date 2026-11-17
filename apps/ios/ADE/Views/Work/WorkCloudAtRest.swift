@@ -9,18 +9,29 @@ import UIKit
 // MARK: - Saved CLI and shell copies
 
 /// The saved copy of one CLI or shell session, read from the account server.
-/// It is read-only: the person reads what the session showed when its
-/// computer went to sleep. "Wake to use it" is the one action, and it wakes.
+/// The person reads what the session showed when its computer went to
+/// sleep. "Wake to use it" is the one action, and it wakes. A CLI whose
+/// computer was deleted gets a composer instead: the message goes to ADE
+/// Cloud's queue, and the server continues the CLI on a new computer. A
+/// shell takes no messages.
 struct CloudSessionCopyScreen: View {
   let row: CloudSessionRow
   /// The fleet key of the session's computer, for the wake.
   let fleetKey: String?
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
   private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.scenePhase) private var scenePhase
   @State private var copy: CloudAtRestStore.Read<CloudSessionCopy>?
   @State private var waking = false
   @State private var wakeError: String?
+  @State private var draft = ""
+  /// The send id of the message being sent: the same id again on a retry,
+  /// so the server keeps one message.
+  @State private var sendId: String?
+  @State private var sending = false
+  @State private var sendError: String?
   #if DEBUG
   /// Fixture screens show this copy and read nothing.
   var fixtureCopy: CloudSessionCopy?
@@ -30,6 +41,18 @@ struct CloudSessionCopyScreen: View {
     let count = lines.count
     guard count > 0 else { return }
     proxy.scrollTo(count - 1, anchor: .bottomLeading)
+  }
+
+  /// The session's computer was deleted: it can't wake. A message continues a CLI.
+  private var computerDeleted: Bool {
+    if let fleetKey, case .deleted? = cloudLaneState(fleetKey: fleetKey, sync: syncService, store: cloudStore) { return true }
+    return false
+  }
+
+  private var acceptsMessages: Bool { computerDeleted && !row.isShell }
+
+  private var openQueuedCount: Int {
+    cloudStore.openMessages(machineKey: row.machineKey, chatId: row.sessionId).count
   }
 
   private var lines: [String] {
@@ -52,6 +75,18 @@ struct CloudSessionCopyScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { footer }
     }
     .task { await load() }
+    // While a message waits for the new computer, follow it (the app in front only).
+    .task(id: "\(acceptsMessages)|\(openQueuedCount)|\(scenePhase == .active)") {
+      guard acceptsMessages, scenePhase == .active else { return }
+      #if DEBUG
+      if fixtureCopy != nil { return }
+      #endif
+      let sync = syncService
+      await AccountCloudStore.shared.followQueue(machineKey: row.machineKey, chatId: row.sessionId, using: sync) {
+        // The CLI continues on a new computer: its live row comes with the next read.
+        sync.refreshCloudServerIfStale(force: true)
+      }
+    }
     .adeInspectable("Work.CloudSessionCopy")
   }
 
@@ -84,6 +119,11 @@ struct CloudSessionCopyScreen: View {
   private var headerDetail: String {
     let saved = Date(timeIntervalSince1970: row.updatedAt / 1000).formatted(.relative(presentation: .named))
     let what = row.isShell ? "this shell" : "this CLI"
+    if computerDeleted {
+      return row.isShell
+        ? "What \(what) showed before its computer was deleted, saved \(saved). A shell can't continue on a new computer."
+        : "What \(what) showed before its computer was deleted, saved \(saved). A message continues it on a new ADE Cloud computer."
+    }
     return "What \(what) showed when its computer went to sleep, saved \(saved). You can't type here."
   }
 
@@ -133,7 +173,105 @@ struct CloudSessionCopyScreen: View {
     }
   }
 
+  @ViewBuilder
   private var footer: some View {
+    if acceptsMessages {
+      composer
+    } else if computerDeleted {
+      // A shell on a deleted computer: nothing can wake or continue it.
+      EmptyView()
+    } else {
+      wakeFooter
+    }
+  }
+
+  /// A message for a CLI whose computer was deleted, with the messages ADE
+  /// Cloud holds for it above (as in a chat).
+  private var composer: some View {
+    VStack(spacing: 0) {
+      CloudQueuedMessagesView(accountMachineKey: row.machineKey, chatId: row.sessionId)
+      if let sendError {
+        Text(sendError)
+          .font(.caption)
+          .foregroundStyle(ADEColor.danger)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 18)
+          .padding(.top, 6)
+      }
+      HStack(alignment: .bottom, spacing: 8) {
+        TextField("Message \(nonEmptyTrimmed(row.title) ?? "the CLI")", text: $draft, axis: .vertical)
+          .lineLimit(1...5)
+          .font(.body)
+          .padding(.horizontal, 14)
+          .padding(.vertical, 10)
+          .disabled(sending)
+          .adeInspectable("Work.CloudSessionCopy.Composer")
+        Button {
+          Task { await send() }
+        } label: {
+          Group {
+            if sending {
+              ProgressView().controlSize(.small).tint(.white)
+            } else {
+              Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))
+            }
+          }
+          .frame(width: 34, height: 34)
+          .background(Circle().fill(canSend ? ADEColor.accent : ADEColor.textMuted.opacity(0.35)))
+          .foregroundStyle(.white)
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSend)
+        .accessibilityLabel("Send")
+        .padding(.trailing, 6)
+        .padding(.bottom, 5)
+      }
+      .workChatGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+      .padding(.horizontal, 12)
+      .padding(.vertical, 8)
+    }
+  }
+
+  private var canSend: Bool {
+    !sending && nonEmptyTrimmed(draft) != nil
+  }
+
+  /// Hands the message to ADE Cloud's queue. The server makes a new computer
+  /// for the lane and continues this CLI there, then types the message.
+  private func send() async {
+    guard let text = nonEmptyTrimmed(draft), !sending else { return }
+    let messageId = sendId ?? "ios-\(UUID().uuidString.lowercased())"
+    sendId = messageId
+    sending = true
+    sendError = nil
+    defer { sending = false }
+    #if DEBUG
+    if fixtureCopy != nil { return }
+    #endif
+    switch await AccountCloudStore.shared.queueSend(
+      machineKey: row.machineKey, chatId: row.sessionId, messageId: messageId, text: text, using: syncService
+    ) {
+    case .queued:
+      draft = ""
+      sendId = nil
+      ADEHaptics.success()
+    case .routeMissing:
+      // An older server takes no messages for a CLI copy.
+      sendError = "ADE Cloud can't continue this CLI yet. Continue it from ADE on a computer."
+    case .refused(let message):
+      // Nothing was kept: the next send is a new message.
+      sendId = nil
+      sendError = message
+      ADEHaptics.error()
+    case .failed(let message):
+      // The server may hold it: a retry sends the same id.
+      sendError = message
+      ADEHaptics.error()
+    }
+  }
+
+  private var wakeFooter: some View {
     VStack(spacing: 6) {
       if let wakeError {
         Text(wakeError)
@@ -318,6 +456,7 @@ struct WorkCloudRestingMoveSheet: View {
         }
       }
       .padding(20)
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .background(ADEColor.pageBackground.ignoresSafeArea())
       .navigationTitle("Move to another machine")
       .navigationBarTitleDisplayMode(.inline)

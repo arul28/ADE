@@ -60,6 +60,7 @@ struct CloudLaneAtRestScreen: View {
   @State private var waking = false
   @State private var wakeError: String?
   @State private var changedFileAsk: CloudGitChangedFile?
+  @State private var movePresented = false
 
   private var summaryRead: CloudAtRestStore.Read<CloudGitSummary>? {
     store.summary(machineKey: subject.accountMachineKey, laneId: subject.laneId)
@@ -110,6 +111,19 @@ struct CloudLaneAtRestScreen: View {
         .accessibilityLabel("Wake the lane's computer")
         .adeInspectable("CloudLane.AtRest.Wake")
       }
+      // The system puts a secondary action in the bar's ⋯ menu.
+      ToolbarItem(placement: .secondaryAction) {
+        Button("Move to…", systemImage: "arrow.right.circle") { movePresented = true }
+          .adeInspectable("CloudLane.AtRest.Move")
+      }
+    }
+    .sheet(isPresented: $movePresented) {
+      CloudLaneRestingMoveSheet(
+        laneId: subject.laneId,
+        fleetKey: subject.fleetKey,
+        deleted: subject.fleetKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix),
+        onAwake: onAwake
+      )
     }
     .task(id: subject.laneId) { await load(force: false) }
     .sheet(isPresented: $filesPresented) {

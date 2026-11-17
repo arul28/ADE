@@ -55,6 +55,7 @@ struct LaneDetailScreen: View {
   }
   @State private var copiedLinkNotice: String?
   @State private var newLaneWithChangesPresented = false
+  @State private var movePresented = false
   /// The Duo's git column shows this diff in place of the git list.
   @State private var inlineDiffRequest: LaneDiffRequest?
 
@@ -196,6 +197,18 @@ struct LaneDetailScreen: View {
     }
     .sheet(isPresented: $showCommitDiffPicker) {
       commitDiffPickerSheet
+    }
+    .sheet(isPresented: $movePresented) {
+      LaneMoveSheet(
+        // The primary lane is the main checkout in every screen's copy.
+        laneName: currentSnapshot.lane.laneType == "primary" ? "The main checkout" : currentSnapshot.lane.name,
+        chats: detail?.chatSessions ?? []
+      )
+    }
+    // "Wake and move" on the lane at rest: the computer is up, so the move
+    // sheet opens once the lane's chats are read.
+    .onChange(of: detail != nil, initial: true) { _, loaded in
+      if loaded, LaneMoveAfterWake.take(laneId: laneId) { movePresented = true }
     }
     .sheet(isPresented: $showBranchPicker) {
       if let detail {
@@ -397,6 +410,7 @@ struct LaneDetailScreen: View {
       onManage: { managePresented = true },
       onCopyLaneLink: copyLaneLink,
       onCopyBranchLink: copyBranchLink,
+      onMove: canRunLiveActions ? { movePresented = true } : nil,
       forcesGit: inlineDiffRequest != nil
     ) {
       LaneDuoDashboard(

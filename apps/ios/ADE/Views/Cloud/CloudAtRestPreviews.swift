@@ -45,6 +45,32 @@ enum CloudAtRestPreviews {
       return AnyView(CloudWorkFixture())
     case "duo-cloud-session-copy":
       return AnyView(CloudSessionCopyScreen(row: Data.cliCopy, fleetKey: nil, fixtureCopy: Data.cliCopyText))
+    case "duo-cloud-session-copy-deleted":
+      // The CLI's computer was deleted: a composer, and one message ADE Cloud holds.
+      AccountCloudStore.shared.seedPreview(access: nil, account: nil, queued: [
+        AccountCloudStore.chatKey(machineKey: Data.machineKey, chatId: Data.cliCopy.sessionId): [
+          CloudChatQueuedMessage(messageId: "m-cli", state: "queued", text: "Run the upload tests once more, then push."),
+        ],
+      ])
+      return AnyView(CloudSessionCopyScreen(
+        row: Data.cliCopy,
+        fleetKey: ADECloudMachine.savedFleetKeyPrefix + Data.machineKey,
+        fixtureCopy: Data.cliCopyText
+      ))
+    case "duo-cloud-shell-copy-deleted":
+      return AnyView(CloudSessionCopyScreen(
+        row: Data.shellCopy,
+        fleetKey: ADECloudMachine.savedFleetKeyPrefix + Data.machineKey,
+        fixtureCopy: CloudSessionCopy(session: Data.shellCopy, format: "text", text: "$ git status --short\n M apps/web/src/upload.ts\n$")
+      ))
+    case "duo-lane-move":
+      return AnyView(LaneMoveFixture(chats: Data.laneChats, options: Data.moveOptions))
+    case "duo-lane-move-no-chats":
+      return AnyView(LaneMoveFixture(chats: [], options: Data.moveOptions))
+    case "duo-lane-move-asleep":
+      return AnyView(CloudLaneMoveFixture(deleted: false))
+    case "duo-lane-move-deleted":
+      return AnyView(CloudLaneMoveFixture(deleted: true))
     case "duo-cloud-move-asleep":
       return AnyView(CloudMoveFixture(deleted: false))
     case "duo-cloud-move-deleted":
@@ -209,6 +235,26 @@ enum CloudAtRestPreviews {
     ],"claudePasses":1,"unknown":false,"carried":{"antigravity":true}}
     """#)
 
+    /// Two open chats, one with a subagent under it (it moves with its parent).
+    static let laneChats: [AgentChatSessionSummary] = ["chat-a", "chat-b", "chat-sub"].compactMap { id in
+      let parent = id == "chat-sub" ? #","orchestrationParentSessionId":"chat-a","spawnKind":"subagent""# : ""
+      let title = ["chat-a": "Fix the flaky upload test", "chat-b": "Update the changelog", "chat-sub": "Find every fixed sleep"][id] ?? id
+      let json = #"{"sessionId":"\#(id)","laneId":"lane-upload","provider":"claude","model":"claude-sonnet-4-5","status":"idle","startedAt":"2026-11-17T08:00:00Z","lastActivityAt":"2026-11-17T08:30:00Z","title":"\#(title)","surface":"work"\#(parent)}"#
+      return try? JSONDecoder().decode(AgentChatSessionSummary.self, from: Foundation.Data(json.utf8))
+    }
+
+    static let moveOptions = AgentChatCrossMachineHandoffOptions(
+      machines: [
+        AgentChatCrossMachineHandoffMachineOption(machineKey: "studio", name: "Mac Studio", online: true, unavailableReason: nil, hasRepository: true),
+        AgentChatCrossMachineHandoffMachineOption(machineKey: "air", name: "MacBook Air", online: true, unavailableReason: nil, hasRepository: false),
+        AgentChatCrossMachineHandoffMachineOption(machineKey: "mini", name: "Mac mini", online: false, unavailableReason: nil, hasRepository: true),
+      ],
+      blockers: [
+        AgentChatCrossMachineHandoffBlocker(id: "dirty", title: "Uncommitted changes", detail: "3 files are not committed.", clearedByIncludeChanges: true, fixHint: nil),
+      ],
+      changes: AgentChatCrossMachineHandoffChanges(unpushedCommits: 2, changedFiles: 3)
+    )
+
     private static func entry(_ path: String, folder: Bool = false, size: Int = 2_400) -> GitHubDirectContentEntry {
       GitHubDirectContentEntry(name: (path as NSString).lastPathComponent, path: path, type: folder ? "dir" : "file", size: folder ? 0 : size)
     }
@@ -273,6 +319,36 @@ private struct CloudWorkFixture: View {
       Spacer(minLength: 0)
     }
     .contentShape(Rectangle())
+  }
+}
+
+/// The live lane's "Move to…" sheet, with fixed places and no send.
+private struct LaneMoveFixture: View {
+  let chats: [AgentChatSessionSummary]
+  let options: AgentChatCrossMachineHandoffOptions
+
+  var body: some View {
+    ADEColor.pageBackground.ignoresSafeArea()
+      .sheet(isPresented: .constant(true)) {
+        LaneMoveSheet(laneName: "Fix flaky upload test", chats: chats, fixtureOptions: options)
+      }
+  }
+}
+
+/// "Move to…" on a lane whose ADE Cloud computer sleeps or was deleted.
+private struct CloudLaneMoveFixture: View {
+  let deleted: Bool
+
+  var body: some View {
+    ADEColor.pageBackground.ignoresSafeArea()
+      .sheet(isPresented: .constant(true)) {
+        CloudLaneRestingMoveSheet(
+          laneId: "lane-upload",
+          fleetKey: deleted ? ADECloudMachine.savedFleetKeyPrefix + "mk_cloud_fixture" : "cloud-fixture",
+          deleted: deleted,
+          onAwake: {}
+        )
+      }
   }
 }
 

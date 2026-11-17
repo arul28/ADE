@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C1AE00000000000000B00012 /* LaneMoveSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00012 /* LaneMoveSheet.swift */; };
 		C1AE00000000000000B00005 /* CloudAtRestReads.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00005 /* CloudAtRestReads.swift */; };
 		C1AE00000000000000B00006 /* GitHubDirectClient+Contents.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00006 /* GitHubDirectClient+Contents.swift */; };
 		C1AE00000000000000B00007 /* SyncService+LinearAccount.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00007 /* SyncService+LinearAccount.swift */; };
@@ -576,6 +577,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C1AE00000000000000A00012 /* LaneMoveSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMoveSheet.swift; path = ADE/Views/Lanes/LaneMoveSheet.swift; sourceTree = "<group>"; };
 		C1AE00000000000000A00005 /* CloudAtRestReads.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudAtRestReads.swift; path = ADE/Services/CloudAtRestReads.swift; sourceTree = "<group>"; };
 		C1AE00000000000000A00006 /* GitHubDirectClient+Contents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "GitHubDirectClient+Contents.swift"; path = "ADE/Services/GitHubDirectClient+Contents.swift"; sourceTree = "<group>"; };
 		C1AE00000000000000A00007 /* SyncService+LinearAccount.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+LinearAccount.swift"; path = "ADE/Services/SyncService+LinearAccount.swift"; sourceTree = "<group>"; };
@@ -1280,6 +1282,7 @@
 				A1000000000000000000000D /* LaneHelpers.swift */,
 				A1000000000000000000000E /* LaneListViewParts.swift */,
 				A1000000000000000000000F /* LaneManageSheet.swift */,
+				C1AE00000000000000A00012 /* LaneMoveSheet.swift */,
 				A1000000000000000000001C /* LaneRootStateViews.swift */,
 				A10000000000000000000017 /* LaneTreeRow.swift */,
 				D20000000000000000000F11 /* LaneRemoteMachines.swift */,
@@ -2430,6 +2433,7 @@
 				B1000000000000000000000D /* LaneHelpers.swift in Sources */,
 				B1000000000000000000000E /* LaneListViewParts.swift in Sources */,
 				B1000000000000000000000F /* LaneManageSheet.swift in Sources */,
+				C1AE00000000000000B00012 /* LaneMoveSheet.swift in Sources */,
 				B1000000000000000000001C /* LaneRootStateViews.swift in Sources */,
 				B1000000000000000000001E /* LaneColorPalette.swift in Sources */,
 				B1000000000000000000001F /* LaneColorSwatchPicker.swift in Sources */,
