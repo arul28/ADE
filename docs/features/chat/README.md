@@ -1086,7 +1086,8 @@ A Codex reset credit is a single-use token that clears an account's rate-limit w
   destination was deleted puts the card back rather than leaving a dead end.
   One plan card takes one answer at a time (`codexPlanHandoff.ts`), so a phone
   and the desktop cannot implement the same plan twice. Personal chats, share
-  guests and terminal-launched sessions do not offer it.
+  guests and terminal-launched sessions do not offer it, and on ADE Cloud the
+  option is hidden while the lane's computer is asleep.
 - **Codex permission switches.** Codex takes approval/sandbox changes at thread/turn start. When a live session switches to Full Auto while a turn still raises requests from the old policy, the service auto-answers stale lane-confined command/file/permission gates and clears their cards. Auto-grants are turn-scoped and check the request `cwd` and concrete grant paths; escaped or ambiguous whole-root grants stay manual, and the planner guard still declines mutations from turns started in plan mode.
 - **Steer queue.** Follow-ups during a turn can be staged for the turn boundary (cap 10) with per-entry edit, cancel and dispatch. The per-provider composer modes are in [composer-and-ui.md](composer-and-ui.md#staged-messages-and-sending-during-a-turn); the host rules:
   - **Claude** offers two atomic SDK deliveries: **Send during turn** (`priority: "next"`, `shouldQuery: true`: after the current tool step, before the next model call) and **Interrupt & send** (`priority: "now"`, `shouldQuery: true`: redirects the current step without closing the query or killing background work).
