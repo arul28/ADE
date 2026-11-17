@@ -1526,10 +1526,14 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     values: Record<string, string>;
     state: CredentialStoreReadState;
   }> {
+    // Taken before the file and the key are read, as in `readSettledUnlocked`.
+    const statBeforeRead = await readCredentialFileStatSnapshotAsync(this.credentialsPath);
+    const keyStatAtRead = (await readCredentialFileStatSnapshotAsync(this.machineKeyPath)) ?? undefined;
     const { value: raw, exists: credentialsExist } = await readJsonObjectAsync(this.credentialsPath);
     if (!credentialsExist) {
       this.lastReadState = "missing";
       this.lastReadFailureReason = null;
+      await this.rememberSettledAsyncRead({}, "missing", statBeforeRead, undefined);
       return { values: {}, state: "missing" };
     }
     if (!raw || Object.keys(raw).length === 0) {
@@ -1565,7 +1569,42 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     this.lastReadState = "available";
     this.lastReadFailureReason = null;
     if (attempt.sealedBinding !== "machine") this.scheduleRebindToMachineKey(material);
+    else await this.rememberSettledAsyncRead(attempt.values, "available", statBeforeRead, keyStatAtRead);
     return { values: attempt.values, state: "available" };
+  }
+
+  /**
+   * Keeps an asynchronous read for reuse when it had nothing left to do, as
+   * `readSettledUnlocked` does for `getSync`: the file was missing or already
+   * sealed to the machine key, no quarantine record waits to be merged, and
+   * the file did not change while it was read. Without this, a store that is
+   * only read through `get()` (the GitHub token reads, for example) read and
+   * decrypted the file and the machine key on every call. The next read
+   * proves the entry with one `stat` (`readSettledCache`), so a write by any
+   * process is seen as before.
+   */
+  private async rememberSettledAsyncRead(
+    values: Record<string, string>,
+    state: "available" | "missing",
+    statBeforeRead: CredentialFileStatSnapshot | undefined,
+    keyStat: CredentialFileStatSnapshot | undefined,
+  ): Promise<void> {
+    if (!this.cacheSettledReads || statBeforeRead === undefined) return;
+    if ((state === "missing") !== (statBeforeRead === null)) return;
+    try {
+      if (await readCredentialStoreQuarantineAsync(this.credentialsPath)) return;
+      const statAfterRead = await readCredentialFileStatSnapshotAsync(this.credentialsPath);
+      if (statAfterRead === undefined || !isSameCredentialFileStat(statBeforeRead, statAfterRead)) return;
+      this.settledRead = {
+        stat: statAfterRead,
+        state,
+        values,
+        expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS,
+        keyStat,
+      };
+    } catch {
+      // Not kept: the next read reads the file again.
+    }
   }
 
   /**
