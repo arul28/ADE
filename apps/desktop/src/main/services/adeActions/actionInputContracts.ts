@@ -206,7 +206,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   },
   cloud: {
     status: {
-      description: "Read this first. The whole ADE Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | disk_full | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {hours, diskGb, diskShared}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours}, disk {usedGb, limitGb}, computers {inUse, awake} (no limit on how many), lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, preset, setting}, message. Hours are plan hours (Small-computer hours). Never returns a key or token.",
+      description: "Read this first. The whole ADE Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | disk_full | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {hours, diskGb, diskShared}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours}, disk {usedGb, limitGb}, computers {inUse, awake} (no limit on how many), lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, extraDiskMonthCents (paid extra disk they may grow into: cents a month, 0 none, null up to the account's extra-disk limit), preset, setting}, message. Hours are plan hours (Small-computer hours). Never returns a key or token.",
       input: "no input",
       example: "ade cloud status --text",
     },
@@ -241,13 +241,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade cloud create --kind vm --shape 4x8 --name \"android vm\"",
     },
     limits: {
-      description: "What unattended agents (full-auto chats, automation runs) may do on ADE Cloud alone: {unattendedSpend, machinesPerDay, maxShape, preset: ask | balanced | hands_off | custom}. Attended agents always ask in their chat.",
+      description: "What unattended agents (full-auto chats, automation runs) may do on ADE Cloud alone: {unattendedSpend, machinesPerDay, maxShape, extraDiskMonthCents (the most the account's paid extra disk may cost a month after an agent's disk grow, in cents; 0 none; null, the default, up to the account's own monthly extra-disk limit), preset: ask | balanced | hands_off | custom}. Attended agents always ask in their chat.",
       input: "none",
       example: "ade cloud limits --text",
     },
     set_limits: {
       description: "Change what unattended agents may do: a level in `preset` (ask, balanced, hands_off), or single limits. Loosening any limit asks the person; an unattended agent is refused.",
-      input: "object { preset?: \"ask\" | \"balanced\" | \"hands_off\", unattendedSpend?: boolean, machinesPerDay?: number (0-100), maxShape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
+      input: "object { preset?: \"ask\" | \"balanced\" | \"hands_off\", unattendedSpend?: boolean, machinesPerDay?: number (0-100), maxShape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", extraDiskMonthCents?: number (0-100000) | null (up to the account's extra-disk limit) }",
       example: "ade cloud limits balanced",
     },
     make_status: {
@@ -274,6 +274,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "On the ADE Cloud computer this runs on, delete what is rebuilt on next use (package and tool caches, Docker's build cache), then measure the disk again and send it to ADE's server. Never a repository, dependencies, an image or an emulator. An agent's call asks the person with a card in its chat first; with nobody watching (full-auto, an automation, ADE MCP) the answer is no. Answers { freedGb }.",
       input: "object { machine?: string (the instance id of the computer this runs on, the default: a call that names another machine is refused) }",
       example: "ade actions run cloud.clear_caches (on a lane's cloud computer), or Settings › ADE Cloud › a lane › Clear caches",
+    },
+    grow_disk: {
+      description: "Grow the disk of the ADE Cloud computer this runs on, to fit `needFreeGb` more free space or to `toGb`. Inside the plan's disk (and the size's limit) it grows with nothing to ask, unattended chats too; past the plan, with extra disk on, it asks the person with a card in your chat first; unattended (full-auto, automation, ADE MCP) the agent limits answer: inside `extraDiskMonthCents` (by default the account's monthly extra-disk limit) it grows with a line saying what it costs, past it it is refused, and when ADE can't read the agent limits from the account it is refused too. At the account's storage limit, or past the agents' extra disk, it posts a card naming the computers that hold the disk, and grows nothing. A grow restarts the computer: ADE saves the chats, the call waits for the restart, and your chat continues after it with a note that the disk grew. Answers { state: \"fits\" | \"grown\" | \"growing\" | \"limit\" | \"declined\" | \"busy\" | \"unavailable\", fromGb?, toGb?, message }.",
+      input: "object { needFreeGb?: number (GB that must be free), toGb?: number (the disk's new size), reason: string }",
+      example: "ade cloud resize --free 8 --reason \"the Android emulator's first boot needs 7.2 GB\"",
     },
     lane_launch_cancel: {
       description: "Stop an ADE Cloud lane launch before its chat starts, and delete the computer made for it. Only the chat that started it, or the person.",

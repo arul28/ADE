@@ -63,6 +63,8 @@ export type CloudBusyTerminal = {
   atPrompt: boolean | null;
   /** The foreground process's name, or null. */
   foreground: string | null;
+  /** The foreground process's command line, or null (an older brain, or `/proc` hides it). */
+  foregroundArgs?: readonly string[] | null;
   lastOutputAt: number;
   lastInputAt: number;
 };
@@ -90,18 +92,37 @@ export type CloudBusyFacts = {
 /** Names an agent CLI runs under when someone starts it by hand in a shell. */
 const AGENT_CLI_PROCESS_NAMES = new Set(["claude", "codex", "cursor-agent", "agent", "droid", "opencode", "muse"]);
 
-function terminalBusyReason(terminal: CloudBusyTerminal, now: number): "agent_cli" | "terminal" | null {
+/**
+ * An `ade` command that grows the disk itself and waits on it: `ade cloud
+ * resize --free|--disk`, or `ade android start` (its first boot grows a full
+ * disk). The grow must not wait on the terminal that asked for it.
+ */
+function isAdeDiskGrowCommand(args: readonly string[] | null | undefined): boolean {
+  if (!args?.length) return false;
+  const at = args.findIndex((arg) => /(?:^|[\\/])(?:ade|cli\.c?js)$/.test(arg));
+  if (at < 0) return false;
+  const rest = args.slice(at + 1);
+  const has = (domain: string, verb: string) => rest.some((arg, index) => arg === domain && rest[index + 1] === verb);
+  if (has("cloud", "resize")) return rest.some((arg) => /^--(?:free|need-free|disk)(?:=|$)/.test(arg));
+  return has("android", "start");
+}
+
+function terminalBusyReason(terminal: CloudBusyTerminal, now: number): "agent_cli" | "shell_agent_cli" | "disk_grow_command" | "terminal" | null {
   const untouched = now - Math.max(terminal.lastOutputAt, terminal.lastInputAt) >= CLOUD_UNTOUCHED_IDLE_MS;
   if (terminal.kind === "agent_cli" || (terminal.foreground != null && AGENT_CLI_PROCESS_NAMES.has(terminal.foreground))) {
     // An agent CLI's own screen moves (a spinner, a timer) while it works, and
     // stops at its prompt. `waiting-input` is it asking the person: idle.
-    return terminal.state === "running" && !untouched ? "agent_cli" : null;
+    if (terminal.state !== "running" || untouched) return null;
+    // ADE reopens only the agent CLI sessions it tracks after a restart; one
+    // started by hand in a shell is a command that a restart would cut.
+    return terminal.kind === "agent_cli" ? "agent_cli" : "shell_agent_cli";
   }
   // A plain shell: its pty's output-based state reads idle under a quiet
   // command (`sleep 300`, a slow build), so what's in the foreground decides.
   // Not knowing is a command running; only 60 silent minutes make that idle.
   if (terminal.atPrompt === true) return null;
-  return untouched ? null : "terminal";
+  if (untouched) return null;
+  return isAdeDiskGrowCommand(terminal.foregroundArgs) ? "disk_grow_command" : "terminal";
 }
 
 /**
@@ -131,7 +152,7 @@ export function decideCloudBusy(
 
 export type CloudKeepAwakeBusy = {
   busy: boolean;
-  /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "setup", "lane_setup", "move", "copy", "first_clone", "lane_launch", "schedule", "in_use". */
+  /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "shell_agent_cli" (one started by hand in a shell), "disk_grow_command" (an `ade` command waiting on its own disk grow), "setup", "lane_setup", "move", "copy", "first_clone", "lane_launch", "schedule", "in_use". */
   reasons: string[];
   /** When the machine's next timer is due (a scheduled wake-up, an automation), or null. */
   nextWakeAt?: number | null;

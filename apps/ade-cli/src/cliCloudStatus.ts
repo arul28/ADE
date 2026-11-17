@@ -7,6 +7,7 @@
  *
  *   NEITHER FILE MAY USE THE OTHER'S IMPORTS AS A VALUE AT MODULE SCOPE.
  */
+import { describeCloudAgentExtraDisk } from "../../desktop/src/shared/adeCloud";
 import { isRecord } from "./cli";
 
 /** "12.5" from a number of hours, "—" when unknown. */
@@ -86,8 +87,12 @@ export function formatCloudStatus(value: unknown): string {
   const agents = isRecord(status.agents) ? status.agents : null;
   if (agents) {
     const sizes = Array.isArray(agents.sizesAllowed) ? agents.sizesAllowed.join(", ") : "—";
+    // An older ADE sends no extra disk: nothing said about it.
+    const extraDisk = agents.extraDiskMonthCents === null || typeof agents.extraDiskMonthCents === "number"
+      ? ` · paid extra disk: ${describeCloudAgentExtraDisk(agents.extraDiskMonthCents)}`
+      : "";
     rows.push(["Agents", agents.unattendedSpend === true
-      ? `${String(agents.newComputersLeftToday ?? 0)} of ${String(agents.newComputersPerDay ?? 0)} new computers left today · alone up to: ${sizes}`
+      ? `${String(agents.newComputersLeftToday ?? 0)} of ${String(agents.newComputersPerDay ?? 0)} new computers left today · alone up to: ${sizes}${extraDisk}`
       : "agents nobody watches may not use hours; attended agents ask in their chat"]);
   }
   const width = Math.max(...rows.map(([label]) => label.length));

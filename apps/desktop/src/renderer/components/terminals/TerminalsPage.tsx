@@ -1,4 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getChatLaunchEntry } from "../../state/chatLaunchStore";
+import { isChatLaunchPending } from "../../../shared/chatLaunch";
+import { cancelChatLaunch } from "../chat/launch/chatLaunchActions";
 import { LaneShareGuestView } from "../laneShare/guest/LaneShareGuestView";
 import { clearLaneShareWorkSelection, selectLaneShareInWork, useLaneShareGuestStore } from "../laneShare/guest/laneShareGuestStore";
 import { Trash } from "@phosphor-icons/react";
@@ -246,6 +249,16 @@ function copyToClipboard(text: string, what: string): void {
   void navigator.clipboard.writeText(text).catch(() => {
     showToast({ title: `Could not copy ${what}`, tone: "error" });
   });
+}
+
+/**
+ * A chat whose lane is still being set up (or failed setting up) is a launch,
+ * not a chat on any machine yet: a chat delete answers "deleted" and the
+ * launch keeps its row. Cancelling the launch is the delete.
+ */
+function hasPendingChatLaunch(sessionId: string): boolean {
+  const launch = getChatLaunchEntry(sessionId)?.snapshot;
+  return Boolean(launch && launch.kind === "chat" && isChatLaunchPending(launch));
 }
 
 export function TerminalsPage({ active = true }: { active?: boolean }) {
@@ -829,6 +842,23 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       if (!confirmed) return;
 
       setSessionActionError(null);
+      if (hasPendingChatLaunch(session.id)) {
+        setDeletingSessionId(session.id);
+        try {
+          await cancelChatLaunch(session.id, { restorePrompt: false });
+          work.closeTab(session.id);
+          setContextMenu((current) => (current?.session.id === session.id ? null : current));
+          setInfoPopover((current) => (current?.session.id === session.id ? null : current));
+          showDeletedChatToast(session, label, null, false);
+        } catch (err) {
+          console.error("[TerminalsPage] cancel launch for delete failed", { sessionId: session.id, err });
+          setSessionActionError(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          setDeletingSessionId((current) => (current === session.id ? null : current));
+        }
+        return;
+      }
+
       setDeletingSessionId(session.id);
       // A caller supplies a binding only when the row was rendered under a
       // foreign machine group. Ownership is not a property of where the row was
@@ -987,6 +1017,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const deleteSelectedSession = useCallback(
     async (session: TerminalSessionSummary) => {
       const pin = resolveSessionRuntimePin(session);
+      if (hasPendingChatLaunch(session.id)) {
+        await cancelChatLaunch(session.id, { restorePrompt: false });
+        return;
+      }
       if (isChatToolType(session.toolType)) {
         await (window.ade.agentChat.delete({ sessionId: session.id }, requireChatPin(pin)));
         if (pin) cancelCrossMachineOptimisticChatSession(pin, session.id);

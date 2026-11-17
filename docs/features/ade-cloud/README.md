@@ -79,7 +79,8 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Product analytics for cloud lanes (launch result, freed lane, Clear caches; the renderer sends the default size) | `cloudLaneAnalytics.ts` |
 | Account sign-ins on every computer (capture, apply, renewal) | `services/providerLogins/` (entry `providerLoginSync.ts`, one file per job) |
 | CLI and agent verbs, approvals | `cloudAgentActions.ts`, `cloudBrainMaker.ts`, `cloudDesktopActions.ts` |
-| A new lane on its own new computer (before the hand-off to its brain) | `cloudLaneLaunchService.ts`, `cloudLaneLaunchRecords.ts`, `registerCloudLaneLaunchIpc.ts` |
+| A new lane on its own new computer (before the hand-off to its brain) | `cloudLaneLaunchService.ts`, `cloudLaneLaunchRecords.ts`, `registerCloudLaneLaunchIpc.ts`, `cloudLaunchFileCopies.ts` (images from another machine) |
+| An agent's disk grow on its own computer | `cloudAgentActions.ts` (`grow_disk`), `cloudDiskGrowHost.ts`; `apps/ade-cli/src/services/power/cloudDiskGrow.ts`; `apps/desktop/src/shared/cloudDiskGrowRules.ts` (the fit), `apps/desktop/src/shared/cloudDiskGrowCard.ts` (the chat cards) |
 | Rules on a cloud computer (one lane, Codex full access) | `cloudComputerRules.ts`, `cloudComputerLaneHold.ts` |
 | Desktop IPC | `registerCloudIpc.ts` |
 | Reaching ADE's server, access | `cloudServerProvider.ts`, `cloudAccess.ts`, `cloudVaultItems.ts` |
@@ -432,7 +433,8 @@ Hours, plan, disk and billing come from `GET /cloud/account`
 move keeps the old computer's disk, and the old disk doesn't count twice). A
 disk only grows, through `resize` with `disk`: on its own near full, when the
 computer is idle (`ade-cli/src/services/power/cloudDiskGrow.ts`, which sends
-`origin: "auto"`), or from the Android pane. A first Android start needs
+`origin: "auto"`), from the Android pane, or by an agent on that computer
+(below). A first Android start needs
 about 7.2 GB free for the device's data, so on a cloud computer the brain
 refuses it up front (`ANDROID_LOW_DISK`, `androidDiskGuard.ts`), and the pane
 offers **Grow the disk** to the smallest 4 GB step that fits. The person
@@ -442,6 +444,48 @@ past the size's `diskMaxGb`, or past the free plan's disk at one time; on a
 paid plan it gives the extra disk and its monthly cost, sends a person whose
 extra disk is turned down to the plans card, and opens the plans card when
 the server answers `needs_approval`.
+
+**An agent grows its own computer's disk.** `ade cloud resize --free <GB>`
+(or `--disk <GB>`, with `--reason "…"`) runs `cloud.grow_disk`
+(`cloudAgentActions.ts`) and then `growToFit` of the computer's own grower
+(`cloudDiskGrow.ts`, registered for the brain by `cloudDiskGrowHost.ts`). It
+grows only the disk of the computer it runs on; any other machine is refused
+with the way to do it. The fit is one rule in one place: `cloudDiskGrowFit`
+in `shared/cloudDiskGrowRules.ts` (re-exported from `shared/adeCloud.ts`).
+- Inside the plan's disk it grows with no card, for every caller.
+- Past the plan, into the extra disk the person turned on, a watched chat gets
+  an approval card. A caller nobody watches (a full-auto chat, an automation,
+  ADE MCP) is answered by the agent limits' paid extra disk
+  (`extraDiskMonthCents`; null is up to the account's monthly extra-disk limit,
+  the default). ADE refuses it when it can't read the limits. The hours check
+  does not apply: extra disk spends money, not hours.
+- The account's own extra-disk switch and monthly limit always apply, on the
+  server.
+- `growToFit` reads the account and the fit again before each resize, after
+  an approval wait and before each 409 retry. A grow that then needs more
+  paid disk asks again, at most 3 rounds.
+- The Android emulator's first start grows the disk the same way when it is
+  short (`androidEmulatorLifecycle.ts`), with no paid extra disk.
+- At the limit the server's `disk_limit` refusal carries
+  `lanes: [{ laneName, diskGb }]`. The limit card names the computers that
+  hold the disk.
+- The restart continues the chats and agent CLIs it cut, whatever "Continue
+  chats after restarts" says. Its restart cause is `disk_grow`
+  (`continueAfterRestartAllowed` in `brainUnplannedRestart.ts`). Updates,
+  crashes and reboots still follow the setting. A Devin CLI can't be reopened.
+- The grow waits for idle. Chats and ADE's own agent CLIs do not hold it (they
+  continue). A command in a terminal, or an agent CLI someone started by hand
+  in a shell (busy reason `shell_agent_cli`), holds it back. The `ade` command
+  that asked for the grow (`ade cloud resize --free|--disk`, `ade android
+  start`; busy reason `disk_grow_command`, read from the terminal's foreground
+  command line) does not.
+- The chat sees a card before the restart ("growing", with the extra disk's
+  cost when it uses any) and after it (the disk it has now), built by
+  `shared/cloudDiskGrowCard.ts` and posted by the brain
+  (`ade-cli/src/cli.ts`). The brain keeps what it told in
+  `$ADE_HOME/cloud/disk-grow.json`. A grow that doesn't happen turns the card
+  into a failed or limit card. After the restart the cards are retried: after
+  10 s, then up to 5 times every 30 s.
 
 ## Referrals and the free plan
 
@@ -888,6 +932,15 @@ a terminal in.
   new computers, the refusal reads "your agents hit today's limit of N new
   computers a day. Change it in Settings › Integrations › ADE Cloud › What
   agents may do › New computers a day." A person is never counted.
+- **Paid extra disk.** One more agent limit: how much paid extra disk an
+  agent nobody watches may grow into, a month. The choices are None, $5, $10,
+  $25 and Your limit (the default: up to the account's monthly extra-disk
+  limit). Set it in Settings › Integrations › ADE Cloud (the agent limits card;
+  `CloudAgentLimitsCard.tsx`), with `ade cloud limits --extra-disk
+  <dollars>|none|limit`, or in the iPhone's "What agents may do" picker. It is
+  checked on the client, because the agent limits live with the person's
+  settings. The server enforces the account's own monthly limit. A higher
+  value always needs the person, like the other limits.
 - **The join.** No approval: the server puts a one-time join key in the new
   computer's env, and the computer signs itself in to the account (see the
   server launcher below). The `computer`, `join` and `clone` rows show the
@@ -948,7 +1001,15 @@ launch
 `docs/plans/cloud-6/c6-c8-launcher-spec.md`).
 
 - **Start.** Files first (`PUT /cloud/launches/:id/files/:fileId`, at most 10,
-  25 MB each, kept in R2 under `launches/<user>/<launch>/`), then
+  25 MB each, kept in R2 under `launches/<user>/<launch>/`). The desktop copies
+  images attached on another machine (a project open on a remote pin) to this
+  computer first, through that machine's `chat.getImageDataUrl`
+  (`cloudLaunchFileCopies.ts`). It asks the source machine first: a file at
+  the same path here is used only when that machine doesn't have it. The
+  copies live in `<records>/files/<launchId>` and go with the record. A
+  non-image file from another machine stops the start with what to do.
+  Messages typed during setup get the same copies. A cancel during the copy
+  waits for that start, then cancels. Then
   `POST /cloud/launches` with `CloudServerLaunchRequest`. The launch id is the
   create's request id: the same id answers the same launch and never makes a
   second computer. The create is the one create path (`createComputer` in
@@ -1016,7 +1077,11 @@ launch
   last one is retried with a backoff, and the next boot sends it when it still
   couldn't land. A `done` launch takes no other state. A launch stopped in the computer's own
   ADE reads as `failed` ("The launch was stopped on the computer."). The
-  caller reads the record while it watches. A cancel before the agent starts
+  caller reads the record while it watches. The setup card shows the
+  computer's own rows (fetch, checkout, environment, agent) from the server's
+  record, and a row never goes back. The desktop starts pairing once the
+  computer joined, beside the clone, so the poll never stops. The time to find
+  the launch there counts from the end of the clone. A cancel before the agent starts
   deletes the computer the row holds after the cancel lands, and a cancel
   again retries a delete that failed. The minute cron deletes a record a
   week after its start (a draft after a day), with all its files.
@@ -1178,7 +1243,14 @@ Each call is account level: it names a computer of the account, never a pin.
   server's `/resize` wakes it first (under the same wake rules, and metered
   from the wake) for every caller: a size change, a disk grow, the dashboard. It starts when the agent is idle (the computer's
   `keep-awake.json` shows no agent work) or now (`ade cloud prepare-stop`
-  stops the turn). Its steps go to every window (`IPC.cloudLaneJobEvent`).
+  stops the turn). A disk-only grow (the same size with a bigger disk, such as
+  the Android pane's **Grow the disk**) runs `ade cloud prepare-stop
+  --disk-grow <GB>` instead. It writes the grow note and keeps the turns
+  running, and they continue after the restart. An older ADE ignores the flag
+  and stops them. A resize with a disk sends `computerIdle: true` only within
+  2 minutes of the job's own save (a Retry saves again first). A failed
+  disk-only resize removes the note. Its steps go to every window
+  (`IPC.cloudLaneJobEvent`).
   The lane is Online only when ADE on the computer answers and has the
   lane's project. A moved computer gets the lane's name and lane metadata.
 - **An agent asks.** `ade cloud resize --request --size large --reason "…"`
@@ -1440,7 +1512,7 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   without ADE Cloud access.
 - `ade cloud prepare-stop --timeout 40` (the server runs it before a stop at 0 hours)
   interrupts running chat turns and agent CLIs and writes the saved chat copy.
-- Disk (`cloudDiskGrow.ts`, `cloudDiskGuard.ts`): ADE's storage guard runs on
+- Disk (`cloudDiskGrow.ts`, `cloudDiskGrowHost.ts`, `cloudDiskGuard.ts`): ADE's storage guard runs on
   every computer, and on a cloud computer its lines follow that computer's own
   disk (`diskPressureThresholdsForSize`, read from the disk at each sample):
   agent turns stop at 5% free, heavy jobs at 10%, the warning at 15%, each

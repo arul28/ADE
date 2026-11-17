@@ -19,6 +19,7 @@ import {
   CLOUD_DEFAULT_AGENT_LIMITS,
   CLOUD_WAKE_PORT,
   CLOUD_WAKE_PORT_LABEL,
+  cloudAgentExtraDiskCentsOf,
   cloudShape,
   type CloudAgentLimits,
   type CloudSleepPolicy,
@@ -198,6 +199,8 @@ function parseAgentLimits(raw: unknown): CloudAgentLimits {
     unattendedSpend: typeof value.unattendedSpend === "boolean" ? value.unattendedSpend : fallback.unattendedSpend,
     machinesPerDay: typeof perDay === "number" && Number.isInteger(perDay) && perDay >= 0 && perDay <= 100 ? perDay : fallback.machinesPerDay,
     maxShape: cloudShape(typeof value.maxShape === "string" ? value.maxShape : null)?.id ?? fallback.maxShape,
+    // Left out (limits saved before it) is the account's own extra-disk limit.
+    extraDiskMonthCents: cloudAgentExtraDiskCentsOf(value.extraDiskMonthCents),
   };
 }
 
@@ -218,7 +221,7 @@ export type CloudAgentLimitsStore = {
   write(limits: CloudAgentLimits): Promise<CloudAgentLimits>;
 };
 
-/** From the account when it answers, else this computer's copy, else the default. */
+/** From the account when it answers, else this computer's copy, else the default (marked `fallback` when the account didn't answer). */
 export function createCloudAgentLimitsStore(deps: {
   vault: () => CloudVault | null;
   machineStore: () => { getSync(key: string): string | null; setSync(key: string, value: string): void } | null;
@@ -244,7 +247,10 @@ export function createCloudAgentLimitsStore(deps: {
         : { ok: false as const };
       const fromAccount = got.ok ? parseStoredLimits(got.value) : null;
       if (fromAccount) return fromAccount;
-      return parseStoredLimits(local()?.getSync(CLOUD_AGENT_LIMITS_MACHINE_CREDENTIAL_KEY)) ?? CLOUD_DEFAULT_AGENT_LIMITS;
+      const here = parseStoredLimits(local()?.getSync(CLOUD_AGENT_LIMITS_MACHINE_CREDENTIAL_KEY)) ?? CLOUD_DEFAULT_AGENT_LIMITS;
+      // The account answered and has nothing saved: these are the limits. Else
+      // another computer may have saved stricter ones (`fallback`).
+      return got.ok && got.value == null ? here : { ...here, fallback: true };
     },
     async write(limits) {
       const next = parseAgentLimits(limits);

@@ -3,6 +3,7 @@ import type {
   AndroidEmulatorError,
   AndroidEmulatorEvent,
 } from "../../../shared/types/androidEmulator";
+import type { CloudDiskGrowHost } from "../adeCloud/cloudDiskGrowHost";
 import type { DemoEngineSet } from "../demoVideo/demoEngines";
 import type { Logger } from "../logging/logger";
 import type { AndroidEmulatorLaunch } from "./androidEmulatorProcess";
@@ -45,6 +46,8 @@ export type AndroidEmulatorServiceDeps = {
    * (`remoteWorkCopyService`). Without it a `remote-work-…` lane is refused.
    */
   projectRoot?: string | null;
+  /** The disk grower of the ADE Cloud computer this runs on (`cloudDiskGrowHost.ts`); null anywhere else. */
+  diskGrow?: (() => CloudDiskGrowHost | null) | null;
   logger?: Logger | null;
   /** The SDK the user picked in Settings, read on every use. */
   readSdkSettingPath?: () => string | null;

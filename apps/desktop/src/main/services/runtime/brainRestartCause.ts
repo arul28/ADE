@@ -15,7 +15,9 @@ import type { BrainStopIntent } from "./liveTurnProjects";
  * - the watchdog breadcrumb this start recovered (`last-wedge.json`);
  * - the resource-pressure record (`resource-pressure.json`) as the previous
  *   brain left it;
- * - the remote update the previous brain accepted (`update-request.json`).
+ * - the remote update the previous brain accepted (`update-request.json`);
+ * - on an ADE Cloud computer, the disk grow the previous brain asked for
+ *   (`cloud/disk-grow.json`), whose restart ended it.
  *
  * Pure: the caller reads the files (`brainUnplannedRestart.ts`, `cli.ts`).
  */
@@ -27,6 +29,8 @@ export const RESTART_MEMORY_CONTEXT_WINDOW_MS = 15 * 60_000;
  * or from before that brain started, names nobody.
  */
 export const RESTART_UPDATE_REQUEST_MAX_AGE_MS = 30 * 60_000;
+/** A disk grow asked for more than this before the previous brain ended didn't end it (`CLOUD_DISK_GROW_STARTED_COOLDOWN_MS`). */
+const RESTART_DISK_GROW_MAX_AGE_MS = 10 * 60_000;
 /** Clock slack between the files of one brain (heartbeats every 15 s, samples every 5 min). */
 const SAME_RUN_SLACK_MS = 60_000;
 
@@ -38,6 +42,8 @@ export type PreviousBrainRun = {
   stoppedBy: string | null;
   /** The intent the stopping brain took (`noteBrainStopIntent`), when it stopped on purpose. */
   stopIntent: BrainStopIntent | null;
+  /** When the computer had booted as that brain started; null on older records. */
+  bootedAtMs?: number | null;
 };
 
 export type BrainRestartCauseFacts = {
@@ -60,6 +66,8 @@ export type BrainRestartCauseFacts = {
   } | null;
   /** The last `machine.updateAndRestart` the previous brain accepted. */
   updateRequest: { atMs: number; requestedBy: UpdateRequestedBy | null } | null;
+  /** The disk grow the previous brain asked for on an ADE Cloud computer (a grow restarts it). */
+  diskGrow?: { atMs: number; fromGb: number | null; toGb: number } | null;
 };
 
 /**
@@ -67,7 +75,7 @@ export type BrainRestartCauseFacts = {
  * `recordBrainRunStart`. The heartbeat counts only when the previous brain
  * wrote it.
  */
-export type BrainStartFacts = Pick<BrainRestartCauseFacts, "currentVersion" | "wedge" | "memoryPressure" | "updateRequest"> & {
+export type BrainStartFacts = Pick<BrainRestartCauseFacts, "currentVersion" | "wedge" | "memoryPressure" | "updateRequest" | "diskGrow"> & {
   lastHeartbeat: { pid: number; ts: number } | null;
 };
 
@@ -111,6 +119,23 @@ export function deriveBrainRestartCause(facts: BrainRestartCauseFacts): RestartC
   };
 
   const buildChanged = Boolean(previous.build && facts.currentBuild && previous.build !== facts.currentBuild);
+  /**
+   * A computer restart the previous brain's disk grow explains: asked for
+   * during that brain's run, within the grow's wait of its end. The grow file
+   * outlives its restart, and this cause makes chats continue even with the
+   * setting off (`continueAfterRestartAllowed`), so a grow from before the
+   * previous brain's boot never counts: that grow's restart is the one the
+   * previous brain started after, not the one that ended it.
+   */
+  const diskGrow = (endedAtMs: number | null): RestartCause | null => {
+    const grow = facts.diskGrow;
+    if (!grow || !finite(grow.atMs) || !finite(grow.toGb)) return null;
+    const endMs = endedAtMs ?? lastAliveMs;
+    if (finite(previous.bootedAtMs) && grow.atMs < previous.bootedAtMs) return null;
+    if (grow.atMs < previous.startedAtMs - SAME_RUN_SLACK_MS || grow.atMs > endMs + SAME_RUN_SLACK_MS) return null;
+    if (endMs - grow.atMs > RESTART_DISK_GROW_MAX_AGE_MS) return null;
+    return { kind: "disk_grow", endedAtMs, fromGb: finite(grow.fromGb) ? grow.fromGb : null, toGb: grow.toGb };
+  };
   const update = (endedAtMs: number | null): RestartCause => {
     const request = facts.updateRequest;
     // Accepted by the previous brain, in the minutes before it stopped.
@@ -132,14 +157,14 @@ export function deriveBrainRestartCause(facts: BrainRestartCauseFacts): RestartC
     // An orderly stop.
     if (previous.stopIntent === "accepted_update" || buildChanged) return update(previous.stoppedAtMs);
     if (previous.stoppedAtMs < facts.bootMs) {
-      return { kind: "computer_restarted", endedAtMs: previous.stoppedAtMs, planned: true };
+      return diskGrow(previous.stoppedAtMs) ?? { kind: "computer_restarted", endedAtMs: previous.stoppedAtMs, planned: true };
     }
     return { kind: "service_restarted", endedAtMs: previous.stoppedAtMs };
   }
 
   // No orderly stop: a crash, a kill, a power loss or a computer restart.
   if (lastAliveMs < facts.bootMs) {
-    return { kind: "computer_restarted", endedAtMs: lastAliveMs, planned: false, memory: memory() };
+    return diskGrow(lastAliveMs) ?? { kind: "computer_restarted", endedAtMs: lastAliveMs, planned: false, memory: memory() };
   }
   if (wedgeAtMs != null) {
     return {
@@ -167,6 +192,7 @@ export function restartCauseLogFields(cause: RestartCause | null): Record<string
     requestedByName: update?.requestedBy?.machineName ?? null,
     freezeCause: cause.kind === "service_restarted_by_watchdog" ? cause.freezeCause : null,
     planned: cause.kind === "computer_restarted" ? cause.planned : null,
+    diskToGb: cause.kind === "disk_grow" ? cause.toGb : null,
     memoryLow: memory !== null,
     swapUsedMb: memory?.swapUsedMb ?? null,
     simulatorMb: memory?.simulatorMb ?? null,

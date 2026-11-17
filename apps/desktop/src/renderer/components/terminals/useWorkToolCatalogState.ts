@@ -8,6 +8,11 @@ import { cleanUpRemoteWork } from "./remoteWorkCleanup";
 import type { ToolMachine } from "./useToolMachines";
 import { currentRemoteDeviceMachines, leftoverMachines, newestDeviceUseAt } from "./workToolCatalog";
 
+/** One switch slot: the chat's machine, the chat, and the device kind. */
+function pendingSlotOf(pinKey: string | null, sessionId: string | null | undefined, kind: DeviceKind | ""): string {
+  return `${pinKey ?? "bound"}\u0000${sessionId ?? ""}\u0000${kind}`;
+}
+
 /**
  * Where this chat's devices are, and what it left on other machines: the tools
  * pane's device choice and Clean up wiring.
@@ -62,6 +67,23 @@ export function useWorkToolCatalogState(args: {
     return out;
   }, [activeRemoteUses, deviceSources.sources, machines, pickedHere, viewOnly, viewPicks]);
 
+  // One switch per kind at a time, per chat and machine: a click while one is
+  // out is ignored, so a slow or dropped link answers once, not once per
+  // click. Keyed by chat, so a switch still out on the chat left behind does
+  // not hold this one. A ref for the guard (two clicks land before a render),
+  // state for the chip that shows it.
+  const pendingRef = useRef(new Set<string>());
+  const [pendingSlots, setPendingSlots] = useState<Readonly<Record<string, string>>>({});
+  const pendingMachineKeys = useMemo(() => {
+    const out: Partial<Record<DeviceKind, string>> = {};
+    if (!sessionId) return out;
+    const prefix = pendingSlotOf(chatPinKey, sessionId, "");
+    for (const [slot, machineKey] of Object.entries(pendingSlots)) {
+      if (slot.startsWith(prefix)) out[slot.slice(prefix.length) as DeviceKind] = machineKey;
+    }
+    return out;
+  }, [chatPinKey, pendingSlots, sessionId]);
+
   // The open tool's machine switch: `ade devices use <kind>@<machine>`, on the
   // chat's machine (its pin), the same setting the agent's commands read and
   // the tile shows. A view-only pick changes this panel alone.
@@ -71,6 +93,10 @@ export function useWorkToolCatalogState(args: {
       setViewPicks((current) => ({ ...current, [kind]: machine }));
       return;
     }
+    const slot = pendingSlotOf(chatPinRef.current?.key ?? null, sessionId, kind);
+    if (pendingRef.current.has(slot)) return;
+    pendingRef.current.add(slot);
+    setPendingSlots((current) => ({ ...current, [slot]: machine.key }));
     const newestUse = newestDeviceUseAt(kind, activeRemoteUsesRef.current);
     setPickedHere((current) => {
       const next = { ...current };
@@ -93,6 +119,9 @@ export function useWorkToolCatalogState(args: {
           return next;
         });
       }
+    }).finally(() => {
+      pendingRef.current.delete(slot);
+      setPendingSlots(({ [slot]: _done, ...rest }) => rest);
     });
   }, [sessionId]);
 
@@ -131,6 +160,8 @@ export function useWorkToolCatalogState(args: {
     refreshDeviceSources: deviceSources.refresh,
     chosenRemote,
     chooseDeviceMachine,
+    /** Per kind, the machine a switch is going to now; the row shows it busy and takes no other pick. */
+    pendingMachineKeys,
     /** A machine can be picked in the open tool's row (kept, or for this view only). */
     canChoose: Boolean(sessionId),
     viewOnly,

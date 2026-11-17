@@ -736,7 +736,7 @@ describe("ADE Cloud account", () => {
     "select billed_gb, reported_at is not null as reported, unconfirmed_at is not null as unconfirmed from cloud_disk_days where user_id = ? and day = ?",
     OWNER, DAY_ONE,
   );
-  const errorOf = async (response: Response) => ((await response.json()) as { error?: { code?: string; reason?: string } }).error ?? null;
+  const errorOf = async (response: Response) => ((await response.json()) as { error?: { code?: string; reason?: string; lanes?: Array<{ laneName: string; diskGb: number }> } }).error ?? null;
   const accountRow = () => harness.row("select plan, paid_plan, paid_plan_next, included_milli from cloud_accounts where user_id = ?", OWNER);
 
   /** Stopped computers holding `disks` GB, each the same size at the provider. */
@@ -826,7 +826,10 @@ describe("ADE Cloud account", () => {
     const response = await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 4, memory: 16, disk: toGb });
 
     expect(response.status).toBe(status);
-    expect((await errorOf(response))?.reason ?? null).toBe(reason);
+    const error = await errorOf(response);
+    expect(error?.reason ?? null).toBe(reason);
+    // A refusal at the limit names the computers that hold the disk, with their disk.
+    expect(error?.lanes ?? null).toEqual(reason ? [{ laneName: expect.any(String), diskGb: fromGb }] : null);
     expect(computer(harness).disk_gb).toBe(reason ? fromGb : toGb);
     expect(providerCalls(harness, /POST .*\/resize$/)).toHaveLength(reason ? 0 : 1);
   });

@@ -29,9 +29,11 @@ export async function prepareCloudComputerToStop(args: {
   runtimes: readonly AdeRuntime[];
   timeoutMs: number;
   logger?: { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
+  /** A disk grow's restart: the turns keep running (they continue after it), only the chat copy is written. */
+  keepTurns?: boolean;
 }): Promise<CloudPrepareStopResult> {
   const deadline = Date.now() + Math.max(1_000, args.timeoutMs);
-  const counts = await Promise.all(args.runtimes.map(async (runtime) => {
+  const counts: Array<{ chats: number; clis: number }> = args.keepTurns ? [] : await Promise.all(args.runtimes.map(async (runtime) => {
     const chats = await runtime.agentChatService?.interruptRunningTurns?.().catch((error: unknown) => {
       args.logger?.warn("cloud.prepare_stop_chats_failed", { error: error instanceof Error ? error.message : String(error) });
       return 0;
@@ -43,10 +45,11 @@ export async function prepareCloudComputerToStop(args: {
 
   // Turns take a moment to wind down and record that they were stopped.
   const waitUntil = deadline - FLUSH_RESERVE_MS;
-  while (stillBusy(args.runtimes) > 0 && Date.now() < waitUntil) {
+  while (!args.keepTurns && stillBusy(args.runtimes) > 0 && Date.now() < waitUntil) {
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }
-  const remaining = stillBusy(args.runtimes);
+  // Kept turns run on through the restart by design: they aren't left over.
+  const remaining = args.keepTurns ? 0 : stillBusy(args.runtimes);
 
   const flushMs = Math.max(2_000, deadline - Date.now());
   const flush = await uploadPendingCloudChats(flushMs).catch((error: unknown) => {

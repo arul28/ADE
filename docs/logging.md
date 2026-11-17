@@ -2033,7 +2033,13 @@ too), `kept` (they ticked "Keep its chats"), `partial` (ADE couldn't delete
 all its chats) or `failed`; it tells whether deleting the chats is the right
 default. `cloud_clear_caches`: the computer's own
 brain clears its caches, `completed`, `failed`, or `denied` (an agent's ask
-declined or unanswered). `cloud_default_size`: the person picked another size
+declined or unanswered). `cloud_disk_grow`: an agent's grow of the
+disk of the computer it runs on (`cloud.grow_disk`, from that computer's brain):
+`completed` (a grow was asked), `denied` (the person or the agent limits said
+no), `rejected` (the account's storage limit) or `failed` (busy, or the grow
+couldn't run); a disk that already has the room sends nothing. The grows
+themselves are counted by the account directory (`ade_cloud_action` `grow`).
+`cloud_default_size`: the person picked another size
 for new lanes, `size_small` to `size_xlarge` (a value another computer synced
 is not counted again). No lane, project, computer, branch, prompt, size of a
 computer or error travels. Each is a person's decision or a launch that makes

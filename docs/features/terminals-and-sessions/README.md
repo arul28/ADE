@@ -2091,6 +2091,10 @@ Renderer surfaces:
   `renderer/lib/chatHandoffIntent.ts` and select the row so the chat pane can
   open the matching surface, while Copy, Snooze, Lane, and Open in
   remain pointer/keyboard submenus. Every action row carries a duotone glyph.
+  A chat whose lane is still in setup, or failed setup, is a launch and not a
+  chat on any machine yet. Its menu holds only Retry setup (after a failure),
+  Cancel setup, Pin, Remove from grid and Copy session ID. Delete of such a
+  row, single or bulk, cancels the launch (`TerminalsPage.tsx`).
   `openIn` is an `OpenInTarget` from
   `resolveOpenInTarget`. Local and headerless foreign singleton rows omit
   session-root Open in because **Lane ▸** already renders it from

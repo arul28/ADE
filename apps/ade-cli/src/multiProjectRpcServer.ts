@@ -415,7 +415,7 @@ export type MultiProjectRpcHandlerOptions = {
    * which never own the machine's power settings.
    */
   /** On a cloud computer: interrupts work and writes the saved chat copy before a stop (`ade cloud prepare-stop`). */
-  prepareCloudStop?: ((args: { timeoutMs: number }) => Promise<unknown>) | null;
+  prepareCloudStop?: ((args: { timeoutMs: number; diskGrowToGb?: number | null }) => Promise<unknown>) | null;
   /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
   pushCloudWork?: ((args: { check: boolean; message?: string | null }) => Promise<unknown>) | null;
   /** On a cloud computer: keeps it awake while `run` works (a first clone), and counts the end as use. */
@@ -3635,7 +3635,10 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "cloud.prepareStop") {
       const prepare = options.prepareCloudStop;
       if (!prepare) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't prepare a computer to stop.");
-      return await prepare({ timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 40_000 });
+      return await prepare({
+        timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 40_000,
+        diskGrowToGb: typeof params.diskGrowToGb === "number" && Number.isFinite(params.diskGrowToGb) && params.diskGrowToGb > 0 ? params.diskGrowToGb : null,
+      });
     }
 
     // A provider sign-in a person finishes on another screen (`ade providers

@@ -31,7 +31,7 @@ import {
 } from "./lanesWithoutComputer";
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
 import { ignoredFilesStatement, keepIdleComputer, parseIgnoredFiles, recordIdleUse } from "./idleCleanup";
-import { CLOUD_PATHS, cloudAutoSizeRefusalSentence, formatCloudCents, overPlanLimitsSentence, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
+import { CLOUD_PATHS, cloudAutoSizeRefusalSentence, formatCloudCents, overPlanLimitsSentence, type CloudDiskLimitLane, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
 import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
 import { freeCapRefuses } from "./costReport";
 import { accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
@@ -150,8 +150,27 @@ type Refused = { response: Response; refusal: CloudRefusal };
 /** What every handler gets from the request: one clock, and a way to finish work after the response. */
 type CloudRequestContext = { now: number; waitUntil: CloudWaitUntil };
 
-function diskRefusal(code: string, message: string, reason: CloudDiskRefusalReason, refusal: CloudRefusal): Refused {
-  return { response: fail(code, message, 403, { reason }), refusal };
+function diskRefusal(code: string, message: string, reason: CloudDiskRefusalReason, refusal: CloudRefusal, lanes?: CloudDiskLimitLane[]): Refused {
+  return { response: fail(code, message, 403, { reason, ...(lanes?.length ? { lanes } : {}) }), refusal };
+}
+
+/**
+ * The computers that hold the account's disk, biggest first, for a refusal at
+ * its limit (`CloudDiskLimitLane`). Empty when they can't be read: the list
+ * only helps the refusal, so a failed read never changes the answer.
+ */
+async function diskLimitLanes(env: CloudEnv, userId: string): Promise<CloudDiskLimitLane[]> {
+  try {
+    const rows = await env.DB.prepare(`
+      select coalesce(lane_name, name, instance_id) as label, disk_gb from cloud_computers
+      where user_id = ? and deleted_at is null and disk_gb > 0
+      order by disk_gb desc limit 20
+    `).bind(userId).all<{ label: string; disk_gb: number }>();
+    return (rows.results ?? []).map((row) => ({ laneName: row.label, diskGb: row.disk_gb }));
+  } catch (error) {
+    logCloud("cloud.disk_limit_lanes_failed", { userId, error: error instanceof Error ? error.message : "unknown" });
+    return [];
+  }
 }
 
 /** The ways out of a refused grow on a paid plan, the same on Plus and Pro. */
@@ -241,36 +260,35 @@ function tierRefusal(size: CloudSize, diskGb: number, moving: boolean): Refused 
 async function diskRoom(env: CloudEnv, account: AccountRow, nextTotalGb: number, now: number): Promise<{ ok: true; capGb: number } | ({ ok: false } & Refused)> {
   const planGb = countedPlanDiskGb(account);
   if (nextTotalGb <= planGb) return { ok: true, capGb: planGb };
+  // Past the plan's disk: a refusal names what holds it (read only when it refuses).
+  const atLimit = async (code: string, message: string, reason: Exclude<CloudDiskRefusalReason, "unavailable" | "tier_limit">): Promise<{ ok: false } & Refused> =>
+    ({ ok: false, ...diskRefusal(code, message, reason, reason, await diskLimitLanes(env, account.user_id)) });
   if (planIdOf(account) === "free") {
     // `past_due` follows the free plan's disk until the card works again: that is its way out.
     const message = account.stripe_status === "past_due" && account.plan === "paid"
       ? "Your last payment didn't go through. Update your card in Manage, then try again."
       : `Free computers share ${planGb} GB of disk at one time, and this would go past it. Delete a computer you no longer use, or move to a bigger plan.`;
-    return { ok: false, ...diskRefusal("needs_paid_plan", message, "plan_disk", "plan_disk") };
+    return await atLimit("needs_paid_plan", message, "plan_disk");
   }
   const overPlan = `Your computers share ${planGb} GB of disk at one time, and this would go past it.`;
   if (!cloudOffers(env).extraDisk) {
-    return { ok: false, ...diskRefusal("disk_limit", `${overPlan} Delete a computer you no longer use.`, "extra_off", "extra_off") };
+    return await atLimit("disk_limit", `${overPlan} Delete a computer you no longer use.`, "extra_off");
   }
   const extraGb = nextTotalGb - planGb;
   const limitCents = account.extra_disk_limit_cents;
-  const needsApproval = (): Refused => diskRefusal(
+  const needsApproval = () => atLimit(
     "disk_limit",
     `This needs ${extraGb} GB more disk than your plan's ${planGb} GB at one time. Extra disk is ${formatCloudCents(extraDiskCentsPer10GbMonthOf(account))} for each 10 GB a month, counted by the day. Turn it on in Settings, or delete a computer you no longer use.`,
-    "needs_approval",
     "needs_approval",
   );
   if (account.extra_disk_state !== "on") {
     // `off`: never decided, so it asks once; `asked`: turned down.
-    return { ok: false, ...(account.extra_disk_state === "off" ? needsApproval() : diskRefusal("disk_limit", `${overPlan} ${PAID_DISK_WAYS_OUT}`, "extra_off", "extra_off")) };
+    return account.extra_disk_state === "off" ? await needsApproval() : await atLimit("disk_limit", `${overPlan} ${PAID_DISK_WAYS_OUT}`, "extra_off");
   }
-  if (limitCents == null) return { ok: false, ...needsApproval() };
+  if (limitCents == null) return await needsApproval();
   const thisPeriod = await extraDiskMicrosThisPeriod(env, account) + extraGb * extraDiskMicrosPerGbDayOf(account) * daysLeftIn(account.period_end, now);
   if (Math.max(thisPeriod, extraDiskMonthMicros(extraGb, account)) > limitCents * CENT_MICROS) {
-    return {
-      ok: false,
-      ...diskRefusal("disk_limit", `This would pass the ${formatCloudCents(limitCents)} a month you set for extra disk. Raise the limit in Settings, or delete a computer you no longer use.`, "monthly_limit", "monthly_limit"),
-    };
+    return await atLimit("disk_limit", `This would pass the ${formatCloudCents(limitCents)} a month you set for extra disk. Raise the limit in Settings, or delete a computer you no longer use.`, "monthly_limit");
   }
   return { ok: true, capGb: nextTotalGb };
 }

@@ -27,6 +27,8 @@ import {
 } from "./agentChatService.testHarness";
 import { BACKGROUND_WORK_LOST_RESUME_PROMPT, RESTART_RESUME_PROMPT } from "../../../shared/chatAutoResume";
 import { recordCliSessionsToReopen } from "../pty/cliReopenAfterRestart";
+import { computerBootedAtMs } from "../processes/processStartTime";
+import { brainRunEndpointKey, recordBrainRunStart } from "../runtime/brainUnplannedRestart";
 import { describe, expect, it, test, vi } from "vitest";
 
 async function waitForFakeTimerPromise<T>(
@@ -681,6 +683,74 @@ describe("createAgentChatService", () => {
       // Taken once: a later start finds no list to continue from.
       expect(fs.readdirSync(path.join(tmpRoot, ".ade", "cache")).filter((name) => name.startsWith("reopen-cli-after-restart."))).toEqual([]);
       next.service.forceDisposeAll();
+    });
+
+    it.each([
+      // The grow asked for during the previous brain's run restarted the computer.
+      ["continues after an ADE disk grow's restart", { bootedAgoMs: 70 * 60_000, startedAgoMs: 60 * 60_000, grewAgoMs: 2 * 60_000 }, true],
+      // The grow file outlives its restart: a grow from before the previous
+      // brain's boot is the restart that brain started after, not this one.
+      ["holds after a reboot that follows an older grow's restart", { bootedAgoMs: 9.25 * 60_000, startedAgoMs: 9 * 60_000, grewAgoMs: 9.5 * 60_000 }, false],
+    ] as const)("with Continue chats after restarts off, %s", async (_label, previousRun, continues) => {
+      const brainRuntimeDir = fs.mkdtempSync(path.join(tmpRoot, "brain-run-"));
+      const brainSocket = path.join(brainRuntimeDir, "ade.sock");
+      // Times before this computer's boot, so the result does not depend on its uptime.
+      const nowMs = Date.now();
+      const bootMs = computerBootedAtMs(nowMs);
+      const brainRunFile = path.join(brainRuntimeDir, "brain-run", `${brainRunEndpointKey(brainSocket)}.json`);
+      fs.mkdirSync(path.dirname(brainRunFile), { recursive: true });
+      fs.writeFileSync(brainRunFile, JSON.stringify({
+        pid: 987_654_321,
+        startedAt: new Date(bootMs - previousRun.startedAgoMs).toISOString(),
+        bootedAt: new Date(bootMs - previousRun.bootedAgoMs).toISOString(),
+        build: "b1",
+        stoppedAt: new Date(bootMs - 30_000).toISOString(),
+      }));
+      recordBrainRunStart({
+        runtimeDir: brainRuntimeDir,
+        socketPath: brainSocket,
+        build: "b1",
+        writeOwnRecord: false,
+        nowMs,
+        causeFacts: {
+          currentVersion: "1.0.0",
+          lastHeartbeat: null,
+          wedge: null,
+          memoryPressure: null,
+          updateRequest: null,
+          diskGrow: { atMs: bootMs - previousRun.grewAgoMs, fromGb: 64, toGb: 96 },
+        },
+      });
+      try {
+        const scheduledWork = createScheduledWorkDb();
+        const stopped = createService({ db: scheduledWork.db });
+        const atWork = await stopped.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4-codex" });
+        await stopped.service.disposeAll();
+        recordCliSessionsToReopen(tmpRoot, [{ sessionId: atWork.id, midTurn: true, kind: "chat" }]);
+
+        const next = createService({
+          db: scheduledWork.db,
+          readContinueAfterRestart: () => false,
+          ptyService: {
+            create: vi.fn(),
+            resumeSession: vi.fn(),
+            canAcceptScheduledTurn: () => true,
+            enrichSessions: (rows: Array<Record<string, unknown>>) => rows,
+          },
+        });
+        await waitFor(() => next.logger.info.mock.calls.some(([event, fields]) => continues
+          ? event === "agent_chat.planned_stop_chats_continued"
+          : event === "agent_chat.update_resume_dropped" && (fields as { reason?: string }).reason === "disabled"));
+
+        const continueRows = (scheduledWork.readState()?.schedules ?? []).filter((row) => row.source === "update_restart");
+        expect(continueRows.map((row) => row.sessionId)).toEqual(continues ? [atWork.id] : []);
+        // The continue names the grow it came after: its sizes, whatever the wording.
+        if (continues) expect(continueRows[0]?.prompt).toMatch(/64 GB[\s\S]*96 GB/);
+        next.service.forceDisposeAll();
+      } finally {
+        // No facts: the next start in this file names no cause.
+        recordBrainRunStart({ runtimeDir: brainRuntimeDir, socketPath: brainSocket, build: "b1", writeOwnRecord: false });
+      }
     });
 
     it("leaves a planned stop's machine-brain chat in the list for the machine brain", async () => {

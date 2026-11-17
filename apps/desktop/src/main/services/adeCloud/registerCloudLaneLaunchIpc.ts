@@ -1,14 +1,17 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { app, ipcMain } from "electron";
 import type { CloudLaneLaunchCallRequest, CloudLaneLaunchCallResult } from "../../../shared/cloudLaneLaunch";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { IPC } from "../../../shared/ipc";
 import type {
+  AgentChatFileRef,
   ChatLaunchArgs,
   ChatLaunchCompleteClientArgs,
   ChatLaunchEvent,
   ChatLaunchIdArgs,
   ChatLaunchQueueMessageArgs,
+  OpenProjectBinding,
 } from "../../../shared/types";
 import type { RuntimeBridgeRegistration } from "../ipc/runtimeBridge";
 import { resolveProjectRepoOrigin } from "../projects/projectRepoOrigin";
@@ -18,6 +21,9 @@ import { isRecord } from "../shared/utils";
 import { sendToAllWindows } from "./broadcast";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
+import { cloudLaunchFilesDir } from "./cloudLaneLaunchRecords";
+import { copyLaunchFilesFromSource } from "./cloudLaunchFileCopies";
+import { requireLaunchId } from "./cloudLaneLaunchSteps";
 import { createCtoCloudHomeService } from "./ctoCloudHomeService";
 import type { CtoCloudHomeCallRequest } from "../../../shared/ctoCloudHome";
 import { cloudLaneLaunchOutcomes, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
@@ -55,8 +61,9 @@ export function registerCloudLaneLaunchIpc(args: {
   const { remote, logger } = args;
   const { pendingCreates: _pendingCreates, ...creator } = args.machineCreatorDeps;
   const countOutcome = cloudLaneLaunchOutcomes(args.analytics, "desktop");
+  const recordsDir = path.join(app.getPath("userData"), "cloud-lane-launches");
   const service = createCloudLaneLaunchService({
-    recordsDir: path.join(app.getPath("userData"), "cloud-lane-launches"),
+    recordsDir,
     logger,
     emit: (event: ChatLaunchEvent) => {
       sendToAllWindows(IPC.cloudLaneLaunchEvent, event);
@@ -108,6 +115,73 @@ export function registerCloudLaneLaunchIpc(args: {
     }, { remoteProjects: (targetId) => remote.projects(targetId), logger });
   };
 
+  /**
+   * The composer saves a draft's files on the machine the tab's project is
+   * open on, and this app runs the launch: files saved on another machine are
+   * copied here first (`cloudLaunchFileCopies.ts`).
+   */
+  const copyFilesFromSource = async (
+    request: Partial<CloudLaneLaunchCallRequest>,
+    launchId: string,
+    attachments: AgentChatFileRef[] | undefined,
+  ): Promise<Record<string, string>> => {
+    const source = isRecord(request.source) && isRecord(request.source.remote) ? request.source.remote : null;
+    const targetId = typeof source?.targetId === "string" ? source.targetId : null;
+    const projectId = typeof source?.projectId === "string" ? source.projectId : null;
+    const rootPath = typeof source?.rootPath === "string" ? source.rootPath : null;
+    let binding: Promise<OpenProjectBinding & { kind: "remote" }> | null = null;
+    return await copyLaunchFilesFromSource({
+      attachments,
+      dir: cloudLaunchFilesDir(recordsDir, launchId),
+      readSourceImage: targetId && projectId && rootPath
+        ? async (filePath) => {
+          binding ??= resolveSourceBinding(targetId, projectId, rootPath);
+          const answer = await remote.callAction(await binding, { domain: "chat", action: "getImageDataUrl", args: { path: filePath } });
+          const dataUrl = isRecord(answer) ? answer.dataUrl : null;
+          if (typeof dataUrl !== "string") throw new Error("the machine sent no image");
+          return dataUrl;
+        }
+        : null,
+    });
+  };
+  const resolveSourceBinding = async (targetId: string, projectId: string, rootPath: string) => {
+    await remote.connect(targetId);
+    return await remote.resolveBinding(targetId, projectId, rootPath);
+  };
+
+  /** Starts not yet held by the service (their files still copying), by launch id. */
+  const starting = new Map<string, Promise<CloudLaneLaunchCallResult>>();
+  const startLaunch = async (
+    request: Partial<CloudLaneLaunchCallRequest>,
+    launchArgs: ChatLaunchArgs,
+    launchId: string,
+  ): Promise<CloudLaneLaunchCallResult> => {
+    // A start this app already holds (a second Send) needs no copies.
+    const copying = !service.owns(launchId);
+    try {
+      const localCopies = copying
+        ? await copyFilesFromSource(request, launchId, [
+          ...(launchArgs.attachments ?? []),
+          ...(launchArgs.chat?.message?.attachments ?? []),
+        ])
+        : {};
+      const originUrl = await readOrigin(request);
+      return {
+        owned: true,
+        result: await service.start({ args: launchArgs, originUrl, localCopies }),
+        projectIdentity: normalizeGitRemoteIdentity(originUrl),
+      };
+    } catch (error) {
+      // Refused before a record took the copies: nothing else removes them.
+      if (copying && !service.owns(launchId)) {
+        await fs.rm(cloudLaunchFilesDir(recordsDir, launchId), { recursive: true, force: true }).catch((rmError: unknown) => {
+          logger.warn("cloud_lane_launch.files_rollback_failed", { launchId, error: rmError instanceof Error ? rmError.message : String(rmError) });
+        });
+      }
+      throw error;
+    }
+  };
+
   ipcMain.handle(IPC.cloudLaneLaunchCall, async (event, raw: unknown): Promise<CloudLaneLaunchCallResult> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneLaunchCall)) {
       throw new Error("ADE can't do that from here.");
@@ -115,12 +189,18 @@ export function registerCloudLaneLaunchIpc(args: {
     const request = (isRecord(raw) ? raw : {}) as Partial<CloudLaneLaunchCallRequest>;
     switch (request.method) {
       case "start": {
-        const originUrl = await readOrigin(request);
-        return {
-          owned: true,
-          result: await service.start({ args: request.args as ChatLaunchArgs, originUrl }),
-          projectIdentity: normalizeGitRemoteIdentity(originUrl),
-        };
+        const launchArgs = request.args as ChatLaunchArgs;
+        const launchId = requireLaunchId(launchArgs?.launchId);
+        // A second Send while the first still copies: one start, one set of copies.
+        const already = starting.get(launchId);
+        if (already) return await already;
+        const run = startLaunch(request, launchArgs, launchId);
+        starting.set(launchId, run);
+        try {
+          return await run;
+        } finally {
+          if (starting.get(launchId) === run) starting.delete(launchId);
+        }
       }
       case "list": {
         const projectIdentity = normalizeGitRemoteIdentity(await readOrigin(request));
@@ -134,6 +214,9 @@ export function registerCloudLaneLaunchIpc(args: {
       case "queueMessage":
       case "completeClient": {
         const launchId = launchIdOf(request.args);
+        // A start still copying its files: a Cancel pressed meanwhile waits for it, then cancels the launch it made.
+        const pending = launchId && !service.owns(launchId) ? starting.get(launchId.trim().toLowerCase()) : undefined;
+        if (pending) await pending.catch(() => undefined);
         if (!launchId || !service.owns(launchId)) return { owned: false };
         const idArgs = request.args as ChatLaunchIdArgs;
         switch (request.method) {
@@ -145,8 +228,11 @@ export function registerCloudLaneLaunchIpc(args: {
             return { owned: true, result: await service.retry(idArgs) };
           case "startNow":
             return { owned: true, result: await service.startNow(idArgs) };
-          case "queueMessage":
-            return { owned: true, result: await service.queueMessage(request.args as ChatLaunchQueueMessageArgs) };
+          case "queueMessage": {
+            const queued = request.args as ChatLaunchQueueMessageArgs;
+            const localCopies = await copyFilesFromSource(request, requireLaunchId(launchId), queued.attachments);
+            return { owned: true, result: await service.queueMessage(queued, localCopies) };
+          }
           case "completeClient":
             return { owned: true, result: await service.completeClient(request.args as ChatLaunchCompleteClientArgs) };
         }

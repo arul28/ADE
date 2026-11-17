@@ -1914,7 +1914,7 @@ import {
   stoppedForGoodListWriters,
   takeCarriedCliSessionsToReopen,
 } from "../runtime/liveTurnProjects";
-import { brainRestartCause, noteRestartContinuation } from "../runtime/brainUnplannedRestart";
+import { brainRestartCause, continueAfterRestartAllowed, noteRestartContinuation } from "../runtime/brainUnplannedRestart";
 import { providerFromTool } from "../../utils/terminalSessionSignals";
 import { createCliCardInputs } from "./cliCardInputs";
 import { createClaudeCliScheduleMirror } from "./claudeCliScheduledWork";
@@ -23478,6 +23478,12 @@ export function createAgentChatService(args: {
     return projectConfigService.get().effective.ai?.chat?.continueAfterRestart !== false;
   };
   /**
+   * Whether the restart this brain started after continues what it stopped
+   * (`continueAfterRestartAllowed`). Only for the restart that already
+   * happened; what a coming update does reads the setting alone.
+   */
+  const continueAfterThisRestart = (): boolean => continueAfterRestartAllowed(continueAfterRestartEnabled);
+  /**
    * Cut off within `RESTART_RESUME_MAX_AGE_MS`. A chat first opened later than
    * that (it crashed long ago, maybe under an older build) keeps the closed
    * turn instead of resuming stale work. A chat at rest that waited on
@@ -23535,7 +23541,8 @@ export function createAgentChatService(args: {
    * for every kind of restart: an update the user accepted (`armUpdateResume`,
    * and the update dialog's line through `listInterruptedChats`) and a crash,
    * force quit or reboot (`recoverDetachedChatAfterRestart`). Continue chats
-   * after restarts is on, the chat is not archived (a settled chat resumes:
+   * after restarts is on (or an ADE disk grow made the restart this brain
+   * started after: `continueAfterThisRestart`), the chat is not archived (a settled chat resumes:
    * settling stops nothing), it is not
    * waiting on the user's answer, it was cut off recently, and it has not
    * resumed itself `MAX_CONSECUTIVE_RESTART_RESUMES` times in a row. An
@@ -23556,7 +23563,8 @@ export function createAgentChatService(args: {
     const managed = options.managed ?? managedSessions.get(sessionId) ?? null;
     const acceptedUpdate = options.acceptedUpdate || hasPendingAcceptedUpdateResume(sessionId);
     return restartResumeHold({
-      continueEnabled: continueAfterRestartEnabled(),
+      // An accepted update is its own restart: the setting alone decides it.
+      continueEnabled: options.acceptedUpdate ? continueAfterRestartEnabled() : continueAfterThisRestart(),
       recent: options.recent ?? withinRestartResumeAge(row?.endedAt),
       awaitingUser: options.awaitingUser
         ?? (managed?.awaitingInputAtLoad === true || readPersistedState(sessionId)?.awaitingInput === true),
@@ -23572,7 +23580,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     customResume?: { prompt: string; reason: string },
   ): void => {
-    if (!continueAfterRestartEnabled()) return;
+    if (!continueAfterThisRestart()) return;
     const restartContinue = customResume === undefined;
     const resume = customResume ?? {
       prompt: chatRestartResumePrompt(brainRestartCause()),
@@ -73291,7 +73299,7 @@ export function createAgentChatService(args: {
     } catch (error) {
       logger.warn("agent_chat.cli_reopen_read_failed", { source: "crash", error: errorText(error) });
     }
-    const hold = !continueAfterRestartEnabled()
+    const hold = !continueAfterThisRestart()
       ? "disabled"
       : args.isRuntimeInRestartLoop?.() === true ? "restart_loop" : null;
     if (plannedChats.length > 0) {
@@ -77597,7 +77605,7 @@ export function createAgentChatService(args: {
   };
   const runRestartRecoverySweep = async (): Promise<void> => {
     await scheduledWorkReady;
-    if (restartRecoverySweepStopped || !continueAfterRestartEnabled()) return;
+    if (restartRecoverySweepStopped || !continueAfterThisRestart()) return;
     const rows = recentDetachedChatRows(Date.now() - RESTART_RESUME_MAX_AGE_MS)
       .slice(0, RESTART_RECOVERY_SWEEP_LIMIT);
     for (const row of rows) {

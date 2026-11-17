@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { Lock, Robot } from "@phosphor-icons/react";
 import {
+  CLOUD_AGENT_EXTRA_DISK_CHOICES,
   CLOUD_LIMITS_PRESETS,
   CLOUD_MACHINES_PER_DAY_CHOICES,
   CLOUD_SHAPES,
   cloudLimitsPresetOf,
+  formatCloudCents,
   type CloudAgentLimits,
 } from "../../../shared/adeCloud";
 import { IntegrationChoice } from "./integrations/IntegrationChrome";
@@ -64,6 +66,12 @@ export function CloudAgentLimitsCard() {
   const disabled = busy || limits == null;
 
   const unattended = limits?.unattendedSpend ?? null;
+  // Paid extra disk: "limit" is null (up to the account's own monthly extra-disk limit, the default).
+  const extraDiskCents = limits ? limits.extraDiskMonthCents ?? null : undefined;
+  const extraDiskValue = extraDiskCents === undefined ? null : extraDiskCents === null ? "limit" : String(extraDiskCents);
+  const extraDiskChoices: readonly number[] = typeof extraDiskCents === "number" && !(CLOUD_AGENT_EXTRA_DISK_CHOICES as readonly number[]).includes(extraDiskCents)
+    ? [...CLOUD_AGENT_EXTRA_DISK_CHOICES, extraDiskCents].sort((a, b) => a - b)
+    : CLOUD_AGENT_EXTRA_DISK_CHOICES;
   // "Yes" starts from Balanced's limits when the saved ones are the "No" preset's leftovers.
   const allow = (value: boolean) => {
     if (!limits || limits.unattendedSpend === value) return;
@@ -114,6 +122,24 @@ export function CloudAgentLimitsCard() {
                   sentenceCase={false}
                   onChange={(maxShape) => setLimit({ maxShape })}
                   options={CLOUD_SHAPES.map((shape) => ({ value: shape.id, label: shape.label, title: `${shape.cpu} CPU · ${shape.memoryGb} GB` }))}
+                />
+              </div>
+              <div className="adecd-limit-row">
+                <div><b>Paid extra disk</b><small>When a disk outgrows your plan, a month</small></div>
+                <IntegrationChoice
+                  label="Paid extra disk agents may use"
+                  value={extraDiskValue}
+                  disabled={disabled}
+                  sentenceCase={false}
+                  onChange={(choice) => setLimit({ extraDiskMonthCents: choice === "limit" ? null : Number(choice) })}
+                  options={[
+                    ...extraDiskChoices.map((cents) => ({
+                      value: String(cents),
+                      label: cents === 0 ? "None" : formatCloudCents(cents),
+                      title: cents === 0 ? "Agents never grow a disk into paid extra disk alone" : `While your extra disk costs at most ${formatCloudCents(cents)} a month`,
+                    })),
+                    { value: "limit", label: "Your limit", title: "Up to the monthly limit you set for extra disk" },
+                  ]}
                 />
               </div>
             </>
