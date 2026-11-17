@@ -17,7 +17,8 @@ import type { JevService } from "../jev/jevService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
-import { writeCarriesTypedInput, writeIsTerminalReport, type AgentShellRelaunchScope, type AgentShellRetireReason } from "../sessions/agentShellCleanup";
+import { writeCarriesTypedInput, type AgentShellRelaunchScope, type AgentShellRetireReason } from "../sessions/agentShellCleanup";
+import { writeIsTerminalReport } from "../../../shared/terminalReports";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -89,6 +90,7 @@ import type {
   PtyRestartAgentCliResult,
   AgentCliInterruptResult,
   PtySendToSessionArgs,
+  PtySubmitInputArgs,
   PtySendToSessionResult,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
@@ -407,6 +409,14 @@ const AGENT_CLI_LINE_SUBMIT_KEY = "\r";
  * timestamp to be beaten by the next repaint.
  */
 const AGENT_CLI_SUBMIT_DELAY_MS = 25;
+/**
+ * Enter after a multi-line paste from the local line, for every CLI but
+ * Codex (its own 180 ms): a paste can take the CLI longer to take in than
+ * typed text, and an Enter that comes too soon can land in the paste.
+ */
+const LOCAL_LINE_PASTE_SUBMIT_DELAY_MS = 100;
+/** Line ids a terminal's brain remembers, so a line sent again is not typed twice. */
+const SUBMITTED_LINE_IDS_KEPT = 200;
 const CODEX_CLI_PASTE_SUBMIT_DELAY_MS = 180;
 const CURSOR_CLI_PASTE_SUBMIT_DELAY_MS = 500;
 const AGENT_CLI_READY_TIMEOUT_MS = 20_000;
@@ -6407,9 +6417,22 @@ export function createPtyService({
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
     if (!write(AGENT_CLI_INPUT_CLEAR_TO_START_KEY)) return false;
     await delay(AGENT_CLI_INPUT_CLEAR_DELAY_MS);
-    // Muse 1.4.7 takes a bracketed paste as one multi-line message; typed
-    // newlines would submit it line by line.
-    if (provider === "codex" || provider === "muse") {
+    return await writeAgentCliText(write, inputText, provider, false);
+  };
+
+  /**
+   * Puts text into an agent CLI's input without submitting it. Codex and Muse
+   * take a bracketed paste (Muse 1.4.7 takes one as a single multi-line
+   * message; typed newlines would submit it line by line); `paste` sends one
+   * to every CLI, for text with line breaks. The rest get the text typed.
+   */
+  const writeAgentCliText = async (
+    write: (data: string) => boolean,
+    inputText: string,
+    provider: TerminalResumeProvider | null,
+    paste: boolean,
+  ): Promise<boolean> => {
+    if (paste || provider === "codex" || provider === "muse") {
       return write(`${AGENT_CLI_BRACKETED_PASTE_START}${inputText}${AGENT_CLI_BRACKETED_PASTE_END}`);
     }
     for (let index = 0; index < inputText.length; index += AGENT_CLI_INPUT_CHUNK_SIZE) {
@@ -6986,6 +7009,44 @@ export function createPtyService({
       });
     },
   });
+
+  /** Lines sent with an id, by id: a repeat gets the first one's answer (`submitInput`). */
+  const submittedLines = new Map<string, Promise<{ ok: true }>>();
+
+  const submitLine = async ({ ptyId, text, inputOrigin }: PtySubmitInputArgs): Promise<{ ok: true }> => {
+    const entry = ptys.get(ptyId);
+    if (!entry || entry.disposed) throw new Error("This terminal is no longer running.");
+    const line = typeof text === "string" ? text.replace(/\r\n?/g, "\n").replace(/\x1b/g, "\u241b") : "";
+    if (!line.trim()) throw new Error("Nothing to send.");
+    const session = sessionService.get(entry.sessionId);
+    const provider = session?.resumeMetadata?.provider ?? providerFromTool(session?.toolType ?? entry.toolTypeHint);
+    const multiline = line.includes("\n");
+    const previous = submitInputFlights.get(entry.sessionId) ?? Promise.resolve(true);
+    const flight = previous
+      .catch(() => true)
+      .then(async () => {
+        if (entry.disposed) return false;
+        const written = await writeAgentCliText((data) => {
+          if (entry.disposed) return false;
+          service.write({ ptyId, data, inputOrigin });
+          return true;
+        }, multiline ? line.replace(/\n/g, "\r") : line, provider, multiline);
+        if (!written) return false;
+        await delay(provider === "codex"
+          ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
+          : multiline ? LOCAL_LINE_PASTE_SUBMIT_DELAY_MS : AGENT_CLI_SUBMIT_DELAY_MS);
+        if (entry.disposed) return false;
+        service.write({ ptyId, data: AGENT_CLI_LINE_SUBMIT_KEY, inputOrigin });
+        return true;
+      });
+    submitInputFlights.set(entry.sessionId, flight);
+    try {
+      if (!(await flight)) throw new Error("This terminal is no longer running.");
+      return { ok: true };
+    } finally {
+      if (submitInputFlights.get(entry.sessionId) === flight) submitInputFlights.delete(entry.sessionId);
+    }
+  };
 
   const service = {
     async waitForResumeTargetBackfill(sessionId: string): Promise<void> {
@@ -9428,6 +9489,32 @@ export function createPtyService({
       } catch (err) {
         logger.warn("pty.write_failed", { ptyId, err: String(err) });
       }
+    },
+
+    /**
+     * A line the person wrote in the terminal's local line (slow links): its
+     * text into the CLI's input, then Enter after the CLI's settle delay. Both
+     * writes happen here, so the link's jitter cannot put the Enter inside the
+     * paste. No clear keys: the CLI's input may hold text typed before, and
+     * the line adds to it the way typing would. Lines to one terminal go in
+     * order. Throws when the terminal is gone, so the caller keeps the text.
+     */
+    async submitInput(args: PtySubmitInputArgs): Promise<{ ok: true }> {
+      const sendId = typeof args.clientSendId === "string" ? args.clientSendId.trim() : "";
+      const earlier = sendId ? submittedLines.get(sendId) : undefined;
+      if (earlier) return await earlier;
+      const submitted = submitLine(args);
+      if (sendId) {
+        submittedLines.set(sendId, submitted);
+        // A failed line may be sent again under its id.
+        submitted.catch(() => submittedLines.delete(sendId));
+        while (submittedLines.size > SUBMITTED_LINE_IDS_KEPT) {
+          const oldest = submittedLines.keys().next().value;
+          if (oldest === undefined) break;
+          submittedLines.delete(oldest);
+        }
+      }
+      return await submitted;
     },
 
     markSessionAttentionRequested(sessionId: string): void {

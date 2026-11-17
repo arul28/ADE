@@ -3912,6 +3912,7 @@ function authorizePtyAdeActionInvocation(
       return;
     case "sendToSession":
     case "resumeSession":
+    case "submitInput":
     case "write":
     case "resize":
     case "dispose":

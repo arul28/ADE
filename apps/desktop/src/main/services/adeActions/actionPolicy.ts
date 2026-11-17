@@ -1422,6 +1422,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "resumeSession",
     "sendToSession",
     "setDefaultShell",
+    "submitInput",
     "write",
   ],
   terminal: [

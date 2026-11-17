@@ -803,6 +803,19 @@ export type PtySendToSessionArgs = {
 
 export type PtyResumeSessionArgs = Omit<PtySendToSessionArgs, "text">;
 
+/** A line from a terminal's local line: typed into the CLI, then submitted with Enter. */
+export type PtySubmitInputArgs = {
+  ptyId: string;
+  text: string;
+  /**
+   * The line's id. A repeat with the same id (sent again after a dropped
+   * link) gets the first one's answer and types nothing.
+   */
+  clientSendId?: string;
+  /** Who sent it (`sessionInputOrigin`), stamped by the preload. */
+  inputOrigin?: unknown;
+};
+
 export type PtySendToSessionResult = PtyCreateResult & {
   session: TerminalSessionSummary | null;
   resumed: boolean;

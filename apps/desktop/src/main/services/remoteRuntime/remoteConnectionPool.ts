@@ -419,17 +419,21 @@ function shouldRetryRemoteRuntimeAction(
 }
 
 /**
- * A chat send with a client id, to a brain that drops a repeat of an id it has
- * seen (`clientSendDedupe`). Sending it again is safe: the brain answers a
- * repeat with the first send's result and writes no second message. So a send
- * whose answer a dropped link lost goes out again after the reconnect, instead
- * of ending as "outcome unknown" and a second copy from the person's retry.
+ * A send with a client id that the brain answers once: a chat send to a brain
+ * that drops a repeat of an id it has seen (`clientSendDedupe`), or a terminal
+ * line (`pty.submitInput`, which every brain that has it dedupes). Sending it
+ * again is safe: the brain answers a repeat with the first send's result and
+ * writes no second copy. So a send whose answer a dropped link lost goes out
+ * again after the reconnect, instead of ending as "outcome unknown" and a
+ * second copy from the person's retry.
  */
-export function isDedupedChatSend(
+export function isDedupedSend(
   request: RemoteRuntimeActionRequest,
   brainDedupesSends: boolean,
 ): boolean {
-  if (!brainDedupesSends || request.domain !== "chat" || request.action !== "sendMessage") return false;
+  const deduped = (request.domain === "chat" && request.action === "sendMessage" && brainDedupesSends)
+    || (request.domain === "pty" && request.action === "submitInput");
+  if (!deduped) return false;
   const args = request.args as { clientSendId?: unknown } | undefined;
   return typeof args?.clientSendId === "string" && args.clientSendId.trim().length > 0;
 }
@@ -1047,7 +1051,7 @@ export class RemoteConnectionPool {
       },
       {
         retryOnConnectionError: (entry) => shouldRetryRemoteRuntimeAction(request)
-          || isDedupedChatSend(request, entry.result.capabilities?.clientSendDedupe === true),
+          || isDedupedSend(request, entry.result.capabilities?.clientSendDedupe === true),
       },
     );
   }

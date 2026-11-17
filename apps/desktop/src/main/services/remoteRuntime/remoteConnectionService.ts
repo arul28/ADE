@@ -83,7 +83,7 @@ import {
   withTempAttachmentFile,
 } from "./attachmentUploadClient";
 import {
-  isDedupedChatSend,
+  isDedupedSend,
   isRemoteRuntimeConnectionError,
   type RemoteConnectionPool,
 } from "./remoteConnectionPool";
@@ -406,12 +406,12 @@ function sameStatusValue(a: unknown, b: unknown): boolean {
 }
 
 /**
- * After a wake, may this call go out again? Replay-safe actions may. A chat send
- * may when it carries a client id and the brain says it recognizes a retry of one
- * it already took, so a message caught by a sleep is delivered, and never twice.
+ * After a wake, may this call go out again? Replay-safe actions may. A send may
+ * when it carries a client id the brain recognizes a retry of (`isDedupedSend`),
+ * so a message caught by a sleep is delivered, and never twice.
  */
 function isRetriableAfterSleep(request: RemoteRuntimeActionRequest, brainDedupesSends: boolean): boolean {
-  return isReplaySafeAdeAction(request.domain, request.action) || isDedupedChatSend(request, brainDedupesSends);
+  return isReplaySafeAdeAction(request.domain, request.action) || isDedupedSend(request, brainDedupesSends);
 }
 
 export class RemoteConnectionService {

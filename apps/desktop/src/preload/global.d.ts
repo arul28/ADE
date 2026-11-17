@@ -862,6 +862,7 @@ import type {
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
   PtySendToSessionArgs,
+  PtySubmitInputArgs,
   PtySendToSessionResult,
   PtyDataEvent,
   PtyExitEvent,
@@ -4511,6 +4512,15 @@ declare global {
           args: { ptyId: string; data: string },
           pin: OpenProjectBinding,
         ) => Promise<void>;
+        /**
+         * A line from the terminal's local line: typed into the agent CLI, then
+         * Enter after its settle delay, on the terminal's machine. Absent where
+         * the client cannot send one (ADE Web), which keeps the local line off.
+         */
+        submitInput?: (
+          args: PtySubmitInputArgs,
+          pin: OpenProjectBinding,
+        ) => Promise<{ ok: true }>;
         resize: (
           args: {
             ptyId: string;

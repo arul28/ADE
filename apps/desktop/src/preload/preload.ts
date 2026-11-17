@@ -919,6 +919,7 @@ import type {
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
   PtySendToSessionArgs,
+  PtySubmitInputArgs,
   PtySendToSessionResult,
   PtyDataEvent,
   PtyExitEvent,
@@ -12625,6 +12626,19 @@ const adeBridge = {
         { args: runtimeArg },
       );
       if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyWrite, runtimeArg);
+    },
+    submitInput: async (
+      args: PtySubmitInputArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> => {
+      const runtimeArgs = { ...args, inputOrigin: await sessionInputOriginFor(pin) };
+      return callPinnedOrBoundRuntimeActionOr<{ ok: true }>(
+        pin,
+        "pty",
+        "submitInput",
+        { args: runtimeArgs },
+        () => ipcRenderer.invoke(IPC.ptySubmitInput, runtimeArgs),
+      );
     },
     resize: async (
       arg: {
