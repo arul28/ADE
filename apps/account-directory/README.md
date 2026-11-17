@@ -647,12 +647,12 @@ A send to a chat or CLI whose computer rests or is gone goes here
 
 - **The checks.** The wake checks run before the insert, so a refusal stores
   nothing: blocked, hours and disk (`wakeBlocker`), `update_in_progress`,
-  `update_needed` (an image below `CLOUD_CHAT_QUEUE_MIN_ADE_VERSION` that can
-  not update on wake), `plan_past_due`, the awake cap (a 12 s wait), and the
+  `update_needed` (a computer whose boot report did not list `chat_queue` and
+  that can not update on wake), `plan_past_due`, the awake cap (a 12 s wait), and the
   idle cleanup.
 - **The wake.** In `waitUntil`, the server starts an asleep computer and runs
   `ade cloud messages drain --json` there over exec (120 s). The booted route
-  stores the computer's `ade_version`.
+  stores the computer's `ade_version` and `features` (`ade_features`).
 - **A deleted computer.** The send starts a server launch with `continueChat
   { machineKey, chatId, kind }` on the old lane and branch and answers
   `wake.state: "launching"` with the `launchId`. The row is inserted only

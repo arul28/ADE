@@ -519,7 +519,12 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
     },
     madeBy: { kind: "person" },
     channel: "beta",
-    continueChat: { machineKey: chat.machine_key, chatId: chat.chat_id, ...(chat.kind === "cli" ? { kind: "cli" as const } : {}) },
+    continueChat: {
+      machineKey: chat.machine_key,
+      chatId: chat.chat_id,
+      ...(chat.kind === "cli" ? { kind: "cli" as const } : {}),
+      ...(input.settings && chat.kind !== "cli" ? { settings: input.settings } : {}),
+    },
   };
   const started = await deps.wake!.startLaunch(parsed);
   if (started.status !== 200 && started.status !== 201) return started;

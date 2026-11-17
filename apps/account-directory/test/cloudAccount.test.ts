@@ -2894,6 +2894,12 @@ describe("ADE Cloud without a computer", () => {
     expect(providerCalls(harness, /POST .*\/start$/)).toHaveLength(0);
 
     harness.exec("update cloud_accounts set used_milli = 0 where user_id = ?", OWNER);
+    // An image that never listed `chat_queue` can't drain: refused before anything is kept, until its boot report lists it.
+    const old = await harness.send(OWNER, "POST", messages, { messageId: "m1", text: "Fix the footer." });
+    expect([old.status, ((await old.json()) as { error?: { code?: string } }).error?.code]).toEqual([409, "update_needed"]);
+    expect(queued()).toEqual([]);
+    expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/booted`, { adeVersion: "1.2.131", features: ["chat_queue", "later_feature"] })).status).toBe(200);
+    expect(harness.row("select ade_features from cloud_computers where instance_id = ?", INSTANCE).ade_features).toBe("chat_queue");
     // Settings keep known keys with short plain values only.
     const settings = { reasoningEffort: "xhigh", fastMode: true, fastTier: "turbo", presetId: "<b>p</b>", runtimeActor: "cto" };
     const sent = await harness.send(OWNER, "POST", messages, { messageId: "m1", text: "Fix the footer.", settings });
@@ -3010,7 +3016,7 @@ describe("ADE Cloud without a computer", () => {
     harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
     seedAccount(harness, OWNER);
-    seedComputer(harness, { machine_key: "key-cli", lane_id: LANE, lane_name: "Fix the login page", lane_project_origin: "https://github.com/acme/widgets", lane_branch: "ade/fix-login" });
+    seedComputer(harness, { machine_key: "key-cli", ade_features: "chat_queue", lane_id: LANE, lane_name: "Fix the login page", lane_project_origin: "https://github.com/acme/widgets", lane_branch: "ade/fix-login" });
     const saveSession = (sessionId: string, kind: "cli" | "shell", toolType: string) => harness.send(OWNER, "PUT", `/cloud/sessions/key-cli/${sessionId}`, {
       instanceId: INSTANCE, format: "text", text: "$ ready\n", row: { kind, toolType, laneId: LANE, projectKey: "github.com/acme/widgets" },
     });

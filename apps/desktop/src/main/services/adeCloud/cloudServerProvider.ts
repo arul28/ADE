@@ -10,6 +10,7 @@
 
 import { readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState, type CloudDiskLaneUse, type CloudFreeUnlockResult } from "../../../shared/adeCloud";
 import {
+  CLOUD_COMPUTER_FEATURES,
   CLOUD_COMPUTER_HEADER,
   CLOUD_COMPUTER_PLATFORM_HEADER,
   CLOUD_PATHS,
@@ -307,7 +308,8 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     },
 
     async reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean }> {
-      const body = record(await request("POST", instancePath(id, "booted"), { body: { adeVersion } }));
+      // Only the computer's own brain sends it, and that brain has every feature this build lists.
+      const body = record(await request("POST", instancePath(id, "booted"), { body: { adeVersion, features: CLOUD_COMPUTER_FEATURES } }));
       return { sleepWhenIdle: body?.sleepWhenIdle === true };
     },
 

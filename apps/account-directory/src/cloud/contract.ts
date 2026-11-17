@@ -131,8 +131,9 @@
  * image. `{ reason: "idle", computerIdle: true }` is the computer updating
  * itself: refused unless it is running, and a no-op (`started: false`) unless
  * it is behind the image a passed check allowed. One update at a time.
- * `POST /cloud/instances/:id/booted` takes `{ adeVersion }`; every brain start
- * sends it, and it settles a waiting update.
+ * `POST /cloud/instances/:id/booted` takes `{ adeVersion, features }`; every
+ * brain start sends it, and it settles a waiting update. `features` lists
+ * `CLOUD_COMPUTER_FEATURES` that this image has; an older image sends none.
  * `POST /cloud/instances/:id/resize` takes `{ origin: "auto" }` from the
  * computer's own disk grower, so analytics can tell it from a person's grow.
  * With `{ origin: "auto", launchId }` it is a server launch's setup moving its
@@ -1318,10 +1319,12 @@ export const CLOUD_COMPUTER_COMMANDS = {
   saveForRest: "ade cloud save-for-rest --capsules --json",
 } as const;
 /**
- * The first ADE release whose brain drains the chat queue. An older computer
- * that can't update on wake answers `update_needed`.
+ * What a computer's ADE can do, in its boot report
+ * (`POST /cloud/instances/:id/booted` `features`). `chat_queue`: it drains
+ * the chat message queue. A computer that reported no list is an older image.
  */
-export const CLOUD_CHAT_QUEUE_MIN_ADE_VERSION = "1.2.130-beta.49";
+export const CLOUD_COMPUTER_FEATURES = ["chat_queue"] as const;
+export type CloudComputerFeature = typeof CLOUD_COMPUTER_FEATURES[number];
 
 /** `ade cloud save-for-rest --capsules --json` prints one line of this. */
 export type CloudSaveForRestReport = {
@@ -1715,6 +1718,12 @@ export type CloudServerLaunchRequest = {
     chatId: string;
     /** `cli`: the saved row is a CLI session copy (`chatId` is its session id); the computer restores the CLI. Left out: a chat. */
     kind?: "chat" | "cli";
+    /**
+     * The settings the person picked with the message (`CloudChatMessageRequest.settings`).
+     * The computer applies them to the restored chat before it sends the message.
+     * Only the server sets it; a launch start from a client never carries it.
+     */
+    settings?: CloudChatMessageSettings;
   };
 };
 

@@ -122,11 +122,14 @@ create table if not exists cloud_fork_capsules (
 );
 create index if not exists cloud_fork_capsules_lane on cloud_fork_capsules (user_id, machine_key, lane_id);
 
--- The ADE version each computer last reported at brain start (`POST
--- .../booted`): the queue answers `update_needed` for an image too old to
--- drain it that won't update itself.
+-- The ADE version and features each computer last reported at brain start
+-- (`POST .../booted`). `ade_features` is a comma list of
+-- `CLOUD_COMPUTER_FEATURES`, null for an image that sends none: the queue
+-- answers `update_needed` for a computer without `chat_queue` that won't
+-- update itself.
 alter table cloud_computers add column ade_version text;
 alter table cloud_computers add column ade_version_at integer;
+alter table cloud_computers add column ade_features text;
 
 -- Launches that continue an existing chat: one per (lane, chat).
 alter table cloud_launches add column continue_machine_key text;

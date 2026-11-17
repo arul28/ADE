@@ -18,7 +18,7 @@ import { routeCtoCopy } from "./ctoCopy";
 import { handleInternalEventWake, isInternalEventWakeRequest, routeEventWakeSubscription, type EventWakeOutcome } from "./eventWakes";
 import { routeJiraIssue, routeJiraSearch, routeLinearQuery } from "./integrations";
 import { routeCloudLimits } from "./limits";
-import { adeVersionAtLeast, routeChatMessages, routeComputerMessages, type ChatWake } from "./chatMessages";
+import { routeChatMessages, routeComputerMessages, type ChatWake } from "./chatMessages";
 import { ROW_ID } from "./http";
 import { routeSessionCopies } from "./sessionCopies";
 import { routeGitSummaries } from "./gitSummaries";
@@ -44,7 +44,7 @@ import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage
 import { ignoredFilesStatement, keepIdleComputer, parseIgnoredFiles, recordIdleUse } from "./idleCleanup";
 import {
   CLOUD_BLOCKED_READ_ROUTES,
-  CLOUD_CHAT_QUEUE_MIN_ADE_VERSION,
+  CLOUD_COMPUTER_FEATURES,
   CLOUD_COMPUTER_COMMANDS,
   CLOUD_EDGE_PATHS,
   CLOUD_PATHS,
@@ -1236,10 +1236,9 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     const adeVersion = shortText(body.adeVersion, 64);
     const { sleepWhenIdle } = await recordBootReport(env, computer, adeVersion, now);
-    // The message queue reads it: an image too old to drain the queue answers `update_needed` (`chatWakeFor`).
-    if (adeVersion) {
-      await env.DB.prepare("update cloud_computers set ade_version = ?, ade_version_at = ? where instance_id = ?").bind(adeVersion, now, computer.instance_id).run();
-    }
+    // The message queue reads the features (`chatWakeFor`). Every report replaces them: an older image sends none.
+    await env.DB.prepare("update cloud_computers set ade_version = coalesce(?, ade_version), ade_version_at = ?, ade_features = ? where instance_id = ?")
+      .bind(adeVersion, now, featuresOf(body.features), computer.instance_id).run();
     return json({ ok: true, sleepWhenIdle });
   },
   // The computer's own measure of its disk and its last work, sent at its idle step.
@@ -1552,6 +1551,13 @@ async function handleComputerUse(env: CloudEnv, computer: ComputerRow, now: numb
   return refused ?? json({ ok: true });
 }
 
+/** The known features of a boot report, as the stored comma list; null when it sent none. */
+function featuresOf(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  const known = CLOUD_COMPUTER_FEATURES.filter((feature) => value.includes(feature));
+  return known.length ? known.join(",") : null;
+}
+
 const UPDATE_NEEDED_MESSAGE = "This computer runs an older ADE that can't take messages while it sleeps. Open the lane and update the computer, then send again.";
 /** Long enough for a woken computer's ADE to start and send what waits; a drain that runs longer goes on by itself. */
 const DRAIN_EXEC_TIMEOUT_MS = 120_000;
@@ -1569,8 +1575,8 @@ function chatWakeFor(env: CloudEnv, userId: string, provider: CloudProvider | nu
       const { blocked } = await wakeBlocker(env, computer.user_id, now);
       if (blocked) return blocked.response;
       if (computer.update_state === "updating") return fail("update_in_progress", new CloudUpdateInProgressError().message, 409);
-      // An image older than the drain command: fine when its wake updates it, else it must update first.
-      if (computer.ade_version && !adeVersionAtLeast(computer.ade_version, CLOUD_CHAT_QUEUE_MIN_ADE_VERSION)
+      // A computer that never reported `chat_queue` can't drain: fine when its wake updates it, else it must update first.
+      if (!computer.ade_features?.split(",").includes("chat_queue")
         && !isBehindAutomatic(computer, await readUpdateTargets(env), now)) {
         return fail("update_needed", UPDATE_NEEDED_MESSAGE, 409);
       }

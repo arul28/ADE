@@ -223,6 +223,13 @@ A message to a chat or CLI whose computer rests goes to the account server
 4. The computer claims each message in one conditional update, sends it with
    `clientSendId = messageId`, and reports it. Each message goes once.
 
+A chat message can carry `settings`: the model, preset, reasoning effort and
+fast mode the person picked while the chat rested. The server checks each
+field (`cloudChatMessageSettingsOf`), seals the settings with the text, and
+gives them only to the chat's computer. That computer applies them with
+`updateSession` before it sends the message. A failed apply logs
+`cloud.chat_queue_settings_failed` and the message still goes.
+
 The person can take back a queued message (`DELETE`); one a claim took
 answers 409 `message_taken`. An unsent message fails after 24 hours.
 
@@ -237,6 +244,9 @@ chat continues on the new computer in the same chat row.
   (`forkCapsules.ts`). The other 10 providers replay the saved transcript.
 - The new computer moves the saved chat to its own machine key
   (`POST /cloud/chats/:m/:c/move`); the queued messages move with it.
+- The first message's `settings` go in `continueChat.settings` (chats only).
+  The new computer applies them after the restore and before it sends the
+  message. A second send that joins the launch carries no settings.
 - A lane and chat has one continue launch at a time
   (`cloud_launches_continue`); a second send joins it.
 - A failed, timed-out, cancelled or gone launch fails its messages with the

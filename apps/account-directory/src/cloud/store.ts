@@ -181,6 +181,8 @@ export type ComputerRow = {
   /** The ADE version of its last brain start (migration 0039, `POST .../booted`). */
   ade_version?: string | null;
   ade_version_at?: number | null;
+  /** Comma list of `CLOUD_COMPUTER_FEATURES` from the last boot report; null: an older image. */
+  ade_features?: string | null;
 };
 
 export type AccountRow = {
