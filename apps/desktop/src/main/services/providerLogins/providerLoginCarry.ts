@@ -12,12 +12,17 @@
  * - A login in an OS keychain or keyring is never read here. `osStore` only
  *   says that one exists, for `status`. It is read only when the person
  *   allows it (Antigravity's Allow, `providerLoginAllow.ts`), never in a pass.
- * - Claude's own login and Pi's Anthropic login are never carried.
+ * - Claude's own login and Pi's Anthropic login are never carried, and
+ *   neither is an Anthropic login held by OpenCode: only OpenCode's own
+ *   opencode.ai sign-in travels.
+ * - A login kept in a database (OpenCode's `opencode.db`) is never read as a
+ *   file. Its spec names a `store`, which gives a mark and the one login.
  *
  * A row with `carry: "fallback"` is built where the format is known and stays
  * off until a real test passes; turning one on is a one-line change here.
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -37,6 +42,8 @@ import { isClassicGitHubToken, readGhHostsGithubCom } from "./providerLoginGhCli
 import { parseQwenUserSettings } from "../ai/qwenUserSettings";
 import { ANTIGRAVITY_TOKEN_FILE, peekAntigravityKeyringPresent } from "../ai/antigravityAuth";
 import { isRecord } from "../shared/utils";
+import { resolveAdeOpenCodeStoreDir } from "../../../shared/opencodeDataHome";
+import { readOpenCodeCarryCredential, readOpenCodeCarryMark } from "../opencode/openCodeCredentials";
 
 /**
  * Copilot's carried sign-in is this computer's GitHub CLI login for
@@ -63,7 +70,8 @@ export type CarryRoot =
   | "qwenHome"
   | "antigravityHome"
   | "piAgent"
-  | "proxyAuth";
+  | "proxyAuth"
+  | "openCodeData";
 
 export type CarryContext = {
   env: NodeJS.ProcessEnv;
@@ -81,6 +89,19 @@ export type CarryFileSpec = {
   carry: boolean;
   /** A bundle with a required file missing is "not signed in". */
   required: boolean;
+  /** Set for a login kept in a database: capture asks the store, never `stat`s and reads the whole file. */
+  store?: CarryStore;
+};
+
+/**
+ * A login kept inside a database file. `mark` stands in for the file's
+ * `stat` (null: no login there, the same as a missing file) and `read` for
+ * its bytes (the one login, as JSON). "unreadable": the store cannot be read
+ * now (a lock); capture tries again on the next pass.
+ */
+export type CarryStore = {
+  mark(abs: string): { mtimeMs: number; size: number; ino: number } | null | "unreadable";
+  read(abs: string): Buffer | null | "unreadable";
 };
 
 /** Files read together in one stable pass. One bundle can hold several sign-ins (Pi). */
@@ -219,8 +240,15 @@ function exists(file: string): boolean {
   }
 }
 
-function file(root: CarryRoot, dir: string, rel: string, options: { carry?: boolean; required?: boolean } = {}): CarryFileSpec {
-  return { root, rel, abs: path.join(dir, rel), carry: options.carry ?? true, required: options.required ?? true };
+function file(root: CarryRoot, dir: string, rel: string, options: { carry?: boolean; required?: boolean; store?: CarryStore } = {}): CarryFileSpec {
+  return {
+    root,
+    rel,
+    abs: path.join(dir, rel),
+    carry: options.carry ?? true,
+    required: options.required ?? true,
+    ...(options.store ? { store: options.store } : {}),
+  };
 }
 
 // ── Kimi: the login slot comes from config.toml, read only when it changes ──
@@ -274,6 +302,71 @@ function kimiProviderPart(configText: string | null): Record<string, unknown> | 
     ...(baseUrl ? { baseUrl } : {}),
     ...(key && storage ? { oauth: { storage, key, ...(oauthHost ? { oauthHost } : {}) } } : {}),
   };
+}
+
+// ── OpenCode: the opencode.ai sign-in, one row of ADE's own OpenCode store ──
+
+/** The store file, under the `openCodeData` root (`resolveAdeOpenCodeStoreDir`). */
+export const OPENCODE_DB_REL = "opencode.db";
+
+let openCodeMarkMemo: { abs: string; stat: string; mark: { mtimeMs: number; size: number; ino: number } | null } | null = null;
+
+/**
+ * The opencode.ai row's mark. The store is large and OpenCode writes it on
+ * every turn, so the row is asked for only when the file or its WAL moved
+ * since the last pass; an idle store costs two `stat`s.
+ */
+const OPENCODE_STORE: CarryStore = {
+  mark: (abs) => {
+    const stat = `${statMark(abs)}|${statMark(`${abs}-wal`)}`;
+    if (openCodeMarkMemo && openCodeMarkMemo.abs === abs && openCodeMarkMemo.stat === stat) return openCodeMarkMemo.mark;
+    const read = readOpenCodeCarryMark(abs);
+    if (read === "unreadable") return "unreadable";
+    const mark = read
+      ? { mtimeMs: read.updatedAt, size: read.rows, ino: Number.parseInt(crypto.createHash("sha256").update(read.id).digest("hex").slice(0, 8), 16) }
+      : null;
+    openCodeMarkMemo = { abs, stat, mark };
+    return mark;
+  },
+  read: (abs) => {
+    const row = readOpenCodeCarryCredential(abs);
+    return row === null || row === "unreadable" ? row : Buffer.from(JSON.stringify(row), "utf8");
+  },
+};
+
+function parseOpenCode(contents: ReadonlyMap<string, Buffer>): CarryParseResult {
+  const data = json(contents, OPENCODE_DB_REL);
+  const value = data && isRecord(data.value) ? data.value : null;
+  const id = str(data, "id");
+  if (!value || !id) return { unreadable: true };
+  const parts = { openCodeCredential: { id, label: str(data, "label") ?? "default", value } };
+  if (value.type === "oauth") {
+    const access = str(value, "access");
+    if (!access) return { unreadable: true };
+    const metadata = isRecord(value.metadata) ? value.metadata : null;
+    const email = str(metadata, "email");
+    const accountId = str(metadata, "accountID");
+    const expires = typeof value.expires === "number" && value.expires > 0 ? value.expires : null;
+    return {
+      logins: [{
+        slot: "base",
+        class: "renewing",
+        familySecret: str(value, "refresh") ?? access,
+        account: email || accountId ? { email, id: accountId } : null,
+        expiresAt: expires,
+        files: [],
+        parts,
+      }],
+      skipped: [],
+    };
+  }
+  if (value.type === "key") {
+    const key = str(value, "key");
+    if (!key) return { unreadable: true };
+    return { logins: [{ slot: "base", class: "fixed", familySecret: key, account: null, expiresAt: null, files: [], parts }], skipped: [] };
+  }
+  // An external login (a cloud provider's own sign-in) holds no secret; it has its own account sync.
+  return { logins: [], skipped: [{ slot: "base", state: "not_checked" }] };
 }
 
 // ── Pi ────────────────────────────────────────────────────────────────
@@ -407,8 +500,14 @@ const ROWS: CarryRow[] = [
   },
   {
     provider: "opencode",
-    carry: "fallback",
-    message: "Sign in to OpenCode on the cloud computer, or add a key. ADE does not copy OpenCode sign-ins yet.",
+    carry: "carried",
+    message: "ADE copies OpenCode's opencode.ai sign-in (OpenCode Go and Zen), without its refresh token. This computer keeps renewing it. "
+      + "Other sign-ins made in OpenCode stay on this computer, and ADE never copies an Anthropic login.",
+    locate: (ctx) => [{
+      id: "opencode/base",
+      files: [file("openCodeData", carryRootDir("openCodeData", ctx)!, OPENCODE_DB_REL, { carry: false, store: OPENCODE_STORE })],
+    }],
+    parse: (_bundle, contents) => parseOpenCode(contents),
   },
   {
     provider: "pi",
@@ -780,6 +879,9 @@ export function carryRootDir(root: CarryRoot, ctx: CarryContext): string | null 
     // agy keeps its folder under `<home>/.gemini` whatever GEMINI_HOME says.
     case "antigravityHome": return path.join(ctx.homeDir, ".gemini");
     // ADE's subscription proxy keeps its logins under the ADE home (`cliProxyApiConfig.ts`).
+    // ADE's own OpenCode store (`opencodeDataHome.ts`), never the person's own OpenCode.
+    // Its ADE home falls back to this context's home, as the proxy's does, never the process's own.
+    case "openCodeData": return resolveAdeOpenCodeStoreDir({ ...ctx.env, ADE_HOME: ctx.env.ADE_HOME?.trim() || path.join(ctx.homeDir, ".ade") });
     case "proxyAuth": return path.join(ctx.env.ADE_HOME?.trim() ? path.resolve(ctx.env.ADE_HOME.trim()) : path.join(ctx.homeDir, ".ade"), "proxy", "auth");
     case "devinData": {
       const credentials = devinCredentialFiles({ env: ctx.env, homeDir: ctx.homeDir, platform: ctx.platform });
@@ -880,6 +982,17 @@ export function accessOnlyFile(provider: ProviderLoginProvider, rel: string, dat
   // Droid's file is encrypted: it cannot be cut, so it goes whole.
   if (provider === "droid") return { data, renewalSafe: false };
   return { data, renewalSafe: true };
+}
+
+/**
+ * The opencode.ai credential value without its refresh token, for the same
+ * reason as `accessOnlyFile`. The field stays, empty, as OpenCode keeps it
+ * for a login with no refresh token: OpenCode 2.0.29 then fails its renewal
+ * in the last 5 minutes and leaves the row as it is.
+ */
+export function accessOnlyOpenCodeValue(value: Record<string, unknown>): Record<string, unknown> {
+  if (value.type !== "oauth" || !("refresh" in value)) return value;
+  return { ...value, refresh: "" };
 }
 
 /** Pi's entry without its refresh token, for the same reason as `accessOnlyFile`. */

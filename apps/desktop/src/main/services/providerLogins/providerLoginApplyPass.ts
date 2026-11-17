@@ -106,6 +106,8 @@ export function createApplyPass(s: SyncShared) {
   const policy = deps.cloudComputer ? CLOUD_COMPUTER_POLICY : OWN_COMPUTER_POLICY;
   /** `<place> <key>` pairs whose collision with a local sign-in was logged, so each is logged once. */
   const keptLocalLogged = new Set<string>();
+  /** Places whose provider is not installed here yet (OpenCode), logged once: apply tries again each pass. */
+  const notInstalledLogged = new Set<string>();
 
   /** The local states capture read for the place: Pi's own sub-provider's entries and the file as a whole; every slot otherwise. */
   function* localSlotsAt(provider: ProviderLoginProvider, place: string) {
@@ -207,7 +209,8 @@ export function createApplyPass(s: SyncShared) {
     const kimiConfigs = new Set(entries.flatMap((entry) => [entry.kimiConfig?.path, entry.antigravity?.path].filter((abs): abs is string => Boolean(abs))));
     let present = 0;
     for (const spec of bundle.files) {
-      if (kimiConfigs.has(spec.abs)) continue;
+      // A database (OpenCode's store) is never read whole; its row has no file entry here.
+      if (kimiConfigs.has(spec.abs) || spec.store) continue;
       let bytes: Buffer;
       try {
         bytes = fs.readFileSync(spec.abs);
@@ -621,9 +624,13 @@ export function createApplyPass(s: SyncShared) {
       }
       if (!result.ok) {
         applyStates.set(place, { state: "failed", key: want.kind === "key" ? "key" : want.key });
-        deps.logger.warn("provider_login.apply_failed", { provider, place, reason: result.reason, code: result.code ?? null });
+        if (result.reason !== "not_installed" || !notInstalledLogged.has(place)) {
+          if (result.reason === "not_installed") notInstalledLogged.add(place);
+          deps.logger.warn("provider_login.apply_failed", { provider, place, reason: result.reason, code: result.code ?? null });
+        }
         continue;
       }
+      notInstalledLogged.delete(place);
       state.applied[place] = result.entry;
       ownerOff.delete(place);
       applyStates.set(place, { state: want.kind === "key" ? "key" : "applied", key: want.kind === "key" ? "key" : want.key });

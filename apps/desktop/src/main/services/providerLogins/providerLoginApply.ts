@@ -15,6 +15,11 @@
  *   Antigravity's sign-in is the agy CLI's token file
  *   (`~/.gemini/antigravity-cli/antigravity-oauth-token`); the CLI's settings
  *   are not written.
+ * - OpenCode's sign-in is a row of ADE's own OpenCode store, written through
+ *   OpenCode's own API (`setOpenCodeCredentialWriter`), never by SQL: OpenCode
+ *   makes and migrates its store, checks the value, and a running server has
+ *   the row at once. The row is removed only while it is still the one ADE
+ *   wrote; a sign-in the person made there is another row and stays.
  * - A cloud computer that does not own a renewing sign-in gets it
  *   access-only: its refresh token is taken out (`accessOnlyFile`). Only a
  *   cloud computer that took the renewal over (step 3b, `full`) gets the full
@@ -41,8 +46,11 @@ import path from "node:path";
 import type { ProviderLoginProvider } from "../../../shared/types/providerLogins";
 import { writeFileAtomic } from "../state/durableFile";
 import { isRecord } from "../shared/utils";
+import { readOpenCodeCredentialValue, type OpenCodeCarryCredential } from "../opencode/openCodeCredentials";
 import {
+  OPENCODE_DB_REL,
   accessOnlyFile,
+  accessOnlyOpenCodeValue,
   accessOnlyPiEntry,
   carryRootDir,
   carryRow,
@@ -70,6 +78,8 @@ export type AppliedEntry = {
   pi?: { authPath: string; slot: string; entryHash: string };
   kimiConfig?: { path: string };
   qwen?: { path: string; partHash: string; envKeys: string[]; wroteProviders: boolean };
+  /** The OpenCode credential row apply wrote: its id, and the short hash of its value as OpenCode stored it. */
+  openCode?: { dbPath: string; id: string; valueHash: string };
   /** The agent settings fields apply wrote, by dotted name, with the short hash of each value. */
   antigravity?: { path: string; fields: Record<string, string> };
   /** The copy's expiry (epoch ms), for the short wait before a turn (step 3a); null when it has none. */
@@ -224,7 +234,35 @@ export function appliedEntryUnchanged(entry: AppliedEntry): boolean {
     if (current === "unreadable") return false;
     if (current !== "missing" && qwenPartHash(qwenPartOf(current, entry.qwen.envKeys)) !== entry.qwen.partHash) return false;
   }
+  if (entry.openCode) {
+    const current = readOpenCodeCredentialValue(entry.openCode.dbPath, entry.openCode.id);
+    if (current === "unreadable") return false;
+    if (current && shortHash(JSON.stringify(current)) !== entry.openCode.valueHash) return false;
+  }
   return true;
+}
+
+// ── OpenCode's store (written through OpenCode's own server) ─────────
+
+/**
+ * Writes the carried opencode.ai row into ADE's OpenCode store through
+ * OpenCode's `credential` API. The brain sets the real one
+ * (`openCodeCarryWriter.ts`); without it an OpenCode sign-in is not applied.
+ */
+export type OpenCodeCredentialWriter = {
+  /**
+   * Put the row into the store at `dbPath` and make it the one in use; a row
+   * with the same id is replaced. "not_installed": no OpenCode here yet.
+   */
+  put(dbPath: string, row: OpenCodeCarryCredential): Promise<"ok" | "not_installed">;
+  /** Take the row out of the store at `dbPath`. "not_installed": no OpenCode here, so nothing to take. */
+  remove(dbPath: string, id: string): Promise<"ok" | "not_installed">;
+};
+
+let openCodeWriter: OpenCodeCredentialWriter | null = null;
+
+export function setOpenCodeCredentialWriter(writer: OpenCodeCredentialWriter | null): void {
+  openCodeWriter = writer;
 }
 
 // ── Pi's lock (proper-lockfile 4.1.2, as Pi takes it) ─────────────────
@@ -374,8 +412,8 @@ export function readBackLoginHashes(provider: ProviderLoginProvider, slot: strin
   for (const bundle of row.locate(ctx)) {
     const contents = new Map<string, Buffer>();
     for (const spec of bundle.files) {
-      const bytes = readBytes(spec.abs);
-      if (bytes) contents.set(spec.rel, bytes);
+      const bytes = spec.store ? spec.store.read(spec.abs) : readBytes(spec.abs);
+      if (bytes && bytes !== "unreadable") contents.set(spec.rel, bytes);
     }
     if (!contents.size) continue;
     const parsed = row.parse(bundle, contents, ctx);
@@ -404,7 +442,9 @@ export type ApplySignIn = {
   full?: boolean;
 };
 
-export type ApplyResult = { ok: true; entry: AppliedEntry } | { ok: false; reason: "refused_path" | "unreadable_target" | "nothing_to_write" | "write_failed"; code?: string | null };
+export type ApplyResult =
+  | { ok: true; entry: AppliedEntry }
+  | { ok: false; reason: "refused_path" | "unreadable_target" | "nothing_to_write" | "write_failed" | "not_installed"; code?: string | null };
 
 /**
  * Write one sign-in. A renewing copy is access-only unless this cloud
@@ -494,6 +534,24 @@ export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | nu
       } else if (previous?.kimiConfig) {
         entry.kimiConfig = previous.kimiConfig;
       }
+    }
+
+    if (want.provider === "opencode") {
+      const row = isRecord(want.parts?.openCodeCredential) ? want.parts!.openCodeCredential as Record<string, unknown> : null;
+      const value = row && isRecord(row.value) ? row.value as Record<string, unknown> : null;
+      if (!row || !value || typeof row.id !== "string" || !row.id) return { ok: false, reason: "nothing_to_write" };
+      if (!openCodeWriter) return { ok: false, reason: "not_installed" };
+      const written = accessOnly ? accessOnlyOpenCodeValue(value) : value;
+      const label = typeof row.label === "string" && row.label ? row.label : "default";
+      const dbPath = path.join(carryRootDir("openCodeData", ctx)!, OPENCODE_DB_REL);
+      // The copy before (another sign-in's row) goes first, while it is still ADE's; a row the person changed stays.
+      if (previous?.openCode && previous.openCode.id !== row.id && appliedEntryUnchanged({ ...previous, files: [] })) {
+        await openCodeWriter.remove(previous.openCode.dbPath, previous.openCode.id);
+      }
+      if (await openCodeWriter.put(dbPath, { id: row.id, label, value: written }) === "not_installed") return { ok: false, reason: "not_installed" };
+      const stored = readOpenCodeCredentialValue(dbPath, row.id);
+      if (!stored || stored === "unreadable") return { ok: false, reason: "write_failed" };
+      entry.openCode = { dbPath, id: row.id, valueHash: shortHash(JSON.stringify(stored)) };
     }
 
     // Antigravity: the token file is the whole sign-in (it names its own
@@ -734,6 +792,17 @@ export async function removeApplied(entry: AppliedEntry): Promise<{ kept: number
         if (entry.qwen.wroteProviders) delete next.modelProviders;
         writePrivateFileAtomic(entry.qwen.path, encodeJson(next));
       }
+    }
+  }
+  if (entry.openCode) {
+    const current = readOpenCodeCredentialValue(entry.openCode.dbPath, entry.openCode.id);
+    if (current === "unreadable") throw Object.assign(new Error("OpenCode's store is busy."), { code: "EBUSY" });
+    if (current && shortHash(JSON.stringify(current)) !== entry.openCode.valueHash) {
+      // Changed since apply wrote it (the person renewed or replaced it there): it stays.
+      kept += 1;
+    } else if (current) {
+      if (!openCodeWriter) throw Object.assign(new Error("OpenCode is not available here."), { code: "ENOWRITER" });
+      await openCodeWriter.remove(entry.openCode.dbPath, entry.openCode.id);
     }
   }
   if (entry.antigravity && isRecord(entry.antigravity.fields)) {

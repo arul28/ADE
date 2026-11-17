@@ -655,6 +655,29 @@ Sign-ins also come down to the person's own computers
 - What the sync down wrote is replaced only while it is as ADE wrote it. It
   leaves on ADE sign-out.
 
+OpenCode's sign-in (`providerLoginCarry.ts`, `openCodeCarryWriter.ts`):
+
+- Only the opencode.ai sign-in travels (OpenCode Go and Zen ride it): the
+  `credential` row with `integration_id = 'opencode'` in ADE's own OpenCode
+  store, the one in use. Other sign-ins made in OpenCode stay on the computer.
+  An Anthropic login held by OpenCode is never copied (the Claude rule).
+- Capture never reads the store file (it is large and changes on every
+  turn). It asks SQLite for the row's id and last write only when the file or
+  its WAL moved, and reads the row when that changed.
+- Apply writes the row through OpenCode's own `credential` API on the shared
+  server, never by SQL, and makes it the one in use. A copy is access-only
+  (the refresh token is empty), on ADE Cloud and on the person's other
+  computers alike. ADE never downloads OpenCode only to write a sign-in; it
+  waits until OpenCode is there.
+- The computer that signed in renews it ahead: 270 s before expiry, ADE asks
+  its OpenCode server to load a new, empty folder, which makes OpenCode 2.0.29
+  renew the login (it renews only inside the last 5 minutes). No model
+  request. The renewed row is pushed by the next pass.
+- An access-only copy's OpenCode asks to renew in the last 5 minutes and is
+  refused; the row stays and works until its own expiry, by which time the
+  renewed copy has come down. A route (`--via opencode-go`) reads the access
+  token straight from the store and works until that expiry.
+
 The account's cards show one card per account for copies from several
 computers ("From 3 computers"), and a pick uses the freshest usable copy of
 that account (`cloudPlacePicks`). A computer that signs out takes its copy out
