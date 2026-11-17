@@ -29,6 +29,10 @@ import { describeTravellingChanges, openChatOnOtherMachine } from "../chat/Cross
 import { MENU_ITEM_CLASS, MenuRowIcon, MenuSeparator, MenuSubmenu, MenuSubmenuStatus } from "../ui/MenuSubmenu";
 import { cn } from "../ui/cn";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
+import { adeCloudMoveSource, wakeAdeCloudLane } from "../../state/adeCloudLaneWake";
+import { CloudMark } from "../remoteTargets/cloudBrand";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
+import { ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE, useOwnMoveMachines } from "../chat/crossMachineMoveTargets";
 
 /**
  * Session menu "Hand off ▸ Another machine ▸". The panel paints at once and
@@ -98,7 +102,11 @@ export function CrossMachineMoveSubmenu({
   const [options, setOptions] = useState<OptionsState>({ status: "idle" });
   const requestRef = useRef(0);
 
+  // An ADE Cloud chat whose computer rests or was removed:
+  // the menu never asks that computer, so opening it never dials or wakes one.
+  const cloudSource = adeCloudMoveSource(binding, session.id);
   const load = () => {
+    if (cloudSource) return;
     const request = ++requestRef.current;
     setOptions({ status: "loading" });
     void withChatPin(binding, (chatPin) => window.ade.agentChat
@@ -112,6 +120,8 @@ export function CrossMachineMoveSubmenu({
   };
 
   const result = options.status === "ready" ? options.result : null;
+  // Own computers only: ADE Cloud shows once, as the disabled row below.
+  const machines = useOwnMoveMachines(result?.machines);
   // The summary and the brain's answer can arrive in either order.
   const record: AgentChatCrossMachineHandoffRecord | null = pickNewerCrossMachineHandoffRecord(
     session.crossMachineHandoff ?? null,
@@ -236,7 +246,7 @@ export function CrossMachineMoveSubmenu({
   };
 
   const anyQuickBrief = Boolean(
-    result?.machines.some((machine) => machine.online && !machine.unavailableReason && machine.hasRepository !== false),
+    machines?.some((machine) => machine.online && !machine.unavailableReason && machine.hasRepository !== false),
   );
   const quickBriefHint = anyQuickBrief
     ? [
@@ -348,11 +358,30 @@ export function CrossMachineMoveSubmenu({
               <MenuSeparator />
             </>
           ) : null}
-          {options.status === "idle" || options.status === "loading" ? (
+          {cloudSource === "gone" ? (
+            <MenuSubmenuStatus>This chat's ADE Cloud computer was removed. Send it a message: it continues on a new ADE Cloud computer.</MenuSubmenuStatus>
+          ) : cloudSource === "resting" ? (
+            <>
+              <MenuSubmenuStatus>Your ADE Cloud computer is asleep. Wake it to move this chat.</MenuSubmenuStatus>
+              <button
+                type="button"
+                role="menuitem"
+                className={MENU_ITEM_CLASS}
+                onClick={() => {
+                  onClose();
+                  // A move is doing: wake the computer, then the person picks where to move it.
+                  wakeAdeCloudLane(binding, () => onOpenFullSetup(null));
+                }}
+              >
+                <MenuRowIcon icon={ArrowClockwise} />
+                Wake and move
+              </button>
+            </>
+          ) : options.status === "idle" || options.status === "loading" ? (
             <MenuSubmenuStatus>Finding your machines…</MenuSubmenuStatus>
           ) : options.status === "error" ? (
             <MenuSubmenuStatus>{options.message}</MenuSubmenuStatus>
-          ) : result && result.machines.length === 0 ? (
+          ) : machines && machines.length === 0 ? (
             <MenuSubmenuStatus>No other machines on this account.</MenuSubmenuStatus>
           ) : null}
           {hardBlockers.length ? (
@@ -368,7 +397,7 @@ export function CrossMachineMoveSubmenu({
               {quickBriefHint}
             </div>
           ) : null}
-          {result?.machines.map((machine) => {
+          {machines?.map((machine) => {
             // No repository there: the full setup asks before cloning. A CLI
             // has no full setup, so it waits until the project is open there.
             const needsClone = machine.hasRepository === false;
@@ -432,6 +461,22 @@ export function CrossMachineMoveSubmenu({
               </div>
             );
           })}
+          {machines ? (
+            <div className="flex items-center gap-0.5" data-testid="session-menu-move-ade-cloud">
+              <button
+                type="button"
+                disabled
+                title={ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE}
+                aria-label={`${ADE_CLOUD_NAME}, unavailable. ${ADE_CLOUD_MOVE_UNAVAILABLE_SENTENCE}`}
+                className={cn(MENU_ITEM_CLASS, "min-w-0 flex-1 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent")}
+              >
+                <CloudMark size={12} className="shrink-0 text-muted-fg" />
+                <span className="min-w-0 flex-1 truncate">{ADE_CLOUD_NAME}</span>
+                <span className="ml-3 shrink-0 whitespace-nowrap text-[10px] text-muted-fg/60">not yet</span>
+              </button>
+              <span aria-hidden className="kit-icon-btn shrink-0 invisible" />
+            </div>
+          ) : null}
           {cli ? null : (
             <>
               <MenuSeparator />

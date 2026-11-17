@@ -647,8 +647,8 @@ click it by point, or use App Control for the DOM.
 ## Streaming
 
 The driver encodes the virtual display with VideoToolbox and writes Annex-B
-H.264 access units to a token-guarded loopback HTTP endpoint, exactly like
-`iosVideoStreamServer.ts`. The renderer decodes with WebCodecs, using a codec
+H.264 access units to a token-guarded loopback HTTP endpoint
+(`macDesktopStreamServer.ts`, on `media/loopbackTokenServer.ts`). The renderer decodes with WebCodecs, using a codec
 string built from the stream's own SPS.
 
 Latency is a set of deliberate choices, measured against the open-source
@@ -1189,10 +1189,9 @@ Accessibility (a frameless Electron palette) says so, rather than "No window".
 
 A sandboxed app's Open and Save panels get their content from a system
 service (`com.apple.appkit.xpc.openAndSavePanelService`), but on macOS 27 the
-panel window on screen belongs to the app itself. Measured with TextEdit on a
-lane display (2026-10-26): the panel opened on the lane's display, also when
-the app had no window left there. The service owned only a hidden window. An
-Accessibility move of the panel reported success, and the panel did not move.
+panel window on screen belongs to the app itself. The panel opens on the
+lane's display, also when the app has no window left there. The service owns only a hidden window, and an
+Accessibility move of the panel does not move it.
 So a lane app's panel is a lane window like any other: listed, observed and
 watched. A window the service itself owns is never taken, because taking that
 process would give one lane every app's next panel: `claim`/`park` refuse it,

@@ -1,21 +1,16 @@
 # Remote Commands (`syncRemoteCommandService`)
 
-Remote commands are the execution channel for controllers. A controller
-(another desktop acting as a peer, or the iOS app) sends a `command`
-envelope to the ADE brain; the brain's in-process services
-resolves it through `syncRemoteCommandService`, runs the underlying
-action against its in-process services, and replies with `command_ack`
-and then `command_result`.
+Remote commands are how controllers act. A controller (a desktop peer, the
+iPhone, the web client) sends a `command` envelope to the brain;
+`syncRemoteCommandService` runs the action on the brain's in-process
+services and replies with `command_ack`, then `command_result`.
 
-Source file: `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`
-(~4,600 lines). The desktop tree's
-`apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` is a
-one-line re-export of the canonical module.
+Source: `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`. The
+desktop file `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts`
+is a one-line re-export.
 
-Terminology note: **brain** is the always-on machine-owned ADE process.
-Some wire and code identifiers also say `host` or `syncHost` because
-those names predate the current glossary; they refer to the brain/sync
-authority unless this document explicitly says otherwise.
+**Brain** is the always-on ADE process of a machine. Wire and code names
+that say `host` or `syncHost` mean the brain, unless this doc says otherwise.
 
 ## Shape
 
@@ -82,241 +77,151 @@ type SyncRemoteCommandPolicy = {
 };
 ```
 
-The scope label matters because the brain serves **multiple projects**
-and one hidden personal-chat scope at once. `runtime`-scoped commands
-(machine-wide diagnostics, personal chats, project catalog reads, settings,
-and local connection metadata) run without a project binding. The retired iOS
-**Pair a browser** sheet no longer calls `sync.getWebPairingInfo`; new hosted
-web connections start from account sign-in and the account machine directory.
-`project`-scoped
-commands (everything that mutates lane / chat / PR state inside a
-project) require the brain to have an active project AND the caller to
-have bundled a matching `projectId` on the envelope. The brain enforces
-this with explicit error codes:
+The brain serves several projects and one hidden personal-chat scope at
+once. `runtime`-scoped commands (machine diagnostics, personal chats, catalog
+reads, settings, local connection metadata) need no project. No client calls
+`sync.getWebPairingInfo`. `project`-scoped commands need an open project and
+a matching `projectId` on the envelope:
 
-- `code: missing_project` — the brain has a project open but the command did
-  not include `projectId`. Re-select the project on the controller and
-  retry.
-- `code: project_not_open` — caller asked for a project the brain does
-  not currently have open. Drive a `project_switch_request` first.
+- `code: missing_project` — the envelope has no `projectId`. Select the
+  project again and retry.
+- `code: project_not_open` — the brain does not have that project open. Send
+  a `project_switch_request` first.
 
-One more error code originates **outside** the registry:
-`code: host_unavailable`. When a `command` envelope reaches the
-brain-level ingress while **no project sync host owns the peer** (the
-host is restarting, or was blocked by a conflicting sync listener),
-`brainProjectActionsSyncHandler` answers immediately with a failed
-`command_result` carrying that code plus a typed snapshot (`reason`,
-`conflict`, `recoveryEligible`). Controllers do not dump the raw host
-sentence. A verified conflict takes over the phone or hosted-web
-project surface immediately; a generic starting failure retries silently
-(2s / 4s / 8s) then takes over. `sync.diagnoseHost` and `sync.recoverHost`
-are runtime-scoped and work without a project host; **Fix connection**
-stops the verified blocking ADE runtime and restarts the intended brain.
-The brain checks a server-owned pairing grant before returning owner details or
-executing recovery: desktop runtime-host grants retain their existing authority,
-while phones and browsers receive the narrower recovery grant only through
-verified same-account adoption. PIN-only mobile pairings get a redacted
-diagnosis and cannot stop or restart a runtime.
+**`host_unavailable`** comes from outside the registry. When no project host
+owns the peer (restarting, or blocked by another sync listener),
+`brainProjectActionsSyncHandler` answers at once with a failed
+`command_result` and a typed snapshot (`reason`, `conflict`,
+`recoveryEligible`).
 
-Two properties of that pair of actions matter to anyone calling them. The
-repair is **serialized and bounded**: one repair runs per machine, a second
-caller (another device, or the same one reconnecting mid-repair) joins the
-running one instead of opening a second stop/restart sequence, and the whole
-run is raced against a 90 s deadline so a step that never settles cannot leave
-later callers waiting forever. And the two diagnosis paths cost different
-amounts: the `hello_ok.projectHost` snapshot and the per-command
-`host_unavailable` reply skip the synchronous listener scan — both run on every
-reconnect and every failing command while a host is down, and that scan shells
-out to `lsof` or PowerShell — while an explicit `sync.diagnoseHost` pays for
-the full scan. Clients keep **Retry** enabled for the duration of a repair on
-both iOS and hosted web, because the repair may restart the brain and a restart
-that never reports back would otherwise strand the screen on a spinner; an
-explicit Retry re-diagnoses instead of waiting.
+- A verified conflict takes over the phone or web project surface at once; a
+  starting failure retries silently (2 s, 4 s, 8 s) first.
+- `sync.diagnoseHost` and `sync.recoverHost` are runtime-scoped. **Fix
+  connection** stops the verified blocking runtime and restarts the brain.
+  Owner details and recovery need a server-owned grant: desktop runtime-host
+  grants, or the recovery grant that phones and browsers get only from
+  same-account adoption. PIN-only phones get a redacted diagnosis.
+- The repair is serialized (a second caller joins) and bounded by 90 s. The
+  `hello_ok.projectHost` snapshot and `host_unavailable` replies skip the
+  synchronous listener scan; only `sync.diagnoseHost` runs it.
+- Clients keep **Retry** enabled during a repair, because a restart may never
+  report back.
+- iOS treats the code as retryable (`isSyncHostUnavailableError`) and keeps
+  queued work. An already-attempted live `chat.send` is not queued (its
+  outcome is unknown); iOS restores the draft instead.
 
-The state is still transient for queued work: iOS marks it retryable
-(`isSyncHostUnavailableError`), and queued operations are preserved — not
-deleted — when a replay hits it during a host restart window. Queueable actions
-normally enter the offline queue, but an already-attempted live `chat.send` is
-the deliberate exception because its outcome is ambiguous; iOS restores the
-draft for a manual transcript-aware retry instead of risking a duplicate turn.
+Controllers read the descriptors (`getSupportedActions`, `getDescriptors`)
+and gate UI on them; the brain is the authority.
 
-Controllers read `SyncRemoteCommandDescriptor`s from the brain (via the
-`getSupportedActions` / `getDescriptors` surface) and gate UI
-accordingly — the brain's policy and scope are always authoritative.
+**Mobile compatibility.** `apps/desktop/src/shared/syncMobileCompatibility.ts`
+holds `MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS`. The brain checks its
+registry against it and advertises `features.mobileCompatibility`. A missing
+action gives `mode: "limited"` and `missingActions`, never a refused
+connection. When you add, rename or remove a command that ADE Mobile uses,
+update that list and the iOS tests in the same change.
 
-Mobile compatibility is a separate product contract layered on top of those
-descriptors. The required iOS action set lives in
-`apps/desktop/src/shared/syncMobileCompatibility.ts`
-(`MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS`); the brain evaluates the
-actual registry against that list and advertises
-`features.mobileCompatibility` in `hello_ok`. A missing action must produce
-`mode: "limited"` and a `missingActions` list, not a rejected connection. iOS
-then keeps the WebSocket alive, hides or blocks unsupported actions locally, and
-surfaces update guidance. When adding, renaming, or removing a remote command
-that ADE Mobile uses, update the shared compatibility list and iOS tests in the
-same change.
+`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS` in the same file holds
+additive commands that newer phones feature-detect from
+`hello_ok.features.commandRouting.actions`. They must never join the
+required set, because older phones never call them and a host without them
+must stay `full`. Each entry's comment says what the phone does without it.
+Examples:
 
-The same file also holds `MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`: additive
-commands that newer phones may feature-detect from
-`hello_ok.features.commandRouting.actions` but that must **not** join the
-required set, because older mobile builds never call them. The four Linear
-connection commands (`cto.startLinearMobileOAuth`,
-`cto.completeLinearMobileOAuth`, `cto.setLinearToken`, `cto.clearLinearToken`)
-live here: a brain that predates them omits them from its advertised actions, so
-the phone leaves Linear connect/reconnect/disconnect hidden (falling back to the
-API-key path or an "update ADE on your Mac" hint) rather than treating their
-absence as a broken connection. Their omission never flips a host to `limited`.
+- the Linear connection commands: the phone hides connect and disconnect;
+- `cto.getAttention`: no CTO badge;
+- the session lifecycle commands (`session.settleSessions`,
+  `session.unsettleSessions`, `session.setSettleOverride`,
+  `session.snoozeSession`, `session.wakeSession`,
+  `session.clearWokeMarker`): no settle or snooze controls, so a current
+  brain **must** advertise them;
+- the new-lane launch commands (`chat.startLaunch` and the rest): the phone
+  falls back to `lanes.create` → `chat.create`;
+- `chat.resumeUsageLimitNow`, `chat.continueUsageLimitOnAlternate`,
+  `chat.switchAccount`, `prs.setDraft`, `prs.setAutoMerge`: the phone hides
+  that control;
+- `machine.updateImpact` and `machine.updateAndRestart`: the phone and the web
+  keep "Update ADE on that computer".
 
-`machine.updateImpact` and `machine.updateAndRestart` are the phone's
-"Update & restart" for a computer, and they are optional too. They are the
-sync-command twins of the runtime RPC's `runtime.updateImpact` and
-`machine.updateAndRestart` that a desktop calls, and they run the same
-transaction: `joinOrStartMachineUpdate` coalesces a desktop's call and
-a phone's call into one run. Both are runtime-scoped and are answered on both
-of the phone's paths: the project host's registry and the brain ingress (a
-roster socket, or a socket parked there while the host is down). Policy is
-`controllerAllowed` only, never queueable: any paired phone or browser may
-run them, while a desktop viewer, an unpaired socket or a lane-share guest is
-refused. The requester's name comes from the pairing record when there is
-one, not from the client's claim: the brain ingress reads its peer's record,
-and the project host passes its peer's record to `machine.*` commands
-(`SyncRemoteCommandExecutionContext.requester`). Only a brain started by `ade serve` that
-owns its machine installs them (`setMachineUpdateRemoteCommands`). An
-embedded runtime installs nothing, advertises nothing, and the phone keeps
-"Update ADE on that computer". ADE Web sends the same two commands from its
-`remoteRuntime.updateAndRestart` / `getUpdateImpact` (`webclient/adapter/federated.ts`),
-so the desktop's own update screens work in a browser tab. The phone and the
-web learn which build is newest from the account directory's
-`GET /releases/latest`, which runs the desktop's own reader
-(`apps/desktop/src/shared/latestByTrack.ts`) over the same two release
-manifests; a track only takes a build of that track. The phone falls back to
-the manifests directly when signed out. No client moves a machine across tracks.
+`machine.updateImpact` and `machine.updateAndRestart` are the sync-command twins
+of the runtime RPC's `runtime.updateImpact` and `machine.updateAndRestart`.
+They run the same transaction: `joinOrStartMachineUpdate` joins a desktop's
+call and a phone's call into one run.
 
-`cto.getAttention` is optional for the same reason. The phone checks
-`supportsRemoteAction("cto.getAttention")` before probing, so against an older
-brain it simply never lights the CTO badge; putting it in the required set would
-flip every already-shipped brain into `limited` mode over a dot.
-
-The session-lifecycle commands sit in the same optional list:
-`session.settleSessions`, `session.unsettleSessions`,
-`session.setSettleOverride`, `session.snoozeSession`, `session.wakeSession`, and
-`session.clearWokeMarker`. The phone gates its settle and snooze affordances on
-these appearing in `hello_ok.features.commandRouting.actions`, so a current
-brain **must** advertise them — but they must stay out of the required set,
-because a shipped mobile build that predates the feature would otherwise be
-flipped into `limited` mode against a newer host it works with perfectly well.
-
-`chat.regenerateSessionMetadata` is optional for the same compatibility reason:
-older phones never call it. A newer controller may feature-detect it from the
-advertised action list before offering a metadata refresh; omitting it must not
-break the connection or put the host in `limited` mode.
-
-The new-lane launch commands (`chat.startLaunch`, `chat.getLaunch`,
-`chat.listLaunches`, `chat.cancelLaunch`, `chat.retryLaunch`,
-`chat.startLaunchNow`, `chat.queueLaunchMessage`) are optional too: a phone
-that finds `chat.startLaunch` missing from the advertised actions falls back to
-its chained `lanes.create` → `chat.create` flow, and older phones never call
-them.
-
-`chat.resumeUsageLimitNow` is optional on the same logic. The phone hides its
-usage-limit **Resume now** button unless the host advertises the action, so an
-older brain simply offers the states that re-arm through `chat.updateSession`,
-and an older phone that never calls it must not be flipped to `limited`
-against a newer host. `chat.continueUsageLimitOnAlternate` is optional for the
-same reason: the phone shows **Continue on** that account only when the host
-advertises it and the resume carries `alternateAccount`.
-`chat.switchAccount` is optional too: a client without it simply has no
-account switcher.
-
-`prs.setDraft` and `prs.setAutoMerge` are optional for the same reason. The
-phone shows the draft and auto-merge controls in the PR actions sheet only
-when the host advertises each action, so an older host stays `full`.
+- Both are runtime-scoped and are answered on both of the phone's paths: the
+  project host's registry and the brain ingress (a roster socket, or a socket
+  parked there while the host is down).
+- The policy is `controllerAllowed` only, never queueable. Any paired phone or
+  browser may run them; a desktop viewer, an unpaired socket or a lane-share
+  guest is refused.
+- The requester's name comes from the pairing record when there is one, not
+  from the client's claim (`SyncRemoteCommandExecutionContext.requester`).
+- Only a brain started by `ade serve` that owns its machine installs them
+  (`setMachineUpdateRemoteCommands`). An embedded runtime installs and
+  advertises nothing.
+- ADE Web sends the same two commands from its
+  `remoteRuntime.updateAndRestart` / `getUpdateImpact`
+  (`webclient/adapter/federated.ts`).
+- The phone and the web read the newest build from the account directory's
+  `GET /releases/latest`; the phone reads the manifests directly when signed
+  out. No client moves a machine across tracks.
 
 ## Registry
 
-Commands are registered by calling `register(action, policy, handler,
-scope = "project")` inside `createSyncRemoteCommandService`. The
-registry is a `Map<SyncRemoteCommandAction, RegisteredRemoteCommand>`
-built at service construction. Handlers receive parsed-and-validated
-args and either return a result or throw; thrown errors are wrapped
-into the `command_result.error` envelope. The default scope is
-`"project"` because most actions need an open project to make sense;
-runtime-scoped registrations are explicit.
+`register(action, policy, handler, scope = "project")` in
+`createSyncRemoteCommandService` fills a `Map` at construction. Handlers get
+parsed args and return a result or throw; a throw becomes
+`command_result.error`. Runtime scope is always explicit.
 
 ### Action categories
 
-Listed in order of appearance in the registry. The hosted browser web
-client (`../web-client/README.md`) is a controller of this same registry,
-so read-heavy Work/chat/git/PR/history surfaces plus whole families
+The list follows the registry order. The web client
+(`../web-client/README.md`) uses this registry too, so whole families
 (`terminal.*`, `rebase.*`, `history.*`, `github.*`, `projectConfig.*`,
-`ai.*`, `usage.*`) exist to back the desktop renderer's namespaces
-over the wire. A controller only invokes an action the host advertises in
-`hello_ok.features.commandRouting.actions`.
+`ai.*`, `usage.*`) back the desktop renderer namespaces over the wire. A
+controller calls only actions in `hello_ok.features.commandRouting.actions`.
 
 **Account** (`account.*`)
-- `getMachineInventory` — viewer-allowed runtime read for the selected machine's
-  token-free provider accounts, model counts, and saved harness presets. Detail
-  is fetched only when the machine is online and already connected; older brains
-  that do not advertise the command are treated as compatibility gaps.
+- `getMachineInventory` — viewer-allowed runtime read of the machine's
+  token-free provider accounts, model counts and saved harness presets. It
+  runs only for an online, connected machine.
 
-**Provider accounts** (`providerAccounts.*`)
-- `list`, `getSettings`, `refresh` — viewer-allowed reads of the host's Claude
-  and Codex logins.
-- `loginStatus`, `create`, `remove`, `signOut`, `rename`, `setDefault`, `dismissReplaced`,
-  `setSettings`, `loginStart`, `loginSubmitCode`, `loginCancel` — controller-only
-  (`viewerAllowed: false`, `controllerAllowed: true`). A viewer may read;
-  anything that changes a login, or reads a running sign-in (its link and device
-  code), needs control of the host.
+**Provider accounts** (`providerAccounts.*`), all runtime-scoped:
+- `list`, `getSettings`, `refresh` — viewer-allowed reads of the host's
+  Claude and Codex logins.
+- `loginStatus`, `create`, `remove`, `signOut`, `rename`, `setDefault`,
+  `dismissReplaced`, `setSettings`, `loginStart`, `loginSubmitCode`,
+  `loginCancel` — controller-only. A change to a login, or a read of a
+  running sign-in (its link and device code), needs control.
 
-All are runtime-scoped (`register(entry.action, entry.policy, entry.handler,
-"runtime")`): accounts name config homes on the host, so they need no open
-project. `providerAccountRemoteCommands.ts` forwards each payload unchanged to
-the method of the same name on the `provider_instances` action domain, so a
-remote caller and the desktop run one implementation; a method the domain does
-not expose throws when the host starts, not on a user's first tap. The actions
-are registered under `MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`
-(`shared/syncMobileCompatibility.ts`), so a host older than them leaves the
-phone's AI accounts page showing "update ADE" rather than an empty list. iOS and
-the hosted web client both consume them; see `ios-companion.md` and
-`../web-client/README.md`.
+`providerAccountRemoteCommands.ts` forwards each payload to the same method
+on the `provider_instances` action domain, so remote callers and the desktop
+share one implementation. A method the domain lacks throws at host start.
+They are optional mobile actions, so an older host gives "update ADE". iOS
+and the web client use them.
 
 **Usage** (`usage.*`)
-- `getAdeStats` — viewer-allowed project read for today, 7d, 30d, year,
-  or all time. Returns the same stale-while-revalidate aggregate used by
-  the desktop Usage page: provider tokens, project-DB activity, daily points
-  (including the per-provider split the daily chart plots), and
-  `desktop` / `mobile` / `tui` / `web` / `api` client attribution. It does
-  not replicate or return raw `usage_events` rows. `scope` is `account`,
-  `machine`, or `project`; `force` bypasses the account fan-out's rate floor
-  and is set only by an explicit user Refresh.
-- `getUsageRollup` — viewer-allowed runtime read returning this machine's
-  day × provider × model aggregates plus its transcript-source identity, for
-  the account scope's merge. Aggregates only: no transcript record, session id,
-  or absolute path crosses the machine boundary (source roots travel as
-  digests). `null` means the machine has not finished its first ledger scan, so
-  the caller retries rather than storing an empty rollup.
-- `getQuotaSnapshot` — viewer-allowed project read of the runtime's cached
-  Claude/Codex quota snapshot. It returns provider windows plus source,
-  freshness, retry, and stale/error state without starting provider or ledger
+- `getAdeStats` — viewer-allowed read (today, 7d, 30d, year, all time) of the
+  desktop Usage aggregate: provider tokens, project activity, daily points
+  with the per-provider split, and client attribution (`desktop`, `mobile`,
+  `tui`, `web`, `api`). No raw `usage_events` rows. `scope` is `account`,
+  `machine` or `project`; `force` is only for a user Refresh.
+- `getUsageRollup` — viewer-allowed runtime read of this machine's day ×
+  provider × model aggregates and source identity. No transcript record,
+  session id or absolute path leaves the machine (roots go as digests).
+  `null` means the first ledger scan is not done; the caller retries.
+- `getQuotaSnapshot` — viewer-allowed read of the cached Claude and Codex
+  quota (windows, source, freshness, retry, stale or error). It starts no
   work.
-- `refreshQuota` — viewer-allowed project refresh of Claude/Codex quota only.
-  The host disables interactive auth for this remote path, so it never opens a
-  Keychain prompt or a bare CLI login flow on behalf of the controller.
-  Local history scanners remain behind the separate desktop/CLI Activity path.
+- `refreshQuota` — viewer-allowed quota-only refresh with interactive auth
+  off, so it never opens a Keychain prompt or a CLI login.
 
 **Lanes** (`lanes.*`)
 - `list`, `listDeleteProgress`, `refreshSnapshots`, `getDetail`
 - `create`, `importBranch`, `getNewLaneDefaults`, `setNewLaneDefaults`
-- `listUnregisteredWorktrees`, `attach`, `adoptAttached` —
-  **compatibility stubs.** Every git worktree is now a lane the moment it
-  exists, so there is nothing to select or attach. They stay registered
-  because they are in `MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS`:
-  unregistering them would drop them from
-  `hello_ok.features.commandRouting.actions` and flip a healthy host into
-  "limited" mode for every phone. `listUnregisteredWorktrees` returns an
-  empty array (an older phone's attach sheet renders its own empty state);
-  `attach` and `adoptAttached` fail with a "no longer supported" message
-  the phone surfaces verbatim.
+- `listUnregisteredWorktrees`, `attach`, `adoptAttached` — **compatibility
+  stubs.** Every worktree is a lane. They stay registered because they are
+  required mobile actions. `listUnregisteredWorktrees` returns `[]`; the
+  other two fail with a "no longer supported" message.
 - `rename`, `updateAppearance`
 - `archive`, `unarchive`, `delete`
 - `rebaseStart`, `rebasePush`, `rebaseRollback`, `rebaseAbort`
@@ -330,20 +235,12 @@ the hosted web client both consume them; see `ios-companion.md` and
   `LaneSummary.devicesOpen` with a 60 s TTL and fans out updates via
   the brain-status broadcast (`brain_status`).
 
-`lanes.refreshSnapshots` supports lightweight lane refreshes; `lanes.getDetail` reads the scoped lane summary.
-
-`lanes.getDetail` and `lanes.refreshSnapshots` are **conditional
-responses**. Both compute their full payload, then hash it
-(`sha256(JSON.stringify(response))`) into a `signature` field. A caller
-that already holds a payload can send its cached `ifNoneMatch`
-signature; when it equals the freshly computed one the runtime replies
-with a lightweight `{ signature, notModified: true }` shell carrying no
-payload body, so the phone skips both the transport of an unchanged
-lane detail / snapshot set and the client-side re-decode. A mismatched
-or absent `ifNoneMatch` returns the full payload with
-`notModified: false` and the current `signature` to cache. The full
-payload is still computed either way (the signature derives from it),
-so the win is transport and decode, not host compute.
+`lanes.getDetail` and `lanes.refreshSnapshots` are **conditional**. The
+payload hash (`sha256(JSON.stringify(response))`) is its `signature`. When
+the caller's `ifNoneMatch` matches, the reply is
+`{ signature, notModified: true }` with no body; else the full payload with
+`notModified: false`. The host still computes the payload; the saving is
+transport and decode.
 
 **Work** (`work.*`)
 - `listSessions`, `getSession`, `getSessionDelta`, `deleteSession`,
@@ -355,43 +252,24 @@ so the win is transport and decode, not host compute.
 - `snoozeSession`, `snoozeSessions`, `wakeSession`, `wakeSessions`
 - `setSettleOverride`, `clearWokeMarker`
 
-All ten are `viewerAllowed` and `queueable`. This is deliberately its own
-namespace — matching the ADE action registry's domain name — rather than a
-corner of `work.*`, because mobile and the hosted web client feature-detect it
-independently of the `work.*` read surface. It is also the **only** path to
-session lifecycle for those two controllers: neither has a local database, so
-unlike desktop they cannot write a settle or a snooze locally and
-let replication carry it. Session lifecycle is therefore reachable on all six
-surfaces (desktop, iOS, hosted web, the `ade` CLI, and CTO
-tools) — it is not a desktop-only capability.
+All ten are `viewerAllowed` and `queueable`. The namespace matches the
+action domain, so phones and the web client detect it apart from `work.*`.
+It is their only path to session lifecycle (they have no local database).
 
-`session.settleSession` routes through the shared `settleTerminalSession`
-transaction, so `dismissPendingInput` behaves identically to desktop.
-
-`session.settleSessions` accepts the same optional `dismissPendingInput` flag —
-this is the action mobile actually uses, because the singular
-`session.settleSession` is not in the mobile compatibility lists. When the flag
-is set the handler first runs `dismissPendingInputBeforeSettle`
-(`apps/desktop/src/main/services/sessions/settleTerminalSession.ts`, extracted
-from `settleTerminalSession` so bulk and single paths share one dismissal
-semantic), then performs the normal `settleSessions` write, so the reply stays
-the changed-id list clients match on. The flag is **rejected when more than one
-session id is sent**: the dismissal mutates as it goes and throws for a row with
-nothing pending, so a mixed batch would dismiss the first *k−1* rows, throw on
-the *k*-th, and settle none of them. Rejecting the combination up front is
-cheaper than a half-applied batch; generalizing it requires making the dismiss
-loop atomic first. The flag is additive, so a host that predates it ignores it
-and simply settles the row, leaving the pending prompt in place.
-
-Snooze deadlines arrive from clients with no local clock authority, so the
-registry validates them rather than trusting them: `parseRemoteSnoozeDeadline`
-accepts either `untilIso` or `snoozedUntil` and validates the instant,
-`parseRemoteWakeReason` validates against `SESSION_WAKE_REASONS`, and
-`parseRemoteSettleOverride` delegates to the shared
-`parseSessionSettleOverride` in `apps/desktop/src/shared/types/sessions.ts` so
-`"clear"` / `"none"` / `""` / null all clear the override and garbage throws
-instead of silently clearing it. The string sentinels exist because a client
-that cannot encode a JSON null (iOS) must still be able to express "clear".
+- `session.settleSession` uses the shared `settleTerminalSession`
+  transaction, so `dismissPendingInput` acts as on desktop.
+- `session.settleSessions` (the one mobile uses) accepts
+  `dismissPendingInput` too. It first runs `dismissPendingInputBeforeSettle`
+  (`apps/desktop/src/main/services/sessions/settleTerminalSession.ts`), then
+  the normal settle, and returns the changed ids. The flag is **refused with
+  more than one session id**: the dismissal throws on a row with nothing
+  pending, so a batch would half-apply. An older host ignores the flag.
+- Snooze inputs are validated, never trusted: `parseRemoteSnoozeDeadline`
+  (`untilIso` or `snoozedUntil`), `parseRemoteWakeReason`
+  (`SESSION_WAKE_REASONS`), and `parseRemoteSettleOverride` through
+  `parseSessionSettleOverride` (`apps/desktop/src/shared/types/sessions.ts`).
+  `"clear"`, `"none"`, `""` and null clear the override, because iOS cannot
+  send a JSON null; other values throw.
 
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`
@@ -410,173 +288,84 @@ that cannot encode a JSON null (iOS) must still be able to express "clear".
   `cancelLaunch`, `retryLaunch`, `startLaunchNow`, `queueLaunchMessage`,
   `completeLaunchClient` — see [New-lane launch commands](#new-lane-launch-commands)
 
-The five file-attachment actions are the chunked base64 staging contract for
-documents and videos, which fit neither the image-only `saveTempAttachment` leg
-nor the direct-HTTP `createAttachmentUpload` route. See
+The five file-attachment actions are the chunked base64 staging for
+documents and videos; see
 [Chunked staging for file-shaped attachments](README.md#chunked-staging-for-file-shaped-attachments).
 
-`chat.getTranscript` supports cursor pagination: responses carry an
-opaque `nextCursor`, and requests can pass `cursor` to page strictly-older
-history. Full agent runtimes advertise `cursorKind: "byte"` and use an
-append-stable logical JSONL offset, so serving a page never requires parsing the
-whole transcript. The minimal non-agent headless fallback advertises
-`cursorKind: "index"` over its bounded in-memory transcript. Clients must keep
-the cursor opaque and use `cursorKind` only to select their local merge
-strategy.
+`chat.getTranscript` pages with an opaque `nextCursor` (pass `cursor` for
+older history). Agent runtimes advertise `cursorKind: "byte"` (an
+append-stable JSONL offset, no full parse); the headless fallback advertises
+`cursorKind: "index"`. Clients keep the cursor opaque and use `cursorKind`
+only to choose a merge strategy.
 - `create`, `send`, `interrupt`, `interruptWithQueueMode`,
   `restoreCancelledQueue`, `steer`, `cancelSteer`, `editSteer`,
   `dispatchSteer`, `cancelDispatchedSteer`, `approve`, `respondToInput`
 - `recoverTurn`, legacy `recoverCodexTurn`, `resolveUnprocessedMessage`
-- `restart`, `updateSession`, `regenerateSessionMetadata`, `archive`, `unarchive`, `delete`, `models`,
-  `modelCatalog`
+- `restart`, `updateSession`, `regenerateSessionMetadata`, `archive`,
+  `unarchive`, `delete`, `models`, `modelCatalog`
 - `resumeUsageLimitNow`
 
-`chat.recoverTurn` is the provider-neutral stall-recovery action. It takes
-`{ sessionId, turnId, action }`, where `action` is `wait`, `nudge`,
-`retry_same_runtime`, or `restart_resume`. It is viewer-allowed and
-non-queueable: recovery must be applied to the currently active turn, never
-replayed after reconnect. Older hosts may advertise only
-`chat.recoverCodexTurn`; clients map the same four controls to its legacy
-action names without rendering duplicate recovery cards.
+Live-only means not queueable: a reconnect never replays it.
 
-`chat.resolveUnprocessedMessage` takes
-`{ sessionId, steerId, action: "run_next" | "dismiss" }`. It is also
-viewer-allowed and non-queueable. The runtime persists a terminal
-`user_message_resolution` receipt and makes both actions idempotent across
-client retries and runtime restarts. `run_next` is accepted only while the
-session is idle and commits only after the replacement turn is dispatched;
-`dismiss` never sends a turn.
+| Action | Args → result | Policy and rules |
+|---|---|---|
+| `chat.recoverTurn` | `{ sessionId, turnId, action }`; `action` is `wait`, `nudge`, `retry_same_runtime` or `restart_resume` | Viewer-allowed, live-only; acts on the active turn. Older hosts have only `chat.recoverCodexTurn`; clients map the same four controls and show one card. |
+| `chat.resolveUnprocessedMessage` | `{ sessionId, steerId, action: "run_next" \| "dismiss" }` | Viewer-allowed, live-only. A terminal `user_message_resolution` receipt makes both idempotent across retries and restarts. `run_next` needs an idle session and commits after the new turn dispatches; `dismiss` sends nothing. |
+| `chat.regenerateSessionMetadata` | `{ sessionId, fields? }` (`title`, `laneName`, `statusLine`; omitted = all) → `applied`, `skipped`, `modelId` | Viewer-allowed, live-only. One request returns all three; only chosen fields apply. Per-field snapshots keep edits made during the request. It may replace a manual title; it skips the primary lane name. An array with no valid field is refused. |
+| `chat.resolveSmartLinkPreview` | `{ url }` → provider, kind, label, maybe a title and favicon | Viewer-allowed read. GitHub and Linear titles use the runtime's integrations; other HTTP(S) goes through the SSRF-hardened preview service. Local, private, oversized or non-HTML URLs give the plain preview. The URL is never replaced. |
+| `chat.resolveSourceFavicons` | `{ domains }` → `{ icons: { [domain]: dataUrl \| null } }` | Viewer-allowed, runtime-scoped. First-party fetch by the SSRF-guarded resolver, cached on disk. See [Favicons](../chat/transcript-and-turns.md#favicons). |
+| `chat.getMcpApp` | `{ sessionId, itemId }` → the app with `contentSecurityPolicy` | Viewer-allowed. The controller serves the page with the brain's policy (`sandbox allow-scripts`) and builds none. Over 1 MB gives `{ status: "unavailable", reason }`. |
+| `chat.mcpAppRequest` | `{ sessionId, itemId, method, params, userActivated }` | Not viewer-allowed, live-only. Runs a tool on the app's server through the live session. A tool that may change data needs `userActivated: true`. Optional on mobile. See [MCP Apps](../chat/README.md#mcp-apps). |
+| `chat.createScheduledWork` | `{ sessionId, cron, prompt, recurring?, reason? }` | **Owner-only**, live-only. `recurring` defaults to true; false runs once at the next cron match. |
+| `chat.setScheduledWorkPaused` / `chat.cancelScheduledWork` | `{ sessionId, paused }` / `{ sessionId, scheduleId }` | Viewer-allowed, live-only. |
+| `chat.resumeUsageLimitNow` | `{ sessionId }` → `{ ok: true, turnId }` or `{ ok: false, reason: "no_live_usage_limit" \| "resume_in_flight", message }` | **Owner-only**, live-only: it spends a turn of the owner's quota. A refusal is an answer, not an error. |
+| `chat.continueUsageLimitOnAlternate` | `{ sessionId }` → `{ ok: true, sessionId }` or `{ ok: false, reason: "no_live_usage_limit" \| "no_alternate_account" \| "handoff_failed", message }` | Owner-only, live-only. Uses the account on the live resume. |
+| `chat.switchAccount` | `{ sessionId, instanceId }` → `{ ok: true, instanceId }` or `{ ok: false, reason: "busy" \| "signed_out" \| "failed", message }` | Owner-only, live-only: it changes who pays for the next turn. |
 
-`chat.regenerateSessionMetadata` takes
-`{ sessionId, fields?: ("title" | "laneName" | "statusLine")[] }`. Omitting
-`fields` selects all three; duplicate allowed fields are de-duplicated, and a
-provided array with no valid field is rejected. It is viewer-allowed and
-non-queueable, so a reconnect cannot replay an old generation request. The
-runtime makes one structured session-intelligence request that returns all
-three strings, then applies only the selected fields. It returns `applied`,
-`skipped`, and `modelId`; per-field snapshots protect edits made while the
-request runs. Explicit generation may replace a manual title, while imported
-provider titles are replaceable metadata. The primary lane name is skipped.
+Controllers show each control only when the descriptor list has it.
 
-`chat.resolveSmartLinkPreview` is a viewer-allowed, non-mutating enrichment
-read. Its `{ url }` payload returns the shared deterministic provider/kind/label
-shape and may add a title or bounded favicon data URL. GitHub and Linear titles
-use the runtime's configured integrations; generic HTTP(S) metadata is fetched
-only by the runtime's SSRF-hardened preview service. Unsupported, unreachable,
-local/private, oversized, or non-HTML URLs fall back to the deterministic
-preview instead of failing the composer. The canonical URL is never replaced by
-the title.
+`chat.modelCatalog` takes `{ mode?, refreshProvider?, cursorSource? }`.
+`mode` is `"cached"` (default), `"refresh-stale"` or `"force"`; only the last
+two probe. `refreshProvider` is `opencode`, `cursor`, `droid`, `lmstudio` or
+`ollama`. `cursorSource` (`sdk`, `cli`, `all`; default `all`) picks the Cursor
+source probed now; chat surfaces pass `sdk` to skip the slow CLI spawn. The
+result is the provider-grouped catalog of the desktop ModelPicker.
 
-`chat.resolveSourceFavicons` is a viewer-allowed, runtime-scoped (no project
-needed) read for the Sources list. `{ domains: string[] }` returns
-`{ icons: { [domain]: dataUrl | null } }`, fetched first-party from each site by
-the host's SSRF-guarded favicon resolver and cached on its disk. See
-[Favicons](../chat/transcript-and-turns.md#favicons).
+**Steering.**
+- `chat.dispatchSteer` takes `{ sessionId, steerId, mode: "inline" |
+  "interrupt" }` → `{ ok, dispatchedAt }`. The modes come from
+  `ACTIVE_TURN_DISPATCH_MODES` (`apps/desktop/src/shared/types/chat.ts`); an
+  unsupported mode is refused with `unsupportedActiveTurnDispatchModeMessage`,
+  never downgraded.
+  - Claude: the message goes into the live input stream (`priority: "next" |
+    "now"`, `shouldQuery: true`). Interrupt redirects the request without
+    stopping background work. The row is removed after the input pump accepts.
+  - Cursor: `"interrupt"` stops the run, waits, and resends on the same agent
+    thread (the row returns to the queue on a throw); `"inline"` uses
+    `Run.steer()`.
+- Read `dispatchedAt`. A refused inline dispatch (Cursor Cloud, attachments or
+  per-message overrides, a declined turn, no steer channel) answers
+  `{ dispatchedAt: null }` without a throw and keeps the row staged. A queued
+  command's ack has no `dispatchedAt` key. iOS keeps the row queued in both
+  cases.
+- `chat.cancelDispatchedSteer` → `{ ok, cancelled }`; `cancelled` is false,
+  because the SDK cannot cancel a pushed message.
+- `chat.cancelSteer` with `requireQueued: true` refuses when delivery already
+  claimed the message. Desktop Edit uses it before it restores the text.
 
-`chat.getMcpApp` and `chat.mcpAppRequest` carry MCP Apps to a controller (the
-iPhone app). `chat.getMcpApp` (`{ sessionId, itemId }`, viewer-allowed) returns
-the stored app with `contentSecurityPolicy`, the page's policy as the brain
-built it, including `sandbox allow-scripts`; the controller serves the page
-with that string and builds none. A page over 1 MB is answered
-`{ status: "unavailable", reason }` instead of being sent.
-`chat.mcpAppRequest` (`{ sessionId, itemId, method, params, userActivated }`)
-is not viewer-allowed and not queueable: it runs a tool for the app, on the
-app's own server, through the chat's live session. `userActivated` is the
-controller's word that the user tapped inside the app just before; a tool that
-may change data runs only when it is true. Both are optional in
-`syncMobileCompatibility.ts`. See [MCP Apps](../chat/README.md#mcp-apps).
+**Stop.** `chat.interruptWithQueueMode` takes `{ sessionId, mode }` →
+`{ mode, cancelledQueuedCount, recoveryId?, recoveryExpiresAt? }`:
+- `stop_and_clear` (default): interrupt with `cancel_queued: true`, then
+  cancel per message if needed; background jobs keep running.
+- `stop_only`: keep queued messages and background jobs.
+- `stop_and_background`, `stop_and_clear_and_background`: also stop running
+  Claude tasks.
 
-`chat.createScheduledWork` takes `{ sessionId, cron, prompt, recurring?,
-reason? }` and creates an ADE-owned durable schedule for any provider-backed
-chat. `recurring` defaults to true; false creates a one-shot at the next
-five-field cron match. `chat.setScheduledWorkPaused` takes `{ sessionId,
-paused }`, and `chat.cancelScheduledWork` takes `{ sessionId, scheduleId }`.
-`chat.resumeUsageLimitNow` takes `{ sessionId }` and is **owner-only**
-(`viewerAllowed: false`) and non-queueable: unlike cancelling a row, it spends
-a provider turn against the owner's quota, and a replayed offline command must
-never mint a second one. It answers `{ ok: true, turnId }` or, when the host
-declines to send, `{ ok: false, reason: "no_live_usage_limit" |
-"resume_in_flight", message }` — a refusal is an ordinary answer, not an error,
-and nothing is sent or mutated in either case.
-`chat.continueUsageLimitOnAlternate` takes `{ sessionId }` and is owner-only
-and non-queueable for the same reason. The account is the one already published
-on the live resume. It answers `{ ok: true, sessionId }` for the new chat, or
-`{ ok: false, reason: "no_live_usage_limit" | "no_alternate_account" |
-"handoff_failed", message }`.
-`chat.switchAccount` takes `{ sessionId, instanceId }` and is owner-only and
-non-queueable: it changes which login pays for the chat's next turn. It answers
-`{ ok: true, instanceId }` or `{ ok: false, reason: "busy" | "signed_out" |
-"failed", message }`.
-Create is owner-only (`viewerAllowed: false`), so paired controller devices can
-discover the capability but cannot invoke it. Pause, resume, and cancel are
-viewer-allowed recovery controls. All three are deliberately
-non-queueable so an offline replay cannot create a duplicate schedule or apply
-stale management state. Controllers expose each control only when the brain's
-descriptor list advertises it.
-
-`chat.modelCatalog` accepts `{ mode?, refreshProvider?, cursorSource? }`
-where `mode` is `"cached" | "refresh-stale" | "force"` (default
-`"cached"`) and `refreshProvider` is `"opencode" | "cursor" | "droid" |
-"lmstudio" | "ollama"`. `cursorSource` (`"sdk" | "cli" | "all"`, default
-`"all"`) scopes which Cursor discovery source the host probes
-synchronously — chat-style surfaces pass `"sdk"` so the refresh stays off
-the slower `cursor-agent` CLI spawn while the CLI flavor revalidates in
-the background. The brain returns the full provider-grouped catalog used
-by the desktop ModelPicker and the iOS Work model sheet; only
-explicit `force` / `refresh-stale` calls trigger a runtime probe.
-
-`chat.dispatchSteer` takes `{ sessionId, steerId, mode: "inline" | "interrupt" }`
-and returns `{ ok, dispatchedAt }`. Which modes a session accepts comes from the
-canonical `ACTIVE_TURN_DISPATCH_MODES` table in
-`apps/desktop/src/shared/types/chat.ts` — read the table rather than a copy of
-it here — and a mode the provider cannot honor is rejected with the shared
-`unsupportedActiveTurnDispatchModeMessage` text rather than silently
-downgraded. On Claude the staged message is pushed through the live input stream
-with `priority: "next" | "now"` and `shouldQuery: true`; interrupt mode
-redirects the current model request without closing the query or stopping its
-background work, and the queued row is removed only after the input pump accepts
-the message. On Cursor `"interrupt"` promotes the staged row to the
-interrupt-and-continue redirect — stop the run, wait for it to settle, resend on
-the same agent thread — and the row is restored to the queue if that redirect
-throws, while `"inline"` offers it to the live local run through `Run.steer()`.
-
-A remote caller must read `dispatchedAt` rather than treat a non-throwing reply
-as delivery. An inline dispatch the run refuses — a Cursor Cloud session, a row
-carrying attachments or per-message overrides, a turn that declined, a build
-with no steer channel — answers `{ dispatchedAt: null }` **without** throwing
-and leaves the row staged, and a durably queued command answers with an ack
-envelope that carries no `dispatchedAt` key at all. The iOS staged strip keeps their queued display in either case.
-`chat.cancelDispatchedSteer` returns `{ ok, cancelled }`; the current public
-SDK cannot cancel an already pushed priority message, so `cancelled` is false.
-The iOS companion uses
-both via `SyncService.dispatchChatSteer` /
-`cancelDispatchedChatSteer`.
-
-`chat.cancelSteer` accepts optional `requireQueued: true`. That guarded form
-rejects if delivery already claimed the message instead of merely clearing a
-stale client row; desktop Edit uses it before restoring queued text and
-attachments to the composer. The field is optional so older clients retain the
-original idempotent cancel behavior.
-
-`chat.interruptWithQueueMode` is an additive capability probe for queue-aware
-Claude Stop. It takes
-`{ sessionId, mode: "stop_and_clear" | "stop_only" | "stop_and_background" | "stop_and_clear_and_background" }` and returns
-`{ mode, cancelledQueuedCount, recoveryId?, recoveryExpiresAt? }`.
-`stop_and_clear` is the backward-compatible default; it asks a capable Claude
-runtime to interrupt with `cancel_queued: true`, then falls back to
-per-message cancellation where needed, and leaves background jobs running.
-`stop_only` interrupts the model turn and preserves queued messages and
-background jobs. The two `*_and_background` modes also stop running Claude
-tasks. A controller that does not see this additive
-descriptor must call legacy `chat.interrupt` without assuming the host honors
-the mode. `chat.stopTask` takes `{ sessionId, taskId }`, stops that one
-Claude task, and is advertised in the mobile compatibility hello payload.
-`chat.restoreCancelledQueue` takes `{ sessionId, recoveryId }`,
-returns `{ restored, restoredCount }`, and is accepted only during the
-eight-second recovery window for that same session. Interrupt, stopTask, and
-restore are
-viewer-allowed and non-queueable: replaying them after reconnect could stop a
-different turn or resurrect stale input.
+A controller that does not see it calls `chat.interrupt`. `chat.stopTask`
+(`{ sessionId, taskId }`) stops one Claude task and is a required mobile
+action. `chat.restoreCancelledQueue` (`{ sessionId, recoveryId }` →
+`{ restored, restoredCount }`) works only in the 8-second recovery window.
+Interrupt, stopTask and restore are viewer-allowed and live-only.
 
 **Personal chat** (`personalChats.*`)
 - `list`, `create`, `getSummary`, `read`, `send`
@@ -590,16 +379,12 @@ different turn or resurrect stale input.
 - `terminalCreate`, `terminalWrite`, `terminalResize`, `terminalDispose`
 - `saveTempAttachment`, `getImageDataUrl`, `streamEvents`
 
-All personal actions are `scope: "runtime"` and dispatch to the injected
-`PersonalChatScope`, never to the active project's `agentChatService`. Only
-`send` is queueable. `create` is live-only because replaying a queued create
-cannot return a stable session id and may duplicate the conversation. Every
-session-bound action revalidates `surface: "personal"`; terminal and attachment
-actions additionally enforce scope ownership/path confinement.
-Scheduled-work mutations are live-only too. They reuse the project chat
-argument/result contracts after personal-scope validation, which lets iOS map
-its shared Chat Info Cancel and Pause/Resume controls to `personalChats.*`
-without an active project.
+All personal actions are runtime-scoped and go to `PersonalChatScope`,
+never to the project `agentChatService`. Only `send` is queueable; a queued
+`create` could not return a stable id. Every session action checks
+`surface: "personal"`; terminal and attachment actions also check scope
+ownership and path confinement. Scheduled-work actions reuse the project
+contracts after the personal-scope check.
 
 **Git** (`git.*`)
 - `getChanges`, `getFile`, `getFilePatch`, `getUserIdentity`
@@ -608,43 +393,31 @@ without an active project.
 - `commit`, `listRecentCommits`,
   `listCommitFiles`, `getCommitMessage`, `getFileHistory`
 - `revertCommit`, `cherryPickCommit`, `createTag`, `resetToCommit`
-- `isCommitInLaneHistory` — checks whether a given `commitSha` is
-  reachable from the lane's current HEAD; used by controllers before
-  surfacing destructive operations on commits that may belong to a
-  different branch
+- `isCommitInLaneHistory` (`{ laneId, commitSha }` → boolean) — is the
+  commit reachable from the lane HEAD; checked before destructive commit
+  actions
 - `stashPush`, `stashList`, `stashApply`, `stashPop`, `stashDrop`,
   `stashClear`
-- `fetch`, `pull`, `sync`, `push`, `getSyncStatus`, `getSyncStatuses`
-  — `getSyncStatuses` returns the existing sync-status shape keyed by
-  requested lane id, so a controller reads many lanes in one call
-- `undoLastHeadChange`, `redoLastHeadChange` — paired recovery
-  actions that re-read HEAD before acting and refuse when the lane
-  has moved since the operation they target
-- `getConflictState`, `rebaseContinue`, `rebaseAbort`,
-  `mergeContinue`, `mergeAbort` — the merge variants mirror the rebase
-  pair so the iOS lane conflict banner can continue or abort an
-  in-progress merge, not just a rebase
+- `fetch`, `pull`, `sync`, `push`, `getSyncStatus`, `getSyncStatuses` (many
+  lanes in one call, keyed by lane id)
+- `undoLastHeadChange`, `redoLastHeadChange` — re-read HEAD and refuse when
+  the lane moved since the target operation
+- `getConflictState`, `rebaseContinue`, `rebaseAbort`, `mergeContinue`,
+  `mergeAbort`
 - `listBranches`, `checkoutBranch`
 
-`git.pull` accepts an optional `mode` argument
-(`"ff-only" | "rebase" | "merge"`, default `ff-only`) so controllers
-can pick the strategy without having to send three separate actions.
-Unknown mode values are rejected with a clear error.
-`git.resetToCommit` takes `{ laneId, commitSha, mode }` where `mode`
-is one of `soft | mixed | hard`; ADE records the operation as
-`git_reset_<mode>` so undo/redo lookups can pair it up later.
-`git.createTag` takes `{ laneId, commitSha, tagName, message? }`;
-omitting `message` creates a lightweight tag.
-`git.isCommitInLaneHistory` takes `{ laneId, commitSha }` and returns
-a boolean.
+`git.pull` takes `mode` (`ff-only` default, `rebase`, `merge`); another value
+is refused. `git.resetToCommit` takes `{ laneId, commitSha, mode }` (`soft`,
+`mixed`, `hard`) and records `git_reset_<mode>` for undo. `git.createTag`
+takes `{ laneId, commitSha, tagName, message? }`; no message makes a
+lightweight tag.
 
 **Files**
 - `files.writeTextAtomic`
 
 **Terminal** (`terminal.*`)
-- `list`, `activeForChat` — session-list and per-chat active-terminal
-  reads that back the web/mobile terminal surfaces (the live IO itself
-  still rides the `terminal_*` sub-protocol, not command routing).
+- `list`, `activeForChat` — reads for the web and mobile terminal views.
+  Live IO uses the `terminal_*` sub-protocol.
 
 **Conflicts** (`conflicts.*`)
 - `getLaneStatus`, `listOverlaps`, `getBatchAssessment`
@@ -655,15 +428,24 @@ a boolean.
 **History** (`history.*`)
 - `listOperations` — the undo/redo operations log.
 
+**Search** (`search.*`), both viewer-allowed:
+- `query` — `SearchQueryArgs` → `SearchQueryResult`, the same
+  `searchService.query` call as the `search` action domain. The brain removes
+  `callerScope` from the payload. A payload with no string `query` fails
+  ("search.query requires query."). Before bootstrap builds the search
+  service, the call fails with "Search is not available in this runtime."
+  The web palette uses it to search each connected computer.
+- `indexStatus` — `SearchIndexStatus`, or null when the runtime has no
+  search service.
+
+A lane share guest cannot run either one. The brain does not log the query
+text.
+
 **GitHub** (`github.*`)
 - `getStatus`, `getRemoteStatus`, `publishCurrentProject`
-- `getRequestBudget` — the host's zero-network GitHub request budget (quota
-  reserve pause, worst recent failure kind, retry instant). `viewerAllowed`,
-  because it only reports how hard the caller may poll. Registered for the
-  hosted web client specifically: its PR timers run in the browser but their
-  GitHub requests are spent from *this* machine's quota, so without the
-  registration its adapter falls back to an all-null budget and its 5-second
-  checks loop never sees the reserve. See
+- `getRequestBudget` — viewer-allowed, no network: the host's GitHub budget
+  (reserve pause, worst recent failure, retry time). The web client's PR
+  timers spend this machine's quota, so they read it. See
   [pull requests](../pull-requests/README.md#keeping-automatic-github-reads-inside-the-quota).
 
 **Project config** (`projectConfig.*`)
@@ -673,381 +455,229 @@ a boolean.
 - `getStatus` — provider/auth status for the settings surfaces.
 
 **PRs** (`prs.*`)
-- `list`, `listOpenForRepo`, `refresh`, `getDetail`, `getDetailBundle`, `getStatus`
-  — `getDetailBundle` groups a PR's status, checks, reviews, and
-  comments reads while preserving successful sidecars on partial failure
+- `list`, `listOpenForRepo`, `refresh`, `getDetail`, `getDetailBundle`
+  (status, checks, reviews and comments; keeps good parts on a partial
+  failure), `getStatus`
 - `getChecks`, `getReviews`, `getComments`, `getFiles`
 - `postReviewComment`, `delete`, `cleanupBranch`
 - `listWithConflicts`, `listSnapshots`
-- `createFromLane`, `land`,
-  `close`, `reopen`, `requestReviewers`, `rerunChecks`, `addComment`
-- `setDraft` (`{ prId, draft: boolean }`) and `setAutoMerge`
-  (`{ prId, enabled: boolean, method?: "merge" | "squash" | "rebase" }`) —
-  convert a PR to draft or mark it ready, and arm or disarm GitHub
-  auto-merge. Both are `viewerAllowed` and queueable. They are
-  **optional** mobile capabilities (see the compatibility note above)
-- `getMobileSnapshot` — aggregate read that returns
-  `PrMobileSnapshot` (summaries, stacks, per-PR capabilities,
-  create-PR eligibility). Consumed by the iOS PRs
-  tab; see `ios-companion.md` for the shape.
+- `createFromLane`, `land`, `close`, `reopen`, `requestReviewers`,
+  `rerunChecks`, `addComment`
+- `setDraft` (`{ prId, draft }`), `setAutoMerge` (`{ prId, enabled,
+  method? }`) — viewer-allowed, queueable, optional on mobile
+- `getMobileSnapshot` — `PrMobileSnapshot` (summaries, stacks, capabilities,
+  create eligibility) for the iOS PRs tab; see `ios-companion.md`
 
 **CTO** (`cto.*`)
-- `ensureSession`, `getState`, `updateIdentity` — resolve the single CTO
-  chat session and read/patch its identity.
-- `getHomeMachine`, `setHomeMachine` — read or choose the machine that owns this
-  project's CTO.
-- `getMemory` — return the CTO's memory snapshot (project notes, notes about the
-  person, and the open-work list) for the phone's Memory card. The v1-only fields
-  are sent empty so older phones keep decoding.
-- `updateNotes`, `updateOpenWork` — queueable writes for one notes file and the
-  open-work list, used by the hosted web client's CTO page and settings.
-- `refreshContext` — give the CTO a fresh provider thread; the ADE session and
-  everything it remembers stay.
-- `previewSystemPrompt` — the assembled prompt the hosted web client's CTO
-  settings read.
-- `getAttention` — whether the CTO thread is blocked on the user, for the
-  badge on the phone's CTO tab. It delegates to the canonical
-  `agentChatService.getCtoAttention()` (the same implementation behind
-  `IPC.ctoGetAttention` and the `cto_state.getAttention` action), so no
-  surface derives "needs you" differently. `viewerAllowed` and strictly
-  read-only: `getCtoAttention` never calls `ensureIdentitySession`, so
-  drawing a badge cannot materialize a primary lane and a CTO chat session
-  as a side effect. The phone needs its own command here because the CTO
-  chat is excluded from every session roster and cannot be derived from the
-  chat list. The result is `idle`, `awaiting-input`, or `unknown`; mobile and
-  hosted-web clients retain their last known badge state on `unknown` instead
-  of treating a failed host scan as idle. It is an **optional** mobile
-  capability (see the compatibility note above).
+- `ensureSession`, `getState`, `updateIdentity` — the one CTO chat and its
+  identity.
+- `getHomeMachine`, `setHomeMachine` — the machine that owns the project's
+  CTO.
+- `getMemory` — project notes, notes about the person and the open-work list
+  (v1-only fields sent empty for older phones).
+- `updateNotes`, `updateOpenWork` — queueable writes (web CTO page and
+  settings).
+- `refreshContext` — a new provider thread; the session and memory stay.
+- `previewSystemPrompt` — the assembled prompt.
+- `getAttention` — `idle`, `awaiting-input` or `unknown` for the CTO badge,
+  through `agentChatService.getCtoAttention()` (the same as
+  `IPC.ctoGetAttention` and `cto_state.getAttention`). Viewer-allowed and
+  strictly read-only: it never calls `ensureIdentitySession`, so a badge
+  cannot create a primary lane or CTO chat. The CTO chat is in no roster, so
+  phones must ask. Clients keep the last badge on `unknown`. Optional.
 - `getLinearConnectionStatus`, `getLinearQuickView`,
   `getLinearIssuePickerData`, `searchLinearIssues`, `getLinearIssueComments`
-  — the Linear read surface. The former worker-management commands
-  (`removeAgent`, `setAgentStatus`, `triggerAgentWakeup`,
-  `rollbackAgentRevision`) were removed with the worker subsystem.
-- `startLinearMobileOAuth`, `completeLinearMobileOAuth`, `setLinearToken`,
-  `clearLinearToken` — the Linear **connection-management** surface the iOS
-  Linear pane uses to connect, reconnect, and disconnect a workspace from the
-  phone. `startLinearMobileOAuth` mints a desktop PKCE session for the
-  worker-bounce OAuth flow (redirect through the `ade-github-webhook-relay`
-  worker back to `ade://linear-oauth`); `completeLinearMobileOAuth` hands the
-  captured `code`/`state` back for the desktop-side token exchange;
-  `setLinearToken` stores a pasted API key; `clearLinearToken` disconnects. All
-  four are `viewerAllowed` and are **optional** mobile capabilities (see the
-  compatibility note above) — older brains omit them, and iOS gates the connect
-  UI on the advertised action set. See
+  — Linear reads.
+- `startLinearMobileOAuth` (desktop PKCE session; redirect through
+  `ade-github-webhook-relay` to `ade://linear-oauth`),
+  `completeLinearMobileOAuth` (desktop token exchange), `setLinearToken`
+  (API key), `clearLinearToken` — Linear connection from the phone.
+  Viewer-allowed, optional. See
   [Linear integration](../linear-integration/README.md#connecting-and-managing-from-mobile).
 
 **Mac Desktop** (`macDesktop.*`)
 
-The lane's private macOS screen, watched live from the hosted web client and
-the phone. Registered only when the runtime built both the Mac Desktop service
-and its subscription fan-out, and advertised to clients with
-`hello_ok.features.macDesktopStream: true`; either half missing keeps the
-existing still-image fallback. Web takeover is advertised separately with
-`hello_ok.features.macDesktopControl: true`, which is set exactly when the
-`takeControl` command is registered.
+The lane's private macOS screen, for the web client and the phone. It is
+registered only when the runtime has the Mac Desktop service and its
+fan-out, advertised as `hello_ok.features.macDesktopStream: true`; else
+clients keep the still image. `hello_ok.features.macDesktopControl: true` is
+set exactly when `takeControl` is registered.
 
-- `getStatus` `{ laneId }` — viewer-allowed read of the same `MacDesktopStatus`
-  the desktop gets, with the recording pinned to `null` so its host file path
-  never crosses the socket. The stream's token and URL are already absent from a
-  status read.
-- `start` `{ laneId, laneName? }` / `stop` `{ laneId }` — controller-only
-  (`viewerAllowed: false`, `controllerAllowed: true`): creating or destroying a
-  display is a host mutation, so a read-only viewer device never gets it. A
-  paired phone and the hosted web client both may `start`. The phone calls it
-  only from the Off card; it never calls `stop`. The web client may stop.
-  `start` is idempotent and platform-gated: a non-Mac runtime answers
+- `getStatus` `{ laneId }` — viewer-allowed `MacDesktopStatus` with
+  `recording: null`, so no host path leaves. No stream token or URL.
+- `start` `{ laneId, laneName? }`, `stop` `{ laneId }` — controller-only.
+  The phone calls `start` only from the Off card and never `stop`; the web
+  client may stop. `start` is idempotent; a non-Mac runtime answers
   `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
-- `streamSubscribe` `{ laneId, subscriptionId, viewerLabel? }` → `{ ok, width,
-  height, codec }`. It calls the same service path as the desktop's
-  `startStream`, so idle-rate and owner bookkeeping apply, but the asker is
-  recorded as a **subscription** owner keyed by `subscriptionId` — not a chat —
-  so it never appears in `viewerChatSessionIds`. The first pushed record is
-  always a `config`, then a keyframe.
-- `streamUnsubscribe` `{ subscriptionId }`. A socket close releases every
-  subscription that connection owned, with no notice (the socket is gone).
+- `streamSubscribe` `{ laneId, subscriptionId, viewerLabel? }` →
+  `{ ok, width, height, codec }`. Same path as desktop `startStream`, but the
+  owner is a **subscription** (never in `viewerChatSessionIds`). The first
+  record is a `config`, then a keyframe.
+- `streamUnsubscribe` `{ subscriptionId }`. A socket close releases its
+  subscriptions.
 - `takeControl` `{ laneId, controllerId, controllerLabel? }` →
-  `MacDesktopLeaseState`. Controller-only (`viewerAllowed: false`,
-  `controllerAllowed: true`): a read-only viewer watches, a paired/account
-  browser controller drives. The payload's `controllerId` is a per-tab TOKEN,
-  not a lease identity — the brain derives the holder id as
-  `web:<socket connection id>:<token>`, so a client can only return or renew
-  the lease its own socket took. A paired phone calls the same four commands
-  (`takeControl`, `returnControl`, `renewLease`, `input`) when the host
-  advertises `macDesktopControl`.
-- `returnControl` `{ laneId, controllerId }` and `renewLease` `{ laneId,
-  controllerId }` → `MacDesktopLeaseState | null`, with the same derivation.
-  A second connection's derivation cannot match the first's holder id, so
-  returning or renewing someone else's lease is a no-op. `renewLease` is the
-  heartbeat: null means the lease lapsed or another controller holds it.
-- `input` `{ laneId, call: { kind: "click" | "move" | "scroll" | "type" |
-  "press" | "drag", args } }` → `MacDesktopInputResult` for one forwarded
-  pointer or keyboard event. The host strips `controllerId`, `holderId` and
-  `chatSessionId` from `args`, forces `silent: true`, and re-fills the derived
-  controller id; `type` text is capped at 4 KiB per call and any named point
-  outside the lane's display is refused.
-- A socket that took a lease returns it on `ws close`, immediately through
-  `returnControl` rather than at the TTL. The command service records which
-  derived holder ids each connection took, because that bookkeeping never
-  leaves the brain.
-- Server→client pushes on the same envelope channel the brain uses for chat
-  events: `macDesktop.streamRecord` `{ subscriptionId, seq, kind: "config" |
-  "frame", keyframe, timestampUs, data }` where `data` is base64 (Annex-B
-  access units for frames, the JSON config object for configs), and
-  `macDesktop.streamEnded` `{ subscriptionId, reason, message? }` with
-  `reason` one of `unsubscribed`, `stopped`, `display_destroyed`,
-  `connection_closed`, `error`.
-- Backpressure is per subscription: once the peer's queued bytes exceed 2 MiB,
-  `frame` records are dropped until the next keyframe, so a decoder never
-  receives a P-frame whose reference was skipped. `seq` counts source records,
-  sent or not, so a gap in `seq` tells the client frames were dropped and it
-  can hold P-frames until the keyframe that follows.
+  `MacDesktopLeaseState`, controller-only. `controllerId` is a per-tab
+  token; the brain derives the holder id `web:<socket connection id>:<token>`,
+  so a socket can only return or renew its own lease. Phones use the same
+  four commands when `macDesktopControl` is set.
+- `returnControl`, `renewLease` `{ laneId, controllerId }` →
+  `MacDesktopLeaseState | null`. Another socket's call is a no-op.
+  `renewLease` is the heartbeat; null means lapsed or held by another.
+- `input` `{ laneId, call: { kind, args } }` (`click`, `move`, `scroll`,
+  `type`, `press`, `drag`) → `MacDesktopInputResult`. The host strips
+  `controllerId`, `holderId` and `chatSessionId`, forces `silent: true` and
+  sets the derived id. `type` text is capped at 4 KiB; a point outside the
+  display is refused.
+- On `ws close` the host returns that socket's leases at once.
+- Pushes: `macDesktop.streamRecord` `{ subscriptionId, seq, kind: "config" |
+  "frame", keyframe, timestampUs, data }` (base64 Annex-B units or the JSON
+  config) and `macDesktop.streamEnded` `{ subscriptionId, reason, message? }`
+  (`unsubscribed`, `stopped`, `display_destroyed`, `connection_closed`,
+  `error`).
+- Backpressure: over 2 MiB queued, frames drop until the next keyframe.
+  `seq` counts source records, so a gap means a drop.
 
 The canonical list is typed as `SyncRemoteCommandAction` in
 `apps/desktop/src/shared/types/sync.ts`.
 
 ## Argument parsing
 
-Each action has a dedicated parse function (e.g. `parseCreateLaneArgs`,
-`parseAgentChatSendArgs`, `parseCreatePrArgs`) that:
+Each action has its own parser (`parseCreateLaneArgs`,
+`parseAgentChatSendArgs`, `parseCreatePrArgs`, …). It takes
+`Record<string, unknown>`, checks required fields (`requireString`,
+`requireStringArray`, `requireService`), coerces optional ones
+(`asTrimmedString`, `asOptionalNumber`, `asOptionalBoolean`,
+`asStringArray`) and returns the typed service args. A bad payload throws a
+plain error (`"lanes.create requires name."`) that the controller gets as
+`command_result.error.message`.
 
-1. Accepts `Record<string, unknown>`.
-2. Validates required fields with `requireString` / `requireStringArray` /
-   `requireService`.
-3. Coerces optional fields through `asTrimmedString`, `asOptionalNumber`,
-   `asOptionalBoolean`, `asStringArray`.
-4. Returns the typed args object expected by the brain's in-process service.
-
-Helpers (`asTrimmedString`, `asStringArray`, `requireString`, etc.) live
-at the top of the file. A non-conforming args object causes the parser
-to throw an explicit error like `"lanes.create requires name."`; that
-error reaches the controller as `command_result.error.message`. The metadata
-parser additionally requires `fields` to be an array when present, normalizes
-and de-duplicates the three allowed field names, and rejects an array with no
-valid field.
-
-Cross-machine handoff has dedicated parsers for all five actions. The service
-then performs the deeper version, bounds, secret-redaction, Git identity, and
-SHA-256 fingerprint validation on the capsule before any destination resource
-is created; the parser is not the capsule trust boundary.
+The five handoff parsers check shape only. The service checks the capsule
+(version, bounds, secret redaction, Git identity, SHA-256 fingerprint)
+before it creates anything; the parser is not the trust boundary.
 
 ## Handler bodies
 
-Handlers are thin glue onto the brain's in-process services. Most look like:
+Most handlers parse and call one service method. These have more logic:
 
-```ts
-register("lanes.archive",
-  { viewerAllowed: true, queueable: true },
-  async (payload) => {
-    await args.laneService.archive(parseArchiveLaneArgs(payload, "lanes.archive"));
-    return { ok: true };
-  });
-```
-
-A handful have more logic:
-
-- **`lanes.create`** — uses saved account and repository defaults when start choices are omitted. `lanes.getNewLaneDefaults` and `lanes.setNewLaneDefaults` read and write those defaults.
-
-- **`work.runQuickCommand`** — constructs a `PtyCreateArgs`, calls
-  `ptyService.create`, and returns the PTY handle for the controller
-  to subscribe to via `terminal_subscribe`.
-- **`work.runShellBlock`** — runs a chat reply's shell code block. The chat
-  must be in the given lane (the lane picks the folder, the chat owns the
-  terminal), then `ptyService.create` with `chatSessionId`, the client-built interpreter
-  `command` and `args` (the script is one argument, at most 128,000
-  UTF-8 bytes in all), `toolType: "shell"`, tracked, with the host's own
-  `SHELL_BLOCK_RUN_ENV` (pagers off); the client sends no environment. Controller-only and not
-  queueable, so a block runs when the person confirms it and never later on a
-  reconnect. Optional in the mobile compatibility contract: clients feature-
-  detect it from `hello_ok.features.commandRouting.actions`.
-- **`work.startCliSession`** — runtime-side mobile CLI launcher used by
-  the iOS Work "new session" surface. Args are validated through
-  `parseStartCliSessionArgs`,
-  which restricts `provider` to the allowlist
-  `claude | codex | cursor | droid | opencode | shell` (any other
-  value throws `"work.startCliSession requires provider."`), clamps
-  `cols` to `[20, 240]` and `rows` to `[4, 120]`, and truncates
-  `initialInput` at 20 KB. `model` / `modelId`, `reasoningEffort`,
-  `fastMode`, and (for Codex) `fastTier` flow into the same launch builder as
-  desktop; the older `codexFastMode` wire name is accepted only as a
-  compatibility alias. Provider-specific argv, env, and shell
-  preambles come from `buildTrackedCliLaunchCommand` in
-  `apps/desktop/src/shared/cliLaunch.ts`
-  — the same module the desktop Work tab uses — so the runtime owns the
-  startup-command shape and a phone cannot smuggle in a free-form
-  shell command (the `shell` provider takes no startup payload at all).
-  For Codex on macOS, the runtime resolves the explicitly opted-in and
-  OpenAI-signature-verified standalone Computer Use client at launch time and
-  adds only the canonical `mcp_servers.computer_use` config overrides; a
-  missing/disabled/unverified client adds nothing.
-  The runtime resolves the requested lane worktree before building that
-  launch payload, so ADE guidance and `ADE_AGENT_SKILLS_DIRS` prefer
-  lane-local `.claude` / `.agents` / `.ade` / `.codex` skill dirs and
-  bundled ADE resources instead of whichever project root the daemon
-  process happened to start from.
-  Claude launches mint a pre-assigned `--session-id` upfront via
-  `randomUUID()` so continuation works as soon as the row exists.
-  When `initialInput` is present, it is passed to `ptyService.create`
-  as `args.initialInput` with an `initialInputDelayMs` (default
-  750 ms for CLI launches) so the agent CLI input protocol handles
-  bracketed-paste submission after the TUI has had time to initialize.
-  This replaces the older pattern of post-create `writeBySessionId`
-  keystrokes.
-  The launch carries the same options as a desktop CLI launch: `instanceId`
-  (provider account), `presetId`, `credentialId`, `droidPermissionMode`,
-  `linearIssues` (each parsed with `parseLaneLinearIssueValue` and attached
-  to the session before the spawn through `ptyService.create`, so the CLI
-  inherits `ADE_LINEAR_*`), and the caller's `startupDelayMs` /
-  `initialInputDelayMs` (a provider launch that sets its own input delay
-  keeps it). The web client's `pty.create` maps a desktop
-  `runtimeCliLaunch` onto these fields. iOS starts a CLI on another
-  machine's checkout the same way it starts a chat there: the namespaced
-  lane id and the machine-marked project id route the command to that
-  machine, and the new terminal opens over that machine's link.
-  The iOS CLI start offers an **account** menu (the CLI provider's accounts
-  from `account.getMachineInventory` `providers[].accounts`, shown only when
-  there are two or more, only for the connected machine, and hidden while a
-  preset is picked) and a **Linear issue** picker (the Linear issue list in
-  pick mode); it sends `instanceId` and full `linearIssues` records. Stored
-  API keys have no listing that crosses the machine boundary, so the phone
-  reaches a key through a preset that names it.
-- `chat.typeIntoCli` (`{ sessionId, text, holdUntilFree?, clientMessageId? }` →
-  `{ ok, outcome }`) types a message into a running tracked agent CLI, only
-  at a free prompt (`agentChatService.typeIntoAgentCliWhenFree`, through the
-  same per-CLI flight as wakes, so it never lands mid-turn or shares a turn
-  with a wake). `outcome` is `delivered`, `deferred` (busy, nothing typed),
-  `held` (busy; the host types it when the prompt is free, in order, for up to
-  six hours; not durable across a brain restart) or `ended` (the process is
-  gone; nothing typed, nothing relaunched). The command defaults
-  `holdUntilFree` to true, because the phone keeps no queue of its own; the
-  desktop's runtime action (`chat.typeIntoCli`) and the web adapter send it
-  false and queue in the Work input box instead. `clientMessageId` names one
-  message: a repeat with the same id — a resend after a lost answer — gets the
-  first call's answer instead of typing the text again, and a typed or held
-  answer is kept for ten minutes. Queueable: an offline phone's send goes out
-  on reconnect. Not offered to lane share guests. Optional in
-  the mobile contract (`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`).
-  The result is `SyncStartCliSessionResult` (`{ sessionId, ptyId,
-  session: TerminalSessionSummary | null }`) — the controller can
-  immediately render the session card and call `terminal_subscribe`
-  without an extra round-trip. The command-result journal persists
-  only the returned session handle and summary, not the `initialInput`
-  text, so reconnect replay does not leak the user's prompt into the
-  runtime-side ledger.
+- **`lanes.create`** — uses the saved account and repository defaults
+  (`lanes.getNewLaneDefaults`, `lanes.setNewLaneDefaults`) for omitted start
+  choices.
+- **`lanes.list`** — `laneService.list`, then `buildLaneListSnapshots`
+  (runtime buckets and conflict status for the iOS Lanes tab).
+- **`lanes.initEnv`, `lanes.applyTemplate`** — the shared
+  `runLaneEnvironmentSetup` (`lanes/laneEnvironmentSetup.ts`,
+  `includeArchived: false`), which the action domain, IPC and launch service
+  also use.
+- **`lanes.suggestName`** — background naming for the mobile auto-create
+  flow, like `agentChatService.generateAutoLaneIdentity`. Takes `{ prompt,
+  modelId, laneId, fallbackName?, temporaryBranch?, attachments? }`, makes
+  one structured request for a title and a Git-safe branch fragment, applies
+  each on the host, and returns `{ name, hostApplied }`.
+  - Not queueable, so an offline phone uses its own fallback at once.
+  - Honors `titleGenerationEnabled`. Model order: the configured naming
+    model, the launched model, then a signed-in model of the same provider.
+    Low or minimal reasoning. Images are context; other files give metadata.
+  - iOS waits 45 s and retries once for a transient failure only (not for
+    disabled naming, no auth, no capability, bad output or an unsafe branch).
+    Any failure keeps the deterministic lane and branch, so naming never
+    blocks lane creation.
+  - iOS (`WorkNewChatScreen`, the hub composer) creates the lane at once on
+    an `ade/<8 lowercase hex>` branch, then calls
+    `SyncService.suggestLaneName` after the launch. With `hostApplied` it
+    refreshes; an older host returns a title that iOS applies with
+    `lanes.rename`. A manual change during naming wins.
+- **`lanes.presence.announce` / `.release`** — handled in `syncHostService`,
+  not the registry. The brain keeps a per-lane `DeviceMarker` map and adds
+  `devicesOpen` (60 s TTL) to `LaneSummary`.
+- **`work.runQuickCommand`** — `ptyService.create` from a `PtyCreateArgs`;
+  returns the PTY for `terminal_subscribe`.
+- **`work.runShellBlock`** — runs a chat reply's shell block. The chat must
+  be in the lane. `ptyService.create` gets `chatSessionId`, the client's
+  interpreter `command` and `args` (the script is one argument, at most
+  128,000 UTF-8 bytes), `toolType: "shell"` and the host's
+  `SHELL_BLOCK_RUN_ENV` (pagers off); the client sends no environment.
+  Controller-only and live-only, so a block runs only on confirmation.
+  Optional on mobile.
+- **`work.startCliSession`** — the CLI launcher for iOS Work and the web
+  client (`pty.create` maps a desktop `runtimeCliLaunch` onto it).
+  - `parseStartCliSessionArgs` allows `provider` `claude`, `codex`, `cursor`,
+    `droid`, `opencode` or `shell` (else "work.startCliSession requires
+    provider."), clamps `cols` to 20–240 and `rows` to 4–120, and cuts
+    `initialInput` at 20 KB.
+  - `model`/`modelId`, `reasoningEffort`, `fastMode` and Codex `fastTier`
+    (alias `codexFastMode`) go to `buildTrackedCliLaunchCommand`
+    (`apps/desktop/src/shared/cliLaunch.ts`), shared with desktop, so a
+    phone cannot send a free-form command. `shell` takes no startup payload.
+  - It also takes `instanceId`, `presetId`, `credentialId`,
+    `droidPermissionMode`, `linearIssues` (parsed by
+    `parseLaneLinearIssueValue`, attached before the spawn so the CLI gets
+    `ADE_LINEAR_*`), `startupDelayMs` and `initialInputDelayMs` (a provider's
+    own delay wins).
+  - The lane worktree resolves first, so `ADE_AGENT_SKILLS_DIRS` prefers
+    lane skill folders. Codex on macOS adds only
+    `mcp_servers.computer_use` overrides, and only for an opted-in,
+    signature-verified client.
+  - Claude gets a pre-assigned `--session-id`. `initialInput` goes to
+    `ptyService.create` with `initialInputDelayMs` (750 ms default) for a
+    bracketed-paste submit.
+  - The result is `SyncStartCliSessionResult` (`{ sessionId, ptyId, session
+    }`), so the controller can subscribe at once. The result journal keeps
+    the handle and summary, never `initialInput`.
+  - A namespaced lane id and machine-marked project id route it to another
+    machine. The iOS start offers an account menu (two or more accounts from
+    `account.getMachineInventory`, connected machine only, hidden with a
+    preset) and a Linear picker. Stored API keys are reachable only through a
+    preset.
+- **`chat.typeIntoCli`** — `{ sessionId, text, holdUntilFree?,
+  clientMessageId? }` → `{ ok, outcome }`. Types into a running agent CLI
+  only at a free prompt, through `agentChatService.typeIntoAgentCliWhenFree`
+  (the same flight as wakes). `outcome`: `delivered`; `deferred` (busy,
+  nothing typed); `held` (typed in order when free, up to six hours, lost on
+  a brain restart); `ended` (process gone, nothing relaunched).
+  - `holdUntilFree` defaults to true, because the phone has no queue; the
+    desktop and web send false and queue in the Work input box.
+  - A repeat `clientMessageId` gets the first answer (kept ten minutes).
+  - Queueable. Not for share guests. Optional on mobile.
 - **`work.listExternalSessions` / `work.importExternalSession`** — list and
-  import provider-native Claude, Codex, Cursor, Droid, and OpenCode CLI
-  sessions through the runtime's external-session service. Import forwards the
-  full service result: CLI results carry the new `sessionId` / `ptyId` plus a
-  persisted `TerminalSessionSummary` when available; chat results carry the
-  new `chatSessionId` plus the required persisted `AgentChatSessionSummary`.
-  Controllers use those summaries for immediate navigation rather than waiting
-  for the next sync/session-list refresh. Provider storage, cwd validation, and
-  process launch remain host-side; see
+  import Claude, Codex, Cursor, Droid and OpenCode CLI sessions. Import
+  returns the new ids plus the persisted summary, for navigation at once. See
   [External Session Import](../terminals-and-sessions/external-session-import.md).
-- **`work.getExternalSessionDetail`** — one external session's conversation for
-  the phone's import preview (`viewerAllowed`, not queueable). Args are
-  `provider`, `sessionId`, and an optional `before` paging cursor. It calls the
-  runtime's `externalSessionsService.getDetail`, the same entry the desktop's
-  `external-sessions.getDetail` action uses (so it reads the service's provider
-  homes), with a 120-event page (the desktop reads 200) so paging stays
-  exact, and returns `ExternalSessionDetail`: `events` (ADE chat envelopes,
-  oldest to newest) compacted by `compactChatEventForMobileWire` minus the
-  `resultTruncatedForMobile` flag (a preview has no stored transcript to fetch a
-  full tool result from), `hasOlder`, and `olderCursor` for the next
-  `before`. When `events` is non-empty `messages` is sent empty; a host that
-  produced no events keeps the text tail. Like list and import it fails with
-  "External sessions service not available." on a runtime without that
-  service. Older hosts do not register it, and the phone feature-detects it.
-- **`work.sendToSession`** — sends text to an existing durable Work
-  CLI session. If the PTY is live, the runtime writes into it; if the
-  process ended and the session is resumable, the runtime starts the
-  provider continuation internally and attaches the runtime to the
-  same session id.
-- **`work.stopRuntime`** — looks up the session's PTY id and disposes
-  the PTY without deleting the durable session row or transcript.
-- **`chat.create`** / **`chat.launch`** — resolve a missing `model` to the
-  first available provider model through `resolveChatCreateModel`
-  (`apps/desktop/src/main/services/chat/chatCreateModelResolution.ts`, which
-  calls `agentChatService.getAvailableModels`) before forwarding. The
-  chat-launch service applies the same resolver to every launch.
-- **`chat.regenerateSessionMetadata`** — requires the runtime's
-  `agentChatService`, makes the single structured request for the selected
-  visible chat title, lane name, and/or status line, and returns per-field
-  `applied`/`skipped` results. The action is deliberately non-queueable; the
-  service's snapshot checks preserve edits that race the generation.
-- **`chat.recoverCodexTurn`** — validates one of `wait`, `steer`,
-  `interrupt_retry_same_thread`, or `restart_resume_thread` and forwards to
-  the chat service. It is viewer-allowed but deliberately non-queueable: the
-  session/turn pair must still be the active stalled turn when handled.
-- **`lanes.suggestName`** — background lane naming for the mobile
-  auto-create flow (desktop parity with
-  `agentChatService.generateAutoLaneIdentity`). Takes `{ prompt,
-  modelId, laneId, fallbackName?, temporaryBranch?, attachments? }`, makes one
-  structured naming request for a readable lane title and a Git-safe branch
-  fragment, applies each identity independently on the host, and returns
-  `{ name, hostApplied }`. Image attachments reuse the existing bounded chat
-  attachment references as naming context; non-image attachments contribute
-  metadata only. The handler is deliberately **not queueable**
-  so an offline phone fails fast and the client uses its own
-  deterministic fallback instead of receiving a stale queued suggestion.
-  Naming honors the host `titleGenerationEnabled` setting. A configured naming
-  model wins; otherwise the launched model is tried first, then an authenticated
-  same-provider model where possible. Naming uses low/minimal reasoning rather
-  than inheriting the coding turn's reasoning level. iOS allows 45 seconds per
-  non-disconnecting request and at most one retry for plausibly transient
-  failures. Disabled naming, missing authentication, unsupported capability,
-  invalid structured output, and branch-safety rejection are not retried.
-  Missing services, invalid output, timeout, or provider failure retain
-  independently derived deterministic lane and branch values, so naming can
-  never block or fail lane creation. Structured logs carry the lane, temporary
-  branch, selected model, source, attempt count, mutation outcomes, and
-  skip/failure reason. The iOS callers
-  (`WorkNewChatScreen` and the hub composer) create the lane instantly
-  with the deterministic title on an exact `ade/<8 lowercase hex>` temporary
-  branch, then call `SyncService.suggestLaneName` fire-and-forget after the
-  session launch. When `hostApplied` is true they refresh lane state instead of
-  issuing a second rename; legacy hosts still return a title that mobile applies
-  through `lanes.rename`. A manual lane or branch change made while naming is in
-  flight wins, and any throw keeps the deterministic identity.
-- **`lanes.initEnv` / `lanes.applyTemplate`** — both call the shared
-  `runLaneEnvironmentSetup` (`lanes/laneEnvironmentSetup.ts`) with
-  `includeArchived: false`: it resolves the lane's overlay context, merges
-  the template (when given) over the project's env init config and
-  overrides, and invokes `laneEnvironmentService.initLaneEnvironment`. The
-  action domain, IPC, and the chat-launch service use the same helper.
-- **`lanes.list`** — delegates to `laneService.list` then runs
-  `buildLaneListSnapshots` to produce the richer payload the iOS
-  Lanes tab consumes (runtime bucket summaries and conflict status).
-- **`prs.refresh`** — delegates to `prService.refresh`, then
-  re-lists PRs and returns the PR list plus a **bounded** set of snapshots:
-  `{ refreshedCount, prs, snapshots, snapshotScope, omittedSnapshotPrIds }`.
-  Args: `prId` / `prIds` (snapshots for exactly those PRs) and
-  `includeSnapshots: "active" | "all" | "none"` (default `"active"`: open or
-  draft PRs, and PRs whose lane is not archived). Snapshots are capped at
-  6 MiB per reply, open PRs first; the ones left out are listed in
-  `omittedSnapshotPrIds` and load one PR at a time (`{ prId }`) when opened.
-  An argument-less refresh used to return every stored snapshot — 17 MB on a
-  real project — which the host refused to send and closed the phone over.
-- **Reply size guard.** `execute` measures every command's serialized result;
-  over 12 MiB (`SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES`) the command fails with
-  `{ ok: false, error: { code: "result_too_large", message, bytes, limitBytes } }`.
-  The host's `sendRequired` does the same for any request-bound reply that
-  cannot fit the 16 MiB send budget, and keeps the socket open; only a peer
-  whose queue is already full, or backpressured past the timeout, is closed
-  with 4001.
-- **`prs.getMobileSnapshot`** — calls `prService.getMobileSnapshot`,
-  which builds GitHub PR stacks, classifies each
-  PR's action capabilities, and resolves per-lane create-PR eligibility
-  against the compare base.
-- **`lanes.presence.announce` / `lanes.presence.release`** — handled
-  in `syncHostService` directly (not in the remote command registry);
-  the brain upserts a per-lane `DeviceMarker` map and
-  decorates outgoing `LaneSummary` payloads with `devicesOpen`.
+- **`work.getExternalSessionDetail`** — `{ provider, sessionId, before? }`
+  for the phone's import preview; viewer-allowed, live-only. It calls
+  `externalSessionsService.getDetail` with a 120-event page and returns
+  `events` (compacted by `compactChatEventForMobileWire`, without
+  `resultTruncatedForMobile`), `hasOlder` and `olderCursor`. With events,
+  `messages` is empty. Without the service: "External sessions service not
+  available." Optional.
+- **`work.sendToSession`** — writes into a live PTY, or resumes an ended
+  resumable session under the same id.
+- **`work.stopRuntime`** — disposes the PTY; the session row and transcript
+  stay.
+- **`chat.create`, `chat.launch`** — a missing `model` resolves through
+  `resolveChatCreateModel`
+  (`apps/desktop/src/main/services/chat/chatCreateModelResolution.ts`).
+- **`chat.recoverCodexTurn`** — legacy actions `wait`, `steer`,
+  `interrupt_retry_same_thread`, `restart_resume_thread`; viewer-allowed,
+  live-only.
+- **`prs.refresh`** — refresh, then return `{ refreshedCount, prs,
+  snapshots, snapshotScope, omittedSnapshotPrIds }`. `prId`/`prIds` pick
+  snapshots; `includeSnapshots` is `active` (default: open or draft, lane
+  not archived), `all` or `none`. Snapshots stop at 6 MiB per reply, open
+  first; the rest are in `omittedSnapshotPrIds` and load one at a time.
+- **`prs.getMobileSnapshot`** — `prService.getMobileSnapshot`: stacks,
+  capabilities, create eligibility.
+- **Reply size guard.** A result over 12 MiB
+  (`SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES`) fails with `{ code:
+  "result_too_large", message, bytes, limitBytes }`. `sendRequired` does the
+  same for any reply over the 16 MiB send budget and keeps the socket. Only a
+  peer with a full queue, or backpressured past the timeout, closes with
+  4001.
 
 ### Lane response decoration
 
-`syncHostService` wraps lane list, detail, snapshot, create, and import results to
-inject `LaneSummary.devicesOpen` from the presence map. Controllers
-therefore see up-to-date presence without a separate query.
+`syncHostService` adds `LaneSummary.devicesOpen` to lane list, detail,
+snapshot, create and import results, so no separate presence query is
+needed.
 
 ## Service dependencies
 
@@ -1075,12 +705,9 @@ services:
 }
 ```
 
-Optional services that are missing cause their dependent actions to
-throw `"<service> not available."` at call time. The `requireService`
-helper centralises that check. This pattern lets a narrower runtime
-construct only the services it can actually back without crashing at
-command registration — useful for headless/manual runtime setups that, for
-example, intentionally skip the chat service.
+A missing optional service makes its actions throw `"<service> not
+available."` at call time (`requireService`), not at registration. So a
+narrow runtime (a headless one with no chat service) still starts.
 
 ## Supported-action discovery
 
@@ -1093,79 +720,56 @@ getPolicy(action: string): SyncRemoteCommandPolicy | null;
 execute(payload: SyncCommandPayload): Promise<unknown>;
 ```
 
-Controllers typically read descriptors at connection time, cache
-them, and refresh on brain-status broadcasts (`brain_status`). The iOS Lanes /
-Files / Work / PRs tabs use this to render action buttons only for
-commands the current runtime supports under the current policy.
+Controllers read descriptors on connect, cache them and refresh on
+`brain_status`. The iOS tabs show only the actions the runtime supports
+under the current policy.
 
 ## Logging
 
-Every execution logs `sync.remote_command.execute` at `debug` level
-with the `action` and `policy`. Failed executions log at `warn` / `error`
-from the underlying service. No args are logged by default — most
-payloads are mundane, but chat `text` fields and file `relPath` values
-can be sensitive.
+Each run logs `sync.remote_command.execute` (debug) with `action` and
+`policy`. Failures log at warn or error in the service. Args are never
+logged, because chat `text` and file `relPath` can be sensitive.
 
 ## Integration with other sync surfaces
 
-- **Changeset sync** remains the channel for state reads. A
-  controller observes the effect of a command through replicated
-  `lanes`, `sessions`, `linear_workflow_runs`, etc. rows arriving
-  after the runtime finishes the command.
-- **Terminal sub-protocol** pairs with `work.runQuickCommand`,
-  `work.startCliSession`, `work.sendToSession`, and `work.stopRuntime`. The controller
-  invokes the command, then sends `terminal_subscribe` with the
-  returned session id to stream output and enable input/resize control.
-  A host that advertises `features.rosterTerminal` also streams a terminal of
-  any other open project when the envelope `projectId` names that project
-  (`apps/ade-cli/src/services/sync/syncTerminalStreams.ts`, shared by the
-  project host and the brain ingress). This is how the phone opens a terminal
-  on a machine it is not focused on.
-  The brain and its project hosts share one terminal input ledger, so input
-  that a phone resends after it reconnects to the other ingress is a
-  duplicate, not a second keystroke.
-- **Chat sub-protocol** pairs with `chat.create` / `chat.send` +
-  `chat_subscribe`. Same pattern: create / send the message through
-  a command, subscribe to the transcript stream for incremental
-  events. `chat.send` waits for the runtime-side dispatch acknowledgement
-  before returning `ok`, so the phone does not clear its local echo
-  while the desktop is still preparing the turn. The handler passes
-  `routeActiveToSteer: true` into `agentChatService.sendMessage`, so a send
-  that lands while a turn is already active is converted into a steer
-  instead of racing the live turn; when that happens the ack carries the
-  steer's `{ steerId, queued, reason?: "queue_full" }` alongside `ok: true`
-  (a plain new-turn send still returns just `{ ok: true }`; a steer queue
-  already at its cap comes back `queued: false, reason: "queue_full"`). The extra fields are additive — older
-  clients ignore them, and the phone uses them to reconcile the message it
-  echoed optimistically. If a live send times out or loses transport before the
-  acknowledgement arrives, the phone treats delivery as ambiguous: it does not
-  enqueue an automatic replay, restores the draft, and leaves transcript
-  reconciliation to show whether the host started the turn. Personal chat uses the same
-  envelopes but sends `chatScope: "personal"`; that explicit discriminator
-  resolves the hidden durable transcript and active-turn state without a
-  `projectId`.
-- **New-lane launches** pair `chat.startLaunch` … with the pushed
-  `chat_launch_event` envelope (see
+- **Changeset sync** carries state. A controller sees a command's effect in
+  the replicated rows (`lanes`, `sessions`, `linear_workflow_runs`, …).
+- **Terminal sub-protocol.** After `work.runQuickCommand`,
+  `work.startCliSession`, `work.sendToSession` or `work.stopRuntime`, the
+  controller sends `terminal_subscribe` with the session id.
+  - With `features.rosterTerminal`, a host also streams a terminal of
+    another open project named by the envelope `projectId`
+    (`apps/ade-cli/src/services/sync/syncTerminalStreams.ts`, shared by the
+    project host and the brain ingress).
+  - The brain and its project hosts share one terminal input ledger, so a
+    resend after a reconnect to the other ingress is a duplicate.
+- **Chat sub-protocol.** Create or send by command, then `chat_subscribe`.
+  - `chat.send` returns `ok` only after the runtime acknowledges dispatch,
+    so the phone keeps its local echo until then.
+  - The handler passes `routeActiveToSteer: true`, so a send during an
+    active turn becomes a steer. Then the ack adds `{ steerId, queued,
+    reason?: "queue_full" }`; a full queue gives `queued: false`. Older
+    clients ignore the extra fields.
+  - On a timeout or a lost transport before the ack, the phone treats the
+    send as unknown: no automatic replay, the draft comes back, and the
+    transcript shows whether the turn started.
+  - Personal chat sends `chatScope: "personal"`, with no `projectId`.
+- **New-lane launches** use the pushed `chat_launch_event` envelope (see
   [New-lane launch commands](#new-lane-launch-commands)).
-- **Smart-link preview** is a normal viewer-allowed command rather than a chat
-  stream message. Hosted web uses it so arbitrary pasted URLs are fetched at
-  the trusted runtime boundary; older hosts simply leave the local fallback
-  label in place.
-- **File access sub-protocol** (`file_request` / `file_response`) is
-  a separate envelope from remote commands; it handles large binary
-  payloads and streaming reads outside the command surface to avoid
-  bloating the command envelope.
+- **Smart-link preview** is a normal command, so the web client fetches
+  pasted URLs at the runtime. Older hosts keep the local label.
+- **File access** (`file_request` / `file_response`) is a separate envelope
+  for large and streamed reads.
 
 ## New-lane launch commands
 
 The brain-owned "start a chat in a lane that does not exist yet" contract
-(`apps/desktop/src/shared/types/chatLaunch.ts`) is exposed to phones and the
-hosted web client as eight sync commands with the same names as the brain's
-`chat` action domain. All are viewer-allowed and **not queueable**: the client
-shows the launch optimistically and offers Retry, and a lane appearing minutes
-later from an offline outbox would surprise everyone. When the host has no
-`chatLaunchService`, every command except `chat.listLaunches` (which returns
-`[]`) throws "New-lane launches are not available on this host."
+(`apps/desktop/src/shared/types/chatLaunch.ts`) is eight sync commands named
+like the brain's `chat` action domain. All are viewer-allowed and **not
+queueable**: the client shows the launch at once with Retry, and a lane from
+an old offline outbox would surprise the person. With no
+`chatLaunchService`, every command except `chat.listLaunches` (returns `[]`)
+throws "New-lane launches are not available on this host."
 
 | Command | Args | Result |
 |---|---|---|
@@ -1178,79 +782,55 @@ later from an offline outbox would surprise everyone. When the host has no
 | `chat.queueLaunchMessage` | `{ launchId, text, displayText?, attachments? }` | snapshot; throws `Launch not found: <id>` for an unknown launch |
 | `chat.completeLaunchClient` | `{ launchId, sessionId?, error? }` | snapshot; a CLI launch's client reports the PTY session it started (or its error) |
 
-Every entry point parses payloads with the one parser module
-`apps/desktop/src/main/services/chat/chatLaunchArgs.ts` (the desktop action
-domain in `adeActions/registry.ts` uses it too). `chat.create` is parsed with
-the `chat.create` field parser (its `laneId` / `sessionId` are dropped — the
-launch owns them) plus the harness selection `presetId` / `credentialId` /
-`instanceId`; `chat.message` with the `chat.send` field parser (its
-`sessionId` is dropped), keeping `contextAttachments` and a `local` / `cloud`
-`runtime`, and its `text` may be empty when the message carries only context.
-An empty `model` is auto-picked by the launch service
-(`resolveChatCreateModel`).
+All entry points (the desktop action domain in `adeActions/registry.ts`
+too) parse with `apps/desktop/src/main/services/chat/chatLaunchArgs.ts`.
+`chat.create` uses the `chat.create` field parser (its `laneId` and
+`sessionId` dropped; the launch owns them) plus `presetId`, `credentialId`
+and `instanceId`. `chat.message` uses the `chat.send` field parser (its
+`sessionId` dropped), keeps `contextAttachments` and a `local` or `cloud`
+`runtime`, and may have empty `text` with context only. An empty `model`
+resolves through `resolveChatCreateModel`.
 
 The launch's stages and controls are described in
 [Chat › New-lane launches](../chat/README.md#new-lane-launches).
 
-**Pushed progress.** The sync host subscribes to the launch service and sends
-every `ChatLaunchEvent` (`launch-updated` with the full snapshot, or
-`launch-removed`) as a `chat_launch_event` envelope to every authenticated
-peer of the project — runtime-only paired hosts and backpressured peers are
-skipped. There is no subscription to key on, because a launch is visible
-before its chat exists. The payload (`SyncChatLaunchEventPayload`) is the
-event plus the host's `projectId` and `projectRootPath`, so multi-project
-clients can route it. Clients hydrate with `chat.listLaunches` on connect and
-merge snapshots by `sequence`.
+**Pushed progress.** The sync host sends each `ChatLaunchEvent`
+(`launch-updated` with the snapshot, or `launch-removed`) as a
+`chat_launch_event` envelope to every authenticated peer of the project
+(not runtime-only hosts or backpressured peers). There is no subscription,
+because a launch shows before its chat exists. The payload
+(`SyncChatLaunchEventPayload`) adds `projectId` and `projectRootPath` for
+routing. Clients load `chat.listLaunches` on connect and merge by
+`sequence`.
 
 ## Chat command payload shape
 
-The `chat.create` / `chat.send` field parsers (`parseAgentChatCreateFields`,
-`parseAgentChatSendArgs`, `parseAgentChatFileRefs`,
-`parseCursorConfigValues`) live in
-`apps/desktop/src/main/services/chat/chatLaunchArgs.ts` next to the launch
-parsers that build on them; the sync host imports them for its direct chat
-commands. `parseAgentChatSendArgs` and `parseAgentChatSteerArgs` accept the full
-`AgentChatSendArgs` surface: `sessionId`, `text`, `attachments` (via
-`parseAgentChatFileRefs`, array of `{ path, type: "file" | "image" }`),
-`displayText`, `reasoningEffort`, `executionMode`, `interactionMode`.
-Steers accept `sessionId`, `text`, and `attachments`. Controllers
-(phones and desktop peers) can therefore attach files/images and
-specify reasoning / execution / interaction modes remotely; the
-runtime-side `agentChatService` consumes the same shape end-to-end.
+The field parsers (`parseAgentChatCreateFields`, `parseAgentChatSendArgs`,
+`parseAgentChatFileRefs`, `parseCursorConfigValues`) live in
+`apps/desktop/src/main/services/chat/chatLaunchArgs.ts`. Sends accept the
+full `AgentChatSendArgs`: `sessionId`, `text`, `attachments` (`{ path, type:
+"file" | "image" }`), `displayText`, `reasoningEffort`, `executionMode`,
+`interactionMode`. Steers accept `sessionId`, `text` and `attachments`.
 
-## Lane and PR Linear-issue payload shape
+## Lane, PR and model payload shapes
 
-`parseCreateLaneArgs` accepts an optional
-`linearIssue: LaneLinearIssue | null` so a controller can create a
-lane already attached to a Linear ticket; `laneService.create`
-derives the branch name (`linearIssueBranchName`) and persists the
-issue into `lane_linear_issues`.
-
-`parseCreatePrArgs` accepts
-`closeLinearIssueOnMerge: boolean`. When the lane has a connected
-issue, this flag drives whether `prService` injects `Fixes IDENT`
-(closes the issue when the PR merges) or `Refs IDENT` (links
-without closing) into the PR body via `ensureLinearPrReference`.
-
-Brain-status (`brain_status`) envelopes carry the brain's `LinearConnectionStatus`,
-which now includes optional `organizationId`, `organizationName`,
-`organizationUrlKey`, and `organizationLogoUrl` fields populated by
-the brain when the Linear workspace is connected. Controllers use
-these to render the workspace brand on Linear-related surfaces
-without fetching them separately.
-
-`parseChatModelsArgs` accepts `{ provider, activateRuntime?, cursorSource? }`
-(`cursorSource` is `"sdk" | "cli" | "all"`, mirroring `chat.modelCatalog`).
-When `chat.create` is missing an explicit model, `resolveChatCreateModel`
-forwards `activateRuntime: true` only for `opencode`, `pi`, the ACP
-providers (`qwen`, `kimi`, `grok`), and `copilot`. The ACP rows are gated on
-a CLI auth pass, and Copilot's rows come from an SDK model read; activation
-refreshes both (for OpenCode it launches the
-probe server). All other providers use passive (cache-only) resolution;
-see the chat README for the passive/active contract. The iOS companion's
-`chat.models` request sets `activateRuntime: true` for cursor/droid and
-`cursorSource: "sdk"` for cursor so a fresh key surfaces SDK models on the
-first fetch instead of returning an empty passive cache.
+- `parseCreateLaneArgs` accepts `linearIssue: LaneLinearIssue | null`;
+  `laneService.create` derives the branch (`linearIssueBranchName`) and
+  stores the issue in `lane_linear_issues`.
+- `parseCreatePrArgs` accepts `closeLinearIssueOnMerge`. With a connected
+  issue, `ensureLinearPrReference` writes `Fixes IDENT` (closes on merge)
+  or `Refs IDENT` into the PR body.
+- `brain_status` carries `LinearConnectionStatus` with optional
+  `organizationId`, `organizationName`, `organizationUrlKey` and
+  `organizationLogoUrl` for the workspace brand.
+- `parseChatModelsArgs` accepts `{ provider, activateRuntime?, cursorSource?
+  }`. For a `chat.create` with no model, `resolveChatCreateModel` sets
+  `activateRuntime: true` only for `opencode`, `pi`, the ACP providers
+  (`qwen`, `kimi`, `grok`) and `copilot` (ACP rows need a CLI auth pass,
+  Copilot rows an SDK read, OpenCode a probe server). Others use the passive
+  cache; see the chat README. iOS `chat.models` sets `activateRuntime: true`
+  for Cursor and Droid, and `cursorSource: "sdk"` for Cursor, so a new key
+  shows models at once.
 
 ## Unregistered actions are a silent-write hazard
 
@@ -1270,14 +850,18 @@ the fallback. Surfaces render that as "unavailable on the connected ADE host".
 Two rules follow:
 
 - A web-reachable write needs a `register(...)` entry here, not just an adapter
-  method. `apps/desktop/src/renderer/webclient/adapter/__tests__/hostCommandContract.test.ts`
-  fails CI when the adapter calls an action the brain does not serve, and its
-  `KNOWN_UNSUPPORTED` map is where a deliberate omission is recorded with its
-  reason.
+  method.
 - Some actions are deliberately absent. `ai.storeApiKey` is the canonical
   example: the web adapter redacts the key before sending, so a handler here
-  would persist the placeholder rather than the credential. Adding a provider
-  key stays a desktop-only operation.
+  would persist the placeholder rather than the credential. On the web, an
+  ADE Cloud provider key goes to the account vault through the account server
+  (`PUT /cloud/sign-ins/:id`), never through a brain.
+
+ADE Cloud pins (the ADE Cloud binding and `cloud-saved:` copies of resting
+cloud computers) never reach `CommandCaller`. The account adapter answers their
+reads from the account server and GitHub, and refuses other calls with one
+sentence. A call that does something goes to the lane's own computer after
+it wakes. See the [web client](../web-client/README.md#ade-cloud-reads).
 
 Note that lane presence (`lanes.presence.announce` / `.release`) is served
 through synthetic descriptors declared in `syncHostService`, outside this
@@ -1285,79 +869,46 @@ registry — a reader auditing coverage has to count those too.
 
 ## Gotchas
 
-- **`viewerAllowed: false` means no paired device, not "controllers only".**
-  The brain rejects such an action for every remote peer
-  (`Remote command … is not available to paired controller devices`), so a
-  handler registered that way is unreachable from iOS and the hosted web client
-  alike. Use it only for operations that genuinely must be performed at the
-  machine itself.
-- **`chat.models` returns the brain's model catalog.** A controller
-  must not hardcode model IDs. The brain is authoritative about
-  which models are wired up, which providers have credentials, and
-  what the default model and `defaultReasoningEffort` are. Compatibility
-  catalogs may keep fallback rows for older hosts, but host-advertised tiers
-  and defaults win.
-- **`lanes.delete` and `lanes.archive` are queueable.** A
-  disconnected controller can enqueue deletes that replay on
-  reconnect. Be aware when reasoning about "why did this lane
-  disappear" — check the command queue, not just the local DB.
-- **Do not make `personalChats.create` queueable.** Clients can cache personal
-  summaries per host for offline reading, but creation must wait for a live
-  brain. Only an existing session's `personalChats.send` may queue.
-- **Do not queue final cross-machine acceptance.** Source preparation,
-  source validation, destination preflight, acceptance, and source marking all
-  require current runtime/Git state. `chat.acceptCrossMachineHandoff` is
-  deliberately non-queueable and route-pinned; safe retries come from the
-  destination's durable handoff-id + capsule-fingerprint record, not an offline
-  command queue. See [the handoff contract](./cross-machine-session-handoff.md).
-- **`prs.createFromLane` requires GitHub auth on the brain.** Headless
-  brains resolve async GitHub operations the same way the desktop does:
-  an explicit env token (`ADE_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`),
-  then the authorized ADE GitHub App user token, then a stored PAT, then the
-  `gh` CLI resolved from known absolute install locations
-  (launchd's minimal PATH does not include Homebrew), then reading
-  `gh`'s `hosts.yml` oauth token directly (both host-level and nested
-  `users:<login>:` token layouts). Only when none of those yield a
-  token does the command fail with a clear error before reaching
-  GitHub.
-- **`work.runQuickCommand` always creates a PTY.** There is no
-  "run a command, give me just the output" variant; the controller
-  must subscribe to the terminal stream and stop the process with
-  `work.stopRuntime`. A daemon configured without a real PTY service
-  (rare; only used in some headless test harnesses) will surface
-  `pty service not available` for this command.
-- **`work.startCliSession` provider list is brain-controlled.** The
-  controller cannot pass `command` / `args` / `startupCommand`
-  overrides — the brain derives those from the provider name through
-  `buildTrackedCliLaunchCommand`. To add a new provider you extend
-  `apps/desktop/src/shared/cliLaunch.ts` and the
-  `parseCliProvider` allowlist together; a phone client that hardcodes
-  the new id without a brain update will get a "requires provider"
-  error.
-- **`files.writeTextAtomic` does not invoke git hooks or editors.**
-  It writes atomically to the lane worktree and that is all.
-  Services that care about post-write side effects (lint,
-  formatters) watch the filesystem independently.
-- **Mobile file mutations are no longer read-only-gated.** Files are
-  freely editable from the phone: the old `mobileReadOnly` /
-  edit-protection write gate was removed on both sides (the iOS
-  `ensureMobileFileMutationsAllowed` check and the brain's
-  `assertWriteAllowed` / `MOBILE_MUTATING_FILE_ACTIONS` enforcement),
-  matching the desktop edit-protection removal. The `mobileReadOnly`
-  field still rides the workspace payload but no longer blocks writes.
-  Path-safety and the external-workspace block below are unchanged.
-- **External desktop file opens are not mobile-visible.** Desktop
-  `files.openExternalPath` workspaces use `kind: "external"` and
-  `external-local:*` ids. The sync host filters them from mobile
-  `listWorkspaces` and rejects every mobile file action that targets one,
-  including reads and search, because those roots can point anywhere on the
-  desktop user's local filesystem.
-- **`requireService` throws lazily.** A runtime missing a service does
-  not cause registration to fail; it causes the first invocation of
-  a command that needs that service to fail with a specific message.
-  Tests should exercise each command path rather than assume
-  "registered means callable."
-- **Policy is runtime-declared, not controller-configurable.** The
-  controller cannot opt itself into commands the runtime marked
-  non-viewer-allowed. If a phone needs an action that is policy-gated,
-  the fix is a runtime-side policy change, not a client workaround.
+- **`viewerAllowed: false` means no remote peer at all.** The brain refuses
+  it for every paired device ("Remote command … is not available to paired
+  controller devices"), iOS and web alike. Use it only for work that must
+  happen at the machine. Policy is declared by the runtime; a controller
+  cannot opt in, so a gated action needs a runtime policy change.
+- **`chat.models` is the brain's catalog.** Do not hardcode model ids. The
+  brain decides the models, the credentials, the default model and
+  `defaultReasoningEffort`. Fallback rows for older hosts lose to
+  host-advertised tiers.
+- **`lanes.delete` and `lanes.archive` are queueable.** An offline delete
+  replays on reconnect. When a lane disappears, check the command queue too.
+- **Do not make `personalChats.create` queueable.** Only an existing
+  session's `personalChats.send` may queue.
+- **Do not queue cross-machine acceptance.** Preparation, validation,
+  preflight, acceptance and marking all need current runtime and Git state.
+  `chat.acceptCrossMachineHandoff` is live-only and route-pinned; safe
+  retries come from the destination's durable handoff id and capsule
+  fingerprint. See [the handoff contract](./cross-machine-session-handoff.md).
+- **`prs.createFromLane` needs GitHub auth on the brain.** Order: an env
+  token (`ADE_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`), the ADE GitHub App
+  user token, a stored PAT, the `gh` CLI from known absolute paths (launchd's
+  PATH has no Homebrew), then `gh`'s `hosts.yml` token (host-level and
+  `users:<login>:` layouts). With none, it fails before it calls GitHub.
+- **`work.runQuickCommand` always creates a PTY.** Subscribe for output and
+  stop it with `work.stopRuntime`. Without a PTY service it fails with `pty
+  service not available`.
+- **The brain owns the `work.startCliSession` provider list.** No `command`,
+  `args` or `startupCommand` overrides. A new provider needs
+  `apps/desktop/src/shared/cliLaunch.ts` and the `parseCliProvider`
+  allowlist together; a phone that sends a new id to an old brain gets
+  "requires provider".
+- **`files.writeTextAtomic` runs no Git hooks or editors.** Services that
+  need lint or format watch the file system.
+- **The phone can edit files.** No mobile read-only gate exists;
+  `mobileReadOnly` is in the workspace payload but nothing reads it. Path
+  safety and the external-workspace block still apply.
+- **External desktop file opens are not visible on mobile.**
+  `files.openExternalPath` workspaces (`kind: "external"`,
+  `external-local:*`) are left out of mobile `listWorkspaces`, and every
+  mobile file action on one is refused (reads and search too), because the
+  root can be anywhere on the desktop.
+- **Registered does not mean callable.** `requireService` throws on the
+  first call, so tests exercise each command path.

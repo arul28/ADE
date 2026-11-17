@@ -272,6 +272,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     disabledReasonByLaneId,
     foreignLaneIdSet,
     restingMachineIds,
+    offlineTabMachineName,
   } = useLanesPageMachines({
     active,
     projectStateKey: activeProjectStateKey,
@@ -2211,7 +2212,17 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const multiSelectedList = useMemo(() => [...multiSelectedLaneIds], [multiSelectedLaneIds]);
 
   // This project's ADE Cloud lanes without a computer: one folded block, apart from the live lanes.
-  const laneListToolbar = <CloudLanesWithoutComputerBlock className="mx-1.5 mb-2" />;
+  // The tab's own computer while it is offline: its lanes are hidden, and one line says why.
+  const laneListToolbar = (
+    <>
+      {offlineTabMachineName ? (
+        <p className="mx-2.5 mb-2 mt-0 text-[12px] leading-[1.4] text-[var(--kit-text-2)]" data-testid="lanes-offline-machine">
+          {`${offlineTabMachineName} is offline. Its lanes show when it is on.`}
+        </p>
+      ) : null}
+      <CloudLanesWithoutComputerBlock className="mx-1.5 mb-2" />
+    </>
+  );
 
   /* ---- Render ---- */
 

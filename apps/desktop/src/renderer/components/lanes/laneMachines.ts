@@ -162,7 +162,7 @@ export type LaneMachineDerivationInput = {
   /**
    * The account's ADE Cloud computers, as a React caller subscribes to them
    * (`useAdeCloudLaneComputers`); defaults to the last read. An ADE Cloud
-   * computer is named by its lane ("Cloud · <lane>"), never its instance id.
+   * computer reads "ADE Cloud", never its instance id.
    */
   cloudIndex?: Pick<AdeCloudIndexState, "computers" | "cloudComputers">;
 };

@@ -23,6 +23,7 @@ import {
 import { authenticateAccount, linearGraphqlUrl, readAuthorizationHeader, verifyLinearViewerOrganization } from "./auth";
 import { notifyLinearTopic, postLinearAgentAcknowledgement, runAfterResponse } from "./linearAgentCore";
 import { linearAgentMemberAccountMatches, routeLinearAgentSessionEvent, subscribeLinearTopic } from "./linearAgent";
+import { wakeCloudComputersForTopics } from "./cloudEventWakes";
 
 type LinearEventRow = {
   event_seq: number;
@@ -366,6 +367,11 @@ export async function handleLinearWebhook(request: Request, env: RelayEnv, ctx?:
     if (agentRoute?.routed) {
       tasks.push(notifyLinearTopic(env, `linear-account:${agentRoute.accountId}`, { t: "linear_delivery" }));
     }
+    // Resting cloud computers hold no socket: the account directory wakes the ones listening.
+    tasks.push(wakeCloudComputersForTopics(env, [
+      `linear-org:${organizationId}`,
+      ...(agentRoute?.routed ? [`linear-account:${agentRoute.accountId}`] : []),
+    ]));
     if (agentRoute?.acknowledgement) {
       tasks.push(postLinearAgentAcknowledgement(env, organizationId, agentRoute.acknowledgement));
     }

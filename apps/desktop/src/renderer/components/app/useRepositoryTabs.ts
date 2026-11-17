@@ -8,8 +8,8 @@
  * - `useOneCopyPerRepository` keeps one open copy per repository: when a
  *   switch opens another copy of a repository whose tab is open, the copy the
  *   tab showed before closes in place (same position, its view state kept).
- * - `useNoMachineTabCleanup` drops a no-machine tab once a copy of its
- *   repository is open.
+ * - A repository with no own computer online is bound to ADE Cloud: its
+ *   tab is a normal tab whose copy is the ADE Cloud binding.
  * - `carryRouteToCopy` keeps the page the person is on when the tab moves to
  *   another copy.
  *
@@ -21,7 +21,9 @@ import { captureError } from "../../../shared/sentry/capture";
 import type { AccountProjectView } from "../../../shared/accountProject";
 import type { RemoteOpenProjectBinding } from "../../../shared/types";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
-import { useAppStore, type NoMachineRepositoryTab } from "../../state/appStore";
+import { useAppStore } from "../../state/appStore";
+import { isAdeCloudBinding, type AdeCloudBindingProject } from "../../../shared/adeCloud/binding";
+import { adeCloudProjectForTabId } from "../../state/adeCloudTabs";
 import {
   savedRepositoryCopyKey,
   type SavedRepositoryTab,
@@ -204,16 +206,16 @@ export function useWindowStripMemory(args: WindowStripMemory & { enabled: boolea
 
 /**
  * The window's repository tabs as main saves them (S5): each open tab by its
- * repository id, with the copy it shows, then the tabs with no computer
- * online. Main reopens them on the next launch, also after an update.
+ * repository id, with the copy it shows. A tab bound to ADE Cloud is saved
+ * with no copy, as older versions saved a tab with no computer online, so
+ * every version reopens it. Main reopens them on the next launch, also after
+ * an update.
  */
 export function buildSavedWindowRepositoryTabs(args: {
   groups: readonly ProjectTabGroup[];
   openLocal: ReadonlySet<string>;
   openRemote: ReadonlySet<string>;
-  noMachineTabs: readonly NoMachineRepositoryTab[];
   activeBindingKey: string | null;
-  activeNoMachineTabId: string | null;
   /** True while Home, a new tab or a page with no project is in front. */
   noTabInFront: boolean;
   nameFor: (group: ProjectTabGroup) => string;
@@ -228,18 +230,13 @@ export function buildSavedWindowRepositoryTabs(args: {
     const shown = open.find((machine) => machine.bindingKey === args.activeBindingKey) ?? open[0]!;
     let copy: SavedRepositoryTabCopy | null = null;
     if (shown.isLocal) copy = { kind: "local", rootPath: shown.rootPath };
+    else if (isAdeCloudBinding(shown.binding)) copy = null;
     else if (shown.binding?.kind === "remote") copy = { kind: "remote", binding: { ...shown.binding, iconDataUrl: null } };
-    if (!copy) continue;
+    else continue;
     seen.add(group.id);
     tabs.push({ id: group.id, displayName: args.nameFor(group), copy });
     if (!args.noTabInFront && shown.bindingKey === args.activeBindingKey) activeId = group.id;
   }
-  for (const tab of args.noMachineTabs) {
-    if (seen.has(tab.id)) continue;
-    seen.add(tab.id);
-    tabs.push({ id: tab.id, displayName: tab.displayName, copy: null });
-  }
-  if (args.activeNoMachineTabId && seen.has(args.activeNoMachineTabId)) activeId = args.activeNoMachineTabId;
   return { tabs, activeId };
 }
 
@@ -260,11 +257,12 @@ export function useWindowRepositoryTabsSync(enabled: boolean, tabs: SavedWindowR
   }, [serialized]);
 }
 
-/** The renderer state that reopens a saved strip: open copies, no-machine tabs and the order. */
+/** The renderer state that reopens a saved strip: open copies, ADE Cloud tabs and the order. */
 export function restoredStripFromSaved(saved: SavedWindowRepositoryTabs): {
   localRoots: string[];
   remoteBindings: RemoteOpenProjectBinding[];
-  noMachineTabs: NoMachineRepositoryTab[];
+  /** Tabs saved with no copy: they open bound to ADE Cloud. */
+  adeCloudTabs: AdeCloudBindingProject[];
   tabOrder: string[];
   /** The copies of tabs saved apart from their repository's tab (a tab keyed by its copy). */
   ownTabKeys: string[];
@@ -273,20 +271,20 @@ export function restoredStripFromSaved(saved: SavedWindowRepositoryTabs): {
   const localRoots: string[] = [];
   const ownTabKeys: string[] = [];
   const remoteBindings: RemoteOpenProjectBinding[] = [];
-  const noMachineTabs: NoMachineRepositoryTab[] = [];
+  const adeCloudTabs: AdeCloudBindingProject[] = [];
   const tabOrder: string[] = [];
   for (const tab of saved.tabs) {
     const key = savedRepositoryCopyKey(tab.copy);
     if (tab.copy?.kind === "local") localRoots.push(tab.copy.rootPath);
     else if (tab.copy?.kind === "remote") remoteBindings.push(tab.copy.binding);
-    else noMachineTabs.push({ id: tab.id, displayName: tab.displayName, iconDataUrl: null });
+    else adeCloudTabs.push(adeCloudProjectForTabId(tab.id, tab.displayName));
     if (key) tabOrder.push(key);
     if (key && tab.id === key) ownTabKeys.push(key);
   }
   return {
     localRoots,
     remoteBindings,
-    noMachineTabs,
+    adeCloudTabs,
     tabOrder,
     ownTabKeys,
     active: saved.tabs.find((tab) => tab.id === saved.activeId) ?? null,
@@ -377,18 +375,6 @@ export function useOneCopyPerRepository(args: {
   ]);
 }
 
-/** Drops a no-machine tab once a copy of its repository is open in this window. */
-export function useNoMachineTabCleanup(tabGroups: readonly ProjectTabGroup[]): void {
-  const noMachineTabs = useAppStore((state) => state.noMachineTabs);
-  useEffect(() => {
-    if (noMachineTabs.length === 0) return;
-    const openIds = new Set(tabGroups.map((group) => group.id));
-    for (const tab of noMachineTabs) {
-      if (openIds.has(tab.id)) useAppStore.getState().closeNoMachineTab(tab.id);
-    }
-  }, [noMachineTabs, tabGroups]);
-}
-
 /**
  * The tab in front of a saved strip could not open again (its folder is gone,
  * its computer refused). The strip stays as it is; Sentry hears about it.
@@ -399,8 +385,8 @@ export function reportStripRestoreFailure(error: unknown): void {
 
 /**
  * The strip's rules, in one place for the top bar: one open copy per
- * repository, no-machine tabs that leave once a copy opens, this window's
- * memory across a reload, and the strip main saves for the next launch (S5).
+ * repository, this window's memory across a reload, and the strip main saves
+ * for the next launch (S5).
  */
 export function useRepositoryTabStrip(args: {
   windowSessionRestored: boolean;
@@ -415,8 +401,6 @@ export function useRepositoryTabStrip(args: {
   setTabOrder: Dispatch<SetStateAction<string[]>>;
   preferredBindingKeyByGroup: Record<string, string>;
   tabOrder: string[];
-  noMachineTabs: readonly NoMachineRepositoryTab[];
-  activeNoMachineTabId: string | null;
   noTabInFront: boolean;
   recordNameFor: (group: ProjectTabGroup) => string | null | undefined;
   /** The open copies in a tab of their own, kept across a reload. */
@@ -432,8 +416,6 @@ export function useRepositoryTabStrip(args: {
     openRemoteProjectTabs,
     preferredBindingKeyByGroup,
     tabOrder,
-    noMachineTabs,
-    activeNoMachineTabId,
     noTabInFront,
     recordNameFor,
   } = args;
@@ -449,7 +431,6 @@ export function useRepositoryTabStrip(args: {
     setOpenRemoteProjectTabs: args.setOpenRemoteProjectTabs,
     setTabOrder: args.setTabOrder,
   });
-  useNoMachineTabCleanup(tabGroups);
   useWindowStripMemory({
     enabled: windowSessionRestored,
     remoteTabs: openRemoteProjectTabs,
@@ -463,13 +444,11 @@ export function useRepositoryTabStrip(args: {
       groups: tabGroups,
       openLocal: new Set(openProjectTabRoots),
       openRemote: new Set(openRemoteProjectTabs.map((entry) => entry.key)),
-      noMachineTabs,
       activeBindingKey,
-      activeNoMachineTabId,
       noTabInFront,
       nameFor: (group) => recordNameFor(group) ?? group.displayName,
     }),
-    [activeBindingKey, activeNoMachineTabId, noMachineTabs, noTabInFront, openProjectTabRoots, openRemoteProjectTabs, recordNameFor, tabGroups],
+    [activeBindingKey, noTabInFront, openProjectTabRoots, openRemoteProjectTabs, recordNameFor, tabGroups],
   );
   useWindowRepositoryTabsSync(windowSessionRestored && !webMode, savedRepositoryTabs);
 }

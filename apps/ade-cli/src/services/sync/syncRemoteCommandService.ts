@@ -434,6 +434,8 @@ import { sanitizeResumeTargetId } from "../../../../desktop/src/main/utils/termi
 import type { SyncPinStore } from "./syncPinStore";
 import { compactChatEventForMobileWire } from "../../../../desktop/src/shared/chatMobileSlim";
 import type { ProxyService } from "../proxy/proxyService";
+import type { SearchService } from "../../../../desktop/src/main/services/search/searchService";
+import type { SearchQueryArgs } from "../../../../desktop/src/shared/types/search";
 import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/chat/sessionInputOrigins";
 import { createWebhookRemoteCommandHandlers, type WebhookRemoteSource } from "./webhookRemoteCommands";
 import { createAutomationRuleRemoteCommandHandlers, type AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
@@ -630,6 +632,8 @@ type SyncRemoteCommandServiceArgs = {
   db?: AdeDb;
   usageTrackingService?: UsageTrackingHost | null;
   getProxyService?: () => Pick<ProxyService, "status"> | null;
+  /** This project's search index; null until bootstrap has built it. */
+  getSearchService?: () => Pick<SearchService, "query" | "indexStatus"> | null;
   accountSettingsStore?: AccountSettingsStore | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   projectRoot?: string;
@@ -4261,6 +4265,22 @@ function registerProxyRemoteCommands({ args, register }: RemoteCommandRegistrati
     if (!proxyService) throw new Error("Subscription proxy is not available in this runtime.");
     return proxyService.status();
   }, "runtime");
+}
+
+/**
+ * The project's search index, read only, for the web palette (the same calls
+ * as the `search` action domain). A remote caller never sets `callerScope`,
+ * as at the RPC edge. The query text is not logged: it can hold chat text.
+ */
+function registerSearchRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  register("search.query", { viewerAllowed: true }, async (payload) => {
+    const searchService = args.getSearchService?.();
+    if (!searchService) throw new Error("Search is not available in this runtime.");
+    const { callerScope: _callerScope, ...query } = (payload ?? {}) as SearchQueryArgs;
+    if (typeof query.query !== "string") throw new Error("search.query requires query.");
+    return searchService.query(query);
+  });
+  register("search.indexStatus", { viewerAllowed: true }, async () => args.getSearchService?.()?.indexStatus() ?? null);
 }
 
 function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
@@ -8852,6 +8872,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   }, "runtime");
 
   registerProxyRemoteCommands({ args, register });
+  registerSearchRemoteCommands({ args, register });
   registerLaneRemoteCommands({ args, register });
   registerWorkRemoteCommands({ args, register });
   registerChatRemoteCommands({ args, register });

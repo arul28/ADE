@@ -45,6 +45,11 @@ export type RelayEnv = {
   ACCOUNT_DIRECTORY?: { fetch: typeof fetch };
   ACCOUNT_DIRECTORY_PRODUCTION?: { fetch: typeof fetch };
   /**
+   * Shared with both account directories: proves an event wake
+   * (`cloudEventWakes.ts`). Unset, no resting cloud computer is woken by an event.
+   */
+  CLOUD_EVENT_WAKE_SECRET?: string;
+  /**
    * Optional worker-level Cursor Cloud webhook signing secret. Tried before
    * per-account secrets registered in D1. Cursor signs with HMAC-SHA256 of the
    * raw body as `X-Webhook-Signature: sha256=<hex>`.

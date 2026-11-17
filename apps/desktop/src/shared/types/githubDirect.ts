@@ -199,6 +199,28 @@ export type GithubDirectContentEntry = {
   htmlUrl: string | null;
 };
 
+/**
+ * One file on GitHub at a ref (`getFileContent`). `content` is base64; a file
+ * over GitHub's 1 MB limit for this read has no content (`tooLarge`).
+ */
+export type GithubDirectFileContent = {
+  path: string;
+  size: number;
+  sha: string;
+  content: string;
+  tooLarge: boolean;
+};
+
+/** One commit of a branch on GitHub (`listCommits`), newest first. */
+export type GithubDirectCommit = {
+  sha: string;
+  message: string;
+  authorName: string | null;
+  authorLogin: string | null;
+  authoredAt: string | null;
+  htmlUrl: string | null;
+};
+
 /** What `diagnoseRepository` found, in the spec's detection order. */
 export type GithubDirectRepositoryDiagnosis = {
   /**
@@ -228,6 +250,8 @@ export type GithubDirectRequest =
   | { op: "listIssueComments"; params: GithubDirectRepoRef & { number: number } }
   | { op: "listBranches"; params: GithubDirectRepoRef & { maxPages?: number } }
   | { op: "listContents"; params: GithubDirectRepoRef & { path?: string; ref?: string } }
+  | { op: "getFileContent"; params: GithubDirectRepoRef & { path: string; ref?: string } }
+  | { op: "listCommits"; params: GithubDirectRepoRef & { ref?: string; maxPages?: number } }
   | { op: "diagnoseRepository"; params: GithubDirectRepoRef };
 
 export type GithubDirectOp = GithubDirectRequest["op"];
@@ -245,6 +269,8 @@ export type GithubDirectData = {
   listIssueComments: GithubDirectComment[];
   listBranches: GithubDirectBranch[];
   listContents: GithubDirectContentEntry[];
+  getFileContent: GithubDirectFileContent;
+  listCommits: GithubDirectCommit[];
   diagnoseRepository: GithubDirectRepositoryDiagnosis;
 };
 

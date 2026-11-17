@@ -2975,6 +2975,8 @@ export type SyncRemoteCommandAction =
   | "usage.getModelPriceOverrides"
   | "usage.setModelPriceOverride"
   | "proxy.status"
+  | "search.query"
+  | "search.indexStatus"
   // This machine's "Update & restart", from a phone or browser
   // (`machineUpdateRemoteCommands.ts`).
   | "machine.updateImpact"

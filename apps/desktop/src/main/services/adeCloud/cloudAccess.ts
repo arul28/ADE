@@ -132,21 +132,28 @@ export function cloudVaultFromBridge(bridge: CloudVaultBridge, key: string): Clo
   };
 }
 
+/**
+ * The vault kinds a cloud item lives under: `integration` (ADE Cloud's own
+ * items), or `provider_api_key` (the one API key store, which ADE Cloud's keys
+ * mirror into).
+ */
+export type CloudVaultKind = typeof CLOUD_VAULT_KIND | "provider_api_key";
+
 /** The brain: one account-wide item in its own vault store. */
 export function cloudVaultFromStore(store: {
-  get(scope: string, kind: "integration", key: string): string | null;
-  set(scope: string, kind: "integration", key: string, value: string): boolean;
-  remove(scope: string, kind: "integration", key: string): boolean;
-}, key: string): CloudVault {
+  get(scope: string, kind: CloudVaultKind, key: string): string | null;
+  set(scope: string, kind: CloudVaultKind, key: string, value: string): boolean;
+  remove(scope: string, kind: CloudVaultKind, key: string): boolean;
+}, key: string, kind: CloudVaultKind = CLOUD_VAULT_KIND): CloudVault {
   return {
     async get() {
-      return { ok: true, value: store.get(ACCOUNT_SCOPE_ALL, CLOUD_VAULT_KIND, key) };
+      return { ok: true, value: store.get(ACCOUNT_SCOPE_ALL, kind, key) };
     },
     async set(value) {
-      return store.set(ACCOUNT_SCOPE_ALL, CLOUD_VAULT_KIND, key, value);
+      return store.set(ACCOUNT_SCOPE_ALL, kind, key, value);
     },
     async remove() {
-      return store.remove(ACCOUNT_SCOPE_ALL, CLOUD_VAULT_KIND, key);
+      return store.remove(ACCOUNT_SCOPE_ALL, kind, key);
     },
   };
 }
@@ -172,6 +179,8 @@ let accessCache: { key: string; enabled: boolean; at: number } | null = null;
 let accessAsking: { key: string; answer: Promise<boolean | null> } | null = null;
 let accessFailure: { key: string; at: number } | null = null;
 const accessAnswerListeners = new Set<() => void>();
+/** The server's sentence for the last no (a blocked account), per account; null for a yes or an old server. */
+let accessReason: { key: string; reason: string | null } | null = null;
 
 /**
  * Hear when the cached answer changes (a new yes or no, or a sign-out that
@@ -216,6 +225,25 @@ export async function readCloudAccessState(deps: CloudAccessDeps): Promise<Cloud
   return (await readCloudAccess(deps)).state;
 }
 
+/** What a window shows for ADE Cloud: on, read-only (blocked) with the server's sentence, signed out, or not known yet. */
+export type CloudAccessView = {
+  state: "on" | "blocked" | "signed_out" | "unknown";
+  /** The server's sentence for a blocked account, or null. */
+  reason: string | null;
+  /** The account this answer is for (`cloudAccessKey`), so a window keeps one answer per account. */
+  account: string | null;
+};
+
+/** `readCloudAccessState` as the view a window keeps; the same cached ask. */
+export async function readCloudAccessView(deps: CloudAccessDeps): Promise<CloudAccessView> {
+  const state = (await readCloudAccess(deps)).state;
+  const key = deps.signedIn() ? accessKey(deps) : null;
+  if (state === "ready") return { state: "on", reason: null, account: key };
+  if (state === "signed_out") return { state: "signed_out", reason: null, account: null };
+  if (state === "unreadable") return { state: "unknown", reason: null, account: key };
+  return { state: "blocked", reason: accessReason?.key === key ? accessReason.reason : null, account: key };
+}
+
 /**
  * Hands the skill roots the account this process serves, so a chat launched
  * after the answer went stale (or the account changed) asks again on its own.
@@ -238,8 +266,12 @@ async function readAccessFlag(key: string, provider: CloudProvider, deps: CloudA
   const cachedYes = () => (accessCache?.key === key && accessCache.enabled ? true : null);
   if (accessFailure?.key === key && now - accessFailure.at < ACCESS_FAILURE_TTL_MS) return cachedYes();
   if (accessAsking?.key === key) return await accessAsking.answer;
-  const answer = provider.accessEnabled().then(
-    (enabled) => {
+  const ask = provider.accessAnswer
+    ? provider.accessAnswer()
+    : provider.accessEnabled().then((enabled) => ({ enabled, readOnly: !enabled, reason: null }));
+  const answer = ask.then(
+    ({ enabled, reason }) => {
+      accessReason = { key, reason: enabled ? null : reason };
       setAccessCache({ key, enabled, at: Date.now() });
       accessFailure = null;
       // The brain starts its next life with this answer (`cloudAccessMemory`).

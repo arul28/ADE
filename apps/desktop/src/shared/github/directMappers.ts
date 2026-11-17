@@ -7,7 +7,9 @@ import type {
   GithubDirectBranch,
   GithubDirectCheckRun,
   GithubDirectComment,
+  GithubDirectCommit,
   GithubDirectContentEntry,
+  GithubDirectFileContent,
   GithubDirectIssue,
   GithubDirectIssueDetail,
   GithubDirectPull,
@@ -68,6 +70,34 @@ export function mapContentEntry(value: unknown): GithubDirectContentEntry | null
   const type = str(value.type);
   if (!name || !path || (type !== "file" && type !== "dir" && type !== "symlink" && type !== "submodule")) return null;
   return { name, path, kind: type, size: num(value.size) ?? 0, htmlUrl: str(value.html_url) };
+}
+
+/** A `/contents/<file>` answer; null for a folder or another kind. */
+export function mapFileContent(value: unknown): GithubDirectFileContent | null {
+  if (!isRecord(value) || value.type !== "file") return null;
+  const path = str(value.path);
+  const sha = str(value.sha);
+  if (!path || !sha) return null;
+  const encoding = str(value.encoding);
+  const content = encoding === "base64" ? (str(value.content) ?? "").replace(/\s+/g, "") : "";
+  return { path, sha, size: num(value.size) ?? 0, content, tooLarge: encoding !== "base64" };
+}
+
+export function mapCommit(value: unknown): GithubDirectCommit | null {
+  if (!isRecord(value)) return null;
+  const sha = str(value.sha);
+  if (!sha) return null;
+  const commit = isRecord(value.commit) ? value.commit : {};
+  const author = isRecord(commit.author) ? commit.author : {};
+  const account = isRecord(value.author) ? value.author : {};
+  return {
+    sha,
+    message: str(commit.message) ?? "",
+    authorName: str(author.name),
+    authorLogin: str(account.login),
+    authoredAt: str(author.date),
+    htmlUrl: str(value.html_url),
+  };
 }
 
 export function mapPull(value: unknown): GithubDirectPull | null {

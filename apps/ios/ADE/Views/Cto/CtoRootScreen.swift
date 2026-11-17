@@ -14,6 +14,8 @@ struct CtoRootScreen: View {
 
   @StateObject private var store = CtoStore()
   @StateObject private var live = CtoLiveModel()
+  /// The CTO's account copy, read once while its home can't answer.
+  @StateObject private var accountCopy = CtoAccountCopyModel()
   @State private var isLoadingSnapshot = false
   @State private var snapshotLoadError: String?
   @State private var lastLiveSnapshotReloadAt: Date?
@@ -223,6 +225,11 @@ struct CtoRootScreen: View {
       secondaryActionTitle: "Pick another home",
       secondaryAction: { showingHomeChooser = true }
     )
+    // What the home saved after its last turn, from the account: readable
+    // while the home sleeps, and with no computer at all.
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      CtoAccountCopyEntry(name: store.name, model: accountCopy)
+    }
     .sheet(isPresented: $showingHomeChooser) {
       CtoHomeChooserSheet(
         look: live.look,

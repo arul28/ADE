@@ -197,6 +197,18 @@ export type CloudKeepAwakeOptions = {
    */
   reportUse?: (lastWorkAt: number | null, stillIdle: () => boolean) => Promise<void>;
   /**
+   * Saves what a client reads while the machine rests (`cloudRestSave.ts`:
+   * the chats' last parts, shell and CLI copies, Git summaries). Runs at the
+   * idle moment, before `reportUse`; it stops early once someone uses the
+   * machine, and a failure never holds the sleep back.
+   */
+  saveForRest?: (stillIdle: () => boolean) => Promise<void>;
+  /**
+   * The machine woke from a sleep (or the brain's checks stopped for a long
+   * gap). Called once per wake, at the first check after it. Never throws.
+   */
+  onWoke?: () => void;
+  /**
    * Tells the server this brain started, which settles a waiting update.
    * `sleepWhenIdle`: the machine woke only for that update, so it sleeps at
    * its first idle check instead of after three minutes. Rejects to be tried
@@ -389,6 +401,9 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         return;
       }
       if (!waitingOnPerson && await options.growDiskIfNeeded?.(() => !usedSinceTick)) return;
+      await options.saveForRest?.(() => !usedSinceTick).catch((error: unknown) => {
+        options.logger?.warn("cloud.idle_rest_save_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
       await options.reportUse?.(lastWorkAt, () => !usedSinceTick).catch((error: unknown) => {
         options.logger?.warn("cloud.idle_use_report_failed", { error: error instanceof Error ? error.message : String(error) });
       });
@@ -478,6 +493,12 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       if (askedToSleep || (lastTickAt != null && at - lastTickAt > intervalMs * SLEEP_GAP_INTERVALS)) {
         lastBusyAt = at;
         askedToSleep = false;
+        // A wake: messages queued while it slept go now (`cloudChatMessageQueue.ts`).
+        try {
+          options.onWoke?.();
+        } catch (error) {
+          options.logger?.warn("cloud.on_woke_failed", { error: error instanceof Error ? error.message : String(error) });
+        }
       }
       lastTickAt = at;
       // Work ends between checks. The first idle check still counts it, so a

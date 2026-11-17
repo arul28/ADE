@@ -20,1237 +20,543 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 
 ## Source file map
 
-- `apps/desktop/src/main/services/adeCloud/` — ADE Cloud
-  (the provider seam, New ADE Cloud machine, half-made box cleanup); see [ADE Cloud](../ade-cloud/README.md).
+ADE Cloud:
+
+- `apps/desktop/src/main/services/adeCloud/` — the provider seam, New ADE
+  Cloud machine and half-made box cleanup; see [ADE Cloud](../ade-cloud/README.md).
+- `apps/ade-cli/src/services/cloudChats/` — the brain's side of ADE Cloud with
+  no computer awake (see [On an ADE Cloud computer](#on-an-ade-cloud-computer)):
+  `cloudChatUploader.ts` (saved chat parts and subagent copies),
+  `cloudRestSave.ts` (copies, Git summaries, capsules and event wakes before a
+  rest), `cloudChatMessageQueue.ts` and `chatIdleWait.ts` (the queue drain),
+  `cloudChatRestore.ts` (fork-continue of a chat or a CLI).
+- `apps/ade-cli/src/services/account/cloudBootLaunch.ts` — a server launch on a
+  new cloud computer, with its sign-in wait (`cloudLaunchSignInWait.ts`) and the
+  continue of a saved chat; `accountLaneIndexPublisher.ts` — the account lane
+  index.
+- `apps/ade-cli/src/services/power/cloudPrepareStop.ts` — `ade cloud
+  prepare-stop`; `cloudKeepAwake.ts` — the idle step, the rest save before a
+  sleep, and the drain on a wake.
+- `apps/ade-cli/src/services/github/cloudGitIdentity.ts` — the commit identity
+  of a cloud computer.
+
+Connections and links:
 
 - `apps/desktop/src/main/services/remoteRuntime/remoteBrainStart.ts` — who asked
   for a connect (`user` or `background`), the `ade brain start` command for a
-  POSIX or Windows remote, and the start-then-retry loop; plus the plain
-  messages for a brain that is not running and an SSH server that refuses a
-  command.
+  POSIX or Windows remote, the start-then-retry loop, and the plain messages
+  for a stopped brain and an SSH server that refuses a command.
 - `apps/desktop/src/main/services/remoteRuntime/remoteEventSetup.ts` — the
-  2-minute ceiling on an event read or subscribe setup and
-  `REMOTE_EVENT_SETUP_TIMEOUT`, naming the step it was on.
+  2-minute ceiling on an event read or subscribe setup
+  (`REMOTE_EVENT_SETUP_TIMEOUT`, naming the step).
 - `apps/ade-cli/src/lib/brainConnectionLoss.ts` and
   `apps/desktop/src/shared/brainConnectionLoss.ts` — the relay's
-  `brain_connection_lost` answer and the desktop's field-by-field validation
-  of it.
+  `brain_connection_lost` answer and its validation.
 - `apps/desktop/src/main/services/remoteRuntime/remoteDialTelemetry.ts` — one
-  record per outage of why a dial failed: each route's kind, result, fixed
-  error token and duration, matched to the other machine's report by hashed
-  device ids. See [Logging](../../logging.md#error-tracking-sentry).
+  record per outage of why a dial failed (route kind, result, error token,
+  duration), matched to the other machine by hashed device ids. See
+  [Logging](../../logging.md#error-tracking-sentry).
 - `apps/desktop/src/shared/slowLinkMode.ts` — the slow-connection rule (round
-  trips and drops, with hysteresis), the person's per-machine setting
-  (`auto`, `on`, `off`), the `slowLink` status on a connection, the percentile
-  helper and the link report a desktop sends on its maintenance ping.
-  `remoteConnectionService.ts` feeds it and puts the result in the connection
-  snapshot, so the composer chip, the machine row and the picture tiles read
-  one feed with no extra poll.
-- `apps/desktop/src/main/services/remoteRuntime/remoteLinkMeter.ts` — the
-  per-machine window that sizes bulk pieces by the measured delivery rate and
-  keeps enough of them in flight to cover the round trip; `linkWantsSlowPath`
-  decides whether a bulk transfer takes the slow path at all.
+  trips and drops, with hysteresis), the per-machine setting (`auto`, `on`,
+  `off`), `slowLink` on a connection and the link report. The connection
+  snapshot carries it, so the chip, the machine row and the tiles need no poll.
+- `apps/desktop/src/main/services/remoteRuntime/remoteLinkMeter.ts` — sizes
+  bulk pieces from the measured rate and keeps the round trip covered;
+  `linkWantsSlowPath` picks the slow path.
 - `apps/desktop/src/main/services/remoteRuntime/remoteAttachmentParts.ts` and
-  `apps/desktop/src/main/services/chat/chatAttachmentParts.ts` — a paste sent
-  in parts that are safe to send again (`chat.saveTempAttachmentPart`), with
-  the machine's own part store placing them in any order and staging once.
+  `apps/desktop/src/main/services/chat/chatAttachmentParts.ts` — a paste sent in
+  parts that are safe to send again (`chat.saveTempAttachmentPart`), staged
+  once in any order.
 - `apps/desktop/src/main/services/computerUse/artifactDisplayCopy.ts` — the
-  1920 px JPEG copy a transcript tile shows on a far link, kept in
-  `.ade/cache/artifact-display/` (at most 400, pruned after a minute of rest).
+  1920 px JPEG a transcript tile shows on a far link
+  (`.ade/cache/artifact-display/`, at most 400).
 - `apps/desktop/src/shared/backgroundActionJob.ts` and
-  `apps/ade-cli/src/backgroundActionJobs.ts` — long actions a caller follows by
-  id: started once per id, joined by a call sent again, the outcome kept ten
-  minutes, and the `backgroundJob` answer field that says "still running".
-- `apps/ade-cli/src/connectionLinkSummary.ts` — the brain's side of the link
-  lines (`rpc.link_summary`, `rpc.link_closed`), one per remote connection
-  every five minutes plus one when it closes.
+  `apps/ade-cli/src/backgroundActionJobs.ts` — long actions followed by id:
+  started once per id, joined by a repeat call, the outcome kept ten minutes.
+- `apps/ade-cli/src/connectionLinkSummary.ts` — `rpc.link_summary` every five
+  minutes per remote connection, and `rpc.link_closed`.
 - `apps/desktop/src/main/services/remoteRuntime/remoteTerminalUpdate.ts` —
-  `updateViaRemoteTerminal`, the terminal-driven `ade brain update` for a
-  connected Windows machine on a build that cannot self-install.
-- `apps/desktop/src/shared/crossMachineHandoff.ts` — `pickLiveCheckout`, the
-  shared choice of a project's checkout on a machine: folder exists, then
-  user-opened, then `lastOpenedAt`. `projects.list`
-  (`apps/ade-cli/src/multiProjectRpcServer.ts`) returns an optional `exists`
-  per project, from async stats under a 250 ms budget (one stat per path at a
-  time, cached 10 s). `laneMachines`, `agentMachineBridge`,
-  `ctoCrossMachineBridge`, `machineBridge`, `cliMachineTargeting` and
-  `remoteBootstrap` all pick through it; `ade projects` labels a missing
-  folder "folder missing".
-
+  `ade brain update` typed into a terminal, for a connected Windows machine
+  whose build cannot install itself.
+- `apps/desktop/src/shared/crossMachineHandoff.ts` — `pickLiveCheckout`: a
+  project's checkout on a machine (folder exists, then user-opened, then
+  `lastOpenedAt`). `projects.list` returns `exists` per project (async stats,
+  250 ms budget, cached 10 s); every cross-machine picker uses it, and
+  `ade projects` labels "folder missing".
 - `apps/ade-cli/src/services/account/machineBridge.ts`,
-  `agentMachineBridge.ts` — brain-to-brain connection pools (one per caller
-  class: CTO, agents) and the agents' `machines.call` forwarding. The host's
-  paired channel passes the authenticated peer device into each runtime handler
-  (`SyncRuntimeRpcHandlerContext`), which binds an `ade-agent-remote` caller's
-  per-request claim to it. See
+  `agentMachineBridge.ts` — brain-to-brain connection pools (CTO, agents) and
+  `machines.call` forwarding. The host binds an `ade-agent-remote` caller's
+  claim to the authenticated peer device (`SyncRuntimeRpcHandlerContext`). See
   [Cross-machine agents](../sync-and-multi-device/cross-machine-agents.md).
-
-- `apps/desktop/src/main/services/remoteRuntime/` — paired transport
-  (`syncRuntimeTransport.ts`), loopback preview forwarding
-  (`syncPortForwardClient.ts`), paired credential and endpoint history
-  (`syncPairedMachineStore.ts`, whose endpoint list is append-only except for
-  `forgetEndpoint`: an address that provably answered as a *different* host is
-  dropped rather than demoted, because `markEndpointFailed` re-adds whatever it
-  records a failure for and a failing address stays in the list until it
-  answers or mDNS sees it after that failure — a neighbour's tailnet name that
-  once landed in the record would otherwise be dialled on every connect. The
-  record's own endpoint always survives, so a machine can never be left with
-  nothing to dial), LAN → tailnet → relay ordering (`pairedRuntimeRoutes.ts`:
-  an address with two or more consecutive silent failures and no answer or
-  mDNS sighting since ranks after the routes that are not failing; it is still
-  dialled, last; only timeouts, unreachable and unknown errors demote, so a
-  host that answered with a rejection never does; a relay attempt the relay
-  closed with `4505`, because the host opened a new relay link mid-connect as
-  a machine back from sleep does, is tried once more at once and does not
-  demote the relay, `isRelayHostReplacedError`), typed handshake rejections
-  (`pairedRuntimeErrors.ts` — `PairedRuntimeHelloRejectedError` carries the
-  host's structured `hello_error.code` and the rejecting host's identity, so
-  classification never pattern-matches the host's prose;
-  `PairedRuntimeRpcOverBudgetError` marks an RPC channel the host closed with
-  `rpc_over_budget`, which `RemoteConnectionService` never counts as an
-  unreachable machine), paired bootstrap and connection diagnostics;
-  plus the Advanced SSH transport (multi-route fallback, bounded connect/exec
-  timeouts, strict host-key verification, normalized handshake errors) and
-  runtime upload/bootstrap. The folder also owns the target registry, runtime
-  RPC client (request-local timeouts with connection-fatal transport/protocol
-  failures), remote connection pool (paired-first with eligible SSH fallback,
-  eviction listeners, connection-failure retryable reads, preview forwards,
-  optional-action fallbacks, event-stream gap/epoch propagation, route-pinned
-  sensitive action dispatch, unknown-outcome errors for non-replayable actions
-  that lose confirmation, and capability-gated handoff storage preflight),
-  connection service (which shares one host read between identical concurrent
-  `streamEvents` calls, and stages pasted attachment bytes through
-  `uploadChatAttachmentBytes` and the private temp file of
-  `attachmentUploadClient.withTempAttachmentFile`), and Bonjour + Tailscale
-  discovery. See
-  [internal architecture](./internal-architecture.md) for the over-budget
-  close.
+- `apps/desktop/src/main/services/remoteRuntime/` — the transports, the target
+  registry, the RPC client, the connection pool and service, and Bonjour +
+  Tailscale discovery.
+  - `syncRuntimeTransport.ts` (paired), `syncPortForwardClient.ts` (preview
+    forwards).
+  - `syncPairedMachineStore.ts` — credentials and endpoint history. Only
+    `forgetEndpoint` removes an address: one that answered as a different host.
+    The record's own endpoint always stays.
+  - `pairedRuntimeRoutes.ts` — LAN, then tailnet, then relay. Two silent
+    failures in a row (timeouts, unreachable, unknown errors) rank an address
+    last until it answers or mDNS sees it; a rejection never demotes. A relay
+    attempt closed with `4505` (the host opened a new relay link, as after a
+    sleep) is tried once more at once (`isRelayHostReplacedError`).
+  - `pairedRuntimeErrors.ts` — `PairedRuntimeHelloRejectedError` carries the
+    host's `hello_error.code` and identity, so nothing parses prose.
+    `PairedRuntimeRpcOverBudgetError` (`rpc_over_budget`) never counts as an
+    unreachable machine (see [internal architecture](./internal-architecture.md)).
+  - SSH (Advanced): route fallback, bounded connect and exec, strict host
+    keys, runtime upload and bootstrap.
+  - The pool: paired first with eligible SSH fallback, retryable reads,
+    event gap and epoch handling, route-pinned sensitive actions, and an
+    unknown-outcome error for a non-replayable action that loses its answer.
+    Identical concurrent `streamEvents` calls share one read. Pasted bytes go
+    through `uploadChatAttachmentBytes`.
 - `apps/desktop/src/main/services/remoteRuntime/remoteSidecarCache.ts` — the
-  release-asset fallback for the `ade-<target>` sidecar a target-only desktop
-  package does not bundle: version-pinned download, `SHA256SUMS` verification,
-  atomic publish into `<ADE home>/runtime-sidecars/<tag>/<target>/`, and typed
-  `unavailable`/`network`/`checksum` failures. Reached only through
-  `resolveBootstrapRuntimeSidecars` in `remoteBootstrap.ts`. Shares its asset
-  naming and checksum parsing with `apps/ade-cli/src/lib/releaseAssets.ts`.
-- `apps/desktop/src/main/services/ipc/runtimeBridge.ts` — runtime IPC boundary:
-  remote target registry, connect / projects / project-open channels, remote
-  action/sync/event dispatch, local-runtime project action/sync/event routing,
-  local port-forward creation for remote previews, per-target action registry
-  lookups, replay-aware event streams, manual disconnect handling, and
-  per-window remote-open generation guards so a slow earlier remote-project
-  open cannot overwrite the latest window binding. It also registers
-  `ade.runtime.events.release`, the renderer's explicit teardown for a
-  subscription it has stopped reading, and `ade.remoteRuntime.updateAndRestart`,
-  the desktop half of the host's `machine.updateAndRestart` runtime method (see
-  [`machine.updateAndRestart`](#machineupdateandrestart)). Two members exist for
-  main-process callers that have no project binding at all: `callMachineMethod`
-  is machine-scoped RPC to an already-paired target — used by the account-wide
-  usage merge, which asks each machine for its own rollup — and deliberately
-  does not widen the separate method allowlist `IPC.remoteRuntimeCallSync`
-  keeps for the renderer; `isTargetConnected` (backed by
-  `RemoteConnectionService.isConnected`) lets an opportunistic background reader
-  skip a disconnected target, because a failed call there schedules that
-  machine's bounded automatic-reconnect backoff and an optional refresh should
-  not compete with an interactive reconnect. The local machine identity those callers key
-  on moved to `services/account/localMachineIdentity.ts` — Electron-free, so the
-  usage rollup publisher and the CLI-hosted brain resolve the same machine key
-  without importing this bridge — and is re-exported here for existing callers.
-  Remote event-stream reads and subscription acknowledgements use a 30 s
-  transport deadline and retry once after reconnecting; ordinary remote
-  actions keep their action-specific budgets. Automatic reconnects use bounded
-  exponential backoff from 30 s to 5 minutes and remain eligible indefinitely,
-  so a temporary sleep/network gap does not require restarting the desktop app.
-  Implicit calls (a pane's poll, an event read) wait for the same backoff when
-  the machine has no open connection: they fail fast with `Remote ADE service
-  connection failed recently (…)` instead of each dialing. Calls that share one
-  failed dial count it once. An SSH target whose last connect failed with
-  `ssh_auth` or `host_key` is not retried at all until Try again (explicit
-  Connect), an edit to the target, or trusting the host key; the status message
-  then says ADE stopped retrying. Paired machines are never held this way, because their own
-  route can come back on its own. A manual disconnect sets
-  `reconnectBlocked: "disconnected"`, and the preload then answers that
-  machine's calls itself, with main's refusal text, instead of sending them
-  (`preload/remoteTargetGate.ts`); the window's event pump
-  parks until a snapshot shows the machine connected again.
+  release download of an `ade-<target>` sidecar a target-only package lacks:
+  version-pinned, `SHA256SUMS`-checked, published atomically to
+  `<ADE home>/runtime-sidecars/<tag>/<target>/`. Only
+  `resolveBootstrapRuntimeSidecars` calls it.
+- `apps/desktop/src/main/services/ipc/runtimeBridge.ts` — the runtime IPC
+  boundary: targets, connect, projects, project open, action / sync / event
+  dispatch, preview port forwards, per-window open generations (a slow open
+  never overwrites a later one), `ade.runtime.events.release` and
+  `ade.remoteRuntime.updateAndRestart` (see
+  [`machine.updateAndRestart`](#machineupdateandrestart)).
+  - `callMachineMethod` is machine-scoped RPC for main-process callers with no
+    binding (the usage merge); it does not widen the renderer allowlist.
+    `isTargetConnected` lets a background reader skip a disconnected machine.
+  - The local machine identity lives in
+    `services/account/localMachineIdentity.ts` (no Electron).
+  - Event reads and subscribe acks: 30 s, one retry after a reconnect.
+  - Automatic reconnects back off from 30 s to 5 min, forever. Implicit calls
+    fail fast during the backoff (`Remote ADE service connection failed
+    recently (…)`); calls that share one failed dial count it once.
+  - An SSH target that failed with `ssh_auth` or `host_key` is not retried
+    until Try again, an edit, or a host-key trust. Paired machines are never
+    held this way.
+  - A manual disconnect sets `reconnectBlocked: "disconnected"`; the preload
+    answers that machine's calls itself (`preload/remoteTargetGate.ts`).
 - `apps/desktop/src/renderer/components/settings/SettingsMachineScope.tsx`
   and `settings/health/useHealthData.ts` — machine-scoped Settings pages pass
-  the selected machine binding to project reads and clear the previous
-  machine's lane, storage and health data before loading the new target.
+  the machine's binding and clear the old machine's data first.
 - `apps/desktop/src/main/services/ipc/runtimeEventSubscriptionRegistry.ts` —
-  the store behind those streams. Subscriptions are keyed by
-  `(sender, requestKey = <bindingKey>:<category|*>:<replay|live>)`, because one
-  window runs several pumps at once (active binding, one pinned PTY pump per
-  foreign lane, one pinned chat pump) and keying by sender alone would make each
-  new pump tear down its siblings. Stale entries are reclaimed by idle expiry
-  (refreshed on every poll, swept every 60 s at a 180 s idle threshold) with the
-  renderer's release as the fast path. Every caller — release, the ended
-  callback, remote disconnect, sender death, the sweep — removes through one
-  function, so disposal and pruning cannot drift apart, and cleanup functions are
-  attached through an atomic check so a subscription replaced mid-flight never
-  adopts a disposer the registry could not run.
-- `apps/desktop/src/preload/pinnedRuntimeEvents.ts` — the renderer-side half:
-  every event pump that reads a binding the window is *not* bound to. It owns one
-  shared PTY pump per pinned binding (polling plus `ade.runtime.event` push
-  delivery, with its own cursor, epoch generation, dedupe ring, in-flight
-  epoch-rewind guard, and failure backoff), the per-listener generic pump used by
-  pinned chat/project subscriptions (also fed by polling plus push: a pushed
-  event is delivered at once, a repeat by id is dropped, and a push carrying a
-  new epoch triggers an immediate re-poll instead of a dispatch), and the
-  helpers the active pump in `preload.ts` shares. Main-side subscriptions are reference-counted per
-  `(binding, category)` so sibling pumps share one and only the last teardown
-  releases it; the active pump never retains a reference and therefore never
-  releases a subscription a pinned pump is still reading.
+  event subscriptions keyed by
+  `(sender, <bindingKey>:<category|*>:<replay|live>)`, because one window runs
+  several pumps. Idle entries expire after 180 s (swept every 60 s); the
+  renderer's release is the fast path. One function removes entries for every
+  caller.
+- `apps/desktop/src/preload/pinnedRuntimeEvents.ts` — the pumps for bindings
+  the window is not bound to: one PTY pump per pinned binding and a generic
+  pump per listener, each with polling plus push, a cursor, epochs and a
+  dedupe ring. Main-side subscriptions are reference-counted per
+  `(binding, category)`; the active pump never holds a reference.
 - `apps/desktop/src/main/services/account/accountBridge.ts` and
   `apps/ade-cli/src/services/account/accountMachineDirectoryService.ts` —
-  account-directory adoption. The desktop Machines row and packaged CLI both
-  turn an online account machine into the same paired-machine credential record
-  and paired-only remote target; account credentials are not retained as an
-  alternate transport.
+  account-directory adoption: the Machines row and the CLI turn an account
+  machine into a paired credential and a paired-only target.
 - `apps/ade-cli/src/services/account/accountMachinePublisherService.ts` — the
-  producer side: the host publishes its own directory row so a same-account
-  desktop or CLI can adopt it. Only currently validated routes are advertised —
-  a `lan` endpoint per live LAN address (a saved `lastHost` that matches the
-  current LAN/Tailscale set is now classified as `lan`/`tailscale` rather than
-  the opaque `saved` kind, so LAN endpoints publish correctly instead of being
-  dropped), a `tailnet` endpoint per reachable Tailscale address, and a `relay`
-  endpoint once the tunnel bridge is validated **and** an end-to-end self-probe
-  confirms the relay path round-trips (`relayEndToEndVerifiedAt` with no
-  failure). Bridge validation is now
-  proactive (`syncTunnelClientService.validateCurrentBridge`, run on
-  control-open and on listener-ready), so the relay endpoint appears in the
-  directory as soon as the machine is signed in, its listener is confirmed, and
-  the self-probe passes — it no longer waits for an external client to open the
-  first relay tunnel. The row also carries the host's Ed25519 identity as
-  `pubkey`, which same-account clients verify before a sealed `ade-adopt-v1`
-  adoption over a direct route (see the [Sync](../sync-and-multi-device/README.md)
-  security model). The published machine name is channel-suffixed (`<name> · Alpha`, stable left bare) so two channels on one computer are
-  distinguishable rows.
+  host's own directory row. It lists only validated routes: `lan` per live LAN
+  address, `tailnet` per reachable Tailscale address, and `relay` once the
+  bridge is validated (`validateCurrentBridge`, run on control open and
+  listener ready) and an end-to-end self-probe passes. The row carries the
+  host's Ed25519 `pubkey` for sealed `ade-adopt-v1` adoption (see
+  [Sync](../sync-and-multi-device/README.md)). The name has a channel suffix
+  (`<name> · Alpha`; stable is bare).
 - `apps/ade-cli/src/services/sync/syncTunnelClientService.ts` and
-  `apps/ade-cli/src/bootstrap.ts` — the relay side of a paired route. The tunnel
-  client is shared one-per-machine (`getSharedSyncTunnelClientService`, keyed by
-  `sync-cloud-relay.json`); bootstrap builds a
-  `relayTunnelAuthorityGate` per project scope, which starts the tunnel only
-  while this process holds the machine-wide sync host lease and hands the
-  shared listener to `attachHostListener()` outside the construction factory,
-  so the runtime that owns the listener supplies the port, loopback nonce, and
-  bridge proof regardless of which runtime created the instance. See *Relay
-  tunnel and the sync port* below.
+  `apps/ade-cli/src/bootstrap.ts` — the relay side. One tunnel client per
+  machine (`getSharedSyncTunnelClientService`); `relayTunnelAuthorityGate`
+  starts it only while this process holds the sync host lease, and the owner of
+  the listener supplies port, nonce and bridge proof. See
+  [Relay tunnel and the sync port](#relay-tunnel-and-the-sync-port).
 - `apps/ade-cli/src/services/sync/syncHostService.ts` — the host end: paired
-  hello authentication (with the `sync_host.paired_device_rejected` /
-  `sync_host.paired_account_owner_mismatch` rejection logs and the
-  frame-count-aware peer-close logs) and tailnet publication, including
-  `staleAdeTailnetServePorts` / `reclaimStaleTailnetServes`, which retire
-  ADE's own leftover `tailscale serve` entries after each successful publish.
+  hello authentication (`sync_host.paired_device_rejected`,
+  `sync_host.paired_account_owner_mismatch`) and tailnet publication, which
+  retires ADE's own leftover `tailscale serve` entries
+  (`reclaimStaleTailnetServes`).
 - `apps/ade-cli/src/commands/doctor.ts` — the `Sync port` row names a drifted
-  port and its base-port holders, and says explicitly that a root-owned holder
-  such as `tailscaled` is invisible to this probe rather than reporting the
-  ports as free.
+  port and its base-port holders, and says that a root-owned holder (such as
+  `tailscaled`) is invisible to this probe.
 - `apps/ade-cli/src/services/account/pairedRemoteConnector.ts` and
-  `apps/ade-cli/src/lib/remoteLaunchBudget.ts` — paired route/auth/health policy,
-  legacy account-target migration, and bounded cancellation for
-  `ade machines connect`.
+  `apps/ade-cli/src/lib/remoteLaunchBudget.ts` — paired route, auth and health
+  policy and bounded cancellation for `ade machines connect`.
+
+The local brain and its service:
+
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` —
-  the local runtime connection used by desktop IPC, event streaming, sync
-  Settings, and local-work checks. Runtime initialization advertises an integer
-  compatibility window (`minCompatibleProtocol` through `protocolVersion`).
-  A desktop connects normally to a newer machine brain when its own
-  `RUNTIME_COMPAT_LEVEL` falls inside that window; a newer incompatible brain
-  remains preserved and the old desktop window falls back to an isolated
-  no-sync runtime. It also spawns
-  `ade serve` for non-primary sockets, tracks the per-user login service
-  install/health state, and applies short per-call timeouts for project
-  registration, file actions, and event polling so renderer IPC calls do not
-  wait for the desktop handler timeout. `LocalRuntimeStatus` now also carries
-  the brain's `pid`, its bound `syncPort`, the account-directory `publishHealth`
-  slice (state + `failingSinceMs` + last-leg durations), and the one-shot
-  `lastWedge` recovered by the event-loop watchdog.
-  When a packaged desktop cannot start the machine service after its own
-  repair attempt, it starts an app-owned brain on the primary socket with
-  `--no-sync` if the failure is service installation or service startup. This
-  keeps local work available while phone sync is off. The desktop status reports
-  `runtimeMode: "app_fallback"` and the typed `appFallback` reason; an app banner
-  offers **Fix it**. Disk, database, and migration failures do not trigger this
-  fallback. The child exits with the desktop. Repair reinstalls the real service
-  and reconnects to it; on Linux the pool first releases its fallback child
-  because systemd only stops children it owns. A new desktop launch attempts
-  the service again before considering fallback.
-  `probeMachineRuntimeIdentity()` is the side-effect-free question "what is
-  answering on this machine's endpoint, exactly": a `MachineRuntimeIdentity`
-  carrying version, build hash, pid, the build hash this desktop expected, and
-  whether the answering brain is a compatible newer one. It replaces the older
-  `probeMachineRuntimeHealth()`, which answered `ok` and thereby could not tell
-  a correctly updated brain from the pre-update one still holding the socket —
-  see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction).
-  The pool's own opportunistic service repair is now both throttled and
-  suppressible. `serviceRepairBackoffMs` spaces attempts at 0 / 5 s / 15 s /
-  30 s / 60 s, capped at one a minute, because a mismatched runtime previously
-  spawned one installer per connect attempt — that is per failing action poll.
-  `beginUpdateWindow` / `endUpdateWindow` suppress repair entirely for at most
-  `LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS` (2 minutes) while an update is applying,
-  and connects refused during it get
-  `LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE` ("ADE is applying an update. The
-  background service is restarting.") rather than a repair. The window
-  self-expires, so a transaction that never settles cannot leave recovery
-  disabled for the session. `getStaleMismatchedRuntime()` reports a
-  still-running pre-update brain, verified alive and start-time-matched through
-  `readProcessStartTimeMs` so a recycled pid is never mistaken for it, and never
-  reports a brain *newer* than this desktop. The Machines panel renders
-  publish health as a This-computer indicator (`remoteMachineModel.describePublishHealth`,
-  which reads inactive states as "none" and only alarms a real failure after it
-  has persisted ~2 minutes), and the app shell reads `lastWedge` for the
-  `BrainRecoveryNotice` banner. Both `serve --install-service` and
-  `serve --uninstall-service` run through one shared
-  `runServiceManagerCommand` child-process boundary (spawn, output
-  accumulation, single-settle latch, timeout kill, output parse) and differ only
-  in the policy applied to the result. Install is bounded at
-  `RUNTIME_SERVICE_START_WAIT_MS` (90 s) and uninstall at 20 s: a wedged
-  installer used to pin `serviceInstallPromise` forever, which blocked every
-  later install and left Repair spinning, but the budget errs long because it
-  has to cover the installer's own handover wait — a child killed at this
-  deadline reads as a failed install even when the supervisor's replacement is
-  coming up. The parsed result carries `starting` and `restarted` through to
-  `LocalRuntimeStatus.serviceInstall`, and a `starting` install is logged as
-  `local_runtime.service_install_starting` rather than as a success. The status
-  also carries `attemptStartedAt`: the start of the current *streak* of install
-  attempts, not of this attempt, because installs recur (every connect failure
-  re-runs one, isolated recovery re-runs one every 60 s) and what recovery has
-  to age is how long the brain has failed to answer since the first of them. It
-  resets on a successful connection, and it is what
-  `projectRecoveryService.diagnose` measures its `brain_starting` window
-  against. `installServiceBestEffort`
-  coalesces concurrent callers onto one child, but a `forceRestart: true` call
-  never coalesces onto a plain install — a background install may skip entirely
-  or may have spawned before the user asked for a restart, so returning its
-  promise would report success without restarting anything. A forced call queues
-  behind whatever is in flight, runs its own forcing install, and becomes the
-  promise later callers coalesce onto. The compatibility repair path forces it:
-  when the endpoint answered with the wrong identity (`runtime_older`,
-  `build_mismatch`, `role_mismatch`) the brain is running and responsive, so an
-  idempotent install would report "already installed and running" and leave it —
-  a fresh Alpha app then staleness-locks onto a brain left by an earlier
-  build. Repairing a *missing* endpoint stays a plain install (nothing to
-  replace), and isolated recovery also forces, since it only runs after the
-  primary endpoint failed to probe compatible. A forced install cannot replace
-  a brain the service manager does not own, such as one an old `ade` CLI
-  started on the machine socket. So isolated recovery
-  (`olderBrainRetirement.ts`) asks a strictly older brain on the primary socket
-  to shut down through its own `shutdown` call, the clean exit that saves chats
-  for restart recovery. It never signals or force-kills, and it acts only in a
-  packaged desktop with the service installed, outside quit and update windows,
-  once per pid, and never for this process, a pool-owned brain or a brain the
-  desktop runs under. During quit, a call whose connection drops is not
-  retried: it ends as "connection closed", and `drain()` waits for every action
-  call, not only coalesced ones.
+  the local runtime connection for desktop IPC, events, sync Settings and
+  local-work checks.
+  - Compatibility: the brain advertises `minCompatibleProtocol` through
+    `protocolVersion`. A desktop whose `RUNTIME_COMPAT_LEVEL` is inside that
+    window connects to a newer brain; otherwise the brain stays and the old
+    desktop falls back to an isolated no-sync runtime.
+  - It spawns `ade serve` for non-primary sockets, tracks the login service,
+    and gives project registration, file actions and event polls short
+    per-call timeouts.
+  - `LocalRuntimeStatus` carries the brain's `pid`, `syncPort`,
+    `publishHealth` and the one-shot `lastWedge` (read by
+    `BrainRecoveryNotice`).
+  - App fallback: when a packaged desktop cannot install or start the service
+    after its own repair, it starts an app-owned brain on the primary socket
+    with `--no-sync` (`runtimeMode: "app_fallback"`, with a **Fix it** banner).
+    Disk, database and migration failures never trigger it. The child exits
+    with the desktop; Repair reinstalls the real service (on Linux the pool
+    releases its child first, because systemd stops only its own children).
+  - `probeMachineRuntimeIdentity()` says exactly what answers on the
+    endpoint (version, build hash, pid, the expected build hash, and whether
+    it is a compatible newer brain). See
+    [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction).
+  - Opportunistic repair backs off (`serviceRepairBackoffMs`: 0 / 5 / 15 / 30
+    / 60 s, then one a minute). `beginUpdateWindow` / `endUpdateWindow`
+    suppress it for at most 2 minutes during an update, and refused connects
+    get `LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE`.
+    `getStaleMismatchedRuntime()` reports a live pre-update brain (start time
+    checked through `readProcessStartTimeMs`), never a newer one.
+  - `serve --install-service` and `--uninstall-service` share
+    `runServiceManagerCommand`; install waits at most 90 s, uninstall 20 s.
+    `starting` and `restarted` reach `LocalRuntimeStatus.serviceInstall`; a
+    `starting` install logs `local_runtime.service_install_starting`.
+    `attemptStartedAt` is the start of the current streak of install attempts
+    (reset on a connect), which `projectRecoveryService.diagnose` ages for
+    `brain_starting`.
+  - `installServiceBestEffort` coalesces callers, but a `forceRestart` call
+    never joins a plain install: it queues and runs its own. Compatibility
+    repair forces it when the endpoint answers with the wrong identity
+    (`runtime_older`, `build_mismatch`, `role_mismatch`); a missing endpoint
+    gets a plain install. Isolated recovery forces too.
+  - `olderBrainRetirement.ts`: isolated recovery asks a strictly older brain
+    on the primary socket (one the service manager does not own) to run its
+    own `shutdown`. It never signals or kills, and acts only in a packaged
+    desktop with the service installed, outside quit and update, once per pid.
+  - During quit, a call whose connection drops is not retried, and `drain()`
+    waits for every action call.
+  - `codedRecoveryError` refuses an app-owned brain on a primary service
+    socket and carries the `AdeRecoveryErrorCode` to the recovery surface.
 - `apps/desktop/src/main/services/runtime/lastFailureStore.ts` — bounded typed
-  project/machine failure reports used when the background service exits before
-  desktop IPC can obtain a normal runtime error.
+  failure reports for a service that exits before IPC gets a normal error.
 - `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` —
-  brain-independent project diagnosis and ordered repair for storage,
-  database, migration, endpoint, and chat continuity failures. It also owns
-  `restartBrain()`, the machine-scoped restart behind the Connections **Repair**
-  button and the brain-down notice's **Fix it**. Both it and `repair()`'s restart_service/verify_endpoint steps go
-  through one `restartServiceAndWait()` sequence — install, wait up to 90 s for
-  the machine endpoint to rebind, then `ping` — which reports which stage lost
-  rather than the copy, because its two callers phrase the same stage
-  differently (`repair()` speaks in repair steps, `restartBrain()` throws).
-  `force` is more than the install flag: a forced restart is the only caller that
-  actually asked for one, so an install that resolves having *skipped* is a
-  failure for it, and its message becomes "A newer version of ADE is already
-  running. Restart ADE to switch to it." (the release-build block is passed
-  through verbatim, since it is already written as instructions) rather than the
-  installer's log line. The two are mutually exclusive: `restartBrain()` rejects
-  with "Recovery is already running." while a `repair()` is in flight, because
-  repair stops the service and then does exclusive database work, and
-  reinstalling the brain underneath it would put a writer back on the database
-  mid-check. Repair wins; the button can be pressed again afterwards.
-- **A slow brain is not a broken brain.** The brain binds `ade.sock` *before*
-  it starts the mobile sync host (`runServe` in `apps/ade-cli/src/cli.ts`
-  starts `runSyncHostStartupLoop` in the background right after the socket is
-  published), so a desktop can reach it within a second or two of spawn even
-  while a project scope is still opening or the sync port band is being
-  reclaimed. All three installers — launchd, systemd, and Windows — wait
-  `RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS` (30 s; `WINDOWS_HANDOVER_TIMEOUT_MS`,
-  15 s, on Windows) for the replacement to answer and, if it is alive but still
-  quiet, return `ok: true, starting: true` instead of a
-  `replacement_responsive` failure — the supervisor owns that child and it will
-  answer. Every budget in this lifecycle is defined once, in
-  `apps/ade-cli/src/serviceManager/runtimeServiceBudgets.ts`, because the
-  numbers only mean anything relative to each other (the desktop's wait has to
-  outlast the installer's). The shared handover itself — responsiveness probe,
-  young-brain age check, crash-loop veto, the wait loop and the young-brain
-  decision — lives in `apps/ade-cli/src/serviceManager/serviceHandover.ts`
-  (`awaitServiceHandover`, `awaitYoungBrainStart`) so launchd and systemd
-  cannot drift; each installer keeps only its own message text. The young-brain
-  wait and the real handover get a full budget **each**: when they shared one
-  install-wide deadline, a young brain that died late in its wait left the
-  restart with no time and its replacement was reported as a `replacement_pid`
-  failure. The job is registered through `loadLaunchAgent`
-  (`serviceManager/common.ts`), shared with the watchdog agent: `launchctl
-  enable` (clears launchd's disabled list), `launchctl bootstrap gui/<uid>`,
-  `launchctl load -w` as the fallback for a session with no gui domain, then
-  `launchctl print` to confirm the job exists, with one retry a second later.
-  The exit code of `launchctl load` is never trusted: for a disabled job it
-  prints `Load failed: 5: Input/output error`, exits 0 and registers nothing,
-  which left two Macs unable to start ADE after an update while Repair and
-  Reset reinstalled through the same load. A job that still is not registered
-  fails with `failureStep: "launchd_register"` and launchctl's own text; the
-  status check names the disabled list, the diagnostic report reads it
-  (`launchctl print-disabled`), and `ade reset --all` re-enables every ADE label
-  on it. After registering, `installLaunchd.ts` runs `launchctl
-  kickstart` (no `-k`, so a running job is untouched) whenever launchd has not
-  started the job: a launchd domain in on-demand-only mode ignores `RunAtLoad`
-  and `KeepAlive`, leaves the job at `runs = 0` / `pended nondemand spawn =
-  speculative`, and logs `pending spawn, domain in on-demand-only mode`. Without
-  the kickstart every Repair, reinstall and machine reset on such a Mac ended in
-  `replacement_pid`; a failed kickstart's own error is appended to that message.
-  The heartbeat watchdog kickstarts the service after it kills a wedged brain
-  for the same reason, and the diagnostic report carries launchd's spawn log
-  (`log show --last 10m`) plus a Notes line naming the state.
-  `installSystemd.ts` reads unit state from a single
-  `systemctl --user show -p ActiveState -p MainPID` and treats systemd's own
-  `activating` as a live brain. The desktop then keeps
-  dialling the socket for `LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS`
-  (90 s). A forced install (Repair) that finds an unchanged agent whose child
-  is younger than `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (120 s) and not answering
-  yet waits for that child rather than killing it — restarting a booting brain
-  only resets its clock, and doing it on every Repair click was how a slow
-  machine could never finish starting one. A brain that keeps dying is always
-  young, so a recorded crash-loop streak vetoes that wait: it needs the restart
-  and the diagnosis, not more patience. `projectRecoveryService.diagnose`
-  reports the same window as `brain_starting` (no Repair offered; the recovery
-  screen re-diagnoses every 2 s and reopens the project itself once healthy),
-  and `repair()` streams each step to the window via `IPC.recoveryRepairStep`
-  so a long restart wait reads as progress, not a hang. Before this, a 10 s
-  handover budget expired against healthy-but-slow brains on cold or slower
-  machines, the update transaction reported "couldn't be set up", and the
-  recovery screen's Repair killed the brain that was seconds from ready.
-- **Linux parity.** `ade` on Linux (headless brains, `install.sh` installs,
-  remote runtimes reached over SSH) goes through `installSystemdService`, which
-  before this used to write the unit, `enable --now`, `restart`, and report
-  success the moment systemd accepted the restart — no proof the replacement
-  ever answered and no way to say "installed, still starting". A remote
-  bootstrap then dialled a socket that was not up yet and read a
-  healthy-but-slow brain as a broken one. It now runs the same handover as
-  macOS: no-op when an unchanged unit already answers, wait rather than restart
-  a child younger than `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (vetoed by a crash-loop
-  streak), and `starting`/`restarted`/`failureStep` on the way out.
-- **Windows: "still starting" needs proof of a supervisor.** The readiness
-  probe (`serviceManager/windowsSupervisor.ts`) returns `supervised` alongside
-  `ready`, and only sets it once the recorded pid is verifiably *our*
-  supervisor — alive, and a PowerShell running this launcher. A bare
-  `process.kill(pid, 0)` would not do: the pid comes from an on-disk record, a
-  recycled pid belongs to an unrelated process, and `isPidAlive` reports EPERM
-  (someone else's pid) as alive. Calling a recycled pid "still starting" turns a
-  genuinely failed install into an `ok: true` the caller waits on and never
-  repairs. An unanswerable query is likewise never `supervised`: unknown must
-  not read as healthy.
+  project diagnosis and ordered repair (storage, database, migration,
+  endpoint, chat continuity), plus `restartBrain()` behind **Repair** and the
+  brain-down **Fix it**. Both use `restartServiceAndWait()` (install, wait up
+  to 90 s for the endpoint, `ping`), which names the stage that failed. A
+  forced restart treats a skipped install as a failure ("A newer version of
+  ADE is already running. Restart ADE to switch to it."). `restartBrain()`
+  refuses ("Recovery is already running.") while `repair()` runs, because
+  repair does exclusive database work.
+- **A slow brain is not a broken brain.** The brain binds `ade.sock` before it
+  starts the sync host (`runServe` in `apps/ade-cli/src/cli.ts`), so a desktop
+  reaches it within seconds.
+  - Every installer waits `RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS` (30 s; 15 s on
+    Windows) for the replacement to answer, then returns `ok: true,
+    starting: true` for a live but quiet one.
+  - `serviceManager/serviceHandover.ts` (`awaitServiceHandover`,
+    `awaitYoungBrainStart`) is the one handover for launchd, systemd and
+    Windows; the young-brain wait and the handover get a full budget each.
+  - A forced install (Repair) that finds an unchanged agent whose child is
+    younger than `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (120 s) waits for it rather
+    than restart it. A recorded crash-loop streak cancels that wait.
+  - `projectRecoveryService.diagnose` reports the same window as
+    `brain_starting` (no Repair; the screen re-diagnoses every 2 s), and
+    `repair()` streams its steps (`IPC.recoveryRepairStep`). The desktop keeps
+    dialling for 90 s (`LOCAL_RUNTIME_SERVICE_REPAIR_CONNECT_TIMEOUT_MS`).
+  - launchd: `loadLaunchAgent` (`serviceManager/common.ts`) runs `launchctl
+    enable`, `bootstrap gui/<uid>`, `load -w` as a fallback, then `print` to
+    confirm, with one retry. The exit code of `launchctl load` is never
+    trusted (a disabled job prints an error, exits 0 and registers nothing).
+    An unregistered job fails with `failureStep: "launchd_register"`; the
+    diagnostic report reads `launchctl print-disabled`, and
+    `ade reset --all` re-enables every ADE label.
+  - `installLaunchd.ts` runs `launchctl kickstart` (no `-k`) when launchd has
+    not started the job, because a domain in on-demand-only mode ignores
+    `RunAtLoad` and `KeepAlive`. The watchdog kickstarts after it kills a
+    wedged brain, and the diagnostic report carries launchd's spawn log.
+  - `installSystemd.ts` reads `systemctl --user show -p ActiveState -p
+    MainPID` and treats `activating` as live.
+- **Linux parity.** Headless and SSH brains use `installSystemdService` with
+  the same handover, young-brain wait, crash-loop veto and
+  `starting` / `restarted` / `failureStep` results.
+- **Windows: "still starting" needs proof of a supervisor.**
+  `serviceManager/windowsSupervisor.ts` sets `supervised` only when the
+  recorded pid is alive and is a PowerShell running this launcher; a recycled
+  pid or an unanswerable query is never `supervised`.
 - **A brain that loses its socket ends itself.** `monitorBrainSocketOwnership`
-  (`apps/ade-cli/src/cli.ts`) remembers the inode it bound and polls the path.
-  Binding before the sync host removed the incidental protection the startup
-  loop's socket-liveness abort gave: two brains that both probe the same
-  *stale* socket can race across the `unlink`/`listen` await, and the loser ends
-  up listening to an inode nothing can reach without ever seeing `EADDRINUSE`.
-  Losing the inode now ends the brain, the supervisor restarts it, and the
-  restart reports `socket_owned_by_other` instead of squatting silently. The
-  shutdown that follows removes the socket file only if it still owns that
-  inode (`unlinkOwnedRuntimeSocket`) — an unconditional `unlink` here deleted
-  the *winner's* socket and left the machine with a live brain nothing could
-  reach. Windows named pipes are exempt — a pipe name has no directory entry to
-  steal.
-- `apps/desktop/src/main/services/runtime/machineTrustResetMigration.ts` —
-  one-time packaged-release reset of the old machine-connection trust files.
-  It preserves account auth, machine identity, pairing PINs, projects, and SSH
-  configuration, and completes only after the background service restart is
-  confirmed — specifically, only when the install reports `restarted`. A forced
-  install may legitimately decline to restart a brain that is still starting
-  (it waits for it instead), and that brain loaded the pre-reset files, so
-  leaving the marker unset is what makes the next launch restart it for real.
-- `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts`
-  (`codedRecoveryError`) — refuses to start an app-owned brain on a primary
-  service socket and carries the recorded `AdeRecoveryErrorCode` to IPC and the
-  renderer recovery surface.
-- `apps/desktop/src/renderer/components/remoteTargets/ConnectionRouteDetails.tsx`
-  — the collapsed **Details** list under a connection failure. The headline is
-  one sentence; this is where every attempted route, its host/port, its duration
-  and the diagnostic id live. Failure reasons render as plain words
-  (`no answer`, `timed out`, `not signed in`, `pairing rejected`,
-  `wrong machine answered`, `another route won`, `unsupported`,
-  `version mismatch`, `failed`) mapped from
-  `RemoteRuntimeConnectionAttempt.failure`, never re-derived from message text.
-- `apps/desktop/src/renderer/components/remoteTargets/RemoteErrorCard.tsx` —
-  the error card. Beyond **Try again** it accepts one optional `action`: a
-  single explicit recovery step for failures retrying cannot fix. Today that is
-  **Pair again**, offered by `RemoteTargetList` only when the rejecting machine
-  is also a row in this ADE account's directory (there is otherwise nothing to
-  re-adopt); pressing it re-runs `account.pairMachine`. Nothing re-pairs on its
-  own.
-- `apps/desktop/src/renderer/components/remoteTargets/SavedMachineRow.tsx`,
-  `MachineIdentity.tsx`, and `remoteMachineModel.ts` (`accountMachineMatchesTarget`,
-  `isMachineVersionOutdated`, `isMachineVersionCurrent`, `knownAdeVersions`,
-  `machineUpdateTargetVersion`)
-  — one machine row. `MachineIdentity.tsx` draws the computer with its platform's
-  logo in the machine's own color (`machinePlatform`, `machineFormFactor`), on
-  the stable key `machineColorKey` picks, so every device paints the same
-  machine the same color; a hand-picked color overrides it for this computer
-  only (`ade.machineColors.v1`). Beside it sit a presence dot, a version chip
-  that reads `from → to` when the machine is behind, and a detail line naming
-  the winning route ("Local network", "Tailscale", "ADE relay", "SSH") and its
-  latency. A machine runs two versions: its brain and its desktop app. The
-  brain reports the installed app's version beside its own
-  (`runtimeInfo.desktopAppVersion` on `ade/initialize` and `runtime/info`, and
-  `appVersion` in the Bonjour TXT; null on a machine with no app, absent from
-  older brains). One reader (`readInstalledDesktopApp`) answers: macOS reads
-  the app's Info.plist (`plutil` for a binary one), so an app updated while the
-  brain kept running still reads right; Windows finds the app the desktop
-  recorded in `runtime/desktop-app.json` (or the usual install folders) and
-  reads the `.exe`'s version resource, so a closed app the brain updated reads
-  right too. When the two agree the chip shows
-  one version; when they differ it shows both ("1.2.123 · brain 1.2.125"), and
-  the older of the two decides "behind" (`machineVersionFacts`,
-  `shared/machineVersions.ts`), so a machine whose app is behind is never "Up
-  to date". `ade brain status` adds a `desktop app` row only when it differs.
-  The **Update** button appears on a connected machine that is behind.
-  "Behind" is measured against the newest ADE *this* computer knows about — what
-  it runs, or a newer build it has already seen published — using the shared
-  `compareUpdateVersions`; a machine level with us gets no button. The click
-  calls `window.ade.remoteRuntime.updateAndRestart(targetId, targetVersion)` and
-  renders the host's step-attributed message in the row, then checks the
-  machine's reported version against the reply's `pendingVersion`
-  (`describeMachineUpdateAttempt`) to say whether the update landed. While it
-  runs, `UpdateSteps.tsx` shows Sending → Restarting → Back on <version>
-  (`machineUpdatePhase`), and the row stays under Connected for the restart even
-  though the update drops its connection on purpose.
-- `apps/desktop/src/renderer/components/remoteTargets/` — Machines panel ("Your
-  machines") with connected / available / unavailable sections, Pair and SSH
-  entry paths, share-this-machine and connection-doctor cards, saved/discovered
-  machine rows, machine-identity tiles and colors (`MachineIdentity.tsx`),
-  route and latency status, SSH host-key trust, structured connection
-  errors, project picker, and the This-computer
-  route-publish health indicator. A connect stopped because the host key still
-  has to be confirmed is not a failure, and `blockingHostKeyTrust` reports it as
-  its own outcome (`needs_trust` / `changed`) rather than through `onError`, so
-  callers reveal the trust prompt instead of showing a machine row an error it
-  did not have. Connection failures also carry a **Report this error to ADE…** control. `remoteMachineModel.ts`
-  (`describePublishHealth`) is the pure classifier for that indicator: the
-  publishing `published` state reads healthy, the non-publishing states
-  (`sync_disabled`, `sync_not_started`, `not_host`, `account_signed_out`,
-  `machine_key_unavailable`,
-  …) read as "none", and every other state is a failure that only alarms once it
-  has persisted at least `PUBLISH_FAILING_ALARM_MS` (2 min) so a transient blip
-  stays quiet. When that failure is specifically the brain-side unreadable
-  account session (`isBrainAccountSessionFailure`, i.e. `token_unreadable`), the
-  row also mounts the shared `BrainRepairButton` / `useBrainRepair` pair — the
-  same control the Connections This Mac card renders, reading the same publisher
-  health record, with the periodic `getInfo` poll extracted as a named
-  `refreshPublishHealth` so a settled restart re-reads it immediately.
-  Discovery diagnostics are warnings only, and only Bonjour produces one (a
-  failed Wi-Fi scan). Tailscale discovery reports nothing when Tailscale is
-  missing, quit or slow: it only adds Tailscale addresses to computers Bonjour
-  found (Find nearby never lists a Tailscale-only peer), so nothing visible is
-  lost, and a Tailscale note over "Your computers" read as the reason a machine
-  would not connect. A computer whose Tailscale route fails says so in its own
-  connection test, and Account → Private network shows Tailscale's own status.
-  The panel derives its warning line from the diagnostics array; a failed
-  `listDiscoveredMachines` call stays a separate string rather than becoming a
-  synthetic diagnostic.
-- `apps/desktop/src/renderer/components/app/projectTabGrouping.ts` — collapses
-  the open local and remote tabs into one group per repository, joined on the
-  normalized git origin. A project with no resolvable origin is never merged,
-  and at most one checkout per machine joins a group (a lane worktree shares its
-  parent's origin, so merging them would produce a tab that cannot represent
-  both). `apps/desktop/src/shared/projectIdentity.ts` owns the binding-key
-  format the join and every per-project cache are keyed by.
-  `TopBar.tsx` renders the group as one tab plus a machine menu; the machine
-  name only earns inline space when it is ambiguous (more than one machine in
-  the group, or a checkout that is not on This computer), and the menu also offers
-  **Connect another machine…**.
-- `apps/desktop/src/shared/machineIdentity.ts` — the single definition of "the
-  machine ADE is running on": `THIS_MACHINE_ID` (`"this-mac"`),
-  `THIS_MACHINE_NAME` (`"This computer"`), `isThisMachineId`, and
-  `machineDisplayName`. Every producer and consumer of a machine id imports
-  from here — `laneMachines.ts`, `projectTabGrouping.ts`, `crossMachineLanes.ts`,
-  `LaneGitActionsPane.tsx`, the composer, and the Chats page — because the
-  push-divergence guard decides "is this another machine?" by comparing ids, so
-  two spellings of this machine make it warn that This computer diverged from
-  itself. The name is deliberately platform-neutral — ADE also runs on Windows,
-  where "This Mac" was simply wrong.
-  Machines are named **absolutely** ("This computer", "MacBook Pro (97)"); "remote"
-  is never a machine name, since the machine a tab is bound to can change and
-  the create-lane dialog already uses "remote" for the git base-branch source.
-  `machineNameForBinding(binding)` is that absolute name for the machine a
-  call-routing binding targets. A null binding is the tab's own machine — which
-  for a chat is exactly the unpinned path — so it names "This computer" the same
-  way a local binding does. A remote binding prefers the runtime's own reported
-  name and falls back to the project tab's display name; neither branch can
-  produce the word "remote".
+  (`cli.ts`) remembers the bound inode. Two brains can race over a stale
+  socket; the loser exits and its restart reports `socket_owned_by_other`.
+  Shutdown removes the socket only when it still owns the inode
+  (`unlinkOwnedRuntimeSocket`). Windows pipes are exempt.
+- `apps/desktop/src/main/services/runtime/machineTrustResetMigration.ts` — a
+  one-time reset of the old machine-connection trust files that keeps account
+  auth, identity, PINs, projects and SSH settings. It completes only when the
+  service install reports `restarted`.
+
+The Machines panel:
+
+- `apps/desktop/src/renderer/components/remoteTargets/` — "Your machines":
+  connected, available and unavailable sections, Pair and SSH paths, the
+  share and connection-doctor cards, machine rows, host-key trust, errors,
+  the project picker and the This-computer publish indicator.
+  - `blockingHostKeyTrust` returns `needs_trust` / `changed` as its own
+    outcome, not as an error.
+  - Failures carry **Report this error to ADE…**.
+  - `remoteMachineModel.describePublishHealth`: `published` is healthy;
+    `sync_disabled`, `sync_not_started`, `not_host`, `account_signed_out`,
+    `machine_key_unavailable` and the like read "none"; any other state alarms
+    only after 2 minutes. A `token_unreadable` failure adds the shared
+    `BrainRepairButton`.
+  - Only Bonjour produces a discovery warning. Tailscale discovery adds
+    addresses to computers Bonjour found and reports nothing when Tailscale is
+    missing or slow.
+- `ConnectionRouteDetails.tsx` — the collapsed **Details** under a failure:
+  each route, host and port, duration and diagnostic id, with reasons in plain
+  words mapped from `RemoteRuntimeConnectionAttempt.failure`, never from
+  message text.
+- `RemoteErrorCard.tsx` — **Try again**, plus one optional `action`. Today that
+  is **Pair again** (`account.pairMachine`), only when the rejecting machine is
+  in this account's directory. Nothing re-pairs on its own.
+- `SavedMachineRow.tsx`, `MachineIdentity.tsx`, `remoteMachineModel.ts`,
+  `UpdateSteps.tsx` — one machine row.
+  - The computer drawn with its platform logo in the machine's color
+    (`machineColorKey`); a hand-picked color applies to this computer only
+    (`ade.machineColors.v1`). A presence dot, a version chip and the winning
+    route with its latency.
+  - Two versions: the brain's and the installed app's
+    (`runtimeInfo.desktopAppVersion`, Bonjour `appVersion`; read by
+    `readInstalledDesktopApp` from Info.plist on macOS or the `.exe` version on
+    Windows). When they differ the chip shows both, and the older decides
+    "behind" (`shared/machineVersions.ts`).
+  - **Update** shows on a connected machine behind the newest version this
+    computer knows (`compareUpdateVersions`). It calls
+    `remoteRuntime.updateAndRestart`, shows Sending → Restarting → Back on
+    <version>, keeps the row under Connected during the restart, and checks
+    the reported version against `pendingVersion`.
+
+Tabs, machines and routing:
+
+- `apps/desktop/src/renderer/components/app/projectTabGrouping.ts` — one tab
+  group per repository, joined on the normalized git origin. No origin, no
+  merge; at most one checkout per machine in a group.
+  `shared/projectIdentity.ts` owns the binding-key format. `TopBar.tsx` shows a
+  machine name only when it is ambiguous, and the menu offers **Connect
+  another machine…**.
+- `apps/desktop/src/shared/machineIdentity.ts` — "the machine ADE runs on":
+  `THIS_MACHINE_ID` (`"this-mac"`), `THIS_MACHINE_NAME` (`"This computer"`),
+  `isThisMachineId`, `machineDisplayName`. Every machine-id user imports it,
+  because the push guard compares ids. Machines have absolute names; "remote"
+  is never a machine name. `machineNameForBinding` names the machine of a
+  binding (null is this computer).
 - `apps/desktop/src/main/services/projects/recentProjectSummary.ts` — reads
-  `origin`'s URL straight out of the repo's git config (no `git` subprocess per
-  recent) and attaches it to each recent summary, which is the join key the tab
-  grouping above uses. `parseGitOriginUrlFromConfig` / `cleanGitConfigValue`
-  undecorate the value the way git does (quoted strings with `\` escapes,
-  unquoted `;`/`#` comment tails), `resolveGitConfigDirectory` walks a linked
-  worktree's `<main>/.git/worktrees/<name>` metadata dir back to the main repo's
-  config structurally rather than by substring, and the parsed URL is cached per
-  project root keyed on the config file's mtime because recents are
-  re-summarized on every focus.
-- `apps/desktop/src/renderer/state/crossMachineLanes.ts` and the
-  `crossMachineLanesByMachineId` / `crossMachineLaneScopeKey` slice of
-  `appStore.ts` — the **cross-machine Work union**. Lanes carry the machine
-  (`lanes.worktree_path` is an absolute path on exactly one machine) and chats
-  inherit theirs through `laneId`, so the union is keyed by machine and holds
-  lanes; there is deliberately no per-chat machine field. Refreshes are driven
-  by the connection-snapshot subscription and existing lane-lifecycle /
-  session-changed events (coalesced), plus a fallback loop for machines that
-  publish no renderer change feed. That loop is visibility-gated: it stops
-  entirely while the window is hidden and refreshes once on the way back, re-reads
-  chats every 10 s, and gives the lane list its own 30 s cadence because
-  `lane.list` with `includeStatus` resolves a git status per lane on the other
-  machine. A chat naming a lane that machine has never reported forces the lane
-  read immediately, but only once — ids a completed read did not explain are
-  remembered, since `session.list` does not filter on lane status while
-  `lane.list` excludes archived lanes, and a chat on an archived lane is
-  permanently unresolvable. Foreign reads are bounded,
-  timed out, capped at four machines in parallel, and never gate the local list.
-  Each read is a pinned `lanes.list`, `sessions.list` or `prs.listAll` with the
-  machine's binding, so the desktop and ADE Web read the same way; a window
-  without those reads marks the machine with an error
-  (`work.machine_read_bridge_missing`) instead of an empty union.
+  `origin` from the git config file (no `git` process), undecorated as git
+  does, follows a linked worktree to the main config, and caches by mtime.
+- `apps/desktop/src/renderer/state/crossMachineLanes.ts` (and the
+  `crossMachineLanesByMachineId` slice of `appStore.ts`) — the cross-machine
+  Work union, keyed by machine and holding lanes; chats inherit a machine
+  through `laneId` (there is no per-chat machine field).
+  - Refresh: connection snapshots and lane and session events (coalesced),
+    plus a loop that stops while the window is hidden: chats every 10 s, lanes
+    every 30 s, an unknown lane at once and only once. Foreign reads are
+    bounded, at most four machines at a time, and never hold up the local list.
+    Each read is a pinned `lanes.list`, `sessions.list` or `prs.listAll`; a
+    window without them logs `work.machine_read_bridge_missing`.
+  - Hidden, not deleted: a machine that drops leaves the list and comes back
+    with its rows. An asleep ADE Cloud computer is not offline. A drop counts
+    after a failed reconnect attempt plus a 45 s floor (120 s ceiling). An
+    `idle` target, or a connected machine that cannot prove the repository,
+    counts on the floor alone and keeps its rows in the store.
+  - Rows leave only when the machine is gone from the snapshot, reports the
+    repository missing with a resolvable origin to prove it, or has been
+    unreachable 24 hours. The union is per repository.
+  - `selectOtherMachineBranchStates` feeds the push guard.
+  - Pin hooks: `machineEntryForBinding` / `useMachineEntryForBinding` join by
+    binding **key**, and also read the retained slices during a same-repo tab
+    switch (one slot per proven origin). `useForeignSessionLaneId` finds the
+    lane of a chat this tab does not list. `useLanesForPin` is the **only**
+    lane list a pinned lane id may resolve against (lane ids are unique per
+    machine, not globally); it returns `null` for no pin.
+  - **Root-store invariant:** `crossMachineLanesByMachineId` lives only in the
+    root store, so these are `useRootAppStore` hooks; never pass a
+    `useAppStore` state into `machineEntryForBinding`.
 - `apps/desktop/src/renderer/state/connectRepositoryCopies.ts` — while a
-  repository tab is in front, every computer with a copy that the account lists
-  as awake (`accountMachinePresence`, sleep-aware) and that has no live
-  connection here joins in the background through `machines.connect(key,
-  { background: true })`. A background connect never wakes a sleeping cloud
-  computer, never starts a brain, never parks another ADE Web connection for
-  room, and answers `declined` for a computer the person disconnected. One pass
-  runs at a time; a failed computer is retried after 60 s, at most five times on
-  the timer, and again on window focus.
-- `apps/desktop/src/main/services/machines/machineConnector.ts` — the main
-  process's `machines.connect`: this computer's own key, a saved connection, or
-  a pairing through the account. One flight per machine key; a connect a person
-  asked for waits for a background flight and then runs its own.
-  A machine that drops is **dimmed, not deleted**: its lanes and chats stay on
-  screen, collapsed and inert, with the offline form of the machine marker naming
-  it. Believing a drop takes a completed, failed reconnect attempt (`connecting`
-  observed, then a non-connected state) plus a 45 s floor, with a 120 s ceiling
-  for a dial that never finishes: every redial publishes `connecting` and a
-  single failed liveness ping flips a target to `error`, so a shorter rule dims
-  the sidebar on every wifi blip. Two states skip the wait for an attempt that is
-  never coming and dim on the floor alone — an `idle` target, which will not
-  redial at all, and a machine that is connected but cannot re-prove this
-  repository, which answers but is never read for it. The second is dimmed and
-  not removed: absence of proof is not proof of absence, and a project list that
-  has not caught up after a reconnect must not read as "the repo is gone". Coming
-  back is applied instantly, and the verdict survives a Work-tab remount — a
-  dimmed machine brightens only by becoming eligible again, never because the
-  runtime that held its drop record was torn down.
-  Rows leave for three reasons: the machine is gone from the connection snapshot
-  (unpaired or removed), it positively reports the repository missing *and* there
-  is a resolvable origin to prove that by, or it has been unreachable for 24
-  hours. The origin requirement is what keeps a healthy machine's rows alive
-  while the bound machine blips — `repoMatchFor` will answer "missing" off a
-  folder-name mismatch alone, and the scope's origin URL is re-resolved from the
-  bound machine, so it can be transiently null. Deleting rows on that evidence is
-  not recoverable.
-  The union is
-  scoped per repository, so switching project tabs invalidates it wholesale.
-  `selectOtherMachineBranchStates` is the derived-state seam the push guard
-  reads at click time.
-  The same module owns the **pin-resolution hooks** every chat-scoped surface
-  resolves its machine through:
-  - `machineEntryForBinding(state, pin)` / `useMachineEntryForBinding(pin)` —
-    the pinned machine's slice of the union. The join is by binding **key**, not
-    machine id: `machineId` is only known once that machine has answered, while
-    a pin carries its routing target from the moment a chat is selected. The
-    React hook also consults the retained Work slices: a same-repo tab switch
-    replace-clears the live map, and Git/Files must keep answering from the
-    Studio slice that is still on screen rather than the empty refill. Retain
-    lives in one slot per proven origin (per tab when origin is unknown) so a
-    Git pane that mounts during refill cannot start empty and wipe Work's
-    snapshot, and a second project tab cannot prune this repo's Studio slice.
-    A background tab whose `projectStateKey` is not the live union's scope
-    reads its own slot and does not ingest that union. `useWorkSessions` also copies
-    the focused session (and the open tools pane) onto the destination
-    `workViewByProject` key when git origin proves the same repo — otherwise
-    the MacBook key's empty selection would unfocus the Studio chat and the
-    tools would follow the laptop. The tools-pane strip is stored under the
-    focused chat's runtime binding, not the tab's `projectStateKey`. Held
-    `ade browser open` requests expire after a short handoff window and are
-    capped per pin.
-  - `useForeignSessionLaneId(sessionId, presentLocally)` — a chat selected from
-    another machine is absent from this tab's session list, so its lane, and
-    with it its machine, is knowable only from the union (live, then retained).
-    `presentLocally` short-circuits the scan for the common case where the tab
-    already holds the session.
-  - `useLanesForPin(pin)` — the **only** lane list a pinned lane id may be
-    resolved against. Never `state.lanes`: lane ids are unique per machine, not
-    globally, so falling back to the tab-bound machine's list can match a
-    *different* lane that happens to share the id and then hand its worktree
-    path to a tool about to drive the other machine. A machine that has not been
-    read yet yields an empty list, which surfaces as "not found" rather than as
-    the wrong lane. During a same-repo refill it reads the retained slice before
-    the warm cache. It returns `null` for an absent pin so callers keep their own
-    unpinned source explicitly rather than by accident, and it reads each half
-    from the store that owns it: the union from the root store, the warm
-    `laneCacheByProject` lane cache from the surrounding project-scoped store.
-  - **Root-store invariant.** `crossMachineLanesByMachineId` is written only to
-    the root store — every writer goes through `rootAppStoreApi` — and
-    `createProjectAppStore` does not copy it, so a project-scoped `useAppStore`
-    read sees an empty record forever. That is why these are `useRootAppStore`
-    hooks, and why a React caller must not pass a `useAppStore` state into
-    `machineEntryForBinding`.
-- `apps/desktop/src/renderer/lib/chatMachineRouting.ts` — **per-session runtime
-  routing**. `buildLaneBindingIndex` folds each open binding's lane list into a
-  lane→binding index (active binding first wins), and `resolveChatRuntimePin`
-  returns the `OpenProjectBinding` a session's calls must target, or `null` when
-  it already lives on the active binding. `collectOpenProjectBindings` and
-  `buildChatMachineRoutingState` are the shared constructors both consumers use
-  so the two surfaces cannot drift into different definitions of "open" or of
-  lane precedence. `isLivePinnedBinding` asks whether a pin is still *open*
-  rather than whether it is *active*, because a pin differing from the active
-  binding is now the normal state of any session whose lane lives on another open
-  machine. Clicking such a row streams it from its own machine without rebinding
-  the tab, which would otherwise drag Lanes / PRs / Files / Git / Run along with
-  it.
+  repository tab is in front, each computer with a copy that the account lists
+  as awake and that has no live connection joins in the background
+  (`machines.connect(key, { background: true })`). A background connect never
+  wakes a cloud computer, starts a brain or parks another web connection, and
+  is `declined` for a machine the person disconnected. A failed one retries
+  after 60 s, at most five times, and on focus.
+- `apps/desktop/src/main/services/machines/machineConnector.ts` —
+  `machines.connect`: this computer, a saved connection, or a pairing through
+  the account. One flight per machine; a person's connect waits for a
+  background flight, then runs its own.
+- `apps/desktop/src/renderer/lib/chatMachineRouting.ts` — per-session routing:
+  `buildLaneBindingIndex`, `resolveChatRuntimePin` (null when the session is on
+  the active binding), the shared `collectOpenProjectBindings` /
+  `buildChatMachineRoutingState`, and `isLivePinnedBinding` (open, not active).
+  A row on another open machine streams from there without rebinding the tab.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` and
-  `apps/desktop/src/renderer/components/terminals/useWorkMachineRouter.ts` — the
-  two routers built on that module. The chat pane resolves its own pin from the
-  chat's lane; the Work hook is the Work tab's single routing authority for
-  CLI/shell rows, adding lane-then-launch-pin resolution
-  (`pinForSession`) and the launch-pin registry writes
-  (`rememberSessionPin` / `forgetSessionPin`) on top of the shared router. The
-  Work tools pane (Terminal / Git / Files / iOS / App Control / Browser) follows
-  the active Work session's machine through a `runtimePin` prop off that same
-  hook, so a chat on another machine gets *that* machine's git, terminals, and
-  files rather than the tab's.
-- `apps/desktop/src/renderer/components/chat/ChatRuntimeScope.tsx` — the
-  canonical chat-machine derivation, resolved **once per pane**. `AgentChatPane`
-  runs `useChatScopeDerivation` (session → lane, via
-  `useForeignSessionLaneId` when the chat is not in this tab's list → pin, via
-  the chat machine router) and hands the result to `ChatRuntimeScopeProvider`,
-  which covers its whole panel/drawer subtree. The pane and every chat-scoped
-  tool — Git toolbar, iOS simulator, App Control, built-in browser, file
-  changes, PR pane, terminals — therefore cannot disagree about which machine
-  the chat is on, which is the failure mode a global `useAppStore` selector
-  produces by default: it answers with the *tab's* machine, wrong in exactly the
-  case that matters. `useChatRuntimeScope()` returns
+  `terminals/useWorkMachineRouter.ts` — the two routers on that module: the
+  chat pane resolves its pin from its lane; the Work hook adds launch pins for
+  CLI and shell rows, and the tools pane follows it.
+- `apps/desktop/src/renderer/components/chat/ChatRuntimeScope.tsx` — the chat's
+  machine, derived once per pane (`useChatScopeDerivation`) and provided to the
+  whole subtree, so every chat tool agrees. `useChatRuntimeScope()` returns
   `{ pin, binding, laneId, lane, laneWorktreePath, rootPath, isRemote,
-  machineName, online }`; `pin === null` means, and only means, "this chat lives
-  on the tab's binding", so the unpinned call is byte-for-byte what it was
-  before per-chat routing. Outside a provider the hook yields the unpinned,
-  local, online fallback, which is how a chat-less surface should behave.
-  `useChatRuntimeScopeForPin(pin, laneId, bindingOverride?)` serves surfaces
-  reused outside a chat pane — the CLI session header mounts `ChatGitToolbar`
-  with its own pin and no provider above it — so the derivation comes from a
-  prop instead of context. Lane rows and worktree paths come from
-  `useLanesForPin`, never from the tab's `lanes`; `online` is false only when the
-  chat's *pinned* machine is known unreachable, since the bound machine's
-  liveness is the window's problem rather than this chat's.
+  machineName, online }`; `pin === null` means only "on the tab's binding".
+  `useChatRuntimeScopeForPin` serves a surface outside a chat pane (the CLI
+  header's `ChatGitToolbar`). `online` is false only for a known-unreachable
+  pinned machine.
 - `apps/desktop/src/renderer/components/lanes/laneMachines.ts`,
-  `LaneMachineSelector.tsx`, and `PushDivergenceDialog.tsx` —
-  machine selection during lane creation and the push-time divergence warning.
-  `deriveLaneMachineOptions` matches each machine's checkout of the repo by
-  normalized git origin (`matchedBy: "origin"`, proof) or, failing that, by
-  folder name (`matchedBy: "name"`, a guess that must not on its own rebind the
-  app). `CreateLaneDialogHost` captures the binding the dialog opened on and
-  restores it if the dialog is closed without creating a lane, so browsing
-  machines cannot silently leave the window pointed somewhere else.
-- `apps/desktop/src/shared/laneDivergence.ts` — the push-time guard.
-  `toMachineBranchState` builds its inputs from lane records the renderer
-  already has (`LaneSummary.branchRef` + `LaneStatus.ahead/behind` from
-  `LaneListSnapshot` / `lane_state_snapshots`). The rule is grounded in `ahead`,
-  not head commits: no lane record in ADE carries a head sha, so a rule that
-  required one could never fire. Another machine holding the same branch with
-  `ahead > 0` holds commits that are by definition not in the push, so moving
-  the upstream tip would strand them. Head shas only ever *silence* the guard
-  (two machines proven to sit on the same commit); an unknown head never
-  suppresses a warning, because this guards a destructive push. It stays silent
-  when no other machine holds the branch, the entry is this machine (ids
-  compared, never names), the other machine is on a different branch, or the
-  other machine has nothing unpushed.
-- `apps/desktop/src/renderer/state/appStore.ts`,
-  `apps/desktop/src/renderer/components/app/App.tsx`,
-  `TopBar.tsx`, and `projectRouteStorage.ts` — represent every open remote
-  binding as an independent project surface. Work, lane, session, route,
-  layout, and terminal-runtime identity use the binding key rather than the
-  remote filesystem path. Local and remote tabs share one eight-surface warm
-  LRU: inactive mounted surfaces are inert and animation-paused, while older
-  open surfaces snapshot their state before unmounting. Returning to a tab
-  restores its cached surface and revalidates lanes; a failed reconnect leaves
-  that stale surface visible. Closing or disconnecting switches away first, then
-  evicts only the affected binding — but the two are **not** the same eviction:
-  - **Explicit tab close, and removing a machine**, are deliberate "forget this
-    surface" actions: `evictProjectState(bindingKey)` plus
-    `removeStoredProjectRoute(bindingKey)` wipe view state, data caches, and the
-    remembered route.
-  - **Disconnect** is temporary — the machine can come back — so it takes the
-    narrower `evictProjectDataCaches(bindingKey)` path: lane cache, lane
-    selection, and session cache are dropped (they can be stale against a remote
-    that changed while it was unreachable) while `workViewByProject` /
-    `laneWorkViewByScope` and the stored route survive, so reconnecting lands on
-    the chat or tile the user had open. Binding keys are deterministic
-    (`remote:<targetId>:<projectId>`), so the preserved view state re-attaches.
-    When the disconnected tab was the last one, `closeProject({
-    preserveRemoteViewState: true })` applies the same rule instead of wiping.
-- `apps/desktop/src/preload/preload.ts` — routes runtime-backed renderer APIs to
-  local or remote JSON-RPC actions based on the active project binding — or, for
-  a chat that lives on another open machine, based on an explicit
-  `OpenProjectBinding` pin passed as a trailing argument
-  (`callPinnedOrBoundRuntimeActionOr`). Chat and session APIs
-  (`agentChat.send` / `steer` / `interrupt` / `approve` / `getSummary` /
-  `recoverTurn` / …, `sessions.get`, `sessions.readTranscriptTail`) accept that
-  optional pin; when it is absent the call is byte-for-byte the bound path it was
-  before per-chat routing, with no extra await. The pin surface extends to every
-  domain a chat-scoped tool drives, because the simulator, the controlled app,
-  and a run's captured artifacts all live on the machine that owns the lane:
-  - the **iOS simulator** domain (`getStatus` / `listDevices` /
-    `listLaunchTargets` / `launch` / `attachToChatSession` / `shutdown` /
-    `screenshot` / `getScreenSnapshot` and the rest), **App Control**, and the
-    **computer-use artifact** reads and repairs (`deleteArtifacts` /
-    `recoverArtifact` / `readArtifactPreview`). These route through domain-bound
-    wrappers — `callIosSimulatorActionOr`, `callAppControlActionOr`,
-    `callComputerUseArtifactActionOr` — so the domain string is not retyped at
-    ~50 call sites, where a typo is a silent "unknown action" at runtime, while
-    each method stays statically greppable by name.
-  - the cross-machine handoff trio `agentChat.prepareCrossMachineHandoff` /
-    `validateCrossMachineSource` / `markCrossMachineHandoff`, which are facts
-    about the chat's machine and so take the pin rather than the unpinned
-    `callProjectRuntimeActionOr`.
-  - **Pinned event subscriptions.** `iosSimulator.onEvent` and
-    `appControl.onEvent` take the pin and follow their reads to the pinned
-    runtime's stream. Without that a pinned panel got status reads and no live
-    updates, and the bound machine's stream described a different simulator
-    entirely. `builtInBrowser.onEvent` is the deliberate exception, and now in
-    both directions: the built-in browser is hosted by *this* desktop's main
-    process (it owns a `WebContentsView`) and the runtime daemon only proxies
-    calls into it over the desktop bridge socket, so **every** pin — local
-    checkout or remote machine — keeps reading the local IPC stream, because
-    there is no browser on the pinned machine to describe. `isLocalBrowserRoutingPin`
-    in preload is the one place that decides this: a local pin routes through
-    that runtime (which proxies straight back to this browser with the right
-    project scope), a remote pin falls through to local IPC.
-
-    What a remote pin *does* change is what `localhost` means.
-    `localizeRemoteLoopbackUrl` rewrites every loopback URL
-    (`localhost`, `127.0.0.0/8`, `[::1]`, `0.0.0.0`) onto a per-(machine, port)
-    TCP port-forward — the same `remoteRuntimeEnsurePortForward` the lane
-    preview uses — before `navigate` / `createTab` / `showPanel` reach main, and
-    the forward is memoized per (machine, port) so a reload does not pay an IPC
-    round trip. The pane keeps showing the REMOTE origin the human asked for
-    plus a tunnel badge naming the machine; the ephemeral forward port is never
-    surfaced. The first use of a new (machine, port) pair needs a human grant
-    even on a machine that already carries the `portForward` grant, because the
-    *agent* picks the port — "Always for this lane" decisions live in
-    `browserTunnelAlwaysKeys` on the lane's persisted Work view state.
-    Which agents may use the ADE browser at all is a separate, machine-wide
-    setting that does not depend on the site (see computer-use docs, "Who can
-    use the ADE browser").
-
-    Because the browser is this desktop's, the Browser tool is **available on
-    remote lanes** — `workToolAvailability` gates only the iOS simulator and App
-    Control on `isRemoteProject`. "Remote" here means the pin *or*, for a chat
-    the Work router leaves unpinned, the tab's own binding: a chat on a remote
-    project tab's own runtime has no pin, and `ChatBuiltInBrowserPanel` falls
-    back to `projectBinding` so those lanes still tunnel.
-
-    A remote pin also subscribes to `builtInBrowser.onRemoteRequest`. That
-    subscription takes the pinned runtime's stream, and when the pin IS the
-    window's active binding it falls back to the shared remote pump's fanout
-    rather than opening a second stream — the pinned-pump helper returns null
-    there, and without the fanout the subscription was a silent no-op. A machine
-    running only `ade serve` has no browser at all, so `ade browser open <url>`
-    there emits a `built_in_browser_remote_request` runtime event and returns
-    `{ status: "forwarded_to_desktop", requestId }` instead of failing at the
-    desktop bridge socket.     A desktop holding a remote pin for that lane takes
-    the request, runs it through the same approval + forward path, and answers
-    with the `built_in_browser.acknowledgeRemoteRequest` runtime action so the
-    CLI can print "Opened on <desktop> via tunnel" — or, after a bounded 5s
-    wait, "no desktop is attached to this machine". If Browser is not the
-    visible Work tool, Work holds that request, switches the pane only when the
-    request names the focused chat (or names no chat), and the Browser panel
-    drains the hold on mount — the event is not replayed. A request that names a
-    different chat stays queued for that chat's panel and does not steal the
-    focused pane.
-
-    **One request, one answering panel.** The daemon publishes the request to
-    every desktop panel pinned to that machine. A request naming a lane or a
-    chat is filtered by the panels themselves, but one naming neither belongs to
-    whichever panel is willing to take it — which was every panel at once, so
-    two ADE windows both showing the Browser tool for the same machine both
-    navigated and both acked, opening the URL twice and landing the second ack
-    on a requestId nobody was waiting on. The racing panels live in different
-    renderers, so arbitration happens in the one process they share:
-    `main/services/builtInBrowser/remoteRequestClaims.ts` grants the first
-    claim for an id and refuses every later one. Claimed ids are remembered for
-    `REMOTE_REQUEST_CLAIM_TTL_MS` (60 s — long enough to outlive the requester's
-    own 5 s timeout and any retry, short enough that a week-old desktop is not
-    holding a day of ids), capped at `REMOTE_REQUEST_CLAIM_MAX` (500) with the
-    oldest evicted first. A request carrying no usable id cannot be arbitrated
-    and is let through, so an older daemon's unlabelled request stays answerable.
-
-    **The browser where the user sits.** The rule since 2026-10-13: an agent's
-    `ade browser` commands run in the browser of the desktop that sent its chat
-    the last message (see "Which desktop shows it" below), when that desktop is
-    not on the agent's machine. A chat on a Windows PC, driven from a Mac
-    Studio, works in the Mac Studio's browser: the user watches it in their own
-    pane, the page uses their sign-ins, and the agent can take a tab they
-    attach. Before this only "show the user" opens crossed over; `observe`,
-    `click` and the rest ran in a browser on the agent's machine that the user
-    could not see and that held none of their tabs, and the agent could only
-    answer "I cannot see what you see".
-
-    `BUILT_IN_BROWSER_METHOD_ROUTES` (`desktopBridgeMethods.ts`) gives every
-    bridge method one route, and the compiler refuses a method without one:
-    `open`, `user-desktop` (acts on a chat's tab), `local-file` (`upload`,
-    `har`, `record`: a file on the agent's machine) or `agent-machine` (its dev
-    servers, a recording's step caption, the pane's own layout). Two paths
-    carry the first two, both chosen by `remoteBrowserForwarder.ts#route`:
-
-    - **Opens** (`navigate`, `createTab`). The agent's own open is sent as a
-      command (below) and loads quietly in a background tab the chat owns, as
-      it does for a chat on the desktop's own machine. A loopback URL cannot
-      load quietly, because its port forward may need a person's yes: the
-      desktop answers `needs_pane`, and the daemon sends the open as a
-      `built_in_browser_remote_request`, which brings the Browser pane and its
-      approval bar up. `showPanel` and `--panel` always take the request path.
-    - **Commands** (`built_in_browser_remote_call`, the methods in
-      `BUILT_IN_BROWSER_REMOTE_CALL_METHODS`): `observe`, `click`, `fill`,
-      `readText`, `claim`, `getStatus`, the element picker, DevTools and the
-      other calls that act on a tab. The daemon publishes the command,
-      addressed to that one desktop, and takes a reply only from that desktop's
-      id. The desktop answers through the `built_in_browser.replyRemoteCall`
-      runtime action twice: `taken` at once, then `done` with the result. A
-      `wait` or a sign-in handoff gets its own time budget
-      (`builtInBrowserRemoteCallDoneTimeoutMs`) on both machines. A result's
-      screenshot is a file on the desktop, so its bytes travel in the reply and
-      the daemon writes them under `.ade/cache/browser-observations/remote/`
-      and points the result at that copy.
-
-    On the desktop, `renderer/lib/remoteBrowserCallHost.ts` answers. It is not
-    a component: the agent keeps working while the user reads another chat or
-    has Git in the tools pane. A machine is served once any chat pane shows a
-    chat or a draft on it (Work, the Chats page, the Browser tab's dock); one
-    event subscription per machine, the four most recently shown, saved in
-    localStorage and served again 4 s after a reload (a machine not shown for
-    7 days is dropped). A command addressed to this desktop by name runs even
-    for a chat the window has not shown since it started: the call carries
-    `collection` (`project` or `personal`), and the project is the binding's
-    root. It swaps the agent's project path (a path on another machine) for
-    that collection's root as this window names it, runs the command
-    through `builtInBrowser.runRemoteAgentCall` (main:
-    `builtInBrowserRemoteCalls.ts`, the same `dispatchBuiltInBrowserAgentCall`
-    the bridge socket uses, so ownership, presence and agent access apply
-    unchanged), and replies on the pinned runtime. Two windows showing the chat
-    are arbitrated by `remoteRequestClaims`, as for an open.
-
-    One task stays on one machine. The forwarder remembers which browser holds
-    every tab and browser session a result names (`remoteBrowserTabHosts.ts`).
-    A command with `--tab` / `--browser-session` goes to that machine; one
-    with no tab goes where the chat's last tab is; a plain `open` follows the
-    user. An unknown id is tried in the chat's browser, then looked up on this
-    machine and on every desktop before the command fails, and the failure
-    lists the machines asked. A desktop that holds the tab and does not answer
-    is an error ("did not run anywhere"), never a run here.
-
-    Broadcasts (`remoteBrowserBroadcast.ts`) reach every desktop that holds a
-    pin on this machine at once: `listTabsForAgent` (a project's tabs, read
-    without building the collection; never the personal collection) for
-    `ade browser status`, `releaseLaneTabs` when a lane is deleted or
-    archived, and `chatBrowserLifecycle` (`running` / `idle` / `ended`) as a
-    chat that used the browser through this brain starts a turn, finishes one,
-    or ends, so its agent tabs close on every desktop that holds them.
-    Watching another machine's tab is not a broadcast: a desktop or phone polls
-    `work_tools.readBrowserTabFrame` on that machine's runtime (person-only:
-    the desktop app over RPC, the phone over its sync command), which renews a short preview-stream watch on the desktop there, and
-    `work_tools.sendBrowserTabInput` carries a person's clicks and typing
-    (Take control). A tab list waits for the desktops that answered the last ones,
-    or 1.2 s when none has; after a list nobody answered, lists are skipped
-    for two minutes or until a desktop takes a command.
-
-    Isolated sign-ins (`--isolated`, `--profile`) open on the user's desktop
-    like any tab. A loopback URL needs the pane's request path, which carries
-    `profile` / `isolated` only for a desktop whose `needs_pane` reply says
-    `requestCarriesSignIn`; for an older desktop the tab opens on the agent's
-    machine instead.
-
-    The agent's own machine is the fallback and the opt-out:
-
-    - No desktop takes a command within 4 s (the laptop is closed): a command
-      for no particular tab runs in the browser on the agent's machine, and the
-      chat's commands stay there for 60 s before the desktop is asked again.
-    - The last message came from the phone or the CLI: there is no desktop to
-      name, so nothing changes from before.
-    - `--here` on any `ade browser` command: the browser on the agent's machine.
-    - `upload`, `har` and `record` read or write a file on the agent's machine.
-      They are refused with a pointer to `--here` unless the tab is here.
-
-    Every result says where it ran (`browserHost`, printed by `--text` as a
-    first line), and every error names the machine whose browser refused
-    (`builtInBrowserErrorOnMachine`). `ade browser status` prints the route
-    (`route`: the browser `open` uses and why, where isolated tabs go, the
-    fallback in effect) and every reachable machine's tabs and cap.
-
-    Known limits: a tab opened through a tunnel reports its forward port
-    (`127.0.0.1:<ephemeral>`) to the agent rather than the port it asked for; a
-    personal chat on another machine is served only once its pane was shown
-    here (the daemon names its collection, but no pane registers a personal
-    binding); a download lands on the user's computer.
-
-    On the desktop, three things say where a remote chat's browser is, and no
-    more: the Browser card in the tools picker ends with `chat on <machine>`;
-    the floating preview pictures only a tab that chat owns (it used to fall
-    back to the person's own active tab); and "Attach to chat" works, with a
-    sentence in the attached block telling the agent the tab is on the user's
-    computer.
-
-    **A request to show the user also reaches every screen when nobody can
-    tell.** A call that asks to show the user (`showPanel`, which
-    `ade browser panel` sends, or `openPanel: true`, which
-    `ade browser open --panel` sends) is forwarded as a
-    `built_in_browser_remote_request`, addressed to the desktop that sent the
-    chat its last message. When nobody can tell where the user is, the request
-    goes to every connected desktop and the agent machine's panel opens too. If
-    the addressed desktop does not acknowledge, the request is sent again to
-    every desktop.
-
-    **Links in a chat open the chat machine's `localhost`.** A chat link to
-    `http://localhost:4180` carries the chat's pin (`openLinkFromUi(url,
-    event, { runtimePin })`). An unpinned link means the window's own binding,
-    which may itself be another machine. `withLocalizedBrowserUrl` falls back to
-    that binding when no pin is passed, so even the plain navigate path tunnels.
-    A mounted Browser panel on that machine takes the click itself, so the URL
-    bar keeps showing `localhost:4180` and the tab gets its tunnel badge. When
-    the panel is not mounted, the link waits in `pendingBrowserLinkOpens` until
-    the pane the click revealed mounts, with a 3 s fallback to the plain
-    navigate. Another machine's `localhost` exists only through ADE's tunnel,
-    so such a link always opens in the ADE browser, even when links are set to
-    open in the system browser.
-  - **Read caches are namespaced by binding.** The preload process is shared by
-    every machine a window talks to, so a read cache keyed by arguments alone is
-    machine-blind: once an action can carry a pin, one machine's rows could be
-    served to — or overwritten by — another's. `boundReadCacheKey()` prefixes
-    each cached read's key with the current binding's key. The iOS simulator
-    status and device caches became keyed caches for the same reason, and a
-    pinned `getStatus` / `listDevices` bypasses the cache entirely with a direct
-    `callPinnedRuntimeAction`.
-  - **The bridge object is contract-checked.** It is declared
-    `const adeBridge = { … } satisfies Window["ade"]` before
-    `contextBridge.exposeInMainWorld`, so a preload signature that drifts from
-    the declared `global.d.ts` contract — a missing `pin` parameter above all —
-    is a compile error rather than a renderer silently talking to the wrong
-    machine.
-
-  Remote project usage/budget reads route through the remote runtime.
-  Local-bound windows take usage/budget from the machine brain. A window
-  with no local project (Welcome, Hub, a remote-machine tab) still goes
-  through desktop usage IPC, which proxies those reads to a booted brain
-  project scope and falls back to the in-process tracker only when no brain
-  scope is running. Main relays the brain's usage events onto
-  `ade.usage.event` so those unbound windows stay live; bound windows ignore
-  that channel and keep the runtime event stream. File actions are strict once a
-  local or remote runtime is bound. During a
-  project switch, preload records a pending local binding for the target root
-  and includes `rootPath` on local runtime action/sync/event calls so early
-  renderer requests hit the destination runtime project instead of the previous
-  window session binding. During remote project opens, preload clears the
-  current binding, tracks the newest open generation, waits for active remote
-  opens before retrying read-only project calls, blocks mutating action/sync
-  calls with the "Project is switching" error, and avoids refreshing a stale
-  runtime binding. Read or write comes from each action's declaration in
-  `apps/desktop/src/shared/adeActionAccess.ts`, not from its name; chat reads
-  that must reach the chat's own host (drafts, thread comments) wait for the
-  switch to finish. Remote event polling suppresses buffered replay on the first
-  live subscription, resets cursors on `eventEpoch` changes, notifies project
-  refresh paths on `gap: true`, and backs off when idle; lane preview URLs
-  returned by a remote runtime are localized through a local TCP forward before
-  the renderer opens them. For a packaged local window temporarily attached to
-  an isolated runtime with sync disabled, only the exact machine-level
-  `Sync service is not available` / `Register a project first` failures retry
-  through main-process sync IPC; remote-bound failures never fall back to the
-  local machine.
+  `LaneMachineSelector.tsx`, `PushDivergenceDialog.tsx` — the machine choice
+  when creating a lane (by origin, which is proof, else by folder name, a guess
+  that never rebinds on its own) and the push warning.
+  `CreateLaneDialogHost` restores the opening binding if the dialog closes
+  without a lane.
+- `apps/desktop/src/shared/laneDivergence.ts` — the push guard. Another machine
+  on the same branch with `ahead > 0` holds commits the push would strand. Head
+  shas only silence it (proven same commit); an unknown head never does. Silent
+  when no other machine has the branch, the entry is this machine (by id), or
+  the other machine has nothing unpushed.
+- `apps/desktop/src/renderer/state/appStore.ts`, `app/App.tsx`, `TopBar.tsx`,
+  `projectRouteStorage.ts` — every open remote binding is its own project
+  surface, keyed by binding key. Local and remote tabs share one eight-surface
+  warm LRU; a failed reconnect leaves the stale surface visible.
+  - Closing a tab or removing a machine forgets it
+    (`evictProjectState` + `removeStoredProjectRoute`).
+  - Disconnect only drops data caches (`evictProjectDataCaches`); the view
+    state and route stay, so a reconnect lands on the same chat. Binding keys
+    are `remote:<targetId>:<projectId>`. `closeProject({
+    preserveRemoteViewState: true })` does the same for the last tab.
+- `apps/desktop/src/preload/preload.ts` — routes runtime-backed APIs to the
+  local or remote runtime of the active binding, or to an explicit
+  `OpenProjectBinding` pin passed last (`callPinnedOrBoundRuntimeActionOr`).
+  With no pin, a call is exactly the bound path, with no extra await.
+  - Pinned domains: chat and session calls, the iOS simulator, App Control and
+    computer-use artifacts (through `callIosSimulatorActionOr`,
+    `callAppControlActionOr`, `callComputerUseArtifactActionOr`, so the domain
+    string is typed once), and the cross-machine handoff calls.
+  - `iosSimulator.onEvent` and `appControl.onEvent` follow the pin to that
+    runtime's stream. `builtInBrowser.onEvent` never does: the browser is this
+    desktop's (`isLocalBrowserRoutingPin` decides).
+  - Read caches are keyed by binding (`boundReadCacheKey()`); a pinned
+    simulator status or device read skips the cache.
+  - The bridge is declared `satisfies Window["ade"]`, so a preload signature
+    that drifts from `global.d.ts` (a missing `pin` above all) does not
+    compile.
+  - Usage and budget: a bound window reads them from its runtime; a window
+    with no local project goes through desktop usage IPC, which proxies to a
+    booted brain scope (`ade.usage.event` keeps it live).
+  - Project switch: preload records a pending local binding and sends
+    `rootPath`, so early calls hit the new project. During a remote open it
+    clears the binding, waits before retrying reads, and refuses writes with
+    "Project is switching". Read or write comes from
+    `shared/adeActionAccess.ts`, never the action name.
+  - Remote event polling skips buffered replay on the first live subscribe,
+    resets on an `eventEpoch` change, refreshes on `gap: true`, and backs off
+    when idle. Lane preview URLs go through a local TCP forward.
+  - Only an isolated no-sync local window retries `Sync service is not
+    available` / `Register a project first` through main; a remote-bound
+    failure never falls back to the local machine.
+  - The browser across machines is described in
+    [The ADE browser for a remote chat](#the-ade-browser-for-a-remote-chat).
 - `apps/desktop/src/main/services/projects/windowTabRootAuthorization.ts` — what
-  a window's set-open-tabs call is allowed to change. `resolveWindowTabRoots`
-  splits the renderer's one list into two very different things: `tabRoots`,
-  what the window is displaying, which is renderer-supplied and only ever used
-  to look projects back up, so an unknown path there is harmless; and
-  `authorizedLocalRoots`, the window's local runtime scope, which
-  `runtimeBridge` treats as "this window opened this checkout". A path that
-  never opened must not earn local-runtime access merely by appearing in a tab
-  list, so only roots resolving to a project this process actually opened pass
-  through — the same gate `projectsForWindowTabs` applies on the way back out.
-  `main.ts` additionally keeps a per-window `windowKnownLocalProjectRoots` set —
-  every local root the window itself opened this session — surfaced as
-  `knownLocalProjectRoots` on the window session and folded into
-  `runtimeBridge.collectAuthorizedLocalRuntimeRoots`. It exists because neither
-  existing signal can answer "was this window ever working in this local
-  checkout?": `windowProjectTabRoots` is replaced wholesale by the renderer on
-  every tab change, and `windowProjectRoots` is nulled the moment the tab binds
-  to a remote machine. A chat pinned to "This computer" is exactly that
-  question — its lane lives on this machine no matter which machine the tab is
-  bound to — and rejecting it left cross-machine Work views unable to act on
-  their own local sessions. Membership stays window-scoped and is granted only
-  by the window opening the project itself, never by a renderer-supplied path.
+  a window's set-open-tabs call may change. `resolveWindowTabRoots` splits the
+  list into `tabRoots` (display only) and `authorizedLocalRoots` (local runtime
+  scope), and only roots of projects this process opened pass. `main.ts` also
+  keeps `windowKnownLocalProjectRoots` (every local root this window opened),
+  so a chat pinned to This computer can act from a remote-bound tab. Only the
+  window's own open grants membership.
 - Settings › Passwords & Secrets always talks to the computer the person is
-  using (`passwords.call` through main), whatever project tab the window is
-  on: the vault is the account's and syncs from there, and a "this computer
-  only" secret lives there. Its `.env` import reads a file picked on that
-  computer and its export writes to that computer's Downloads. A remote chat's
-  secret card, a webhook's signing secret and Cursor Cloud's env still reach
-  their project through `project_secret` on the pinned machine.
-- `apps/ade-cli/src/multiProjectRpcServer.ts` — runtime-level project catalog
-  and sync methods, machine-scoped personal-chat methods, plus project-scoped
-  action dispatch. `projects.getHandoffStoragePreflight` validates a proposed
-  clone parent/path, free-space floor, and destination-local Git access before
-  cross-machine handoff setup mutates the machine. `runtimeEvents.*`
-  replies include `eventEpoch`, `gap`, and `oldestCursor` from the runtime's
-  bounded event buffer. `projects.list` inlines host-resolved icons, with
-  `dataUrl`, `sourcePath`, and `mimeType` fields, under a 24-icon / 750 ms
-  connect-path budget with 128 KiB per-icon and 512 KiB aggregate wire caps,
-  so a connected desktop can render real project logos without letting an
-  oversized registry stall connection setup. `projects.setIcon` and
-  `projects.removeIcon` let a desktop store or clear a project's icon on the
-  host: the bytes arrive base64 with an extension-derived MIME check, a 2 MB
-  cap, and a basename-only file name, the host imports them under the
-  project's `.ade/project-icons` folder, and both methods answer with the icon
-  the host now resolves. Older hosts advertise `machineProjects.setIcon:
-  false`, so the desktop asks the user to update that machine instead of
-  calling. A project with a git origin takes its name and icon from the
-  shared project record first (`shared/projectRecord.ts`: rows `project.icon`
-  and `project.name` in the account settings store under `repo:<origin>`,
-  or `.ade/project-record.json` on a brain with sync off), so every machine of
-  the account shows the same ones; a record icon is already a small data URL
-  and costs no worker. `projects.setIcon` writes the record too, and
-  `projects.removeIcon` writes its "no custom icon" value, after which every
-  machine drops its own override and shows the detected icon. A record write
-  the store cannot take (signed out, brain down) stays pending in
-  `.ade/project-record.json`; that machine shows it, and the next record read
-  or write that reaches the store sends it first. `projects.inspectRemoval`
-  reports the state of the host's copy of a project for the remove dialog
-  (changed files and commits no remote has in the main folder and every
-  lane worktree, stashes, ignored `.env` files by name, live chats and
-  terminals). `projects.removeCopy` (cto role, never an agent; another
-  machine reaches it only over the runtime channel, which needs
-  `runtimeHostGranted`) removes the entry and, with `deleteFolder`, the
-  folder: it reads the state again, refuses when it no longer matches the
-  `stateToken` the person saw (or shows work the person did not accept, or
-  something runs). The token covers the work itself, not only its counts:
-  each checkout's HEAD and git status, every branch tip and stash, and the
-  size and time of each changed, untracked and ignored secret file. Over
-  5,000 changed paths in one checkout the token never matches, so a delete
-  of accepted work there is refused. It then checks that the folder is exactly a registered root that
-  holds no home folder, ADE home, other project or running ADE, stops the
-  project, moves the folder aside in one rename and deletes it for good, then
-  drops the entry. Lane worktrees outside the project folder stay. The
-  desktop's own computer asks with `folderMode: "caller"` and moves the folder
-  to the Trash itself. Older hosts lack `machineProjects.removeCopy`; the
-  desktop then offers only entry removal through `projects.remove`. It also serves
-  `machine.updateAndRestart` (cto role on the runtime endpoint; a paired phone or
-  browser instead sends the sync commands `machine.updateImpact` /
-  `machine.updateAndRestart`) and hosts the
-  `ProjectlessSyncControls` fallback for `sync.*` on a machine with no project —
-  see [sync and multi-device](../sync-and-multi-device/README.md#sync-on-a-machine-with-no-project).
-- `apps/ade-cli/src/services/runtime/brainHeartbeat.ts` — the brain's
-  externally-readable liveness beat: `<ADE home>/runtime/heartbeat.json`
-  (`{pid, ts, seq, startedAt}`) rewritten every 15 s from a timer that ticks
-  while the brain is completely idle, which is exactly the state a wedge hides
-  in. A beat that is itself overdue by more than 60 s records `suspendGapMs` and
-  logs `brain.suspend_gap`: the writer noticing its own lateness is the cheapest
-  evidence that the machine slept. `evaluateBrainHeartbeat` is the shared
-  verdict function, and `brainWatcherSuspendFloorMs` the shared floor both
-  platforms measure a watcher's own lateness against.
-- `apps/ade-cli/src/services/runtime/brainWatchdogCheck.ts` — `runBrainWatchdogCheck`,
-  behind `ade runtime watchdog-check`. Reads the heartbeat and, at most, kills
-  one pid. It deliberately never opens the runtime socket: a wedged brain is
-  precisely the case where connecting hangs, and a watchdog that blocks on its
-  patient is not a watchdog. It keeps one file of its own,
-  `<ADE home>/runtime/watchdog-check.json` (`{ts, staleBeat}`), which is how it
-  knows how long ago it last ran and whether it has already seen this exact
-  beat — the two facts behind the `machine_slept` and `stale_unconfirmed`
-  verdicts below. The record is written before the judgement, so a check that
-  dies mid-run still leaves its timestamp; an unwritable runtime directory means
-  the watcher stops killing rather than kills on stale information.
-- `apps/ade-cli/src/serviceManager/installLaunchdWatchdog.ts` — install/uninstall
-  of the `com.ade.watchdog` launch agent (`.alpha` for the Alpha channel,
-  `StartInterval` 60 s), done alongside the brain's own agent and best effort: a
-  machine that cannot install the watchdog still gets a brain.
-- `apps/ade-cli/src/serviceManager/runtimeServiceBudgets.ts` — every timeout in
-  the brain's start/handover lifecycle, in one file, because the numbers only
-  mean anything relative to each other: `RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS`
-  (30 s) is how long an installer waits before reporting `starting`,
-  `WINDOWS_HANDOVER_TIMEOUT_MS` (15 s) the supervisor's shorter equivalent,
-  `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (120 s) the "still starting, not broken"
-  window shared by the installers' young-brain wait and the desktop's
-  `brain_starting` diagnosis, `RUNTIME_SERVICE_START_WAIT_MS` (90 s) a caller's
-  wait for the endpoint, and `RUNTIME_SERVICE_STARTING_CONNECT_WAIT_MS` (60 s)
-  how long a caller keeps dialling a brain the installer called `starting`.
-  They were bare literals in seven files, where tuning one silently broke the
-  ordering the whole lifecycle depends on.
-- `apps/ade-cli/src/serviceManager/serviceHandover.ts` — the handover itself,
-  shared by launchd, systemd and Windows: `awaitServiceHandover` (responsiveness
-  probe, wait loop, `starting` verdict) and `awaitYoungBrainStart` (age check
-  plus the crash-loop veto). Each installer keeps only its own message text, so
-  the three cannot drift.
+  using (`passwords.call` through main), whatever the tab: the vault is the
+  account's, and a "this computer only" secret lives there. `.env` import and
+  export use that computer's files. A remote chat's secret card, a webhook's
+  signing secret and Cursor Cloud's env reach their project through
+  `project_secret` on the pinned machine.
+- `apps/ade-cli/src/multiProjectRpcServer.ts` — the runtime's project catalog
+  and sync methods, machine-scoped personal-chat methods and project action
+  dispatch.
+  - `projects.getHandoffStoragePreflight` checks a clone path, free space and
+    Git access before a handoff changes the machine.
+  - `runtimeEvents.*` replies carry `eventEpoch`, `gap` and `oldestCursor`.
+  - `projects.list` inlines icons (24 icons / 750 ms on connect, 128 KiB each,
+    512 KiB total). `projects.setIcon` / `removeIcon` store or clear an icon on
+    the host (base64, MIME from the extension, 2 MB, basename only, under
+    `.ade/project-icons`). Older hosts advertise `machineProjects.setIcon:
+    false`.
+  - A project with a git origin takes its name and icon from the shared
+    project record (`shared/projectRecord.ts`: `project.icon` and
+    `project.name` under `repo:<origin>`, or `.ade/project-record.json` with
+    sync off). A write the store cannot take waits in that file and goes first
+    on the next read or write.
+  - `projects.inspectRemoval` reports the host copy's state for the remove
+    dialog (unpushed changes and commits in every worktree, stashes, ignored
+    `.env` files, live chats and terminals). `projects.removeCopy` (cto only;
+    another machine needs `runtimeHostGranted`) re-reads that state and
+    refuses when it no longer matches the `stateToken` (HEADs, status, branch
+    tips, stashes, sizes and times of changed and secret files; over 5,000
+    paths never match). It then checks the folder is exactly a registered
+    root with no home, ADE home, other project or running ADE inside, stops
+    the project, renames the folder aside and deletes it. The desktop's own
+    computer sends `folderMode: "caller"` and uses the Trash. Older hosts lack
+    `machineProjects.removeCopy` and get entry removal only.
+  - It also serves `machine.updateAndRestart` (a paired phone or browser
+    sends the sync commands `machine.updateImpact` /
+    `machine.updateAndRestart` instead) and the
+    `ProjectlessSyncControls` fallback for `sync.*` — see
+    [sync and multi-device](../sync-and-multi-device/README.md#sync-on-a-machine-with-no-project).
+
+Brain liveness and lifecycle:
+
+- `apps/ade-cli/src/services/runtime/brainHeartbeat.ts` —
+  `<ADE home>/runtime/heartbeat.json` (`{pid, ts, seq, startedAt}`), written
+  every 15 s even when idle. A beat late by more than 60 s logs
+  `brain.suspend_gap` (the machine slept). `evaluateBrainHeartbeat` and
+  `brainWatcherSuspendFloorMs` are shared by both platforms.
+- `apps/ade-cli/src/services/runtime/brainWatchdogCheck.ts` —
+  `ade runtime watchdog-check`: reads the heartbeat and kills at most one pid.
+  It never opens the socket (a wedged brain hangs connects). Its own record,
+  `<ADE home>/runtime/watchdog-check.json`, is written before the verdict; an
+  unwritable directory means it stops killing.
+- `apps/ade-cli/src/serviceManager/installLaunchdWatchdog.ts` — the
+  `com.ade.watchdog` agent (`.alpha` for Alpha, every 60 s), best effort.
+- `apps/ade-cli/src/serviceManager/runtimeServiceBudgets.ts` — every timeout
+  of the start and handover, in one file, because they only make sense
+  together: handover 30 s (`RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS`; 15 s on
+  Windows), young brain 120 s, endpoint wait 90 s, and 60 s of dialling a
+  `starting` brain (`RUNTIME_SERVICE_STARTING_CONNECT_WAIT_MS`).
+- `apps/ade-cli/src/serviceManager/serviceHandover.ts` — the shared handover
+  (see above).
 - `apps/ade-cli/src/services/runtime/awaitRuntimeServiceEndpoint.ts` — the
-  install-then-wait policy `ade setup` uses, free of the CLI's globals so it can
-  be tested against a probe that answers on the Nth call. A failed install with
-  `starting` set is not a failure: the service is registered and supervised, so
-  it keeps dialling.
+  install-then-wait of `ade setup`; a failed install marked `starting` keeps
+  dialling.
 - `apps/ade-cli/src/services/runtime/brainStartupState.ts` —
-  `readBrainStartupState`, the CLI's read of the desktop's `brain_starting`
-  verdict, for callers whose brain did not answer (a brain that answers is
-  running, never starting). The desktop reaches that verdict through its
-  connection pool; the CLI has no pool, so it asks the platform service manager
-  the same questions — is the service registered and running, how old is the
-  brain it supervises, and has that brain been restarted — and calls it
-  `starting` only when the service is installed, not stopped, its brain is
-  younger than the shared `RUNTIME_SERVICE_YOUNG_BRAIN_MS` window, and that
-  brain is not crash-looping. The crash-loop veto matters because a brain that
-  dies and relaunches every few seconds is always young, so age alone would
-  report a crash loop as "starting" forever: on macOS and Linux the veto reads
-  the brain's own `last-failure.json` streak, and on Windows it is the
-  supervisor's `restartCount`. Windows has no `ps -o etime=` either, so the age
-  comes from the same supervisor pid record (`runtimeStartedAtMs`) rather than
-  from the process table. Every probe failure fails closed to not-starting:
-  claiming a brain is starting when we cannot tell would hide a dead one.
-- `apps/ade-cli/src/services/runtime/connectWhileServiceStarts.ts` — dials the
-  endpoint of a just-installed service, allowing for a `starting` one, and
-  throws `RuntimeServiceStillStartingError` rather than a plain connect failure
-  when it runs out of time. That distinction matters: a plain failure is what
-  let a caller fall through to spawning an unmanaged rival brain on a socket the
-  supervisor already owns.
-- `apps/ade-cli/src/services/runtime/machineUpdateAndRestart.ts` —
-  `createMachineUpdateControls` / `runMachineUpdateAndRestart`, the host side of
-  `machine.updateAndRestart`. Absent for embedded and test runtimes, which have
-  no installed service to update; the method then refuses rather than pretending
-  to have restarted something.
+  `readBrainStartupState`, the CLI's `brain_starting` answer for a brain that
+  does not answer: the service is installed and not stopped, its brain is
+  younger than 120 s, and it is not crash-looping (`last-failure.json` on
+  macOS and Linux, the supervisor's `restartCount` on Windows, where the age
+  comes from `runtimeStartedAtMs`). Any probe failure means not starting.
+- `apps/ade-cli/src/services/runtime/connectWhileServiceStarts.ts` — dials a
+  just-installed service and throws `RuntimeServiceStillStartingError` on time
+  out, so no caller starts a rival brain on the supervisor's socket.
+- `apps/ade-cli/src/services/runtime/machineUpdateAndRestart.ts` — the host
+  side of `machine.updateAndRestart`; embedded and test runtimes refuse it.
 - `apps/ade-cli/src/services/runtime/machineUpdateInFlight.ts` —
-  `joinOrStartMachineUpdate`, the one-run-per-process coalescer the runtime RPC
-  and the phone's sync command both go through.
-- `apps/ade-cli/src/services/runtime/atomicJson.ts` — the shared
-  write-temp-then-rename JSON helper these runtime state files use, so a reader
-  outside the process never sees a half-written record.
-- `apps/ade-cli/src/services/projects/` — machine project registry,
-  lazy per-project service scope cache, and `projectIconResolver.ts`. Brain
-  startup boots only the authoritative sync-host project; other recent
-  projects stay cold until a project-scoped request or explicit handoff needs
-  them, because each scope owns a complete DB/search/chat/automation/PTY
-  runtime rather than lightweight catalog metadata. `projectIconResolver.ts`
-  (`resolveRemoteProjectIcon`, an electron-free port of the desktop icon
-  resolver: `.ade/local.yaml` `project.iconPath` override + conventional icon/logo files +
-  `index.html` `<link rel="icon">`, best-effort and rendered to a 64 px
-  thumbnail capped at 128 KiB on the wire).
-- `apps/ade-cli/scripts/build-static.mjs` — produces the static
-  `ade-<platform-arch>` SEA binary and the `.native.tar.gz` of native modules,
-  resolves the runtime version from the CLI / desktop package metadata, and
-  verifies same-platform static binaries report that version.
+  `joinOrStartMachineUpdate`, the one-run-per-process coalescer that the
+  runtime RPC and the phone's sync command both go through.
+- `apps/ade-cli/src/services/runtime/atomicJson.ts` — the write-temp-then-
+  rename JSON helper for these state files.
+- `apps/ade-cli/src/services/projects/` — the machine project registry, the
+  lazy per-project scope cache (startup boots only the sync-host project; each
+  scope is a full DB, search, chat, automation and PTY runtime) and
+  `projectIconResolver.ts` (the `.ade/local.yaml` `project.iconPath`
+  override, icon files, `index.html` icons; a 64 px thumbnail, 128 KiB).
+
+Build and install:
+
+- `apps/ade-cli/scripts/build-static.mjs` — the static `ade-<platform-arch>`
+  SEA binary and its `.native.tar.gz`, with the version check.
 - `apps/ade-cli/scripts/install-runtime.sh` and `install-runtime.ps1` —
-  standalone installers that download `ade-<platform-arch>` and the matching
-  native deps from a release. They own only what must happen before the `ade`
-  binary exists — download, verify, PATH, `ade brain start` — and hand the rest
-  of onboarding to `ade setup`, one implementation both platforms share so they
-  cannot drift.
+  download, verify, PATH and `ade brain start`; the rest is `ade setup`.
 - `apps/desktop/scripts/materialize-runtime-resources.mjs` and
-  `validate-runtime-resources.mjs` — populate and validate
-  `apps/desktop/resources/runtime/` for packaging.
+  `validate-runtime-resources.mjs` — `apps/desktop/resources/runtime/` for
+  packaging.
 
 ## User model
 
@@ -1278,14 +584,10 @@ remote host's stable pairing identity, or losing its stored pairing grant,
 invalidates the saved paired credential and requires re-pairing; ADE does not
 silently attach old credentials to a different host identity.
 
-The next packaged release intentionally starts this trust model from a clean
-slate once per channel. It removes previously saved desktop remote targets and
-paired-device grants, restarts that channel's background runtime, and then lets
-users pair or adopt machines again. It does not sign the user out, change the
-machine identity/PIN, remove projects, or touch SSH configuration. Source/dev
-launches do not perform the reset.
-
-Opening a project on another machine no longer interrupts. The old confirmation dialog existed to warn that a *separate remote tab* was being created; under one-tab-per-repository there is no second tab, so the warning had nothing left to warn about. Divergence between two checkouts is surfaced where it can actually cost you something instead: at push time, when another machine holds the same branch with unpushed commits (`apps/desktop/src/shared/laneDivergence.ts`).
+Opening a project on another machine asks nothing: a repository is one tab.
+ADE warns about two checkouts that differ only at push time, when another
+machine holds the same branch with unpushed commits
+(`apps/desktop/src/shared/laneDivergence.ts`).
 
 ## One repository, many machines
 
@@ -1299,20 +601,11 @@ The tab's machine is the global execution context — Lanes, PRs, the Files
 page, and Run all follow it. Two things are deliberately wider than that:
 
 - **The Work sidebar is a union.** It shows chats in flight on *every* connected
-  machine for this repository, regardless of which machine the tab is bound to.
-  Lanes not on This computer carry a small monochrome machine marker that promotes to
-  the machine's name when a glyph alone would be ambiguous (the machine is
-  offline, two or more foreign machines are on screen, or the same branch exists
-  elsewhere). Foreign lanes appear only when they have sessions — the union is
-  about work in flight, not an inventory. A machine that goes offline keeps its rows,
-  dimmed, folded shut, and inert, and sinks below the reachable machines.
-  One session renders as exactly one row. The union is built against the ids the
-  active binding's own roster already holds and carries a single claim set across
-  machine slices, so neither a locally seeded optimistic launch nor two slices
-  reporting the same session can produce a second row with its own elapsed clock.
-  Local wins the tie, matching where a click resolves. A slice only claims
-  sessions on lanes that same machine reports, so a session naming a lane a
-  machine does not have cannot suppress the machine that does have it.
+  machine for this repository, whatever the tab's machine. A lane not on This
+  computer carries a machine marker. Foreign lanes show only when they have
+  sessions. An offline machine's rows are hidden until it reconnects. One
+  session is one row: a single claim set spans the slices, local wins a tie,
+  and a slice claims only sessions on lanes that machine reports.
 - **A session owns its Work tools.** Git, Files, Terminal, Browser, Simulator,
   and App Control in the Work tools pane follow the focused chat's machine, not
   the tab dropdown. Opening a chat, CLI, or shell from the union streams it from
@@ -1548,14 +841,9 @@ field and reports `remote.brain_connection_lost`
 
 ### When the connect fails, the user reads one sentence
 
-A failed connect used to hand the user a list of routes. Four lines of
-`lan 192.168.1.24:8787: timeout` say nothing about what to do, and three of them
-are usually irrelevant noise around the one route that actually reached the
-machine and was rejected.
-
-The main process now classifies the attempts and picks the dominant cause,
-carried as `RemoteRuntimeConnectErrorInfo.failure` alongside the existing
-`attempts` array. The UI keys its headline **and its recovery action** off that
+The main process classifies the attempts and picks the dominant cause,
+carried as `RemoteRuntimeConnectErrorInfo.failure` beside the `attempts`
+array. The UI keys its headline **and its recovery action** off that
 field, never off the message text. Every host, port, duration and the
 correlation id stay in a collapsed **Details** list
 (`ConnectionRouteDetails.tsx`), which is where support questions get answered.
@@ -1616,7 +904,7 @@ surface:
   (dialled like a phone would, only when the control and bridge are up),
   Tailscale's state and whether it routes everything through an exit node
   (`tailscale status --json`; an exit node that blocks the relay is the case
-  that looked healthy on the host and dead everywhere else), the account, and
+  that looks healthy on the host and dead everywhere else), the account, and
   a recent freeze. Each part gets a state and a fix. It is always this physical
   computer (like `getLocalStatus`), never the window's bound machine; the web
   client has no such check and shows nothing.
@@ -1630,7 +918,7 @@ surface:
   itself" with the fix to update it.
 
 **A frozen host says so.** While a machine is frozen, its clients cannot tell
-that from a dropped network. The brain loop watchdog now reports every stall
+that from a dropped network. The brain loop watchdog reports every stall
 it came back from (`onStall`, not suspensions) and every wedge it restarted
 (`onRecovered`) to `hostStallRecord.ts`, which keeps the latest one of 5 s or
 more, with the 1-minute load average (none on Windows) and core count. For 5
@@ -1664,7 +952,7 @@ responding (overloaded, asleep or off the network).
 
 ## Compatibility warnings
 
-Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays the capability warnings inline in the machine row. Warnings cover:
+Version skew and capability skew do not fail the connect. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays the capability warnings inline in the machine row. Warnings cover:
 
 - Runtime version mismatch, shown as the machine row's version chip (`X → Y`) rather than a sentence; the older machine is the one to update.
 - Remote package channel mismatch (e.g. desktop is `alpha`, remote runtime advertises `stable`).
@@ -1676,10 +964,9 @@ Version skew and capability skew no longer fail the connect outright. The bootst
 A desktop package carries **only its own build target's** `ade-<platform-arch>`
 binary and matching `.native.tar.gz` archive in `apps/desktop/resources/runtime/`,
 plus the packaged ADE CLI resources that include `ptyHostWorker.cjs` for remote
-terminal hosting. Bundling all five targets is what pushed the macOS update ZIP
-past the 1 GiB Squirrel.Mac cliff (see
-[desktop-auto-update.md](../onboarding-and-settings/desktop-auto-update.md)),
-so foreign-platform payloads now fail the build rather than ship.
+terminal hosting. A foreign-platform payload fails the build: all five targets
+would push the macOS update ZIP past the 1 GiB Squirrel.Mac limit (see
+[desktop-auto-update.md](../onboarding-and-settings/desktop-auto-update.md)).
 
 `apps/desktop/scripts/runtime-resource-targets.cjs` is the single source of
 truth for which sidecars a build may contain — `darwin-arm64`, `darwin-x64`,
@@ -1689,7 +976,7 @@ truth for which sidecars a build may contain — `darwin-arm64`, `darwin-x64`,
 | --- | --- | --- |
 | `target` | `ADE_RUNTIME_TARGET=<target>` (set per release packaging job) | Exactly that target must be present and any other target's sidecar is a hard failure. |
 | `host-only` | `ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1` | Local channel builds validate only the host target. |
-| `full` | neither | The historical local behavior that stages every target. |
+| `full` | neither | Stages every target. |
 
 Only `target` mode is exclusive, and three stages enforce it: the pre-build CI
 gate `assert-runtime-resource-target.mjs` (name comparison only, so a mis-scoped
@@ -1697,8 +984,8 @@ artifact download fails in milliseconds rather than after a ~20 minute build),
 `validate-runtime-resources.mjs` before packaging (same diff plus the executable
 bit and archive-content checks), and the electron-builder `afterPack` hook.
 
-The consequence for SSH bootstrap is that a desktop no longer has a local copy
-of every runtime it might need to upload — see "Sidecar fetch fallback" below.
+For SSH bootstrap, a desktop does not have a local copy of every runtime it
+might need to upload — see "Sidecar fetch fallback" below.
 `win32-x64` is still not an SSH-bootstrap *target*; a Windows desktop bundles it
 for its own local brain.
 
@@ -1886,7 +1173,106 @@ tunnel.
 
 Local project bindings use the local ADE runtime for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, native GitHub stacks, PR issue-resolution launch flows, PR AI conflict-resolution sessions, issue inventory, tests, project config, and most git operations. Electron main still owns desktop-only services that physically require an Electron host.
 
-Removing or disconnecting a machine never closes a project that exists elsewhere. A project tab is the repo (see `docs/plans/unified-machines.md`), so its remote binding is only a default: when the machine goes away, the tab falls back to another checkout of the same repo — the local checkout first, then another connected machine — and only a repo that lives nowhere else closes. A disconnect keeps the tab and its view state, with the disconnected machine's lanes, chats, and terminals simply gone from the project; a remove does the same but also forgets the machine's saved details and remembered route. The Connections confirmation names which open tabs stay and which close.
+Removing or disconnecting a machine never closes a project that exists elsewhere. A project tab is the repo, so its remote binding is only a default: when the machine goes away, the tab falls back to another checkout of the same repo — the local checkout first, then another connected machine — and only a repo that lives nowhere else closes. A disconnect keeps the tab and its view state, with the disconnected machine's lanes, chats, and terminals simply gone from the project; a remove does the same but also forgets the machine's saved details and remembered route. The Connections confirmation names which open tabs stay and which close.
+
+## The ADE browser for a remote chat
+
+The built-in browser belongs to a desktop (its main process owns the
+`WebContentsView`). A brain only proxies calls to it over the desktop bridge
+socket. So a pin never moves the browser's event stream; it changes where
+`localhost` points and which desktop answers.
+
+- **Loopback tunnels.** For a remote pin, `localizeRemoteLoopbackUrl` rewrites
+  `localhost`, `127.0.0.0/8`, `[::1]` and `0.0.0.0` onto a per-(machine, port)
+  forward (`remoteRuntimeEnsurePortForward`, memoized) before `navigate`,
+  `createTab` or `showPanel`. The pane shows the remote origin and a tunnel
+  badge, never the forward port. The first use of a new (machine, port) pair
+  needs a person's yes, even with the `portForward` grant, because the agent
+  picks the port; "Always for this lane" is kept in `browserTunnelAlwaysKeys`.
+  Which agents may use the browser at all is a separate machine-wide setting.
+- **Available on remote lanes.** `workToolAvailability` gates only the
+  simulator and App Control on `isRemoteProject`. A chat on a remote tab's own
+  runtime has no pin; `ChatBuiltInBrowserPanel` falls back to
+  `projectBinding`, so it still tunnels.
+- **A brain with no browser.** `ade browser open <url>` on a machine that runs
+  only `ade serve` emits `built_in_browser_remote_request` and returns
+  `{ status: "forwarded_to_desktop", requestId }`. A desktop that holds a pin
+  for that lane runs it through the same approval and forward path and answers
+  with `built_in_browser.acknowledgeRemoteRequest` ("Opened on <desktop> via
+  tunnel", or after 5 s "no desktop is attached to this machine"). If Browser
+  is not on screen, Work holds the request and switches the pane only for the
+  focused chat (or no chat); a request for another chat waits for its panel.
+  `builtInBrowser.onRemoteRequest` on the active binding uses the shared remote
+  pump's fanout.
+- **One request, one answering panel.** Several windows can show the Browser
+  for one machine. `main/services/builtInBrowser/remoteRequestClaims.ts` grants
+  the first claim per id and refuses the rest (ids kept 60 s, at most 500). A
+  request with no id is let through.
+- **The browser where the user sits.** An agent's `ade browser` commands run
+  in the browser of the desktop that sent its chat the last message (see
+  [Which desktop shows it](#which-desktop-shows-it)), when that desktop is not
+  the agent's machine. The user watches it in their pane, with their sign-ins.
+  - `BUILT_IN_BROWSER_METHOD_ROUTES` (`desktopBridgeMethods.ts`) gives every
+    method one route (the compiler refuses one without): `open`,
+    `user-desktop`, `local-file` (`upload`, `har`, `record`) or
+    `agent-machine`. `remoteBrowserForwarder.ts#route` picks the path.
+  - Opens (`navigate`, `createTab`) load quietly in a chat-owned background
+    tab. A loopback URL may need a person's yes, so the desktop answers
+    `needs_pane` and the open goes as a remote request with the pane and its
+    approval bar. `showPanel` and `--panel` always take the request path.
+  - Commands (`built_in_browser_remote_call`,
+    `BUILT_IN_BROWSER_REMOTE_CALL_METHODS`: `observe`, `click`, `fill`,
+    `readText`, `claim`, `getStatus` and the other tab calls) go to one
+    desktop, and only its reply counts: `taken` at once, then `done`
+    (`built_in_browser.replyRemoteCall`). `wait` and sign-in handoffs get
+    their own budget. A screenshot's bytes travel in the reply and land under
+    `.ade/cache/browser-observations/remote/`.
+  - `renderer/lib/remoteBrowserCallHost.ts` answers on the desktop. It serves a
+    machine once any chat pane shows a chat or draft on it: one subscription
+    per machine, the four most recent, kept in localStorage and served again
+    4 s after a reload (dropped after 7 days unseen). The call carries
+    `collection` (`project` or `personal`); the host swaps in this window's
+    root and runs `builtInBrowser.runRemoteAgentCall` (main:
+    `builtInBrowserRemoteCalls.ts`, the same dispatch as the bridge socket).
+  - One task stays on one machine: `remoteBrowserTabHosts.ts` remembers which
+    browser holds each tab. `--tab` goes there; no tab goes where the chat's
+    last tab is; a plain `open` follows the user. An unknown id is tried
+    everywhere before it fails, and the error lists the machines asked. A
+    holder that does not answer is an error, never a run elsewhere.
+  - Broadcasts (`remoteBrowserBroadcast.ts`) reach every desktop with a pin on
+    this machine: `listTabsForAgent` (`ade browser status`), `releaseLaneTabs`
+    on a lane delete or archive, and `chatBrowserLifecycle` as a chat starts,
+    finishes or ends. A tab list waits for the desktops that answered last
+    time (or 1.2 s); after an unanswered list, lists stop for two minutes or
+    until a desktop takes a command.
+  - Watching another machine's tab is a poll of
+    `work_tools.readBrowserTabFrame` (person only), and
+    `work_tools.sendBrowserTabInput` carries Take control input.
+  - Isolated sign-ins open on the user's desktop. A loopback one needs a
+    desktop whose `needs_pane` reply says `requestCarriesSignIn`; otherwise
+    the tab opens on the agent's machine.
+  - Fallbacks to the agent's machine: no desktop takes a command within 4 s
+    (then the chat stays local for 60 s); the last message came from the
+    phone or the CLI; `--here`. `upload`, `har` and `record` are refused with a
+    pointer to `--here` unless the tab is local.
+  - Every result names where it ran (`browserHost`), every error the machine
+    that refused (`builtInBrowserErrorOnMachine`). `ade browser status`
+    prints the route and every machine's tabs.
+  - Known limits: a tunnelled tab reports its forward port to the agent; a
+    remote personal chat is served only after its pane was shown here; a
+    download lands on the user's computer.
+  - On the desktop, the Browser card says `chat on <machine>`, the floating
+    preview shows only that chat's tabs, and "Attach to chat" tells the agent
+    the tab is on the user's computer.
+- **A request to show the user** (`showPanel`, `open --panel`) goes to the
+  desktop that sent the last message. When nobody can tell, or that desktop
+  does not acknowledge, it goes to every desktop, and the agent machine's
+  panel opens too.
+- **Chat links open the chat machine's `localhost`.** A link carries the
+  chat's pin (`openLinkFromUi(url, event, { runtimePin })`); with no pin,
+  `withLocalizedBrowserUrl` uses the window's binding. A mounted Browser panel
+  takes the click; otherwise the link waits in `pendingBrowserLinkOpens` (3 s
+  fallback). Another machine's `localhost` always opens in the ADE browser.
 
 ## A slow or dropping link
 
@@ -1998,7 +1384,7 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 - `Remote ADE service does not support multi-project mode` — the remote is running an older ADE before multi-project RPC. Re-bootstrap from a current desktop build.
 - `ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.` — ADE could not initialize any compatible installed service. Expand technical details to see each channel home and the launch, initialization, or capability-negotiation failure.
 - `Remote ADE service <version> does not support <capability>.` — the remote runtime connected but is missing a specific `machineProjects` capability the renderer just called (e.g. `cloning remote projects`). Update ADE on that machine.
-- `Remote ADE service method <method> failed (code N): <message> Details: ...` — the runtime RPC client now surfaces the JSON-RPC error `code`, `message`, and `data` together so a remote handler failure (e.g. a missing project capability or a service action error) is no longer reported as a generic `Remote ADE service request failed.` string.
+- `Remote ADE service method <method> failed (code N): <message> Details: ...` — a remote handler failed; the JSON-RPC `code`, `message` and `data` are shown together.
 - `Remote ADE service connection was interrupted before ADE could confirm the action result. ADE reconnected …` — the link dropped while a call that must not run twice was in flight. The machine is reachable, so the connection status stays healthy; only that call's result is unknown. Idempotent writes the desktop sends on its own (`work_tools.setActiveTool`, `pr.reconcileOnFocus`, `session.clearWokeMarker`) are replay-safe and run again instead.
 - `Remote ADE service timed out waiting for method ...` — only that request expired. The shared runtime connection and event subscriptions remain live; retry explicitly if the operation is still needed, because ADE does not replay timed-out mutations automatically.
 - A cross-machine handoff warning that ADE lost confirmation — destination
@@ -2031,9 +1417,8 @@ would hand that computer the identity this desktop uses with the first one — s
 matching on a saved endpoint is deliberately not an option, and a LAN pairing
 with no `hostDeviceId` mints a fresh identity.
 
-Minting a fresh id when one already exists is not merely untidy: the host keeps
-the old record forever, secret still valid, with no way to ever match it again,
-accumulating one orphaned credential per re-pair.
+A fresh id for a host that already has one leaves an orphaned, still-valid
+credential on the host for every re-pair.
 
 Three logs make a lost pairing diagnosable:
 
@@ -2078,9 +1463,8 @@ Whether a runtime may dial the relay at all is a separate question, decided by
 `relayTunnelAuthorityGate` on the machine-wide sync host lease
 (`syncHostSingleton`), not by owning a listener. The relay Durable Object keeps
 one host control socket per `machineKey` and evicts the previous holder with
-close code `4505`, so two brains that both dial it evict each other in a tight
-loop and relay stays down for both — the failure mode that made this a lease in
-the first place. A `4505` close therefore suppresses redialing (bounded
+close code `4505`, so two brains that both dial it would evict each other in a
+loop. A `4505` close therefore suppresses redialing (bounded
 re-attempts on a 60 s floor, then a stop with a 10-minute re-arm) and surfaces
 as `routeHealth.relay.relayControlSuppressed` in `ade doctor` and in the
 desktop relay banner, rather than being retried as if it were a network fault.
@@ -2094,11 +1478,8 @@ ADE advertises its sync port with `tailscale serve --bg --tcp=<port>`. That
 outlives the process that registered it, so the served port is reclaimed after
 each successful publish (`staleAdeTailnetServePorts` +
 `reclaimStaleTailnetServes`). Without it every restart — and every force-kill
-that skips teardown — orphans an entry that Tailscale keeps bound on the tailnet
-address; ADE's own next wildcard bind then fails `EADDRINUSE` against its own
-leftover and walks one port higher, leaking another. It ratchets forever: one
-machine reached 66 stranded ports and ~70 failed binds per start, drifting from
-8787 to 8852.
+that skips teardown — leaves an entry that Tailscale keeps bound, and ADE's next
+bind fails `EADDRINUSE` and walks one port higher, again and again.
 
 Only ADE's exact signature is reclaimed — a port inside ADE's sync range
 forwarding to `127.0.0.1` on the **same** port — so a hand-rolled
@@ -2123,219 +1504,155 @@ having no holder, which reads as "free" and is the opposite of the truth.
 
 ## Wedge supervision and remote repair
 
-A brain can fail in a way no supervisor notices: the event loop dies while the
-process stays alive. launchd's `KeepAlive` and the Windows supervisor loop both
-react only to an **exit**, so a hung brain keeps its socket, keeps its sync
-lease, and answers nothing — observed once for 2h14m with zero log output and
-every remote route dead until someone walked to the machine.
+A brain can hang with its process alive: the event loop dies, the brain keeps
+its socket and sync lease, and answers nothing. launchd's `KeepAlive` and the
+Windows supervisor react only to an **exit**, so three layers cover a hang:
 
-Three layers now cover that, and they are deliberately different in kind:
-
-- **In-process** — `brainLoopWatchdog` runs a worker thread that SIGKILLs the
+- **In-process.** `brainLoopWatchdog` runs a worker thread that SIGKILLs the
   brain when the event loop stalls past its threshold. It cannot help when the
-  worker itself never starts or dies with the process.
-- **External** — the brain writes `<ADE home>/runtime/heartbeat.json`
+  worker never starts or dies with the process.
+- **External.** The brain writes `<ADE home>/runtime/heartbeat.json`
   (`{pid, ts, seq, startedAt}`) every 15 s from a timer that ticks while idle
-  (`services/runtime/brainHeartbeat.ts`). Something outside the process reads it
-  and kills a brain whose beat is older than 90 s **and** whose pid is still
-  alive. Both conditions are required: an absent or unreadable heartbeat means
-  "no judgement available", never "wedged", and a stale beat with a dead writer
-  is left to the supervisor that already owns the restart.
-
-  Those two facts are necessary and were not sufficient. A laptop that sleeps
-  suspends the brain and its watcher together, so on wake the beat is 40 minutes
-  old and describes the suspension, not a wedge — and the watchdog killed a
-  perfectly healthy brain every time the lid closed. A kill now needs three
-  facts, and `evaluateBrainHeartbeat` returns a named verdict for each way it
-  can fail to get them:
-
-  1. the beat is stale and its writer is alive and positively identified;
-  2. **the watcher was awake to watch it go stale** — it measures its own
-     lateness, which is the one thing a suspended process can still report.
-     When the gap since its previous run reaches
+  (`services/runtime/brainHeartbeat.ts`). A watcher kills a brain whose beat is
+  older than 90 s **and** whose pid is alive. An absent or unreadable heartbeat
+  is "no judgement", never "wedged"; a stale beat with a dead writer is left to
+  the supervisor. `evaluateBrainHeartbeat` needs three facts and returns a
+  named verdict for each one it lacks:
+  1. The beat is stale and its writer is alive and positively identified.
+  2. **The watcher was awake to see it go stale.** A sleeping laptop suspends
+     both. When the gap since the watcher's last run reaches
      `brainWatcherSuspendFloorMs` (`max(90 s, 3 × the check interval)`) and the
      beat's age fits inside that gap plus the staleness window, the verdict is
-     `machine_slept` and nothing is killed. A brain that went quiet days before
-     a ten-minute nap is not explained by the nap and still dies;
-  3. **a previous check already saw this same beat**, matched on the beat's own
-     timestamp rather than on its age. A brain the OS merely stopped scheduling
-     beats again before the next check and never reaches a kill; a wedged one is
-     still sitting on the same timestamp a cadence later. Until then the verdict
-     is `stale_unconfirmed`. A beat that comes back fresh clears the strike, so
-     the two stale checks have to be consecutive.
+     `machine_slept` and nothing dies. A brain quiet for days before a short
+     nap still dies.
+  3. **A previous check saw this same beat**, matched on the beat's own
+     timestamp. A brain the OS only stopped scheduling beats again first; until
+     the second consecutive stale check the verdict is `stale_unconfirmed`. A
+     fresh beat clears the strike.
 
-  Both platforms apply the same three rules. macOS gets them from
-  `evaluateBrainHeartbeat`; the Windows supervisor implements them inline in
-  PowerShell against the same heartbeat file and the same suspend floor.
-  `ADE_BRAIN_HEARTBEAT_STALE_MS` overrides the 90 s staleness threshold on both
-  platforms, under the same rules — a positive integer wins, anything else keeps
-  the default, and the result never drops below 30 s — and the suspend floor is
-  computed after the override, so it rescales. Only the pickup differs: the
-  macOS check is a fresh process every 60 s and reads the variable at the next
-  check, while the Windows supervisor reads it once at start, so a changed
-  machine variable applies after the brain service restarts.
-  - *macOS*: a separate launch agent, `com.ade.watchdog` (`.alpha` for the
-    Alpha channel), `StartInterval` 60 s, running `ade runtime watchdog-check` from
-    the same binary the brain was installed from. It is installed and removed
-    alongside the brain's own launch agent, best effort — a machine that cannot
-    install the watchdog still gets a brain.
-  - *Windows*: the PowerShell supervisor already runs a restart loop, so the
-    check folds into it. It waits in 15 s slices instead of one unbounded
-    `WaitForExit()` and stops a child that stopped beating, applying the same
-    three rules — `Get-StaleBeatTs` returns the stale beat's *timestamp* rather
-    than its age precisely so the second-strike rule can recognise the same beat
-    across polls. No Scheduled Task.
-- **Desktop, when running** — `projectRecoveryService.restartBrain` already
-  probes and repairs. The watchdog exists for the headless case, and does not
-  duplicate it.
+  `ADE_BRAIN_HEARTBEAT_STALE_MS` overrides the 90 s (a positive integer wins,
+  never below 30 s), and the suspend floor rescales with it.
+  - *macOS*: a separate launch agent, `com.ade.watchdog` (`.alpha` for Alpha),
+    `StartInterval` 60 s, runs `ade runtime watchdog-check` from the brain's
+    binary. It is installed and removed with the brain's agent, best effort.
+    Each check is a fresh process, so it reads the variable each time.
+  - *Windows*: the PowerShell supervisor's restart loop waits in 15 s slices and
+    applies the same three rules inline (`Get-StaleBeatTs` returns the beat's
+    timestamp for the second strike). No Scheduled Task. It reads the variable
+    once at start, so a change applies after the service restarts.
+- **Desktop, when running.** `projectRecoveryService.restartBrain` probes and
+  repairs; the watchdog is for the headless case.
 
-A kill writes the same `event-loop-wedge.json` breadcrumb the in-process
-watchdog writes, so the next start promotes it to `last-wedge.json`, logs
-`brain.recovered_from_wedge`, and it surfaces through the existing `lastWedge`
-field on `runtime/info` with no second reporting path.
+A kill writes the `event-loop-wedge.json` breadcrumb the in-process watchdog
+writes, so the next start promotes it to `last-wedge.json`, logs
+`brain.recovered_from_wedge`, and shows it in `runtime/info`'s `lastWedge`.
 
-The brain's launch agent also pins `ThrottleInterval` to 10 s. While
-`/Applications/ADE.app` is being replaced the brain can be restarted onto
-half-written files and die instantly (`Cannot find module '/serve'`); the floor
-turns that into a slow, self-healing retry instead of a hot spin.
-
-`brainFreshnessMonitor` handles the other half of a swap: it re-hashes the
-installed runtime every ~5 minutes and restarts into new code when the hash
-moves. A file that is missing, unreadable, or still changing is treated as a
-swap **in progress** — it must hold still across a settle pause before it is
-hashed at all — so a mid-copy binary can never trigger a restart into a
-truncated file.
+- The brain's launch agent pins `ThrottleInterval` to 10 s. While
+  `/Applications/ADE.app` is being replaced, a restart onto half-written files
+  dies at once (`Cannot find module '/serve'`); the floor makes that a slow
+  retry, not a hot spin.
+- `brainFreshnessMonitor` re-hashes the installed runtime about every 5 minutes
+  and restarts into new code when the hash moves. A missing, unreadable or
+  changing file is a swap **in progress** and must hold still across a settle
+  pause before it is hashed, so a mid-copy binary never triggers a restart.
 
 ### `machine.updateAndRestart`
 
-A machine that is stuck, or quietly running old code because no local desktop
-ever connected to notice, has to be fixable from wherever the user is. The
-projectless runtime method `machine.updateAndRestart` does that. On the
-authenticated runtime RPC endpoint it requires the `cto` role and inherits that
-endpoint's paired/authenticated channel; a paired phone or ADE Web asks for the
-same run over sync commands instead (`machine.updateImpact` and
-`machine.updateAndRestart`,
-`apps/ade-cli/src/services/sync/machineUpdateRemoteCommands.ts`), where any
-paired controller may run them and a viewer or lane-share guest is refused. One
-run happens per process whatever asked for it (`machineUpdateInFlight.ts`): a
-second caller joins the run already in flight and gets its result. It is never
+A machine that is stuck, or runs old code because no local desktop noticed,
+must be fixable from wherever the user is. The projectless method
+`machine.updateAndRestart` needs the `cto` role and the authenticated runtime
+RPC endpoint. A paired phone or ADE Web asks for the same run over the sync
+commands `machine.updateImpact` and `machine.updateAndRestart`
+(`apps/ade-cli/src/services/sync/machineUpdateRemoteCommands.ts`): any paired
+controller may run them, and a viewer or lane-share guest is refused. One run
+happens per process, whatever asked for it (`machineUpdateInFlight.ts`): a
+second caller joins the run in flight and gets its result. It is never
 automatic and never silent.
 
-The host records who asked (`requestedBy`: a machine name and a client kind).
-The name comes from the paired device record of the connection; the client's
-own claim counts only when there is none, and it is cleaned and length-capped
-either way. It appears in `brain.remote_update_route` and
-`autoUpdate.remote_install_requested`, and, when the update was accepted, in
-the message agents get after the restart ("an update to 1.2.3 that "Mac Studio"
-asked for"). It never changes the routing, and an older client or app that
-sends or reads no such field keeps working.
+- **Who asked.** The host records `requestedBy` (a machine name and client
+  kind), from the connection's paired device record (the client's own claim
+  only when there is none; cleaned and length-capped). It appears in
+  `brain.remote_update_route`, `autoUpdate.remote_install_requested`, and the
+  message agents get after an accepted restart ("an update to 1.2.3 that "Mac
+  Studio" asked for"). It never changes routing; older clients ignore it.
+- **Version.** The client sends `targetVersion`. A machine already on it (or
+  past it) installs and restarts nothing: "Already on X — nothing to update,
+  nothing restarted" (`alreadyCurrentResult`), because a restart stops every
+  agent there. A request with no version is the "fix a stuck machine" button
+  and still restarts.
+- **Steps.** The reply names `check`, `apply` and `restart`. `restart` comes
+  back `pending`: it ends the process that answers, so the client confirms by
+  reconnecting and reading the version.
 
-The client names the version it believes is newest (`targetVersion`); the host
-refuses to "update" to a version it already runs or has passed. A versioned
-request the machine already satisfies installs nothing and restarts nothing — it
-answers "Already on X — nothing to update, nothing restarted"
-(`alreadyCurrentResult`) — because a needless restart stops every agent on that
-machine. A request naming no version is the "fix a stuck machine" button and
-still restarts. The reply is step-attributed — `check`, `apply`, `restart` — so
-a failure names the step instead of saying "something went wrong". The `restart`
-step comes back
-`pending` on purpose: it tears down the process answering the call, so the
-client confirms by reconnecting and reading the version. A brain cannot report
-on its own replacement.
+**Which updater runs.** A brain served by an open desktop app belongs to it:
+the app re-registers its runtime whenever the brain goes missing, so a
+standalone runtime installed under it is replaced within milliseconds.
 
-Which updater runs depends on whether the host's desktop app is open. A brain
-served by an open app belongs to that app: the app re-registers its own runtime
-whenever it sees the brain go missing, so a standalone runtime installed under
-it is replaced again within milliseconds (on 2026-10-05 a Mac Studio's open app
-put 1.2.90 back 10 ms after a remote update installed 1.2.91). So the host asks
-first: the brain calls `app_update.install` on this machine's desktop bridge
-when an app answers there
-(`apps/ade-cli/src/services/runtime/desktopAppUpdateBridge.ts`). The app
-(`apps/desktop/src/main/services/updates/remoteUpdateInstall.ts`) checks its own
-feed, then answers `installing` (staged: it runs its consented
-`quitAndInstall` 1.5 s after replying, so the reply reaches the caller before
-the service uninstall takes the brain down), `downloading` (it installs when
-the download finishes, giving up after 30 minutes), `already_current`,
-`no_update`, `unsupported` (development and channel builds), or `failed`. The
-app's post-update transaction then restarts the brain on the new build. This is
-the same path on macOS and Windows. With no app attached, an app too old to
-know the method, or `unsupported`, the standalone `ade brain update` runs as
-before. The reply's `route` says which (`desktop_app` or `standalone`), and
-`pendingVersion` names the version the machine should come back on.
+- The brain first calls `app_update.install` on this machine's desktop bridge
+  (`apps/ade-cli/src/services/runtime/desktopAppUpdateBridge.ts`). The app
+  (`apps/desktop/src/main/services/updates/remoteUpdateInstall.ts`) checks its
+  feed and answers `installing` (it runs its consented `quitAndInstall` 1.5 s
+  after the reply), `downloading` (installs when done, gives up after 30
+  minutes), `already_current`, `no_update`, `unsupported` (development and
+  channel builds) or `failed`. The app's post-update step restarts the brain.
+  The same on macOS and Windows.
+- With no app, an app too old for the method, or `unsupported`, the standalone
+  `ade brain update` runs. The reply's `route` (`desktop_app` or `standalone`)
+  says which, and `pendingVersion` names the version to come back on.
+- A connected Windows machine whose build cannot self-install
+  (`isWindowsSelfInstallBlocked`, `shared/updateVersions.ts`) gets no
+  `app_update.install`. `runtimeBridge` uses `updateViaRemoteTerminal`
+  (`remoteTerminalUpdate.ts`): a remote PTY in the primary lane of that
+  machine's live project runs `ade brain update [--version X]`, and the client
+  polls `session.get`. Exit 0 or a dropped connection is installing (route
+  `terminal`); a refused read while connected is retried, then failed; a
+  non-zero exit is failed with a manual hint. It gives up after
+  `REMOTE_MACHINE_UPDATE_TIMEOUT_MS` (15 min).
+- The app-routed install on a healthy build runs a read-only service-removal
+  preflight first, so `failed` carries the reason. See
+  [Desktop auto-update](../onboarding-and-settings/desktop-auto-update.md).
+- A brain update this app did not start writes
+  `<ADE home>/runtime/update-status.json`. While it says `staged` (2 min),
+  `applying` or `restarting` (5 min), or `succeeded` (60 s), the desktop
+  connection pool does not repair the service, so an open app cannot put its
+  older runtime back.
 
-A connected Windows machine on a build that cannot self-install
-(`isWindowsSelfInstallBlocked`, `shared/updateVersions.ts`) is not sent
-`app_update.install`. `runtimeBridge` routes its Update to
-`updateViaRemoteTerminal` (`remoteTerminalUpdate.ts`): it opens a remote PTY in
-the primary lane of that machine's live project, runs
-`ade brain update [--version X]`, and polls `session.get`. Exit 0 or a dropped
-connection means installing (reply route `terminal`); a refused read while still
-connected is retried, then reported failed; a non-zero exit is failed with a
-manual hint. It gives up after `REMOTE_MACHINE_UPDATE_TIMEOUT_MS` (15 min), and
-the IPC ceiling allows for it. The app-routed install on a healthy build first
-runs a read-only service-removal preflight, so `failed` carries the reason
-instead of an `installing` that cannot finish. See
-[Desktop auto-update](../onboarding-and-settings/desktop-auto-update.md).
+**The client checks the result.** Before it sends, it re-reads each machine's
+live version and skips one already on the target with the same "Already on X"
+answer. It records `pendingVersion` (from an older host, `targetVersion` for an
+applied update). When the machine reports that version the row says "Updated
+to X"; after 5 minutes (35 for a download) it says "Still on Y — the update to
+X didn't apply". A reconnect after the restart refreshes the version
+(`RemoteConnectionPool.onEntryConnected`), so a finished update is never
+called failed. The button stays busy until then.
 
-A brain update this app did not start (`ade brain update` on the machine, or a
-remote one that fell back to the standalone route) writes its progress to
-`<ADE home>/runtime/update-status.json`. While that file says `staged` (2 min),
-`applying` or `restarting` (5 min), or `succeeded` (60 s), the desktop's
-connection pool treats it as an update window and does not repair the service,
-so an open app cannot put its older runtime back over the new one.
+**Nothing restarts without a yes.** The desktop first asks what the update
+would stop (`ade.remoteRuntime.getUpdateImpact` → `runtime.updateImpact`) and
+shows it in the confirmation: chats mid-turn by name, plus counts of open CLI
+sessions and terminals (a restart closes each).
 
-The client does not trust "reconnecting…". Before it sends anything it re-reads
-each machine's live version and skips one already on the target (or newer) with
-the same "Already on X — nothing to update, nothing restarted" answer, so a
-stale list cannot stop work on a machine that needs nothing. It then records
-`pendingVersion` (or, from a host that predates it, `targetVersion` for an
-applied update) and checks the machine against it: once the machine reports that
-version the row says
-"Updated to X"; if it has not after 5 minutes (35 for a download) it says
-"Still on Y — the update to X didn't apply" with the version it is actually on.
-A call that reconnects the machine after its restart refreshes the recorded
-version (`RemoteConnectionPool.onEntryConnected`), so a finished update is never
-called a failed one. The button stays busy until then.
+- `runtime.updateImpact` is `cto`-gated, reads only booted projects (it never
+  boots one), and includes personal chats. A machine too old for it falls back
+  to `runtime.activitySummary`: "Work is running" or "Nothing is running".
+- One 3-second deadline covers both asks; no answer reads "Couldn't check
+  what's running", never idle. The IPC never rejects.
+- With two or more connected machines behind, `MachinesBehindBanner` ("N
+  machines are behind", naming the target) offers **Update all**: one
+  confirmation with a block per machine, then the updates in parallel.
 
-Nothing restarts without a yes. Before the call, the desktop asks the machine
-what the update would stop (`ade.remoteRuntime.getUpdateImpact`, which calls the
-projectless `runtime.updateImpact`) and shows it in the confirmation: the chats
-mid-turn by name, plus counts of the CLI sessions and terminals that are open (a restart closes each one, quiet or not).
-`runtime.updateImpact` is `cto`-gated, reads only projects the brain has already
-booted (it never boots one to answer), and includes personal chats. A machine
-that needs the update is usually too old to have the method, so the desktop
-falls back to `runtime.activitySummary` and says only "Work is running" or
-"Nothing is running". One 3-second deadline covers both asks; a machine that
-has not answered by then (or is no longer saved) reads "Couldn't check what's
-running", never as idle. The IPC never rejects. When two or more connected
-machines are behind, a banner above the section header offers **Update all**
-(`MachinesBehindBanner`, "N machines are behind", naming the target version):
-one confirmation with a block per machine, then the same per-machine update in
-parallel.
-
-The same action is offered where this computer's own update lives: General's
-ADE card has an update row for every machine
+**Where it is offered.** General's ADE card has an update row per machine
 (`components/settings/general/MachineUpdateRows.tsx`), and **Update other
-machines** (`components/settings/OtherMachinesUpdateSection.tsx`) sits under
-Your computers on the Account page. Each lists the machines with their version
-and track, "Update" for the ones behind the newest build this computer knows on
-**their own** track (a Stable machine is never sent a Beta build, or the
-reverse), and "Update all N". Every place that starts or shows one of
-these updates, the install dialog below included, goes through one store
-(`components/remoteTargets/machineUpdates.ts`), so an update started in one
-shows as in flight in the others and its outcome survives leaving the page.
-The words for what is running live in
-`components/remoteTargets/MachineUpdateImpact.tsx`. The
-browser client cannot ask a machine to update, so the section is not rendered
-there.
-
-The same rows appear in this computer's own restart dialog
-(`components/app/autoUpdateInstallAction.tsx`) for connected machines behind on
-their track, each with its own "Update" box (the confirm dialog lets its body
-place the checkboxes in its rows, each still answered by key). The machines
-picked update first and this computer restarts last, because its relaunch ends
-the run. If one refuses, the dialog names it and asks whether to restart here
-anyway.
+machines** (`components/settings/OtherMachinesUpdateSection.tsx`) is under Your
+computers on the Account page. Each lists machines with version and track,
+"Update" for those behind the newest build on **their own** track (Stable never
+gets Beta, or the reverse), and "Update all N". This computer's restart dialog
+(`components/app/autoUpdateInstallAction.tsx`) shows the same rows with an
+"Update" box each; picked machines update first and this computer restarts
+last, and a refusal is named with a choice to restart anyway. All of them use
+one store (`components/remoteTargets/machineUpdates.ts`), so an update shows as
+in flight everywhere and its outcome survives leaving the page. The words for
+what runs live in `components/remoteTargets/MachineUpdateImpact.tsx`. The
+browser client cannot ask a machine to update, so it does not show the section.
 
 ### Account state and reachability
 
@@ -2348,6 +1665,102 @@ while the user signs in again. Only a deliberate `signed_out` drops the tunnel.
 The relay control socket authenticates with machine credentials rather than the
 account token, so this costs nothing in reachability terms. Direct LAN and
 tailnet routes to a paired device never consulted account state at all.
+
+## On an ADE Cloud computer
+
+An ADE Cloud computer runs the same brain. On it the brain also keeps the
+account server up to date, so a person reads the lane with no computer awake.
+The server routes and caps are in
+[ADE Cloud with no computer of your own](../ade-cloud/README.md#ade-cloud-with-no-computer-of-your-own).
+Each part below runs only when `isAdeCloudComputer()` is true, except the
+account lane index, which every brain sends.
+
+### What the brain saves before it rests
+
+The rest save (`apps/ade-cli/src/services/cloudChats/cloudRestSave.ts`) runs
+these steps in order, four uploads at a time, inside one time budget:
+
+1. The chats' newest parts (`cloudChatUploader.ts`).
+2. Shell and CLI copies: the 50 newest terminals across the open projects. A
+   shell keeps its last 5,000 lines (2 MiB at most). A CLI keeps its stored
+   terminal screen when it fits, else its last lines. The text is redacted
+   first. A terminal with no new output since the last save is not sent again.
+3. A Git summary for each lane, when it changed.
+4. Fork capsules, only with `--capsules` (the delete path): Claude, Codex and
+   OpenCode chats, and Claude Code and Codex CLIs. A capsule over 20 MiB is
+   skipped, and the continue replays the saved transcript.
+5. Native subagent transcripts of Claude, Muse and OpenCode chats, as saved
+   chats under their parent (`parentChatId`, `spawnKind: "native_subagent"`).
+   The newest 20 subagents of each chat go, one part of at most 4 MiB each.
+   The idle step skips OpenCode, because its subagents are read through its
+   server.
+6. The event-wake topics (Linear workspaces and webhooks that a rule on this
+   computer acts on), only when the list changed.
+
+The save runs at three points:
+
+| When | Budget | Capsules |
+|---|---|---|
+| The idle step, before the computer sleeps (`cloudKeepAwake.ts`) | 60 s | no |
+| `ade cloud prepare-stop`, in the time left after the chats | what is left | no |
+| `ade cloud save-for-rest [--capsules]`, which the server's idle cleanup runs between push-work and the check | 225 s | with the flag |
+
+What the save already sent is kept in `<ADE home>/cloud/rest-save.json`. A
+disk copy under a new machine key saves everything again.
+
+### Messages that waited while it slept
+
+The queue drain (`cloudChatMessageQueue.ts`) runs 15 s after the brain starts,
+when the brain signs in, when the computer wakes, and when the server runs
+`ade cloud messages drain`. For each message it claims the
+message, sends it, and reports `delivered` or `failed`. A journal in
+`<ADE home>/cloud/chat-messages.json` makes sure a crash between the send and
+the report never sends a message twice. The messages of one chat go in order:
+a message that waits stops the rest of its chat.
+
+- **A chat.** The drain waits up to 30 minutes for the chat to be idle. If the
+  chat's provider is not signed in, the launch's sign-in card shows first. The
+  send carries `clientSendId` = the message id, so the written `user_message`
+  carries the same id.
+- **A CLI.** The drain types the text through the composer's CLI send path
+  (`typeIntoAgentCliWhenFree`, held until the CLI is free). That path waits
+  for the CLI's ready signal ([the turn signal table](../terminals-and-sessions/pty-and-sessions.md#exact-turn-status-for-agent-clis)):
+  Claude Code hooks, Codex 0.167+ OSC 7501, and output guesses (about 12 s of
+  quiet) for every other CLI. A busy CLI tries again at the next drain.
+  Attached files go into the text as a list of paths.
+- **A CLI that is gone** (the computer restarted) gets `failed` with "This CLI
+  isn't running on its computer any more (the computer restarted), so ADE
+  couldn't type the message. Open the CLI and send the message again."
+
+### A chat or CLI whose computer was deleted
+
+The server starts a continue launch on a new computer. The new brain makes the
+lane, then restores the chat or CLI with the same id
+(`cloudChatRestore.ts`). The restore reuses the cross-machine move
+destination; see
+[Continue on a new ADE Cloud computer](../sync-and-multi-device/cross-machine-session-handoff.md#continue-on-a-new-ade-cloud-computer).
+The brain holds the chat's uploads while it restores, then goes on from the
+server's last part.
+
+### Other account work
+
+- **The account lane index.** `accountLaneIndexPublisher.ts` sends each
+  project's lanes (name, branch, machine, PR number) to `/account/lanes`. A
+  lane or PR change makes one write 30 s later, so a burst makes one write. The
+  same set makes no write. The
+  last sent set is in `<ADE home>/account-lanes.json`. Every brain publishes,
+  not only cloud computers.
+- **Git identity.** `cloudGitIdentity.ts` sets `user.name` and `user.email` on
+  a cloud computer to the account's GitHub noreply identity, else
+  `ADE Cloud <cloud@users.noreply.ade-app.dev>`. It never writes over a value
+  a person set. Its record is `<ADE home>/cloud/git-identity.json`.
+- **Being deleted.** Once the server says the computer is being deleted, the
+  brain refuses new work with "This ADE Cloud computer is being deleted, so it
+  can't take new work. Its lane is saved; continue it on another computer."
+- **Provider logins.** The cloud computer gets the account's sign-ins, and
+  access-only copies of the logins in the subscription proxy
+  (`<ADE home>/proxy/auth`, without refresh tokens, `providerLoginCarry.ts`).
+  The proxy on the person's own computer stays their one owner.
 
 ## Related docs
 

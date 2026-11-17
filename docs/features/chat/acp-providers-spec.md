@@ -49,8 +49,6 @@ slash-command allowlist.
 
 - New host code lives in `apps/desktop/src/main/services/chat/acpHost/`.
 - Protocol types: mirrored in-repo (`acpHost/acpProtocolTypes.ts`) from `@agentclientprotocol/sdk` 1.7.0, protocol v1; the SDK is not a dependency. Do NOT target the v2 draft.
-- Do NOT restore `droidAcpPool.ts` / `acpEventMapper.ts` patterns from git
-  history; this is a fresh design informed by their failure modes.
 - Live IPC publishes uncompacted `liveEnvelope` — the mapper must not slim live
   events (see `commitChatEvent` in `agentChatService.ts`).
 - Stable row identity: `messageId` (text/thought) and `toolCallId` (tool rows).
@@ -816,9 +814,8 @@ picker overhaul beyond greying.
 ADE runs its own pinned copy of each ACP CLI from the machine tools cache
 (`../onboarding-and-settings/agent-tools-cache.md`). The user's installed CLI is
 never run, and there is no version check, update button or tested range any
-more: the old `ai/acpProviderUpdate.ts`, the `acp_provider_outdated` notice and
-its `ProviderOutdatedNoticeRow` were removed. Old persisted notices render as a
-plain warning line.
+more. An old persisted `acp_provider_outdated` notice renders as a plain
+warning line.
 
 - **Resolution** (`ai/acpExecutables.ts`): the dev/test env override
   (`ACP_EXECUTABLE_ENV_KEYS`, e.g. `GROK_EXECUTABLE`) → the current pin → the

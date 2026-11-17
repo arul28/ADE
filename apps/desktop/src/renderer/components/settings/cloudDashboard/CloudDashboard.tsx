@@ -33,6 +33,7 @@ import { Banner } from "../../ui/notice";
 import { cloudFreeGithubHeroLine } from "./CloudFreeGithubNotice";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { CloudAgentLimitsCard } from "../CloudAgentLimitsCard";
+import { isWebClientMode } from "../../../lib/webClientMode";
 import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, decodeSettingsHash } from "../settingsHash";
 import { CloudCity, type CityItem } from "./CloudCity";
 import { CloudSky, useStillWhenHidden } from "./CloudSky";
@@ -44,7 +45,7 @@ import { CloudIdleCleanupNotices, idleRowTag } from "./CloudIdleCleanupNotice";
 import { CloudSizes } from "./CloudSizes";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
-import { useHasOwnComputer } from "../../../state/ownComputers";
+import { useHasOwnComputer, useOwnWebComputers } from "../../../state/ownComputers";
 import { useWebMachines } from "../../../webclient/workspace/WebWorkspaceContext";
 import {
   STATE_LABEL,
@@ -104,7 +105,10 @@ const errorText = (error: unknown) => ipcErrorMessage(error) || `${ADE_CLOUD_NAM
  * already holds; nothing wakes a computer to look.
  */
 export function CloudDashboard({ account, machines }: { account: CloudAccountState; machines: CloudMachinesState }) {
-  const ownComputer = useHasOwnComputer();
+  // On the web, only a connected computer of the person's own answers for the
+  // sign-ins; with all of them offline the account's cards show instead.
+  const ownComputerOn = useOwnWebComputers().some((machine) => machine.status === "live");
+  const ownComputer = useHasOwnComputer() && (!isWebClientMode() || ownComputerOn);
   // ADE Web with no computer of its own still reads and sets the agent limits
   // through a connected ADE Cloud computer, when one is connected.
   const connectedMachine = useWebMachines().some((machine) => machine.status === "live");
@@ -354,8 +358,9 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
       {/* Sign-ins on the left; the shorter agent limits and the invite card
           stack on the right, so the two columns end near one height (B14-2). */}
       {/* With no computer of the person's own (ADE Web), the sign-ins show as
-          "Providers on ADE Cloud" below this page instead; the agent limits
-          need a connected computer to read them (an ADE Cloud one will do). */}
+          "Providers on ADE Cloud" below this page instead. The web app reads
+          the agent limits from the account; on a server without that route
+          they need a connected computer (an ADE Cloud one will do). */}
       {ownComputer ? (
         <div className="adecd-pair">
           <CloudSignIns />
@@ -366,7 +371,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
         </div>
       ) : (
         <div className="adecd-stack">
-          {connectedMachine ? <CloudAgentLimitsCard /> : null}
+          {connectedMachine || isWebClientMode() ? <CloudAgentLimitsCard /> : null}
           <CloudInviteCard account={account} onChanged={refresh} />
         </div>
       )}

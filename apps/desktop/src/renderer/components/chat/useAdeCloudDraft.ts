@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { captureError } from "../../../shared/sentry/capture";
 import {
   cloudCatalogOf,
   cloudHoursLeftMilli,
@@ -12,7 +13,7 @@ import type { AgentChatFileRef, AgentChatProvider, ChatLaunchChatArgs, ChatLaunc
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
 import { cloudTierHoursAt, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
-import { useAdeCloudEnabled } from "../../state/cloudAccess";
+import { adeCloudDoBlock, useAdeCloudAccess, useAdeCloudEnabled } from "../../state/cloudAccess";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { accountCloudLaunchesAvailable } from "../../state/accountCloudLaunches";
 import { cloudRemoteSignInOf, cloudRemoteSignInRefusal } from "../../../shared/accountCloudLaunches";
@@ -30,7 +31,8 @@ import { AUTO_CREATE_DRAFT_LANE_OPTION as AUTO_CREATE_LANE_OPTION, type RoutedDr
 const NO_MACHINES: readonly CloudMachine[] = [];
 
 /** The Run on menu's ADE Cloud entry. One entry for every ADE Cloud lane. */
-export const ADE_CLOUD_MACHINE_ID = "__ade_cloud__";
+import { ADE_CLOUD_MACHINE_ID } from "../../../shared/adeCloudMachine";
+export { ADE_CLOUD_MACHINE_ID };
 
 /** What can open from the label above the box: the plan row, the Free up space flow, the ADE Cloud page, or GitHub's settings. */
 export type AdeCloudTrayAction = "upgrade" | "free-space" | "settings" | "github";
@@ -92,7 +94,10 @@ export function useAdeCloudDraft({
   originUrl: string | null;
 }) {
   const cloudEnabled = useAdeCloudEnabled();
-  const active = enabled && cloudEnabled;
+  const access = useAdeCloudAccess();
+  // Reading the account's computers needs the account to be allowed in; a
+  // blocked account still sees the entry, read-only, with the server's sentence.
+  const active = enabled && cloudEnabled && access.state !== "blocked";
   // No settle re-reads from here: the menu needs the list in memory, not a timer.
   const machines = useCloudMachines(active, { settle: false });
   const index = useAdeCloudLaneComputers();
@@ -135,11 +140,18 @@ export function useAdeCloudDraft({
 
   return {
     /**
-     * ADE Cloud access is on for this account: the Run on menu lists it. ADE
-     * Web starts the lane through the account server (`POST /cloud/launches`),
-     * so it needs this browser's account sign-in.
+     * ADE Cloud is one machine every account has: the Run on menu always
+     * lists it (also before the server answers). ADE Web starts the lane
+     * through the account server (`POST /cloud/launches`).
      */
-    available: cloudEnabled && (!isWebClientMode() || accountCloudLaunchesAvailable()),
+    available: true,
+    /**
+     * Why ADE Cloud can't start or wake anything from here, or null: the
+     * account is blocked (the server's sentence), ADE is signed out, or ADE
+     * Web has no account sign-in in this browser. The entry still shows, off.
+     */
+    doBlock: adeCloudDoBlock(access)
+      ?? (isWebClientMode() && !accountCloudLaunchesAvailable() ? "Sign in to ADE in this browser to use ADE Cloud." : null),
     account,
     /** The account's computers from the shared read (empty until it answers). */
     machines: result?.machines ?? NO_MACHINES,
@@ -148,6 +160,8 @@ export function useAdeCloudDraft({
     projectLanes,
     /** The account's lane computers: the Run on menu lists them under ADE Cloud, not as computers. */
     computers,
+    /** Every ADE Cloud computer of the account (`isAdeCloudComputer`), a lane's or not. */
+    index,
     tiers,
     tierId,
     /** The size picked for this draft, or null while it follows the default (what a saved pick keeps). */
@@ -183,6 +197,55 @@ export type AdeCloudSend = {
  * state: the lane list, the picked lane, the label above the box (why Send
  * can't go), what Send needs (`sendRef`), and where the label's actions open.
  */
+/**
+ * Antigravity on ADE Cloud uses the Google sign-in ADE carries from a
+ * person's own computer. Without it a computer would wait for a browser
+ * sign-in it can't do.
+ */
+export const ANTIGRAVITY_NOT_CARRIED_SENTENCE =
+  "Sign in to Antigravity in ADE on your computer once (Allow the Keychain or Credential Manager if asked). ADE Cloud then uses that sign-in.";
+
+/**
+ * Whether the account carries an Antigravity sign-in to ADE Cloud: true,
+ * false, or null while unknown (no answer yet, or a server that doesn't say).
+ * Read once when Antigravity is picked with ADE Cloud, and again on window
+ * focus (a sign-in on the computer, then back here). No timer. Account level,
+ * so no pin.
+ */
+function useAntigravityCarried(wanted: boolean): boolean | null {
+  const [carried, setCarried] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!wanted) return undefined;
+    let cancelled = false;
+    const read = () => {
+      const desktopRead = window.ade?.cloud?.carriedSignIns;
+      // ADE Web reads the account's sign-ins; the server adds `carried` there.
+      const webRead = window.ade?.cloudLaunches?.signIns;
+      const answer: Promise<{ antigravity?: boolean } | null | undefined> = desktopRead
+        ? desktopRead()
+        : webRead
+          ? webRead().then((signIns) => (signIns as { carried?: { antigravity?: boolean } }).carried ?? null)
+          : Promise.resolve(null);
+      void answer.then(
+        (value) => {
+          if (!cancelled) setCarried(typeof value?.antigravity === "boolean" ? value.antigravity : null);
+        },
+        // Unknown stays unknown; the next focus reads again.
+        (error: unknown) => {
+          captureError(error, { level: "warning", handled: true, fingerprint: ["ade-cloud", "carried-sign-ins-read"] });
+        },
+      );
+    };
+    read();
+    window.addEventListener("focus", read);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", read);
+    };
+  }, [wanted]);
+  return wanted ? carried : null;
+}
+
 export function useAdeCloudComposer(input: {
   draft: ReturnType<typeof useAdeCloudDraft>;
   mode: boolean;
@@ -291,6 +354,7 @@ export function useAdeCloudComposer(input: {
    * on the new computer.
    * The same sentences main would refuse with, so none appears after Send.
    */
+  const antigravityCarried = useAntigravityCarried(Boolean(mode && input.showControls && !input.isCliDraft && input.provider === "antigravity"));
   const notice = useMemo<AdeCloudTrayNotice | null>(() => {
     if (!mode || !input.showControls) return null;
     // One rule for every start refusal, new lane or existing lane: while the
@@ -304,8 +368,23 @@ export function useAdeCloudComposer(input: {
         actions: [],
       };
     }
+    // Blocked or signed out: nothing can start or wake; reading still works.
+    if (draft.doBlock) {
+      return { tone: "blocked", message: draft.doBlock, short: "ADE Cloud can't start work now.", actions: [] };
+    }
     const accountBlock = adeCloudAccountBlock(draft.account, { newLane });
     if (accountBlock) return accountBlock;
+    // Antigravity runs on the sign-in the account carries from a computer of
+    // the person's own. Known not carried, say how; on the web, also while
+    // unknown (it can't carry one itself).
+    if (!input.isCliDraft && input.provider === "antigravity" && (antigravityCarried === false || (antigravityCarried == null && isWebClientMode()))) {
+      return {
+        tone: "notice",
+        message: ANTIGRAVITY_NOT_CARRIED_SENTENCE,
+        short: "Sign in to Antigravity on your computer first.",
+        actions: [],
+      };
+    }
     if (!newLane) return null;
     // ADE Web starts a new lane through the account server, which takes a
     // chat and its message. A CLI session needs a terminal on the new
@@ -318,9 +397,10 @@ export function useAdeCloudComposer(input: {
         actions: [],
       };
     }
-    // The account server can't finish a sign-in that runs only on the desktop
-    // (Antigravity, Qwen Code): the computer would wait on it until it gives up.
-    const remoteSignIn = isWebClientMode() && !input.isCliDraft ? cloudRemoteSignInOf(input.provider) : null;
+    // The account server can't finish a sign-in that runs only on the desktop:
+    // the computer would wait on it until it gives up. Antigravity has its own
+    // rule above (the carried sign-in).
+    const remoteSignIn = isWebClientMode() && !input.isCliDraft && input.provider !== "antigravity" ? cloudRemoteSignInOf(input.provider) : null;
     if (remoteSignIn?.remoteSignIn === "desktop") {
       return {
         tone: "notice",
@@ -361,7 +441,9 @@ export function useAdeCloudComposer(input: {
     }
     return null;
   }, [
+    antigravityCarried,
     draft.account,
+    draft.doBlock,
     gitRefusal,
     draft.tierId,
     mode,

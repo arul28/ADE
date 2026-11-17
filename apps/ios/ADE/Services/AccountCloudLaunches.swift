@@ -179,13 +179,17 @@ struct CloudAccountSignIns: Decodable, Equatable {
   let signIns: [CloudAccountSignIn]
   /// The vault didn't answer: `saved` may be wrong.
   let unknown: Bool
+  /// Provider sign-ins carried from ADE desktop to ADE Cloud, by provider
+  /// (`carried.antigravity`). Empty when the server left it out.
+  let carried: [String: Bool]
 
-  private enum CodingKeys: String, CodingKey { case signIns, unknown }
+  private enum CodingKeys: String, CodingKey { case signIns, unknown, carried }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     signIns = c.lenient([CloudAccountSignIn].self, forKey: .signIns) ?? []
     unknown = c.lenient(Bool.self, forKey: .unknown) ?? false
+    carried = c.lenient([String: Bool].self, forKey: .carried) ?? [:]
   }
 }
 
@@ -200,60 +204,53 @@ extension CloudServerClient {
   private struct LaunchList: Decodable { let launches: [CloudLaunchRecord] }
 
   func modelCatalog() async throws -> CloudModelCatalog {
-    try decodeBody(CloudModelCatalog.self, from: try await send("GET", "cloud/models"))
+    try decode(CloudModelCatalog.self, from: try await send("GET", "cloud/models"))
   }
 
   /// 201 for a new launch; the same `launchId` again answers the same launch.
   func startLaunch(_ body: RemoteJSONValue) async throws -> CloudLaunchRecord {
     let data = try JSONEncoder().encode(body)
-    return try decodeBody(CloudLaunchRecord.self, from: try await send("POST", "cloud/launches", body: data, timeout: 48))
+    return try decode(CloudLaunchRecord.self, from: try await send("POST", "cloud/launches", body: data, timeout: 48))
   }
 
   /// Stops a launch before its agent starts; the server refuses once it has (`launch_started`).
   func cancelLaunch(_ launchId: String) async throws -> CloudLaunchRecord {
-    try decodeBody(CloudLaunchRecord.self, from: try await send("DELETE", "cloud/launches/\(pathSegment(launchId))"))
+    try decode(CloudLaunchRecord.self, from: try await send("DELETE", "cloud/launches/\(segment(launchId))"))
   }
 
   func launch(_ launchId: String) async throws -> CloudLaunchRecord {
-    try decodeBody(CloudLaunchRecord.self, from: try await send("GET", "cloud/launches/\(launchId)"))
+    try decode(CloudLaunchRecord.self, from: try await send("GET", "cloud/launches/\(launchId)"))
   }
 
   /// The account's launches still in progress, and failures of the last day.
   func activeLaunches() async throws -> [CloudLaunchRecord] {
-    try decodeBody(LaunchList.self, from: try await send("GET", "cloud/launches", query: [URLQueryItem(name: "active", value: "1")])).launches
+    try decode(LaunchList.self, from: try await send("GET", "cloud/launches", query: [URLQueryItem(name: "active", value: "1")])).launches
   }
 
   func accountSignIns() async throws -> CloudAccountSignIns {
-    try decodeBody(CloudAccountSignIns.self, from: try await send("GET", "cloud/sign-ins"))
+    try decode(CloudAccountSignIns.self, from: try await send("GET", "cloud/sign-ins"))
   }
 
   func saveAccountSignIn(_ signInId: String, key: String) async throws -> CloudAccountSignIns {
     let data = try JSONSerialization.data(withJSONObject: ["key": key])
-    return try decodeBody(CloudAccountSignIns.self, from: try await send("PUT", "cloud/sign-ins/\(pathSegment(signInId))", body: data))
+    return try decode(CloudAccountSignIns.self, from: try await send("PUT", "cloud/sign-ins/\(segment(signInId))", body: data))
   }
 
   func removeAccountSignIn(_ signInId: String) async throws -> CloudAccountSignIns {
-    try decodeBody(CloudAccountSignIns.self, from: try await send("DELETE", "cloud/sign-ins/\(pathSegment(signInId))"))
+    try decode(CloudAccountSignIns.self, from: try await send("DELETE", "cloud/sign-ins/\(segment(signInId))"))
   }
 
   /// A code pasted from the provider's page, for a sign-in on the computer.
   /// Answers the reason when the code did not work.
   func sendSignInCode(instanceId: String, jobId: String, code: String) async throws -> String? {
     let data = try JSONSerialization.data(withJSONObject: ["code": code])
-    let status = try decodeBody(
+    let status = try decode(
       CloudSignInCodeStatus.self,
-      from: try await send("POST", "cloud/instances/\(pathSegment(instanceId))/sign-ins/\(pathSegment(jobId))/code", body: data, timeout: 100)
+      from: try await send("POST", "cloud/instances/\(segment(instanceId))/sign-ins/\(segment(jobId))/code", body: data, timeout: 100)
     )
     return status.state == "failed" ? (status.reason ?? "The code didn't work. Open the page again for a new one.") : nil
   }
 
-  private func pathSegment(_ value: String) -> String {
-    value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? value
-  }
-
-  private func decodeBody<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
-    do { return try JSONDecoder().decode(type, from: data) } catch { throw Failure.unreadable }
-  }
 }
 
 /// One plain sentence for a failed account-server call.
@@ -261,6 +258,7 @@ func cloudServerFailureMessage(_ error: Error) -> String {
   switch error as? CloudServerClient.Failure {
   case .noAccess: return "ADE Cloud isn't open for this account."
   case .unauthorized: return "Sign in to ADE again, then try again."
+  case .refused(_, let message): return message
   case .server(_, let message?): return message
   case .server(let status, nil): return "ADE Cloud answered with an error (\(status)). Try again soon."
   case .transport: return "ADE Cloud didn't answer. Check the connection, then try again."
@@ -349,6 +347,9 @@ final class AccountCloudLaunchStore: ObservableObject {
   @Published private var hiddenIds: Set<String> = []
   @Published private(set) var catalog: CloudModelCatalog?
   @Published private(set) var catalogError: String?
+  /// Provider sign-ins ADE desktop carried to ADE Cloud (`carried` of
+  /// `GET /cloud/sign-ins`), read with the catalog. Empty until read.
+  @Published private(set) var carriedSignIns: [String: Bool] = [:]
 
   private var pollTask: Task<Void, Never>?
   /// Bumped for each poll loop and by `reset`: a loop clears the handle only while it is still the current one.
@@ -380,6 +381,14 @@ final class AccountCloudLaunchStore: ObservableObject {
     } catch {
       guard generation == accountGeneration else { return }
       catalogError = cloudServerFailureMessage(error)
+    }
+    // Whether a desktop-only sign-in (Antigravity) already reached ADE Cloud.
+    do {
+      let signIns = try await client.accountSignIns()
+      guard generation == accountGeneration else { return }
+      carriedSignIns = signIns.carried
+    } catch {
+      cloudLaunchLog.notice("cloud_launches read=sign_ins failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }
   }
 
@@ -445,25 +454,48 @@ final class AccountCloudLaunchStore: ObservableObject {
     poll(using: sync)
   }
 
-  /// Starts a chat on ADE Cloud for one of the account's projects.
-  func start(accountProjectId: String, origin: String, prompt: String, provider: String, modelId: String, using sync: SyncService) async {
+  /// Starts a chat on ADE Cloud for one of the account's projects: on a new
+  /// cloud lane named from the prompt, or on an existing cloud lane
+  /// (`existingLane`, its lane id and name), with or without a computer.
+  /// Answers the launch id.
+  @discardableResult
+  func start(
+    accountProjectId: String,
+    origin: String,
+    prompt: String,
+    provider: String,
+    modelId: String,
+    effort: String? = nil,
+    existingLane: (id: String, name: String)? = nil,
+    newLaneName: String? = nil,
+    using sync: SyncService
+  ) async -> String {
     UserDefaults.standard.set(["provider": provider, "modelId": modelId], forKey: Self.lastModelKey)
     let launchId = UUID().uuidString.lowercased()
     let messageId = "msg_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(24)
-    let body: RemoteJSONValue = .object([
+    var chat: [String: RemoteJSONValue] = [
+      "provider": .string(provider),
+      "modelId": .string(modelId),
+      "permissions": .string("default"),
+      "prompt": .string(prompt),
+      "messageId": .string(String(messageId)),
+    ]
+    if let effort = effort.flatMap({ nonEmptyTrimmed($0) }) { chat["effort"] = .string(effort) }
+    var fields: [String: RemoteJSONValue] = [
       "launchId": .string(launchId),
       "kind": .string("chat"),
       // The server reads the origin from the account's project.
       "project": .object(["accountProjectId": .string(accountProjectId)]),
-      "chat": .object([
-        "provider": .string(provider),
-        "modelId": .string(modelId),
-        "permissions": .string("default"),
-        "prompt": .string(prompt),
-        "messageId": .string(String(messageId)),
-      ]),
+      "chat": .object(chat),
       "madeBy": .object(["kind": .string("person")]),
-    ])
+    ]
+    if let existingLane {
+      fields["lane"] = .object(["id": .string(existingLane.id), "name": .string(existingLane.name)])
+    } else if let newLaneName = newLaneName.flatMap({ nonEmptyTrimmed($0) }) {
+      // The computer's brain renames the lane and its branch with the AI name.
+      fields["lane"] = .object(["name": .string(newLaneName), "autoName": .bool(true)])
+    }
+    let body: RemoteJSONValue = .object(fields)
     entries.insert(Entry(
       launchId: launchId,
       origin: origin.lowercased(),
@@ -473,6 +505,7 @@ final class AccountCloudLaunchStore: ObservableObject {
       body: body
     ), at: 0)
     await runStart(launchId, body: body, using: sync)
+    return launchId
   }
 
   /// Starts again a launch whose start failed, or whose computer failed
@@ -600,6 +633,7 @@ final class AccountCloudLaunchStore: ObservableObject {
     pollTask?.cancel()
     pollTask = nil
     pollGeneration += 1
+    carriedSignIns = [:]
     accountGeneration += 1
     entries = []
     hiddenIds = []

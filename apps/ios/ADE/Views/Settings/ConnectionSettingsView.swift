@@ -244,7 +244,7 @@ struct ConnectionSettingsView: View {
   /// run the page: unknown or no is hidden.
   private var visibleRoutes: [SettingsRoute] {
     SettingsRoute.allCases.filter { route in
-      if route == .adeCloud { return syncService.cloudAvailable && syncService.cloudSupported }
+      if route == .adeCloud { return syncService.cloudSettingsOffered }
       return route.group != .project || syncService.activeProject != nil
     }
   }
@@ -278,7 +278,7 @@ struct ConnectionSettingsView: View {
     case .integrations: SettingsIntegrationsPage(syncService: syncService)
     case .adeCloud:
       // A stale link from before access changed still lands on nothing.
-      if syncService.cloudAvailable && syncService.cloudSupported {
+      if syncService.cloudSettingsOffered {
         CloudSettingsPage(syncService: syncService)
       }
     case .notifications:

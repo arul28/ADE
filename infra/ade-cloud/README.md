@@ -1,8 +1,8 @@
 # ADE Cloud machine template
 
-The image ADE creates ADE Cloud boxes and VMs from ("New ADE Cloud machine" in
-Add a computer, and ready machines). It is Debian 12 whose main process is
-the ADE brain.
+The image every ADE Cloud computer starts from. Each cloud lane gets its own
+computer from it. A computer is a box (a gVisor sandbox) or a VM. The image is
+Debian 12, and its main process is the ADE brain.
 
 - `template/Dockerfile`: `node:24-bookworm-slim`, git/gawk/tini, build-essential
   and pkg-config (node-gyp compiles native npm packages on install), bubblewrap
@@ -29,11 +29,12 @@ the ADE brain.
   dockerd as root through a single sudoers rule (`ade-entrypoint.sh
   --root-setup`), after loading the netfilter modules the VM kernel ships
   unloaded; a sandboxed box (gVisor) skips it. It also sets `IS_SANDBOX=1`
-  and `ADE_SUSPEND_GAP_TICK_MS=1000`, and runs a ready machine's setup job
-  (`$ADE_HOME/ready/job.sh`) inside its own process tree so what the setup
-  starts survives sleep. The root step also keeps Supabase's ports
-  (54320-54329) out of the kernel's range for outgoing connections: a busy
-  setup used to take one as an outgoing port right before Docker bound it.
+  and `ADE_SUSPEND_GAP_TICK_MS=1000`. It still runs a setup job that an
+  older ADE wrote (`$ADE_HOME/ready/job.sh`) inside its own process tree, so
+  what the setup starts survives sleep; current ADE writes none. The root step
+  also keeps Supabase's ports (54320-54329) out of the kernel's range for
+  outgoing connections, so a busy setup can not take one before Docker binds
+  it.
 - The Android SDK for the Android tool on a VM (`/opt/android-sdk`:
   platform-tools, emulator, cmdline-tools, the API 34 x86_64 image). The
   entrypoint sets `ANDROID_HOME`, and the root step gives `/dev/kvm` to group
@@ -67,10 +68,17 @@ the ADE brain.
   ADE's hardware anchor hashes them; one baked value would make the account
   directory merge every box into one row.
 
-Nothing is signed in inside the image. A new box signs in after it starts:
-the ADE that made it runs `ade login --headless` on it over the provider's exec and
-approves the code with its own account (see
-`apps/desktop/src/main/services/adeCloud/cloudMachineCreator.ts`).
+Nothing is signed in inside the image. A new computer signs in after it
+starts:
+
+- A lane's computer gets a one-time join code from the server launcher
+  (`ADE_LAUNCH_ID`, `ADE_LAUNCH_JOIN`). Its brain signs itself in to the
+  account (`apps/ade-cli/src/services/account/cloudBootLaunch.ts`; see "A new
+  lane with no computer of your own" in `docs/features/ade-cloud/README.md`).
+- A bare computer (`ade cloud create`, a copy, a move) signs in when the ADE
+  that made it runs `ade login --headless` on it over the provider's exec and
+  approves the code with its own account
+  (`apps/desktop/src/main/services/adeCloud/cloudMachineCreator.ts`).
 
 ## Build and publish
 
@@ -84,9 +92,9 @@ AGENT37_API_KEY=sk_live_... infra/ade-cloud/build-template.sh ade-a1-test # a tr
 AGENT37_API_KEY=sk_live_... infra/ade-cloud/build-template.sh ade 1.2.128 # pin an ADE release
 ```
 
-The build takes about 13.5 minutes (2026-11-06: 2.5 for the steps, 11 for
-the provider to save and ingest the image). Building an existing name publishes a
-new revision; boxes already made keep their image, and `ade brain update`
+The build takes about 13.5 minutes (about 2.5 for the steps and 11 for the
+provider to save and ingest the image). Building an existing name publishes a
+new revision; computers already made keep their image, and `ade brain update`
 updates their ADE.
 
 ADE's server creates from the exact template version pinned in `cloud_settings`
@@ -123,8 +131,7 @@ creates one from `ade@N` (tagged `created_by: ade-template-check`), checks ADE i
 its version (with `--expect-version`, exactly that release), that a command
 runs and that ADE's brain answers, that a real repository (a tiny public one,
 cloned) opens as a project, its lanes list, a new lane appears in that list and
-a terminal runs a command (`ade@9` passed without a project check and could not
-open a project), that a file in `/home/node` survives sleep and wake and then
+a terminal runs a command, that a file in `/home/node` survives sleep and wake and then
 stop and start, and deletes the computer in a `finally` (Ctrl-C included). The
 whole test gives up after 20 minutes, and deletes the computer then too. It
 prints first-start timings.
@@ -158,10 +165,10 @@ npx wrangler d1 execute ade-account-directory-production --remote --env producti
   --command "UPDATE cloud_settings SET value = 'off', updated_at = $(date +%s000) WHERE key = 'auto_update_stable';"
 ```
 
-Measured on 2026-11-08 with `ade@8` (ADE 1.2.129-beta.24, a 2 CPU / 4 GB computer
-on a 4 GB disk): create answered in 0.8 s, first command at 1.1 s, `ade --version`
-at 2.4 s, ADE's brain answering at 4.0 s. Sleep 1.3 s, wake to a brain answering
-1.9 s; stop 1.1 s, start to a brain answering 3.7 s.
+Typical timings on a 2 CPU / 4 GB computer with a 4 GB disk: the create
+answers in about 1 s, and ADE's brain answers about 4 s later. A sleep takes
+about 1 s, and a wake to a brain that answers about 2 s. A stop takes about 1 s,
+and a start to a brain that answers about 4 s.
 
 A computer that an ADE older than the template already built keeps its image
 until it is updated; `ade brain update` updates its ADE. On first boot a new

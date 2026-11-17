@@ -2,8 +2,10 @@
 
 ## About this project
 
-- ADE is a local-first desktop application for orchestrating coding agents, lanes, PR workflows, and proof/artifact capture.
-- The main product lives in `apps/desktop` and is built with Electron, React, and TypeScript.
+- ADE orchestrates coding agents, lanes, PR workflows, and proof/artifact capture across the person's machines.
+- ADE works fully with no computer of your own. Every account always has **ADE Cloud**, one machine shown next to the person's own computers on web, iPhone and desktop. Each cloud lane has its own computer underneath, which the person never sees. Reads come from the account and GitHub; only doing wakes a computer. See `docs/PRD.md` and `docs/ARCHITECTURE.md` section 1.1.
+- The account servers are Cloudflare Workers: `apps/account-directory` (machines, ADE Cloud, saved cloud work), `apps/push-relay` (vault, settings, Activity), `apps/tunnel-relay`, `apps/webhook-relay`.
+- The main product lives in `apps/desktop` and is built with Electron, React, and TypeScript. The hosted web client is built from the same renderer; the iPhone app is `apps/ios`.
 - The ADE CLI lives in `apps/ade-cli` and shares core services with the desktop app.
 - State is primarily stored under `.ade/` inside the active project, with runtime metadata in SQLite and machine-local files under `.ade/secrets`, `.ade/cache`, and `.ade/artifacts`.
 
@@ -111,6 +113,12 @@ and the Work tab lists chats, CLIs and shells from every connected machine at
 once. A lane owns its machine, and its chats and terminals live there and only
 there.
 
+ADE also works with no computer of your own. Every account has ADE Cloud, one
+machine in every machine list and "Run on" menu. Underneath, each cloud lane
+has its own computer with its own pin, so the rules below apply to it too.
+Reading a cloud lane (saved chats, session copies, its Git summary) comes from
+the account and never wakes its computer; only doing (send, run, Git) wakes it.
+
 So every action that can be done for something on another machine (a chat, a
 session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
 
@@ -184,11 +192,11 @@ Each provider reaches ADE in two ways, and they behave differently:
 The most common defect class in this repo is a change that works on the path you tested and is missing everywhere else. Before you call a change done (and again in `/quality`), walk this list and state which entries applied:
 
 - **Entry points.** A behavior reachable from the desktop UI is usually also reachable from the `ade` CLI, deeplinks, the command palette, and keybindings. Fixing one entry point is not fixing the feature.
-- **Clients.** Desktop (Electron), hosted web, and iOS attach to the same brain. Shared logic belongs in shared services and types, not re-implemented per client.
+- **Clients.** Desktop (Electron), hosted web, and iOS attach to the same brains and read the same account. A person with no computer of their own uses web and iOS on ADE Cloud only, so every flow must work there. Shared logic belongs in shared services and types, not re-implemented per client.
 - **Providers.** Every provider, on both its chat and its CLI surface; see **Every provider, both surfaces**.
 - **Contracts.** Anything crossing a boundary is typed once: main-process handler, `src/shared` types, preload exposure, renderer caller, daemon action domain, tests/mocks. Change the contract and all of them move together.
 - **Reverse states.** If you add a way in, add the way out and the way to see it. Snooze needs unsnooze; settle needs unsettle; a link needs unlink. A one-way door is a bug.
-- **Connection modes.** Local runtime, remote runtime, and relay behave differently. Multi-device and offline cases are real; the phone can be newer than the host. Anything that acts on a chat, session or lane must reach the machine that owns it; see **Built for remote machines**.
+- **Connection modes.** Local runtime, remote runtime, relay, and an ADE Cloud lane whose computer is asleep or deleted behave differently. Multi-device and offline cases are real; the phone can be newer than the host. Anything that acts on a chat, session or lane must reach the machine that owns it; see **Built for remote machines**.
 - **Windows and Linux.** Desktop parity is part of "done" for all new code, never a follow-up. Use the Linux evidence guidance in `docs/development/linux-support.md`.
 - **Docs.** User-visible behavior changes update the matching `docs/features/` doc in present tense.
 
@@ -384,6 +392,8 @@ only:
 ## Terminology
 
 - Use "lane" for ADE worktrees/branches.
+- Use "ADE Cloud" for the one cloud machine. Never show an individual cloud computer, its lane-named machine, or an instance id to the person.
+- An own computer is "offline" (hidden). A cloud computer is "asleep", never "offline".
 - Use "computer use" for screenshot/video/GUI/browser proof flows.
 ## Style preferences
 

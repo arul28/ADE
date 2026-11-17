@@ -273,7 +273,8 @@ export function SettingsPage({
   // keeps the single bound-machine view it always had.
   const machineParam = searchParams.get("machine");
   const machinesEnabled = !isWebClientMode();
-  const { machines, thisMachineDeviceName } = useProjectMachines(active && machinesEnabled);
+  // Machine-level settings are for the person's own computers; ADE Cloud has its own place.
+  const { machines, thisMachineDeviceName } = useProjectMachines(active && machinesEnabled, { ownOnly: true });
   // With no `?machine=`, a link to a setting about the tab's own machine
   // (GitHub, Linear, link opening) lands on that machine; anything else lands
   // on This computer. For a tab open on this computer the two agree.

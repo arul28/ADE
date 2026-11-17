@@ -234,10 +234,10 @@ export function checkRemoteAdeCommand(
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
   }
-  // Only ADE's server runs these, over exec on a cloud computer: one interrupts
-  // all its work, the other commits and pushes every lane.
-  if (command === "cloud" && (words[0] === "prepare-stop" || words[0] === "push-work" || words[0] === "work-state")) {
-    return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. ADE's server runs it on a machine it is about to stop or free-wake.` };
+  // Only ADE's server runs these, over exec on a cloud computer: they stop
+  // its work, push every lane, save it for rest, or send its queued messages.
+  if (command === "cloud" && SERVER_ONLY_CLOUD_COMMANDS.has(words[0] ?? "")) {
+    return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. Only ADE's server runs it, on ADE Cloud.` };
   }
   // Renaming, removing or re-pairing account machines outlives revoking the
   // connection, like account tokens; reading the roster is fine.
@@ -290,6 +290,8 @@ const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
 const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([
   ["action", "actions"], ["machine", "machines"], ["device", "devices"], ["gh", "github"], ["provider", "providers"],
 ]);
+/** `ade cloud` subcommands only ADE's server runs, over exec on a cloud computer. */
+const SERVER_ONLY_CLOUD_COMMANDS: ReadonlySet<string> = new Set(["prepare-stop", "push-work", "work-state", "save-for-rest", "messages"]);
 /** `ade machines` subcommands that only read the roster. */
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;

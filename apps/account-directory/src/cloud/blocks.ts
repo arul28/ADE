@@ -26,7 +26,7 @@ const CREATES_PER_HOUR = 10;
 /** Server launches one account may start in an hour. */
 const LAUNCHES_PER_HOUR = 15;
 
-const ACCOUNT_BLOCKED_MESSAGE = "ADE Cloud is turned off for this account. Contact ADE support if you think this is a mistake.";
+export const ACCOUNT_BLOCKED_MESSAGE = "ADE Cloud is turned off for this account. Contact ADE support if you think this is a mistake.";
 const CREATES_PAUSED_MESSAGE = "ADE Cloud isn't making new computers right now. Your computers keep working. Try again later.";
 const TOO_MANY_CREATES_MESSAGE = `You made ${CREATES_PER_HOUR} computers in the last hour. Wait a little, then try again.`;
 const TOO_MANY_LAUNCHES_MESSAGE = `You started ${LAUNCHES_PER_HOUR} cloud launches in the last hour. Wait a little, then try again.`;

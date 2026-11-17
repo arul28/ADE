@@ -23,6 +23,7 @@ import {
 import { MachineAvatar, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
 import { useCloudSelfUpdates } from "../remoteTargets/useCloudSelfUpdates";
 import type { CloudMachine } from "../../../shared/adeCloud";
+import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME } from "../../../shared/adeCloud/binding";
 import { UpdateTrackChip } from "../app/ChannelBadge";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 import { Banner } from "../ui/notice";
@@ -60,10 +61,12 @@ function useConnectedMachines(): { machines: ConnectedMachine[] | null; failed: 
  * ADE on the other machines this computer is connected to: the version each
  * runs, and "Update & restart" for the ones that are behind. The same action
  * as the Machines list, placed where this computer's own update lives.
- * Cloud computers update themselves: each shows that line instead of the
- * button, and one that is asleep (so not connected) is listed too.
+ * ADE Cloud is one machine: its computers update themselves, so they show as
+ * one "ADE Cloud" row with the update line (and its Retry) of the computer that
+ * needs attention, connected or asleep, never one row per computer.
  *
- * Renders nothing in the browser client, which cannot ask a machine to update.
+ * Renders nothing where this client cannot ask a machine to update
+ * (`canUpdateOtherMachines`).
  */
 type UpdatesProps = {
   group: string;
@@ -92,8 +95,10 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
   // here is not called behind.
   const known = useKnownAdeVersions();
   const cloud = useCloudSelfUpdates();
-  // Cloud computers keep themselves current, so they are never in "Update all".
-  const behind = machinesBehindOnTheirTrack(machines.filter((machine) => !cloud.boxFor(machine.colorKey)), known);
+  // Cloud computers keep themselves current: they leave the machine rows and "Update all",
+  // and go into the one ADE Cloud row.
+  const ownMachines = machines.filter((machine) => !cloud.boxFor(machine.colorKey));
+  const behind = machinesBehindOnTheirTrack(ownMachines, known);
   const automaticBehind = behind.filter((machine) => !machineUpdateIsManual(machine, machineUpdates.attempts[machine.id]));
   const targetById = new Map(behind.map((machine) => [machine.id, machine.targetVersion]));
   const anyBusy = automaticBehind.some((machine) => isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
@@ -101,10 +106,9 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
   const showTracks = updateSnapshot.track?.running === "beta"
     || updateSnapshot.track?.selected === "beta"
     || machines.some((machine) => machineUpdateTrack(machine) === "beta");
-  const connectedKeys = new Set(machines.map((machine) => machine.colorKey ?? machine.id));
-  const restingCloud = cloud.boxes.filter((box) => !connectedKeys.has(box.machineKey!));
+  const cloudBox = adeCloudRowBox(cloud);
 
-  if (compact && machines.length === 0 && restingCloud.length === 0) return null;
+  if (compact && ownMachines.length === 0 && !cloudBox) return null;
 
   return (
     <ModernSection
@@ -134,26 +138,12 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
           />
         ) : readMachines == null ? (
           <ModernRow title="Reading connected machines…" />
-        ) : machines.length === 0 && restingCloud.length === 0 ? (
+        ) : ownMachines.length === 0 && !cloudBox ? (
           <ModernRow
             title="No other machines connected"
             hint="Connect a machine from Connections in the top bar to see its version and update it from here."
           />
-        ) : [...machines.map((machine) => {
-          const box = cloud.boxFor(machine.colorKey);
-          if (box) {
-            return (
-              <CloudUpdateRow
-                key={machine.id}
-                box={box}
-                name={machine.name}
-                colorKey={machine.colorKey ?? machine.id}
-                arch={machine.arch}
-                version={machine.version ? machine.versionLabel ?? machine.version : null}
-                cloud={cloud}
-              />
-            );
-          }
+        ) : [...ownMachines.map((machine) => {
           const attempt = machineUpdates.attempts[machine.id] ?? null;
           const status = attempt
             ? describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version }, machineUpdates.nowMs)
@@ -226,40 +216,30 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
               ) : null}
             </ModernRow>
           );
-        }), ...restingCloud.map((box) => (
-          <CloudUpdateRow key={box.instanceId} box={box} name={box.name?.trim() || box.instanceId} colorKey={box.machineKey!} arch={null} version={null} cloud={cloud} />
-        ))]}
+        }), ...(cloudBox ? [<CloudUpdateRow key="ade-cloud" box={cloudBox} cloud={cloud} />] : [])]}
       </ModernRows>
     </ModernSection>
   );
 }
 
-/**
- * A cloud computer in the list: its image, and the update line where other
- * machines have Update & restart. Asleep, it has no ADE version to read.
- */
-function CloudUpdateRow({
-  box,
-  name,
-  colorKey,
-  arch,
-  version,
-  cloud,
-}: {
-  box: CloudMachine;
-  name: string;
-  colorKey: string;
-  arch: string | null | undefined;
-  version: string | null;
-  cloud: ReturnType<typeof useCloudSelfUpdates>;
-}) {
+/** The cloud computer whose line the ADE Cloud row shows: one with an error, then a failed update, then any. */
+function adeCloudRowBox(cloud: ReturnType<typeof useCloudSelfUpdates>): CloudMachine | null {
+  return cloud.boxes.find((box) => cloud.errorFor(box))
+    ?? cloud.boxes.find((box) => box.update?.state === "failed")
+    ?? cloud.boxes.find((box) => box.update?.state === "updating")
+    ?? cloud.boxes[0]
+    ?? null;
+}
+
+/** The one ADE Cloud row: the update line where other machines have Update & restart. */
+function CloudUpdateRow({ box, cloud }: { box: CloudMachine; cloud: ReturnType<typeof useCloudSelfUpdates> }) {
   const error = cloud.errorFor(box);
   return (
     <ModernRow
-      leading={<MachineAvatar colorKey={colorKey} name={name} platform={machinePlatform(arch, "linux")} formFactor={machineFormFactor({ name })} size={30} />}
-      title={name}
-      hint={version ? <>ADE <span className="kit-num">{version}</span></> : box.state === "asleep" ? "Asleep" : "Not connected"}
-      control={cloud.lineFor(box, name)}
+      leading={<MachineAvatar colorKey={ADE_CLOUD_MACHINE_ID} name={ADE_CLOUD_NAME} platform={machinePlatform(null, "linux")} formFactor={machineFormFactor({ name: ADE_CLOUD_NAME })} size={30} />}
+      title={ADE_CLOUD_NAME}
+      hint="Updates itself"
+      control={cloud.lineFor(box, ADE_CLOUD_NAME)}
     >
       {error ? (
         <Banner

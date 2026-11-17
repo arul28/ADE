@@ -109,6 +109,7 @@ import type { ProductAnalyticsService } from "../../../../desktop/src/main/servi
 import { requireSignedInAccountAccessToken, type AccountAuthService } from "../account/accountAuthService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import type { ProxyService } from "../proxy/proxyService";
+import type { SearchService } from "../../../../desktop/src/main/services/search/searchService";
 import {
   getSharedAccountAttestationConfig,
   getSharedAccountAuthService,
@@ -137,6 +138,7 @@ type SyncServiceArgs = {
   db: AdeDb;
   usageTrackingService?: UsageTrackingHost | null;
   getProxyService?: () => Pick<ProxyService, "status"> | null;
+  getSearchService?: () => Pick<SearchService, "query" | "indexStatus"> | null;
   accountSettingsStore?: AccountSettingsStore | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   logger: Logger;
@@ -1115,6 +1117,7 @@ export function createSyncService(args: SyncServiceArgs) {
     db: args.db,
     usageTrackingService: args.usageTrackingService,
     getProxyService: args.getProxyService,
+    getSearchService: args.getSearchService,
     accountSettingsStore: args.accountSettingsStore,
     productAnalyticsService: args.productAnalyticsService,
     projectRoot: args.projectRoot,

@@ -86,6 +86,8 @@ describe("checkRemoteAdeCommand", () => {
     ["read", "making an ADE Cloud machine", ["cloud", "create", "--kind", "box"]],
     ["write", "stopping a computer's work", ["cloud", "prepare-stop"]],
     ["write", "pushing a computer's lanes", ["cloud", "push-work"]],
+    ["write", "saving a computer for rest", ["cloud", "save-for-rest", "--capsules"]],
+    ["write", "draining a computer's queued messages", ["cloud", "messages", "drain"]],
     ["write", "a stdin-reading command without stdin", ["files", "write", "--workspace", "l", "a.txt", "--stdin"]],
     ["write", "a body read from stdin without stdin", ["prs", "create", "--body-file", "-"]],
   ] as const)("%s access refuses %s", (scope, _label, args) => {

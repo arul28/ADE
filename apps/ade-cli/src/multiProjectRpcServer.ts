@@ -420,6 +420,10 @@ export type MultiProjectRpcHandlerOptions = {
   prepareCloudStop?: ((args: { timeoutMs: number; diskGrowToGb?: number | null; growId?: string | null }) => Promise<unknown>) | null;
   /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
   pushCloudWork?: ((args: { check: boolean; message?: string | null }) => Promise<unknown>) | null;
+  /** On a cloud computer: saves what clients read at rest, capsules too on the delete path (`ade cloud save-for-rest`). */
+  saveCloudForRest?: ((args: { capsules: boolean }) => Promise<unknown>) | null;
+  /** On a cloud computer: sends the messages queued for its existing chats (`ade cloud messages drain`). */
+  drainCloudMessages?: (() => Promise<unknown>) | null;
   /** On a cloud computer: keeps it awake while `run` works (a first clone), and counts the end as use. */
   holdCloudWork?: (<T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>) | null;
   /** `ade providers sign-in --remote` and its code and status companions (remoteProviderSignIn.ts). */
@@ -673,6 +677,8 @@ const RUNTIME_METHODS = new Set([
   "cloud.prepareStop",
   "cloud.pushWork",
   "cloud.workState",
+  "cloud.saveForRest",
+  "cloud.drainMessages",
   "providers.remoteSignInStart",
   "providers.remoteSignInStatus",
   "providers.remoteSignInCode",
@@ -3625,7 +3631,10 @@ export function createMultiProjectRpcRequestHandler(
 
     // The server runs this over exec before stopping a computer at 0 hours. Not
     // a `cloud.call`: this machine may not have the account access `cloud` needs.
-    if (method === "cloud.prepareStop" || method === "cloud.pushWork" || method === "cloud.workState") {
+    if (
+      method === "cloud.prepareStop" || method === "cloud.pushWork" || method === "cloud.workState"
+      || method === "cloud.saveForRest" || method === "cloud.drainMessages"
+    ) {
       if (callerIdentityIsAgent(callerIdentity())) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "An agent can't run this on the computer.");
       }
@@ -3665,6 +3674,16 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "cloud.workState") {
       if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't read this computer's work.");
       return await options.pushCloudWork({ check: true });
+    }
+    // The idle cleanup's save between push-work and the check (CONTRACTS 4).
+    if (method === "cloud.saveForRest") {
+      if (!options.saveCloudForRest) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't save this computer for rest.");
+      return await options.saveCloudForRest({ capsules: params.capsules === true });
+    }
+    // The server runs this after it woke the computer for a queued message.
+    if (method === "cloud.drainMessages") {
+      if (!options.drainCloudMessages) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't send queued chat messages.");
+      return await options.drainCloudMessages();
     }
 
     if (method === "keepAwake.call") {

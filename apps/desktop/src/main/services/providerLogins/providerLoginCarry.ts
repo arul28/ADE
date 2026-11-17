@@ -62,7 +62,8 @@ export type CarryRoot =
   | "ghConfig"
   | "qwenHome"
   | "antigravityHome"
-  | "piAgent";
+  | "piAgent"
+  | "proxyAuth";
 
 export type CarryContext = {
   env: NodeJS.ProcessEnv;
@@ -646,7 +647,82 @@ const ROWS: CarryRow[] = [
     carry: "fallback",
     message: "Sign in to Muse on the cloud computer, or add a key. ADE does not copy Muse sign-ins.",
   },
+  {
+    // The logins a person signed in to ADE's subscription proxy itself (the
+    // older flow): `<ADE_HOME>/proxy/auth/*.json`. The proxy here stays their
+    // one owner and renews them; ADE Cloud computers get access-only copies
+    // (no refresh token), which the proxy there loads and never renews. The
+    // logins ADE lends the proxy (`ade-borrow-*.json`) are made on each
+    // computer from its own CLI logins, so they never travel.
+    provider: "proxy",
+    carry: "carried",
+    message: "ADE copies the logins you signed in to ADE's subscription proxy, without their refresh tokens. This computer's proxy keeps renewing them.",
+    locate: (ctx) => {
+      const dir = carryRootDir("proxyAuth", ctx)!;
+      let names: string[] = [];
+      try {
+        names = fs.readdirSync(dir).filter((name) => PROXY_AUTH_FILE.test(name) && !name.startsWith(PROXY_BORROWED_PREFIX)).sort();
+      } catch {
+        names = [];
+      }
+      return [{ id: "proxy/auth", files: names.slice(0, PROXY_MAX_FILES).map((name) => file("proxyAuth", dir, name)) }];
+    },
+    parse: (bundle, contents) => {
+      const emails = new Set<string>();
+      let expiresAt: number | null = null;
+      const files: CarriedFile[] = [];
+      for (const spec of bundle.files) {
+        const data = json(contents, spec.rel);
+        const buffer = contents.get(spec.rel);
+        // A file the proxy can't read either is not carried.
+        if (!data || !buffer || !proxyAccessToken(data)) continue;
+        files.push(carriedFile(spec, buffer));
+        const email = str(data, "email");
+        if (email) emails.add(email);
+        const expiry = proxyExpiry(data);
+        if (expiry != null) expiresAt = expiresAt == null ? expiry : Math.min(expiresAt, expiry);
+      }
+      if (!files.length) return { logins: [], skipped: [] };
+      return {
+        logins: [{
+          slot: "base",
+          class: "renewing",
+          // The set of logins: the proxy here renews each one, so its refresh tokens change.
+          familySecret: `proxy\u0000${files.map((entry) => entry.rel).join("\u0000")}`,
+          account: emails.size === 1 ? { email: [...emails][0]!, id: null } : null,
+          expiresAt,
+          files,
+        }],
+        skipped: [],
+      };
+    },
+  },
 ];
+
+/** A proxy auth file name: one JSON file in the folder, never a path. */
+const PROXY_AUTH_FILE = /^[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\.json$/;
+/** The logins ADE lends the proxy (`borrowedLogins.ts`): made on each computer, never carried. */
+const PROXY_BORROWED_PREFIX = "ade-borrow-";
+/** At most this many proxy logins travel; far above real use. */
+const PROXY_MAX_FILES = 40;
+
+/** The access token of a proxy auth file (CLIProxyAPI keeps it at the top, some providers under `token`). */
+function proxyAccessToken(data: Record<string, unknown>): string | null {
+  return str(data, "access_token") ?? str(isRecord(data.token) ? data.token : null, "access_token") ?? str(data, "api_key");
+}
+
+/** When a proxy login ends (`expired` or `expires_at`), in ms; null when the file does not say. */
+function proxyExpiry(data: Record<string, unknown>): number | null {
+  for (const key of ["expired", "expires_at", "expiry"]) {
+    const value = data[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value < 1e12 ? value * 1000 : value;
+    if (typeof value === "string") {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+}
 
 export const PROVIDER_LOGIN_CARRY: ReadonlyArray<CarryRow> = ROWS;
 
@@ -703,6 +779,8 @@ export function carryRootDir(root: CarryRoot, ctx: CarryContext): string | null 
     case "cursorSdk": return path.join(ctx.homeDir, ".cursor", "sdk");
     // agy keeps its folder under `<home>/.gemini` whatever GEMINI_HOME says.
     case "antigravityHome": return path.join(ctx.homeDir, ".gemini");
+    // ADE's subscription proxy keeps its logins under the ADE home (`cliProxyApiConfig.ts`).
+    case "proxyAuth": return path.join(ctx.env.ADE_HOME?.trim() ? path.resolve(ctx.env.ADE_HOME.trim()) : path.join(ctx.homeDir, ".ade"), "proxy", "auth");
     case "devinData": {
       const credentials = devinCredentialFiles({ env: ctx.env, homeDir: ctx.homeDir, platform: ctx.platform });
       return path.dirname(credentials.find(exists) ?? credentials[0]!);
@@ -725,6 +803,8 @@ const APPLY_FILES: Partial<Record<ProviderLoginProvider, { root: CarryRoot; rel:
   qwen: [{ root: "qwenHome", rel: /^settings\.json$/ }, { root: "qwenHome", rel: /^\.env$/ }],
   devin: [{ root: "devinData", rel: /^credentials\.toml$/ }],
   antigravity: [{ root: "antigravityHome", rel: /^antigravity-cli\/antigravity-oauth-token$/ }],
+  // One file in the proxy's auth folder; never a lent login's name.
+  proxy: [{ root: "proxyAuth", rel: /^(?!ade-borrow-)[A-Za-z0-9][A-Za-z0-9._@+-]{0,127}\.json$/ }],
 };
 
 export function isApplyFileAllowed(provider: ProviderLoginProvider, root: string, rel: string): boolean {
@@ -778,6 +858,24 @@ export function accessOnlyFile(provider: ProviderLoginProvider, rel: string, dat
       next[issuer] = entry;
     }
     return removed ? { data: encode(next), renewalSafe: true } : { data, renewalSafe: false };
+  }
+  if (provider === "proxy") {
+    const parsed = asJson();
+    if (!parsed) return { data, renewalSafe: false };
+    // Every refresh field, at the top and under `token`: the proxy there must never renew it.
+    const cut = (record: Record<string, unknown>): { next: Record<string, unknown>; removed: boolean } => {
+      let removed = false;
+      const next: Record<string, unknown> = {};
+      for (const [name, value] of Object.entries(record)) {
+        if (/refresh/i.test(name)) removed = true;
+        else next[name] = value;
+      }
+      return { next, removed };
+    };
+    const top = cut(parsed);
+    const token = isRecord(top.next.token) ? cut(top.next.token) : null;
+    if (token) top.next.token = token.next;
+    return top.removed || token?.removed ? { data: encode(top.next), renewalSafe: true } : { data, renewalSafe: true };
   }
   // Droid's file is encrypted: it cannot be cut, so it goes whole.
   if (provider === "droid") return { data, renewalSafe: false };

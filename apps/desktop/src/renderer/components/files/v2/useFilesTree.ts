@@ -89,6 +89,9 @@ export function useFilesTree(args: FilesTreeArgs) {
   const [tree, setTree] = useState<FileTreeNode[]>(
     () => readCachedTree(filesTreeCacheKey(projectCacheKey, initialWorkspaceId)) ?? [],
   );
+  // The root listing of the open workspace: an empty tree before it answers,
+  // or after it failed, is not an empty folder.
+  const [rootStatus, setRootStatus] = useState<"loading" | "ready" | "failed">("loading");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   // The host caps the git-status entry lists on a very large dirty tree, so deep
@@ -159,8 +162,11 @@ export function useFilesTree(args: FilesTreeArgs) {
         return decorated;
       });
       setError(null);
+      setRootStatus("ready");
     } catch (err) {
-      if (workspaceIdRef.current === reqId) setError(err instanceof Error ? err.message : String(err));
+      if (workspaceIdRef.current !== reqId) return;
+      setError(err instanceof Error ? err.message : String(err));
+      setRootStatus("failed");
     }
   }, [files, workspaceId, fetchGitDecorations, projectCacheKey, setError, workspaceIdRef]);
 
@@ -182,6 +188,7 @@ export function useFilesTree(args: FilesTreeArgs) {
     setLoadingDirs(new Set());
     setDecorationsTruncated(false);
     setError(null);
+    setRootStatus("loading");
     void refreshRoot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, workspaceId, refreshRoot, projectCacheKey]);
@@ -388,6 +395,7 @@ export function useFilesTree(args: FilesTreeArgs) {
 
   return {
     tree,
+    rootStatus,
     treeRef,
     setTree,
     expanded,

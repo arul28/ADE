@@ -105,6 +105,24 @@ function signInOf(provider: string, started: CloudRemoteSignInStatus | null, sta
   };
 }
 
+/** What the wait needs from the brain: the readiness read, the provider's own sign-in, and the vault pull. */
+export type SignInWaitDeps = Pick<CloudBootLaunchDeps, "logger" | "providerReady" | "remoteSignIn" | "refreshVault">;
+
+/**
+ * Where a wait shows itself. A launch reports stage rows; a queued chat
+ * message reports `waiting_for_sign_in` on the message.
+ */
+export type SignInWaitHooks = {
+  /** Shows the sign-in; true once the report landed (a lost one is sent again). */
+  show: (signIn: CloudLaunchSignIn) => Promise<boolean>;
+  /** The provider can run now. */
+  ready?: (signIn: CloudLaunchSignIn) => Promise<void>;
+  /** Read at each refresh: true ends the wait (a cancelled launch). */
+  isCancelled?: () => Promise<boolean>;
+  /** Names the wait in log lines (a launch id or a message id). Never chat text. */
+  logMeta: Record<string, unknown>;
+};
+
 /**
  * Holds the launch until the chat's provider can run here: reports
  * `waiting_for_sign_in` with what the person does, follows the sign-in (a
@@ -121,11 +139,40 @@ export async function waitForProviderSignIn(
   sleep: (ms: number) => Promise<void>,
 ): Promise<SignInWait> {
   const { launchId, logger } = deps;
+  return await waitForSignIn(deps, provider, {
+    show: async (signIn) => await report({
+      state: "waiting_for_sign_in",
+      stages: [...stages, { id: SIGN_IN_STAGE, status: "running", detail: signIn.label }],
+      signIn,
+    }),
+    ready: async (signIn) => {
+      await report({ state: "joined", stages: [...stages, { id: SIGN_IN_STAGE, status: "done", detail: signIn.label }] });
+    },
+    isCancelled: async () => {
+      const record = await deps.api()?.launchStatus(launchId).catch((error: unknown) => {
+        logger.warn("cloud_boot_launch.sign_in_launch_read_failed", { launchId, error: errorText(error) });
+        return null;
+      });
+      return record?.state === "cancelled";
+    },
+    logMeta: { launchId },
+  }, sleep);
+}
+
+/** The wait itself, for a launch or a queued chat message (`SignInWaitHooks`). */
+export async function waitForSignIn(
+  deps: SignInWaitDeps,
+  provider: string,
+  hooks: SignInWaitHooks,
+  sleep: (ms: number) => Promise<void>,
+): Promise<SignInWait> {
+  const { logger } = deps;
+  const meta = hooks.logMeta;
   const providerReady = deps.providerReady;
   if (!providerReady) return { kind: "ready", waited: false };
   // A read that fails: the first one goes on (as `unknown`), a later one keeps waiting.
   const readiness = async (fresh: boolean): Promise<ProviderReadiness> => await providerReady(provider, { fresh }).catch((error: unknown) => {
-    logger.warn("cloud_boot_launch.provider_ready_failed", { launchId, provider, error: errorText(error) });
+    logger.warn("cloud_boot_launch.provider_ready_failed", { ...meta, provider, error: errorText(error) });
     return fresh ? "unknown" : "missing";
   });
   if (await readiness(true) !== "missing") return { kind: "ready", waited: false };
@@ -141,7 +188,7 @@ export async function waitForProviderSignIn(
       return signInOf(provider, await remoteSignIn.start(provider), null);
     } catch (error) {
       startFailed = true;
-      logger.warn("cloud_boot_launch.sign_in_start_failed", { launchId, provider, error: errorText(error) });
+      logger.warn("cloud_boot_launch.sign_in_start_failed", { ...meta, provider, error: errorText(error) });
       return signInOf(provider, null, errorText(error).slice(0, 300));
     }
   };
@@ -151,14 +198,9 @@ export async function waitForProviderSignIn(
   const show = async () => {
     const shape = JSON.stringify(signIn);
     if (shape === shown) return;
-    const landed = await report({
-      state: "waiting_for_sign_in",
-      stages: [...stages, { id: SIGN_IN_STAGE, status: "running", detail: signIn.label }],
-      signIn,
-    });
-    if (landed) shown = shape;
+    if (await hooks.show(signIn)) shown = shape;
   };
-  logger.info("cloud_boot_launch.waiting_for_sign_in", { launchId, provider, kind: signIn.kind });
+  logger.info("cloud_boot_launch.waiting_for_sign_in", { ...meta, provider, kind: signIn.kind });
   await show();
   const deadline = Date.now() + SIGN_IN_WAIT_MS;
   let restarts = 0;
@@ -167,7 +209,7 @@ export async function waitForProviderSignIn(
     await sleep(SIGN_IN_POLL_MS);
     if (signIn.jobId && remoteSignIn) {
       const status = await remoteSignIn.status(signIn.jobId).catch((error: unknown) => {
-        logger.warn("cloud_boot_launch.sign_in_status_failed", { launchId, provider, error: errorText(error) });
+        logger.warn("cloud_boot_launch.sign_in_status_failed", { ...meta, provider, error: errorText(error) });
         return null;
       });
       if (status?.state === "failed" && restarts < SIGN_IN_RESTARTS) {
@@ -186,20 +228,16 @@ export async function waitForProviderSignIn(
       }
       // A key or a desktop sign-in has no job to poll: a report that didn't land goes again here.
       if (!signIn.jobId) await show();
-      await deps.refreshVault?.().catch((error: unknown) => logger.warn("cloud_boot_launch.vault_refresh_failed", { launchId, error: errorText(error) }));
-      const record = await deps.api()?.launchStatus(launchId).catch((error: unknown) => {
-        logger.warn("cloud_boot_launch.sign_in_launch_read_failed", { launchId, error: errorText(error) });
-        return null;
-      });
-      if (record?.state === "cancelled") return { kind: "cancelled" };
+      await deps.refreshVault?.().catch((error: unknown) => logger.warn("cloud_boot_launch.vault_refresh_failed", { ...meta, error: errorText(error) }));
+      if (await hooks.isCancelled?.()) return { kind: "cancelled" };
     }
     if (await readiness(false) !== "missing") {
-      logger.info("cloud_boot_launch.signed_in", { launchId, provider });
-      await report({ state: "joined", stages: [...stages, { id: SIGN_IN_STAGE, status: "done", detail: signIn.label }] });
+      logger.info("cloud_boot_launch.signed_in", { ...meta, provider });
+      await hooks.ready?.(signIn);
       return { kind: "ready", waited: true };
     }
   }
   // The server's own timeout error: its cleanup then deletes this unused computer.
-  logger.info("cloud_boot_launch.sign_in_timed_out", { launchId, provider });
+  logger.info("cloud_boot_launch.sign_in_timed_out", { ...meta, provider });
   return { kind: "failed", error: CLOUD_LAUNCH_SIGN_IN_TIMED_OUT };
 }

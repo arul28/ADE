@@ -8,6 +8,9 @@ import { relativeWhen } from "../../lib/format";
 import { Banner, noticeKindModel } from "../ui/notice";
 import { GitHubIssueStateIcon } from "../lanes/githubBrand";
 import type { PrsRepoRef } from "./state/prsReader";
+import { useLaneMentionsByPr, type LaneMention } from "./state/accountLaneMentions";
+import { LaneMentionChip } from "./LaneMentionChip";
+import { AccountReadFailed } from "../adeCloud/AccountReadFailed";
 
 /**
  * Pull requests and issues read with the ADE account's own GitHub sign-in,
@@ -74,6 +77,8 @@ type DirectRow = {
   url: string | null;
   icon: React.ReactNode;
   tag: string | null;
+  /** Lanes the account lane index ties to this pull request (none for a branch with no lane). */
+  lanes?: readonly LaneMention[];
 };
 
 function DirectList({
@@ -86,6 +91,7 @@ function DirectList({
   refreshing,
   truncated,
   onRefresh,
+  notice = null,
 }: {
   repo: PrsRepoRef;
   note: string;
@@ -96,6 +102,8 @@ function DirectList({
   refreshing: boolean;
   truncated: boolean;
   onRefresh: () => void;
+  /** A second notice under the GitHub one (the lane index did not load). */
+  notice?: React.ReactNode;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="github-direct-list">
@@ -120,6 +128,7 @@ function DirectList({
           <DirectGithubStateNotice error={error} repo={repo} items={noun} onRetry={onRefresh} />
         </div>
       ) : null}
+      {notice ? <div className="shrink-0 px-4 pt-3">{notice}</div> : null}
       <div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="list" aria-label={noun}>
         {loading && rows.length === 0 ? (
           <div className="flex items-center gap-2 p-3 text-[12px] text-[color:var(--kit-text-3)]">
@@ -148,6 +157,12 @@ function DirectList({
                   </span>
                 </span>
               </button>
+              {row.lanes?.length ? (
+                // Beside the row's button, not inside it: a lane opens in ADE, the row opens GitHub.
+                <div className="flex min-w-0 flex-wrap gap-1 pb-1.5 pl-[30px] pr-2">
+                  {row.lanes.map((mention) => <LaneMentionChip key={mention.key} mention={mention} />)}
+                </div>
+              ) : null}
             </div>
           ))
         )}
@@ -183,10 +198,18 @@ function issueRow(issue: GithubDirectIssue): DirectRow {
   };
 }
 
-/** The open pull requests of `repo`; a null repo reads nothing (the page is hidden). */
-export function DirectPrsList({ repo }: { repo: PrsRepoRef | null }) {
+/**
+ * The open pull requests of `repo`; a null repo reads nothing (the page is
+ * hidden). The account lane index is read once for the repository (`origin`,
+ * else `repo` on github.com), so each row names its lanes on every machine.
+ */
+export function DirectPrsList({ repo, origin = null }: { repo: PrsRepoRef | null; origin?: string | null }) {
   const read = useAccountGithubPulls(repo, { state: "open" });
-  const rows = React.useMemo(() => read.pulls.map(pullRow), [read.pulls]);
+  const mentions = useLaneMentionsByPr(origin ?? (repo ? `https://github.com/${repo.owner}/${repo.name}` : null), repo != null);
+  const rows = React.useMemo(
+    () => read.pulls.map((pull) => ({ ...pullRow(pull), lanes: mentions.byPr.get(pull.number) })),
+    [mentions.byPr, read.pulls],
+  );
   if (!repo) return null;
   return (
     <DirectList
@@ -198,7 +221,19 @@ export function DirectPrsList({ repo }: { repo: PrsRepoRef | null }) {
       loading={read.loading}
       refreshing={read.refreshing}
       truncated={read.truncated}
-      onRefresh={() => void read.refresh()}
+      onRefresh={() => {
+        void read.refresh();
+        mentions.retry();
+      }}
+      notice={mentions.failed ? (
+        <AccountReadFailed
+          id="pr-lane-mentions"
+          what="which lanes these pull requests are on"
+          code={mentions.failed.code}
+          message={mentions.failed.message}
+          onRetry={mentions.retry}
+        />
+      ) : null}
     />
   );
 }

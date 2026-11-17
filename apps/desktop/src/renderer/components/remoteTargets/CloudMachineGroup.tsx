@@ -2,6 +2,9 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { ArrowClockwise, CircleNotch, GitBranch, Sun, UserMinus } from "@phosphor-icons/react";
 import {
   cloudAccountBanner,
+  cloudHoursLeftMilli,
+  formatCloudHours,
+  type CloudAccountState,
   cloudMachineSelfUpdating,
   cloudOutOfHours,
   describeCloudMachineSize,
@@ -12,6 +15,7 @@ import {
   type CloudMachinesResult,
 } from "../../../shared/adeCloud";
 import { Banner } from "../ui/notice";
+import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { PushAllWorkButton } from "./PushAllWorkButton";
 import type { NoticeAction } from "../ui/notice/NoticeParts";
 import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
@@ -41,7 +45,6 @@ export function CloudGroupHead({
     <div className="ade-cx-section-head ade-cx-cloud-head">
       <CloudMark size={12} bold />
       {ADE_CLOUD_NAME}
-      <span className="ade-cx-count">{boxes.length}</span>
       {loading ? <CircleNotch size={11} className="animate-spin" aria-label="Checking ADE Cloud" /> : null}
       {totals.hoursRate > 0 ? (
         <span className="ade-cx-cloud-head-facts kit-num" title="How fast the computers awake now use your hours, as multiples of a Small computer.">
@@ -90,7 +93,7 @@ export function CloudGroupBanners({
         <div key="push-work" className="ade-ig-mini-rows">
           {result.machines.map((box) => (
             <div key={box.instanceId} className="ade-ig-mini-row">
-              <span className="ade-ig-mini-title">{box.name ?? box.instanceId}</span>
+              <span className="ade-ig-mini-title">{(box as CloudLaneMachine).lane?.laneName ?? "Computer without a lane"}</span>
               <PushAllWorkButton instanceId={box.instanceId} />
             </div>
           ))}
@@ -243,46 +246,52 @@ export function CloudBoxStrip({
 }
 
 /**
- * A box with no ADE row: one that is still joining, was removed from ADE, or
- * never signed in. It still uses hours when awake, so it stays in the list with its rate and
- * Delete computer.
+ * ADE Cloud as one machine in the machine list: how many lanes it has, how
+ * many are awake, and the hours left. Each lane's computer is ADE's
+ * business; Settings › ADE Cloud lists the lanes by name, with their sizes and
+ * actions. Never a computer's own name or id.
  */
-export function CloudBoxOnlyRow({
-  box,
-  accountKnown,
-  actions,
-  strip,
+export function AdeCloudMachineRow({
+  boxes,
+  account,
+  known,
+  onOpenSettings,
 }: {
-  box: CloudMachine;
-  /** Whether the account's machine list was read; otherwise "not in ADE" is unknown. */
-  accountKnown: boolean;
-  actions: MachineAction[];
-  strip: ReactNode;
+  boxes: readonly CloudMachine[];
+  account: CloudAccountState | null;
+  /** The account's computers were read; before that the row claims nothing. */
+  known: boolean;
+  onOpenSettings?: (() => void) | null;
 }) {
-  const name = box.name?.trim() || box.instanceId;
-  // A box that carries its machine key has joined (the key is written at
-  // join), so it is out of ADE, not still setting up, however new it is.
-  const joining = !box.machineKey && box.createdAtMs != null && Date.now() - box.createdAtMs < 10 * 60_000;
-  const line = !accountKnown
-    ? `On ${ADE_CLOUD_NAME}`
-    : joining
-      ? "Setting up and signing in to your account…"
-      : box.machineKey
-        ? `Not in ADE. Reconnect it from ⋯, or delete it.`
-        : `Not in ADE. Delete it if you don't need it.`;
+  const lanes = boxes.filter((box) => (box as CloudLaneMachine).lane).length;
+  const awake = cloudGroupTotals(boxes).running;
+  const hoursLeft = account ? formatCloudHours(cloudHoursLeftMilli(account)) : null;
+  const line = !known
+    ? "Your account's cloud machine"
+    : lanes === 0
+      ? "No lanes yet. Pick ADE Cloud in Run on to start one."
+      : `${lanes} ${lanes === 1 ? "lane" : "lanes"}, ${awake === 0 ? "all asleep" : `${awake} awake`}`;
   return (
-    <div style={machineRowStyle} data-cloud-box-only={box.instanceId}>
+    <div style={machineRowStyle} data-ade-cloud-machine="">
       <div className="ade-cx-row-grid">
         <span className="ade-cx-cloud-avatar" aria-hidden>
           <CloudMark size={18} bold />
         </span>
         <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
-          <span style={nameStyle}>{name}</span>
-          <span style={subTextStyle}>{line}</span>
+          <span style={nameStyle}>{ADE_CLOUD_NAME}</span>
+          <span style={subTextStyle}>
+            {line}
+            {hoursLeft != null ? <span className="kit-num">{`, ${hoursLeft} h left`}</span> : null}
+          </span>
         </div>
-        <MachineActionsMenu label={`Actions for ${name}`} actions={actions} />
+        {onOpenSettings ? (
+          <div className="ade-cx-row-actions">
+            <button type="button" onClick={onOpenSettings} style={{ ...connectButtonStyle, marginRight: 4 }}>
+              Open
+            </button>
+          </div>
+        ) : <span />}
       </div>
-      {strip}
     </div>
   );
 }

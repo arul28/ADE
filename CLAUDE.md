@@ -15,6 +15,12 @@ and the Work tab lists chats, CLIs and shells from every connected machine at
 once. A lane owns its machine, and its chats and terminals live there and only
 there.
 
+ADE also works with no computer of your own. Every account has ADE Cloud, one
+machine in every machine list and "Run on" menu. Underneath, each cloud lane
+has its own computer with its own pin, so the rules below apply to it too.
+Reading a cloud lane (saved chats, session copies, its Git summary) comes from
+the account and never wakes its computer; only doing (send, run, Git) wakes it.
+
 So every action that can be done for something on another machine (a chat, a
 session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
 

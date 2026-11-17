@@ -273,8 +273,11 @@ export function WorkToolPickMachineState({
   read,
   viewOnly,
   onChoose,
+  onAdeCloud = false,
 }: {
   kind: DeviceKind;
+  /** The chat runs on ADE Cloud: Android comes there later; Apple simulators stream from a Mac. */
+  onAdeCloud?: boolean;
   /** The machines that can run it, offline ones too. */
   machines: readonly ToolMachine[];
   /** Whether the account's machine list was read: an unread list is not an empty one. */
@@ -284,7 +287,11 @@ export function WorkToolPickMachineState({
   onChoose: ((machine: ToolMachine) => void) | null;
 }) {
   const noun = DEVICE_KINDS[kind].noun;
-  const title = kind === "ios" ? "Apple simulators run on a Mac" : `This machine can't run the ${noun}`;
+  const title = kind === "ios"
+    ? (onAdeCloud ? "Apple simulators stream here from a Mac" : "Apple simulators run on a Mac")
+    : onAdeCloud && kind === "android"
+      ? "Android comes to ADE Cloud later"
+      : `This machine can't run the ${noun}`;
   const somewhere = kind === "ios" ? "a Mac" : "a machine that can run it";
   let line: string;
   if (!machines.length && read === "pending") line = "Looking for your machines…";

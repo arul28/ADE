@@ -5,6 +5,7 @@ import type { ComposerDraftStore } from "./chatLiveEvents";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { isImeComposing } from "../../lib/imeComposition";
+import { ipcErrorMessage } from "../../lib/format";
 import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
@@ -3049,6 +3050,8 @@ function AgentChatComposerImpl({
   const [attachmentQuery, setAttachmentQuery] = useState("");
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentResults, setAttachmentResults] = useState<AgentChatFileRef[]>([]);
+  /** The sentence of a file search that failed (a lane at rest needs its computer), shown instead of "No matching files". */
+  const [attachmentSearchError, setAttachmentSearchError] = useState<string | null>(null);
   const [attachmentCursor, setAttachmentCursor] = useState(0);
   const [attachError, setAttachError] = useState<string | null>(null);
   // Files whose staging failed for a reason a second attempt could fix — a
@@ -4238,6 +4241,7 @@ function AgentChatComposerImpl({
     if (!query.length) {
       setAttachmentBusy(false);
       setAttachmentResults([]);
+      setAttachmentSearchError(null);
       setAttachmentCursor(0);
       return;
     }
@@ -4247,10 +4251,15 @@ function AgentChatComposerImpl({
       onSearchAttachments(query)
         .then((results) => {
           if (cancelled) return;
+          setAttachmentSearchError(null);
           setAttachmentResults(results.filter((r) => !attachedPaths.has(r.path)));
           setAttachmentCursor(0);
         })
-        .catch(() => { if (!cancelled) setAttachmentResults([]); })
+        .catch((error: unknown) => {
+          if (cancelled) return;
+          setAttachmentResults([]);
+          setAttachmentSearchError(ipcErrorMessage(error) || "ADE couldn't search the files. Try again.");
+        })
         .finally(() => { if (!cancelled) setAttachmentBusy(false); });
     }, 120);
     return () => { cancelled = true; window.clearTimeout(timeout); };
@@ -9436,6 +9445,9 @@ function AgentChatComposerImpl({
                       <span className="truncate">{result.path}</span>
                     </button>
                   ))
+                ) : attachmentSearchError ? (
+                  // Why the search failed (a lane at rest needs its computer): a sentence to read, not a placeholder.
+                  <div className="px-3 py-2 text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/75">{attachmentSearchError}</div>
                 ) : (
                   <div className="px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/25">No matching files.</div>
                 )}

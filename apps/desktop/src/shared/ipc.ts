@@ -1206,6 +1206,18 @@ export const IPC = {
   cloudSavedChatsList: "ade.cloud.savedChats.list",
   cloudSavedChatsRead: "ade.cloud.savedChats.read",
   cloudSavedChatsDelete: "ade.cloud.savedChats.delete",
+  /**
+   * ADE with no computer (`main/services/adeCloud/adeCloudReadIpc.ts`): a
+   * tab bound to ADE Cloud, the account reads behind it, and the message
+   * queue of an existing cloud chat.
+   */
+  adeCloudOpenProject: "ade.adeCloud.openProject",
+  adeCloudProjectOverview: "ade.adeCloud.projectOverview",
+  adeCloudGitSummary: "ade.adeCloud.gitSummary",
+  adeCloudSavedSessions: "ade.adeCloud.savedSessions",
+  adeCloudChatMessages: "ade.adeCloud.chatMessages.list",
+  adeCloudChatMessageCancel: "ade.adeCloud.chatMessages.cancel",
+  adeCloudAccountCall: "ade.adeCloud.accountCall",
   cloudListMachines: "ade.cloud.listMachines",
   cloudMachineAction: "ade.cloud.machineAction",
   cloudGetAgentLimits: "ade.cloud.getAgentLimits",
@@ -1238,6 +1250,12 @@ export const IPC = {
   /** C4: can a new cloud computer clone this repository with the account's GitHub sign-in? Account-level, no pin. The launch runs the same check itself; no renderer surface calls this yet. */
   cloudGitPreflight: "ade.cloud.gitPreflight",
   cloudLaunchSignInCode: "ade.cloud.launchSignInCode",
+  /** A message for an existing ADE Cloud chat, through the account's queue (`POST /cloud/chats/:m/:c/messages`). Account-level, no pin. */
+  cloudChatMessageSend: "ade.cloud.chatMessageSend",
+  /** One server launch's record (`GET /cloud/launches/:id`), for a launch the queue started. Account-level, no pin. */
+  cloudServerLaunchStatus: "ade.cloud.serverLaunchStatus",
+  /** Which provider sign-ins the account carries to ADE Cloud (`GET /cloud/sign-ins` `carried`). Account-level, no pin. */
+  cloudCarriedSignIns: "ade.cloud.carriedSignIns",
   /** Sign-ins for cloud machines: the person's provider sign-ins, given to every new cloud machine. */
   cloudSignInStatus: "ade.cloud.cloudSignInStatus",
   cloudSignInClaudeStart: "ade.cloud.cloudSignInClaudeStart",

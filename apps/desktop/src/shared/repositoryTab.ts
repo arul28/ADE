@@ -211,7 +211,7 @@ export type RepositoryCopyInputs = {
   machineNames?: Readonly<Record<string, string>>;
   /** A lane's own ADE Cloud computer (`adeCloudLaneComputerForMachine`). */
   isAdeCloudMachine?: (machine: { hostname: string | null; machineKey: string | null }) => boolean;
-  /** What an ADE Cloud computer shows ("Cloud · <lane>"), never its instance id; null for any other machine. */
+  /** What an ADE Cloud computer shows ("ADE Cloud"), never its instance id; null for any other machine. */
   adeCloudMachineLabel?: (machine: { hostname: string | null; machineKey: string | null }) => string | null;
 };
 

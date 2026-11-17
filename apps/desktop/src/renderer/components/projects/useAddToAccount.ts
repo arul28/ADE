@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { extractError } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
+import { adeCloudProjectOf } from "../../state/adeCloudTabs";
 import { accountProjectListEpoch, noteAccountProjectChange } from "../../state/accountProjectListClient";
 import { showToast } from "../app/toast/toastStore";
 import type { AccountProjectChangeResult, AccountProjectView } from "../../../shared/accountProject";
 
-/** A project just added to the account: the list learns it, and its tab opens (no computer has it yet). */
+/** A project just added to the account: the list learns it, and its tab opens on ADE Cloud (no computer has it yet). */
 export function openAddedAccountProject(project: AccountProjectView): void {
   noteAccountProjectChange({ added: project });
-  useAppStore.getState().showNoMachineTab({ id: project.id, displayName: project.name, iconDataUrl: null });
+  void useAppStore.getState().openAdeCloudProject(adeCloudProjectOf(project)).catch(() => undefined);
 }
 
 type AccountAddAnswer = AccountProjectChangeResult;

@@ -1540,7 +1540,7 @@ function secretsMatch(left: string, right: string): boolean {
  * a transport choice on the directory side; the directory sends this header
  * over either transport. Unset secret fails closed with 503, never open.
  */
-function assertDirectoryProvenance(
+export function assertDirectoryProvenance(
   request: Request,
   env: AttentionRelayEnv,
 ): { ok: true } | { response: Response } {

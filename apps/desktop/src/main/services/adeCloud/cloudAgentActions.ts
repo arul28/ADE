@@ -97,7 +97,7 @@ import { buildCloudTierRequestCard, cloudJoinApprovalWaitText } from "../../../s
 import { buildCloudAccountStatus, CLOUD_DAILY_LIMIT_SETTING, type CloudAccountStatus } from "./cloudAccountStatus";
 import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import { countAgentMadeToday, type createCloudMachines } from "./cloudMachines";
-import type { CloudAgentLimitsStore } from "./cloudSleep";
+import { cloudAgentLimitsChanges, type CloudAgentLimitsStore } from "./cloudSleep";
 
 /**
  * Who is asking, stamped by the RPC server from the caller's session; never
@@ -1148,7 +1148,9 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
           confirm: "Allow it",
         });
       }
-      return await deps.limits.write(next);
+      // Only the changed fields go to the account server (it keeps the rest, and refuses a change made in between).
+      // Signed out or an older server: the whole value, as before.
+      return (await deps.limits.save?.(cloudAgentLimitsChanges(current, next))) ?? await deps.limits.write(next);
     },
   };
 }

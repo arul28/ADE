@@ -1013,6 +1013,12 @@ export type LaneDependencyStatus = {
   defaultTemplateId: string | null;
   templateCount: number;
   checkedAt: string;
+  /**
+   * The main checkout's ignored `.env` files (relative POSIX paths, at most
+   * 20), for the tip that imports one to ADE secrets. Names only. Absent from
+   * an older machine.
+   */
+  envFiles?: string[];
 };
 
 export type GetLaneDependencyStatusArgs = {

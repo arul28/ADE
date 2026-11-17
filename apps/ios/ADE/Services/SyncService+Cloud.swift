@@ -624,183 +624,8 @@ enum CloudWakeResult: Equatable {
 // connected computer is needed, so the work of a computer this phone never
 // connected to still lists, and opening it wakes the computer.
 
-/// One ADE Cloud computer as the account server lists it.
-struct CloudServerInstance: Decodable, Equatable {
-  let id: String
-  let name: String?
-  let status: String
-  let pastDue: Bool
-  let metadata: [String: String]
-
-  private enum CodingKeys: String, CodingKey { case id, name, status, pastDue, metadata }
-
-  init(id: String, name: String?, status: String, pastDue: Bool, metadata: [String: String]) {
-    self.id = id
-    self.name = name
-    self.status = status
-    self.pastDue = pastDue
-    self.metadata = metadata
-  }
-
-  init(from decoder: Decoder) throws {
-    let c = try decoder.container(keyedBy: CodingKeys.self)
-    id = try c.decode(String.self, forKey: .id)
-    name = c.lenient(String.self, forKey: .name)
-    status = c.lenient(String.self, forKey: .status) ?? ""
-    pastDue = c.lenient(Bool.self, forKey: .pastDue) ?? false
-    metadata = c.lenient([String: String].self, forKey: .metadata) ?? [:]
-  }
-
-  private func fact(_ key: String) -> String? {
-    metadata[key].flatMap { nonEmptyTrimmed($0) }
-  }
-
-  /// The ADE machine on it (`ade_machine_key`), once that machine joined.
-  var machineKey: String? { fact("ade_machine_key") }
-  /// The lane it was made for (`ade_lane_id`, `ade_lane_name`), if any.
-  var laneId: String? { fact("ade_lane_id") }
-  var laneName: String? { fact("ade_lane_name") }
-  /// The lane's project (`github.com/owner/repo`).
-  var projectOrigin: String? { fact("ade_project_origin")?.lowercased() }
-  var isAwake: Bool { status == "running" }
-  /// Already starting: its ADE answers soon, with no wake of its own.
-  var isComingUp: Bool { status == "starting" || status == "waking" }
-  var isGone: Bool { status == "deleted" }
-}
-
-/// The server's saved copy of one chat of an ADE Cloud computer.
-struct CloudSavedChatRow: Decodable, Equatable {
-  let machineKey: String
-  let chatId: String
-  let instanceId: String?
-  let title: String?
-  let laneId: String?
-  let laneName: String?
-  let toolType: String?
-  let provider: String?
-  let model: String?
-  /// The repository (`github.com/owner/repo`).
-  let projectKey: String?
-  /// The computer's own id and folder for the project.
-  let projectId: String?
-  let projectRoot: String?
-  let lastActivityAt: String?
-  /// When the computer last saved it (ms).
-  let updatedAt: Double
-
-  private enum CodingKeys: String, CodingKey {
-    case machineKey, chatId, instanceId, title, laneId, laneName, toolType, provider, model
-    case projectKey, projectId, projectRoot, lastActivityAt, updatedAt
-  }
-
-  init(from decoder: Decoder) throws {
-    let c = try decoder.container(keyedBy: CodingKeys.self)
-    machineKey = try c.decode(String.self, forKey: .machineKey)
-    chatId = try c.decode(String.self, forKey: .chatId)
-    instanceId = c.lenient(String.self, forKey: .instanceId)
-    title = c.lenient(String.self, forKey: .title)
-    laneId = c.lenient(String.self, forKey: .laneId)
-    laneName = c.lenient(String.self, forKey: .laneName)
-    toolType = c.lenient(String.self, forKey: .toolType)
-    provider = c.lenient(String.self, forKey: .provider)
-    model = c.lenient(String.self, forKey: .model)
-    projectKey = c.lenient(String.self, forKey: .projectKey)
-    projectId = c.lenient(String.self, forKey: .projectId)
-    projectRoot = c.lenient(String.self, forKey: .projectRoot)
-    lastActivityAt = c.lenient(String.self, forKey: .lastActivityAt)
-    updatedAt = c.lenient(Double.self, forKey: .updatedAt) ?? 0
-  }
-}
-
-/// The account server's ADE Cloud routes: one bearer, a 12-second timeout
-/// (a wake waits longer), one retry after a 401 with a fresh token.
-struct CloudServerClient {
-  enum Failure: Error, Equatable {
-    /// The account has no ADE Cloud (the server answers 404 off its list).
-    case noAccess
-    case unauthorized
-    case server(Int, message: String?)
-    case transport
-    case unreadable
-  }
-
-  var baseURL: URL
-  var token: String
-  var refreshToken: (() async -> String?)?
-  var session: URLSession = .adeAccount
-
-  private struct InstanceList: Decodable { let data: [CloudServerInstance] }
-  private struct ChatList: Decodable { let chats: [CloudSavedChatRow] }
-  /// `{ error: { code, message } }` (`cloud/http.ts` `fail`).
-  private struct ErrorBody: Decodable {
-    struct Detail: Decodable { let message: String? }
-    let error: Detail?
-  }
-
-  func instances() async throws -> [CloudServerInstance] {
-    try decode(InstanceList.self, from: try await send("GET", "cloud/instances")).data
-  }
-
-  /// The newest 500 saved chats of the account's computers.
-  func savedChats() async throws -> [CloudSavedChatRow] {
-    try decode(ChatList.self, from: try await send("GET", "cloud/chats", query: [URLQueryItem(name: "limit", value: "500")])).chats
-  }
-
-  func start(instanceId: String) async throws {
-    _ = try await send("POST", "cloud/instances/\(instanceId)/start", body: Data("{}".utf8), timeout: 120)
-  }
-
-  private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
-    do { return try JSONDecoder().decode(type, from: data) } catch { throw Failure.unreadable }
-  }
-
-  /// One call to the account server; `AccountCloudLaunches.swift` adds the launch routes.
-  func send(
-    _ method: String,
-    _ path: String,
-    query: [URLQueryItem] = [],
-    body: Data? = nil,
-    timeout: TimeInterval = 12
-  ) async throws -> Data {
-    var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
-    if !query.isEmpty { components?.queryItems = query }
-    guard let url = components?.url else { throw Failure.transport }
-    let correlationID = UUID().uuidString.lowercased()
-    func once(_ bearer: String) async throws -> (Data, HTTPURLResponse) {
-      var request = URLRequest(url: url)
-      request.httpMethod = method
-      request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
-      request.setValue("application/json", forHTTPHeaderField: "Accept")
-      request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
-      if let body {
-        request.httpBody = body
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-      }
-      request.timeoutInterval = timeout
-      request.cachePolicy = .reloadIgnoringLocalCacheData
-      do {
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw Failure.transport }
-        return (data, http)
-      } catch let failure as Failure {
-        throw failure
-      } catch {
-        throw Failure.transport
-      }
-    }
-    var (data, http) = try await once(token)
-    if http.statusCode == 401, let refreshToken,
-       let fresh = await refreshToken().flatMap({ nonEmptyTrimmed($0) }) {
-      (data, http) = try await once(fresh)
-    }
-    switch http.statusCode {
-    case 200..<300: return data
-    case 401, 403: throw Failure.unauthorized
-    case 404: throw Failure.noAccess
-    default: throw Failure.server(http.statusCode, message: (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error?.message.flatMap { nonEmptyTrimmed($0) })
-    }
-  }
-}
+// `CloudServerInstance`, `CloudSavedChatRow` and `CloudServerClient` live in
+// `CloudServerClient.swift`.
 
 @MainActor
 extension SyncService {
@@ -832,6 +657,13 @@ extension SyncService {
     cloudSavedChats = []
     // The last account's chat launches from this phone go too.
     AccountCloudLaunchStore.shared.reset()
+    // And its ADE Cloud account state, held messages and saved transcripts.
+    AccountCloudStore.shared.reset()
+    // And its saved Git summaries, CLI and shell copies, and Linear answers.
+    CloudAtRestStore.shared.reset()
+    AccountLinearCache.shared.reset()
+    // An account project scope is the last account's project.
+    clearAccountProjectScope()
     // The last account's ADE Cloud computers and wake messages go too.
     setCloudMachines([])
     cloudAccountMachineKeys = nil
@@ -862,6 +694,9 @@ extension SyncService {
   private func readCloudServer() async {
     guard let client = await cloudServerClient(),
           let owner = AccountService.shared.currentPairingAuthorization else { return }
+    // The account's state (hours, deleting soon, lanes without a computer)
+    // reads beside the computers, on the same trigger.
+    async let accountState: Void = AccountCloudStore.shared.refresh(client: client, owner: owner)
     let instances: [CloudServerInstance]?
     do {
       instances = try await client.instances()
@@ -882,6 +717,12 @@ extension SyncService {
       cloudServerLog.error("cloud_server read=chats failed error=\(String(describing: error), privacy: .public)")
       chats = nil
     }
+    // The open project's at-rest view (its CLI and shell copies, Git counts)
+    // in one read. An older server answers 404 and today's rows stay.
+    if let origin = cloudProjectOrigin {
+      await CloudAtRestStore.shared.refreshOverview(origin: origin, client: client)
+    }
+    await accountState
     // An account switch while it read: the answer is the old account's.
     guard !Task.isCancelled, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
     if instances != nil, !cloudServerReadFinished {
@@ -893,7 +734,7 @@ extension SyncService {
     }
     if let instances {
       cloudServerInstances = instances.filter { !$0.isGone }
-      // Name these computers by their lane in every machine row ("Cloud · <lane>").
+      // Note these computers as ADE Cloud: every machine row names them "ADE Cloud".
       CloudLaneComputerLabels.noteServerInstances(cloudServerInstances)
     }
     if let chats { cloudSavedChats = chats }
@@ -939,6 +780,8 @@ extension SyncService {
           ? "\(name) is no longer on this account's ADE Cloud."
           : "This account has no ADE Cloud access, so \(name) can't wake.")
       case .unauthorized: return .failed("ADE Cloud did not accept this sign-in. Sign in again to wake \(name).")
+      // The server said no and why (blocked, out of hours, too many awake): its sentence.
+      case .refused(_, let message): return .failed(message)
       case .transport: return .failed("ADE Cloud did not answer. Check the connection and try again.")
       case .unreadable: return .failed("ADE Cloud sent an answer this app can't read.")
       case .server(let status, let message):
@@ -955,7 +798,10 @@ extension SyncService {
   /// lane that this phone has no connection to, with the rows its saved
   /// copies give. `skip` holds the keys the fleet already lists.
   func restingCloudMachineRows(skip: Set<String>) -> [(fleetKey: String, name: String, projects: [RemoteRosterProject])] {
-    let accountMachines = AccountService.shared.machines
+    // Indexed once per pass: an account with hundreds of cloud lanes must
+    // not scan every list for every computer.
+    var accountByKey: [String: AccountMachine] = [:]
+    for machine in AccountService.shared.machines { accountByKey[machine.machineKey] = machine }
     var byMachine: [String: [CloudSavedChatRow]] = [:]
     for row in cloudSavedChats { byMachine[row.machineKey, default: []].append(row) }
     var laneOnly: [String: CloudServerInstance] = [:]
@@ -965,32 +811,92 @@ extension SyncService {
     }
     var out: [(fleetKey: String, name: String, projects: [RemoteRosterProject])] = []
     for machineKey in Set(byMachine.keys).union(laneOnly.keys).sorted() {
-      guard let machine = accountMachines.first(where: { $0.machineKey == machineKey }),
-            let deviceId = nonEmptyTrimmed(machine.deviceId) else { continue }
-      let fleetKey = HiddenMachineStore.fleetKey(deviceId: deviceId)
-      guard !skip.contains(fleetKey), fleetKey != focusedMachineKey,
-            !HiddenMachineStore.shared.isHidden(identity: deviceId.lowercased()) else { continue }
-      let projects = cloudSavedRosterProjects(rows: byMachine[machineKey] ?? [], box: laneOnly[machineKey])
+      let fleetKey: String
+      if let machine = accountByKey[machineKey], let deviceId = nonEmptyTrimmed(machine.deviceId) {
+        fleetKey = HiddenMachineStore.fleetKey(deviceId: deviceId)
+        guard !HiddenMachineStore.shared.isHidden(identity: deviceId.lowercased()) else { continue }
+      } else {
+        // A computer that left the account (deleted): its saved chats still
+        // list, read from the server, and a send continues them on a new
+        // computer through the server's queue.
+        guard byMachine[machineKey]?.isEmpty == false else { continue }
+        fleetKey = cloudSavedFleetKey(accountMachineKey: machineKey)
+      }
+      guard !skip.contains(fleetKey), fleetKey != focusedMachineKey else { continue }
+      let projects = cloudSavedRosterProjects(
+        rows: byMachine[machineKey] ?? [],
+        box: laneOnly[machineKey],
+        sessions: CloudAtRestStore.shared.sessions(machineKey: machineKey)
+      )
       guard !projects.isEmpty else { continue }
-      let box = cloudServerInstances.first { $0.machineKey == machineKey }
-      out.append((fleetKey, machine.displayName.isEmpty ? (box?.laneName ?? "ADE Cloud") : machine.displayName, projects))
+      // ADE Cloud is one machine to the person: never a computer's own name.
+      out.append((fleetKey, ADECloudMachine.name, projects))
     }
     return out
+  }
+
+  /// The open project's cloud lanes, one row each, for a new chat on an
+  /// existing cloud lane. Ids are namespaced to each lane's own computer
+  /// (`workRemoteLaneId`). A cloud computer's main checkout is left out.
+  func cloudLanesForActiveProject() -> [LaneSummary] {
+    var seen = Set<String>()
+    var out: [LaneSummary] = []
+    for repo in listedRemoteReposForActiveProject() where isCloudFleetKey(repo.machineKey) {
+      for lane in repo.lanes where lane.laneType != "primary" && lane.id != "saved-chats" {
+        guard seen.insert(lane.id).inserted else { continue }
+        var summary = lane.asLaneSummary()
+        summary.id = workRemoteLaneId(machineKey: repo.machineKey, laneId: lane.id)
+        out.append(summary)
+      }
+    }
+    return out
+  }
+
+  /// The fleet key of a saved chat's computer that left the account: no
+  /// device id names it, so its account machine key does.
+  func cloudSavedFleetKey(accountMachineKey: String) -> String {
+    ADECloudMachine.savedFleetKeyPrefix + accountMachineKey.lowercased()
+  }
+
+  /// The account machine key behind an ADE Cloud fleet key: the account's
+  /// machine, or a computer that left the account (`cloudSavedFleetKey`).
+  func cloudAccountMachineKey(fleetKey: String) -> String? {
+    if fleetKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix) {
+      return String(fleetKey.dropFirst(ADECloudMachine.savedFleetKeyPrefix.count))
+    }
+    return AccountService.shared.machine(forFleetKey: fleetKey)?.machineKey
+  }
+
+  /// Whether a fleet key names an ADE Cloud computer (asleep, awake or deleted).
+  func isCloudFleetKey(_ fleetKey: String?) -> Bool {
+    guard let fleetKey else { return false }
+    return cloudMachineFleetKeys.contains(fleetKey) || fleetKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix)
+  }
+
+  /// The account server's row for the computer behind a fleet key.
+  func cloudServerInstance(fleetKey: String?) -> CloudServerInstance? {
+    guard let fleetKey, let accountKey = cloudAccountMachineKey(fleetKey: fleetKey) else { return nil }
+    return cloudServerInstances.first { $0.machineKey?.lowercased() == accountKey.lowercased() }
   }
 
   /// The saved copies of one ADE Cloud computer's account-server rows as roster
   /// projects, for a connection whose own roster is still empty.
   func cloudSavedRosterProjects(fleetKey: String) -> [RemoteRosterProject] {
-    guard let machineKey = AccountService.shared.machine(forFleetKey: fleetKey)?.machineKey else { return [] }
+    // A computer that left the account lists under its saved key.
+    guard let machineKey = cloudAccountMachineKey(fleetKey: fleetKey) else { return [] }
     let box = cloudServerInstances.first { $0.machineKey == machineKey && $0.laneId != nil }
-    return cloudSavedRosterProjects(rows: cloudSavedChats.filter { $0.machineKey == machineKey }, box: box)
+    return cloudSavedRosterProjects(
+      rows: cloudSavedChats.filter { $0.machineKey == machineKey },
+      box: box,
+      sessions: CloudAtRestStore.shared.sessions(machineKey: machineKey)
+    )
   }
 
   /// One roster project per repository: its lanes and its chats, as the
   /// computer last saved them. A lane computer with no saved chat still
   /// shows its lane. Rows with no repository are left out (they belong to no
   /// project's list).
-  private func cloudSavedRosterProjects(rows: [CloudSavedChatRow], box: CloudServerInstance?) -> [RemoteRosterProject] {
+  private func cloudSavedRosterProjects(rows: [CloudSavedChatRow], box: CloudServerInstance?, sessions: [CloudSessionRow] = []) -> [RemoteRosterProject] {
     var order: [String] = []
     var projects: [String: RemoteRosterProject] = [:]
     func project(for origin: String, projectId: String?, root: String?) -> RemoteRosterProject {
@@ -1021,9 +927,13 @@ extension SyncService {
       if !entry.chats.contains(where: { $0.id == row.chatId }) {
         let activity = nonEmptyTrimmed(row.lastActivityAt)
           ?? ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: row.updatedAt / 1000))
+        // A subagent chat files under its parent chat, as on the computer.
+        let parent = nonEmptyTrimmed(row.parentChatId)
         entry.chats.append(RemoteRosterChat(
           id: row.chatId,
           laneId: laneId,
+          spawnKind: parent == nil ? nil : AgentChatSpawnKind(wireValue: row.spawnKind ?? ""),
+          orchestrationParentSessionId: parent,
           title: nonEmptyTrimmed(row.title) ?? "Saved chat",
           provider: row.provider,
           model: row.model,
@@ -1036,8 +946,35 @@ extension SyncService {
     }
     if let box, let laneId = box.laneId, let origin = box.projectOrigin {
       var entry = project(for: origin, projectId: nil, root: nil)
+      if let index = entry.lanes.firstIndex(where: { $0.id == laneId }) {
+        if entry.lanes[index].branchRef == nil { entry.lanes[index].branchRef = box.laneBranch }
+      } else {
+        entry.lanes.append(RemoteRosterLane(id: laneId, name: box.laneName ?? "Cloud lane", color: nil, icon: nil, laneType: "worktree", branchRef: box.laneBranch))
+      }
+      projects[origin] = entry
+    }
+    // The saved copies of its CLI and shell sessions: read-only rows. Their
+    // ids never name a live session, so a tap opens the copy.
+    for copy in sessions {
+      guard let origin = copy.projectKey.flatMap({ nonEmptyTrimmed($0) }) else { continue }
+      var entry = project(for: origin, projectId: nil, root: nil)
+      let laneId = nonEmptyTrimmed(copy.laneId) ?? "saved-chats"
       if !entry.lanes.contains(where: { $0.id == laneId }) {
-        entry.lanes.append(RemoteRosterLane(id: laneId, name: box.laneName ?? "Cloud lane", color: nil, icon: nil, laneType: "worktree", branchRef: nil))
+        entry.lanes.append(RemoteRosterLane(id: laneId, name: nonEmptyTrimmed(copy.laneName) ?? "Saved chats", color: nil, icon: nil, laneType: "worktree", branchRef: nil))
+      }
+      let rowId = cloudSessionCopyRowId(machineKey: copy.machineKey, sessionId: copy.sessionId)
+      if !entry.chats.contains(where: { $0.id == rowId }) {
+        entry.chats.append(RemoteRosterChat(
+          id: rowId,
+          laneId: laneId,
+          title: nonEmptyTrimmed(copy.title) ?? (copy.isShell ? "Shell" : "CLI session"),
+          provider: nil,
+          model: nil,
+          toolType: copy.isShell ? "shell" : (nonEmptyTrimmed(copy.toolType) ?? "cli"),
+          status: copy.status == "running" ? .idle : .ended,
+          lastActivityAt: nonEmptyTrimmed(copy.lastActivityAt)
+            ?? ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: copy.updatedAt / 1000))
+        ))
       }
       projects[origin] = entry
     }
@@ -1053,7 +990,9 @@ extension SyncService {
   /// heartbeat from before it slept can still read "online" for a while, and
   /// its ADE answers only once it is up, so a failed pairing is tried again
   /// (after a new heartbeat, a new address, or 15 s) until the wake time ends.
-  func pairRestingCloudMachine(fleetKey: String, name: String, waking: Bool = false) async -> CloudWakeResult {
+  /// `waitsForStart: false` (a read: connect, never wake) pairs only a
+  /// computer the account lists online now, and else answers `.skipped`.
+  func pairRestingCloudMachine(fleetKey: String, name: String, waking: Bool = false, waitsForStart: Bool = true) async -> CloudWakeResult {
     guard machineFleet?.connection(for: fleetKey) == nil,
           let accountKey = AccountService.shared.machine(forFleetKey: fleetKey)?.machineKey,
           cloudMachineFleetKeys.contains(fleetKey),
@@ -1068,6 +1007,9 @@ extension SyncService {
     var lastAttempt: (at: ContinuousClock.Instant, signal: CloudPairingSignal)?
     while !Task.isCancelled {
       guard AccountService.shared.isPairingCommitAuthorized(owner) else { return .skipped }
+      // A read: a computer that is not up has nothing to pair with. Waiting
+      // here would read the account every 3 s and end in a false failure.
+      if !waitsForStart, current()?.online != true { return .skipped }
       if let machine = current(), machine.online {
         let signal = CloudPairingSignal(machine)
         let due = lastAttempt.map { attempt in

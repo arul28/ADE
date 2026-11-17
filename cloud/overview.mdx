@@ -1,12 +1,22 @@
 ---
 title: "ADE Cloud"
-description: "Run a lane on its own cloud computer: start one, see what it uses, and manage your plan."
+description: "ADE Cloud is a machine every account has: work with no computer of your own, see what it uses, and manage your plan."
 icon: "cloud"
 ---
 
-ADE Cloud gives a lane a computer of its own. The lane, its chats and its terminals run there, so your laptop can sleep while agents keep working, and you can follow along from the desktop app, the web app or your phone.
+ADE Cloud is one machine that every ADE account always has. You don't need a computer of your own: sign in on the web or the iPhone, connect GitHub, pick a repository, and work. ADE Cloud shows in every machine list and every **Run on** menu, next to any computers you have.
 
-Every computer belongs to your ADE account. It joins your account when it is made, sleeps when nothing runs on it, and wakes when you or an agent send it work.
+Each cloud lane gets its own computer underneath. The lane, its chats and its terminals run there, so your laptop can sleep while agents keep working, and you can follow along from the desktop app, the web app or your phone. You never manage these computers: one sleeps when nothing runs on it and wakes when you or an agent send it work.
+
+## Reading and doing
+
+- **Reading never wakes a computer.** Saved chats, CLI sessions and shells (the last 5,000 lines), the lane's branch and changed files, files and history from GitHub, pull requests, the CTO, automations, Linear and Jira come from your account or from GitHub.
+- **Doing wakes it.** Sending a message, running a command, opening a changed file or a Git action wakes the lane's computer. The screen never waits: you can leave, and the action finishes when the computer is up.
+- **A message to an asleep chat** waits on ADE's server and is delivered once, even if you close the tab.
+- **If ADE refuses to wake a computer** (out of hours, too many awake, over your plan's disk), the chat shows why. You can still read everything.
+- **Commits** on a cloud computer use your GitHub noreply address, unless you set your own Git identity.
+
+Your API keys, Passwords and secrets, provider sign-ins, launch defaults and quick slots follow your account to ADE Cloud. Moving an existing lane or chat onto ADE Cloud is not available yet.
 
 ## Start a lane on ADE Cloud
 
@@ -39,7 +49,7 @@ Add `--size small|medium|large|xlarge` to pick a size; without it ADE uses the s
 - **Hours.** Each plan has hours for the month. A Small computer uses one hour per hour awake; bigger sizes use more. A computer that sleeps uses none.
 - **Disk.** Your plan's disk is shared by all your computers at one time. It is not a monthly amount.
 - **Extra hours and extra disk.** On a paid plan you can turn them on in **Settings › ADE Cloud**, with a monthly limit for extra disk. You pay for them only while they are on.
-- **Unused computers** are cleaned up after a while. ADE warns you first and saves the lane's work to its branch; the lane stays, and its next message makes a new computer.
+- **Unused computers** are cleaned up after a while. ADE warns you first, in the lane's chats, with **Keep it**. It pushes the lane's work to its branch and saves each chat. The lane stays, and its next message makes a new computer that continues the same chat.
 
 See [the plans and what each includes](https://ade-app.dev/pricing).
 

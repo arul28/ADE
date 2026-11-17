@@ -1,29 +1,65 @@
 import SwiftUI
 
-/// One machine the New Chat page can start a chat on: the primary machine, or
-/// another machine with a checkout of the focused repository.
+/// One machine the New Chat page can start a chat on: the primary machine,
+/// another machine with a checkout of the focused repository, or ADE Cloud.
 struct WorkNewChatMachineOption: Identifiable, Equatable {
-  /// Nil for the primary (focused) machine.
+  /// Nil for the primary (focused) machine; `ADECloudMachine.id` for ADE Cloud.
   let machineKey: String?
   let name: String
   let symbol: String
   let isLive: Bool
+  /// Why ADE Cloud can't start work now (blocked, out of hours): the
+  /// server's sentence. The option still shows; it is off for new work.
+  var refusal: String? = nil
   var isPrimary: Bool { machineKey == nil }
+  var isCloud: Bool { machineKey == ADECloudMachine.id }
   var id: String { machineKey ?? "primary" }
 }
 
-/// The options: the primary machine first, then connected machines, then the
-/// ones that are not connected (a pick reconnects them).
+/// The ADE Cloud option. Always listed, also before the account server
+/// answers: every account has ADE Cloud.
+@MainActor
+func workNewChatCloudOption(store: AccountCloudStore = .shared) -> WorkNewChatMachineOption {
+  WorkNewChatMachineOption(
+    machineKey: ADECloudMachine.id,
+    name: ADECloudMachine.name,
+    symbol: ADECloudMachine.symbol,
+    isLive: true,
+    refusal: store.doingRefusal
+  )
+}
+
+/// Whether the page starts on ADE Cloud: the tabs show a project no
+/// computer of the person's own serves, or the account has no computer of
+/// its own.
+@MainActor
+func workNewChatPrefersCloud(syncService: SyncService) -> Bool {
+  if syncService.isAccountProjectScope { return true }
+  return syncService.cloudServerReadFinished && !syncService.accountHasOwnComputer(AccountService.shared.machines)
+    && syncService.activeProject != nil && syncService.connectionState != .connected
+}
+
+/// The options: the primary machine first (when a computer's project is
+/// open), then connected machines, then the ones that are not connected (a
+/// pick reconnects them), then ADE Cloud, always. Each cloud lane's own
+/// computer is never an option of its own: ADE Cloud is one machine.
 @MainActor
 func workNewChatMachineOptions(syncService: SyncService, fleet: MachineFleet) -> [WorkNewChatMachineOption] {
   let primaryName = syncService.focusedMachineDisplayName
-  var options = [WorkNewChatMachineOption(
-    machineKey: nil,
-    name: primaryName,
-    symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: primaryName),
-    isLive: syncService.connectionState == .connected
-  )]
-  let others = syncService.remoteReposForActiveProject().map { repo in
+  var options: [WorkNewChatMachineOption] = []
+  // An account project with no computer's copy: the focused computer does
+  // not hold it, so it is no option.
+  if !syncService.isAccountProjectScope, !syncService.isCloudFleetKey(syncService.focusedMachineKey) {
+    options.append(WorkNewChatMachineOption(
+      machineKey: nil,
+      name: primaryName,
+      symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: primaryName),
+      isLive: syncService.connectionState == .connected
+    ))
+  }
+  let others = syncService.remoteReposForActiveProject()
+    .filter { !syncService.isCloudFleetKey($0.machineKey) }
+    .map { repo in
     WorkNewChatMachineOption(
       machineKey: repo.machineKey,
       name: repo.machineName,
@@ -35,10 +71,11 @@ func workNewChatMachineOptions(syncService: SyncService, fleet: MachineFleet) ->
   let names = distinctMachineNames(options.map { option in
     (id: option.id, tagSource: option.machineKey ?? syncService.focusedMachineKey ?? option.id, name: option.name)
   })
-  return options.map { option in
+  let named = options.map { option in
     guard let name = names[option.id], name != option.name else { return option }
     return WorkNewChatMachineOption(machineKey: option.machineKey, name: name, symbol: option.symbol, isLive: option.isLive)
   }
+  return named + [workNewChatCloudOption()]
 }
 
 /// The name each machine shows in a picker, told apart when two share one.
@@ -129,16 +166,40 @@ struct WorkNewChatMachineDropdown: View {
 
   var body: some View {
     Menu {
-      Section("Connected") {
-        ForEach(options.filter { $0.isPrimary || $0.isLive }) { option in
-          Button {
-            onSelect(option)
-          } label: {
-            Label(option.name, systemImage: option.symbol)
+      let connected = options.filter { !$0.isCloud && ($0.isPrimary || $0.isLive) }
+      if !connected.isEmpty {
+        Section("Connected") {
+          ForEach(connected) { option in
+            Button {
+              onSelect(option)
+            } label: {
+              Label(option.name, systemImage: option.symbol)
+            }
           }
         }
       }
-      let notLive = options.filter { !$0.isPrimary && !$0.isLive }
+      // ADE Cloud is always here. When it can't start work now, the
+      // server's reason shows under it and the pick is off.
+      ForEach(options.filter(\.isCloud)) { option in
+        Section {
+          Button {
+            onSelect(option)
+          } label: {
+            if let refusal = option.refusal {
+              Label {
+                Text(option.name)
+                Text(refusal)
+              } icon: {
+                Image(systemName: option.symbol)
+              }
+            } else {
+              Label(option.name, systemImage: option.symbol)
+            }
+          }
+          .disabled(option.refusal != nil)
+        }
+      }
+      let notLive = options.filter { !$0.isPrimary && !$0.isLive && !$0.isCloud }
       if !notLive.isEmpty {
         Section("Not connected · tap to reconnect") {
           ForEach(notLive) { option in

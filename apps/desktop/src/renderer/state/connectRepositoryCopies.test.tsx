@@ -2,6 +2,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdeAccountMachine } from "../../shared/types";
+import { adeCloudBinding } from "../../shared/adeCloud/binding";
 import { useAppStore } from "./appStore";
 import { useConnectRepositoryCopies } from "./connectRepositoryCopies";
 import { publishAccountProjectList } from "./useRepositoryCopies";
@@ -72,7 +73,7 @@ describe("useConnectRepositoryCopies", () => {
 
   afterEach(() => {
     cleanup();
-    useAppStore.setState({ noMachineTabs: [], activeNoMachineTabId: null });
+    useAppStore.setState({ projectBinding: null });
     publishAccountProjectList(null);
     vi.useRealTimers();
   });
@@ -103,11 +104,9 @@ describe("useConnectRepositoryCopies", () => {
     expect(connect).toHaveBeenCalledWith(GAMMA, { background: true });
   });
 
-  it("keeps trying the copies of a no-machine tab in front, not those of the project tab behind it", async () => {
+  it("keeps trying the copies of a tab bound to ADE Cloud in front", async () => {
     useAppStore.setState({
-      projectBinding: null,
-      noMachineTabs: [{ id: "ap_atlas", displayName: "atlas", iconDataUrl: null }],
-      activeNoMachineTabId: "ap_atlas",
+      projectBinding: adeCloudBinding({ accountProjectId: "ap_atlas", displayName: "atlas", gitOriginUrl: "https://github.com/demo-org/atlas" }),
     });
     renderHook(() => useConnectRepositoryCopies());
     await act(async () => {

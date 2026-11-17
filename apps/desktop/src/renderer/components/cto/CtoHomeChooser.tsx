@@ -101,10 +101,10 @@ export function CtoHomeChooser({
   onCancel?: () => void;
 }) {
   const changing = currentName != null;
-  const { computers: laneComputers } = useAdeCloudLaneComputers();
+  const cloudIndex = useAdeCloudLaneComputers();
   const options = useMemo(
-    () => ctoHomeCandidates(machines, current?.machineId ?? null, laneComputers),
-    [current?.machineId, laneComputers, machines],
+    () => ctoHomeCandidates(machines, current?.machineId ?? null, cloudIndex),
+    [cloudIndex, current?.machineId, machines],
   );
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -161,10 +161,10 @@ export function CtoHomeChooser({
           {job ? `Setting up ${name} on ADE Cloud` : changing ? `Move ${name}` : `Where should ${name} live?`}
         </h1>
         {job ? (
-          <p className="m-0 mt-1.5 max-w-full truncate text-[12.5px] text-[var(--kit-text-2)]" title={job.computerName}>
+          <p className="m-0 mt-1.5 max-w-full truncate text-[12.5px] text-[var(--kit-text-2)]">
             {job.phase === "failed"
               ? "Stopped partway. Try again, or cancel to delete the computer."
-              : job.reused ? `Using ${job.computerName} again` : "A few minutes. You can leave this page."}
+              : job.reused ? "Using its ADE Cloud computer again" : "A few minutes. You can leave this page."}
           </p>
         ) : changing ? (
           <p

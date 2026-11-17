@@ -90,13 +90,39 @@ selected automatically. Creating a lane on another machine does not rebind the
 project tab. The new lane is owned by that machine, and later detail, git,
 rebase, and batch actions route to its binding.
 
-The Lanes tab presents one flat list across machines, with machine chips and
-machine filters when the project exists on multiple computers. Offline lanes
-remain visible with actions disabled. Selection and routing use both machine
-id and lane id because lane ids can be copied between machines. Mixed batch
-selections are split by owner before their actions run. The shared router lives
-in `renderer/state/laneMachineRouting.ts`; unknown and unroutable targets fail
-closed instead of falling back to the tab's current machine.
+The Lanes tab shows one flat list across machines, with machine chips and
+machine filters when the project exists on more than one computer
+(`renderer/components/lanes/useLanesPageMachines.ts`):
+
+- **ADE Cloud is one machine.** Every ADE Cloud lane is listed under one
+  "ADE Cloud" chip. The lane's own computer never gets a chip or a row.
+- **Offline own computers are hidden.** Their lanes leave the list. When the
+  tab's own computer is offline, the page shows one line that names it.
+- **An asleep ADE Cloud computer is not offline.** Its lanes stay listed, from
+  the account's saved copy.
+- **Selection and routing** use both the machine id and the lane id, because
+  lane ids can be copied between machines. Mixed batch selections are split
+  by owner before their actions run. The shared router is
+  `renderer/state/laneMachineRouting.ts`. Unknown and unroutable targets fail
+  closed. They never fall back to the tab's own machine.
+
+### An asleep ADE Cloud lane
+
+Opening a lane whose ADE Cloud computer is asleep never wakes it
+(`renderer/components/lanes/RestingCloudLaneDetail.tsx`):
+
+- The header says the computer is asleep and that the view is the lane as it
+  was last saved.
+- The Git line comes from the account's project overview
+  (`window.ade.adeCloud.projectOverview`): the branch, ahead and behind its
+  upstream (or "not pushed"), and when the computer last checked.
+- The changed files come from the lane pin's `diff.getChanges`. The preload
+  answers that read from the account while the computer rests
+  (`renderer/state/adeCloudRestingReads.ts`). The view lists up to 200 files.
+- The view reads once when the lane opens. It has no timer.
+- **Wake to run** is the only control that wakes the computer
+  (`useAdeCloudLaneWake`). The full lane detail opens when the computer is
+  connected. A refusal shows the server's sentence.
 
 ### One lane per ADE Cloud computer
 
@@ -221,7 +247,7 @@ Runtime services (`apps/ade-cli/src/services/lanes/` and friends):
 - `apps/desktop/src/main/services/lanes/deletedLaneSnapshots.ts` keeps what a
   lane delete or a discard would lose as git refs for 30 days, and restores it;
   see Saved work in [worktree-isolation.md](./worktree-isolation.md).
-- `apps/ade-cli/src/services/projects/projectRuntime.ts` exposes the
+- `apps/ade-cli/src/bootstrap.ts` exposes the
   `lane` action domain (CRUD, runtime isolation, branch switching,
   templates, diagnostics) over JSON-RPC; remote runtimes are reached
   over the SSH-tunneled equivalent.
@@ -271,7 +297,9 @@ Renderer components:
 | `renderer/components/app/App.tsx` | Project tab host and route keep-alive shell. Keeps the Work surface mounted after first visit and now does the same for `/lanes`, parking the inactive Lanes surface with `inert` / `aria-hidden` instead of unmounting it. Parked route and project surfaces also set `data-ade-animation-state="paused"`, which lets the global renderer stylesheet stop hidden CSS animations until the surface is active again. Surfaces are keyed by runtime binding (`local:<root>` or the remote binding key) so local and remote views of the same root do not share lane/work state. During cold project switches it renders a transition veil over the old project surface until the target project hydrates. |
 | `renderer/components/app/toast/{toastStore.ts,ToastStack.tsx,ToastViewport.tsx,useLaneEventToasts.ts}` | Shared renderer toast primitive. `ToastViewport` is mounted once from `AppShell`; `ToastStack` renders each toast card there. `useLaneEventToasts` subscribes to `lanes.onLifecycleEvent` and `lanes.rebaseSubscribe`, turning lane-created/archive/delete and final automated rebase outcomes into compact global notices; created-lane toasts include a `View` action that routes to `/lanes?laneId=...&focus=single`. Lane-created and lane-deleted toasts are suppressed for a lane a new-lane chat launch owns (`isChatLaunchLane` in `state/chatLaunchStore.ts`), because the launch's own setup card shows that lane's birth and cancellation. |
 | `renderer/components/lanes/LanesPage.tsx` | Lanes page, lane selection, and dialogs. |
-| `renderer/components/lanes/LanePrBadgePopover.tsx`, `LanePrHoverCard.tsx` | Current-branch-only lane badge and its shared fixed-position portal. The primary chip chooses the newest open/draft PR before falling back to recent terminal activity; the complete current-branch list is clamped to the viewport and dismissed on viewport scroll/resize so row/card overflow cannot hide it, while its own list remains scrollable. |
+| `renderer/components/lanes/useLanesPageMachines.ts` | The page's view of every machine: one flat row list, the machine chips (ADE Cloud as one chip), offline own computers hidden, asleep ADE Cloud computers kept, and `resolveLaneTarget`, the one resolver every lane action goes through. |
+| `renderer/components/lanes/RestingCloudLaneDetail.tsx` | The opened lane of an asleep ADE Cloud computer: the saved Git line and changed files from the account, and **Wake to run**. See [An asleep ADE Cloud lane](#an-asleep-ade-cloud-lane). |
+| `renderer/components/lanes/LanePrBadgePopover.tsx` | Current-branch-only lane badge and its shared fixed-position portal. The primary chip chooses the newest open/draft PR before falling back to recent terminal activity; the complete current-branch list is clamped to the viewport and dismissed on viewport scroll/resize so row/card overflow cannot hide it, while its own list remains scrollable. |
 | `renderer/components/lanes/lanePageModel.ts` | Pure lane-page selectors and URL/deletion helpers used by `LanesPage` and unit tests. Owns `selectLanePrs` — strictly lane-owned, because callers pass the project-wide PR list, with only the branch half relaxed so a PR this lane owns and a chat linked stays visible after a branch move, and one gate in front of all of it: a primary lane parked on its base branch (live HEAD, drift-aware) returns no PRs at all, because it cannot be deleted and a chat-linked merged PR would otherwise stay pinned to `main` forever — and its chat-side counterpart `selectChatPrs`, which adds any pull request this chat linked even when another lane owns it or the lane surface dropped it (see [Pull requests](../pull-requests/README.md#lane-surfaces-and-chat-surfaces-need-two-different-selectors)). Also base-branch suppression for the primary lane, lane branch/PR role derivation (`active` vs `previous`) for history-aware callers, multi-PR ordering, same-repo GitHub PR guardrails for fork branch-name collisions, ADE-vs-GitHub PR tag precedence, terminal-state GitHub overrides for stale ADE PR rows, deep-link lane selection, action-deeplink query cleanup, create-lane request normalization, delete-start selection fallback, batch delete planning, and `runLaneDeleteBatchWithConcurrency` for limited parallel teardown inside each batch. |
 | `renderer/hooks/useLaneListInvalidation.ts` | Shared lane-list invalidation hook used by Lanes, Graph, and PRs. It subscribes to `window.ade.lanes.onLifecycleEvent`, clears renderer read coalescing immediately, debounces a decorated `refreshLanes` call, runs one delayed follow-up refresh to cover daemon/write-to-read races, and self-heals stale visible lists on focus/visibility without polling. Hidden lifecycle events are replayed when the surface becomes visible. |
 | `renderer/lib/laneReadCache.ts` | Renderer-side in-flight coalescing for lane list/snapshot/keybinding reads. Lane lifecycle invalidation clears lane list/snapshot requests and bumps a generation token so a newly requested read never reuses an older in-flight lane snapshot. |
@@ -324,7 +352,7 @@ Shared code:
 - `src/shared/laneLinearIssue.ts` — `parseLaneLinearIssueValue`, `parseLaneLinearIssueJson`, `finalizeLaneLinearIssue`, `laneLinearIssueMissingFields`, `isLinkableLaneLinearIssue`. Validates, normalizes, and checks completeness of `LaneLinearIssue` payloads. Used by `laneService` (create, link), `chatContextAttachments` (attachment hydration), and the CLI.
 - `src/shared/laneJiraIssue.ts` — parses, normalizes, and converts Jira issue snapshots used by lane and session links.
 - `src/shared/chatContextAttachments.ts` — builds and normalizes Linear, GitHub, and Jira chat context attachments using their shared issue parsers.
-- `src/shared/types.ts` — `LaneSummary`, `LaneStatus`, `CreateLaneArgs`, rebase args/results, `RebaseTargetCommit`, overlay types, port/proxy/OAuth/diagnostics types.
+- `src/shared/types/lanes.ts` — `LaneSummary`, `LaneStatus`, `CreateLaneArgs`, rebase args/results, `RebaseTargetCommit`, overlay types, port/proxy/OAuth/diagnostics types.
 - `src/main/services/config/laneOverlayMatcher.ts` — last-wins/deep-merge evaluator for per-lane overlay policies.
 
 Shared git engine (every lane service reaches git through these):
@@ -371,11 +399,11 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
 - `LaneCreateSheet.swift` and `LaneEnvInitProgressView.swift` — mobile lane creation and environment setup.
 - `AddLaneSheet.swift` — mobile add-lane entry point.
 - `LaneDetailScreen.swift`, `LaneDetailGitSection.swift`,
-  `LaneDetailGitActionsPane.swift`, `LaneDetailRebaseBanner.swift`,
-  `LaneDiffScreen.swift`, `LaneSyncDetailScreen.swift`,
+  `LaneDetailGitActionsPane.swift`,
+  `LaneDiffScreen.swift`,
   `LaneManageSheet.swift`,
-  `LaneBatchManageSheet.swift`, `LaneChatLaunchSheet.swift`,
-  `LaneDeeplinkHelpers.swift`, `LaneTreeView.swift`,
+  `LaneBatchManageSheet.swift`,
+  `LaneDeeplinkHelpers.swift`, `LaneTreeRow.swift`,
   `LaneFileTreeComponents.swift` — mobile detail, git, rebase, diff,
   stash, sync, manage, chat-launch, and file-tree parity surfaces.
   `LaneDetailGitActionsPane.swift` is the single git surface embedded

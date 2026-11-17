@@ -1,200 +1,384 @@
 # Linear Integration
 
-ADE's Linear integration is a **read surface plus a developer-driven write flow**, not an autonomous orchestrator. It lets you connect a Linear workspace, browse and search issues, attach an issue to a lane or a chat session, and carry that link through branch naming, commit messages, and PR bodies so Linear links the PR back to the issue. An optional live-status round-trip reflects an ADE agent's progress back into Linear.
-
-> **Removed:** the earlier autonomous Linear workflow engine — intake, routing, dispatcher, sync loop, webhook/relay ingress, flow policy, closeout, and the visual pipeline builder — was deleted along with the CTO worker/hiring model. There is no longer a `LinearWorkflowDefinition`, no dispatcher, no reconciliation timer, and no `ade serve` workflow runtime. The CTO ([`../cto/README.md`](../cto/README.md)) is a single chat thread that can read and lightly update Linear issues through its operator tools; it does not own an intake pipeline. Legacy `linear_workflow_*` / `linear_dispatch_*` / `linear_ingress_*` tables remain in the schema for migration safety but are not written by any live service.
+ADE connects a Linear workspace to a project: browse and edit issues, start
+lanes and agents from them, link them to branches, commits and PRs, and run the
+ADE agent in Linear. The connection follows the project to every computer on
+the account. With no computer on, the account server reads Linear. The CTO
+reads and updates issues through its tools; automations react to Linear events.
 
 ## Source file map
 
-### Connection, client, and writes (`apps/desktop/src/main/services/cto/`)
+### Connection and client (`apps/desktop/src/main/services/cto/`)
 
-The Linear services live under the `cto/` service directory as shared plumbing; they are not CTO-owned workflow machinery.
+The Linear services live in `cto/` as shared plumbing. The CTO does not own
+them.
 
-- `linearAppClient.ts` — the ADE Linear OAuth app constants: the bundled public `ADE_LINEAR_APP_CLIENT_ID` and the `LinearOAuthClientSource` (`"ade-app" | "custom"`) type. This app is the default sign-in client; its authorization auto-provisions the workspace webhook the automations Linear ingress consumes.
-- `linearCredentialService.ts` — encrypted personal API-key/access-token and
-  OAuth-client storage in the active project's `.ade/secrets` or shared machine
-  credential store, with account/device provenance and `ensureFreshToken()` for
-  automatic OAuth refresh. The OAuth refresh token is mirrored as the
-  account-vault `linear_refresh_token` item, stamped with this machine as
-  `refreshOwner`. Only that owner hydrates or exchanges the grant; other
-  signed-in machines leave Linear refresh to the owner so two devices cannot
-  rotate the same token. Device-origin API keys and custom OAuth-client
-  settings remain local. `getOAuthClientCredentials()` falls back to the bundled ADE app client
-  (secretless) when no custom client is configured, and
-  `getOAuthClientSource()` reports which is in effect.
-- `apps/desktop/src/main/services/account/accountVaultBridge.ts` and
-  `apps/desktop/src/main/services/account/accountMigrationRunner.ts`
-  — the brain-backed vault bridge plus silent, receipt-backed migration of a
-  device-origin Linear OAuth refresh token into the signed-in account. Account
-  hydration never replaces a device-origin credential, and sign-out purges
-  account-origin local values.
-- `linearOAuthService.ts` / `linearOAuthRefreshLock.ts` / `linearTokenRefresh.ts` — the OAuth flows, the cross-process refresh lock, and the token-refresh exchange. Two authorize paths share the same PKCE code exchange and token storage: `startSession`/`getSession` run the desktop **loopback** flow (ephemeral server on port 19836), while `startExternalSession`/`completeExternalSession` run the **worker-bounce** flow used by mobile — no loopback server; the redirect target is `LINEAR_MOBILE_OAUTH_REDIRECT_URI` (the `ade-github-webhook-relay` Cloudflare worker's `/linear/oauth/callback`, which 302-bounces to `ade://linear-oauth`). In both flows the PKCE verifier and the resulting token stay desktop-side. The authorize URL requests `read,write,admin` for the ADE app client and `read,write` for a custom client.
-- `linearClient.ts` — the GraphQL client shared by desktop and the headless ADE CLI (reads plus the lightweight `updateIssueState` / `updateIssueAssignee` / `createComment` / `addIssueLabel` writes, and the `listWebhooks` / `createWebhook` / `deleteWebhook` methods the automations Linear ingress uses to manage a per-workspace webhook).
-- `linearIssueTracker.ts` / `issueTracker.ts` — normalization into `NormalizedLinearIssue` and the read shims + write helpers renderer/CLI surfaces call through.
-- `linearGraphQLInput.ts` — GraphQL input builders shared by client and tracker.
-- `linearLaneCardService.ts` — builds the "Open in ADE" Linear attachments for lanes, PRs, issue quick-view links, and chat sessions.
-- `linearLiveStatusService.ts` — the optional launch → PR → merge status round-trip, gated OFF unless `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`.
+| File | What |
+|---|---|
+| `linearAppClient.ts` | `ADE_LINEAR_APP_CLIENT_ID` (the ADE app's public PKCE client) and `LinearOAuthClientSource` (`"ade-app"` or `"custom"`). |
+| `linearCredentialService.ts` | The project's encrypted connection (token, auth mode, expiry, refresh token, `clientId`), a custom OAuth client, `ensureFreshToken()`. |
+| `linearAccountSync.ts` | The connection's vault item and the "one owner renews" rule. |
+| `../account/rotatingCredentialOwner.ts` | `decideRotatingRenewal`: renew, claim or read. |
+| `linearOAuthService.ts`, `linearOAuthRefreshLock.ts`, `linearTokenRefresh.ts` | Sign-in (loopback and worker bounce), the cross-process renewal lock, the token exchange. |
+| `linearClient.ts`, `linearClientShared.ts`, `linearQuickView.ts`, `linearIssueSearch.ts`, `linearInbox.ts` | The GraphQL client: reads, writes, the quick view, search, counts and the inbox. |
+| `linearIssueTracker.ts`, `issueTracker.ts`, `linearGraphQLInput.ts` | Normalized reads and the write helpers. |
+| `linearLaneCardService.ts` | "Open in ADE" attachments for lanes, PRs and chats. |
+| `linearLiveStatusService.ts` | The optional launch → PR → merge status writes. |
+| `linearAgentService.ts`, `linearAgentRuntime.ts`, `linearAgentRelayClient.ts` | The ADE agent in Linear. |
+| `linearInboxAttentionService.ts` | "Needs you" on a lane's chat from the Linear inbox. |
+| `linearLaneSync.ts` | Lane issue fields from `Issue` webhooks. |
+| `linearProofPoster.ts` | A lane's proof posted to its issues when it opens a PR. |
 
-### Renderer surfaces
+Also:
 
-- `renderer/components/app/LinearQuickViewButton.tsx`, `LinearIssueBrowser.tsx`, `LinearIssueSelectModal.tsx`, `LinearIssueResolveModals.tsx` — the top-bar quick view, the filter/search browser, and the single-issue select/resolve dialogs. The browser is split into `linearIssueBrowserModel.ts` (filters, grouping, count labels), `LinearIssueBrowserRows.tsx` (virtualized rows), `LinearIssueDetailPane.tsx` (detail, relations, action dock), and `LinearIssuePropertyPickers.tsx` (inline Status / Priority / Assignee / Labels pickers).
-- `renderer/components/app/LinearPaneHeader.tsx` — the one header both pane hosts use: org logo (monogram fallback), org name, viewer, Refresh, close.
-- `renderer/components/app/IssueLaunchHost.tsx` (`IssueLaunchHost`, mounted once by `AppShell`), `BatchLaunchStatusToast.tsx`, `renderer/components/shared/SessionLaunchModelControls.tsx`, `renderer/lib/issueLaunchRequests.ts`, and `renderer/lib/linearBatchLaunch.ts` — the launcher for Linear, GitHub and Jira issues alike (see [Issues](../issues/README.md#starting-work-from-an-issue)); batch launch: per-issue configuration, the single canonical model-picker Fast control, bounded-parallel create-lane → session → kickoff, and lifecycle-backed readiness/attention status.
-- `renderer/components/settings/LinearSection.tsx` — Settings → Integrations connect/disconnect panel; renders the connected workspace's org logo alongside its name.
-- `renderer/components/lanes/LinearIssueBadge.tsx` (+ `linearBrand.tsx`, `linearIssueDisplay.ts`, `linearProjectIcon.tsx`) — the lane-list badge and brand/display helpers.
+- `apps/ade-cli/src/services/linear/headlessLinearCredentialService.ts`,
+  `apps/ade-cli/src/headlessLinearServices.ts`: the same connection in the
+  headless brain (ADE Cloud computers too).
+- `apps/desktop/src/shared/linearIssueNormalize.ts`: issue normalization,
+  shared by the desktop client and the account reads. Pure.
 
-### iOS Linear surface (`apps/ios/ADE/Views/Linear/`)
+### Account server and relay
 
-- `LinearPaneSheet.swift`, `LinearIssueListScreen.swift`, `LinearIssueDetailScreen.swift`, `LinearLaunchScreen.swift` / `LinearLaunchModel.swift`, `LinearPaneStore.swift`, `LinearPaneToolbarButton.swift`, `LinearBrand.swift` / `LinearSVGPath.swift` — the Work top-bar Linear pane: grouped issue browser, detail view, lane/agent launcher, pane store, and brand/logo assets. Reads and launches go over the existing `cto.*` read RPCs and the existing lane/chat/CLI launch primitives.
-- `LinearConnectionScreen.swift` — the connection-management screen pushed from the pane's gear button. Shows the connected workspace (org logo + name + viewer + auth-mode/expiry) with **Reconnect** and **Disconnect**; when disconnected it hosts the same inline connect affordances as the pane's empty state, so the gear is never a dead end. `LinearConnectActions` (in the same file) is the shared connect UI — "Sign in with Linear" (worker-bounce OAuth) plus an expandable "Use an API key" form — reused by both the connection screen and the disconnected pane. `LinearOrgAvatar` renders the workspace logo with a monogram fallback.
-- `LinearOAuthRunner.swift` — drives the phone side of worker-bounce OAuth: calls `cto.startLinearMobileOAuth` (desktop mints the PKCE session), opens the `authorizeUrl` in an `ASWebAuthenticationSession(callbackURLScheme:"ade")`, captures `ade://linear-oauth?code&state` in-session (so it never reaches `DeepLinkRouter`, which ignores the `linear-oauth` host), then calls `cto.completeLinearMobileOAuth` for the desktop-side exchange + store. Each connect surface (screen and disconnected pane) owns its own runner; every capability is feature-gated on `supportsRemoteAction(...)` so the affordance is hidden on older brains that don't advertise the command.
+| File | What |
+|---|---|
+| `apps/account-directory/src/cloud/integrations.ts` | `POST /cloud/integrations/linear/query`: fixed Linear reads with the project's vault connection. |
+| `apps/account-directory/src/cloud/linearRenewal.ts` | The server's renewal of an ADE-app grant. |
+| `apps/account-directory/migrations/0041_cloud_linear_renewals.sql` | The renewal lease table. |
+| `apps/push-relay/src/accountVault.ts` | `vault/item` and the directory's Linear lease publish. |
+| `apps/desktop/src/shared/adeCloud/integrationReads.ts` | Maps the panes' Linear calls to the account route (desktop on ADE Cloud, web). |
+| `apps/ios/ADE/Services/SyncService+LinearAccount.swift` | The iPhone's account reads. |
+
+### Renderer and iOS
+
+- `renderer/components/app/`: `LinearQuickViewButton.tsx` (top bar),
+  `LinearIssueBrowser.tsx` (with `linearIssueBrowserModel.ts`,
+  `LinearIssueBrowserRows.tsx`, `LinearIssueDetailPane.tsx`,
+  `LinearIssuePropertyPickers.tsx`), `LinearPaneHeader.tsx`,
+  `LinearIssueSelectModal.tsx`, `LinearIssueResolveModals.tsx`,
+  `IssueLaunchHost.tsx`, `BatchLaunchStatusToast.tsx`.
+- `renderer/lib/linearBatchLaunch.ts`, `issueLaunchRequests.ts`,
+  `launchedLanesHighlight.ts`; `renderer/components/shared/SessionLaunchModelControls.tsx`.
+- `renderer/components/settings/LinearSection.tsx`: Settings › Integrations.
+- `renderer/components/lanes/LinearIssueBadge.tsx`, `linearBrand.tsx`,
+  `linearIssueDisplay.ts`, `linearProjectIcon.tsx`.
+- `apps/ios/ADE/Views/Linear/`: the Work top-bar Linear pane
+  (`LinearPaneSheet`, `LinearIssueListScreen`, `LinearIssueDetailScreen`,
+  `LinearLaunchScreen`/`LinearLaunchModel`, `LinearPaneStore`,
+  `LinearPaneToolbarButton`, `LinearBrand`, `LinearSVGPath`),
+  `LinearConnectionScreen.swift` and `LinearOAuthRunner.swift`.
 
 ### Shared and CLI
 
-- `apps/desktop/src/shared/linearMagicWords.ts` — `Refs`/`Fixes` commit and PR magic-word injection (`ensureLinearCommitReference`, `ensureLinearPrReference`, multi-issue linkage block).
-- `apps/desktop/src/shared/linearIssueBranch.ts` — `linearIssueLaneName` / `linearIssueBranchName` derivation.
-- `apps/desktop/src/shared/types/chat.ts` — the `AgentChatContextAttachment` union for Linear, GitHub, and Jira, including `jira_issue`. `apps/desktop/src/shared/chatContextAttachments.ts` builds and normalizes those attachments.
-- `apps/ade-cli/src/cli.ts` — the `ade linear` bridge (`buildLinearPlan`) routed over the daemon to the desktop runtime's Linear connection.
-- `apps/ade-cli/src/issueCliFields.ts` — turns typed names (states, users, labels, projects, cycles, milestones, templates) and values (priority, estimate, due date) into the ids and fields `ade linear create` / `edit` send.
+- `apps/desktop/src/shared/linearMagicWords.ts`: `Refs`/`Fixes` for commits
+  and PR bodies, and the multi-issue block.
+- `apps/desktop/src/shared/linearIssueBranch.ts`: lane and branch names.
+- `apps/desktop/src/shared/chatContextAttachments.ts`: chat issue attachments.
+- `apps/ade-cli/src/cli.ts` (`buildLinearPlan`) and
+  `apps/ade-cli/src/issueCliFields.ts`: `ade linear`.
 
-IPC channel names live in `apps/desktop/src/shared/ipc.ts` (registered in `registerIpc.ts`), reached via `window.ade.cto.*`; the lane-scoped session-attach channels are on `window.ade.lane.*`. See the [Read surface](#read-surface) and [Session-scoped issue attachment](#session-scoped-issue-attachment-and-cli-context-injection) sections for the exact channel lists.
+IPC channels: `apps/desktop/src/shared/ipc.ts` (`window.ade.cto.*`; session
+attach on `window.ade.lane.*`).
 
-## Connection model
+## The connection
 
-Credentials are owned by `apps/desktop/src/main/services/cto/linearCredentialService.ts`.
-The active project keeps an encrypted local access-token record so separate ADE
-projects can attach separate Linear workspaces, while the signed-in account is
-the authority for the OAuth refresh credential. The refresh token is mirrored
-to the account vault as `linear_refresh_token` with this machine as
-`refreshOwner`; a missing local OAuth refresh token hydrates from that
-account item only on the stamped owner, without replacing a device-origin
-local credential. A silent, receipt-backed migration moves a device-origin refresh
-token into the account once after sign-in. Two connection paths:
+Each project has its own Linear connection, so two projects can use two
+workspaces. There are two kinds:
 
-1. **OAuth** (the primary "Sign in with Linear" path; bundled public client with PKCE). By default sign-in uses the **ADE Linear OAuth app** — its public client id (`ADE_LINEAR_APP_CLIENT_ID` in `cto/linearAppClient.ts`) ships with the app, and PKCE means no client secret is bundled. A user-configured custom OAuth client, when present, takes precedence; `linearCredentialService.getOAuthClientSource()` reports `"ade-app"` vs `"custom"` and `oauthConfigured` is now always `true` (the bundled client makes OAuth always available). The ADE app requests the `read,write,admin` scope, while a custom client keeps the narrower `read,write` — the `admin` scope is Linear's requirement for OAuth-app data-change webhooks, so a workspace that authorizes the ADE app gets its Linear webhook auto-provisioned (pointed at the ADE relay) and can drive automation Linear triggers with no manual "Connect Linear events" step. `linearOAuthService.ts` boots an ephemeral loopback server on port 19836, returns the authorize URL for the renderer to open, and finalizes on callback. The sign-in session expires after 10 minutes. The resulting access token (which Linear expires ~24h after sign-in) is refreshed automatically: `linearCredentialService.ensureFreshToken()` exchanges the stored `refresh_token` via `linearTokenRefresh.ts` proactively before requests and reactively on a 401, rotating the refresh token on success. `linearOAuthRefreshLock.ts` serializes refresh across processes. An `invalid_grant` clears the connection so the user re-authorizes; transient failures leave the token in place.
-2. **Personal API key** — pasted into the connection panel, validated by a
-   `viewer` query, and stored as a device-origin encrypted local credential. It
-   does not expire and is the alternative for headless use; it is not copied to
-   another account or machine automatically.
+1. **OAuth** ("Sign in with Linear"). The default client is the ADE Linear
+   app (`ADE_LINEAR_APP_CLIENT_ID`, PKCE, no secret). A custom OAuth client
+   (`linear.oauthClient.v1`, kept on the machine) takes its place when set.
+   The ADE app asks for `read,write,admin`, so Linear sets up the workspace
+   webhook for automations; a custom client asks for `read,write`. The access
+   token lasts about 24 hours, and each refresh returns a new refresh token.
+2. **Personal API key.** Checked with a `viewer` query. It does not expire.
 
-Until a token is stored, nothing binds and no background work runs — connecting is a deliberate act of storing a token.
+Until a token is stored, nothing runs (tests stub `getStatus().tokenStored`).
+
+### It follows the project
+
+`linearAccountSync.ts` copies the connection to the account vault: scope
+`repo:<host>/<owner>/<repo>`, kind `integration`, key `linear`, value
+`{v: 1, authMode, token, refreshToken, expiresAt, clientId?}`. Every computer
+that opens the project adopts it, ADE Cloud computers too.
+
+- A project with no remote has no shared scope. Its connection stays on that
+  computer, and the status says so.
+- `clientId` names the OAuth client that issued the grant. ADE writes it only
+  when a sign-in or a refresh with that client succeeded
+  (`linear.tokenClientId.v1`). Without it, the server never renews the grant.
+- An environment token (`LINEAR_API_KEY` and others) stays on its machine and
+  is never published.
+- The old account-wide row `all/linear_refresh_token/default` is retired by
+  `accountMigrationRunner.ts`.
+
+### One owner renews
+
+An OAuth refresh token works once. Two computers that spend the same token can
+make Linear revoke the grant. So the vault item's `refreshOwner` names the one
+machine that renews (`rotatingCredentialOwner.ts`):
+
+- The owner renews before expiry and publishes the new grant to the vault.
+- Every other computer reads the new grant and never exchanges.
+- When the token ran out more than 10 minutes ago and nothing new came, another
+  computer claims the item (writes it with its own device id), waits 30 s for
+  the claim to stand, and then renews.
+- On one machine, the desktop app and the brain share a device id, and a file
+  lock (`linearOAuthRefreshLock.ts`) keeps one renewal at a time.
+- `invalid_grant` clears the connection, and the person signs in again. Other
+  failures keep the token.
 
 ### Connecting and managing from mobile
 
-The phone can connect, reconnect, and disconnect Linear against its paired Mac
-without a loopback server. Both mobile paths keep credential material
-desktop/brain-side; the account vault carries the OAuth refresh token and the
-phone never stores it. The OAuth start/complete commands are viewer-allowed;
-direct API-key set/clear commands are host-only (`viewerAllowed: false`):
-(`cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`,
-`cto.setLinearToken`, `cto.clearLinearToken`):
+The phone connects, reconnects and disconnects Linear through its paired
+computer (`cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`,
+`cto.setLinearToken`, `cto.clearLinearToken`). These are optional
+capabilities, so an older brain shows no buttons.
 
-- **Worker-bounce OAuth.** `cto.startLinearMobileOAuth` has the desktop mint a PKCE session (`linearOAuthService.startExternalSession`) whose `redirect_uri` is the `ade-github-webhook-relay` Cloudflare worker's `/linear/oauth/callback`. The phone opens the returned `authorizeUrl` in an `ASWebAuthenticationSession`; after the user authorizes, Linear redirects to the worker, which 302-bounces to `ade://linear-oauth?code&state`. The web-auth session (scheme `ade`) captures that callback in-process, so the phone hands `code` + `state` back through `cto.completeLinearMobileOAuth`, and the desktop performs the token exchange (`completeExternalSession`) and stores it. The PKCE verifier and the token never leave the Mac, so the authorization code is useless in transit.
-- **API key.** `cto.setLinearToken` forwards a pasted personal API key to the desktop `linearCredentialService`; the key remains on that host as a device-origin credential. `cto.clearLinearToken` disconnects the workspace for the whole machine and removes any account-vault refresh item.
+- **Worker-bounce OAuth.** The computer makes the PKCE session with the
+  `redirect_uri` set to the webhook relay's `/linear/oauth/callback`. The
+  phone opens the authorize URL in an `ASWebAuthenticationSession`. The relay
+  sends the code on to `ade://linear-oauth`, the session captures it, and the
+  computer exchanges and stores it. The PKCE verifier and the token stay on
+  the computer.
+- **API key.** The phone sends the key to the computer, which stores it.
+  `cto.clearLinearToken` disconnects and removes the vault item.
 
-Because the four commands are advertised as optional capabilities, the iOS UI gates each affordance on `supportsRemoteAction(...)` — an older brain that never advertises them simply shows no connect/reconnect/disconnect buttons (with a short "update ADE on your Mac" hint) instead of erroring.
+## With no computer
+
+The web and iPhone Linear panes, and a desktop tab bound to ADE Cloud, read
+Linear through the ADE account server when no computer answers:
+
+```text
+POST /cloud/integrations/linear/query   { origin, op, vars? }
+```
+
+- The server reads the project's vault item (`repo:<origin>/integration/linear`)
+  with the caller's own bearer. The token stays in that request's memory. It
+  is never stored, logged or sent back.
+- `op` is one of the fixed reads in `CLOUD_LINEAR_OPS`: `identity`, `teams`,
+  `projects`, `issues`, `searchIssues`, `issue`, `issuesByIds` (≤ 50),
+  `comments`, `customViews`, `notifications`. The server never runs a
+  caller's query. A search `filter` is at most 8,000 characters as JSON.
+- The answer is Linear's own `data`. The client turns it into the panes'
+  shapes with `linearIssueNormalize.ts` (desktop, web) or Swift (iPhone).
+- Linear and Jira together allow 30 requests a minute per account. The iPhone
+  reads at most two pages per load through this route.
+- Reads only: a write needs a computer. An older server answers `404`, and
+  the client keeps its old behavior.
+
+Refusals (clients show the server's `message`):
+
+| Code | Status | When |
+|---|---|---|
+| `linear_not_connected` | 409 | The project has no Linear connection. |
+| `linear_renewing` | 409 | The server is renewing the sign-in. |
+| `linear_needs_renewal` | 409 | The token ran out and only a computer can renew it. |
+| `rate_limited` | 429 | Over 30 requests a minute. |
+| `integration_failed` | 502 | Linear failed or timed out (15 s). |
+
+### The server renews an ADE-app grant
+
+When the token has run out and the grant's `clientId` is the ADE app, the
+account server renews it under the same "one owner renews" rule
+(`linearRenewal.ts`). Its owner name is `ade-cloud-directory`.
+
+1. **Claim.** If the owner has been quiet past the 10-minute grace, the
+   server writes the same value with itself as owner (a vault CAS on the
+   revision), reads it back, and records a `claimed` row in
+   `cloud_linear_renewals`. The request answers `linear_renewing`.
+2. **Settle.** The claim must stand 30 s. A computer's later claim wins, and
+   the server lets go.
+3. **Exchange.** One request locks the row (`exchanging`), checks that the
+   vault item still has the same owner, revision and value, and exchanges the
+   refresh token at Linear. All of this runs after the response
+   (`waitUntil`).
+4. **Publish.** The server seals the new grant in the row (`publish`) and
+   writes it to the vault with a CAS. Then the request uses the new token.
+5. If the publish fails, the server keeps the sealed grant and uses it, and
+   its minute cron publishes it through the push relay's lease route. That
+   route writes only while the vault item still holds the spent refresh
+   token.
+
+Other rules:
+
+- A grant from a custom OAuth client, a grant with no `clientId`, or an API
+  key is never renewed by the server.
+- `invalid_grant` drops the row and leaves the vault as it is. Other failures
+  retry, and three failures drop the row.
+- `CLOUD_LINEAR_RENEWAL=0` on the account directory turns renewal off. It also
+  needs `CLOUD_CHAT_MASTER_KEY`, `DIRECTORY_AUTH_SECRET` and the relay binding.
 
 ## Read surface
 
-- `linearClient.ts` — the GraphQL client (shared by desktop and the headless ADE CLI). Reads: `fetchIssueById`, `listProjects`, `searchIssues` (paginated), `countIssues`, `listCustomViews`, `getQuickView`, `fetchIssueComments`, `listLabels`, `listUsers`. Writes: `updateIssue` (one `issueUpdate` for state, assignee, priority, and label changes, then returns the refreshed issue) plus the older single-field helpers. The shared issue fragment carries cycle metadata, label colors, Linear's `branchName`, the parent, sub-issues, and `inverseRelations`; the by-id read adds outgoing `relations`.
-  - **Search.** A query uses Linear's full-text `searchIssues(term:)` and returns `totalCount`. Identifier-shaped queries (`VER-404`, `404`, `#404`) also match on number and team key and list first. If full-text search fails, the client falls back to a title/description filter and logs `linear.search_full_text_failed`.
-  - **Blockers.** `blockerIssueIds` / `hasOpenBlockers` come from real "blocked by" relations (inverse `blocks`), not sub-issues. `parentIssue`, `blockedByIssues`, `blockingIssues`, and `relatedIssues` carry the graph; `childIssues` stays sub-issues only.
-  - **Counts.** Linear connections have no total, so `countIssues` pages issue ids (250 per request, up to 10 filters aliased into one request) until each key runs out or reaches its cap. A search term uses `searchIssues.totalCount` instead. Each `(filter, cap)` answer is cached for 60 s and an in-flight count is shared. The client reads Linear's `X-RateLimit-*` and `X-Complexity` headers; when less than 20% of either hourly budget is left it skips uncached counts (`linear.count_issues_skipped_low_budget`) and the pane shows loaded rows with a `+`. Every count run logs `linear.count_issues` with its request count and complexity.
-  - **Quick view.** One set of parallel raw GraphQL queries (viewer, organization, projects with status/lead/teams inline, teams). It does not use the SDK's lazy relations, which cost one request per project field.
-- `linearIssueTracker.ts` / `issueTracker.ts` — normalization into `NormalizedLinearIssue` plus `getQuickView` / `searchIssues` / `fetchIssueComments` read shims and the `updateIssueState` / `updateIssueAssignee` / `createComment` / `addLabel` write helpers used for lightweight issue updates.
-- `linearGraphQLInput.ts` — GraphQL input builders shared by client and tracker.
+`linearClient.ts` serves desktop and the headless brain.
 
-Renderer surfaces over these reads:
+- **Reads:** `fetchIssueById`, `listProjects`, `searchIssues` (paged),
+  `countIssues`, `listCustomViews`, `getQuickView`, `fetchIssueComments`,
+  `listLabels`, `listUsers`, inbox notifications.
+- **Writes:** `updateIssue` (state, assignee, priority, labels in one
+  `issueUpdate`), comments, labels, and the webhook methods automations use.
+- **Search** uses Linear's `searchIssues(term:)`. Identifier-shaped queries
+  (`VER-404`, `404`, `#404`) match number and team key first. If full-text
+  search fails, the client uses a title and description filter
+  (`linear.search_full_text_failed`).
+- **Blockers** come from "blocked by" relations, not sub-issues.
+- **Counts.** `countIssues` pages issue ids (250 per request, up to 10 filters
+  in one request), caches each answer 60 s and shares a count in flight. When
+  less than 20% of Linear's hourly budget is left, it skips new counts
+  (`linear.count_issues_skipped_low_budget`) and the pane shows `+`.
+- **Quick view.** One set of parallel GraphQL queries (viewer, organization,
+  projects, teams), not the SDK's lazy relations.
 
-- `renderer/components/app/LinearQuickViewButton.tsx` — top-bar button. When Linear is connected it opens a popover hosting the shared `LinearIssueBrowser`. It answers "open the Linear pane" requests (`requestLinearPaneOpen`) and forwards the Linear launch requests that the issue viewers and the create toast send through `requestLinearIssueLaunch` to the shared launcher, `IssueLaunchHost`, which owns the launch dialog. Opening ONE issue (a link, a chip, a deeplink, a lane badge) no longer comes here: it opens the issue itself in the Work tools pane or the issue sheet. See [Issues](../issues/README.md).
-- `renderer/components/app/LinearIssueBrowser.tsx` — the full filter/search surface with checkbox multi-select (shift-click range, select-all), per-project filter persistence in `localStorage`, and a virtualized list (`@tanstack/react-virtual`) with sticky state-group headers and live group counts. The left rail has All issues, My issues, Current cycle (when a team has cycles), the viewer's Linear custom views, and projects with live open-issue counts. Rows show priority, state, labels, a Lane/Agent chip, and the assignee. The detail pane renders the shared `LinearIssueView` (`renderer/components/issues/`): the description, a Relations section (Parent, Blocked by, Blocks, Related, Sub-issues; a click opens that issue), the comment thread with avatars, and a property sidebar with editable status, priority, assignee and labels (optimistic, rolled back with an error toast on failure). Keyboard: `j`/`k` or arrows move, `x` toggles the checkbox, `Enter` runs the primary action, `/` focuses search, `Esc` clears the checked set.
-- `renderer/components/app/LinearIssueSelectModal.tsx` / `LinearIssueResolveModals.tsx` — single-issue select/resolve dialogs mounted from `CreateLaneDialog`, the quick view, and the chat composer's "attach issue" picker. Viewing an attached issue opens the issue viewer instead.
-- `renderer/components/issues/` — the native issue viewer (Issues tool tab, issue sheet), its per-issue cache, and the create composer the pane's "New" opens (all Linear create fields, templates, picture upload through `cto.uploadLinearFile`). See [Issues](../issues/README.md).
-- `renderer/components/lanes/LinearIssueBadge.tsx`, `linearBrand.tsx`, `linearIssueDisplay.ts`, `linearProjectIcon.tsx` — the lane-list badge, brand tokens (`LINEAR_BRAND`, `LinearMark`, `LinearStateIcon`, `LinearPriorityIcon`), and display/label helpers.
-- `renderer/components/settings/LinearSection.tsx` — Settings → Integrations panel for connecting/disconnecting Linear and surfacing the connected workspace.
+The desktop pane is `LinearIssueBrowser` (filter rail, multi-select,
+virtualized list, detail pane; keys `j`/`k`, `x`, `Enter`, `/`, `Esc`). One
+issue opens in the Work tools pane or the issue sheet
+([Issues](../issues/README.md)). The iPhone pane is `apps/ios/ADE/Views/Linear/`;
+`DeepLinkRouter.swift` routes `ade://linear-issue/<IDENT>` to it and ignores
+the `linear-oauth` host.
 
-Mobile surfaces over the same reads:
+## Lanes, commits and PRs
 
-- `apps/ios/ADE/Views/Linear/` — the Work top-bar Linear pane: grouped issue browser, detail view with description/comments/sub-issues, and a launcher for "New lane" or "Launch agent". The pane is UI orchestration only; it reuses the existing `cto.*` read RPCs and the existing lane/chat/CLI launch primitives exposed through sync. The pane's gear opens `LinearConnectionScreen` for **managing** the connection from the phone — connect (worker-bounce OAuth or API key), reconnect, and disconnect — and the disconnected pane surfaces the same connect actions inline. These write paths drive the four `cto.*` connection commands below and are feature-gated so they simply don't appear against an older brain that doesn't advertise them.
-- `apps/ios/ADE/App/DeepLinkRouter.swift` — routes `ade://linear-issue/<IDENT>` and the matching `https://ade-app.dev/open?type=linear-issue` handoff into the mobile pane when a project is open, otherwise bouncing the link to the paired Mac. It deliberately ignores the `linear-oauth` host: the OAuth callback is captured inside the `ASWebAuthenticationSession`, never as an app deeplink.
-
-IPC (named in `apps/desktop/src/shared/ipc.ts`, registered in `registerIpc.ts`, reached via `window.ade.cto.*`): `ctoGetLinearConnectionStatus`, `ctoSetLinearToken`, `ctoClearLinearToken`, `ctoStartLinearOAuth`, `ctoGetLinearOAuthSession`, `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`, `ctoGetLinearProjects`, `ctoGetLinearQuickView`, `ctoGetLinearIssuePickerData`, `ctoSearchLinearIssues`, `ctoGetLinearIssueComments`, `ctoGetLinearIssue`, `ctoUpdateLinearIssue`, `ctoCountLinearIssues`, `ctoGetLinearCustomViews`. The last four are also sync commands (`cto.getLinearIssue`, `cto.updateLinearIssue`, `cto.countLinearIssues`, `cto.getLinearCustomViews`) advertised as optional mobile capabilities. The mobile client drives the read subset through `cto.*` sync commands, plus four **connection-management** sync commands — `cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`, `cto.setLinearToken`, `cto.clearLinearToken` — that let the phone connect, reconnect, and disconnect Linear (see [`../cto/README.md`](../cto/README.md#sync-command-surface) and [`../sync-and-multi-device/remote-commands.md`](../sync-and-multi-device/remote-commands.md)). All four are `viewerAllowed` and advertised as **optional** mobile capabilities, so older brains that omit them leave the phone's connect/manage affordances hidden rather than failing.
-
-## Lane attachment, commit references, and PR magic words
-
-The everyday path: a developer picks a Linear ticket and creates a lane (or attaches it to a chat) to work on it. ADE exposes this in a few places sharing the same primitives:
-
-- **Create a lane from a Linear issue.** `CreateLaneDialog` hosts an "Attach Linear issue" chip in its extras row (backed by `LinearIssueSelectModal` + the shared `LinearIssueBrowser`). Selecting an issue auto-derives the lane name (`linearIssueLaneName` → `IDENT title`) and branch name (`resolveLinearIssueBranchName` → Linear's own `issue.branchName`, which follows the workspace branch format and is the name Linear's GitHub integration matches; when Linear sends none, `linearIssueBranchName` → `ident-title-slug`; both sanitised against git ref rules in `apps/desktop/src/shared/linearIssueBranch.ts`; `laneService` uses the same resolver, so the collision auto-suffix still applies), pre-fills the create form, and enforces a branch-collision check. The same picker is reached from the top-bar `LinearQuickViewButton` and the chat composer's Linear attach dialog, so all entry points produce identical lane shapes.
-- **iOS lane or agent launch.** The mobile Linear pane mirrors the desktop issue browser's launch path: "New lane" creates a Linear-attached lane only, while "Launch agent" creates the lane and then starts either a chat or CLI session with the issue context and an editable kickoff prompt. If agent launch fails after the lane is created, the phone rolls the lane back through `deleteLane` before surfacing the error.
-- **`lane_linear_issues` table.** `laneService.create` accepts `linearIssue?: LaneLinearIssue`; the payload is upserted keyed by `(project_id, lane_id)` and hydrated into `LaneSummary.linearIssue` on every list/get.
-- **Commit message prefix.** When a lane has a connected issue, `gitOperationsService.commit` auto-prefixes the subject with `Refs IDENT: …` via `ensureLinearCommitReference` (`apps/desktop/src/shared/linearMagicWords.ts`). Subjects already mentioning the identifier are left alone.
-- **PR body magic word.** `prService.createFromLane` and the renderer `CreatePrModal` use `ensureLinearPrReference(body, issue, closeOnMerge)` to inject `Fixes IDENT` (closes the issue when the PR merges) or `Refs IDENT` (links without closing). The user toggles `closeLinearIssueOnMerge` from a checkbox in `CreatePrModal`; the same flag is forwarded by `syncRemoteCommandService` so phones drive the same behavior.
-- **Multi-issue PR linkage.** Lanes can accumulate additional issues beyond the primary one (`LaneSummary.linearIssueLinks`, stored in `lane_linear_issue_links`). `prService.applyLinearPrLinkage` collects the primary plus every link with `includeInPr === true`, dedupes by issue id, and writes per-issue magic words plus a single idempotent "Linked Linear issues" markdown block (fenced by `<!-- ade:linear-links v=N -->` comments) into the PR body. Helpers live in `linearMagicWords.ts`.
-- **Chat context attachment.** Chats opened on a Linear-connected lane automatically receive an `AgentChatLinearIssueContextAttachment` (`type: "linear_issue"`, `source: "lane_link"`) via `AgentChatPane`; the composer also supports manual attachment through `LinearIssueContextDialog`. Helpers live in `apps/desktop/src/shared/chatContextAttachments.ts`.
+- **Lane from an issue.** `CreateLaneDialog`, the quick view and the chat
+  composer use one picker. The lane name is `IDENT title`. The branch is
+  Linear's own `branchName` (the name Linear's GitHub integration matches),
+  else `ident-title-slug` (`linearIssueBranch.ts`).
+- **iPhone launch.** "New lane" makes a lane with the issue. "Launch agent"
+  also starts a chat or CLI session with the issue and a kickoff prompt. If the
+  agent fails to start, the phone deletes the new lane.
+- **Storage.** `lane_linear_issues` holds a lane's primary issue;
+  `lane_linear_issue_links` holds more.
+- **Commits.** `gitOperationsService.commit` adds `Refs IDENT:` to the subject
+  when it does not name the issue.
+- **PR body.** `ensureLinearPrReference` adds `Fixes IDENT` (closes on merge)
+  or `Refs IDENT`, from the `closeLinearIssueOnMerge` checkbox.
+  `prService.applyLinearPrLinkage` writes one "Linked Linear issues" block
+  (`<!-- ade:linear-links v=N -->`) for every linked issue.
+- **Chat context.** A chat on a lane with an issue gets a `linear_issue`
+  attachment; the composer can attach more.
 
 ## Session-scoped issue attachment and CLI context injection
 
-Issues can be attached to a **session** (chat or CLI) independently of any lane, so a standalone chat or an `ade chat` / `ade serve` CLI session can carry an attached issue even with no lane. The store is `session_linear_issues`; the lane service owns the surface over the **lane** IPC channels (`lanesAttachLinearIssueToSession`, `lanesDetachLinearIssueFromSession`, `lanesListLinearIssuesForSession`, `lanesListLinearIssuesForLaneSessions`, `lanesUnlinkLinearIssues`), exposed on `window.ade.lane.*`:
+A chat or CLI session can carry issues without a lane (`session_linear_issues`,
+through `window.ade.lane.*`: `attachLinearIssueToSession`,
+`detachLinearIssueFromSession`, `listLinearIssuesForSession`,
+`listLinearIssuesForLaneSessions`, `unlinkLinearIssues`).
 
-- `attachLinearIssueToSession({ chatSessionId, issues, role, source, includeInPr, closeOnMerge, evidence })` persists a `SessionLinearIssueLink` per issue (deduped), and when the session has a lane also mirrors each issue into `lane_linear_issue_links` (source `chat_attach`) without ever promoting the lane's primary issue.
-- On agent spawn, `agentChatService` materializes the attached issues into a per-session context file and sets `ADE_LINEAR_ISSUE_IDS` and `ADE_LINEAR_CONTEXT_FILE` so the spawned agent (or `ade linear …`) reads issue context **without** Linear credentials.
-- On PR open, `prService` fans out session → lane → Linear so a session-only issue still gets a PR attachment.
+- When the session has a lane, the issue also goes to
+  `lane_linear_issue_links` (source `chat_attach`). It never replaces the
+  lane's primary issue.
+- At agent start, `agentChatService` writes the issues to a context file and
+  sets `ADE_LINEAR_ISSUE_IDS` and `ADE_LINEAR_CONTEXT_FILE`. The agent reads
+  the issues with no Linear credentials.
+- On PR open, `prService` links session issues to the PR too.
 
-## Multi-select batch launch
+## Batch launch
 
-From the quick view's `LinearIssueBrowser`, selecting multiple issues opens the shared launch dialog, `IssueLaunchHost` in `renderer/components/app/IssueLaunchHost.tsx` (the GitHub and Jira panes use the same dialog) — one unified dialog with a per-issue config row (model, reasoning effort, provider-supported Fast mode, editable kickoff prompt, editable branch override) plus a "default" config seeding every row, a `laneOnly` mode, and a `findIssueConflicts` duplicate guard that inspects both each lane's primary `linearIssue` and its `linearIssueLinks`. `SessionLaunchModelControls` delegates Fast mode to the model picker, so the launch row has one Fast toggle rather than a second local copy.
+Several selected issues open `IssueLaunchHost`, the one launcher for every
+tracker (see [Issues](../issues/README.md#starting-work-from-an-issue)). For
+Linear, `findIssueConflicts` checks each lane's primary issue and its
+`linearIssueLinks`. A row stays `initializing-agent` until the session's first
+`user_message`, and the Lanes tab highlights new lanes for 30 s
+(`launchedLanesHighlight.ts`).
 
-On submit, `renderer/lib/linearBatchLaunch.ts#runBatchLaunch` runs bounded-parallel (`BATCH_LAUNCH_CONCURRENCY = 3`) create-lane → create-session → send-kickoff per issue. Sibling failures never abort the pool; a failure before the durable agent session exists rolls back the lane so retries do not orphan lanes. Chat launch deliberately returns once the durable session exists while the kickoff turn continues in the background, so the per-issue state remains `initializing-agent` until `BatchLaunchAgentReadinessTracker` observes the session's first `user_message` / started lifecycle event. A failed kickoff becomes `agent-error` ("Needs attention") rather than a retryable lane-creation failure because the lane and chat already exist; `agentChatService` emits an error event if the detached kickoff promise rejects so this state cannot spin forever. Events that race ahead of the launch IPC response are buffered only while the current batch is registering session ids.
+## Live status
 
-As soon as the launch returns its session, `IssueLaunchHost` announces it through `chatSessionEvents.ts`. The Work and lane-scoped session hooks insert the chat optimistically and refresh in the background, while both session-list caches are invalidated so a forced read cannot reuse an older in-flight snapshot. This keeps the new tab/chat visible during concurrent launches rather than waiting for list-cache convergence. `BatchLaunchStatusToast.tsx` reports queued, lane creation, launch, initialization, ready, attention, and pre-session failure separately; successful batches auto-dismiss, while attention/failure rows remain visible. The orchestrator still returns `createdLaneIds`, `createdSessionIds`, and `failedIssueIds`, and `renderer/lib/launchedLanesHighlight.ts` signals the Lanes tab to open its stack drawer and pulse the newly launched agents (one-shot, 30s TTL).
+`linearLiveStatusService.ts` writes an agent's progress to Linear. It is off
+unless `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`.
 
-## Live status round-trip
+- **Agent start:** move the issue to the team's "In Progress", assign it to
+  the connected user, and comment the branch link.
+- **PR open:** comment the PR link on each linked issue.
+- **Merge:** move each linked issue to the team's Done state.
 
-`linearLiveStatusService.ts` (`createLinearLiveStatusService`) reflects an ADE agent's progress back into Linear, reusing the `issueTracker` write surface — **no new credentials**. It is **gated OFF** by default and only runs when `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`:
+Each write is best effort (`linear_live_status.*`) and never blocks the
+launch, PR or merge.
 
-- **On agent launch** (`onAgentLaunched`, wired from `main.ts`): move the issue to the team's "In Progress" state, self-assign it to the connected viewer, and post a branch-link comment. Workflow states are resolved once per team and cached; transitions are de-duped per issue per direction.
-- **On PR open** (`onPrOpened`, from `prService`): comment the PR link onto each linked issue.
-- **On merge** (`onIssueMerged`, from `main.ts`): move each linked issue to the team's Done state.
+## The ADE agent and Linear events
 
-Every write is best-effort: failures are logged (`linear_live_status.*`) and de-dupe markers roll back so a transient failure can retry, but they never block the launch / PR / merge path.
+- **The ADE agent** (`linearAgentService.ts`). The webhook relay sends each
+  Linear `AgentSessionEvent` to the account of the person who delegated or
+  mentioned the agent. A machine with a matching `linear.agent_*` automation
+  rule claims the session (the first claim wins) and runs the rule. The chat's
+  events go back to Linear as agent activities through the relay, which holds
+  the workspace's app token. A Linear reply steers or stops the chat.
+- **Inbox "needs you"** (`linearInboxAttentionService.ts`). A Linear inbox
+  item about an issue a lane carries raises "needs you" on that lane's chat.
+  Only items newer than the stored watermark count.
+- **Lane sync** (`linearLaneSync.ts`). An `Issue` webhook updates the lane's
+  copy of the issue's fields.
+- **Proof** (`linearProofPoster.ts`). When a lane opens a PR for its issues,
+  ADE posts the lane's screenshots and recordings to each issue, once.
+- **Event wakes.** A Linear delivery wakes a resting ADE Cloud computer that
+  listens to its organization or agent session.
 
-## `ade linear` bridge
+## `ade linear`
 
-The `ade linear` CLI (`buildLinearPlan` in `apps/ade-cli/src/cli.ts`) is the issue attach/read bridge for CLI and remote sessions, routed over the daemon to the desktop runtime's Linear connection — no local API key needed. Subcommands: `attach` / `attach-issue`, `detach` / `detach-issue`, `issues`, `attached`, and `my-issues`. This is how a headless or CLI session attaches, lists, and reads issues; issue writes go through the same `issueTracker` surface over the bridge.
+`ade linear` (`buildLinearPlan` in `apps/ade-cli/src/cli.ts`) uses the brain's
+Linear connection; no API key is needed.
 
-Creating and editing issues:
+- Attach and read: `attach`, `detach`, `issues`, `attached`, `my-issues`.
+- `ade linear create --team ADE --title "..."` takes every field of the
+  desktop form: `--description` or `--description-file <path|->`, `--state`,
+  `--assignee`, `--priority`, `--label` (repeat it), `--project`,
+  `--milestone`, `--cycle`, `--estimate`, `--due YYYY-MM-DD`, `--parent`,
+  `--template`. Inside a session with an issue, the new issue links to it;
+  `--blocks`, `--blocked-by`, `--sub-issue` and `--duplicate` pick the link,
+  and `--standalone` skips it. A near-duplicate is refused unless
+  `--allow-duplicate`.
+- `ade linear edit <id>` changes those fields in one `updateIssue`, plus
+  `--remove-label`.
+- One field: `set-state`, `assign`, `set-priority`, `set-estimate`,
+  `set-cycle`, `set-project`, `set-milestone`, `set-due`, `set-parent`,
+  `label`, `unlabel`. `none` clears a field where Linear allows it.
+- `ade linear relate <id> --blocks|--blocked-by|--related|--duplicate-of <other>`.
 
-- `ade linear create --team ADE --title "..."` creates an issue (through `createFollowUpIssue`) and prints its id and URL with `--text`. It takes every field the desktop create form has: `--description` or `--description-file <path|->`, `--state`, `--assignee`, `--priority`, `--label` (repeat it), `--project`, `--milestone`, `--cycle`, `--estimate`, `--due YYYY-MM-DD`, `--parent`, and `--template`. With no `--team`, the team comes from `--from` or `--parent`. Inside a session with an attached issue, the new issue links to it as related; `--blocks`, `--blocked-by`, `--sub-issue`, and `--duplicate` pick the link, and `--standalone` skips it. A near-duplicate of an open issue is refused unless `--allow-duplicate`.
-- `ade linear edit <id>` changes any of those fields in one `updateIssue`, plus `--remove-label`.
-- One field at a time: `set-state`, `assign`, `set-priority`, `set-estimate`, `set-cycle`, `set-project`, `set-milestone`, `set-due`, `set-parent`, `label`, and `unlabel`. `none` clears the field where Linear allows it.
-- `ade linear relate <id> --blocks|--blocked-by|--related|--duplicate-of <other>` links two issues.
+`issueCliFields.ts` matches names (states and labels in the issue's team,
+users, projects, cycles, milestones, templates). `--assignee me` is the
+connected user. A name that matches more than one item is an error that lists
+them.
 
-Names are matched in the CLI from `getIssuePickerData` (states, users, labels, projects), `getIssueCreateOptions` (cycles and templates), and `listProjectMilestones`. A state or label is matched in the issue's team. `--assignee me` reads the connected Linear user. `--cycle` takes `current`, `next`, a cycle number, or an id. A name that matches more than one item is an error that lists them; an id is sent without a lookup. The matching lives in `apps/ade-cli/src/issueCliFields.ts`.
+## Deeplinks and attachments
 
-## Deeplinks and ADE attachments
-
-`linearLaneCardService.ts` builds the "Open in ADE" Linear attachments for lanes, PRs, issue quick-view links, and chat sessions. Portable links use the canonical `https://ade-app.dev/open` web handoff; chat/lane links that are machine-local use the `ade://session/<id>?lane=<lane-id>` form. A teammate clicking from Linear lands in ADE and sees a setup modal when the project or connection is missing.
+`linearLaneCardService.ts` builds "Open in ADE" attachments for lanes, PRs and
+chats. Portable links use `https://ade-app.dev/open`. Machine-local chat and
+lane links use `ade://session/<id>?lane=<lane-id>`. A person who clicks from
+Linear sees a setup dialog when the project or connection is missing.
 
 ## Database tables
 
-State lives in `.ade/ade.db` and replicates through cr-sqlite. Tables the live Linear surface writes:
+State is in `.ade/ade.db` and replicates through cr-sqlite:
 
-- `lane_linear_issues` — the primary issue attached to a lane at create time, keyed by `(project_id, lane_id)`.
-- `lane_linear_issue_links` — additional issues attached to a lane after creation (`role`, `source`, `include_in_pr`, `close_on_merge`, JSON `evidence`).
-- `session_linear_issues` — session-scoped links (chat or CLI session), mirroring `lane_linear_issue_links` fields plus `lane_id`. Like the other CRR-converted Linear tables it carries no secondary UNIQUE index; uniqueness on `(project_id, session_id, issue_id, role)` is enforced in `upsertSessionLinearIssueLink` (delete-then-insert in a transaction).
-- `linear_issue_claims` — active-claim ledger so two lanes don't drive the same issue simultaneously.
+- `lane_linear_issues`: a lane's primary issue, keyed by
+  `(project_id, lane_id)`.
+- `lane_linear_issue_links`: more issues on a lane (`role`, `source`,
+  `include_in_pr`, `close_on_merge`, `evidence`).
+- `session_linear_issues`: issues on a session. `upsertSessionLinearIssueLink`
+  keeps `(project_id, session_id, issue_id, role)` unique (delete then insert).
+
+The `linear_issue_claims`, `linear_workflow_*`, `linear_dispatch_*` and
+`linear_ingress_*` tables stay in the schema for migration safety. No service
+writes them.
+
+The account directory keeps `cloud_linear_renewals` (D1): one lease row per
+account and repository scope while the server renews.
 
 ## Gotchas
 
-- **Dormant until connected.** Until a token is stored, nothing fires and no listener binds. Tests should stub `getStatus().tokenStored` accordingly.
-- **Desktop OAuth is loopback-only.** The desktop sign-in flow needs port 19836 free; the service does not pick alternatives, and collisions surface as a startup error in the panel. The mobile worker-bounce flow does not use a loopback server (it relies on the relay worker + `ade://` callback), so it is unaffected by port 19836.
-- **Local connection state and account refresh state are separate.** Access tokens and auth mode remain in the active project's encrypted credential store; an OAuth refresh token is account-scoped, migrates silently once after sign-in, hydrates only when the local connection lacks one, and is removed from account-origin local state on sign-out or account switch.
-- **Live status is off by default.** Nothing writes back to Linear on launch / PR / merge unless `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`; every hook short-circuits when the flag is unset.
-- **CRR strips non-PK uniqueness.** Linear tables don't rely on secondary UNIQUE constraints for upserts; use explicit select-then-update or the delete-then-insert pattern instead of `ON CONFLICT(some_unique_col)`.
+- **Desktop OAuth needs port 19836.** The loopback flow does not pick another
+  port. The phone's worker-bounce flow does not use it.
+- **Never exchange a refresh token outside the owner rule.**
+- **`clientId` is written only when proven.** Do not fill it from the
+  configured client: a grant from a custom client renewed with ADE's client
+  fails, and the server must not try.
+- **The server keeps people on `linear_renewing` for up to the 10-minute
+  grace** while a computer still owns an expired grant.
+- **CRR strips non-PK uniqueness.** Do not use `ON CONFLICT(<unique column>)`
+  on Linear tables.
 
 ## Cross-links
 
-- [`../cto/README.md`](../cto/README.md) — the CTO thread and its Linear read/write operator tools.
-- [`../lanes/README.md`](../lanes/README.md) — lane creation and the `lane_linear_issues` hydration path.
-- [`../chat/README.md`](../chat/README.md) — chat context attachments and session links.
-- [`../automations/README.md`](../automations/README.md) — the automations Linear ingress (relay + ADE Linear OAuth app webhook) that turns `linear.*` events into automation triggers. Distinct from the removed CTO workflow ingress.
+[CTO](../cto/README.md), [Lanes](../lanes/README.md),
+[Chat](../chat/README.md), [Automations](../automations/README.md) (Linear
+triggers, `linear.agent_*` rules), [Issues](../issues/README.md) (viewer and
+launcher), `apps/push-relay/README.md` (the account vault),
+`apps/webhook-relay/README.md` (Linear webhooks and the agent).

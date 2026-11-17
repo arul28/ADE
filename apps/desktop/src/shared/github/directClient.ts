@@ -16,7 +16,7 @@ import type {
 } from "../types";
 import { GITHUB_DIRECT_ACCOUNT_CHANGED } from "../types/githubDirect";
 import type { AccountAppTokenClient } from "./accountAppTokenClient";
-import { isRecord, str, bool, mapRepository, mapBranch, mapContentEntry, mapPull, mapPullDetail, mapCheckRun, mapReview, mapComment, mapIssue, mapIssueDetail, listOf } from "./directMappers";
+import { isRecord, str, bool, mapRepository, mapBranch, mapContentEntry, mapFileContent, mapCommit, mapPull, mapPullDetail, mapCheckRun, mapReview, mapComment, mapIssue, mapIssueDetail, listOf } from "./directMappers";
 import { appGrantMissingPermissions, appGrantNeedsApproval, appInstallationGrantForOwner } from "./githubAppGrant";
 
 /**
@@ -238,6 +238,35 @@ export function buildGithubDirectRequest(request: unknown): GithubDirectBuiltReq
         op: "listContents",
         repo,
         steps: [{ path: `${repoPath(repo)}/contents${path}`, query: typeof ref === "string" ? { ref } : {}, maxPages: 1 }],
+      };
+    }
+    case "getFileContent": {
+      const repo = checkRepo(params);
+      if (typeof repo === "string") return invalid(repo);
+      const record = params as Record<string, unknown>;
+      const path = checkContentPath(record.path);
+      if (!path) return invalid("path is a file path in the repository");
+      const ref = record.ref;
+      if (ref != null && (typeof ref !== "string" || !REF_PATTERN.test(ref) || ref.includes(".."))) return invalid("ref is a branch, tag or commit");
+      return {
+        ok: true,
+        op: "getFileContent",
+        repo,
+        steps: [{ path: `${repoPath(repo)}/contents${path}`, query: typeof ref === "string" ? { ref } : {}, maxPages: 1 }],
+      };
+    }
+    case "listCommits": {
+      const repo = checkRepo(params);
+      if (typeof repo === "string") return invalid(repo);
+      const record = params as Record<string, unknown>;
+      const ref = record.ref;
+      if (ref != null && (typeof ref !== "string" || !REF_PATTERN.test(ref) || ref.includes(".."))) return invalid("ref is a branch, tag or commit");
+      const maxPages = checkMaxPages(record.maxPages, 1);
+      return {
+        ok: true,
+        op: "listCommits",
+        repo,
+        steps: [{ path: `${repoPath(repo)}/commits`, query: { per_page: "50", ...(typeof ref === "string" ? { sha: ref } : {}) }, maxPages }],
       };
     }
     case "diagnoseRepository": {
@@ -686,6 +715,10 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
         // A file path answers one object, not a folder: no entries.
         return listOf(mapContentEntry)(first!.items).sort((a, b) =>
           a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "dir" ? -1 : b.kind === "dir" ? 1 : a.name.localeCompare(b.name));
+      case "getFileContent":
+        return mapFileContent(first!.single);
+      case "listCommits":
+        return listOf(mapCommit)(first!.items);
       case "listChecks": {
         const status = isRecord(second!.single) ? second!.single : {};
         const statuses = Array.isArray(status.statuses) ? status.statuses : [];

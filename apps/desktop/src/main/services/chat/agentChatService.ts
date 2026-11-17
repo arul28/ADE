@@ -2039,6 +2039,8 @@ function resolveClaudeAgentSdkVersion(): string {
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
+/** The project kv key (plus the session id) that holds the send id a restored ADE Cloud CLI already has. */
+const CLOUD_RESTORE_CLI_SENT_KEY_PREFIX = "cloud_restore.cli_sent:";
 const CLAUDE_UNATTENDED_APPROVAL_MESSAGE = "This automation run has nobody to approve tools, so this call was refused. Keep going with what you are allowed to do, and say in your final message what you could not do.";
 const CLAUDE_UNATTENDED_PLAN_MESSAGE = "This automation run has nobody to approve a plan, so the plan was not approved. Finish without implementing it and report the plan in your final message.";
 const UNATTENDED_QUESTION_MESSAGE = "This automation run has nobody to answer questions. Do not wait for an answer: use your best judgment, and say what you assumed in your final message.";
@@ -26351,6 +26353,12 @@ export function createAgentChatService(args: {
     // The send running for this chat (if it carries a client id) has now
     // written its message, so a retry of it must not write it again.
     if (event.type === "user_message") clientSends.noteMessageWritten(managed.session.id);
+    // The person's message carries that send's id, so a client finds it by id
+    // (a queued message from the web or phone). A message ADE wrote does not.
+    if (event.type === "user_message" && !event.clientSendId && !event.metadata?.hostContinuation) {
+      const clientSendId = clientSends.claimSendId(managed.session.id);
+      if (clientSendId) event = { ...event, clientSendId };
+    }
     if (event.type === "user_message" && event.turnId && /^\/compact(?:\s|$)/i.test(event.text.trim())) {
       rememberBoundedEntry(compactOnlyTurns, event.turnId, automaticCompactSessions.delete(managed.session.id) ? "auto" : "manual", 512);
     }
@@ -56707,6 +56715,251 @@ export function createAgentChatService(args: {
     throw new Error("The handoff capsule fork transport does not match its provider.");
   };
 
+  // ---- ADE Cloud fork-continue restore: BEGIN (apps/ade-cli cloudChatRestore.ts) ----
+  /**
+   * Restores a saved ADE Cloud chat on a new computer under its SAME id. The
+   * chat's old computer is gone; the account server kept its transcript and,
+   * for Claude, Codex and OpenCode, a fork capsule saved at rest.
+   *
+   * 1. The chat is made here with the same id, in its lane.
+   * 2. The capsule's provider history is put in place
+   *    (`materializeCrossMachineFork`). With no capsule (another provider, a
+   *    capsule over the cap, a Codex `.zst` rollout, a failed apply), the
+   *    next turn replays the saved transcript instead.
+   * 3. The saved transcript becomes the chat's history, each event once.
+   *
+   * Safe to run again for the same chat: the provider step runs once, and
+   * the history import skips the events it already has.
+   */
+  const restoreSavedCloudChat = async (restoreArgs: {
+    sessionId: string;
+    laneId: string;
+    modelId: string;
+    title: string | null;
+    /** The saved transcript, oldest first, each with its saved `sequence`. */
+    envelopes: AgentChatEventEnvelope[];
+    /** The fork capsule saved at rest; null replays the transcript. */
+    capsule: AgentChatCrossMachineHandoffCapsule | null;
+    /** The saved transcript was too long to read whole: its oldest part is not here. */
+    olderPartLeftOut?: boolean;
+  }): Promise<{ sessionId: string; restoredWith: "capsule" | "replay" | "earlier" }> => {
+    const sessionId = restoreArgs.sessionId.trim();
+    const descriptor = getModelById(restoreArgs.modelId) ?? resolveModelAlias(restoreArgs.modelId);
+    if (!descriptor || descriptor.deprecated) {
+      throw new Error(`This chat's model '${restoreArgs.modelId}' is not available on this computer.`);
+    }
+    const provider = resolveProviderGroupForModel(descriptor);
+    const model = descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id;
+    const capsule = restoreArgs.capsule?.source.provider === provider ? restoreArgs.capsule : null;
+    const target = capsule?.target ?? null;
+    const handoffId = `cloud-restore:${sessionId}`;
+    const reused = Boolean(sessionService.get(sessionId));
+    const session = await createSessionInternal({
+      sessionId,
+      laneId: restoreArgs.laneId,
+      provider,
+      model,
+      modelId: descriptor.id,
+      title: restoreArgs.title?.trim() || null,
+      sessionProfile: "workflow",
+      ...(target
+        ? {
+            reasoningEffort: pickHandoffReasoningEffort(descriptor, target.reasoningEffort),
+            fastMode: target.fastMode,
+            claudePermissionMode: target.claudePermissionMode,
+            codexApprovalPolicy: target.codexApprovalPolicy,
+            codexSandbox: target.codexSandbox,
+            codexConfigSource: target.codexConfigSource,
+            opencodePermissionMode: target.opencodePermissionMode,
+            permissionMode: target.permissionMode,
+          }
+        : {}),
+      surface: "work",
+      idempotencyKey: handoffId,
+    });
+    const managed = ensureManagedSession(session.id);
+    const seeded: AgentChatEventEnvelope[] = restoreArgs.envelopes.map((envelope, index) => ({
+      ...envelope,
+      sessionId: session.id,
+      provenance: {
+        ...(envelope.provenance ?? {}),
+        providerOrigin: "cloud_restore",
+        sourceSessionId: sessionId,
+        sourceSequence: typeof envelope.sequence === "number" ? envelope.sequence : index + 1,
+        crossMachineHandoffId: handoffId,
+      },
+    }));
+    const alreadyRestored = reused && (
+      Boolean(managed.pendingTranscriptReplay)
+      || readTranscriptEnvelopes(managed).some((envelope) => envelope.provenance?.crossMachineHandoffId === handoffId)
+    );
+    let restoredWith: "capsule" | "replay" | "earlier" = alreadyRestored ? "earlier" : "replay";
+    if (!alreadyRestored) {
+      if (capsule?.forkTransport) {
+        try {
+          await materializeCrossMachineFork({
+            capsule,
+            handoffId: capsule.handoffId,
+            destinationLanePath: managed.laneWorktreePath,
+            managed,
+          });
+          restoredWith = "capsule";
+        } catch (error) {
+          logger.warn("agent_chat.cloud_restore_capsule_failed", { sessionId, provider, error: getErrorMessage(error) });
+        }
+      }
+      if (restoredWith === "replay") {
+        stageTranscriptReplayOnSession(managed, seeded, descriptor.contextWindow, provider);
+        if (provider === "claude" || provider === "codex" || provider === "opencode") {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "This chat goes on from its saved transcript on a new computer. The agent's own history from before was not restored, so the agent reads the transcript instead.",
+          });
+        }
+      }
+      if (restoreArgs.olderPartLeftOut) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "warning",
+          message: "This chat's saved transcript was too long to restore whole. Its oldest part was not restored on this computer.",
+        });
+      }
+      persistChatState(managed);
+    }
+    await crossMachineDestination.appendMissingEvents(managed, handoffId, sessionId, seeded);
+    // New events continue above the saved ones, so a client never sees two events with one number.
+    const highest = seeded.reduce((max, envelope) => Math.max(max, envelope.provenance?.sourceSequence ?? 0), 0);
+    if (managed.eventSequence < highest) managed.eventSequence = highest;
+    persistChatState(managed);
+    logger.info("agent_chat.cloud_restored", { sessionId, provider, restoredWith, events: seeded.length });
+    return { sessionId: session.id, restoredWith };
+  };
+  /**
+   * Restores a saved ADE Cloud CLI row on a new computer under its SAME id,
+   * then types the person's message into it.
+   *
+   * - Claude Code and Codex with a CLI capsule saved at rest: the capsule's
+   *   conversation goes where the CLI looks for it under the lane, and the
+   *   CLI resumes it (the CLI move's own destination steps). The message is
+   *   typed at its first free prompt.
+   * - Every other CLI, or no capsule: the same CLI starts fresh in the lane,
+   *   with an info line and the message as its first prompt.
+   *
+   * Safe to run again: a row with this id that exists here is the answer.
+   */
+  const restoreSavedCloudCli = async (restoreArgs: {
+    sessionId: string;
+    laneId: string;
+    toolType: string;
+    title: string | null;
+    /** The CLI capsule saved at rest; null starts the CLI fresh. */
+    capsule: AgentChatCrossMachineHandoffCapsule | null;
+    /** The person's message, typed into the CLI. */
+    prompt: string;
+    /** The person's send id, so a retry types the message once. */
+    clientMessageId: string;
+  }): Promise<{ sessionId: string; restoredWith: "capsule" | "fresh" | "earlier" }> => {
+    const sessionId = restoreArgs.sessionId.trim();
+    const toolType = restoreArgs.toolType.trim() as TerminalToolType;
+    if (!isTrackedAgentCliToolType(toolType)) throw new Error(`ADE here can't start the '${restoreArgs.toolType}' CLI. Update ADE on this computer.`);
+    const provider = cliMoveProvider({ toolType, resumeMetadata: null });
+    if (!provider) throw new Error("ADE can't tell which agent this CLI ran, so it can't continue it here.");
+    const typeMessage = async () => {
+      const typed = await typeIntoAgentCliWhenFree({
+        sessionId,
+        text: restoreArgs.prompt,
+        holdUntilFree: true,
+        clientMessageId: restoreArgs.clientMessageId,
+      });
+      if (typed.outcome === "ended") throw new Error("The restored CLI stopped before ADE could type the message. Open it and send the message again.");
+    };
+    // The send id this CLI already has, kept in the project database so a
+    // retry after a brain restart (the in-memory type ledger is gone) still
+    // finds it. A fresh CLI gets the message as its first prompt, which the
+    // type ledger never sees.
+    const sentKey = `${CLOUD_RESTORE_CLI_SENT_KEY_PREFIX}${sessionId}`;
+    const alreadySent = (): boolean =>
+      db?.getJson<{ clientMessageId?: unknown }>(sentKey)?.clientMessageId === restoreArgs.clientMessageId;
+    const markSent = (): void => {
+      try {
+        db?.setJson(sentKey, { clientMessageId: restoreArgs.clientMessageId, at: new Date().toISOString() });
+      } catch (error) {
+        logger.warn("agent_chat.cloud_restore_cli_mark_failed", { sessionId, error: getErrorMessage(error) });
+      }
+    };
+    if (sessionService.get(sessionId)) {
+      // A retry after the CLI started: type the message only if this send id never reached it.
+      if (!alreadySent()) {
+        await typeMessage();
+        markSent();
+      }
+      return { sessionId, restoredWith: "earlier" };
+    }
+    const lane = await laneService.getSummary(restoreArgs.laneId);
+    if (!lane?.worktreePath) throw new Error("ADE couldn't find the lane on this computer, so it can't continue the CLI.");
+    const cli = restoreArgs.capsule?.cli && restoreArgs.capsule.cli.provider === provider ? restoreArgs.capsule.cli : null;
+    const title = restoreArgs.title?.trim() || cliProviderName(provider);
+    const keptInstanceId = cli?.accountEmail ? localProviderAccountByEmail(provider, cli.accountEmail) : null;
+    const instanceId = keptInstanceId ?? currentDefaultInstanceId(provider) ?? null;
+    let resumeTargetId: string | null = null;
+    if (cli?.continuation === "resume" && cli.conversation) {
+      const configHome = cliMoveConfigHome(provider, instanceId) ?? (provider === "codex" ? codexConfigHome() : claudeConfigDir());
+      try {
+        const mainContent = decodeCrossMachineForkFile(cli.conversation.mainFile, CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED, "CLI conversation");
+        const sideFiles = (cli.conversation.sideFiles ?? []).map((sideFile) => ({
+          relPath: sideFile.relPath,
+          content: decodeCrossMachineForkFile(sideFile, CROSS_MACHINE_FORK_SIDEFILES_MAX_UNCOMPRESSED, `CLI side file '${sideFile.relPath}'`),
+        }));
+        const placed = await placeCliConversation({
+          conversation: cli.conversation,
+          mainContent,
+          sideFiles,
+          targetCwd: lane.worktreePath,
+          configHome,
+        });
+        resumeTargetId = placed.conversationId;
+      } catch (error) {
+        logger.warn("agent_chat.cloud_restore_cli_place_failed", { sessionId, provider, error: getErrorMessage(error) });
+      }
+    }
+    const infoLine = resumeTargetId
+      ? ""
+      : `This ${cliProviderName(provider)} CLI session goes on in a new ADE Cloud computer. Its earlier conversation could not move here, so it starts fresh in the same lane.`;
+    const launched = await cliLifecycle.launchMovedCli({
+      id: sessionId,
+      laneId: lane.id,
+      title,
+      toolType,
+      provider,
+      resumeMetadata: {
+        provider: provider as TerminalResumeMetadata["provider"],
+        targetKind: provider === "codex" ? "thread" : "session",
+        targetId: resumeTargetId,
+        launch: {
+          ...(cli?.launch ?? { permissionMode: "default" as const }),
+          ...(instanceId ? { instanceId } : {}),
+        },
+        ...(instanceId ? { instanceId } : {}),
+        ...(cli?.launch.presetId ? { presetId: cli.launch.presetId } : {}),
+      },
+      resumeTargetId,
+      // A fresh CLI gets the message as its first prompt; a resumed one gets it typed below.
+      brief: [
+        infoLine || `This ${cliProviderName(provider)} CLI session goes on in a new ADE Cloud computer, so it starts fresh in the same lane.`,
+        "",
+        restoreArgs.prompt,
+      ].join("\n"),
+      goal: cli?.goal ?? null,
+      parent: null,
+    });
+    if (launched.mode === "resume") await typeMessage();
+    markSent();
+    logger.info("agent_chat.cloud_restored_cli", { sessionId, provider, restoredWith: launched.mode === "resume" ? "capsule" : "fresh" });
+    return { sessionId, restoredWith: launched.mode === "resume" ? "capsule" : "fresh" };
+  };
+  // ---- ADE Cloud fork-continue restore: END ----
+
   /**
    * A moved chat keeps its place in the chat tree. The chat itself gets its
    * parent back when that parent is reachable here (often it lives here: a
@@ -66814,7 +67067,8 @@ export function createAgentChatService(args: {
     const timeout = setTimeout(settle, COMPACT_FIRST_INLINE_WAIT_MS);
     timeout.unref?.();
     try {
-      await sendMessageWithoutReview({ sessionId, text: "/compact", displayText: "/compact" });
+      // The `/compact` is ADE's, not the person's message: it does not claim the send's id.
+      await clientSends.outsideSend(() => sendMessageWithoutReview({ sessionId, text: "/compact", displayText: "/compact" }));
       await settled;
       // The compaction's terminal event can arrive inside the turn that
       // carried it (Codex closes that turn a moment later), so the message
@@ -66857,7 +67111,7 @@ export function createAgentChatService(args: {
     let markDispatched = () => {};
     const dispatched = new Promise<void>((resolve) => { markDispatched = resolve; });
     // No ADE time limit, the same as a `/compact` the user types: Stop ends it.
-    const turn = runSessionTurn({ sessionId: managed.session.id, text: "/compact", timeoutMs: null, onDispatched: markDispatched });
+    const turn = clientSends.outsideSend(() => runSessionTurn({ sessionId: managed.session.id, text: "/compact", timeoutMs: null, onDispatched: markDispatched }));
     const ended = turn.then(() => undefined, () => undefined);
     await Promise.race([dispatched, ended]);
     return { turn, before };
@@ -83993,6 +84247,9 @@ ${schedule.prompt}`
     fastForwardCrossMachineHandoffLane,
     acceptCrossMachineHandoff,
     markCrossMachineHandoff,
+    // ADE Cloud fork-continue restore (marked block above).
+    restoreSavedCloudChat,
+    restoreSavedCloudCli,
     getCrossMachineHandoffOptions: (options: AgentChatCrossMachineHandoffSessionArgs) =>
       requireCrossMachineHandoff().getOptions(options.sourceSessionId),
     getCrossMachineMoveLock,

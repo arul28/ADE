@@ -151,8 +151,17 @@ export async function runCloudWakes(env: CloudWakeEnv, options: { now?: number; 
         reached = false;
       }
     }
-    if (reached) woken += 1;
-    else failed += 1;
+    if (reached) {
+      woken += 1;
+      // The request wakes it: the row says so at once, so the awake cap and every client read it as waking (the tick reads the provider next).
+      await env.DB.prepare(`
+        update cloud_computers set status = 'waking', status_changed_at = ?
+        where instance_id = ? and user_id = ? and deleted_at is null and status = 'sleeping'
+      `).bind(now, row.instance_id, row.user_id).run()
+        .then((result) => {
+          if ((result.meta?.changes ?? 0) > 0) logCloud("cloud.timed_wake_recorded", { userId: row.user_id, instanceId: row.instance_id });
+        }, (error: unknown) => reportCloudFailure("cloud.timed_wake_record_failed", { instanceId: row.instance_id, message: error instanceof Error ? error.message : "unknown" }));
+    } else failed += 1;
     if (reached || !WAKE_URL.test(row.wake_url) || now - row.wake_at > GIVE_UP_AFTER_MS) {
       // Only the row this tick read: a newer time the machine sent meanwhile stays.
       await env.DB.prepare("delete from cloud_wakes where user_id = ? and instance_id = ? and wake_at = ?")

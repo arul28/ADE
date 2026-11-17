@@ -10103,6 +10103,11 @@ export function createPtyService({
       return args.raw ? merged : stripAnsi(merged);
     },
 
+    /** The file that holds a session's last screen (its terminal snapshot); it may not exist. */
+    terminalSnapshotPath(sessionId: string): string {
+      return safeTerminalSnapshotPathFor(sessionId);
+    },
+
     /**
      * Logical UTF-8 byte window currently represented by the retained file.
      * `startOffset` advances after rollover; `endOffset` never rewinds. The

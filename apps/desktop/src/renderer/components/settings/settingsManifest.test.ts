@@ -495,25 +495,25 @@ describe("web machine-scoped availability", () => {
     { platform: "MacIntel", mac: true },
     { platform: "Win32", mac: false },
     { platform: "Linux x86_64", mac: false },
-  ])("keeps every setting on the desktop ($platform), except web-only cards, macOS-only ones off a Mac, and ADE Cloud off its access list", async ({ platform, mac }) => {
+  ])("keeps every setting on the desktop ($platform), except web-only cards, macOS-only ones off a Mac, and ADE Cloud after a sign-out", async ({ platform, mac }) => {
     const spy = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
     try {
       const available = new Set(availableSettingsEntries().map((entry) => entry.id));
       expect(SETTINGS_ENTRIES.some((entry) => entry.webOnly)).toBe(true);
       expect(available.has("general.project-location")).toBe(mac);
       for (const entry of SETTINGS_ENTRIES) {
-        // ADE Cloud's settings stay hidden until this account has been told yes.
-        expect(available.has(entry.id)).toBe(entry.webOnly !== true && (mac || entry.macOnly !== true) && !isAdeCloudSettingEntry(entry));
+        // ADE Cloud is a machine every signed-in account has: its settings show before the server answers.
+        expect(available.has(entry.id)).toBe(entry.webOnly !== true && (mac || entry.macOnly !== true));
       }
-      const access = { enabled: true };
+      const access: { state: string; enabled?: boolean } = { state: "signed_out" };
       (window as { ade?: unknown }).ade = { cloudAccess: { read: async () => access, onChanged: () => () => undefined } };
       const cloudSettingIds = SETTINGS_ENTRIES.filter(isAdeCloudSettingEntry).map((entry) => entry.id);
       expect(cloudSettingIds.length).toBeGreaterThan(0);
       window.dispatchEvent(new Event("focus"));
-      await vi.waitFor(() => expect(availableSettingsEntries().map((entry) => entry.id)).toEqual(expect.arrayContaining(cloudSettingIds)));
-      access.enabled = false;
-      window.dispatchEvent(new Event("focus"));
       await vi.waitFor(() => expect(availableSettingsEntries().some(isAdeCloudSettingEntry)).toBe(false));
+      Object.assign(access, { state: "on", enabled: true });
+      window.dispatchEvent(new Event("focus"));
+      await vi.waitFor(() => expect(availableSettingsEntries().map((entry) => entry.id)).toEqual(expect.arrayContaining(cloudSettingIds)));
       delete (window as { ade?: unknown }).ade;
     } finally {
       spy.mockRestore();
@@ -551,7 +551,7 @@ describe("standalone settings availability", () => {
       expect(available.some((entry) => isProjectScoped(entry.scope))).toBe(false);
       expect(available.map((entry) => entry.id)).toEqual(
         SETTINGS_ENTRIES
-          .filter((entry) => !entry.webOnly && !isProjectScoped(entry.scope) && (isMacPlatform() || !entry.macOnly) && !isAdeCloudSettingEntry(entry))
+          .filter((entry) => !entry.webOnly && !isProjectScoped(entry.scope) && (isMacPlatform() || !entry.macOnly))
           .map((entry) => entry.id),
       );
       expect(searchSettingsEntries("reset").map((entry) => entry.id)).toContain("general.reset");

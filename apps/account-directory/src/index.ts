@@ -40,6 +40,7 @@ import { cleanupJevBonusDays, handleJevBonusRequest, isJevBonusRequest, type Jev
 import { handleSignupAnalyticsRequest, isSignupAnalyticsRequest, type SignupAnalyticsEnv } from "./signupAnalytics";
 import { cleanupLaneShares, handleLaneShareRequest, isLaneShareRequest, type LaneShareEnv } from "./laneShares/routes";
 import { handleAccountProjectRequest, isAccountProjectRequest, type AccountProjectEnv } from "./accountProjects/routes";
+import { handleAccountLanesRequest, isAccountLanesRequest } from "./accountLanes/routes";
 import { handleGithubAppRequest, isGithubAppRequest, type GithubAppEnv } from "./githubApp/routes";
 import { handleLatestReleasesRequest, isLatestReleasesRequest, type LatestReleasesEnv } from "./latestReleases";
 import { runGithubAppCron } from "./githubApp/grants";
@@ -116,6 +117,9 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // route (machines only). Matched before the directory, which owns only
   // `/account/machines`.
   if (isAccountProjectRequest(url)) return handleAccountProjectRequest(request, env);
+  // The account lane index (src/accountLanes): account bearer, exact-origin
+  // CORS for the read only; brains publish. Matched before the directory.
+  if (isAccountLanesRequest(url)) return handleAccountLanesRequest(request, env);
   // The account's GitHub App sign-in (src/githubApp): account bearer and the
   // same exact-origin CORS, except the callback and Setup URL pages that a
   // browser opens. 503 for every bearer route until its two secrets are set.

@@ -11,6 +11,10 @@ export const UNREADABLE_REQUEST_MESSAGE = "That request could not be read.";
 
 export const badRequest = (message: string): Response => fail("bad_request", message, 400);
 
+/** An account over its minute for a bucket (`takeRequest`). */
+export const tooManyRequests = (message = "Too many requests from this account in the last minute. Try again in a minute."): Response =>
+  fail("rate_limited", message, 429);
+
 /** A short value (an id, a name) on one line, or null when it is missing or too long. */
 export function shortString(value: unknown, max: number): string | null {
   if (typeof value !== "string") return null;
@@ -26,6 +30,8 @@ export function clippedText(value: unknown, max: number): string | null {
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1).trimEnd()}…`;
 }
 
+/** A saved row's id in a path or a body: a machine key, chat, session or lane id. */
+export const ROW_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 /** A lowercase 8-4-4-4-12 UUID: a launch, a lane on a launch, a delete job. Callers lowercase first. */
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 

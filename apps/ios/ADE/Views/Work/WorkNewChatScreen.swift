@@ -660,8 +660,16 @@ struct WorkNewChatScreen: View {
   /// open the chat (session id = launch id) right away; the host is still
   /// setting the lane up.
   let onLaunchStarted: @MainActor (ChatLaunchSnapshot) async -> Void
+  /// A chat started on ADE Cloud is running: open it (its chat id).
+  let onCloudChatReady: @MainActor (String) async -> Void
 
   @State private var selectedLaneId: String = ""
+  @ObservedObject private var cloudLaunches = AccountCloudLaunchStore.shared
+  @ObservedObject private var cloudStore = AccountCloudStore.shared
+  /// The launch this screen started on ADE Cloud: its setup card shows above
+  /// the composer until the chat runs.
+  @State private var cloudLaunchId: String?
+  @State private var cloudModelPickerPresented = false
   /// The machine the chat starts on. Nil = the primary (focused) machine.
   @State private var selectedMachineKey: String?
   /// That machine's lanes (namespaced ids), when it is not the primary one.
@@ -749,7 +757,8 @@ struct WorkNewChatScreen: View {
     onCliStarted: @escaping @MainActor (TerminalSessionSummary) async -> Void,
     onChatImported: @escaping @MainActor (AgentChatSessionSummary) async -> Void = { _ in },
     onRefreshLanes: @escaping @MainActor () async -> Void,
-    onLaunchStarted: @escaping @MainActor (ChatLaunchSnapshot) async -> Void = { _ in }
+    onLaunchStarted: @escaping @MainActor (ChatLaunchSnapshot) async -> Void = { _ in },
+    onCloudChatReady: @escaping @MainActor (String) async -> Void = { _ in }
   ) {
     self.lanes = lanes
     self.preferredLaneId = preferredLaneId
@@ -760,6 +769,7 @@ struct WorkNewChatScreen: View {
     self.onChatImported = onChatImported
     self.onRefreshLanes = onRefreshLanes
     self.onLaunchStarted = onLaunchStarted
+    self.onCloudChatReady = onCloudChatReady
     // Restore the last-used model + access mode so a fresh New Chat screen opens
     // on the user's most recent choices. Seeding the @State initial values here
     // (rather than assigning in onAppear) avoids the provider/model onChange
@@ -859,6 +869,32 @@ struct WorkNewChatScreen: View {
   /// Whether the synthetic "Auto-create lane" entry is the current selection.
   private var isAutoCreateLane: Bool {
     selectedLaneId == workAutoCreateLaneSentinelId
+  }
+
+  /// Whether the chat starts on ADE Cloud (through the account server).
+  private var isCloudSelected: Bool { selectedMachineKey == ADECloudMachine.id }
+
+  /// The model ADE Cloud runs, from the server's catalog.
+  private var cloudProviderEntry: CloudCatalogProvider? {
+    cloudLaunches.catalog?.providers.first { $0.provider == provider }
+  }
+
+  /// The footnote under the composer while ADE Cloud is picked: why it
+  /// can't start work now, or what a model that signs in on the desktop needs.
+  private var cloudFootnote: String? {
+    guard isCloudSelected else { return nil }
+    if let refusal = cloudStore.doingRefusal { return refusal }
+    if let entry = cloudProviderEntry, entry.remoteSignIn == "desktop" {
+      // The desktop's sign-in already reached ADE Cloud: nothing to do.
+      if cloudLaunches.carriedSignIns[entry.provider] == true {
+        return "Uses your \(entry.label) sign-in from ADE desktop."
+      }
+      return cloudDesktopSignInSentence(label: entry.label)
+    }
+    if cloudLaunches.catalog != nil, cloudProviderEntry?.models.contains(where: { $0.id == modelId }) != true {
+      return "Pick a model ADE Cloud runs."
+    }
+    return nil
   }
 
   /// The lanes of the chosen machine.
@@ -964,8 +1000,27 @@ struct WorkNewChatScreen: View {
         // Pinned: the lane picker must stay reachable no matter how tall the
         // composer grows or whether the keyboard is up.
         // Left-aligned in one row, on the prompt box's own left edge.
+        if let cloudLaunchId, let entry = cloudLaunches.entries.first(where: { $0.launchId == cloudLaunchId }) {
+          WorkCloudLaunchCard(entry: entry) {
+            guard let chatId = entry.record?.sessionId else { return }
+            Task { await onCloudChatReady(chatId) }
+          }
+          .padding(.horizontal, 12)
+          .transition(.opacity)
+        }
+
         laneSelector
           .padding(.horizontal, 10)
+
+        if let cloudFootnote {
+          Text(cloudFootnote)
+            .font(.caption)
+            .foregroundStyle(cloudStore.doingRefusal != nil ? ADEColor.warning : ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .adeInspectable("Work.NewChat.CloudFootnote")
+        }
 
         launchSelectionRow
 
@@ -1052,6 +1107,10 @@ struct WorkNewChatScreen: View {
       }
     }
     .onAppear {
+      // No computer of the person's own serves this project: start on ADE Cloud.
+      if selectedMachineKey == nil, cloudLaunchId == nil, workNewChatPrefersCloud(syncService: syncService) {
+        selectMachine(workNewChatCloudOption())
+      }
       // A lane of another machine opens the page on that machine.
       if selectedMachineKey == nil,
          let preferredLaneId,
@@ -1099,6 +1158,14 @@ struct WorkNewChatScreen: View {
     }
     .sheet(isPresented: $githubIssuePickerPresented) {
       WorkGitHubIssuePickerSheet(syncService: syncService, onPick: addGitHubLaunchIssue)
+    }
+    .sheet(isPresented: $cloudModelPickerPresented) {
+      CloudModelPickerSheet(provider: provider, modelId: modelId) { pickedProvider, pickedModel in
+        provider = pickedProvider
+        modelId = pickedModel
+        reasoningEffort = ""
+        codexFastMode = false
+      }
     }
     .sheet(isPresented: $modelPickerPresented) {
       WorkModelPickerSheet(
@@ -1218,6 +1285,19 @@ struct WorkNewChatScreen: View {
     launchIssues.removeAll()
     launchAccountState.clear()
     let keepsAutoCreate = isAutoCreateLane
+    if option.isCloud {
+      // ADE Cloud: a new cloud lane by default, or one of the project's
+      // cloud lanes. Its models come from the server's catalog.
+      selectedPreset = nil
+      remoteLanes = syncService.cloudLanesForActiveProject()
+      selectedLaneId = workAutoCreateLaneSentinelId
+      machineModelHint = nil
+      Task {
+        await cloudLaunches.loadCatalogIfNeeded(using: syncService)
+        pickCloudModelIfNeeded()
+      }
+      return
+    }
     if option.machineKey == nil {
       remoteLanes = []
       selectedLaneId = keepsAutoCreate ? workAutoCreateLaneSentinelId : (workNewChatPrimaryLane(lanes)?.id ?? "")
@@ -1232,9 +1312,20 @@ struct WorkNewChatScreen: View {
     checkModelOnMachine()
   }
 
+  /// Keeps the model on one ADE Cloud runs: the last cloud pick, else the
+  /// catalog's default.
+  private func pickCloudModelIfNeeded() {
+    guard isCloudSelected, cloudProviderEntry?.models.contains(where: { $0.id == modelId }) != true,
+          let pick = cloudLaunches.defaultModel() else { return }
+    provider = pick.provider
+    modelId = pick.modelId
+    reasoningEffort = ""
+    codexFastMode = false
+  }
+
   @MainActor
   private func loadRemoteLanes(keepSelection: Bool) async {
-    guard let key = selectedMachineKey else { return }
+    guard let key = selectedMachineKey, key != ADECloudMachine.id else { return }
     remoteLanesLoading = true
     defer { remoteLanesLoading = false }
     // A machine that is not connected is connected now (a pick reconnects it).
@@ -1700,7 +1791,9 @@ struct WorkNewChatScreen: View {
       codexFastMode: $codexFastMode,
       fastModeAllowed: fastModeAllowed,
       composerFocused: $composerFocused,
-      onOpenModelPicker: { modelPickerPresented = true },
+      onOpenModelPicker: {
+        if isCloudSelected { cloudModelPickerPresented = true } else { modelPickerPresented = true }
+      },
       launchMenu: AnyView(launchOptionsMenu),
       onSubmit: submit(openingMessage:attachments:)
     )
@@ -1796,6 +1889,60 @@ struct WorkNewChatScreen: View {
   }
 
   @MainActor
+  /// Starts the chat on ADE Cloud through the account server: on a new cloud
+  /// lane, or on the picked cloud lane (with or without a computer). The
+  /// setup card above the composer follows it; the chat opens when it runs.
+  private func submitOnCloud(opener: String, rawText: String, hasAttachments: Bool) async -> Bool {
+    if let refusal = cloudStore.doingRefusal {
+      errorMessage = refusal
+      return false
+    }
+    guard sessionMode == .chat else {
+      errorMessage = "ADE Cloud starts chats from the phone. Switch to Chat."
+      return false
+    }
+    guard !hasAttachments else {
+      errorMessage = "A chat's first message on ADE Cloud can't carry images yet. Send them once it runs."
+      return false
+    }
+    guard let project = syncService.activeAccountProjectForCloud else {
+      errorMessage = "Add this project to your account to use ADE Cloud."
+      return false
+    }
+    guard let entry = cloudProviderEntry, entry.models.contains(where: { $0.id == modelId }) else {
+      errorMessage = "Pick a model ADE Cloud runs."
+      return false
+    }
+    let existingLane: (id: String, name: String)? = isAutoCreateLane ? nil : visibleLanes
+      .first { $0.id == selectedLaneId }
+      .map { lane in (workParseRemoteLaneId(lane.id)?.laneId ?? lane.id, lane.name) }
+    if !isAutoCreateLane, existingLane == nil {
+      errorMessage = "Pick a lane."
+      return false
+    }
+    busy = true
+    errorMessage = nil
+    WorkComposerPreferences.save(composerSelection)
+    let launchId = await cloudLaunches.start(
+      accountProjectId: project.id,
+      origin: "\(project.host)/\(project.owner)/\(project.name)",
+      prompt: opener,
+      provider: entry.provider,
+      modelId: modelId,
+      effort: reasoningEffort,
+      existingLane: existingLane,
+      newLaneName: existingLane == nil ? autoCreatedLaneName(opener: rawText) : nil,
+      using: syncService
+    )
+    busy = false
+    withAnimation(.smooth(duration: 0.2)) { cloudLaunchId = launchId }
+    if cloudLaunches.entries.first(where: { $0.launchId == launchId })?.startError == nil {
+      ADEHaptics.success()
+      return true
+    }
+    return false
+  }
+
   private func submit(openingMessage: String, attachments inputAttachments: [WorkChatInputAttachment]) async -> Bool {
     let readyAttachments = workChatInputReadyAttachments(inputAttachments)
     let rawText = openingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1812,6 +1959,9 @@ struct WorkNewChatScreen: View {
         ? "This model is available for chat only. Choose a CLI-capable model."
         : "This model is available for CLI only. Choose a chat-capable model."
       return false
+    }
+    if isCloudSelected {
+      return await submitOnCloud(opener: chatOpener, rawText: rawText, hasAttachments: !readyAttachments.isEmpty)
     }
     guard readyAttachments.isEmpty || canUploadAttachments else {
       errorMessage = "Reconnect to attach images."
@@ -2099,10 +2249,11 @@ struct WorkNewChatScreen: View {
         switch delivery {
         case .queued:
           deliveryState = "queued"
-        case .sent, .dropped:
-          // `.dropped` (queue_full) is steer-only; a new chat's opener goes
-          // through sendChatMessage, so it is unreachable here. Fold it into the
-          // delivered path to keep the switch exhaustive.
+        case .sent, .dropped, .heldByServer:
+          // `.dropped` (queue_full) is steer-only, and `.heldByServer` needs
+          // an asleep cloud chat with no files; a new chat's opener with
+          // files is neither. Fold both into the delivered path to keep the
+          // switch exhaustive.
           deliveryState = nil
         }
         await onStarted(summary, chatOpener, true, deliveryState, attachmentRefs)

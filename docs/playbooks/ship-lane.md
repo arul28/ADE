@@ -547,9 +547,7 @@ A push cancels and restarts an in-flight Greptile review. So, after a harvest:
   with its own fixes, in one push.
 - Before any push — a fix, a rebase, held commits, or a rerun of a flaky job
   that ends in a rebase — run the poll again and act on everything it reports.
-  A push made from a CI-only check carries open review work past the loop: on
-  PR #1469 a CodeRabbit finding and seven unanswered threads stayed open that
-  way until the user asked about them.
+  A push made from a CI-only check carries open review work past the loop.
 - Before any push, run **Commit-bound quality revalidation**. It reviews the
   delta since `qualityReviewedSha`. At the end of `/quality` that delta is
   usually empty, so this is only the bind and the push; a fix that the review
@@ -866,8 +864,7 @@ Filter out any comment whose `id` is in `addressedCommentIds`.
 **Then read every open review thread, whatever its age.** The `SINCE` filter
 only finds what is new. A review that lands while you wait on CI is older than
 the next push (a docs fix, a rebase), so the next poll's `SINCE` drops it as
-old — and nothing answers it. PR #1410 merged over seven CodeRabbit comments
-this way. Every poll also lists the unresolved threads:
+old — and nothing answers it. Every poll also lists the unresolved threads:
 
 ```bash
 ade prs comments "$PR_NUMBER" --text      # "open" rows are unresolved threads

@@ -35,7 +35,7 @@ import {
   CLOUD_REMOTE_SIGN_IN_KINDS,
   cloudRemoteSignInOf,
 } from "./contract";
-import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
+import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
 import { WAKE_PORT, cloudSizeForTier } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { LAUNCH_COMPUTER_DELETED, deleteComputer, logCloud, ownedComputer, parseJsonColumn, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
@@ -48,6 +48,7 @@ import {
   expiredLaunchMessagesStatement,
   failQueuedMessagesStatement,
   firstMessageDeliveredStatement,
+  chatMessagesDeliveredStatement,
   firstMessageStatement,
   refusedStartMessagesStatement,
   routeLaunchMessages,
@@ -108,6 +109,9 @@ export type LaunchRow = {
   approval_url: string | null;
   stages_json: string | null;
   error: string | null;
+  /** Migration 0039: the saved chat this launch continues (`continueChat`). */
+  continue_machine_key?: string | null;
+  continue_chat_id?: string | null;
   session_id: string | null;
   /** While `waiting_for_sign_in`: CloudLaunchSignIn as JSON (migration 0038). */
   sign_in_json: string | null;
@@ -226,7 +230,7 @@ function laneNameFromPrompt(chat: unknown): string {
   return (line.length > 60 ? `${line.slice(0, 59).trimEnd()}…` : line) || "New lane";
 }
 
-function parseAttachments(value: unknown): CloudLaunchAttachment[] | string {
+export function parseAttachments(value: unknown): CloudLaunchAttachment[] | string {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.length > CLOUD_LAUNCH_MAX_FILES) return `A launch takes at most ${CLOUD_LAUNCH_MAX_FILES} files.`;
   const out: CloudLaunchAttachment[] = [];
@@ -314,6 +318,18 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
   const sizeChoice: CloudLaunchSizeChoice | null = body.sizeChoice === "default" || body.sizeChoice === "capped" || body.sizeChoice === "picked"
     ? body.sizeChoice
     : sizeOmitted ? "default" : null;
+  // Continue a saved chat on the new computer: needs the chat's own lane, named by the caller.
+  let continueChat: CloudServerLaunchRequest["continueChat"];
+  if (body.continueChat != null) {
+    const raw = typeof body.continueChat === "object" && !Array.isArray(body.continueChat) ? body.continueChat as Record<string, unknown> : null;
+    const machineKey = typeof raw?.machineKey === "string" && ROW_ID.test(raw.machineKey.trim()) ? raw.machineKey.trim() : null;
+    const chatId = typeof raw?.chatId === "string" && ROW_ID.test(raw.chatId.trim()) ? raw.chatId.trim() : null;
+    if (!machineKey || !chatId) return "The chat to continue can't be read.";
+    if (raw?.kind != null && raw.kind !== "chat" && raw.kind !== "cli") return "The chat to continue can't be read.";
+    if (kind !== "chat") return "Only a chat launch continues a chat.";
+    if (lane?.id == null) return "A launch that continues a chat names the chat's lane.";
+    continueChat = { machineKey, chatId, ...(raw?.kind === "cli" ? { kind: "cli" as const } : {}) };
+  }
   // An ADE app's own launch args, kept as sent: the computer parses them as every entry's.
   let launch: Record<string, unknown> | null = null;
   if (body.launch != null) {
@@ -339,6 +355,7 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
     madeBy,
     channel,
     ...(launch ? { launch } : {}),
+    ...(continueChat ? { continueChat } : {}),
   };
 }
 
@@ -495,6 +512,14 @@ export async function launchAutoSizeCheck(
   };
 }
 
+/** The launch still continuing this chat on this lane (`continueChat`), if one is. */
+export async function activeContinueLaunch(env: CloudEnv, userId: string, laneId: string, chatId: string): Promise<LaunchRow | null> {
+  return await env.DB.prepare(`
+    select * from cloud_launches where user_id = ? and lane_id = ? and continue_chat_id = ? and state not in ('failed', 'cancelled', 'done')
+    order by created_at desc limit 1
+  `).bind(userId, laneId, chatId).first<LaunchRow>();
+}
+
 async function readLaunch(env: CloudEnv, launchId: string): Promise<LaunchRow | null> {
   return await env.DB.prepare("select * from cloud_launches where launch_id = ?").bind(launchId).first<LaunchRow>();
 }
@@ -588,11 +613,25 @@ async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: stri
   const refusal = await deps.refuseNewLaunch?.();
   if (refusal) return refusal;
   if (row.instance_id && !deps.provider) return fail("unavailable", "ADE Cloud can't delete the failed computer right now. Try again soon.", 503);
-  const claimed = await env.DB.prepare(`
+  // One live launch per continued chat: a newer send already started another one, and the chat's messages go there.
+  const continuing = () => fail("computer_busy", "This chat already continues on another new computer. Its messages go there.", 409);
+  if (row.continue_chat_id && row.lane_id) {
+    const other = await activeContinueLaunch(env, userId, row.lane_id, row.continue_chat_id);
+    if (other && other.launch_id !== row.launch_id) return continuing();
+  }
+  const claim = () => env.DB.prepare(`
     update cloud_launches set state = 'retrying', join_expires_at = null, join_used_at = null, join_rejoins = 0,
       join_user_code = null, approval_url = null, stages_json = null, error = null, session_id = null, sign_in_json = null, updated_at = ?, expires_at = ?
     where launch_id = ? and user_id = ? and updated_at = ? and state = ?
   `).bind(deps.now, deps.now + CLOUD_LAUNCH_RECORD_TTL_MS, launchId, userId, row.updated_at, row.state).run();
+  let claimed: Awaited<ReturnType<typeof claim>>;
+  try {
+    claimed = await claim();
+  } catch (error) {
+    // A send started the other launch between the read above and this claim (`cloud_launches_continue`).
+    if (row.continue_chat_id && error instanceof Error && /UNIQUE/i.test(error.message)) return continuing();
+    throw error;
+  }
   if ((claimed.meta?.changes ?? 0) !== 1) return null;
   if (row.instance_id) {
     try {
@@ -640,6 +679,11 @@ export async function startServerLaunch(
   if (existing && existing.state !== "draft" && !(existing.state === "making" && !existing.instance_id)) {
     return json(recordOf(existing, now), 200);
   }
+  // One launch continues one chat on one lane: a second start (another device, a resend) answers the first.
+  if (parsed.continueChat && (!existing || existing.state === "draft")) {
+    const running = await activeContinueLaunch(env, userId, parsed.lane.id, parsed.continueChat.chatId);
+    if (running) return json(recordOf(running, now), 200);
+  }
   // Only a launch that is new here: a start of one already making its computer goes on to the create's replay.
   if (!existing || existing.state === "draft") {
     const refusal = await deps.refuseNewLaunch?.();
@@ -681,15 +725,31 @@ export async function startServerLaunch(
   // One write: a draft becomes the launch, or a new row is the launch. A start
   // racing this one changes nothing here, goes on into the create, and is
   // answered by its replay (409 while the first create is in flight).
-  const claimed = await env.DB.prepare(`
-    insert into cloud_launches (launch_id, user_id, state, kind, size_id, auto_size, project_origin, lane_id, lane_name, request_json, join_salt, join_hash, created_at, updated_at, expires_at)
-    values (?, ?, 'making', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  const claim = async () => await env.DB.prepare(`
+    insert into cloud_launches (launch_id, user_id, state, kind, size_id, auto_size, project_origin, lane_id, lane_name, request_json, join_salt, join_hash, created_at, updated_at, expires_at,
+      continue_machine_key, continue_chat_id)
+    values (?, ?, 'making', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     on conflict (launch_id) do update set state = 'making', kind = excluded.kind, size_id = excluded.size_id, auto_size = excluded.auto_size,
       project_origin = excluded.project_origin, lane_id = excluded.lane_id, lane_name = excluded.lane_name,
       request_json = excluded.request_json, join_salt = excluded.join_salt, join_hash = excluded.join_hash,
-      updated_at = excluded.updated_at, expires_at = excluded.expires_at
+      updated_at = excluded.updated_at, expires_at = excluded.expires_at,
+      continue_machine_key = excluded.continue_machine_key, continue_chat_id = excluded.continue_chat_id
     where cloud_launches.user_id = excluded.user_id and cloud_launches.state = 'draft'
-  `).bind(launchId, userId, parsed.kind, start.sizeId, autoSize, parsed.project.origin, parsed.lane.id, parsed.lane.name, requestJson, salt, await sha256Hex(joinCode), now, now, expiresAt).run();
+  `).bind(
+    launchId, userId, parsed.kind, start.sizeId, autoSize, parsed.project.origin, parsed.lane.id, parsed.lane.name, requestJson, salt, await sha256Hex(joinCode), now, now, expiresAt,
+    parsed.continueChat?.machineKey ?? null, parsed.continueChat?.chatId ?? null,
+  ).run();
+  let claimed: D1Result;
+  try {
+    claimed = await claim();
+  } catch (error) {
+    // Two starts raced to continue the same chat: the unique index let one in, and this one answers it.
+    if (parsed.continueChat && error instanceof Error && /UNIQUE/i.test(error.message)) {
+      const running = await activeContinueLaunch(env, userId, parsed.lane.id, parsed.continueChat.chatId);
+      if (running) return json(recordOf(running, now), 200);
+    }
+    throw error;
+  }
   const claimedDraft = existing?.state === "draft" && (claimed.meta?.changes ?? 0) === 1;
   if ((claimed.meta?.changes ?? 0) !== 1) {
     const row = await readLaunch(env, launchId);
@@ -867,7 +927,7 @@ const COMPUTER_STATES: ReadonlySet<string> = new Set(["joined", "waiting_for_sig
 const SIGN_IN_KINDS: ReadonlySet<string> = new Set(CLOUD_REMOTE_SIGN_IN_KINDS);
 
 /** The sign-in a waiting launch names, as the computer sent it: links and codes only, each checked. */
-function parseSignIn(value: unknown): CloudLaunchSignIn | null | undefined {
+export function parseSignIn(value: unknown): CloudLaunchSignIn | null | undefined {
   if (value === undefined) return undefined;
   if (value === null) return null;
   const record = typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -930,7 +990,11 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
   // that claimed the launch since this request read it.
   if ((written.meta?.changes ?? 0) !== 1) return fail("launch_closed", "This launch isn't running.", 409);
   // The chat exists: the computer started it with the first message.
-  if (sessionId) await firstMessageDeliveredStatement(env, row.launch_id, sessionId, now).run();
+  if (sessionId) {
+    await firstMessageDeliveredStatement(env, row.launch_id, sessionId, now).run();
+    // A chat's message this launch carries reads delivered, even after an earlier try marked it failed.
+    await chatMessagesDeliveredStatement(env, row.launch_id, now).run();
+  }
   // The computer gave up on the sign-in itself: its queued messages fail as with the server's
   // own timeout, and the minute cron deletes the computer (`failUnjoinedLaunches`).
   if (state === "failed" && error === SIGN_IN_NEVER_FINISHED) await failQueuedMessagesStatement(env, row.launch_id, SIGN_IN_NEVER_FINISHED, now).run();

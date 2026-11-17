@@ -35,6 +35,8 @@ import type {
   PasswordLoginSaveInput,
   PasswordSecretSaveInput,
   PasswordEnvFile,
+  PasswordLaneEnvImportInput,
+  PasswordLaneEnvPreview,
   PasswordSecretsExportResult,
   PasswordSecretsImportInput,
   PasswordSecretsImportResult,
@@ -98,7 +100,13 @@ import {
 import { createMacDesktopBridge } from "./macDesktopPreload";
 import { createAndroidEmulatorBridge } from "./androidEmulatorPreload";
 import type { AndroidEmulatorEvent } from "../shared/types/androidEmulator";
-import { createRemoteTargetGate } from "./remoteTargetGate";
+import { createRemoteTargetGate, type RemoteTargetGate } from "./remoteTargetGate";
+import { adeCloudBinding, isAccountAnsweredPin, isAdeCloudBinding, isAdeCloudTargetId } from "../shared/adeCloud/binding";
+import { ADE_CLOUD_NEEDS_LANE_SENTENCE, createAdeCloudAccountReader, type AdeCloudAccountReaderDeps } from "../shared/adeCloud/accountReader";
+import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
+import type { AdeCloudAccountCallFn } from "../shared/adeCloud/accountCalls";
+import { markExpected } from "../shared/expectedError";
+import { savedChatsMachineKey } from "../shared/cloudSavedChats";
 import { IPC } from "../shared/ipc";
 import type { CloudLaneLaunchCallRequest, CloudLaneLaunchCallResult, CloudLaneLaunchMethod } from "../shared/cloudLaneLaunch";
 import { normalizeGitRemoteIdentity } from "../shared/crossMachineHandoff";
@@ -141,6 +149,8 @@ import type {
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
+import type { CloudCarriedSignIns, CloudLaunchRecord as AccountCloudLaunchRecord } from "../../../account-directory/src/cloud/contract";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
 import {
@@ -2080,7 +2090,118 @@ async function callRemoteProjectActionIfBound<T>(
   return { handled: true, result: response.result as T };
 }
 
-const remoteTargetGate = createRemoteTargetGate({
+// --- ADE Cloud reads (impl-renderer-core) ---------------------------------
+// A project tab bound to ADE Cloud, and a lane pin of a cloud computer that is
+// asleep or deleted, read from the account and from GitHub
+// (`shared/adeCloud/accountReader.ts`). Such a read never reaches main's
+// machine connections, so it never dials or wakes a computer. Every other
+// call for ADE Cloud as a machine is refused with a sentence; a lane's own
+// pin still reaches the lane's computer.
+
+const adeCloudAccountReader = createAdeCloudAccountReader({
+  cloud: () => ({
+    projectOverview: (origin: string) => ipcRenderer.invoke(IPC.adeCloudProjectOverview, { origin }),
+    gitSummary: (machineKey: string, laneId: string) => ipcRenderer.invoke(IPC.adeCloudGitSummary, { machineKey, laneId }),
+  }) as ReturnType<AdeCloudAccountReaderDeps["cloud"]>,
+  github: () => ((request, options) => ipcRenderer.invoke(IPC.githubDirectRequest, request, options ?? {})) as ReturnType<AdeCloudAccountReaderDeps["github"]>,
+  accountCall: () => ((call) => ipcRenderer.invoke(IPC.adeCloudAccountCall, call)) as AdeCloudAccountCallFn,
+});
+
+/**
+ * The connections of resting ADE Cloud computers (the renderer's
+ * `machineIsCloudResting`), by target id. Their lanes' file and Git reads go
+ * to the account, so a read never dials or wakes the computer.
+ */
+const restingCloudTargets = new Map<string, { machineKey: string; origin: string | null }>();
+const MAX_RESTING_CLOUD_TARGETS = 200;
+
+/** The repository address of each account-answered pin a call named, by `targetId\0projectId`. */
+const adeCloudPinOrigins = new Map<string, string | null>();
+
+function rememberAdeCloudPin(pin: OpenProjectBinding | null | undefined): void {
+  if (pin?.kind !== "remote" || (!isAccountAnsweredPin(pin) && !restingCloudTargets.has(pin.targetId))) return;
+  adeCloudPinOrigins.set(`${pin.targetId}\0${pin.projectId}`, pin.gitOriginUrl ?? null);
+  while (adeCloudPinOrigins.size > 200) adeCloudPinOrigins.delete(adeCloudPinOrigins.keys().next().value as string);
+}
+
+function adeCloudOriginFor(targetId: string, projectId: string): string | null {
+  const known = adeCloudPinOrigins.get(`${targetId}\0${projectId}`);
+  if (known) return known;
+  const resting = restingCloudTargets.get(targetId)?.origin;
+  if (resting) return resting;
+  if (known !== undefined) return known;
+  const bound = currentProjectBinding;
+  return bound?.kind === "remote" && bound.targetId === targetId && bound.projectId === projectId ? bound.gitOriginUrl ?? null : null;
+}
+
+function adeCloudRefusal(): Error {
+  return markExpected(new Error(ADE_CLOUD_NEEDS_LANE_SENTENCE), "user");
+}
+
+/** Listing reads a resting connection still asks its computer for: the account has no list of its own for them. */
+const RESTING_CONNECTION_OWN_READS = new Set(["lane.list", "session.list", "chat.listSessions"]);
+
+/**
+ * The machine gate, with ADE Cloud reads answered here. For ADE Cloud as a
+ * machine, every call is answered or refused here. For a resting cloud
+ * computer's lane pin (`cloud-saved:`, or the connection of a computer that
+ * rests now), only the reads the account answers stay here; the rest go to
+ * main as before (a send there wakes the computer).
+ */
+function withAdeCloudAccountReads(gate: RemoteTargetGate): RemoteTargetGate {
+  return {
+    async invoke<T>(channel: string, targetId: string, payload: Record<string, unknown>): Promise<T> {
+      const tabOnAdeCloud = isAdeCloudTargetId(targetId);
+      const savedKey = tabOnAdeCloud ? null : savedChatsMachineKey(targetId);
+      const restingConnection = tabOnAdeCloud || savedKey ? null : restingCloudTargets.get(targetId) ?? null;
+      const restingPin = savedKey != null || restingConnection != null;
+      if (!tabOnAdeCloud && !restingPin) return gate.invoke<T>(channel, targetId, payload);
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const projectId = typeof payload.projectId === "string" ? payload.projectId : "";
+        const request = (payload.request ?? {}) as { domain?: string; action?: string; args?: unknown; arg?: unknown };
+        if (restingConnection && RESTING_CONNECTION_OWN_READS.has(`${String(request.domain ?? "")}.${String(request.action ?? "")}`)) {
+          return gate.invoke<T>(channel, targetId, payload);
+        }
+        const answer = await adeCloudAccountReader.answer(
+          { origin: adeCloudOriginFor(targetId, projectId), machineKey: savedKey ?? restingConnection?.machineKey ?? null },
+          { domain: String(request.domain ?? ""), action: String(request.action ?? ""), args: request.args, arg: request.arg },
+        );
+        if (answer.handled) {
+          return { domain: request.domain, action: request.action, result: answer.result, statusHints: {} } as T;
+        }
+      }
+      if (restingPin) return gate.invoke<T>(channel, targetId, payload);
+      throw adeCloudRefusal();
+    },
+    // ADE Cloud as a machine has no connection: its event pumps park.
+    isDisconnected: (targetId) => (isAdeCloudTargetId(targetId) ? Promise.resolve(true) : gate.isDisconnected(targetId)),
+    isOffline: (targetId) => (isAdeCloudTargetId(targetId) ? Promise.resolve(true) : gate.isOffline(targetId)),
+  };
+}
+
+/** `window.ade.adeCloud`: the account calls of ADE with no computer (`adeCloudReadIpc.ts`). */
+const adeCloudBridge: AdeCloudBridge = {
+  chatMessages: (address) => ipcRenderer.invoke(IPC.adeCloudChatMessages, address),
+  cancelChatMessage: (address) => ipcRenderer.invoke(IPC.adeCloudChatMessageCancel, address),
+  projectOverview: (args) => ipcRenderer.invoke(IPC.adeCloudProjectOverview, args),
+  savedSessions: (args) => ipcRenderer.invoke(IPC.adeCloudSavedSessions, args),
+  accountCall: ((call) => ipcRenderer.invoke(IPC.adeCloudAccountCall, call)) as AdeCloudAccountCallFn,
+  setRestingTargets: (targets) => {
+    restingCloudTargets.clear();
+    for (const target of Array.isArray(targets) ? targets : []) {
+      if (restingCloudTargets.size >= MAX_RESTING_CLOUD_TARGETS) break;
+      const targetId = typeof target?.targetId === "string" ? target.targetId.trim() : "";
+      const machineKey = typeof target?.machineKey === "string" ? target.machineKey.trim() : "";
+      // ADE Cloud as a machine and `cloud-saved:` slices already read from the account.
+      if (!targetId || !machineKey || isAdeCloudTargetId(targetId) || savedChatsMachineKey(targetId) != null) continue;
+      const origin = typeof target.origin === "string" && target.origin.trim() ? target.origin.trim().slice(0, 500) : null;
+      restingCloudTargets.set(targetId, { machineKey: machineKey.slice(0, 200), origin });
+    }
+  },
+};
+// --- end ADE Cloud reads -------------------------------------------------
+
+const remoteTargetGate = withAdeCloudAccountReads(createRemoteTargetGate({
   ipcRenderer,
   onReconnected: (targetId) => {
     // The event pump parked while the bound machine was disconnected picks up
@@ -2092,7 +2213,7 @@ const remoteTargetGate = createRemoteTargetGate({
   },
   // The pinned pumps parked while the machine was offline poll again at once.
   onBackOnline: (targetId) => pinnedRuntimeEvents.resumePinnedRuntimeEventPumps(targetId),
-});
+}));
 
 function isValidPreviewTargetPort(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65_535;
@@ -2505,6 +2626,7 @@ async function callPinnedRuntimeAction<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<T> {
   if (pin.kind === "remote") {
+    rememberAdeCloudPin(pin);
     const response = await remoteTargetGate.invoke<RemoteRuntimeActionResult>(IPC.remoteRuntimeCallAction, pin.targetId, {
       id: pin.targetId,
       projectId: pin.projectId,
@@ -5229,6 +5351,10 @@ const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
 // its own callback, so two subscriptions of one function stay two.
 const laneLifecycleEventFanout = createIpcEventFanout<LaneLifecycleEvent>(IPC.lanesLifecycleEvent);
 const cloudStatusChangedFanout = createIpcEventFanout<unknown>(IPC.cloudStatusChanged);
+// A sign-in or sign-out, another account, or a computer that rested and saved
+// again: the ADE Cloud reads kept for this window are stale. The one fanout
+// listener serves this and every `onChanged` subscriber.
+cloudStatusChangedFanout(() => adeCloudAccountReader.clear());
 const updateEventFanout = createIpcEventFanout<AutoUpdateSnapshot>(IPC.updateEvent);
 const projectChangedFanout = createIpcEventFanout<ProjectInfo | null>(
   IPC.appProjectChanged,
@@ -6088,6 +6214,7 @@ const adeBridge = {
     openProject: async (
       id: string,
       projectId: string,
+      adeCloud?: OpenProjectBinding | null,
     ): Promise<OpenProjectBinding> => {
       return runProjectRuntimeTransition(async () => {
         const generation = ++openRemoteProjectGeneration;
@@ -6095,10 +6222,22 @@ const adeBridge = {
         // In-flight, not settled — see `detachProjectBindingForTransition`.
         // The success and failure paths below both publish the settled answer.
         rememberProjectBinding(null, { publish: false });
-        const openPromise = ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
-          id,
-          projectId,
-        }) as Promise<OpenProjectBinding>;
+        // A tab bound to ADE Cloud opens with no connection (`adeCloudReadIpc.ts`).
+        const adeCloudOpen = isAdeCloudTargetId(id)
+          ? adeCloudBinding({
+              accountProjectId: projectId,
+              displayName: (isAdeCloudBinding(adeCloud) ? adeCloud.displayName : null) ?? projectId,
+              gitOriginUrl: isAdeCloudBinding(adeCloud) ? adeCloud.gitOriginUrl ?? null : null,
+              iconDataUrl: isAdeCloudBinding(adeCloud) ? adeCloud.iconDataUrl ?? null : null,
+            })
+          : null;
+        if (adeCloudOpen) rememberAdeCloudPin(adeCloudOpen);
+        const openPromise = (adeCloudOpen
+          ? ipcRenderer.invoke(IPC.adeCloudOpenProject, { binding: adeCloudOpen })
+          : ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
+              id,
+              projectId,
+            })) as Promise<OpenProjectBinding>;
         activeRemoteProjectOpenPromise = openPromise;
         try {
           const binding = await openPromise;
@@ -12386,6 +12525,15 @@ const adeBridge = {
       callPasswords<PasswordSecretsExportResult>("exportSecrets", args),
     chooseEnvFile: (): Promise<PasswordEnvFile | null> =>
       ipcRenderer.invoke(IPC.passwordsChooseEnvFile),
+    /**
+     * A `.env` file in the main checkout on the machine the pin names: names
+     * and lengths only. The file is only there, so the call goes there.
+     */
+    previewLaneEnv: (args: { path: string }, pin: OpenProjectBinding): Promise<PasswordLaneEnvPreview> =>
+      callPinnedRuntimeAction<PasswordLaneEnvPreview>(pin, "passwords", "previewLaneEnv", { args: { ...args } }),
+    /** Saves the picked names of that file as secrets on that machine; no value comes back. */
+    importLaneEnv: (args: PasswordLaneEnvImportInput, pin: OpenProjectBinding): Promise<PasswordSecretsImportResult> =>
+      callPinnedRuntimeAction<PasswordSecretsImportResult>(pin, "passwords", "importLaneEnv", { args: { ...args } }),
     projects: (): Promise<PasswordsProject[]> =>
       ipcRenderer.invoke(IPC.passwordsProjects),
   },
@@ -13652,6 +13800,7 @@ const adeBridge = {
   // Direct GitHub reads with the ADE account's GitHub App sign-in. Account-
   // scoped: no machine is involved, so no pin; this window's main process
   // reads api.github.com and keeps the token (githubDirectIpc.ts).
+  adeCloud: adeCloudBridge,
   githubDirect: {
     request: async <O extends GithubDirectOp>(
       request: Extract<GithubDirectRequest, { op: O }>,
@@ -14176,7 +14325,7 @@ const adeBridge = {
   // account, so none of these take a pin.
   /** Whether ADE Cloud exists for this account (`renderer/state/cloudAccess.ts`). */
   cloudAccess: {
-    read: (): Promise<{ enabled: boolean; signInEnd?: CloudSignInEnd | null }> => ipcRenderer.invoke(IPC.cloudGetAccess),
+    read: (): Promise<CloudAccessIpcAnswer> => ipcRenderer.invoke(IPC.cloudGetAccess),
     onChanged: (cb: () => void): (() => void) => cloudStatusChangedFanout(() => cb()),
   },
   cloud: {
@@ -14259,6 +14408,12 @@ const adeBridge = {
     /** Through the account server, to that computer: no pin. */
     sendLaunchSignInCode: (args: { instanceId: string; jobId: string; code: string }): Promise<CloudRemoteSignInStatus> =>
       ipcRenderer.invoke(IPC.cloudLaunchSignInCode, args),
+    /** The account's message queue for an existing ADE Cloud chat: account-level, by the chat's machine key, so no pin. */
+    sendChatMessage: (args: CloudChatSendRequest): Promise<CloudChatSendAnswer> => ipcRenderer.invoke(IPC.cloudChatMessageSend, args),
+    /** A launch the queue started, by its id: account-level, no pin. */
+    serverLaunchStatus: (launchId: string): Promise<AccountCloudLaunchRecord | null> => ipcRenderer.invoke(IPC.cloudServerLaunchStatus, { launchId }),
+    /** Provider sign-ins the account carries to ADE Cloud: account-level, no pin. */
+    carriedSignIns: (): Promise<CloudCarriedSignIns | null> => ipcRenderer.invoke(IPC.cloudCarriedSignIns),
     cloudSignInStatus: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInStatus),
     cloudSignInClaudeStart: (args?: CloudSignInClaudeStartArgs): Promise<CloudSignInStatus | null> =>
       ipcRenderer.invoke(IPC.cloudSignInClaudeStart, {

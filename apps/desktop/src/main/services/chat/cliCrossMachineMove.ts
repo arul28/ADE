@@ -65,7 +65,7 @@ export function cliProviderName(provider: string | null | undefined): string {
 }
 
 /** The agent a tracked CLI row runs, as its launch names it; null when ADE can't tell. */
-export function cliMoveProvider(row: TerminalSessionSummary): AgentChatCliLaunchProvider | null {
+export function cliMoveProvider(row: Pick<TerminalSessionSummary, "toolType" | "resumeMetadata">): AgentChatCliLaunchProvider | null {
   const provider = row.resumeMetadata?.provider ?? providerFromTool(row.toolType ?? null);
   return provider && isLaunchProfile(provider) && (provider as string) !== "shell" ? provider as AgentChatCliLaunchProvider : null;
 }

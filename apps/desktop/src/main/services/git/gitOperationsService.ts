@@ -237,16 +237,26 @@ async function recommendDivergedAction(
   return hasRecentRebase ? "force_push_lease" : "pull";
 }
 
+/** Git's refusal when no `user.name` / `user.email` is set anywhere. */
+const MISSING_GIT_IDENTITY = /author identity unknown|unable to auto-detect email|empty ident name|please tell me who you are/i;
+
 export function createGitOperationsService({
   laneService,
   operationService,
   logger,
   onHeadChanged,
-  onWorktreeChanged
+  onWorktreeChanged,
+  commitIdentityFallback
 }: {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
   logger: Logger;
+  /**
+   * The author a commit passes with `-c` when git has no identity at all
+   * (an ADE Cloud computer whose global write failed). Set by the runtime
+   * only; never from a caller's args. Git's config stays as it is.
+   */
+  commitIdentityFallback?: () => { name: string; email: string } | null;
   onHeadChanged?: (args: {
     laneId: string;
     reason: string;
@@ -818,7 +828,19 @@ export function createGitOperationsService({
           const cmd = args.amend
             ? ["commit", "--amend", "-m", message]
             : ["commit", "-m", message];
-          await runGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          try {
+            await runGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          } catch (error) {
+            // No identity anywhere: once more with the runtime's fallback author.
+            const identity = MISSING_GIT_IDENTITY.test(error instanceof Error ? error.message : String(error))
+              ? commitIdentityFallback?.() ?? null
+              : null;
+            if (!identity) throw error;
+            await runGitOrThrow(
+              ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, ...cmd],
+              { cwd: lane.worktreePath, timeoutMs: 30_000 },
+            );
+          }
         }
       });
       return action;

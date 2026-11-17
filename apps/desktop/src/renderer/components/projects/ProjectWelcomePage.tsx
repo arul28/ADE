@@ -272,13 +272,15 @@ export function ProjectWelcomePage() {
   }, [webMachines]);
   // A chat with no project runs on a computer of the person's own, never on an ADE Cloud computer.
   const ownWebMachines = useOwnWebComputers();
-  const activeWebMachine = useMemo(() => (
-    ownWebMachines.find((machine) => machine.status === "live")
-    ?? ownWebMachines.find((machine) => machine.key === workspace?.snapshot.lastActiveMachineKey)
-    ?? ownWebMachines.find((machine) => machine.status === "available")
-    ?? ownWebMachines[0]
-    ?? null
-  ), [ownWebMachines, workspace?.snapshot.lastActiveMachineKey]);
+  // An offline own computer is hidden everywhere: the button never names or dials one.
+  const activeWebMachine = useMemo(() => {
+    const online = ownWebMachines.filter((machine) => machine.status !== "offline");
+    return online.find((machine) => machine.status === "live")
+      ?? online.find((machine) => machine.key === workspace?.snapshot.lastActiveMachineKey)
+      ?? online.find((machine) => machine.status === "available")
+      ?? online[0]
+      ?? null;
+  }, [ownWebMachines, workspace?.snapshot.lastActiveMachineKey]);
 
   useEffect(() => {
     if (!webMode || !workspace) return;
@@ -641,14 +643,14 @@ export function ProjectWelcomePage() {
 
   const browserAvailable = !webMode && browserTabAvailable();
   const musicAvailable = !webMode && musicTabAvailable();
-  // A chat with no project runs on a computer of the person's own; with
-  // none it is hidden (nothing says a computer is needed).
+  // A chat with no project runs on an online computer of the person's own;
+  // with none online it is hidden (nothing says a computer is needed).
   const hasOwnComputer = useHasOwnComputer();
   const getStarted = useGetStartedState({
     // Desktop: unknown until the recents are read, so a list still loading never finishes the card.
     priorWork: webMode ? hasOwnComputer && webRecents.length > 0 : recentsLoaded ? recentProjects.length > 0 : null,
   });
-  const showChatWithoutProject = !webMode || (hasOwnComputer && activeWebMachine != null);
+  const showChatWithoutProject = !webMode || activeWebMachine != null;
   useDesktopFirstAccountTab({ enabled: !webMode && recentsLoaded, hasLocalProjects: recentProjects.length > 0 });
 
   // The page's own card look, when the user set one in edit mode. Scoped to
