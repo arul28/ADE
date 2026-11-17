@@ -529,11 +529,23 @@ export function backupNotSavedReason(computer: Pick<ComputerRow, "backup_problem
 }
 
 async function handleList(url: URL, env: CloudEnv, userId: string, now: number): Promise<Response> {
+  // `laneId` and `machineKey` narrow the list. A computer's own backup round reads the backups
+  // it made and the ones it restored (`machineKey`), never the account's newest 200.
   const laneId = url.searchParams.get("laneId");
-  if (laneId != null && !ROW_ID.test(laneId)) return json({ backups: [] });
-  const rows = (laneId
-    ? await env.DB.prepare("select * from cloud_lane_backups where user_id = ? and lane_id = ? and upload_id is not null order by saved_at desc limit ?").bind(userId, laneId, LIST_LIMIT).all<BackupRow>()
-    : await env.DB.prepare("select * from cloud_lane_backups where user_id = ? and upload_id is not null order by saved_at desc limit ?").bind(userId, LIST_LIMIT).all<BackupRow>()).results ?? [];
+  const machineKey = url.searchParams.get("machineKey");
+  if ((laneId != null && !ROW_ID.test(laneId)) || (machineKey != null && !ROW_ID.test(machineKey))) return json({ backups: [] });
+  const where = ["user_id = ?", "upload_id is not null"];
+  const binds: unknown[] = [userId];
+  if (laneId) {
+    where.push("lane_id = ?");
+    binds.push(laneId);
+  }
+  if (machineKey) {
+    where.push("(machine_key = ? or restored_by_machine_key = ?)");
+    binds.push(machineKey, machineKey);
+  }
+  const rows = (await env.DB.prepare(`select * from cloud_lane_backups where ${where.join(" and ")} order by saved_at desc limit ?`)
+    .bind(...binds, LIST_LIMIT).all<BackupRow>()).results ?? [];
   if (rows.length === 0) return json({ backups: [] });
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();

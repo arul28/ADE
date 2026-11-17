@@ -7,9 +7,9 @@
  *
  * A row comes to exist when a person frees the computer ("Keep the lane on a
  * fresh computer": the desktop pushed the work first), the idle cleanup
- * removes it (`idleCleanup.ts`: the computer committed and pushed its work
- * first; `inactive` rows are from the old 30-day rule), or a cheaper plan's limits free it (`planCleanup.ts`: the
- * computer pushed the work first). A new computer made for the same lane id ends it; so does the
+ * removes it (`idleCleanup.ts`: it rested with every lane's work saved on ADE
+ * Cloud, `laneBackups.ts`; `inactive` rows are from the old 30-day rule), or a
+ * cheaper plan's limits free it (`planCleanup.ts`: saved the same way). A new computer made for the same lane id ends it; so does the
  * person deleting the lane, which also deletes the lane's backups.
  */
 

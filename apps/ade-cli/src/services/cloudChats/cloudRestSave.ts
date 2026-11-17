@@ -74,7 +74,7 @@ const GIT_TIMEOUT_MS = 15_000;
 const STATE_FILE = "rest-save.json";
 
 export type CloudRestSaveOptions = {
-  /** Fork capsules too (the delete path, after push-work). */
+  /** Fork capsules too (the delete path, after prepare-stop). */
   capsules: boolean;
   /**
    * Time for the whole save, counted from the call: a save that waits behind
@@ -615,7 +615,7 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
       }
     }
 
-    // 4. Capsules: the delete path only (after push-work), never at the idle step.
+    // 4. Capsules: the delete path only (after prepare-stop), never at the idle step.
     const capsuleTasks: Array<() => Promise<void>> = [];
     if (options.capsules) {
       for (const runtime of runtimes) {

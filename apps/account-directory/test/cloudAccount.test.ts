@@ -3257,6 +3257,9 @@ describe("ADE Cloud lane backups", () => {
     // The lane's other computer marks the backup it applied by fingerprint: a backup it didn't apply is not marked.
     const restored = (fingerprint: string) => harness.send(OWNER, "POST", `${base}/restored`, { instanceId: SECOND, fingerprint });
     expect([(await restored("e".repeat(64))).status, (await restored(FINGERPRINT)).status]).toEqual([404, 200]);
+    // A computer's own round lists the backups it made and the ones it restored, and no other.
+    const listedFor = async (machineKey: string) => ((await (await harness.send(OWNER, "GET", `/cloud/backups?machineKey=${machineKey}`)).json()) as { backups: Array<{ laneId: string }> }).backups.map((entry) => entry.laneId);
+    expect([await listedFor("key-a"), await listedFor("key-b"), await listedFor("key-z")]).toEqual([[LANE], [LANE], []]);
     // Freeing the other computer and keeping the lane: the backup stays for the lane's next computer.
     expect((await harness.send(OWNER, "DELETE", `/cloud/instances/${SECOND}`, { keepLane: { branchRef: "ade/pricing" } })).status).toBe(200);
     expect(harness.rows("select lane_id from cloud_lane_backups")).toEqual([{ lane_id: LANE }]);

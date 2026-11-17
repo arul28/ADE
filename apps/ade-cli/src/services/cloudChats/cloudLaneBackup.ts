@@ -289,7 +289,8 @@ export type LaneBackupRunDeps = {
   machineKey: string;
   logger: Logger;
   /** Every lane on the computer; `complete` false when a project couldn't be read. */
-  lanes: () => Promise<{ complete: boolean; lanes: BackupLane[] }>;
+  /** `missing`: lanes ADE still has whose folder isn't on disk; their backups stay. */
+  lanes: () => Promise<LaneList>;
   /** False once the time is up or someone used the computer: the rest waits for the next save. */
   mayGoOn: () => boolean;
 };
@@ -299,14 +300,17 @@ export type LaneBackupRunDeps = {
  * not finish counts as not saved, so the report is current only when every
  * lane is clean or saved.
  */
+type LaneList = { complete: boolean; lanes: BackupLane[]; missing?: string[] };
+
 export async function runLaneBackups(deps: LaneBackupRunDeps): Promise<CloudBackupSaveSummary> {
   const { api, instanceId, machineKey, logger } = deps;
   const reportId = randomUUID().replace(/-/g, "");
   const summary: CloudBackupSaveSummary = { reportId: null, state: "failed", saved: 0, unchanged: 0, clean: 0, failed: 0 };
-  let listed: { complete: boolean; lanes: BackupLane[] };
+  let listed: LaneList;
   let held: CloudLaneBackup[];
   try {
-    [listed, held] = await Promise.all([deps.lanes(), api.laneBackups()]);
+    // This computer's backups and the ones it restored: the prune and the "unchanged" check need all of them.
+    [listed, held] = await Promise.all([deps.lanes(), api.laneBackups(null, machineKey)]);
   } catch (error) {
     logger.warn("cloud.lane_backup_read_failed", { error: errorText(error) });
     return summary;
@@ -368,8 +372,9 @@ export async function runLaneBackups(deps: LaneBackupRunDeps): Promise<CloudBack
     }
   }
   // A lane gone from a complete list was deleted on the computer: its backup goes too.
+  // A lane ADE still has with its folder missing is not deleted: its backup may be the only copy.
   if (listed.complete) {
-    const here = new Set(listed.lanes.map((lane) => lane.laneId));
+    const here = new Set([...listed.lanes.map((lane) => lane.laneId), ...(listed.missing ?? [])]);
     for (const laneId of own.keys()) {
       if (here.has(laneId)) continue;
       await api.deleteLaneBackup(machineKey, laneId, instanceId).catch((error: unknown) => {
@@ -520,7 +525,7 @@ export function createBackupLaneLister(deps: {
   projects: () => Array<{ projectId: string; booted: () => Promise<LaneListRuntime | null>; open: () => Promise<LaneListRuntime> }>;
   projectKey: (projectRoot: string) => string | null;
   logger: Logger;
-}): () => Promise<{ complete: boolean; lanes: BackupLane[] }> {
+}): () => Promise<LaneList> {
   const readCache = (): LaneCache => {
     try {
       const parsed = JSON.parse(fs.readFileSync(deps.cachePath, "utf8")) as Partial<LaneCache>;
@@ -544,6 +549,7 @@ export function createBackupLaneLister(deps: {
     const cache = readCache();
     const next: LaneCache = { v: 1, projects: {} };
     const lanes: BackupLane[] = [];
+    const missing: string[] = [];
     let complete = true;
     for (const project of deps.projects()) {
       try {
@@ -560,7 +566,10 @@ export function createBackupLaneLister(deps: {
         next.projects[project.projectId] = rows;
         const key = runtime ? deps.projectKey(runtime.projectRoot) : null;
         for (const row of rows) {
-          if (!row.worktreePath || !fs.existsSync(row.worktreePath)) continue;
+          if (!row.worktreePath || !fs.existsSync(row.worktreePath)) {
+            missing.push(row.laneId);
+            continue;
+          }
           lanes.push({ laneId: row.laneId, laneName: row.laneName, worktreePath: row.worktreePath, projectKey: key ?? deps.projectKey(row.worktreePath) });
         }
       } catch (error) {
@@ -570,7 +579,7 @@ export function createBackupLaneLister(deps: {
       }
     }
     writeCache(next);
-    return { complete, lanes };
+    return { complete, lanes, missing };
   };
 }
 
@@ -595,7 +604,7 @@ export async function prepareLaneBranchFromBackup(args: {
   if (await resolveCommit(cwd, `refs/heads/${branch}`)) return { created: false };
   if (await resolveCommit(cwd, `refs/remotes/origin/${branch}`)) return { created: false };
   // The launch fetched origin already; one more look at GitHub itself, so a branch pushed meanwhile wins.
-  const remote = await runGit(["ls-remote", "--heads", "origin", branch], { cwd, timeoutMs: 30_000, env: READ_ENV });
+  const remote = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", branch], { cwd, timeoutMs: 30_000, env: READ_ENV });
   if (remote.exitCode === 0 && remote.stdout.trim()) return { created: false };
   const backup = (await args.api.laneBackups(args.laneId))
     .filter((entry) => entry.laneId === args.laneId && entry.machineKey !== args.machineKey && entry.branchRef === branch)

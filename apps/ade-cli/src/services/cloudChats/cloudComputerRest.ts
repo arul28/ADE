@@ -74,7 +74,7 @@ export type CloudComputerRest = {
   drain: (reason: string) => void;
   /** `ade cloud messages drain`: starts a round and answers within `DRAIN_ANSWER_MS`. */
   drainAnswer: () => Promise<Record<string, unknown>>;
-  /** The server's idle cleanup started (its push-work). */
+  /** The server's idle cleanup claimed the computer. */
   noteCleanupStarted: () => void;
   /**
    * A person's remote work reached the computer. During the cleanup it is

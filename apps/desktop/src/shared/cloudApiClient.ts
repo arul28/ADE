@@ -441,9 +441,14 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       return await response.arrayBuffer();
     },
     /* ---- Lane backups at rest (`laneBackups.ts`) ---- */
-    /** The account's lane backups (of one lane with `laneId`), newest first; empty from an older server. */
-    laneBackups: async (laneId?: string | null): Promise<CloudLaneBackup[]> =>
-      (await orNullOn404(() => request<{ backups: CloudLaneBackup[] }>("GET", `${CLOUD_PATHS.backups}${laneId ? `?laneId=${encodeURIComponent(laneId)}` : ""}`)))?.backups ?? [],
+    /** The account's lane backups (of one lane with `laneId`, made on one computer with `machineKey`), newest first; empty from an older server. */
+    laneBackups: async (laneId?: string | null, machineKey?: string | null): Promise<CloudLaneBackup[]> => {
+      const query = new URLSearchParams();
+      if (laneId) query.set("laneId", laneId);
+      if (machineKey) query.set("machineKey", machineKey);
+      const suffix = query.size ? `?${query.toString()}` : "";
+      return (await orNullOn404(() => request<{ backups: CloudLaneBackup[] }>("GET", `${CLOUD_PATHS.backups}${suffix}`)))?.backups ?? [];
+    },
     laneBackup: (machineKey: string, laneId: string) =>
       orNullOn404(() => request<CloudLaneBackup>("GET", cloudBackupPath(machineKey, laneId))),
     /** One part (1-based) of a backup's bundle or patch. A browser gets the patch only. */

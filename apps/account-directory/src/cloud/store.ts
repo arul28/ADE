@@ -456,7 +456,7 @@ export function restartStretchStatements(env: CloudEnv, computer: ComputerRow, n
   return statements;
 }
 
-/** The free push-work time of a closing stretch, so the daily reconcile doesn't charge it. */
+/** The free time of a closing stretch (an automatic update's window), so the daily reconcile doesn't charge it. */
 export function freeWakeStatements(env: CloudEnv, computer: ComputerRow, closedAt: number, guard: StatusGuard): D1PreparedStatement[] {
   if (computer.free_wake_started_at == null || computer.free_wake_until == null) return [];
   const freeEnd = Math.min(closedAt, computer.free_wake_until);
@@ -758,7 +758,7 @@ export function cloudOffers(env: Pick<CloudEnv, "STRIPE_PLAN_PRICE_ID" | "STRIPE
 /**
  * On the free plan (a cancelled plan rolls to it) with more disk than the
  * free plan has: nothing pays for that disk, so its computers stay stopped
- * (only the short push-work wake) until a computer is deleted or a plan is
+ * until a computer is deleted or a plan is
  * bought. A `past_due` account is not in this state: Stripe is still trying
  * the card, and its computers and timed wakes keep working.
  */
@@ -1041,7 +1041,7 @@ async function startFreshPeriod(
   const computers = await listComputers(env, account.user_id);
   const statements: D1PreparedStatement[] = [];
   for (const computer of computers) statements.push(...settleStatements(env, computer, now));
-  // Open stretches restart at the boundary (a free push-work wake keeps its future start).
+  // Open stretches restart at the boundary (a free update window keeps its future start).
   statements.push(env.DB.prepare(`
     update cloud_computers set awake_since = ? where user_id = ? and awake_since is not null and awake_since <= ?
   `).bind(now, account.user_id, now));

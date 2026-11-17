@@ -179,10 +179,10 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   } catch (error) {
     reportCloudFailure("cloud.block_tick_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
-  const blockedUsers = await settleAccounts(env, provider, live, now);
-  // Rollbacks for updates that never reported in, then a few asleep computers onto their channel's image.
+  await settleAccounts(env, provider, live, now);
+  // Rollbacks for updates that never reported in. A resting computer is never updated here (that would wake it).
   try {
-    await runCloudAutoUpdates(env, provider, live, blockedUsers, now);
+    await runCloudAutoUpdates(env, provider, live, now);
   } catch (error) {
     reportCloudFailure("cloud.auto_updates_failed", { message: error instanceof Error ? error.message : "unknown" });
   }

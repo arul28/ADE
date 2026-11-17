@@ -1,16 +1,9 @@
-import { isCloudBlocked } from "./blocks";
 import type { CloudInstance, CloudUpdateChannel, CloudUpdateCheck, CloudUpdateReason, CloudUpdateState } from "./contract";
 import { isMeteredStatus } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import {
   clearBackupRestStatement,
-  countedDiskGb,
-  freePlanOverDisk,
   freeWakeStatements,
-  isOutOfHours,
-  listComputers,
-  liveUsedMilli,
-  loadAccount,
   logCloud,
   powerLogStatement,
   reportCloudFailure,
@@ -36,9 +29,9 @@ import {
  * `auto_update_<channel>` (infra/ade-cloud/promote-template.mjs). A person's
  * "Update this computer" goes to the channel's image whatever that says.
  *
- * The minutes awake for an automatic update are free: they ride the same free
- * window as the push-work wake (`free_wake_started_at`/`free_wake_until`, with
- * `awake_since` held at its end), which the daily reconcile already leaves out.
+ * The minutes awake for an automatic update are free: they ride a free window
+ * (`free_wake_started_at`/`free_wake_until`, with `awake_since` held at its
+ * end), which the daily reconcile leaves out.
  * The boot report closes the window, so the hours meter starts there.
  */
 
@@ -165,17 +158,6 @@ export function updateCheckOf(computer: ComputerRow, targets: CloudUpdateTargets
     targetTemplate: channelTemplate(targets, channel),
     updateState: updateStateOf(computer),
   };
-}
-
-/** Why the account's computers may not wake now (0 hours, or disk the free plan doesn't cover). The same test as the routes' `wakeBlocker`. */
-export async function updateBlocked(env: CloudEnv, userId: string, now: number): Promise<"out_of_hours" | "over_plan_disk" | "account_deleted" | "account_blocked" | null> {
-  const account = await loadAccount(env, userId, now);
-  if (account.deleted_at != null) return "account_deleted";
-  // The owner's block: an update would boot a computer the block stopped (or is still stopping).
-  if (await isCloudBlocked(env, userId)) return "account_blocked";
-  const computers = await listComputers(env, userId);
-  if (isOutOfHours(account, liveUsedMilli(account, computers, now))) return "out_of_hours";
-  return freePlanOverDisk(account, countedDiskGb(computers)) ? "over_plan_disk" : null;
 }
 
 /**
@@ -333,8 +315,7 @@ export async function recordBootReport(env: CloudEnv, computer: ComputerRow, ade
   ];
   if (automatic) {
     // The meter starts now. Only the window this update (or rollback) set,
-    // which ends exactly `UPDATE_FREE_WINDOW_MS` after its start; a push-work
-    // wake's window ends elsewhere and is left alone.
+    // which ends exactly `UPDATE_FREE_WINDOW_MS` after its start.
     statements.push(env.DB.prepare(`
       update cloud_computers set awake_since = ?, free_wake_until = ?
       where instance_id = ? and awake_since > ? and free_wake_until = ?
@@ -415,8 +396,8 @@ function reportClockStart(computer: ComputerRow): number {
 
 /**
  * The minute cron's part. `computers` are the live rows with this tick's
- * statuses; `blockedUsers` are accounts whose computers may not wake.
- * 1. An update awake 15 minutes with no boot report fails and rolls back once;
+ * statuses.
+ * An update awake 15 minutes with no boot report fails and rolls back once;
  *    a rollback with no report is left failed and never looped on.
  * A resting computer is not updated here: that would wake it for free.
  */
@@ -424,7 +405,6 @@ export async function runCloudAutoUpdates(
   env: CloudEnv,
   provider: Pick<CloudProvider, "updateInstance">,
   computers: ComputerRow[],
-  blockedUsers: ReadonlySet<string>,
   now: number,
 ): Promise<void> {
   if (computers.length === 0) return;
