@@ -299,6 +299,14 @@ sleep on their own a few minutes after work stops (the brain's
   clock. Timed wakes already set are deleted, as at 0 hours. Deleting a computer always works,
   and the idle cleanup of unused computers still runs. The owner report
   lists these accounts. A cheaper plan's limits apply too (below).
+- **A deleted computer leaves the machine list** (`forgetMachineStatements` in
+  `store.ts`). Every close of a computer, from any surface or from the server
+  (idle cleanup, a launch that never joined or signed in), revokes its machine
+  key, removes it from the account's machines, and removes its project copies
+  (the project list's cursor moves, so every client reads the list again). A key
+  that another live computer of the account still carries (a move or a copy of
+  its files) is kept. The push relay's Activity for it is not purged here: that
+  call needs the person's own token.
 - **A cheaper plan's limits** (`planCleanup.ts`, migrations 0027 and 0032;
   the owner's rules of 2026-11-13): ADE never removes a computer on its own,
   and there is no grace period. Disk that extra disk covers counts as

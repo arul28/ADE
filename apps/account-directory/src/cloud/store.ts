@@ -22,6 +22,7 @@ import {
 } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { keepLaneStatement, laneFactsOf } from "./lanesWithoutComputer";
+import { machineCopiesGoneStatements } from "../accountProjects/store";
 
 /**
  * The computers and accounts in D1, and the one place that moves hours. Live
@@ -496,6 +497,9 @@ export function deleteLogStatement(
     .bind(computer.instance_id, computer.user_id, args.who, args.reason, events, now);
 }
 
+/** A launch whose computer was deleted before it finished: it ends with this error, and Retry makes a new computer. */
+export const LAUNCH_COMPUTER_DELETED = "This launch's ADE Cloud computer was deleted before it finished. Retry makes a new one.";
+
 /** Settles an open stretch and marks the computer deleted, for after the provider's delete. */
 export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: number): D1PreparedStatement[] {
   // Guarded: two deletes of one computer charge its last stretch once.
@@ -508,6 +512,12 @@ export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: 
       lane_id = null, lane_name = null, lane_project_origin = null, lane_branch = null, lane_keep_reason = null
     where instance_id = ?
   `).bind(now, now, computer.instance_id));
+  // Its unfinished launch ends too, or the web and phone list it as running for good.
+  // Not a Retry in flight ('retrying'): that launch is getting a new computer.
+  statements.push(env.DB.prepare(`
+    update cloud_launches set state = 'failed', error = ?, updated_at = ?
+    where instance_id = ? and state in ('making', 'joining', 'needs_approval', 'joined', 'waiting_for_sign_in', 'running')
+  `).bind(LAUNCH_COMPUTER_DELETED, now, computer.instance_id));
   return statements;
 }
 
@@ -529,6 +539,35 @@ export function closedComputerStatements(
     // Before the close below clears the lane's facts.
     ...(args.reason === "account_deleted" ? [] : [keepLaneStatement(env, computer.instance_id, now)]),
     ...markDeletedStatements(env, computer, now),
+    ...forgetMachineStatements(env, computer, now),
+  ];
+}
+
+/**
+ * A deleted computer leaves the account's machine list, as a machine the person
+ * removes does: revoked (so its key can't register again), off the roster, and
+ * its project copies gone (the project list's cursor moves, so every client
+ * reads it again). The desktop did this itself after its own deletes; a delete
+ * from the web, the phone or the server (idle cleanup, a sign-in that never
+ * finished) left it listed as an offline machine. Kept when another live
+ * computer of the account carries the same key (a move or a copy of its files).
+ */
+function forgetMachineStatements(env: CloudDb, computer: ComputerRow, now: number): D1PreparedStatement[] {
+  const key = computer.machine_key;
+  if (!key) return [];
+  const unshared = {
+    sql: "not exists (select 1 from cloud_computers where user_id = ? and machine_key = ? and instance_id <> ? and deleted_at is null)",
+    binds: [computer.user_id, key, computer.instance_id],
+  };
+  return [
+    ...machineCopiesGoneStatements(env.DB, computer.user_id, key, now, unshared),
+    env.DB.prepare(`
+      insert into revoked_machines (user_id, machine_key, device_id, revoked_at)
+      select user_id, machine_key, device_id, ? from machines where user_id = ? and machine_key = ? and ${unshared.sql}
+      on conflict (user_id, machine_key) do update set revoked_at = excluded.revoked_at
+    `).bind(now, computer.user_id, key, ...unshared.binds),
+    env.DB.prepare(`delete from machines where user_id = ? and machine_key = ? and ${unshared.sql}`)
+      .bind(computer.user_id, key, ...unshared.binds),
   ];
 }
 

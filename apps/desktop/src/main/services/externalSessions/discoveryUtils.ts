@@ -49,6 +49,12 @@ export type ExternalSessionDiscoveryRecord = Omit<
 > & {
   sourcePath?: string | null;
   sourceMtimeMs?: number | null;
+  /**
+   * True when this row came from ADE's own managed provider store rather than
+   * the user's. Today only OpenCode has one. Optional: every other provider
+   * has a single store and omits it.
+   */
+  adeOwned?: boolean;
   /** Where the transcript lives when discovery scanned beyond a provider's default home. */
   configHome?: ExternalSessionConfigHome | null;
   /**
@@ -69,8 +75,9 @@ export type ExternalSessionDiscoveryArgs = {
   sessionId?: string | null;
   /**
    * Keep sessions ADE itself ran, which import normally hides (they are ADE
-   * chats already). Recently deleted sets it to read a deleted chat's own
-   * conversation back; only an exact `sessionId` lookup should pass it.
+   * chats already). The OpenCode import list passes it to read ADE's managed
+   * store beside the user's own; Recently deleted uses it for an exact
+   * session id.
    */
   includeAdeOwned?: boolean;
   /**

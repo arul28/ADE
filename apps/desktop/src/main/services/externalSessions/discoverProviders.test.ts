@@ -1377,6 +1377,125 @@ describe("external session provider discovery", () => {
     });
     expect(scoped.map((session) => session.id)).toEqual(["open-new", "open-old"]);
   });
+
+  it("merges ADE's managed OpenCode store when the import asks for it", async () => {
+    const homeDir = path.join(root, "home-managed");
+    const adeHome = path.join(root, "ade-home");
+    const cwd = path.join(root, "opencode-managed-repo");
+    fs.mkdirSync(cwd, { recursive: true });
+    const userStorePath = path.join(homeDir, ".local", "share", "opencode", "opencode.db");
+    const adeStorePath = path.join(adeHome, "opencode-runtime", "xdg-v1", "data", "opencode", "opencode.db");
+    for (const storePath of [userStorePath, adeStorePath]) {
+      fs.mkdirSync(path.dirname(storePath), { recursive: true });
+      const db = new DatabaseSync(storePath);
+      try {
+        db.exec(`
+          CREATE TABLE session_v2 (
+            id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT,
+            time_created INTEGER, time_updated INTEGER, time_archived INTEGER
+          );
+          CREATE TABLE session_message (
+            id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+            time_created INTEGER, data TEXT
+          );
+        `);
+      } finally {
+        db.close();
+      }
+    }
+    const insertSession = (storePath: string, id: string, title: string, updatedAt: number) => {
+      const db = new DatabaseSync(storePath);
+      try {
+        db.prepare(`
+          INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_archived)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(id, null, cwd, title, updatedAt - 10, updatedAt, null);
+        db.prepare("INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(`${id}-message`, id, "user", 1, updatedAt - 5, "{}");
+      } finally {
+        db.close();
+      }
+    };
+    insertSession(userStorePath, "shared-session", "Shared session", 300);
+    insertSession(adeStorePath, "shared-session", "Shared session", 400);
+    insertSession(adeStorePath, "managed-only", "Managed session", 500);
+    const env = { HOME: homeDir, ADE_HOME: adeHome, PATH: "" };
+
+    const managed = await discoverOpenCodeSessions({ homeDir, env, includeAdeOwned: true, limit: 10 });
+    expect(managed.map((session) => session.id)).toEqual(["managed-only", "shared-session"]);
+    expect(managed.find((session) => session.id === "managed-only")).toMatchObject({ adeOwned: true, cwd });
+    expect(managed.find((session) => session.id === "shared-session")).toMatchObject({ adeOwned: true });
+
+    const userOnly = await discoverOpenCodeSessions({ homeDir, env, limit: 10 });
+    expect(userOnly.map((session) => session.id)).toEqual(["shared-session"]);
+    expect(userOnly[0]).toMatchObject({ adeOwned: false });
+  });
+
+  it("keeps the managed store's rows when the user store query fails", async () => {
+    const homeDir = path.join(root, "home-broken-store");
+    const adeHome = path.join(root, "ade-broken-store");
+    const cwd = path.join(root, "opencode-broken-store-repo");
+    fs.mkdirSync(cwd, { recursive: true });
+    const userStorePath = path.join(homeDir, ".local", "share", "opencode", "opencode.db");
+    const adeStorePath = path.join(adeHome, "opencode-runtime", "xdg-v1", "data", "opencode", "opencode.db");
+    fs.mkdirSync(path.dirname(userStorePath), { recursive: true });
+    fs.mkdirSync(path.dirname(adeStorePath), { recursive: true });
+    const broken = new DatabaseSync(userStorePath);
+    try {
+      // A v2 store whose message table is missing: the opener accepts v2, but
+      // the session query throws. That must not take the healthy store down.
+      broken.exec(`
+        CREATE TABLE session_v2 (
+          id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT,
+          time_created INTEGER, time_updated INTEGER, time_archived INTEGER
+        );
+      `);
+      broken.prepare(`
+        INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_archived)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run("broken-user", null, cwd, "Broken user session", 100, 200, null);
+    } finally {
+      broken.close();
+    }
+    const managed = new DatabaseSync(adeStorePath);
+    try {
+      managed.exec(`
+        CREATE TABLE session_v2 (
+          id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT,
+          time_created INTEGER, time_updated INTEGER, time_archived INTEGER
+        );
+        CREATE TABLE session_message (
+          id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER,
+          time_created INTEGER, data TEXT
+        );
+      `);
+      managed.prepare(`
+        INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_archived)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run("managed-good", null, cwd, "Managed session", 100, 300, null);
+      managed.prepare("INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?, ?, ?, ?, ?, ?)")
+        .run("managed-message", "managed-good", "user", 1, 250, "{}");
+    } finally {
+      managed.close();
+    }
+    const warn = vi.fn();
+    const env = { HOME: homeDir, ADE_HOME: adeHome, PATH: "" };
+
+    const sessions = await discoverOpenCodeSessions({
+      homeDir,
+      env,
+      includeAdeOwned: true,
+      limit: 10,
+      logger: { warn },
+    });
+
+    expect(sessions.map((session) => session.id)).toEqual(["managed-good"]);
+    expect(sessions[0]).toMatchObject({ adeOwned: true });
+    expect(warn).toHaveBeenCalledWith(
+      "external_sessions.opencode_store_query_failed",
+      expect.objectContaining({ adeOwned: false }),
+    );
+  });
 });
 
 // Claude chain-dedupe + classification suite (folded in from discoverClaude.test.ts

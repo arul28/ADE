@@ -1158,7 +1158,7 @@ export type CloudServerLaunchRequest = {
      * limits count it.
      */
     | { kind: "agent"; agent: "chat" | "automation" | "mcp"; chatSessionId?: string | null };
-  /** The app's update track; left out is `stable`. */
+  /** The app's update track; left out is `beta` (the web and the phone send none; see `parseLaunchRequest`). */
   channel?: CloudUpdateChannel;
   /**
    * From an ADE app: the launch exactly as the person set it up there

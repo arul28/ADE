@@ -804,6 +804,36 @@ export async function deleteMachineCopies(db: D1Database, userId: string, machin
   return count;
 }
 
+/**
+ * `deleteMachineCopies` as statements for another batch, for one machine and
+ * only while `onlyIf` holds (an SQL condition with its binds): the cloud
+ * computer close runs it with the computer's own row, so a key still carried
+ * by another live computer keeps its copies. Nothing changes without copies.
+ */
+export function machineCopiesGoneStatements(
+  db: D1Database,
+  userId: string,
+  machineKey: string,
+  now: number,
+  onlyIf: { sql: string; binds: unknown[] },
+): D1PreparedStatement[] {
+  const held = "exists (select 1 from account_project_copies where user_id = ? and machine_key = ?)";
+  return [
+    db.prepare(`
+      insert into account_project_state (user_id, seq, floor_seq, updated_at)
+      select ?, 1, 0, ? where ${held} and ${onlyIf.sql}
+      on conflict(user_id) do update set seq = seq + 1, updated_at = excluded.updated_at
+    `).bind(userId, now, userId, machineKey, ...onlyIf.binds),
+    db.prepare(`
+      update account_projects set change_seq = ${ACCOUNT_SEQ}
+       where user_id = ? and ${onlyIf.sql} and id in (
+         select project_id from account_project_copies where user_id = ? and machine_key = ?)
+    `).bind(userId, userId, ...onlyIf.binds, userId, machineKey),
+    db.prepare(`delete from account_project_copies where user_id = ? and machine_key = ? and ${onlyIf.sql}`)
+      .bind(userId, machineKey, ...onlyIf.binds),
+  ];
+}
+
 /** Clerk `user.deleted`: every row of the account goes. Safe to repeat. */
 export async function deleteAccountProjects(db: D1Database, userId: string): Promise<void> {
   await db.batch([

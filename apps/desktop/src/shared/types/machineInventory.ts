@@ -282,7 +282,11 @@ export function buildMachineInventoryDetail(args: {
     if (!provider || savedProviders.has(provider)) continue;
     let group = providers.get(provider);
     if (!group) {
-      group = { provider, accounts: [], modelCount: safeCount(args.modelCounts?.[provider]) };
+      group = {
+        provider,
+        accounts: [],
+        modelCount: safeCount(args.modelCounts?.[provider]),
+      };
       providers.set(provider, group);
     }
     const label = safeText(entry.label) || "Signed in";

@@ -50,7 +50,7 @@ let workChatOlderHistoryTriggerDistance: CGFloat = 240
 let workChatOlderHistoryRearmDistance: CGFloat = 420
 let workChatOlderHistoryScrollableDistance: CGFloat = 1
 
-/// The composer ⋯'s Attach Issue, handed down to the composer's menu.
+/// The composer ⋯'s Issue context section, handed down to the composer's menu.
 struct WorkChatAttachIssueAction {
   let run: () -> Void
 }
@@ -59,10 +59,18 @@ private struct WorkChatAttachIssueKey: EnvironmentKey {
   static let defaultValue: WorkChatAttachIssueAction? = nil
 }
 
+private struct WorkChatAttachGitHubIssueKey: EnvironmentKey {
+  static let defaultValue: WorkChatAttachIssueAction? = nil
+}
+
 extension EnvironmentValues {
   var workChatAttachIssue: WorkChatAttachIssueAction? {
     get { self[WorkChatAttachIssueKey.self] }
     set { self[WorkChatAttachIssueKey.self] = newValue }
+  }
+  var workChatAttachGitHubIssue: WorkChatAttachIssueAction? {
+    get { self[WorkChatAttachGitHubIssueKey.self] }
+    set { self[WorkChatAttachGitHubIssueKey.self] = newValue }
   }
 }
 
@@ -995,6 +1003,9 @@ struct WorkChatSessionView: View {
   /// Attach a Linear issue to this chat, from the composer's ⋯ (as on
   /// desktop). Nil when the host cannot.
   var onAttachIssue: (() -> Void)? = nil
+  /// Attaches a GitHub issue to this chat, when the host can take one. The
+  /// Linear twin above; both draw under the composer's Issue context section.
+  var onAttachGitHubIssue: (() -> Void)? = nil
   /// Opens this chat's side chat. Set only while the chat has one; the badge
   /// row then shows a Side chat chip (never otherwise).
   var onOpenSideChat: (() -> Void)? = nil
@@ -3108,6 +3119,7 @@ struct WorkChatSessionView: View {
       )
       .modifier(laneToolsPresenter)
       .environment(\.workChatAttachIssue, onAttachIssue.map(WorkChatAttachIssueAction.init))
+      .environment(\.workChatAttachGitHubIssue, onAttachGitHubIssue.map(WorkChatAttachIssueAction.init))
     )
   }
 
@@ -3456,6 +3468,7 @@ private struct WorkChatComposerCard: View {
 
 private struct WorkChatComposerDraftInput: View {
   @Environment(\.workChatAttachIssue) private var onAttachIssue
+  @Environment(\.workChatAttachGitHubIssue) private var onAttachGitHubIssue
   @Environment(\.workChatComposerMachineName) private var machineName
   @Environment(\.verticalSizeClass) private var verticalSizeClass
   let chatSummary: WorkChatSummaryRenderContext
@@ -4147,10 +4160,17 @@ private struct WorkChatComposerDraftInput: View {
   @ViewBuilder
   private var composerExtraMenuContent: some View {
     stopAndSendSettingsMenu
-    if let onAttachIssue {
-      Section {
-        Button(action: onAttachIssue.run) {
-          Label("Attach Issue", systemImage: "link.badge.plus")
+    if onAttachIssue != nil || onAttachGitHubIssue != nil {
+      Section("Issue context") {
+        if let onAttachIssue {
+          Button(action: onAttachIssue.run) {
+            Label("Linear issue…", systemImage: "circle.dashed")
+          }
+        }
+        if let onAttachGitHubIssue {
+          Button(action: onAttachGitHubIssue.run) {
+            Label("GitHub issue…", systemImage: "smallcircle.filled.circle")
+          }
         }
       }
     }

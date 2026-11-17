@@ -1,7 +1,12 @@
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
 import type { ExternalChatHistoryImportOptions } from "../../chat/externalChatHistoryImport";
 import type { ExternalSessionDiscoveryArgs } from "../discoveryUtils";
-import { openUserOpenCodeStore, readOpenCodeStoreMessages, type OpenCodeStoreMessageRow } from "../openCodeStore";
+import {
+  openAdeOpenCodeStore,
+  openUserOpenCodeStore,
+  readOpenCodeStoreMessages,
+  type OpenCodeStoreMessageRow,
+} from "../openCodeStore";
 import { EnvelopeSink, isRecord, str, toIso } from "./common";
 
 /** A long session with screenshots stores tens of MB; past this the oldest messages are dropped. */
@@ -16,16 +21,18 @@ function parseJson(raw: string): unknown {
 }
 
 /**
- * A session from the user's own OpenCode store as content events, read-only.
- * Returns null when the store or the session cannot be read — the caller falls
- * back to the sampled messages.
+ * A session from the OpenCode store that owns it (the user's or ADE's managed
+ * store) as content events, read-only. Returns null when the store or the
+ * session cannot be read — the caller falls back to the sampled messages.
  */
 export function loadOpenCodeStoreEvents(args: {
   sessionId: string;
   options: ExternalChatHistoryImportOptions;
   fallbackBaseMs: number;
+  /** Read ADE's managed store instead of the user's own. */
+  adeOwned?: boolean;
 } & Pick<ExternalSessionDiscoveryArgs, "homeDir" | "env">): { events: AgentChatEventEnvelope[]; truncated: boolean } | null {
-  const store = openUserOpenCodeStore(args);
+  const store = args.adeOwned ? openAdeOpenCodeStore(args) : openUserOpenCodeStore(args);
   if (!store) return null;
   try {
     const { messages, truncated } = readOpenCodeStoreMessages(store, {
