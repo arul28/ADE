@@ -322,6 +322,7 @@ describe("ADE Cloud account", () => {
     ["another account moving from a computer", OTHER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, moveFromInstanceId: INSTANCE }],
     ["another account's timed wake", OTHER, "PUT", "/cloud/wake", { instanceId: INSTANCE, url: "https://wake-abc.agent37.app", at: NOW + HOUR }],
     ["another account saving a chat against a computer", OTHER, "PUT", "/cloud/chats/key-a/chat-a/parts/1", { text: "hello", instanceId: INSTANCE, row: {} }],
+    ["another account setting a computer's event wakes", OTHER, "PUT", `${instancePath}/event-wakes`, { topics: [] }],
   ])("%s is refused as if it weren't there", async (_label, caller, method, url, body) => {
     const data = harness;
     data.env.CLOUD_CHATS = {} as R2Bucket;
@@ -2521,5 +2522,120 @@ describe("ADE Cloud automations", () => {
   ])("a schedule's next fire: %s", (_label, cron, zone, after, expected) => {
     const next = nextFireAt(cron, zone, Date.parse(after));
     expect(next == null ? null : new Date(next).toISOString()).toBe(expected);
+  });
+});
+
+// --- server-edge ---
+/*
+ * Account data with no computer, and wakes from events: the privacy and trust
+ * seams only. A secrets list must never carry a value, whatever relay
+ * answers; Jira calls never leave atlassian.net; only the webhook relay's
+ * secret wakes a computer, at most once per cooldown.
+ */
+describe("ADE Cloud account data and event wakes", () => {
+  const RELAY = "https://relay.test";
+  const vaultRows = [
+    { scope: "all", kind: "provider_api_key", key: "anthropic", value: "sk-ant-secret-value", updatedAt: "2026-11-01T00:00:00.000Z" },
+    { scope: "all", kind: "secret", key: "mcp/github/env/GITHUB_TOKEN", value: "ghp_secret_value", updatedAt: "2026-11-01T00:00:00.000Z" },
+    { scope: "all", kind: "provider_login", key: "antigravity/0123456789ab.default", value: "login-secret-blob", updatedAt: "2026-11-01T00:00:00.000Z" },
+  ];
+
+  function withRelay(data: Harness, narrowRoutes: boolean): void {
+    Object.assign(data.env, {
+      PUSH_RELAY_URL: RELAY,
+      ACTIVITY_RELAY: {
+        fetch: async (input: RequestInfo | URL) => {
+          const url = new URL(String(input));
+          const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+          if (url.pathname === "/attention/account/vault/keys") {
+            if (!narrowRoutes) return reply({ ok: false, error: "not found" }, 404);
+            return reply({ ok: true, items: vaultRows.map(({ value: _value, ...row }) => row) });
+          }
+          if (url.pathname === "/attention/account/vault") return reply({ ok: true, items: vaultRows, truncated: false, cursor: null });
+          return reply({ ok: false, error: "not found" }, 404);
+        },
+      },
+    });
+  }
+
+  it.each([["a relay with the keys read", true], ["an older relay (full read)", false]])(
+    "lists saved secrets by name only, never a value, from %s",
+    async (_label, narrowRoutes) => {
+      const data = harness;
+      seedAccount(data, OWNER);
+      withRelay(data, narrowRoutes);
+      const response = await data.send(OWNER, "GET", "/cloud/account-secrets");
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(JSON.parse(text)).toEqual({
+        secrets: [
+          { scope: "all", kind: "provider_api_key", key: "anthropic", updatedAt: "2026-11-01T00:00:00.000Z" },
+          { scope: "all", kind: "secret", key: "mcp/github/env/GITHUB_TOKEN", updatedAt: "2026-11-01T00:00:00.000Z" },
+        ],
+      });
+      expect(text).not.toMatch(/secret-value|secret_value|login-secret|antigravity/);
+    },
+  );
+
+  it.each<[string, string | null]>([
+    ["acme.atlassian.net", "https://acme.atlassian.net"],
+    ["https://Acme.atlassian.net/jira/software", "https://acme.atlassian.net"],
+    ["http://acme.atlassian.net", null],
+    ["https://acme.atlassian.net:8443", null],
+    ["https://user:pw@acme.atlassian.net", null],
+    ["https://acme.atlassian.net.evil.example", null],
+    ["https://evil.example/.atlassian.net", null],
+    ["https://evil.example#.atlassian.net", null],
+    ["https://169.254.169.254", null],
+    ["https://jira.acme.example", null],
+  ])("lets Jira reach %s only as %s", async (siteUrl, expected) => {
+    const { jiraSiteOrigin } = await import("../src/cloud/integrations");
+    expect(jiraSiteOrigin(siteUrl)).toBe(expected);
+  });
+
+  const SECRET = "event-wake-secret-for-tests";
+  const wake = (secret: string | null, topic = `hooks-account:${OWNER}`) => handleCloudRequest(new Request("https://directory.test/cloud/internal/event-wake", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(secret ? { "x-ade-event-wake-secret": secret } : {}) },
+    body: JSON.stringify({ topic }),
+  }), harness.env);
+
+  it("wakes a listening computer only for the webhook relay's secret, once per cooldown", async () => {
+    const data = harness;
+    seedAccount(data, OWNER);
+    seedComputer(data, { status: "sleeping", awake_since: null });
+    provide(data, INSTANCE, "sleeping");
+    const set = await data.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/event-wakes`, { topics: [`hooks-account:${OWNER}`, "linear-org:org-1"] });
+    expect(set.status).toBe(200);
+    const starts = () => providerCalls(data, new RegExp(`POST .*/instances/${INSTANCE}/start$`)).length;
+
+    expect((await wake(null)).status).toBe(503);
+    (data.env as CloudEnv & { CLOUD_EVENT_WAKE_SECRET?: string }).CLOUD_EVENT_WAKE_SECRET = SECRET;
+    expect((await wake(null)).status).toBe(404);
+    expect((await wake("not-the-secret")).status).toBe(404);
+    expect(starts()).toBe(0);
+
+    const first = await wake(SECRET);
+    expect(await first.json()).toEqual({ subscribed: true, woken: 1 });
+    expect(starts()).toBe(1);
+    // Asleep again, a second delivery inside the cooldown wakes nothing.
+    data.exec("update cloud_computers set status = 'sleeping' where instance_id = ?", INSTANCE);
+    data.net.instances.get(INSTANCE)!.status = "sleeping";
+    clock = NOW + 60_000;
+    await wake(SECRET);
+    expect(starts()).toBe(1);
+    clock = NOW + 6 * 60_000;
+    await wake(SECRET);
+    expect(starts()).toBe(2);
+    expect(await (await wake(SECRET, "linear-org:org-unknown")).json()).toEqual({ subscribed: false, woken: 0 });
+  });
+
+  it("refuses an event topic of another account", async () => {
+    const data = harness;
+    seedAccount(data, OWNER);
+    seedComputer(data);
+    const response = await data.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/event-wakes`, { topics: [`hooks-account:${OTHER}`] });
+    expect(response.status).toBe(400);
+    expect(data.row("select count(*) as n from cloud_event_wakes").n).toBe(0);
   });
 });
