@@ -143,6 +143,10 @@ enum SyncChatMessageDelivery: Equatable {
   /// prompt a resend rather than clearing it as if the message went through,
   /// mirroring desktop's queue-full handling.
   case dropped(reason: String?)
+  /// ADE Cloud's server holds the message for a chat whose computer is
+  /// asleep or deleted. The chat's queued row (`CloudQueuedMessagesView`) is
+  /// its one copy until it reaches the chat, so a caller keeps no echo.
+  case heldByServer
 }
 
 /// The wire name of the chunked-upload handshake, owned here with the code that
@@ -16878,7 +16882,7 @@ final class SyncService: ObservableObject {
       let messageId = (args["clientSendId"] as? String) ?? UUID().uuidString
       switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, using: self) {
       case .queued:
-        return .queued(steerId: nil)
+        return .heldByServer
       case .refused(let message), .failed(let message):
         throw NSError(domain: "ADE", code: 46, userInfo: [NSLocalizedDescriptionKey: message])
       case .routeMissing:

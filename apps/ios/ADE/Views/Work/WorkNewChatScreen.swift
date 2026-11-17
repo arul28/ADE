@@ -2249,10 +2249,11 @@ struct WorkNewChatScreen: View {
         switch delivery {
         case .queued:
           deliveryState = "queued"
-        case .sent, .dropped:
-          // `.dropped` (queue_full) is steer-only; a new chat's opener goes
-          // through sendChatMessage, so it is unreachable here. Fold it into the
-          // delivered path to keep the switch exhaustive.
+        case .sent, .dropped, .heldByServer:
+          // `.dropped` (queue_full) is steer-only, and `.heldByServer` needs
+          // an asleep cloud chat with no files; a new chat's opener with
+          // files is neither. Fold both into the delivered path to keep the
+          // switch exhaustive.
           deliveryState = nil
         }
         await onStarted(summary, chatOpener, true, deliveryState, attachmentRefs)

@@ -3046,6 +3046,9 @@ struct WorkSessionDestinationView: View {
         localEchoMessages.removeAll { $0.id == echo.id }
         errorMessage = "Message not sent — the queue is full. Wait for the current turn to finish, then resend."
         return
+      case .heldByServer:
+        // ADE Cloud's queued row above the composer is the message's one copy.
+        localEchoMessages.removeAll { $0.id == echo.id }
       }
       errorMessage = nil
     } catch {
