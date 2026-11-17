@@ -9,6 +9,8 @@ import type { AgentChatSessionSummary } from "../../../../shared/types";
 import { refreshCloudMachines } from "../../remoteTargets/useCloudMachines";
 import { cn } from "../../ui/cn";
 import { navigateToAppTarget } from "../../../lib/openExternal";
+import { workChatPath } from "../../../lib/workChatPath";
+import { useNavigate } from "react-router-dom";
 import { extractError } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { useOptionalWebWorkspace, useWebMachines } from "../../../webclient/workspace/WebWorkspaceContext";
@@ -116,6 +118,7 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
   );
   const chatStates = useLaunchChatStates(readySessionIds);
   const workspace = useOptionalWebWorkspace();
+  const navigate = useNavigate();
   const webMachines = useWebMachines();
   const cloudIndex = useAdeCloudLaneComputers();
   // "Open chat" on a launch whose computer this tab has not connected: connect it first, then open the chat.
@@ -138,14 +141,14 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
     const record = opening;
     void workspace.connectMachineEntry(openingMachine).then(
       () => {
-        if (record.sessionId && currentOpenRef.current === record.launchId) navigateToAppTarget({ kind: "chat", sessionId: record.sessionId, laneId: record.laneId ?? null });
+        if (record.sessionId && currentOpenRef.current === record.launchId) navigate(workChatPath(record.sessionId, record.laneId));
       },
       (error: unknown) => showToast({ tone: "error", title: `Couldn't connect to ${openingMachine.name}`, message: extractError(error) }),
     ).finally(() => {
       startedRef.current = null;
       setOpening((current) => (current?.launchId === record.launchId ? null : current));
     });
-  }, [opening, openingMachine, workspace]);
+  }, [navigate, opening, openingMachine, workspace]);
   // A computer not listed yet: read the account's computers again every few seconds, then stop.
   useEffect(() => {
     if (!opening || openingListed) return;

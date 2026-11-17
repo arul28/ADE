@@ -253,7 +253,7 @@ export function useWebTabsFollowComputers({
   // Waiting tabs whose copy is opening now.
   const webResumeOpeningRef = useRef(new Set<string>());
   const syncResumeOwned = useCallback(() => {
-    setWebResumeOwnedTabs([...webStoppedTabsRef.current.keys(), ...webResumeOpeningRef.current]);
+    setWebResumeOwnedTabs([...webStoppedTabsRef.current.keys(), ...webResumeOpeningRef.current], webStoppedTabsRef.current.values());
   }, []);
   useEffect(() => () => setWebResumeOwnedTabs([]), []);
   // Computers whose copy failed to open again on their return: their waiting

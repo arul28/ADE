@@ -26,9 +26,11 @@ import { ProjectIconDialog, type ProjectIconDialogTarget } from "./ProjectIconDi
 import { CloneLocallyDialog, type CloneLocallyTarget } from "./CloneLocallyDialog";
 import { openProjectCopy } from "./AddProjectForm";
 import { useAppStore } from "../../state/appStore";
+import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { CommandPalette } from "../app/CommandPalette";
+import { webStoppedTabCopies } from "../app/webResumeOwnedTabs";
 import { Banner } from "../ui/notice";
 import {
   ACCOUNT_MACHINE_TARGET_PREFIX,
@@ -305,8 +307,22 @@ export function ProjectWelcomePage() {
     (machineKey: string, projectId: string, rowKey: string, onUnreachable?: () => boolean) => {
       if (!workspace) return;
       const machine = webMachineByKey.get(machineKey);
-      if (!machine) return;
       setRowError(null);
+      if (!machine) {
+        // The row of an open tab names that tab's saved machine, which the
+        // list does not hold while its computer is asleep or not answering:
+        // open the tab, which wakes a sleeping ADE Cloud computer first.
+        void (async () => {
+          try {
+            await switchRemoteProject(machineKey, projectId);
+            navigate(workspace.consumePendingProjectPath() ?? "/work");
+          } catch (error) {
+            if (onUnreachable?.()) return;
+            setRowError(error instanceof Error ? error.message : String(error));
+          }
+        })();
+        return;
+      }
       setOpeningRowKey(rowKey);
       void (async () => {
         try {
@@ -322,7 +338,7 @@ export function ProjectWelcomePage() {
         }
       })();
     },
-    [navigate, webMachineByKey, workspace],
+    [navigate, switchRemoteProject, webMachineByKey, workspace],
   );
 
   // Lanes shared with this account: they need no computer of its own.
@@ -372,6 +388,25 @@ export function ProjectWelcomePage() {
     (rp: RecentProjectSummary) => {
       setRowError(null);
       if (webMode && rp.kind === "remote" && rp.remote) {
+        // A tab of this repository is open, or waiting, on a computer this
+        // browser cannot reach now (asleep, or not answering): the row opens
+        // that tab, which wakes a sleeping ADE Cloud computer first.
+        const origin = normalizeGitRemoteIdentity(rp.gitOriginUrl ?? null);
+        const unreachableTab = [...useAppStore.getState().openRemoteProjectTabs, ...webStoppedTabCopies()].find((binding) => (
+          (origin ? normalizeGitRemoteIdentity(binding.gitOriginUrl ?? null) === origin : binding.rootPath === rp.rootPath)
+          && !webMachines.some((machine) => machine.session?.targetId === binding.targetId && machine.session.state === "live")
+        ));
+        if (unreachableTab) {
+          const rowKey = recentKey(rp);
+          setOpeningRowKey(rowKey);
+          void switchRemoteProject(unreachableTab.targetId, unreachableTab.projectId).then(
+            () => navigate(workspace?.consumePendingProjectPath() ?? "/work"),
+            (error: unknown) => {
+              if (!openNoMachineTab(rp)) setRowError(error instanceof Error ? error.message : String(error));
+            },
+          ).finally(() => setOpeningRowKey((current) => (current === rowKey ? null : current)));
+          return;
+        }
         const targetId = rp.remote.targetId;
         if (targetId.startsWith(ACCOUNT_MACHINE_TARGET_PREFIX)) {
           // A row from the account list: its copy's computer by its account
@@ -442,9 +477,12 @@ export function ProjectWelcomePage() {
       openWebProject,
       project?.rootPath,
       switchProjectToPath,
+      navigate,
       switchRemoteProject,
       webMachineByAccountKey,
+      webMachines,
       webMode,
+      workspace,
     ],
   );
 

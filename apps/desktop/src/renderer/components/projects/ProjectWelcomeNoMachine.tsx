@@ -10,7 +10,8 @@ import { useAppStore, type NoMachineRepositoryTab } from "../../state/appStore";
 import { useAccountProjectList, useRepositoryCopies } from "../../state/useRepositoryCopies";
 import { adeCloudLaneComputerForMachine, isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
-import { navigateToAppTarget, openExternalUrl } from "../../lib/openExternal";
+import { openExternalUrl } from "../../lib/openExternal";
+import { workChatPath } from "../../lib/workChatPath";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { copyMachines, repoKeyForOriginIdentity } from "./projectCopies";
 import { startCopyJob, useCopyJobs } from "./projectCopyJobs";
@@ -169,11 +170,11 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
             : bound.kind === "local" && address.kind === "local" && bound.rootPath === address.rootPath
         );
         if (!sameCopy) return;
-        if (opensChat && chat.record.sessionId) navigateToAppTarget({ kind: "chat", sessionId: chat.record.sessionId, laneId: chat.record.laneId ?? null });
+        if (opensChat && chat.record.sessionId) navigate(workChatPath(chat.record.sessionId, chat.record.laneId));
       },
       (error: unknown) => setOpenFailure({ copy, detail: extractError(error) }),
     );
-  }, []);
+  }, [navigate]);
   // The copy the tab showed before its computer left comes back first.
   const defaultAddress = resolveDefaultCopy({ copies, currentKey: tab.lastCopyKey ?? null });
   useEffect(() => {
@@ -363,7 +364,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
         useAppStore.setState((state) => (state.activeNoMachineTabId === tab.id ? { activeNoMachineTabId: null } : {}));
         const pendingPath = workspace.consumePendingProjectPath();
         // "Open chat" lands on that chat, not on the project's new-chat page.
-        if (chat?.sessionId) navigateToAppTarget({ kind: "chat", sessionId: chat.sessionId, laneId: chat.laneId ?? null });
+        if (chat?.sessionId) navigate(workChatPath(chat.sessionId, chat.laneId));
         else navigate(pendingPath ?? "/work");
       } catch (error) {
         setOpenError({
