@@ -30788,19 +30788,14 @@ async function runServe(
         ...(cloudSetupUpsizer ? cloudSetupUpsizer.setupMemory(laneSetupOnlyRuns) : {}),
       }
     : null;
-  // ADE Cloud: the save before the computer rests (cloudRestSave.ts) and the
-  // queue of messages sent to its existing chats while it slept
-  // (cloudChatMessageQueue.ts). Made below, once the registries and the
-  // sign-in runners exist; the keep-awake hooks reach them through here.
-  const cloudRest: {
-    save: import("./services/cloudChats/cloudRestSave").CloudRestSave | null;
-    queue: import("./services/cloudChats/cloudChatMessageQueue").CloudChatMessageQueue | null;
-    /** The server's idle cleanup runs here until this time (push-work, save-for-rest). */
-    cleanupUntil: number;
-    lastUseReportAt: number;
-    /** The server answered `/use` with `computer_deleting`: remote work is refused. */
-    deleting: boolean;
-  } = { save: null, queue: null, cleanupUntil: 0, lastUseReportAt: 0, deleting: false };
+  // This machine's account machine key; null before it has one.
+  const thisMachineKey = (): string | null => {
+    try {
+      return machineCloudRelayStore.getMachineIdentity().machineKey || null;
+    } catch {
+      return null;
+    }
+  };
   // The account server's typed client, as this brain's signed-in account. Null signed out.
   const accountCloudApi = async (): Promise<import("../../desktop/src/shared/cloudApiClient").CloudApiClient | null> => {
     if (!brainAccountAuthService.getStatus().signedIn) return null;
@@ -30819,6 +30814,18 @@ async function runServe(
         : null),
     });
   };
+  // ADE Cloud: the rest save, the queue of messages for its chats, and the
+  // person's use during the idle cleanup (cloudComputerRest.ts). The save and
+  // the queue are attached below, once the registries and sign-in runners exist.
+  const cloudRest = cloudInstanceId && isAdeCloudComputer()
+    ? (await import("./services/cloudChats/cloudComputerRest")).createCloudComputerRest({
+        instanceId: cloudInstanceId,
+        api: accountCloudApi,
+        logger: headlessProjectLogger,
+        // Declared below; read when a save runs.
+        holdFor: () => holdCloudWork ?? null,
+      })
+    : null;
   const cloudKeepAwake = cloudKeepAwakeModule && readCloudBusy
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
@@ -30833,12 +30840,10 @@ async function runServe(
         reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
         // Copies and Git summaries before the sleep: the lane reads the same with no computer awake.
         saveForRest: async (stillIdle) => {
-          await cloudRest.save?.save({ capsules: false, budgetMs: 60_000, reason: "idle", stillIdle });
+          await cloudRest?.saveAtIdle(stillIdle);
         },
         // Messages queued for its chats while it slept go now.
-        onWoke: () => {
-          void cloudRest.queue?.drain("woke");
-        },
+        onWoke: () => cloudRest?.drain("woke"),
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
         reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
@@ -32407,20 +32412,13 @@ async function runServe(
   }
 
   // ADE Cloud computer: the rest save and the queue of messages for its chats.
-  if (!embedded && cloudInstanceId && isAdeCloudComputer() && cloudKeepAwake) {
+  if (!embedded && cloudInstanceId && cloudRest && cloudKeepAwake) {
     const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }] = await Promise.all([
       import("./services/cloudChats/cloudRestSave"),
       import("./services/cloudChats/cloudChatMessageQueue"),
       import("./services/cloudChats/cloudChatUploader"),
     ]);
-    const thisMachineKey = (): string | null => {
-      try {
-        return machineCloudRelayStore.getMachineIdentity().machineKey || null;
-      } catch {
-        return null;
-      }
-    };
-    cloudRest.save = createCloudRestSave({
+    const restSave = createCloudRestSave({
       adeHome: layout.adeDir,
       instanceId: cloudInstanceId,
       logger: headlessProjectLogger,
@@ -32438,7 +32436,7 @@ async function runServe(
       accountUserId: () => brainAccountAuthService.getStatus().userId ?? null,
       uploadSubagentCopy: uploadSubagentCloudCopy,
     });
-    cloudRest.queue = createCloudChatMessageQueue({
+    const chatQueue = createCloudChatMessageQueue({
       instanceId: cloudInstanceId,
       adeHome: layout.adeDir,
       logger: headlessProjectLogger,
@@ -32486,10 +32484,11 @@ async function runServe(
       },
       ...(holdCloudWork ? { holdFor: holdCloudWork } : {}),
     });
+    cloudRest.attach({ save: restSave, queue: chatQueue });
     // Messages queued while the brain was down go once the account is signed in.
     const drainAtStart = () => {
       if (!brainAccountAuthService.getStatus().signedIn) return;
-      void cloudRest.queue?.drain("start");
+      cloudRest.drain("start");
     };
     const drainTimer = setTimeout(drainAtStart, 15_000);
     drainTimer.unref?.();
@@ -32502,13 +32501,7 @@ async function runServe(
     const { createAccountLaneIndexPublisher, installAccountLaneIndexPublisher } = await import("./services/account/accountLaneIndexPublisher");
     installAccountLaneIndexPublisher(createAccountLaneIndexPublisher({
       adeHome: layout.adeDir,
-      machineKey: () => {
-        try {
-          return machineCloudRelayStore.getMachineIdentity().machineKey || null;
-        } catch {
-          return null;
-        }
-      },
+      machineKey: thisMachineKey,
       putLanes: async () => {
         const api = await accountCloudApi();
         return api ? (index) => api.putAccountLanes(index) : null;
@@ -32538,34 +32531,10 @@ async function runServe(
     return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
       if (request.method === "ade/actions/call" && isRemoteWork(request.params)) {
         void keepAwake.noteUse();
-        // The server's idle cleanup may be saving this computer for its delete:
-        // tell it a person is here (`/use`). Once the delete has started, the
-        // work is refused, so nothing new is lost with the computer.
-        const now = Date.now();
-        if (cloudInstanceId && now < cloudRest.cleanupUntil) {
-          if (!cloudRest.deleting && now - cloudRest.lastUseReportAt > 30_000) {
-            cloudRest.lastUseReportAt = now;
-            try {
-              const api = await accountCloudApi();
-              await Promise.race([
-                api?.recordComputerUse(cloudInstanceId),
-                new Promise((resolve) => {
-                  const timer = setTimeout(resolve, 5_000);
-                  timer.unref?.();
-                }),
-              ]);
-            } catch (error) {
-              if ((error as { code?: unknown } | null)?.code === "computer_deleting") cloudRest.deleting = true;
-              else headlessProjectLogger.warn("cloud.use_report_failed", { error: error instanceof Error ? error.message : String(error) });
-            }
-          }
-          if (cloudRest.deleting) {
-            throw new JsonRpcError(
-              JsonRpcErrorCode.policyDenied,
-              "This ADE Cloud computer is being deleted, so it can't take new work. Its lane is saved; continue it on another computer.",
-            );
-          }
-        }
+        // The server's idle cleanup may be saving this computer for its delete
+        // (`/use`, cloudComputerRest.ts): once the delete started, the work is refused.
+        const refusal = await cloudRest?.noteRemoteWork();
+        if (refusal) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, refusal);
       }
       return await handler(request);
     }, handler);
@@ -32578,7 +32547,7 @@ async function runServe(
         ? async ({ check, message }: { check: boolean; message?: string | null }) => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
             // The idle cleanup starts with this push: a person's send in the next minutes is use (`/use`).
-            if (!check) cloudRest.cleanupUntil = Date.now() + 10 * 60_000;
+            if (!check) cloudRest?.noteCleanupStarted();
             return await holdCloudWork("push_work", 10 * 60_000, () => pushCloudComputerWork({
               check,
               message,
@@ -32588,30 +32557,11 @@ async function runServe(
             }));
           }
         : null,
-      saveCloudForRest: holdCloudWork
-        ? async ({ capsules }: { capsules: boolean }) => {
-            const save = cloudRest.save;
-            if (!save) return { ok: false, capsules: 0, sessions: 0, git: 0, skipped: 0, error: "This computer can't save for rest." };
-            cloudRest.cleanupUntil = Date.now() + 10 * 60_000;
-            // Inside the server's 4-minute exec, with room for the brain's start.
-            return await holdCloudWork("save_for_rest", 5 * 60_000, () => save.save({ capsules, budgetMs: 200_000, reason: capsules ? "cleanup" : "command" }));
-          }
+      saveCloudForRest: holdCloudWork && cloudRest
+        ? async ({ capsules }: { capsules: boolean }) => await cloudRest.saveForCleanup(capsules)
         : null,
-      drainCloudMessages: cloudKeepAwake
-        ? async () => {
-            const queue = cloudRest.queue;
-            if (!queue) return { ok: false, started: false };
-            // The drain goes on after the answer; the exec only starts it.
-            const round = queue.drain("command");
-            const answer = await Promise.race([
-              round.then((result) => ({ ok: true, started: true, ...result })),
-              new Promise<{ ok: true; started: true; running: true }>((resolve) => {
-                const timer = setTimeout(() => resolve({ ok: true, started: true, running: true }), 25_000);
-                timer.unref?.();
-              }),
-            ]);
-            return answer;
-          }
+      drainCloudMessages: cloudKeepAwake && cloudRest
+        ? async () => await cloudRest.drainAnswer()
         : null,
       prepareCloudStop: cloudKeepAwake
         ? async ({ timeoutMs, diskGrowToGb, growId }) => {
@@ -32623,20 +32573,13 @@ async function runServe(
               (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null));
             const personal = await personalChatScope.bootedRuntime().catch(() => null);
             const runtimes = [...booted, personal].filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
-            const save = cloudRest.save;
+            const saveForRest = cloudRest?.saveBeforeStop ?? null;
             return await prepareCloudComputerToStop({
               runtimes,
               timeoutMs,
               logger: headlessProjectLogger,
               keepTurns,
-              ...(save
-                ? {
-                    saveForRest: async (budgetMs: number) => {
-                      const saved = await save.save({ capsules: false, budgetMs, reason: "prepare_stop" });
-                      return { sessions: saved.sessions, git: saved.git };
-                    },
-                  }
-                : {}),
+              ...(saveForRest ? { saveForRest } : {}),
             });
           }
         : null,
