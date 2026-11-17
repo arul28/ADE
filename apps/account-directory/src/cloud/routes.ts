@@ -21,6 +21,22 @@ import { routeJiraIssue, routeJiraSearch, routeLinearQuery } from "./integration
 import { routeCloudLimits } from "./limits";
 import { CLOUD_EDGE_PATHS } from "./contract";
 // --- end server-edge ---
+// --- server-core: ADE without a computer ---
+import { adeVersionAtLeast, routeChatMessages, routeComputerMessages, type ChatWake } from "./chatMessages";
+import { routeSessionCopies } from "./sessionCopies";
+import { routeGitSummaries } from "./gitSummaries";
+import { routeForkCapsules } from "./forkCapsules";
+import { handleProjectOverview } from "./projectOverview";
+import { startServerLaunch, type LaunchRouteDeps } from "./launches";
+import { ACCOUNT_BLOCKED_MESSAGE } from "./blocks";
+import {
+  CLOUD_BLOCKED_READ_ROUTES,
+  CLOUD_CHAT_QUEUE_MIN_ADE_VERSION,
+  CLOUD_COMPUTER_COMMANDS,
+  CLOUD_PLAN_PAST_DUE_SENTENCE,
+  type CloudAccess,
+} from "./contract";
+// --- end server-core ---
 import { handleCloudModels } from "./models";
 import { handleAutomationDelivery, isAutomationDeliveryRequest, noteAutomationLaunchProgress, routeAutomations } from "./automations";
 import { routeProjectComputersDelete } from "./projectComputers";
@@ -985,7 +1001,14 @@ async function handleStart(request: Request, env: CloudEnv, computer: ComputerRo
     const refused = await idleUseRefusal(env, computer, now);
     if (refused) return refused;
   }
-  const status = await provider.startInstance(computer.instance_id);
+  let status: string;
+  try {
+    status = await provider.startInstance(computer.instance_id);
+  } catch (error) {
+    // The provider holds a computer whose plan payment failed: the server's sentence (CONTRACTS 5), not the provider's.
+    if (error instanceof CloudProviderError && error.code === "instance_suspended") return fail("plan_past_due", CLOUD_PLAN_PAST_DUE_SENTENCE, 402);
+    throw error;
+  }
   if (freeWake) {
     // A stretch already open is charged up to here, then it starts over after the free window.
     const closing = computer.awake_since != null && computer.awake_since <= now
@@ -1209,7 +1232,12 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   "POST booted": async (request, env, computer, _provider, { now }) => {
     const body = await readJson(request);
     if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-    const { sleepWhenIdle } = await recordBootReport(env, computer, shortText(body.adeVersion, 64), now);
+    const adeVersion = shortText(body.adeVersion, 64);
+    const { sleepWhenIdle } = await recordBootReport(env, computer, adeVersion, now);
+    // The message queue reads it: an image too old to drain the queue answers `update_needed` (`chatWakeFor`).
+    if (adeVersion) {
+      await env.DB.prepare("update cloud_computers set ade_version = ?, ade_version_at = ? where instance_id = ?").bind(adeVersion, now, computer.instance_id).run();
+    }
     return json({ ok: true, sleepWhenIdle });
   },
   // The computer's own measure of its disk and its last work, sent at its idle step.
@@ -1464,6 +1492,106 @@ function withCors(response: Response, origin: string): Response {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+// --- server-core: ADE without a computer ---
+/** A blocked account's GET of a route it may still read (CONTRACTS 4). */
+function blockedMayRead(method: string, path: string): boolean {
+  if (method !== "GET") return false;
+  return CLOUD_BLOCKED_READ_ROUTES.some((route) => path === route || path.startsWith(`${route}/`));
+}
+
+/** `/cloud/chats/:m/:c/messages[/:msg]`. */
+function chatMessagesRouteOf(path: string): { machineKey: string; chatId: string; rest: string[] } | null {
+  if (!path.startsWith(`${CLOUD_PATHS.chats}/`)) return null;
+  const segments = path.slice(CLOUD_PATHS.chats.length + 1).split("/").map((segment) => {
+    try {
+      return decodeURIComponent(segment);
+    } catch {
+      return "";
+    }
+  });
+  const [machineKey, chatId, action, ...rest] = segments;
+  if (action !== "messages" || !machineKey || !chatId || !SAVED_ROW_ID.test(machineKey) || !SAVED_ROW_ID.test(chatId)) return null;
+  return { machineKey, chatId, rest };
+}
+const SAVED_ROW_ID = /^[A-Za-z0-9._:-]{1,160}$/;
+
+/** What a start of a server launch needs, for `POST /cloud/launches` and the queue's continue launch alike. */
+function launchDepsFor(request: Request, env: CloudEnv, userId: string, provider: CloudProvider | null, ctx: CloudRequestContext): LaunchRouteDeps {
+  const authorization = request.headers.get("authorization");
+  return {
+    provider,
+    now: ctx.now,
+    createComputer: (launchUserId, launchProvider, extras) => createComputer(env, launchUserId, launchProvider, extras, ctx),
+    gitCheck: (origin) => serverGitCheck(env, authorization, origin, userId),
+    // A new launch makes a computer: the owner's kill switch and the hourly limit (never a replay of one).
+    refuseNewLaunch: () => newWorkRefusal(env, userId, "launch", ctx.now, ctx.waitUntil),
+    onProgress: (record) => noteAutomationLaunchProgress(env, record, { now: ctx.now }),
+  };
+}
+
+/**
+ * `POST /cloud/instances/:id/use`, from the computer: real work on it (a
+ * message drained, a person at its terminal). Moves `last_active_at`, which
+ * calls an idle cleanup's delete off (`cameBack`, `claimDelete`), and marks
+ * the use during a save like a person's start (`recordIdleUse`).
+ */
+async function handleComputerUse(env: CloudEnv, computer: ComputerRow, now: number): Promise<Response> {
+  await env.DB.prepare("update cloud_computers set last_active_at = max(coalesce(last_active_at, 0), ?) where instance_id = ? and deleted_at is null")
+    .bind(now, computer.instance_id).run();
+  const refused = await idleUseRefusal(env, computer, now);
+  return refused ?? json({ ok: true });
+}
+
+const UPDATE_NEEDED_MESSAGE = "This computer runs an older ADE that can't take messages while it sleeps. Open the lane and update the computer, then send again.";
+/** Long enough for a woken computer's ADE to start and send what waits; a drain that runs longer goes on by itself. */
+const DRAIN_EXEC_TIMEOUT_MS = 120_000;
+
+/**
+ * The queue's wake (CONTRACTS 3.1): every check `/start` makes, before the
+ * message is stored, then the wake and the drain after the answer.
+ */
+function chatWakeFor(env: CloudEnv, userId: string, provider: CloudProvider | null, ctx: CloudRequestContext, launchDeps: LaunchRouteDeps): ChatWake {
+  const { now } = ctx;
+  return {
+    check: async (computer) => {
+      const accountBlock = await blockedNow(env, computer.user_id);
+      if (accountBlock) return accountBlock;
+      const { blocked } = await wakeBlocker(env, computer.user_id, now);
+      if (blocked) return blocked.response;
+      if (computer.update_state === "updating") return fail("update_in_progress", new CloudUpdateInProgressError().message, 409);
+      // An image older than the drain command: fine when its wake updates it, else it must update first.
+      if (computer.ade_version && !adeVersionAtLeast(computer.ade_version, CLOUD_CHAT_QUEUE_MIN_ADE_VERSION)
+        && !isBehindAutomatic(computer, await readUpdateTargets(env), now)) {
+        return fail("update_needed", UPDATE_NEEDED_MESSAGE, 409);
+      }
+      const awake = isMeteredStatus(computer.status);
+      if (!awake && provider) {
+        // The provider suspends a computer whose plan payment failed: the server's own sentence, before anything is stored.
+        const listed = (await listInstancesCached(provider, false)).find((instance) => instance.id === computer.instance_id);
+        if (listed?.pastDue) return fail("plan_past_due", CLOUD_PLAN_PAST_DUE_SENTENCE, 402);
+      }
+      const capped = await awakeRoom(env, computer, now, AWAKE_CAP_WAIT_MS);
+      if (capped) return capped.response;
+      const refused = await idleUseRefusal(env, computer, now);
+      if (refused) return refused;
+      return { state: awake && computer.idle_claimed_at == null ? "awake" : "waking" };
+    },
+    wakeAndDrain: async (computer) => {
+      if (!provider) {
+        reportCloudFailure("cloud.no_provider_key");
+        return;
+      }
+      if (!isMeteredStatus(computer.status) || computer.idle_claimed_at != null) {
+        await recordStatus(env, computer, await provider.startInstance(computer.instance_id), now, "chat_message");
+      }
+      // The exec wakes it too; a failure is harmless: its ADE drains the queue when it starts.
+      await provider.exec(computer.instance_id, CLOUD_COMPUTER_COMMANDS.drainMessages, DRAIN_EXEC_TIMEOUT_MS);
+    },
+    startLaunch: (parsed) => startServerLaunch(env, userId, parsed, launchDeps),
+  };
+}
+// --- end server-core ---
+
 /**
  * `/cloud/*` straight from a browser and a phone (C7). CORS is the
  * directory's rule (`handleRequest`): only the hosted web client's exact
@@ -1532,11 +1660,15 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   // Every account may use ADE Cloud, except one the owner blocked (`safety.ts`).
   const blocked = await isCloudBlockedForRequest(env, caller.userId);
   if (path === CLOUD_PATHS.access) {
-    // Older apps still ask before they show ADE Cloud.
+    // Older apps still ask before they show ADE Cloud. A blocked account still reads what it has.
     if (request.method !== "GET") return fail("not_found", NOT_FOUND_MESSAGE, 404);
-    return json({ enabled: !blocked });
+    return json((blocked ? { enabled: false, readOnly: true, reason: ACCOUNT_BLOCKED_MESSAGE } : { enabled: true }) satisfies CloudAccess);
   }
-  if (blocked) return accountBlocked();
+  // A blocked account reads what ADE Cloud keeps for it (GET only, `CLOUD_BLOCKED_READ_ROUTES`) and does nothing.
+  if (blocked && !blockedMayRead(request.method, path)) return accountBlocked();
+  if (blocked && path === CLOUD_PATHS.account) {
+    return json({ ...(await buildAccountState(env, caller.userId, Date.now())), blocked: true });
+  }
   if (isCloudWakeRequest(url)) {
     // Scheduled work is refused at 0 hours; a timed wake would break the stop.
     if (request.method === "PUT") {
@@ -1567,6 +1699,31 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (referrals) return referrals;
   const billing = await routeBilling(request, url, path, env, caller.userId, ctx);
   if (billing) return billing;
+  // --- server-core: ADE without a computer --- Rows and R2 only; a send wakes or launches through the provider.
+  if (path === CLOUD_PATHS.projectsOverview) {
+    return request.method === "GET" ? handleProjectOverview(url, env, caller.userId, now) : notFound();
+  }
+  if (path === CLOUD_PATHS.sessions || path.startsWith(`${CLOUD_PATHS.sessions}/`)) return routeSessionCopies(request, url, path, env, caller.userId, now);
+  if (path === CLOUD_PATHS.git || path.startsWith(`${CLOUD_PATHS.git}/`)) return routeGitSummaries(request, url, path, env, caller.userId, now);
+  if (path.startsWith(`${CLOUD_PATHS.capsules}/`)) return routeForkCapsules(request, path, env, caller.userId, now);
+  const chatMessages = chatMessagesRouteOf(path);
+  if (chatMessages) {
+    return providerCall(() => routeChatMessages(request, env, caller.userId, chatMessages.machineKey, chatMessages.chatId, chatMessages.rest, {
+      now,
+      waitUntil,
+      wake: chatWakeFor(env, caller.userId, provider, ctx, launchDepsFor(request, env, caller.userId, provider, ctx)),
+    }));
+  }
+  const computerRoute = instanceRouteOf(path);
+  if (computerRoute && (computerRoute.action === "messages" || computerRoute.action === "use")) {
+    if (!INSTANCE_ID.test(computerRoute.instanceId)) return notFound();
+    const computer = await ownedComputer(env, caller.userId, computerRoute.instanceId);
+    if (!computer) return notFound();
+    if (computerRoute.action === "messages") return routeComputerMessages(request, env, computer, computerRoute.rest, now);
+    if (computerRoute.rest.length || request.method !== "POST") return notFound();
+    return handleComputerUse(env, computer, now);
+  }
+  // --- end server-core ---
   // Saved chats need no provider: they stay readable when the computer can't be.
   if (path === CLOUD_PATHS.chats || path.startsWith(`${CLOUD_PATHS.chats}/`)) {
     return routeSavedChats(request, url, path, env, caller.userId, now, waitUntil);
@@ -1590,16 +1747,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (path === CLOUD_PATHS.models) return handleCloudModels(request);
   // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.
   if (path === CLOUD_PATHS.launches || path.startsWith(`${CLOUD_PATHS.launches}/`)) {
-    const authorization = request.headers.get("authorization");
-    return providerCall(() => routeLaunches(request, path, env, caller.userId, {
-      provider,
-      now,
-      createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, ctx),
-      gitCheck: (origin) => serverGitCheck(env, authorization, origin, caller.userId),
-      // A new launch makes a computer: the owner's kill switch and the hourly limit (never a replay of one).
-      refuseNewLaunch: () => newWorkRefusal(env, caller.userId, "launch", now, waitUntil),
-      onProgress: (record) => noteAutomationLaunchProgress(env, record, { now }),
-    }));
+    return providerCall(() => routeLaunches(request, path, env, caller.userId, launchDepsFor(request, env, caller.userId, provider, ctx)));
   }
   // Automations on ADE Cloud: rows only, except a run's start (Run now), which makes a computer.
   if (path === CLOUD_PATHS.automations || path.startsWith(`${CLOUD_PATHS.automations}/`)) {

@@ -1,3 +1,4 @@
+import { expireChatMessages } from "./chatMessages";
 import { captureCloudDay, type CloudWaitUntil } from "./analytics";
 import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
 import { checkExtraDiskLimits, reportExtraDiskDays, type ExtraDiskOverLimit } from "./billing";
@@ -77,6 +78,10 @@ type TickComputer = ComputerRow & { last_seen_at: number | null };
 export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number; provider?: CloudProvider; waitUntil?: CloudWaitUntil } = {}): Promise<void> {
   const now = options.now ?? Date.now();
   const waitUntil = options.waitUntil;
+  // Rows only, no provider: a queued message never arrives days late, and final rows don't pile up.
+  await expireChatMessages(env, now).catch((error: unknown) => {
+    reportCloudFailure("cloud.chat_messages_sweep_failed", { message: error instanceof Error ? error.message : "unknown" });
+  });
   const key = env.AGENT37_API_KEY?.trim();
   if (!key) return;
   const rows = await env.DB.prepare(`

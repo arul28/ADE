@@ -22,6 +22,7 @@ import { scrubString } from "./sentryScrub";
 import { trustedHttpsOrigin } from "./trustedOrigin";
 import { ACCOUNT_PROJECTS_CURSOR_FIELD } from "./accountProjects/contract";
 import { deleteMachineCopies, readAccountProjectsCursor } from "./accountProjects/store";
+import { dropAccountLanes } from "./accountLanes/routes";
 import { reportCloudFailure } from "./cloud/store";
 
 export type { ActivityRelayOptions } from "./activityRelay";
@@ -1097,10 +1098,11 @@ async function handleList(
   const dbDurationMs = performance.now() - dbStartedAt;
   const now = Date.now();
   const windowMs = onlineWindowMs(env);
-  const machines = rows.map((row) => ({
+  const cloud = await cloudComputerTruth(env, userId);
+  const machines = rows.map((row) => withCloudTruth({
     ...machineRecord(row),
     online: typeof row.last_seen_at === "number" && now - row.last_seen_at <= windowMs,
-  })).sort((left, right) => {
+  }, cloud)).sort((left, right) => {
     if (left.online !== right.online) return left.online ? -1 : 1;
     return Number(right.lastSeenAt ?? 0) - Number(left.lastSeenAt ?? 0);
   });
@@ -1119,6 +1121,16 @@ async function dropAccountProjectCopies(userId: string, machineKeys: string[], e
     await deleteMachineCopies(env.DB, userId, machineKeys, Date.now());
   } catch (error) {
     reportCloudFailure("account_project.machine_copies_delete_failed", {
+      userId,
+      machines: machineKeys.length,
+      message: scrubString(error instanceof Error ? error.message : String(error)),
+    }, "account_projects");
+  }
+  // Its lanes leave the account lane index with it (`accountLanes/routes.ts`); the same best effort.
+  try {
+    await dropAccountLanes(env.DB, userId, machineKeys);
+  } catch (error) {
+    reportCloudFailure("account_lanes.machine_lanes_delete_failed", {
       userId,
       machines: machineKeys.length,
       message: scrubString(error instanceof Error ? error.message : String(error)),
@@ -1271,11 +1283,60 @@ async function handleRename(
      where user_id = ? and machine_key = ?
   `).bind(userId, machineKey).first<MachineRow>();
   if (!row) return json({ error: "machine not found" }, { status: 404 });
-  return json({
+  return json(withCloudTruth({
     ...machineRecord(row),
     online: typeof row.last_seen_at === "number"
       && Date.now() - row.last_seen_at <= onlineWindowMs(env),
-  });
+  }, await cloudComputerTruth(env, userId)));
+}
+
+type CloudTruthRow = { machine_key: string; status: string; status_changed_at: number; idle_deleting_at: number | null };
+type CloudMachineState = "awake" | "waking" | "asleep" | "stopped" | "updating" | "deleting";
+
+/**
+ * The account's ADE Cloud computers by machine key, from their own rows (one
+ * indexed read, no provider call). The server's row is the truth: a computer
+ * the provider put to sleep sends no last heartbeat, so `last_seen_at` alone
+ * reads it online for minutes after it went to rest.
+ */
+async function cloudComputerTruth(env: Env, userId: string): Promise<Map<string, CloudTruthRow>> {
+  try {
+    const rows = (await env.DB.prepare(`
+      select machine_key, status, status_changed_at, idle_deleting_at from cloud_computers
+       where user_id = ? and deleted_at is null and machine_key is not null
+       order by created_at
+    `).bind(userId).all<CloudTruthRow>()).results ?? [];
+    return new Map(rows.map((row) => [row.machine_key.toLowerCase(), row]));
+  } catch (error) {
+    // The list never fails for the cloud facts: without them it answers as before.
+    reportCloudFailure("directory.cloud_truth_read_failed", { userId, message: scrubString(error instanceof Error ? error.message : String(error)) });
+    return new Map();
+  }
+}
+
+function cloudStateOf(row: CloudTruthRow): CloudMachineState {
+  if (row.idle_deleting_at != null) return "deleting";
+  if (row.status === "running" || row.status === "restarting") return "awake";
+  if (row.status === "waking" || row.status === "starting" || row.status === "provisioning") return "waking";
+  if (row.status === "updating") return "updating";
+  return row.status === "sleeping" ? "asleep" : "stopped";
+}
+
+/**
+ * A resting ADE Cloud computer answers `online: false, sleepState: "asleep"`,
+ * which every released client already reads as "asleep, wake to reach it".
+ * `cloud.state` is additive, for clients that know it.
+ */
+function withCloudTruth<T extends MachineRecord & { online: boolean }>(machine: T, cloud: Map<string, CloudTruthRow>): T & { cloud?: { state: CloudMachineState; stateAt: number } } {
+  const row = cloud.get(machine.machineKey.toLowerCase());
+  if (!row) return machine;
+  const state = cloudStateOf(row);
+  const resting = state === "asleep" || state === "stopped" || state === "deleting";
+  return {
+    ...machine,
+    ...(resting ? { online: false, sleepState: "asleep" as const, sleepStateAt: row.status_changed_at } : {}),
+    cloud: { state, stateAt: row.status_changed_at },
+  };
 }
 
 /**

@@ -3,6 +3,7 @@ import {
   CLOUD_CHAT_MAX_PAGE_PARTS,
   CLOUD_CHAT_MAX_PART_BYTES,
   type CloudChatComputer,
+  type CloudChatMoveResult,
   type CloudChatPartResponse,
   type CloudChatRow,
   type CloudChatRowInput,
@@ -15,6 +16,10 @@ import { rewardAfterCloudChat } from "./referrals";
 import { captureCloudSafety, type CloudWaitUntil } from "./analytics";
 import { logCloud, ownedComputer, type CloudEnv } from "./store";
 import { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type UserKeys } from "./seal";
+import { deleteCapsule, deleteCapsulesForLane } from "./forkCapsules";
+import { deleteGitSummaryForLaneStatement } from "./gitSummaries";
+import { deleteSessionCopiesForLane } from "./sessionCopies";
+import { readJson } from "./http";
 
 /** The seal helpers moved to `seal.ts`; older imports from here keep working. */
 export { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type UserKeys } from "./seal";
@@ -66,7 +71,7 @@ const summaryAad = (userId: string, machineKey: string, chatId: string): string 
 const chatPrefix = (userId: string, machineKey: string, chatId: string): string => `chats/${userId}/${machineKey}/${chatId}/`;
 const partKey = (prefix: string, seq: number): string => `${prefix}${String(seq).padStart(10, "0")}`;
 
-type CopyRow = {
+export type CopyRow = {
   user_id: string;
   machine_key: string;
   chat_id: string;
@@ -79,13 +84,32 @@ type CopyRow = {
   last_seq: number;
   bytes: number;
   updated_at: number;
+  /** Migration 0039: the parent chat ADE started this one from, and how. */
+  parent_chat_id?: string | null;
+  spawn_kind?: string | null;
+  /** Migration 0039: the saved chat a fork restore moved to this row. */
+  forked_from_machine_key?: string | null;
+  forked_from_chat_id?: string | null;
+  /** Migration 0039: the machine key its parts and summary are sealed under; null is `machine_key`. */
+  aad_machine_key?: string | null;
 };
+
+/** The machine key a row's parts and summary are sealed under: it stays when a move re-keys the row. */
+const sealKeyOf = (row: Pick<CopyRow, "machine_key" | "aad_machine_key">): string => row.aad_machine_key ?? row.machine_key;
 
 function bucketFor(env: Pick<CloudEnv, "CLOUD_CHATS">): R2Bucket | null {
   return env.CLOUD_CHATS ?? null;
 }
 
-async function copyRow(env: CloudEnv, userId: string, machineKey: string, chatId: string): Promise<CopyRow | null> {
+/** The row a fork restore moved this chat to, if one did. */
+export async function movedRow(env: CloudEnv, userId: string, fromMachineKey: string, chatId: string): Promise<CopyRow | null> {
+  return await env.DB.prepare(`
+    select * from cloud_chat_copies where user_id = ? and forked_from_machine_key = ? and forked_from_chat_id = ? and chat_id = ?
+    order by updated_at desc limit 1
+  `).bind(userId, fromMachineKey, chatId, chatId).first<CopyRow>();
+}
+
+export async function copyRow(env: CloudEnv, userId: string, machineKey: string, chatId: string): Promise<CopyRow | null> {
   return env.DB.prepare("select * from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ?")
     .bind(userId, machineKey, chatId).first<CopyRow>();
 }
@@ -125,6 +149,9 @@ function readRowInput(value: unknown): CloudChatRowInput | null {
   if (laneId && !ROW_ID.test(laneId)) return null;
   const lastActivity = pick("lastActivityAt");
   if (lastActivity && Number.isNaN(Date.parse(lastActivity))) return null;
+  // Ids only: a parent id that isn't one is left out, never a refused part (an older server ignored it).
+  const parentChatId = pick("parentChatId");
+  const spawnKind = pick("spawnKind");
   return {
     title: pick("title"),
     laneId,
@@ -137,6 +164,8 @@ function readRowInput(value: unknown): CloudChatRowInput | null {
     projectId: pick("projectId"),
     projectRoot: pick("projectRoot"),
     lastActivityAt: lastActivity,
+    parentChatId: parentChatId && ROW_ID.test(parentChatId) ? parentChatId : null,
+    spawnKind: spawnKind && /^[a-z][a-z0-9_-]{0,39}$/.test(spawnKind) ? spawnKind : null,
   };
 }
 
@@ -195,8 +224,14 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
   if (!keys) return unavailable();
 
   const existing = await copyRow(env, userId, machineKey, chatId);
+  if (!existing && await movedRow(env, userId, machineKey, chatId)) {
+    // Its parts still live under this key's prefix: a new copy here would write over them.
+    return fail("chat_moved", "This chat moved to another computer. Save it from there.", 409);
+  }
   const lastSeq = existing?.last_seq ?? 0;
-  const prefix = chatPrefix(userId, machineKey, chatId);
+  // A chat a fork restore moved here keeps its parts where they are, sealed under its first machine key.
+  const prefix = existing?.r2_key ?? chatPrefix(userId, machineKey, chatId);
+  const sealKey = existing ? sealKeyOf(existing) : machineKey;
   const key = partKey(prefix, seq);
   const digest = await digestFor(keys, plain);
   let replacedSize = 0;
@@ -218,7 +253,7 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     return fail("sequence_conflict", "That part doesn't follow what is saved.", 409);
   }
 
-  const sealed = await sealBytes(keys.aes, partAad(userId, machineKey, chatId, seq), plain);
+  const sealed = await sealBytes(keys.aes, partAad(userId, sealKey, chatId, seq), plain);
   const delta = sealed.byteLength - replacedSize;
   if (delta > 0 && await accountBytes(env, userId) + delta > CLOUD_CHAT_MAX_ACCOUNT_BYTES) {
     logCloud("cloud.chat_account_full", { userId, machineKey, chatId, limitBytes: CLOUD_CHAT_MAX_ACCOUNT_BYTES });
@@ -245,7 +280,7 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     lastSeq: Math.max(seq, lastSeq),
     updatedAt: now,
   };
-  const summary = await sealText(keys.aes, summaryAad(userId, machineKey, chatId), encoder.encode(JSON.stringify({
+  const summary = await sealText(keys.aes, summaryAad(userId, sealKey, chatId), encoder.encode(JSON.stringify({
     title: row.title,
     laneName: row.laneName,
     status: row.status,
@@ -257,8 +292,8 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
   })));
   const lastActivityMs = rowInput.lastActivityAt ? Date.parse(rowInput.lastActivityAt) : null;
   await env.DB.prepare(`
-    insert into cloud_chat_copies (user_id, machine_key, chat_id, instance_id, project_key, lane_id, summary_sealed, r2_key, last_activity_at, last_seq, bytes, updated_at)
-    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    insert into cloud_chat_copies (user_id, machine_key, chat_id, instance_id, project_key, lane_id, summary_sealed, r2_key, last_activity_at, last_seq, bytes, updated_at, parent_chat_id, spawn_kind)
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     on conflict (user_id, machine_key, chat_id) do update set
       instance_id = excluded.instance_id,
       project_key = coalesce(excluded.project_key, project_key),
@@ -267,9 +302,12 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
       last_activity_at = coalesce(excluded.last_activity_at, last_activity_at),
       last_seq = max(last_seq, excluded.last_seq),
       bytes = max(0, bytes + ?),
-      updated_at = excluded.updated_at
+      updated_at = excluded.updated_at,
+      parent_chat_id = coalesce(excluded.parent_chat_id, parent_chat_id),
+      spawn_kind = coalesce(excluded.spawn_kind, spawn_kind)
   `).bind(
     userId, machineKey, chatId, instanceId, row.projectKey, row.laneId, summary, prefix, lastActivityMs, row.lastSeq, sealed.byteLength, now,
+    rowInput.parentChatId ?? null, rowInput.spawnKind ?? null,
     delta,
   ).run();
   // A saved part is the server's proof a chat ran on an ADE Cloud computer: it pays an
@@ -304,7 +342,7 @@ async function noteFirstCloudChat(env: CloudEnv, userId: string, now: number, wa
   }
 }
 
-function rowToJson(row: CopyRow, summary: Record<string, unknown> | null): CloudChatRow {
+export function rowToJson(row: CopyRow, summary: Record<string, unknown> | null): CloudChatRow {
   const text = (value: unknown): string | null => (typeof value === "string" && value ? value : null);
   return {
     machineKey: row.machine_key,
@@ -323,12 +361,15 @@ function rowToJson(row: CopyRow, summary: Record<string, unknown> | null): Cloud
     lastActivityAt: row.last_activity_at != null ? new Date(row.last_activity_at).toISOString() : null,
     lastSeq: row.last_seq,
     updatedAt: row.updated_at,
+    parentChatId: row.parent_chat_id ?? null,
+    spawnKind: row.spawn_kind ?? null,
+    forkedFrom: row.forked_from_machine_key && row.forked_from_chat_id ? { machineKey: row.forked_from_machine_key, chatId: row.forked_from_chat_id } : null,
   };
 }
 
-async function openSummary(keys: UserKeys, row: CopyRow): Promise<Record<string, unknown> | null> {
+export async function openSummary(keys: UserKeys, row: CopyRow): Promise<Record<string, unknown> | null> {
   if (!row.summary_sealed) return null;
-  const opened = await openText(keys.aes, summaryAad(row.user_id, row.machine_key, row.chat_id), row.summary_sealed);
+  const opened = await openText(keys.aes, summaryAad(row.user_id, sealKeyOf(row), row.chat_id), row.summary_sealed);
   const value = opened ? parseJson(decoder.decode(opened)) : undefined;
   if (value === undefined) {
     logCloud("cloud.chat_summary_unreadable", { userId: row.user_id, machineKey: row.machine_key, chatId: row.chat_id });
@@ -444,41 +485,53 @@ async function savedChatComputers(
   };
 }
 
-/** `GET /cloud/chats?machine&project&limit&cursor`: newest activity first. */
-async function handleList(url: URL, env: CloudEnv, userId: string, now: number): Promise<Response> {
-  const machine = url.searchParams.get("machine")?.trim() || null;
-  if (machine && !ROW_ID.test(machine)) return json({ chats: [], nextCursor: null });
-  const project = url.searchParams.get("project")?.trim() || null;
-  const limit = clampedInt(url.searchParams.get("limit"), DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
-  // `updatedAt:chatId` of the last row of the previous page.
-  const cursor = url.searchParams.get("cursor")?.match(/^(\d+):(.+)$/) ?? null;
-  const keys = await userKeys(env, userId, now);
-  if (!keys) return unavailable();
+/** One page of saved chats, newest activity first; `cursor` is `updatedAt:chatId` of the last row of the previous page. */
+export async function listSavedChats(
+  env: CloudEnv,
+  keys: UserKeys,
+  userId: string,
+  filter: { machine?: string | null; project?: string | null; cursor?: string | null; limit: number },
+): Promise<{ chats: CloudChatRow[]; nextCursor: string | null }> {
+  const cursor = filter.cursor?.match(/^(\d+):(.+)$/) ?? null;
   const where = ["user_id = ?"];
   const binds: Array<string | number> = [userId];
-  if (machine) {
+  if (filter.machine) {
     where.push("machine_key = ?");
-    binds.push(machine);
+    binds.push(filter.machine);
   }
-  if (project) {
+  if (filter.project) {
     where.push("project_key = ?");
-    binds.push(project);
+    binds.push(filter.project);
   }
   if (cursor) {
     where.push("(updated_at < ? or (updated_at = ? and chat_id < ?))");
     binds.push(Number(cursor[1]), Number(cursor[1]), cursor[2]!);
   }
   const rows = await env.DB.prepare(`select * from cloud_chat_copies where ${where.join(" and ")} order by updated_at desc, chat_id desc limit ?`)
-    .bind(...binds, limit + 1).all<CopyRow>();
+    .bind(...binds, filter.limit + 1).all<CopyRow>();
   const results = rows.results ?? [];
-  const page = results.slice(0, limit);
+  const page = results.slice(0, filter.limit);
   const [summaries, computerOf] = await Promise.all([
     Promise.all(page.map((row) => openSummary(keys, row))),
     savedChatComputers(env, userId, page),
   ]);
   const chats: CloudChatRow[] = page.map((row, index) => ({ ...rowToJson(row, summaries[index] ?? null), computer: computerOf(row) }));
   const last = page[page.length - 1];
-  return json({ chats, nextCursor: results.length > limit && last ? `${last.updated_at}:${last.chat_id}` : null });
+  return { chats, nextCursor: results.length > filter.limit && last ? `${last.updated_at}:${last.chat_id}` : null };
+}
+
+/** `GET /cloud/chats?machine&project&limit&cursor`: newest activity first. */
+async function handleList(url: URL, env: CloudEnv, userId: string, now: number): Promise<Response> {
+  const machine = url.searchParams.get("machine")?.trim() || null;
+  if (machine && !ROW_ID.test(machine)) return json({ chats: [], nextCursor: null });
+  const keys = await userKeys(env, userId, now);
+  if (!keys) return unavailable();
+  return json(await listSavedChats(env, keys, userId, {
+    machine,
+    project: url.searchParams.get("project")?.trim() || null,
+    cursor: url.searchParams.get("cursor"),
+    limit: clampedInt(url.searchParams.get("limit"), DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT),
+  }));
 }
 
 /**
@@ -489,7 +542,8 @@ async function handleGetChat(url: URL, env: CloudEnv, userId: string, machineKey
   const bucket = bucketFor(env);
   if (!bucket) return unavailable();
   // The owner check, on every read: the row is looked up under the caller's account.
-  const row = await copyRow(env, userId, machineKey, chatId);
+  // A client that still names the old machine key of a moved chat reads it where it is now.
+  const row = await copyRow(env, userId, machineKey, chatId) ?? await movedRow(env, userId, machineKey, chatId);
   if (!row) return notFound();
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
@@ -509,7 +563,7 @@ async function handleGetChat(url: URL, env: CloudEnv, userId: string, machineKey
       logCloud("cloud.chat_part_missing", { userId, machineKey, chatId, seq });
       return fail("chat_unreadable", "This saved chat can't be read right now.", 503);
     }
-    const opened = await openBytes(keys.aes, partAad(userId, machineKey, chatId, seq), new Uint8Array(await object.arrayBuffer()));
+    const opened = await openBytes(keys.aes, partAad(userId, sealKeyOf(row), row.chat_id, seq), new Uint8Array(await object.arrayBuffer()));
     if (!opened) {
       logCloud("cloud.chat_part_unreadable", { userId, machineKey, chatId, seq });
       return fail("chat_unreadable", "This saved chat can't be read right now.", 503);
@@ -548,9 +602,68 @@ export async function deleteSavedChat(env: CloudEnv, userId: string, machineKey:
   const row = await copyRow(env, userId, machineKey, chatId);
   if (!row) return false;
   await deleteObjectsUnder(bucket, row.r2_key);
-  await env.DB.prepare("delete from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ?").bind(userId, machineKey, chatId).run();
+  await env.DB.batch([
+    env.DB.prepare("delete from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ?").bind(userId, machineKey, chatId),
+    deleteChatMessagesStatement(env, userId, machineKey, chatId),
+  ]);
+  // Its fork capsule goes too: under this key, and under the key it moved from.
+  await deleteCapsule(env, userId, machineKey, chatId);
+  if (row.forked_from_machine_key && row.forked_from_machine_key !== machineKey) await deleteCapsule(env, userId, row.forked_from_machine_key, chatId);
   logCloud("cloud.chat_deleted", { userId, machineKey, chatId });
   return true;
+}
+
+/** A chat's queued messages go with the chat. */
+export function deleteChatMessagesStatement(env: Pick<CloudEnv, "DB">, userId: string, machineKey: string, chatId: string): D1PreparedStatement {
+  return env.DB.prepare("delete from cloud_chat_messages where user_id = ? and machine_key = ? and chat_id = ?").bind(userId, machineKey, chatId);
+}
+
+/**
+ * `POST /cloud/chats/:m/:c/move`, from the new computer of a fork restore:
+ * re-keys the saved chat to the new computer's machine key with its full
+ * history. The parts stay where they are, sealed under the first key
+ * (`aad_machine_key`), so nothing is uploaded again and the chat lists once.
+ * Its queued messages follow it; its capsule, now used, goes. The same move
+ * again answers the moved row.
+ */
+async function handleMove(request: Request, env: CloudEnv, userId: string, machineKey: string, chatId: string, now: number): Promise<Response> {
+  const body = await readJson(request);
+  const toMachineKey = typeof body?.toMachineKey === "string" ? body.toMachineKey.trim() : "";
+  const instanceId = typeof body?.instanceId === "string" ? body.instanceId.trim() : "";
+  if (!ROW_ID.test(toMachineKey) || !/^[a-z0-9]{4,40}$/.test(instanceId)) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
+  const computer = await ownedComputer(env, userId, instanceId);
+  // Only the caller's own computer, and only to its own machine key.
+  if (!computer || computer.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  if (computer.machine_key && computer.machine_key.toLowerCase() !== toMachineKey.toLowerCase()) {
+    return fail("wrong_machine", "A chat moves only to the machine key of the computer that asks.", 409);
+  }
+  const keys = await userKeys(env, userId, now);
+  if (!keys) return unavailable();
+  const answer = async (row: CopyRow, moved: boolean) => json({ chat: rowToJson(row, await openSummary(keys, row)), moved } satisfies CloudChatMoveResult);
+  const source = await copyRow(env, userId, machineKey, chatId);
+  if (machineKey === toMachineKey) return source ? answer(source, false) : notFound();
+  const target = await copyRow(env, userId, toMachineKey, chatId);
+  if (!source) {
+    // Moved already: the same move again answers the moved row.
+    return target && target.forked_from_machine_key === machineKey && target.forked_from_chat_id === chatId ? answer(target, false) : notFound();
+  }
+  if (target) return fail("chat_exists", "The new computer already has a saved copy of this chat.", 409);
+  const moved = await env.DB.batch([
+    env.DB.prepare(`
+      update cloud_chat_copies set machine_key = ?, instance_id = ?, forked_from_machine_key = ?, forked_from_chat_id = ?,
+        aad_machine_key = coalesce(aad_machine_key, machine_key), updated_at = ?
+      where user_id = ? and machine_key = ? and chat_id = ?
+    `).bind(toMachineKey, computer.instance_id, machineKey, chatId, now, userId, machineKey, chatId),
+    env.DB.prepare(`
+      update cloud_chat_messages set machine_key = ?, instance_id = case when via_launch = 0 and state = 'queued' then ? else instance_id end
+      where user_id = ? and machine_key = ? and chat_id = ?
+    `).bind(toMachineKey, computer.instance_id, userId, machineKey, chatId),
+  ]);
+  if ((moved[0]?.meta?.changes ?? 0) !== 1) return notFound();
+  await deleteCapsule(env, userId, machineKey, chatId);
+  logCloud("cloud.chat_moved", { userId, instanceId: computer.instance_id });
+  const row = await copyRow(env, userId, toMachineKey, chatId);
+  return row ? answer(row, true) : notFound();
 }
 
 /** Deletes a lane's saved chats on one computer. A computer's chats survive the computer; a lane's don't survive the lane. */
@@ -561,6 +674,10 @@ export async function deleteSavedChatsForLane(env: CloudEnv, userId: string, mac
   for (const row of rows.results ?? []) {
     if (await deleteSavedChat(env, userId, machineKey, row.chat_id)) removed += 1;
   }
+  // The lane's CLI and shell copies, Git summary and left capsules go with it.
+  await deleteSessionCopiesForLane(env, userId, machineKey, laneId);
+  await deleteCapsulesForLane(env, userId, machineKey, laneId);
+  await deleteGitSummaryForLaneStatement(env, userId, machineKey, laneId).run();
   return removed;
 }
 
@@ -570,9 +687,17 @@ export async function deleteSavedChatsForLane(env: CloudEnv, userId: string, mac
  */
 export async function deleteAllAccountChats(env: Pick<CloudEnv, "DB" | "CLOUD_CHATS">, userId: string): Promise<number> {
   const bucket = bucketFor(env);
-  const removed = bucket ? await deleteObjectsUnder(bucket, `chats/${userId}/`) : 0;
+  // Saved chats, CLI and shell copies and fork capsules: every object this account has in the bucket.
+  let removed = 0;
+  if (bucket) {
+    for (const prefix of [`chats/${userId}/`, `sessions/${userId}/`, `capsules/${userId}/`]) removed += await deleteObjectsUnder(bucket, prefix);
+  }
   await env.DB.batch([
     env.DB.prepare("delete from cloud_chat_copies where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_chat_messages where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_session_copies where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_git_summaries where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_fork_capsules where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_user_keys where user_id = ?").bind(userId),
   ]);
   logCloud("cloud.chats_deleted_for_account", { userId, removed });
@@ -600,6 +725,9 @@ export async function routeSavedChats(request: Request, url: URL, path: string, 
       return json({ deleted: await deleteSavedChat(env, userId, machineKey, second) });
     }
     return notFound();
+  }
+  if (segments.length === 3 && second && ROW_ID.test(second) && third === "move" && request.method === "POST") {
+    return handleMove(request, env, userId, machineKey, second, now);
   }
   if (segments.length === 3 && second === "lanes" && third && ROW_ID.test(third) && request.method === "DELETE") {
     if (!bucketFor(env)) return unavailable();

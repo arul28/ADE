@@ -10,6 +10,7 @@ import {
   type CloudPlanCleanupPick,
   type CloudPlanId,
 } from "./contract";
+import { CLOUD_COMPUTER_COMMANDS, type CloudSaveForRestReport } from "./contract";
 import { sendCloudEmail } from "./email";
 import { isCloudBlocked, notBlockedSql } from "./blocks";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
@@ -106,6 +107,10 @@ const pushCommandWith = (message: string | undefined): string => {
   return commandWith(`ade cloud push-work --json --message '${message}'`);
 };
 const CHECK_COMMAND = commandWith("ade cloud work-state --json");
+/** Capsules, CLI and shell copies and Git summaries, so the lane reads with no computer (CONTRACTS 4). */
+const SAVE_FOR_REST_COMMAND = commandWith(CLOUD_COMPUTER_COMMANDS.saveForRest);
+/** Capsules upload up to 20 MB each: longer than the check, bounded all the same. */
+const SAVE_FOR_REST_TIMEOUT_MS = 4 * 60_000;
 
 type CleanupComputerRow = ComputerRow & { plan_cleanup_claimed_at?: number | null; plan_cleanup_failed_at?: number | null };
 
@@ -829,12 +834,42 @@ export async function pushAllWork(
   if (!pushed) return { ok: false, reason: "ADE on the computer didn't answer the push.", code: "push_unreadable" };
   const left = leftLanes(pushed);
   if (left) return { ok: false, reason: left, code: "push_left_work" };
+  // Before the check: what the lane needs to read and continue with no computer. Never keeps the computer.
+  await saveForRest(provider, computer, reason);
   // Read once more: anything new or unknown keeps it.
   const checked = readTally((await provider.exec(computer.instance_id, CHECK_COMMAND, CHECK_TIMEOUT_MS)).stdout);
   if (!checked) return { ok: false, reason: "ADE couldn't confirm all work is on GitHub.", code: "check_unreadable" };
   const stillLeft = leftLanes(checked);
   if (stillLeft) return { ok: false, reason: stillLeft, code: "check_left_work" };
   return { ok: true, metadata, pushed };
+}
+
+/**
+ * `ade cloud save-for-rest --capsules --json` on the computer: fork capsules,
+ * CLI and shell copies and Git summaries go to the server. Best effort: an
+ * older ADE that doesn't know the command, or a failure, means no capsule
+ * (a new computer replays the saved chat instead), never a kept computer.
+ */
+async function saveForRest(provider: CloudProvider, computer: ComputerRow, reason: string): Promise<void> {
+  try {
+    const ran = await provider.exec(computer.instance_id, SAVE_FOR_REST_COMMAND, SAVE_FOR_REST_TIMEOUT_MS);
+    const report = ran.exitCode === 0 ? readResult(ran.stdout) as Partial<CloudSaveForRestReport> | null : null;
+    if (!report || typeof report.capsules !== "number") {
+      logCloud("cloud.save_for_rest_unavailable", { instanceId: computer.instance_id, reason, exitCode: ran.exitCode });
+      return;
+    }
+    logCloud("cloud.save_for_rest", {
+      instanceId: computer.instance_id,
+      reason,
+      ok: report.ok === true,
+      capsules: report.capsules,
+      sessions: Number(report.sessions) || 0,
+      git: Number(report.git) || 0,
+      skipped: Number(report.skipped) || 0,
+    });
+  } catch (error) {
+    logCloud("cloud.save_for_rest_unavailable", { instanceId: computer.instance_id, reason, code: error instanceof CloudProviderError ? error.code : "unknown" });
+  }
 }
 
 /**

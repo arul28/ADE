@@ -27,6 +27,10 @@ create table if not exists cloud_chat_messages (
   -- a launch carries it (`launch_id`).
   instance_id text,
   launch_id text,
+  -- 1: the launch delivers it (its first message, or one added before the
+  -- launch's chat existed); the computer never claims it from this queue,
+  -- and its state is the launch message's.
+  via_launch integer not null default 0,
   seq integer not null,
   -- Sealed JSON { text, attachments }.
   body_sealed text not null,
@@ -47,6 +51,7 @@ create table if not exists cloud_chat_messages (
 create unique index if not exists cloud_chat_messages_seq on cloud_chat_messages (user_id, machine_key, chat_id, seq);
 -- The computer's list of what to send.
 create index if not exists cloud_chat_messages_instance on cloud_chat_messages (instance_id, state, seq);
+create index if not exists cloud_chat_messages_launch on cloud_chat_messages (launch_id);
 -- The per-account caps and the minute rate limit.
 create index if not exists cloud_chat_messages_user on cloud_chat_messages (user_id, created_at);
 -- The minute cron: queued rows past 24 h, final rows past 7 days.
@@ -116,6 +121,12 @@ create table if not exists cloud_fork_capsules (
   primary key (user_id, machine_key, chat_id)
 );
 create index if not exists cloud_fork_capsules_lane on cloud_fork_capsules (user_id, machine_key, lane_id);
+
+-- The ADE version each computer last reported at brain start (`POST
+-- .../booted`): the queue answers `update_needed` for an image too old to
+-- drain it that won't update itself.
+alter table cloud_computers add column ade_version text;
+alter table cloud_computers add column ade_version_at integer;
 
 -- Launches that continue an existing chat: one per (lane, chat).
 alter table cloud_launches add column continue_machine_key text;

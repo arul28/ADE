@@ -39,6 +39,8 @@ const SANDBOX = "https://sandbox.agent37.app/v1";
 const STRIPE = "https://api.stripe.com/v1";
 const RESEND = "https://api.resend.com";
 const CLERK = "https://api.clerk.com/v1";
+/** An ADE older than `ade cloud save-for-rest`: the save goes on without capsules. */
+const OLD_ADE_EXEC = { exit_code: 127, stdout: "", stderr: "unknown command" };
 
 type SqliteStatement = {
   run(...params: unknown[]): { changes: number | bigint };
@@ -1774,8 +1776,15 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     expect(providerCalls(harness, new RegExp(`PATCH .*/instances/${INSTANCE}$`)).map((call) => call.body)).toEqual([{ network: "deny-all" }]);
     expect(providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/stop$`))).toHaveLength(1);
     expect(providerCalls(harness, /DELETE .*\/subscriptions\/sub_1$/).map((call) => call.body)).toEqual([{ prorate: "false", invoice_now: "false" }]);
-    const refused = await harness.send(OWNER, "GET", "/cloud/account");
-    expect([refused.status, ((await refused.json()) as { error?: { code?: string } }).error?.code]).toEqual([403, "account_blocked"]);
+    // Blocked is read-only: the reads in `CLOUD_BLOCKED_READ_ROUTES` answer, anything that does work is refused.
+    const blockedAccount = await harness.send(OWNER, "GET", "/cloud/account");
+    expect([blockedAccount.status, ((await blockedAccount.json()) as { blocked?: boolean }).blocked]).toEqual([200, true]);
+    expect(await (await harness.send(OWNER, "GET", "/cloud/access")).json()).toEqual({ enabled: false, readOnly: true, reason: expect.any(String) });
+    expect((await harness.send(OWNER, "GET", "/cloud/lanes/without-computer")).status).toBe(200);
+    for (const [method, url] of [["POST", `/cloud/instances/${INSTANCE}/start`], ["GET", "/cloud/instances"], ["POST", "/cloud/chats/key/chat/messages"], ["DELETE", "/cloud/chats/key/chat"]] as const) {
+      const refused = await harness.send(OWNER, method, url, method === "GET" ? undefined : {});
+      expect([url, refused.status, ((await refused.json()) as { error?: { code?: string } }).error?.code]).toEqual([url, 403, "account_blocked"]);
+    }
 
     // The blocked GitHub account on a new ADE account gets no free plan.
     seedAccount(harness, OTHER);
@@ -1846,10 +1855,10 @@ describe("ADE Cloud plan cleanup", () => {
     NEWER.forEach((id, index) => seedComputer(harness, { instance_id: id, created_at: NOW - (10 - index) * DAY, disk_gb: 2 }));
   }
 
-  /** The computer's three answers, in order: prepare-stop, push-work, work-state. */
+  /** The computer's four answers, in order: prepare-stop, push-work, save-for-rest (an older ADE that lacks it), work-state. */
   function answerExecs(prepare: string, push: string, check: string): void {
-    for (const stdout of [prepare, push, check]) {
-      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply({ exit_code: 0, stdout, stderr: "" }) });
+    for (const stdout of [prepare, push, null, check]) {
+      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply(stdout == null ? OLD_ADE_EXEC : { exit_code: 0, stdout, stderr: "" }) });
     }
   }
 
@@ -1972,10 +1981,10 @@ describe("ADE Cloud idle cleanup", () => {
     provide(harness, INSTANCE, "sleeping");
   }
 
-  /** The computer's three answers, in order: prepare-stop, push-work, work-state. */
+  /** The computer's four answers, in order: prepare-stop, push-work, save-for-rest (an older ADE that lacks it), work-state. */
   function answerExecs(push: string, check: string): void {
-    for (const stdout of [quiet, push, check]) {
-      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply({ exit_code: 0, stdout, stderr: "" }) });
+    for (const stdout of [quiet, push, null, check]) {
+      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply(stdout == null ? OLD_ADE_EXEC : { exit_code: 0, stdout, stderr: "" }) });
     }
   }
 
@@ -2637,5 +2646,134 @@ describe("ADE Cloud account data and event wakes", () => {
     const response = await data.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/event-wakes`, { topics: [`hooks-account:${OTHER}`] });
     expect(response.status).toBe(400);
     expect(data.row("select count(*) as n from cloud_event_wakes").n).toBe(0);
+  });
+});
+
+/** R2 in memory: only what the saved-chat and capsule routes call. */
+function memoryBucket(): R2Bucket {
+  const objects = new Map<string, { bytes: Uint8Array; customMetadata?: Record<string, string> }>();
+  const objectOf = (key: string) => {
+    const stored = objects.get(key);
+    return stored ? { key, size: stored.bytes.byteLength, customMetadata: stored.customMetadata, arrayBuffer: async () => stored.bytes.slice().buffer } : null;
+  };
+  return {
+    put: async (key: string, value: ArrayBuffer | Uint8Array | string, options?: { customMetadata?: Record<string, string> }) => {
+      const bytes = typeof value === "string" ? new TextEncoder().encode(value) : new Uint8Array(value instanceof Uint8Array ? value : new Uint8Array(value));
+      objects.set(key, { bytes: bytes.slice(), customMetadata: options?.customMetadata });
+      return objectOf(key);
+    },
+    get: async (key: string) => objectOf(key),
+    head: async (key: string) => objectOf(key),
+    delete: async (keys: string | string[]) => {
+      for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key);
+    },
+    list: async ({ prefix = "" }: { prefix?: string } = {}) => ({
+      objects: [...objects.keys()].filter((key) => key.startsWith(prefix)).sort().map((key) => objectOf(key)!),
+      truncated: false,
+    }),
+  } as unknown as R2Bucket;
+}
+
+describe("ADE Cloud without a computer", () => {
+  const LANE = "5d1e8a3c-2b4f-4e6a-9c7d-1f0b3a5e8c21";
+
+  beforeEach(() => {
+    harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 9).toString("base64");
+    harness.env.CLOUD_CHATS = memoryBucket();
+  });
+
+  const savePart = (instanceId: string, machineKey: string, seq: number, text: string) => harness.send(OWNER, "PUT", `/cloud/chats/${machineKey}/c1/parts/${seq}`, {
+    instanceId, text, row: { lastSeq: seq, laneId: LANE, projectKey: "github.com/acme/widgets", provider: "claude", model: "claude-sonnet" },
+  });
+
+  it("a message to a resting chat is kept once and sent once: a refused send stores nothing, two claims race and one wins, only it finishes the message", async () => {
+    seedAccount(harness, OWNER, { used_milli: 100_000 });
+    seedComputer(harness, { machine_key: "key-a", status: "sleeping", awake_since: null });
+    provide(harness, INSTANCE, "sleeping");
+    expect((await savePart(INSTANCE, "key-a", 1, "{}\n")).status).toBe(200);
+    const messages = "/cloud/chats/key-a/c1/messages";
+    const queued = () => harness.rows("select message_id, state from cloud_chat_messages");
+
+    // Out of hours: refused like a wake, and nothing is kept to arrive later.
+    const refused = await harness.send(OWNER, "POST", messages, { messageId: "m1", text: "Fix the footer." });
+    expect([refused.status, ((await refused.json()) as { error?: { code?: string } }).error?.code]).toEqual([402, "out_of_hours"]);
+    expect(queued()).toEqual([]);
+    expect(providerCalls(harness, /POST .*\/start$/)).toHaveLength(0);
+
+    harness.exec("update cloud_accounts set used_milli = 0 where user_id = ?", OWNER);
+    const sent = await harness.send(OWNER, "POST", messages, { messageId: "m1", text: "Fix the footer." });
+    expect(sent.status).toBe(201);
+    expect(((await sent.json()) as { wake: unknown }).wake).toEqual({ state: "waking" });
+    // The same id again is the same message, with no second wake.
+    expect((await harness.send(OWNER, "POST", messages, { messageId: "m1", text: "Fix the footer." })).status).toBe(200);
+    expect(providerCalls(harness, /POST .*\/start$/)).toHaveLength(1);
+    expect(providerCalls(harness, /POST .*\/exec$/).map((call) => call.body?.command)).toEqual(["ade cloud messages drain --json"]);
+    // The text is sealed at rest; another account sees no such chat or computer.
+    expect(JSON.stringify(harness.rows("select * from cloud_chat_messages"))).not.toContain("footer");
+    expect((await harness.send(OTHER, "GET", messages)).status).toBe(404);
+    expect((await harness.send(OTHER, "GET", `/cloud/instances/${INSTANCE}/messages`)).status).toBe(404);
+
+    const claim = (claimId: string) => harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/messages/m1/claim`, { claimId });
+    const report = (claimId: string, state: string) => harness.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/messages/m1`, { claimId, state });
+    const [CLAIM_A, CLAIM_B] = ["claim-aaaaaaaaaaaaaaaa", "claim-bbbbbbbbbbbbbbbb"];
+    const raced = await Promise.all([claim(CLAIM_A), claim(CLAIM_B)]);
+    expect(raced.map((response) => response.status).sort()).toEqual([200, 409]);
+    const [winner, loser] = raced[0]!.status === 200 ? [CLAIM_A, CLAIM_B] : [CLAIM_B, CLAIM_A];
+    expect([(await report(loser, "delivered")).status, (await report(winner, "delivered")).status, (await report(winner, "failed")).status]).toEqual([409, 200, 409]);
+    // Delivered stays delivered: no later claim or cancel touches it.
+    expect([(await claim(loser)).status, (await harness.send(OWNER, "DELETE", `${messages}/m1`)).status]).toEqual([409, 409]);
+    expect(queued()).toEqual([{ message_id: "m1", state: "delivered" }]);
+  });
+
+  it("a fork restore moves a saved chat to the new computer with its full history: it lists once, old names still read it, nothing is uploaded again", async () => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-old" });
+    expect((await savePart(INSTANCE, "key-old", 1, "first\n")).status).toBe(200);
+    expect((await savePart(INSTANCE, "key-old", 2, "second\n")).status).toBe(200);
+    harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
+    seedComputer(harness, { instance_id: SECOND, machine_key: "key-new" });
+    const move = (caller: string, toMachineKey = "key-new") => harness.send(caller, "POST", "/cloud/chats/key-old/c1/move", { toMachineKey, instanceId: SECOND });
+    const partsOf = async (machineKey: string) => ((await (await harness.send(OWNER, "GET", `/cloud/chats/${machineKey}/c1`)).json()) as { parts: Array<{ text: string }> }).parts.map((part) => part.text);
+
+    expect([(await move(OTHER)).status, (await move(OWNER, "key-else")).status]).toEqual([404, 409]);
+    const moved = await move(OWNER);
+    expect(moved.status).toBe(200);
+    expect(await moved.json()).toEqual({ chat: expect.objectContaining({ machineKey: "key-new", lastSeq: 2, forkedFrom: { machineKey: "key-old", chatId: "c1" } }), moved: true });
+    // Once, under the new key; the same move again answers the moved row.
+    const listed = (await (await harness.send(OWNER, "GET", "/cloud/chats")).json()) as { chats: Array<{ machineKey: string; chatId: string }> };
+    expect(listed.chats.map((chat) => [chat.machineKey, chat.chatId])).toEqual([["key-new", "c1"]]);
+    expect(((await (await move(OWNER)).json()) as { moved: boolean }).moved).toBe(false);
+    // The full history reads under the new key, and under the old one (an older client), with no new upload.
+    expect([await partsOf("key-new"), await partsOf("key-old")]).toEqual([["second\n", "first\n"], ["second\n", "first\n"]]);
+    // The new computer's uploader goes on from the restored seq; the old key can't write over the moved parts.
+    expect((await savePart(SECOND, "key-new", 3, "third\n")).status).toBe(200);
+    expect(await partsOf("key-new")).toEqual(["third\n", "second\n", "first\n"]);
+    seedComputer(harness, { instance_id: "thirdbox12", machine_key: "key-old" });
+    expect((await savePart("thirdbox12", "key-old", 1, "other\n")).status).toBe(409);
+  });
+
+  it("a send to a chat whose computer is gone continues it on one new computer: a second send rides the same launch", async () => {
+    harness.env.CLERK_SECRET_KEY = "sk_test";
+    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-gone", lane_id: LANE, lane_name: "Fix the login page", lane_project_origin: "https://github.com/acme/widgets", lane_branch: "ade/fix-login" });
+    expect((await savePart(INSTANCE, "key-gone", 1, "{}\n")).status).toBe(200);
+    harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
+    const send = (messageId: string) => harness.send(OWNER, "POST", "/cloud/chats/key-gone/c1/messages", { messageId, text: "Go on." });
+
+    const first = await send("m1");
+    expect(first.status).toBe(201);
+    const { wake } = (await first.json()) as { wake: { state: string; launchId: string } };
+    expect(wake).toEqual({ state: "launching", launchId: expect.any(String) });
+    const launch = harness.row("select lane_id, continue_machine_key, continue_chat_id, request_json from cloud_launches where launch_id = ?", wake.launchId);
+    expect([launch.lane_id, launch.continue_machine_key, launch.continue_chat_id]).toEqual([LANE, "key-gone", "c1"]);
+    expect(JSON.parse(String(launch.request_json)).lane).toEqual(expect.objectContaining({ id: LANE, existingBranch: "ade/fix-login" }));
+
+    // The second send finds the launch already continuing this chat: no second computer.
+    const second = await send("m2");
+    expect([second.status, ((await second.json()) as { wake: unknown }).wake]).toEqual([201, { state: "launching", launchId: wake.launchId }]);
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
+    expect(harness.rows("select message_id from cloud_launch_messages where launch_id = ? order by seq", wake.launchId)).toEqual([{ message_id: "m1" }, { message_id: "m2" }]);
   });
 });

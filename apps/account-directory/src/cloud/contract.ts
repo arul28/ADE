@@ -1138,6 +1138,10 @@ export const CLOUD_REFUSAL_CODES = {
   template_unset: 503,
   template_unavailable: 503,
   linear_needs_renewal: 409,
+  /** The queue's caps: too many messages wait in this chat or this account. */
+  too_many_messages: 429,
+  /** A queued message a claim already took (sent, sending, or cancelled). */
+  message_taken: 409,
 } as const;
 export type CloudRefusalCode = keyof typeof CLOUD_REFUSAL_CODES;
 export const isCloudRefusalCode = (code: unknown): code is CloudRefusalCode =>

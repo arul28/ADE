@@ -47,7 +47,13 @@ export async function deleteCloudAccount(
   await env.DB.prepare("delete from cloud_wakes where user_id = ?").bind(userId).run();
   // Lane names, repository origins and branches of lanes whose computer is gone.
   await env.DB.prepare("delete from cloud_lanes_without_computer where user_id = ?").bind(userId).run();
+  // Saved chats, their queued messages, CLI and shell copies, Git summaries and fork capsules, then the key.
   await deleteAllAccountChats(env, userId);
+  // The account lane index: every machine's lane names, branches and PR numbers.
+  await env.DB.batch([
+    env.DB.prepare("delete from account_lane_index where user_id = ?").bind(userId),
+    env.DB.prepare("delete from account_lane_index_state where user_id = ?").bind(userId),
+  ]);
   // Launch facts (first messages, lane names) and their files; project delete jobs.
   await deleteAccountLaunches(env, userId);
   await env.DB.prepare("delete from cloud_project_deletes where user_id = ?").bind(userId).run();

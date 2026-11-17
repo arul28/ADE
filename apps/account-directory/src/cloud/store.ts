@@ -178,6 +178,9 @@ export type ComputerRow = {
   idle_failed_count?: number | null;
   /** Files git ignores that a delete would lose (`CloudIgnoredFiles` as JSON). */
   ignored_files_json?: string | null;
+  /** The ADE version of its last brain start (migration 0039, `POST .../booted`). */
+  ade_version?: string | null;
+  ade_version_at?: number | null;
 };
 
 export type AccountRow = {
@@ -309,12 +312,15 @@ export async function reportCloudAbuse(env: CloudDb, kind: string, userId: strin
 /** A reservation with no computer behind it after this long is given up on. */
 export const PENDING_TIMEOUT_MS = 15 * 60_000;
 /**
- * What the awake cap counts (`AWAKE_COMPUTER_CAP`): awake, or a reservation
- * still being made. Binds one `?`, the reservation cutoff (`now -
- * PENDING_TIMEOUT_MS`). Shared by the wake and create checks (`routes.ts`) and
- * the timed wakes (`cloudWake.ts`), so they all count the same computers.
+ * What the awake cap counts (`AWAKE_COMPUTER_CAP`): awake, on its way there
+ * (`waking`, `starting`), or a reservation still being made. One on its way
+ * counts only for `PENDING_TIMEOUT_MS` after it started (the tick reads the
+ * provider's status meanwhile), so a lost wake never holds a slot. Binds one
+ * `?`, that cutoff (`now - PENDING_TIMEOUT_MS`). Shared by the wake and create
+ * checks (`routes.ts`) and the timed wakes (`cloudWake.ts`), so they all
+ * count the same computers.
  */
-export const AWAKE_CAP_COUNT_SQL = "(status in ('running', 'restarting', 'updating') or (status = 'provisioning' and created_at > ?))";
+export const AWAKE_CAP_COUNT_SQL = "(status in ('running', 'restarting', 'updating') or (status in ('provisioning', 'waking', 'starting') and (case when status = 'provisioning' then created_at else status_changed_at end) > ?))";
 const PENDING_PREFIX = "pending:";
 export const isPendingId = (id: string): boolean => id.startsWith(PENDING_PREFIX);
 export const newPendingId = (): string => `${PENDING_PREFIX}${crypto.randomUUID()}`;

@@ -18,10 +18,14 @@ export type CloudEmailEnv = {
   CLOUD_ALERT_EMAIL?: string;
 };
 
+/**
+ * `kind` names the email in log lines (`idle_warning`, `hours_low`); the
+ * subject never reaches a log line, since it can hold a lane or computer name.
+ */
 export type CloudEmail =
   /** `percentUsed` draws the hours meter. */
-  | { userId: string; subject: string; text: string; percentUsed?: number }
-  | { owner: true; subject: string; text: string };
+  | { userId: string; subject: string; text: string; percentUsed?: number; kind?: string }
+  | { owner: true; subject: string; text: string; kind?: string };
 
 const escapeHtml = (value: string): string => value
   .replace(/&/g, "&amp;")
@@ -84,6 +88,14 @@ function logEmail(event: string, meta: Record<string, unknown>): void {
   console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-account-directory", kind: event, ...meta }));
 }
 
+/**
+ * An email that was not sent because something isn't set up: a warning, so
+ * a missing production secret shows in the Worker's logs, not just a line.
+ */
+function warnEmailSkipped(meta: { target: string; email: string; reason: "no_resend_key" | "no_clerk_key" | "no_recipient" | "no_alert_address" }): void {
+  console.warn(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-account-directory", kind: "cloud.email_skipped", level: "warn", ...meta }));
+}
+
 /** What ADE reads about an account from Clerk's Backend API. The email is never logged. */
 export type ClerkUserFacts = { email: string | null; createdAt: number | null; firstName: string | null };
 
@@ -116,15 +128,20 @@ export type CloudEmailResult = "sent" | "skipped" | "failed";
 
 export async function sendCloudEmail(env: CloudEmailEnv, email: CloudEmail): Promise<CloudEmailResult> {
   const target = "owner" in email ? "owner" : "account";
+  const meta = { target, email: email.kind ?? "cloud_notice" };
   const resendKey = env.RESEND_API_KEY?.trim();
   if (!resendKey) {
-    logEmail("cloud.email_skipped", { target, subject: email.subject });
+    warnEmailSkipped({ ...meta, reason: "no_resend_key" });
+    return "skipped";
+  }
+  if (target === "account" && !env.CLERK_SECRET_KEY?.trim()) {
+    warnEmailSkipped({ ...meta, reason: "no_clerk_key" });
     return "skipped";
   }
   try {
     const to = "owner" in email ? env.CLOUD_ALERT_EMAIL?.trim() || null : await accountEmail(env, email.userId);
     if (!to) {
-      logEmail("cloud.email_no_recipient", { target, subject: email.subject });
+      warnEmailSkipped({ ...meta, reason: target === "owner" ? "no_alert_address" : "no_recipient" });
       return "skipped";
     }
     const response = await fetch(RESEND_URL, {
@@ -133,10 +150,10 @@ export async function sendCloudEmail(env: CloudEmailEnv, email: CloudEmail): Pro
       body: JSON.stringify({ from: FROM_ADDRESS, to: [to], subject: email.subject, text: email.text, html: renderCloudEmail(email) }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    logEmail(response.ok ? "cloud.email_sent" : "cloud.email_refused", { target, subject: email.subject, status: response.status });
+    logEmail(response.ok ? "cloud.email_sent" : "cloud.email_refused", { ...meta, status: response.status });
     return response.ok ? "sent" : "failed";
   } catch {
-    logEmail("cloud.email_failed", { target, subject: email.subject });
+    logEmail("cloud.email_failed", meta);
     return "failed";
   }
 }
