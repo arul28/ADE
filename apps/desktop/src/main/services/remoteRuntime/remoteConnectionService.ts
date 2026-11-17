@@ -532,7 +532,12 @@ export class RemoteConnectionService {
       // A connect that finishes after the machine was removed or disconnected
       // by hand must not write it back.
       if (!this.registry.get(targetId) || this.manuallyDisconnectedTargetIds.has(targetId)) return;
+      // A quiet redial (see connect()) left the status at "error". Ending the
+      // hold above would show that error for the moment until connect() writes
+      // "connected", so the machine reads as connected in this same update.
+      const backFromError = this.statusById.get(targetId)?.state === "error";
       this.mergeStatus(targetId, {
+        ...(backFromError ? { state: "connected" as const, lastError: null } : {}),
         version: result.version,
         // Read with the version, so a brain that stopped reporting it clears it.
         appVersion: result.appVersion ?? null,
