@@ -49,6 +49,8 @@ export type CloudDiskGrowState =
     chats?: CloudDiskGrowChat[];
     /** The chats' grow card, updated in place after the restart. */
     cardId?: string;
+    /** The lane size-change job that wrote this note (`noteOutsideGrow`): only that job's cleanup removes it. */
+    jobId?: string;
   }
   | { v: 1; state: "refused"; reason: string; wayOut: string; at: number; instanceId?: string };
 

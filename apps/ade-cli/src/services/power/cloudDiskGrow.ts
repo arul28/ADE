@@ -757,10 +757,10 @@ export function createCloudDiskGrower(deps: {
      * Android pane's Grow the disk): the same note as this grower's own, so
      * the restart reads as a disk grow and continues the turns it cuts.
      */
-    noteOutsideGrow(toGb: number): boolean {
+    noteOutsideGrow(toGb: number, jobId: string | null): boolean {
       const disk = measure();
       if (!disk) return false;
-      return writeState({ v: 1, state: "growing", origin: "person", toGb: Math.ceil(toGb), at: now(), instanceId: deps.instanceId, fromBytes: disk.space.totalBytes });
+      return writeState({ v: 1, state: "growing", origin: "person", toGb: Math.ceil(toGb), at: now(), instanceId: deps.instanceId, fromBytes: disk.space.totalBytes, ...(jobId ? { jobId } : {}) });
     },
     /**
      * The chats the last boot's grow told before its restart, and what to
