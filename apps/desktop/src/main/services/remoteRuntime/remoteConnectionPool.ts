@@ -2249,11 +2249,19 @@ async function subscribeToRuntimeEvents(
       filter.onChange = async (ptyIds) => {
         const signature = ptyDataIdsSignature(ptyIds);
         if (closed || signature === sent) return;
+        const previous = sent;
         sent = signature;
-        await client.call("runtimeEvents.setPtyDataFilter", {
-          subscriptionId: id,
-          ptyDataIds: ptyIds,
-        }, { timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS });
+        try {
+          await client.call("runtimeEvents.setPtyDataFilter", {
+            subscriptionId: id,
+            ptyDataIds: ptyIds,
+          }, { timeoutMs: REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS });
+        } catch (error) {
+          // The brain kept the previous list: a later push of this one must
+          // go out again, or a terminal it now shows would get no output.
+          if (sent === signature) sent = previous;
+          throw error;
+        }
       };
       // The window may have changed its list while the subscribe was in flight.
       void filter.onChange(filter.current()).catch(() => {});

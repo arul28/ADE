@@ -101,7 +101,15 @@ export function createTerminalLocalLine(onChange: () => void): TerminalLocalLine
       return true;
     },
     paste(pasted) {
-      if (pasted) set(text + pasted.replace(/\r\n?/g, "\n"));
+      if (!pasted) return;
+      // A pasted control character is text here, not a key: a tab or a line
+      // break is kept, ESC is shown, and the rest is dropped, so a paste can
+      // never interrupt the CLI or move its cursor (`input()` refuses them too).
+      const lines = pasted
+        .replace(/\r\n?/g, "\n")
+        .replace(/\x1b/g, "\u241b")
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+      if (lines) set(text + lines);
     },
     takeForHandOver: () => localLineAsKeys(take()),
     restore(failed) {

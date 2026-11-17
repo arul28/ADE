@@ -715,6 +715,7 @@ export class RemoteConnectionService {
       this.manuallyDisconnectedTargetIds.delete(targetId);
       this.explicitlyConnectedTargetIds.delete(targetId);
       this.clearAutomaticReconnectState(targetId);
+      this.endDropRecovery(targetId);
       this.pool.clearConnectFailure(targetId);
       this.latencyProbeTargetIds.delete(targetId);
       this.pairedFallbackSshTrustByTargetId.delete(targetId);

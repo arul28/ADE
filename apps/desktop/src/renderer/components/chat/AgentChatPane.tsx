@@ -478,7 +478,7 @@ import {
   collectDraftVisualAttachmentPaths,
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
-import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
+import { chatNoticeReducer, noticeForChat, shownChatNotice } from "./chatNotice";
 import { savedChatComputerGone } from "../../state/cloudSavedChats";
 import { useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
@@ -5901,14 +5901,12 @@ export function AgentChatPane({
   // machine keeps the name it was given, short or not.
   const chatCloudLane = useAdeCloudLaneForBinding(chatRuntimePin ?? projectBinding);
   // A send's note belongs to its chat: during a switch, before the effect
-  // below clears it, it is not drawn over another chat.
-  const noticeForThisChat = chatNotice?.sessionId != null
-    && (chatNotice.sessionId !== selectedSessionId || chatNotice.sessionId !== renderedSessionId)
-    ? null
-    : chatNotice;
+  // below clears it, it is not drawn over another chat (a new-chat draft has
+  // no chat yet; `noticeForChat` holds that distinction).
+  const noticeForThisChat = noticeForChat(chatNotice, selectedSessionId, renderedSessionId);
   const noticeSessionId = chatNotice?.sessionId ?? null;
   useEffect(() => {
-    setError({ clearIf: (notice) => notice.sessionId != null && notice.sessionId !== selectedSessionId });
+    setError({ clearIf: (notice) => notice.sessionId !== undefined && notice.sessionId !== selectedSessionId });
   }, [selectedSessionId]);
   // A note that put words back in the composer is out of date once the
   // chat's machine connects again, or once the message shows in the chat.

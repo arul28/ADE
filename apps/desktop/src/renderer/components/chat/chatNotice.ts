@@ -9,7 +9,10 @@ import { SAVED_CHAT_COMPUTER_GONE_MESSAGE } from "../../state/cloudSavedChats";
 export type ChatNotice = {
   message: string;
   kind: NoticeKind;
-  /** The chat a send's note is about: it shows on that chat only, and opening another chat clears it. */
+  /**
+   * The chat a send's note is about (`null`: the new-chat draft): it shows
+   * there only, and opening another chat clears it. Left out: any chat.
+   */
   sessionId?: string | null;
   /**
    * The words a send put back in the composer: the note clears when the
@@ -71,6 +74,23 @@ const CHAT_MACHINE_CONNECTION_DROPPED_NOTICE =
   "The connection to this chat's machine dropped for a moment. The chat keeps running there, and ADE reconnects by itself. If something you just did is missing, do it again.";
 
 /**
+ * The notice as the pane for the chat it is about shows it.
+ *
+ * A note with a `sessionId` belongs to that chat only: it is not drawn over
+ * another chat while a switch clears it. `null` is the new-chat draft, where
+ * no chat is open yet, so such a note shows there. A note with no `sessionId`
+ * (an action error, say) is any chat's.
+ */
+export function noticeForChat(
+  notice: ChatNotice | null,
+  selectedSessionId: string | null,
+  renderedSessionId: string | null,
+): ChatNotice | null {
+  if (!notice || notice.sessionId === undefined) return notice;
+  return notice.sessionId === selectedSessionId && notice.sessionId === renderedSessionId ? notice : null;
+}
+
+/**
  * The notice as a pane on another machine's chat shows it: its own call to
  * that machine losing the connection is a status, not a failure, since the
  * chat keeps running there. The stored notice keeps the raw message, so
@@ -92,7 +112,9 @@ export function shownChatNotice(
   // A call to a deleted computer fails as a dropped or unreachable link; the
   // truth is one sentence, not "ADE reconnects by itself".
   if (computerGone && (MACHINE_CONNECTION_DROPPED.test(notice.message) || MACHINE_UNREACHABLE.test(notice.message))) {
-    return { message: SAVED_CHAT_COMPUTER_GONE_MESSAGE, kind: "failure" };
+    // The note keeps its chat and its unsent words: it must not show on
+    // another chat, and it still clears if the message turns up after all.
+    return { ...notice, message: SAVED_CHAT_COMPUTER_GONE_MESSAGE, kind: "failure" };
   }
   return MACHINE_CONNECTION_DROPPED.test(notice.message)
     ? { message: CHAT_MACHINE_CONNECTION_DROPPED_NOTICE, kind: "status" }

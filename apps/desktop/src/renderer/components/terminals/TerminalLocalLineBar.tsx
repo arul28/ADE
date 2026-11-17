@@ -64,8 +64,6 @@ export function TerminalLocalLineBar({
   return (
     <div
       data-ade-terminal-local-line
-      role="status"
-      aria-live="polite"
       className={cn(
         "pointer-events-none absolute inset-x-2 bottom-2 flex flex-col gap-1 rounded-lg border border-dashed bg-card/95 px-2.5 py-1.5 shadow-card backdrop-blur-sm",
         state.error ? "border-warning/70" : "border-accent/60",
@@ -81,7 +79,15 @@ export function TerminalLocalLineBar({
           <span aria-hidden className="ml-px inline-block w-[0.6em] translate-y-[0.12em] bg-accent/80" style={{ height: "1.05em" }} />
         )}
       </div>
-      <div className={cn("text-[11px] leading-4", state.error ? "text-warning" : "text-muted-fg")}>{note}</div>
+      {/* The line itself is read on demand; only the note is announced (a live
+          region around the text would read the whole line on every key). */}
+      <div
+        role="status"
+        aria-live="polite"
+        className={cn("text-[11px] leading-4", state.error ? "text-warning" : "text-muted-fg")}
+      >
+        {note}
+      </div>
     </div>
   );
 }
