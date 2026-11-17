@@ -51,8 +51,9 @@ export type SyncPairingRecord = {
    * adoption, or a PIN re-pair) displaced from `pendingRotation` before any
    * hello proved them. The device may have saved one, so each still
    * authenticates (the pinned DPoP key still applies) and promotes like the
-   * staged secret. Newest first, at most MAX_DISPLACED_ACCOUNT_SECRETS;
-   * cleared once a staged secret is proven. Hosts that predate the field
+   * staged secret. Newest first, at most MAX_DISPLACED_ACCOUNT_SECRETS.
+   * Proving the staged secret clears it; proving a displaced one keeps the
+   * staged rotation and the newer entries. Hosts that predate the field
    * ignore it.
    */
   displacedAccountSecretHashes?: string[];
@@ -89,8 +90,15 @@ export const PAIRING_ROTATION_WINDOW_MS = 10 * 60_000;
  */
 const ACCOUNT_ROTATION_EXPIRES_AT_MS = Number.MAX_SAFE_INTEGER;
 
-/** How many displaced account secrets a record keeps accepting. */
-const MAX_DISPLACED_ACCOUNT_SECRETS = 3;
+/**
+ * How many displaced account secrets a record keeps accepting. The host keeps
+ * only hashes, so it cannot hand an unproven secret out again: each adoption
+ * hello from a device that presents none mints a new one, and a device that
+ * lost every one of those replies still holds the oldest. Each is 24 random
+ * bytes and still needs the pinned DPoP key, so a generous bound costs a few
+ * hash comparisons, never security.
+ */
+const MAX_DISPLACED_ACCOUNT_SECRETS = 16;
 
 type PairingSecretsFile = Record<string, SyncPairingRecord>;
 type RuntimeHostGrantFile = Record<string, { expiresAt: number }>;
@@ -301,6 +309,23 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
   };
 
   /**
+   * What stays staged once a displaced secret is proven: everything issued
+   * after it. A PIN re-pair waiting for its `pairing_commit` keeps its window,
+   * and a newer adoption secret the device may also hold keeps working.
+   */
+  const stagedAfterDisplacedProof = (
+    record: SyncPairingRecord,
+    provenHash: string,
+  ): Pick<SyncPairingRecord, "pendingRotation" | "displacedAccountSecretHashes"> => {
+    const displaced = record.displacedAccountSecretHashes ?? [];
+    const newer = displaced.slice(0, Math.max(0, displaced.indexOf(provenHash)));
+    return {
+      pendingRotation: record.pendingRotation ?? null,
+      ...(newer.length > 0 ? { displacedAccountSecretHashes: newer } : {}),
+    };
+  };
+
+  /**
    * The record a staged rotation becomes once its secret is proven. A
    * secret-only rotation keeps the committed fields as they are now.
    */
@@ -486,15 +511,20 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
             pendingRotation: current.pendingRotation ?? null,
             displacedAccountSecretHashes: current.displacedAccountSecretHashes,
           }
-          : {
-            // Proving a staged secret promotes it and retires the rest.
-            ...replacement,
-            secretHash: provedStaged!.kind === "pending"
-              ? provedStaged!.pending.record.secretHash
-              : provedStaged!.secretHash,
-            lastUsedAt: nowIso(),
-            pendingRotation: null,
-          };
+          : provedStaged!.kind === "pending"
+            ? {
+              // Proving the staged secret promotes it and retires the rest.
+              ...replacement,
+              secretHash: provedStaged!.pending.record.secretHash,
+              lastUsedAt: nowIso(),
+              pendingRotation: null,
+            }
+            : {
+              ...replacement,
+              secretHash: provedStaged!.secretHash,
+              lastUsedAt: nowIso(),
+              ...stagedAfterDisplacedProof(current, provedStaged!.secretHash),
+            };
         writeRecords(records);
         return {
           deviceId: peer.deviceId,
@@ -661,6 +691,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
           records[normalized] = withBackfilledSyncHostRecoveryGrant({
             ...promotedRecord(entry, staged),
             lastUsedAt: nowIso(),
+            ...(staged.kind === "displaced" ? stagedAfterDisplacedProof(entry, staged.secretHash) : {}),
           });
         }
         writeRecords(records);

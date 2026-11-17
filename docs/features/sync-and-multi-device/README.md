@@ -3792,7 +3792,9 @@ again" on every connect. Now, for a record that already exists:
 - The account hello may carry `pairedSecret`, the secret the device already
   holds for this host (desktop and web send it; iOS does not yet and gets the
   staging below). The desktop sends it only to the host identity that issued
-  it. When it matches the committed
+  it, and only inside the sealed adoption channel, after the host signed the
+  challenge with its device id. Web sends it over the relay route that
+  already carries the same secret in every paired hello. When it matches the committed
   or the staged secret, the host keeps that secret, applies the account's
   ownership and grants, and omits `accountPairing`. Nothing is minted, so no
   reply can be lost.
@@ -3806,9 +3808,13 @@ again" on every connect. Now, for a record that already exists:
   DPoP key.
 - A later staging (another adoption, or a PIN re-pair) does not take an
   unproven adoption secret away: it moves to `displacedAccountSecretHashes`
-  (newest first, at most three) and still authenticates and promotes like the
-  staged one. Proving any staged secret clears the list. A phone that saved
-  one adoption's secret and lost the next reply keeps working.
+  (newest first, at most sixteen) and still authenticates and promotes like
+  the staged one. The host keeps only hashes, so it cannot hand an unproven
+  secret out again; the bound covers a device that lost many replies in a
+  row. Proving the staged secret clears the list. Proving a displaced one
+  keeps the staged rotation (a PIN re-pair waiting for `pairing_commit` keeps
+  its window) and the entries issued after it. A phone that saved one
+  adoption's secret and lost the next replies keeps working.
 
 Each account hello that reaches the store logs
 `sync_host.account_pairing_secret` (`sync_ingress.` on the brain) with
