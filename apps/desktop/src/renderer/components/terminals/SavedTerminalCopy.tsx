@@ -8,6 +8,9 @@ import { SAVED_CHATS_MACHINE_PREFIX } from "../../../shared/cloudSavedChats";
 import { savedAgoLabel, useAdeCloudAccountRead } from "../../lib/adeCloudAccountRead";
 import { useCloudMachineWakeFailure, useCloudMachineWakeInFlight, wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
 import { savedTerminalAddress } from "../../state/cloudSavedTerminals";
+import { rootAppStoreApi } from "../../state/appStore";
+import { focusWorkSession } from "../../lib/workSessionRequests";
+import type { MachineAddress } from "../../../shared/machineAddress";
 import { AccountReadFailed } from "../adeCloud/AccountReadFailed";
 import { Button } from "../ui/Button";
 import { normalizeTranscriptToGrid } from "./terminalTranscriptNormalize";
@@ -50,6 +53,41 @@ function useReadableCopy(format: "text" | "xterm" | null, raw: string | null): {
     if (format === "xterm") return { text: screen, cut: false };
     return lastLines(stripAnsi(raw), SHELL_LINES);
   }, [format, raw, screen]);
+}
+
+/** How long after a wake Work still waits for the live terminal to be listed. */
+const LIVE_ROW_WAIT_MS = 120_000;
+
+/**
+ * After Continue: select the live terminal once its computer lists it. The
+ * saved row leaves the list when the computer connects, so this view may be
+ * gone by then; the wait lives outside it, on the store, and ends when the
+ * row is found or after `LIVE_ROW_WAIT_MS` (one cleanup, not a poll).
+ */
+function focusLiveTerminalWhenListed(address: MachineAddress, sessionId: string, laneId: string | null): void {
+  if (address.kind !== "remote") return;
+  const targetId = address.targetId;
+  const tryFocus = (): boolean => {
+    const slice = rootAppStoreApi.getState().crossMachineLanesByMachineId[targetId];
+    if (!slice?.online) return false;
+    const live = slice.sessions.find((session) => session.id === sessionId);
+    if (!live) return false;
+    focusWorkSession(live.id, live.laneId ?? laneId, slice.binding ?? null);
+    return true;
+  };
+  if (tryFocus()) return;
+  let done = false;
+  const stop = () => {
+    if (done) return;
+    done = true;
+    unsubscribe();
+    window.clearTimeout(cap);
+  };
+  const unsubscribe = rootAppStoreApi.subscribe((state, prev) => {
+    if (state.crossMachineLanesByMachineId === prev.crossMachineLanesByMachineId) return;
+    if (tryFocus()) stop();
+  });
+  const cap = window.setTimeout(stop, LIVE_ROW_WAIT_MS);
 }
 
 /** What the person reads about one message waiting for the CLI. */
@@ -222,11 +260,8 @@ function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessio
  */
 export function SavedTerminalCopyView({
   session,
-  onContinued,
 }: {
-  session: Pick<TerminalSessionSummary, "id" | "title" | "toolType" | "lastActivityAt">;
-  /** Runs once the woken computer is connected (the caller opens the live terminal). */
-  onContinued?: () => void;
+  session: Pick<TerminalSessionSummary, "id" | "title" | "toolType" | "lastActivityAt" | "laneId">;
 }): JSX.Element | null {
   const address = savedTerminalAddress(session.id);
   const { state, retry } = useAdeCloudAccountRead(address ? { call: "savedSession" as const, ...address } : null);
@@ -242,7 +277,7 @@ export function SavedTerminalCopyView({
   const continueWork = () => {
     wakeRestingCloudMachine(
       { machineId: `${SAVED_CHATS_MACHINE_PREFIX}${address.machineKey}`, machineName: "ADE Cloud", hostname: copy?.session.instanceId ?? null },
-      () => onContinued?.(),
+      (connected) => focusLiveTerminalWhenListed(connected, address.sessionId, session.laneId ?? null),
     );
   };
 

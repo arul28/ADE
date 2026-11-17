@@ -88,6 +88,12 @@ export type FilesExplorerProps = {
   rootStatus?: "loading" | "ready" | "failed";
   /** Reads the root listing again after a failure. */
   onRetryRoot?: () => void;
+  /**
+   * Why nothing can be made here (a lane read from the account while its
+   * computer is at rest). New file and New folder stay visible but do
+   * nothing, and their tooltip says why.
+   */
+  readOnlyReason?: string | null;
 };
 
 function parentDirOfPath(filePath: string): string {
@@ -198,6 +204,7 @@ export function FilesExplorer({
   flat = false,
   rootStatus = "ready",
   onRetryRoot,
+  readOnlyReason = null,
 }: FilesExplorerProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const fileIconColorFor = useFileIconColor();
@@ -363,25 +370,31 @@ export function FilesExplorer({
             </SmartTooltip>
           ) : null}
         </div>
-        <SmartTooltip content={{ label: "New file", description: "Create a new file in the current directory." }}>
+        <SmartTooltip content={{ label: "New file", description: readOnlyReason ?? "Create a new file in the current directory." }}>
           <button
             type="button"
             aria-label="New file"
-            style={{ ...outlineButton({ height: compact ? 24 : 28, padding: "0 7px", fontSize: 10 }) }}
-            onClick={() => onCreateFile(activeContextDir)}
-            onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
+            aria-disabled={readOnlyReason ? true : undefined}
+            style={{ ...outlineButton({ height: compact ? 24 : 28, padding: "0 7px", fontSize: 10 }), ...(readOnlyReason ? { opacity: 0.45, cursor: "not-allowed" } : null) }}
+            onClick={() => {
+              if (!readOnlyReason) onCreateFile(activeContextDir);
+            }}
+            onMouseEnter={(event) => { if (readOnlyReason) return; event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
             onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
           >
             <FilePlus2 size={compact ? 12 : 13} weight="regular" />
           </button>
         </SmartTooltip>
-        <SmartTooltip content={{ label: "New folder", description: "Create a new folder in the current directory." }}>
+        <SmartTooltip content={{ label: "New folder", description: readOnlyReason ?? "Create a new folder in the current directory." }}>
           <button
             type="button"
             aria-label="New folder"
-            style={{ ...outlineButton({ height: compact ? 24 : 28, padding: "0 7px", fontSize: 10 }) }}
-            onClick={() => onCreateDirectory(activeContextDir)}
-            onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
+            aria-disabled={readOnlyReason ? true : undefined}
+            style={{ ...outlineButton({ height: compact ? 24 : 28, padding: "0 7px", fontSize: 10 }), ...(readOnlyReason ? { opacity: 0.45, cursor: "not-allowed" } : null) }}
+            onClick={() => {
+              if (!readOnlyReason) onCreateDirectory(activeContextDir);
+            }}
+            onMouseEnter={(event) => { if (readOnlyReason) return; event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
             onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
           >
             <FolderPlus size={compact ? 12 : 13} weight="regular" />
@@ -422,7 +435,7 @@ export function FilesExplorer({
           // with the next step when there is one.
           <div className="flex flex-col items-center gap-2 px-3 py-6 text-center font-sans text-[12px]" style={{ color: COLORS.textMuted }}>
             <span>{searchQuery.trim() ? "No matching paths" : "No files yet"}</span>
-            {searchQuery.trim() ? null : (
+            {searchQuery.trim() || readOnlyReason ? null : (
               <button
                 type="button"
                 className="rounded-md px-2 py-1 text-[12px] font-medium text-accent hover:bg-fg/[0.05]"

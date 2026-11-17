@@ -87,7 +87,7 @@ import { ArrowLeft, CaretRight, MagnifyingGlass } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { confirmDialog } from "../../ui/dialog/confirm";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../../app/projectSidebar/ProjectSidebarSlot";
-import { isAdeCloudBinding } from "../../../../shared/adeCloud/binding";
+import { isAccountAnsweredPin, isAdeCloudBinding } from "../../../../shared/adeCloud/binding";
 
 /**
  * Below this pane width the embedded workbench shows ONE surface at a time.
@@ -104,6 +104,8 @@ const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 const MAX_REMEMBERED_OPEN_REQUEST_KEYS = 64;
 const WORKSPACE_LIST_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000] as const;
 const FILES_REFRESH_DEBOUNCE_MS = 200;
+/** Why New file and New folder do nothing on a lane read from the account. */
+const FILES_AT_REST_READ_ONLY = "Read-only: these are the files on GitHub. Wake the lane's computer to change them.";
 // Ceiling for unscoped ("something changed") refreshes: they cost a workspace
 // list + root listing + git status, and arrive as bursts.
 const FULL_REFRESH_MIN_INTERVAL_MS = 5_000;
@@ -265,6 +267,10 @@ function FilesWorkbenchOnCopy({
   // when the machine does, so every callback and effect below can depend on it
   // honestly — see `pinnedFilesApi.ts` for why a ref could not.
   const projectBinding = machinePin ?? boundProjectBinding;
+  // The account answers these files (an ADE Cloud lane whose computer is at
+  // rest): they are what GitHub has, read-only, and a failure to read them is
+  // the account's sentence (connect GitHub, push the branch), not a bug.
+  const accountAnswered = isAccountAnsweredPin(projectBinding);
   const files = useMemo(() => createPinnedFilesApi(projectBinding), [projectBinding]);
   const projectRootPath = machinePin?.rootPath ?? boundProjectRootPath;
   const isRemoteProject = projectBinding?.kind === "remote";
@@ -1757,6 +1763,7 @@ function FilesWorkbenchOnCopy({
           flat={treeInSidebar}
           tree={tree}
           rootStatus={rootStatus}
+          readOnlyReason={accountAnswered ? FILES_AT_REST_READ_ONLY : null}
           onRetryRoot={() => {
             setError(null);
             void refreshRoot();
@@ -1869,6 +1876,7 @@ function FilesWorkbenchOnCopy({
               // A file error can carry a path; keep it out of session replay.
               title: <span data-ph-mask="">{error}</span>,
               ariaLabel: error,
+              ...(accountAnswered ? { report: false as const } : {}),
               actions: [{
                 // A file operation (rename, create, delete) cannot be replayed
                 // safely from here; refreshing the tree is the honest action.
