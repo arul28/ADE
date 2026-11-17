@@ -403,6 +403,19 @@ lightweight tag.
 **History** (`history.*`)
 - `listOperations` — the undo/redo operations log.
 
+**Search** (`search.*`), both viewer-allowed:
+- `query` — `SearchQueryArgs` → `SearchQueryResult`, the same
+  `searchService.query` call as the `search` action domain. The brain removes
+  `callerScope` from the payload. A payload with no string `query` fails
+  ("search.query requires query."). Before bootstrap builds the search
+  service, the call fails with "Search is not available in this runtime."
+  The web palette uses it to search each connected computer.
+- `indexStatus` — `SearchIndexStatus`, or null when the runtime has no
+  search service.
+
+A lane share guest cannot run either one. The brain does not log the query
+text.
+
 **GitHub** (`github.*`)
 - `getStatus`, `getRemoteStatus`, `publishCurrentProject`
 - `getRequestBudget` — viewer-allowed, no network: the host's GitHub budget
