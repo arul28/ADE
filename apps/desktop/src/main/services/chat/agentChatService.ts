@@ -76170,31 +76170,27 @@ export function createAgentChatService(args: {
   const implementationChatHasPlan = async (sessionId: string, itemId: string): Promise<PlanPresence> => {
     if (!sessionService.get(sessionId)) return "absent";
     try {
-      const transcriptPath = await resolveChatTranscriptPath(sessionId);
+      // The readable path, which is the `.gz` itself once storage has compressed
+      // this chat: a destination retried days later is usually compressed, and
+      // the plain file a compression left behind is cleaned up.
+      const transcriptPath = await resolveTranscriptPathForSessionId(sessionId);
       if (!transcriptPath) return "absent";
-      const handle = await fs.promises.open(transcriptPath, "r");
-      try {
-        const buffer = Buffer.allocUnsafe(PLAN_HANDOFF_HEAD_BYTES);
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-        const text = buffer.subarray(0, bytesRead).toString("utf8");
-        for (const line of text.split("\n")) {
-          // The cheap test first: only a line naming this card can be the marker.
-          if (!line.includes(itemId)) continue;
-          try {
-            const parsed = JSON.parse(line) as { event?: { type?: unknown; metadata?: { planHandoff?: { itemId?: unknown } } } };
-            if (parsed?.event?.type === "user_message" && parsed.event.metadata?.planHandoff?.itemId === itemId) {
-              return "present";
-            }
-          } catch {
-            // A cut last line is the only one that can fail to parse.
+      const head = await readHistoryFileRange(transcriptPath, 0, PLAN_HANDOFF_HEAD_BYTES);
+      for (const line of head.toString("utf8").split("\n")) {
+        // The cheap test first: only a line naming this card can be the marker.
+        if (!line.includes(itemId)) continue;
+        try {
+          const parsed = JSON.parse(line) as { event?: { type?: unknown; metadata?: { planHandoff?: { itemId?: unknown } } } };
+          if (parsed?.event?.type === "user_message" && parsed.event.metadata?.planHandoff?.itemId === itemId) {
+            return "present";
           }
+        } catch {
+          // A cut last line is the only one that can fail to parse.
         }
-        // A head that filled the whole buffer may have been cut before the
-        // marker, so say so rather than claiming the plan is absent.
-        return bytesRead < buffer.length ? "absent" : "unknown";
-      } finally {
-        await handle.close();
       }
+      // A head that filled the whole budget may have been cut before the marker,
+      // so say so rather than claiming the plan is absent.
+      return head.length < PLAN_HANDOFF_HEAD_BYTES ? "absent" : "unknown";
     } catch {
       return "unknown";
     }
