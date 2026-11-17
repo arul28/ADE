@@ -359,13 +359,53 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     return Boolean(value && isAdeProviderHomePath(value, options.adeDir));
   }
 
-  function readFile(): RegistryFile {
+  /**
+   * The file's text from the last read, kept while its stat is unchanged. The
+   * store is read on almost every provider call (79 callers), and a `stat` is
+   * cheaper than an open and a read. Every writer replaces the file by rename
+   * (`writeFileAtomic`), which changes its inode and mtime. The text is parsed
+   * again on each call, so each caller still gets its own copy to change.
+   */
+  let cachedText: { ino: number; mtimeMs: number; size: number; raw: string } | null = null;
+
+  function readRegistryText(): string | null {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(registryPath);
+    } catch {
+      cachedText = null;
+      return null;
+    }
+    if (
+      cachedText
+      && cachedText.ino === stat.ino
+      && cachedText.mtimeMs === stat.mtimeMs
+      && cachedText.size === stat.size
+    ) {
+      return cachedText.raw;
+    }
     let raw: string;
     try {
       raw = fs.readFileSync(registryPath, "utf8");
     } catch {
-      return emptyFile();
+      cachedText = null;
+      return null;
     }
+    // Kept only when the file did not change during the read.
+    try {
+      const after = fs.statSync(registryPath);
+      cachedText = after.ino === stat.ino && after.mtimeMs === stat.mtimeMs && after.size === stat.size
+        ? { ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size, raw }
+        : null;
+    } catch {
+      cachedText = null;
+    }
+    return raw;
+  }
+
+  function readFile(): RegistryFile {
+    const raw = readRegistryText();
+    if (raw === null) return emptyFile();
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
