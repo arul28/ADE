@@ -250,6 +250,30 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   copy on 404). Web: `accountCall` `limits` / `saveLimits` with the read
   revision; a stale save loads the newer limits and says "Your limits changed
   on another device. ADE loaded the new ones."
+  - On the web, `getAgentLimits` and `setAgentLimits`
+    (`webclient/adapter/cloud.ts`) go to a connected computer's `cloud.read`
+    and `cloud.write`. With no computer that has them, they go to the account
+    (`GET/PUT /cloud/limits`). A stale `ifRevision` answers 409.
+- `settings/WebAccountCloudCards.tsx`: two cards under
+  `AccountCloudProvidersPanel` in Settings › ADE Cloud, on the web with no
+  own computer that is on (`useAccountProvidersInSettings` in
+  `settingsTabContent.tsx`). Each card reads from the account
+  (`window.ade.accountSettings`) when it opens and on window focus. There is
+  no poll and no secret read.
+  - **Sign-ins on ADE Cloud**: one switch, "Share my sign-ins with ADE
+    Cloud" (`providerLogins.cloud.enabled`; absent is on). Before it writes,
+    the card reads the setting again and keeps every other field (picks,
+    keys switched off, smart balance). Off reads "Off: you sign in on each
+    cloud computer yourself."
+  - **MCP servers**: the account's `mcp.servers`, by name and transport only
+    (`normalizeMcpRegistry`, `MCP_TRANSPORT_LABEL`). Add, change and secrets
+    stay on a computer. Empty: "No MCP servers in your account. Add one in
+    ADE on a computer and every agent gets it, ADE Cloud too."
+  - A failed read shows "ADE couldn't read this from your account. Try
+    again." with Try again and no Report.
+- `settings/cloudDashboard/CloudDashboard.tsx`: on the web, `ownComputer`
+  counts only an own computer that is on. With none on, the account's cards
+  above show in place of the computer's sign-ins.
 - `apps/ade-cli/src/services/proxy/`: the local subscription proxy (`ade
   proxy`, `proxy.*`): hash-verified download, config written 0600, state
   without secrets, start/stop/health supervisor.
@@ -607,6 +631,10 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
     is `hidden`. Secrets, providers, GitHub credentials, dictation, the CLI
     installer, auto-updates, storage, session lifecycle and lane templates are
     `hidden` (their writes would have no descriptor and vanish).
+  - `passwords.web` (scope `account`, `webOnly: true`) puts **Passwords** in
+    the web Settings nav. The page shows only one notice: "Open ADE desktop
+    or the iPhone to see and change Passwords. Agents on every computer, ADE
+    Cloud too, still use them." (`WEB_PASSWORDS_SENTENCE`).
     `sectionWebScope` and `WebScopePill.tsx` print the scope as the section's
     first line on the web.
 - `shared/settingsAgentAccess.ts`: settings an agent may change (lanes, lane
@@ -1020,6 +1048,12 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
     provider, `email · plan`, windows as meters (5-hour, weekly, monthly,
     then others), inline errors, staleness, source and time. The link is
     `status.accountUrl`, else `usageProviderAccountUrl`.
+  - On the web, `usage.liveReadings()` (web only) is false when no computer
+    answers `usage.getQuotaSnapshot`. With no snapshot, the band then says:
+    "Claude, Codex and the other providers report their limits through one
+    of your computers. They show here while one is on." The header's ADE
+    Cloud ring (`useCloudAccount`, `/cloud/account`: hours, disk, computers)
+    shows without a computer.
   - Claude background polls never prompt the Keychain; an explicit refresh may
     fall back from OAuth to a bounded CLI probe. A non-interactive caller that
     cannot read Claude credentials keeps the previous unexpired windows, state
