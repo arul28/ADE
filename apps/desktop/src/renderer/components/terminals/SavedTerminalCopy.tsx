@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
-import { ArrowClockwise, Play, Terminal as TerminalIcon } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowClockwise, PaperPlaneRight, Play, Terminal as TerminalIcon } from "@phosphor-icons/react";
+import type { CloudChatQueuedMessage } from "../../../../../account-directory/src/cloud/contract";
 import type { TerminalSessionSummary } from "../../../shared/types";
+import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
 import { stripAnsi } from "../../../shared/ansiStrip";
 import { SAVED_CHATS_MACHINE_PREFIX } from "../../../shared/cloudSavedChats";
 import { savedAgoLabel, useAdeCloudAccountRead } from "../../lib/adeCloudAccountRead";
@@ -48,6 +50,170 @@ function useReadableCopy(format: "text" | "xterm" | null, raw: string | null): {
     if (format === "xterm") return { text: screen, cut: false };
     return lastLines(stripAnsi(raw), SHELL_LINES);
   }, [format, raw, screen]);
+}
+
+/** What the person reads about one message waiting for the CLI. */
+function queuedLine(message: CloudChatQueuedMessage): string {
+  switch (message.state) {
+    case "queued":
+      return "Waits for the computer";
+    case "sending":
+      return "Sending to the CLI";
+    case "waiting_for_sign_in":
+      return "Waits for a sign-in on ADE Cloud";
+    case "failed":
+      return message.error?.trim() || "It didn't reach the CLI.";
+    default:
+      return "";
+  }
+}
+
+const SHOWN_STATES = new Set<CloudChatQueuedMessage["state"]>(["queued", "sending", "waiting_for_sign_in", "failed"]);
+
+/**
+ * A message to a saved CLI copy goes to the account's queue
+ * (`POST /cloud/chats/:machineKey/:sessionId/messages`, the same as a chat).
+ * The server wakes the computer, or restores the CLI on a new one when its
+ * computer is gone. Reads ride the view opening, a send and window focus;
+ * nothing polls. A shell has no queue (the server answers 404), so it gets no box.
+ */
+function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessionId: string }): JSX.Element | null {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [notice, setNotice] = useState<{ tone: "info" | "error"; text: string } | null>(null);
+  const [unsupported, setUnsupported] = useState(false);
+  const [messages, setMessages] = useState<CloudChatQueuedMessage[]>([]);
+
+  const refresh = useCallback(async () => {
+    const read = window.ade?.adeCloud?.chatMessages;
+    if (!read) return;
+    try {
+      const next = await read({ machineKey, chatId: sessionId });
+      if (next) setMessages(next.filter((message) => SHOWN_STATES.has(message.state)).sort((a, b) => a.seq - b.seq).slice(-5));
+    } catch {
+      // The rows stay as they were; the next focus or send reads again.
+    }
+  }, [machineKey, sessionId]);
+
+  useEffect(() => {
+    setMessages([]);
+    setNotice(null);
+    setUnsupported(false);
+    void refresh();
+    const onFocus = () => void refresh();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refresh]);
+
+  const send = async () => {
+    const text = draft.trim();
+    const sendMessage = window.ade?.cloud?.sendChatMessage;
+    if (!text || sending) return;
+    if (!sendMessage) {
+      setUnsupported(true);
+      return;
+    }
+    setSending(true);
+    setNotice(null);
+    try {
+      const answer = await sendMessage({ machineKey, chatId: sessionId, messageId: newClientSendId(), text });
+      if (answer.state === "unsupported") {
+        setUnsupported(true);
+        return;
+      }
+      if (answer.state === "refused") {
+        setNotice({ tone: "error", text: answer.message });
+        return;
+      }
+      setDraft("");
+      setNotice({
+        tone: "info",
+        text: answer.wake.state === "awake"
+          ? "Sent. The CLI gets it now."
+          : answer.wake.state === "launching"
+            ? "Its computer is gone. A new ADE Cloud computer restores this CLI and sends it."
+            : "Waking your ADE Cloud computer. The CLI gets this when it's up.",
+      });
+      void refresh();
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error && error.message ? error.message : "ADE couldn't send that. Try again." });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const takeBack = async (messageId: string) => {
+    const cancel = window.ade?.adeCloud?.cancelChatMessage;
+    if (!cancel) return;
+    try {
+      const answer = await cancel({ machineKey, chatId: sessionId, messageId });
+      // Taken back: the "waking for it" line no longer says what happens.
+      setNotice(answer.ok ? null : { tone: "error", text: answer.message });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error && error.message ? error.message : "ADE couldn't take that back. Try again." });
+    }
+    void refresh();
+  };
+
+  if (unsupported) {
+    return (
+      <div className="shrink-0 border-t border-border/40 px-4 py-2.5 text-[11.5px] text-muted-fg/75">
+        This ADE Cloud can't take a message for a CLI yet. Continue opens the CLI on its computer.
+      </div>
+    );
+  }
+
+  return (
+    <div className="shrink-0 border-t border-border/40 px-4 py-2.5" data-testid="saved-cli-send">
+      {messages.length > 0 ? (
+        <ul className="mb-2 flex flex-col gap-1">
+          {messages.map((message) => (
+            <li key={message.messageId} className="flex items-center gap-2 text-[11.5px]">
+              <span className="min-w-0 flex-1 truncate text-fg/85" data-ph-mask="">{message.text}</span>
+              <span className={message.state === "failed" ? "shrink-0 text-red-300" : "shrink-0 text-muted-fg/70"} role={message.state === "failed" ? "alert" : undefined}>
+                {queuedLine(message)}
+              </span>
+              {message.state === "queued" ? (
+                <Button size="sm" variant="ghost" onClick={() => void takeBack(message.messageId)}>Take back</Button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {notice ? (
+        <div className={notice.tone === "error" ? "mb-2 text-[11.5px] text-red-300" : "mb-2 text-[11.5px] text-muted-fg/80"} role={notice.tone === "error" ? "alert" : "status"}>
+          {notice.text}
+        </div>
+      ) : null}
+      <form
+        className="flex items-end gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void send();
+        }}
+      >
+        <textarea
+          className="min-h-[34px] flex-1 resize-none rounded-md border border-border/50 bg-transparent px-2.5 py-1.5 text-[12.5px] text-fg outline-none placeholder:text-muted-fg/60 focus-visible:border-accent/60"
+          rows={1}
+          value={draft}
+          placeholder="Message the CLI. Its computer wakes for it."
+          aria-label="Message the CLI"
+          data-ph-mask=""
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              void send();
+            }
+          }}
+        />
+        <Button size="sm" variant="primary" type="submit" disabled={sending || !draft.trim()}>
+          <PaperPlaneRight size={12} weight="fill" />
+          {sending ? "Sending…" : "Send"}
+        </Button>
+      </form>
+    </div>
+  );
 }
 
 /**
@@ -134,6 +300,7 @@ export function SavedTerminalCopyView({
           </pre>
         )}
       </div>
+      {isShell ? null : <SavedCliSendBox machineKey={address.machineKey} sessionId={address.sessionId} />}
     </div>
   );
 }
