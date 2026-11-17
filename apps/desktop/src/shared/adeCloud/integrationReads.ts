@@ -375,7 +375,8 @@ export function createAdeCloudIntegrationReads(accountCall: () => AdeCloudAccoun
 
   const jiraDetail = async (origin: string, key: string): Promise<JiraIssueDetail> => {
     const found = await jiraIssue(origin, key);
-    return mapJiraIssueDetail(found.issue, found.siteUrl, READ_ONLY);
+    // The issue read holds every comment this tab can show: no "more" to offer (older ones open on Jira).
+    return { ...mapJiraIssueDetail(found.issue, found.siteUrl, READ_ONLY), commentsCursor: null };
   };
 
   const jiraComments = async (origin: string, key: string, cursor: string | null) => {
