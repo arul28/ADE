@@ -9,9 +9,9 @@
  *
  * The beat is every 50 ms (20 a second) of the document timeline, counted
  * from its time 0.
- * The thinking indicator's sheen (a CSS loop that `animationPhaseAlignment`
- * starts at time 0) and its glyph (`thinkingGlyph.worker.ts`) step on it, and
- * so do the stepped loops the step clock runs (`steppedLoopClock.ts`). A
+ * The thinking indicator's sheen and glyph (CSS loops that
+ * `animationPhaseAlignment` starts at time 0) step on it, and so do the
+ * stepped loops the step clock runs (`steppedLoopClock.ts`). A
  * signal that the main thread changes joins it by changing just after a beat
  * instant: the compositor shows a step in the first frame at or after its
  * instant, and a change made a moment after that instant lands in the same

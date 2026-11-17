@@ -5290,14 +5290,18 @@ button, [role="button"] {
 
 /* ThinkingIndicator (components/ui/ThinkingIndicator.tsx): a sparkle that
    melts into a circle and back, a twinkle at the turn, a sheen across the
-   label. Every loop is stepped at 30 changes a second and moves only transform
-   or opacity, so the compositor runs it and the main thread paints nothing per
-   step. The indicator is `data-loop-clock="off"`: the stepped loop clock would
-   seek each loop from the main thread instead. A step count applies to each
-   keyframe segment, so each segment gets 30 x its seconds: 36 steps for a
-   1.2 s segment, 24 for 0.8 s.
-   - The shape morph is a strip of its 120 shapes (drawn once, in the
+   label. Every loop is stepped at 20 changes a second, on the work beat
+   (lib/workBeat.ts), and moves only transform or opacity, so the compositor
+   runs it, the main thread paints nothing per step, and all of them change in
+   one frame. The indicator is `data-loop-clock="off"`: the stepped loop clock
+   would seek each loop from the main thread instead. A step count applies to
+   each keyframe segment, so each segment gets 20 x its seconds: 24 steps for
+   a 1.2 s segment, 16 for 0.8 s.
+   - The shape morph is a strip of its 80 shapes (drawn once, in the
      component) behind a one-shape window; one step moves the strip one shape.
+     A worker that drew the glyph into an OffscreenCanvas sent frames of its
+     own, which the display drew apart from the sheen's: about 37 window
+     composites a second for one working chat instead of 21.
    - The sheen is the label's bright copy (the window's `::before`) seen through
      a soft gradient window. The window is 250% of the label wide and slides
      right while the copy slides left by the same distance, so the text holds

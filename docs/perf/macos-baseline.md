@@ -1184,6 +1184,7 @@ CPU is % of one core.
 | Lanes working mark (60 steps/s, compositor): not adopted, unchanged | `loop-cost.mjs lane-spin` | 240/s; 7.6%; 8.8% | same | — |
 | Chat working indicator (sparkle glyph, twinkle, label sheen; 30 steps/s), one running chat: frames / GPU / renderer. Replaces the thinking dots in the chat; measured 2026-10-28 on `bf09cd4b0` + this branch, 120 Hz, load ~3 | `loop-cost.mjs thinking` | 120/s; 22-24%; 15% | 31/s; 17-18%; 14% | 31/s; 23%; 18% |
 | Same, three running chats on screen (split view): the clock shares one frame for all three | `loop-cost.mjs thinking3` | 120/s; 36-40%; 13-17% | 31/s; 21%; 14-15% | 31/s; 26%; 19% |
+| Chat working indicator at 20 steps/s, one working chat: window composites (`Display::DrawAndSwap`) / main frames. Before: the glyph drawn by a worker into an OffscreenCanvas, whose frames the display drew apart from the sheen's. Baseline: the CSS glyph. Measured 2026-11-16 on `495173296` + this branch, 240 Hz, standalone Electron 44 with the demo-mode renderer build, 5 s traces | Electron `contentTracing`, categories `viz,cc` | 34-38/s; 3.6-4.2/s | 21-22/s; 3.6-4.2/s | 31/s; 10/s |
 
 Any running infinite CSS animation makes Chromium service every display
 frame, whatever its `steps()` say: a compositor loop ticks the compositor and
