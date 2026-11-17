@@ -203,6 +203,32 @@ the token. Linear works the same way
   refused one; `integration_failed` (502) means Jira failed or timed out.
 - An older server answers `404`, and the client keeps its old behavior.
 
+### What the app shows with no computer
+
+`shared/adeCloud/integrationReads.ts` answers the Linear and Jira reads for an
+ADE Cloud tab and on the web when no computer answers. Main and the renderer
+map issues the same way (`shared/linearIssueNormalize.ts`,
+`shared/jiraIssueMapping.ts`).
+
+- Linear: the connection status, the quick view, issue search (a custom view
+  filter, or an identifier), projects, the picker data, custom views, one
+  issue and its comments.
+- Jira: the connection status, issue lists, one issue (read-only permissions)
+  and its comments.
+- A refusal is an expected error with the server's sentence, never "Report…".
+  The status read turns `linear_not_connected`, `linear_needs_renewal`,
+  `linear_renewing` and an unsupported Jira site into `connected: false` with
+  that sentence.
+- Writes (an edit, a comment, a state change, a new issue) are not answered.
+  They need a computer, and the caller refuses them with its sentence.
+- A `404` or `null` from an older server gives `handled: false`, so the
+  caller keeps the computer path.
+- The web command names map through `ADE_CLOUD_INTEGRATION_WEB_COMMANDS`.
+- The top-bar Linear button (`LinearQuickViewButton.tsx`) runs no
+  disconnected-retry poll on an ADE Cloud tab. It checks the connection only
+  when the tab opens, the window gets focus, or Settings says the connection
+  changed, so an idle tab sends no requests to the account server.
+
 ## Creating issues
 
 One composer (`IssueCreateDialog.tsx`, mounted once by `IssueCreateHost` in
@@ -415,8 +441,12 @@ Issues tab and the sheet. Turning Linear off is signing out.
 - `apps/account-directory/src/cloud/integrations.ts` — the account server's
   Linear and Jira reads (`jiraSiteOrigin` is the site guard); the types are
   in `cloud/contract.ts` (`CLOUD_EDGE_PATHS`, `CLOUD_INTEGRATION_ERROR_CODES`).
-- `apps/desktop/src/shared/adeCloud/integrationReads.ts` and
-  `shared/jiraIssueMapping.ts` — the client side of those reads.
+- `apps/desktop/src/shared/adeCloud/integrationReads.ts`,
+  `shared/linearIssueNormalize.ts` and `shared/jiraIssueMapping.ts` — the
+  client side of those reads, and the issue mappers main and the renderer
+  share.
+- `apps/desktop/src/renderer/components/app/LinearQuickViewButton.tsx` — the
+  top-bar Linear button; no retry poll on an ADE Cloud tab.
 - `apps/ade-cli/src/cliIssue.ts` — `ade issue`; `apps/ade-cli/src/cliJira.ts` —
   `ade jira`.
 - `apps/desktop/src/main/services/chat/agentChatService.ts` —
