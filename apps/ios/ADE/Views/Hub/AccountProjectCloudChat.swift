@@ -132,7 +132,10 @@ struct AccountProjectCloudComposer: View {
   }
 
   private var modelLabel: String {
-    guard let pickedProvider, let modelId else { return launches.catalog == nil ? "Loading models…" : "Pick a model" }
+    guard let pickedProvider, let modelId else {
+      if launches.catalog == nil { return launches.catalogError == nil ? "Loading models…" : "No models" }
+      return "Pick a model"
+    }
     return pickedProvider.models.first { $0.id == modelId }?.displayName ?? modelId
   }
 

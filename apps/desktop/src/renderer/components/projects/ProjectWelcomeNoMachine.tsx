@@ -33,11 +33,13 @@ import { accountMachinePresence, unconnectedCopyMachineKeys } from "../../state/
 import { refreshCloudMachines, refreshCloudMachinesIfStale } from "../remoteTargets/useCloudMachines";
 import {
   accountCloudLaunchesAvailable,
+  hideAccountCloudLaunch,
   launchesForOrigin,
   useAccountCloudLaunches,
 } from "../../state/accountCloudLaunches";
 import type { CloudLaunchRecord } from "../../../shared/accountCloudLaunches";
 import { useOwnWebComputers } from "../../state/ownComputers";
+import { refreshAccountProjectList } from "../../state/accountProjectListClient";
 import {
   AccountProjectSteps,
   CloudChatComposer,
@@ -106,6 +108,8 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   );
   const [openingCopyKey, setOpeningCopyKey] = useState<string | null>(null);
   const [openError, setOpenError] = useState<{ title: string; technicalDetail: string } | null>(null);
+  // A launch's "Open chat" that waits for its computer's copy to be listed.
+  const [pendingLaunchOpen, setPendingLaunchOpen] = useState<string | null>(null);
   const list = useAccountProjectList();
   const repositoryTab = useMemo(() => repositoryTabOfNoMachineTab(tab, list), [list, tab]);
   const copies = useRepositoryCopies(repositoryTab);
@@ -442,12 +446,45 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     else if (copy.online && copy.address) openCopyAndReport(copy);
     else connectCopy(copy);
   };
-  const openLaunchChat = (record: CloudLaunchRecord) => {
-    const computer = cloudIndex.computers.find((entry) => entry.instanceId === record.instanceId) ?? null;
-    const copy = copyOnComputer(record.instanceId, computer?.machineKey ?? null);
-    if (copy) openCloudCopy(copy);
-    else refreshCloudMachines();
+  const launchCopy = (instanceId: string | null): RepositoryCopy | null => {
+    const computer = cloudIndex.computers.find((entry) => entry.instanceId === instanceId) ?? null;
+    return copyOnComputer(instanceId, computer?.machineKey ?? null);
   };
+  const openLaunchChat = (record: CloudLaunchRecord) => {
+    const copy = launchCopy(record.instanceId);
+    if (copy) {
+      openCloudCopy(copy);
+      return;
+    }
+    // The computer or its copy isn't listed here yet: read both again, and open it once it is.
+    setPendingLaunchOpen(record.instanceId);
+    refreshCloudMachines();
+    void refreshAccountProjectList({ force: true });
+  };
+  const pendingCopy = pendingLaunchOpen ? launchCopy(pendingLaunchOpen) : null;
+  useEffect(() => {
+    if (!pendingCopy) return;
+    setPendingLaunchOpen(null);
+    openCloudCopy(pendingCopy);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the copy appears
+  }, [pendingCopy?.machineKey, pendingCopy?.checkoutId]);
+  // A copy that never appears: read again every few seconds for a minute, then stop.
+  useEffect(() => {
+    if (!pendingLaunchOpen) return;
+    let reads = 0;
+    const timer = window.setInterval(() => {
+      reads += 1;
+      if (reads > 12) {
+        window.clearInterval(timer);
+        setPendingLaunchOpen(null);
+        setOpenError({ title: "Couldn't open the chat yet. Try again in a moment.", technicalDetail: `ADE Cloud computer ${pendingLaunchOpen} has no project copy listed` });
+        return;
+      }
+      refreshCloudMachines();
+      void refreshAccountProjectList({ force: true });
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [pendingLaunchOpen]);
   const cloudLanes = cloudLanesOfOrigin(cloudIndex.computers, launches, origin);
   // A lane whose chat is still starting (making its computer, waiting for a sign-in) is not one yet.
   const readyCloudLaneCount = cloudLanes.filter((lane) => !lane.launch || Boolean(lane.launch.record?.sessionId)).length;
@@ -532,7 +569,13 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
           <CloudChatComposer accountProjectId={tab.id} origin={origin} owner={githubRepo?.owner ?? accountProject?.owner ?? null} access={githubAccess} />
         ) : null}
         {launches.map((entry) => (
-          <CloudSetupCard key={entry.launchId} entry={entry} onOpenChat={openLaunchChat} />
+          <CloudSetupCard
+            key={entry.launchId}
+            entry={entry}
+            onOpenChat={openLaunchChat}
+            onHide={() => hideAccountCloudLaunch(entry.launchId)}
+            openingChat={pendingLaunchOpen != null && pendingLaunchOpen === entry.record?.instanceId}
+          />
         ))}
         {showCopiesCard ? (
       <section className="kit-card w-full" aria-label="Computers">

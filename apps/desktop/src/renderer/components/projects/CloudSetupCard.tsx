@@ -202,11 +202,14 @@ function firstWords(text: string): string {
 export function CloudSetupCard({
   entry,
   onOpenChat,
+  openingChat = false,
   onHide,
 }: {
   entry: AccountCloudLaunchEntry;
   /** Opens the chat on the cloud computer once it exists. */
   onOpenChat?: (record: CloudLaunchRecord) => void;
+  /** "Open chat" waits for the computer's copy to be listed. */
+  openingChat?: boolean;
   /** Takes a card whose chat started off the screen ("Hide"). */
   onHide?: () => void;
 }) {
@@ -326,11 +329,11 @@ export function CloudSetupCard({
         {ready && record ? (
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1 text-[12px]" style={{ color: "var(--kit-text-2)" }}>
-              {record.laneName ? `Lane ${record.laneName} is working.` : "The agent is working."}
+              {record.laneName ? `Lane “${record.laneName}” is working.` : "The agent is working."}
             </span>
             {onOpenChat ? (
-              <button type="button" className="kit-btn kit-btn-primary" data-size="sm" onClick={() => onOpenChat(record)}>
-                Open chat
+              <button type="button" className="kit-btn kit-btn-primary" data-size="sm" disabled={openingChat} onClick={() => onOpenChat(record)}>
+                {openingChat ? "Opening…" : "Open chat"}
               </button>
             ) : null}
           </div>

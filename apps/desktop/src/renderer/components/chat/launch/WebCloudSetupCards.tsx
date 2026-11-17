@@ -34,7 +34,15 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
   if (shown.length === 0) return null;
   return (
     // Above the composer, inside its dock: several cards scroll on their own so none is cut off.
-    <div className={cn("flex max-h-[30vh] flex-col gap-2 overflow-y-auto text-left [&>*]:shrink-0", className)} data-testid="web-cloud-setup-cards">
+    // The bottom fades over the padding, so a list that scrolls never reads as running under the composer.
+    <div
+      className={cn(
+        "flex max-h-[30vh] flex-col gap-2 overflow-y-auto pb-4 text-left [&>*]:shrink-0",
+        "[mask-image:linear-gradient(to_bottom,black_calc(100%-16px),transparent)]",
+        className,
+      )}
+      data-testid="web-cloud-setup-cards"
+    >
       {shown.map((entry) => (
         <CloudSetupCard key={entry.launchId} entry={entry} onOpenChat={openLaunchChat} onHide={() => hideAccountCloudLaunch(entry.launchId)} />
       ))}

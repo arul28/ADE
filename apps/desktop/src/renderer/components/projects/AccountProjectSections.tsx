@@ -22,6 +22,9 @@ import {
 } from "../../state/cloudModelCatalog";
 import { Banner } from "../ui/notice";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
+import { resolveModelDescriptor, type ProviderFamily } from "../../../shared/modelRegistry";
+
 import { SetupSteps, type SetupStep, type SetupStepState } from "./SetupSteps";
 
 /* ---- GitHub access ---- */
@@ -201,6 +204,15 @@ export function CloudChatComposer({
     () => catalog?.providers.flatMap((entry) => entry.models.map((model) => model.id)) ?? [],
     [catalog],
   );
+  // The agent signs in on the cloud computer (the setup card asks), never here: no row says "Not signed in".
+  const catalogAuth = useMemo(() => {
+    const auth: Partial<Record<ProviderFamily, AuthStatus>> = { pi: "ok" };
+    for (const id of catalogModelIds) {
+      const family = resolveModelDescriptor(id)?.family;
+      if (family) auth[family] = "ok";
+    }
+    return auth;
+  }, [catalogModelIds]);
   const desktopOnly = provider ? provider.remoteSignIn === "desktop" : false;
   // The server decides: a public repo clones without GitHub, a private one answers "Give ADE access".
   // The hint shows once the repository reads as private, or can't be read.
@@ -249,6 +261,7 @@ export function CloudChatComposer({
             catalogMode="available-only"
             listsHarnessPresets={false}
             hidePermissionRail
+            providerAuthStatus={catalogAuth}
             compact
             onChange={(modelId) => {
               const has = (entry: { models: ReadonlyArray<{ id: string }> }) => entry.models.some((model) => model.id === modelId);

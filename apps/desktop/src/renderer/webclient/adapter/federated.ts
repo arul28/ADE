@@ -912,6 +912,18 @@ export function createFederatedWebAdapter({
   // through the account, the same path Connect takes. It never moves the
   // machine on screen; `background` (a repository tab opening) also skips a
   // machine the person disconnected and never parks another one for room.
+  /** The account server's ADE Cloud computer with this machine key, or null (none, or no answer). */
+  const serverComputerOf = async (machineKey: string) => {
+    const api = accountClient.cloudApi();
+    if (!api) return null;
+    const computers = await api.listComputers().catch(() => null);
+    return computers?.find((entry) => sameMachineKey(entry.metadata?.ade_machine_key ?? "", machineKey)) ?? null;
+  };
+  /** That computer, when the server says it is asleep or stopped. */
+  const sleepingServerComputer = async (machineKey: string) => {
+    const computer = await serverComputerOf(machineKey);
+    return computer && /^(sleeping|stopped|asleep)$/i.test(computer.status) ? computer : null;
+  };
   const accountMachineFor = (machineKey: string): AdeAccountMachine | null =>
     accountClient.getSnapshot().machines.find((entry) => sameMachineKey(entry.machineKey, machineKey)) ?? null;
   const machineDisplayName = (machine: AdeAccountMachine, fallback?: string | null): string =>
@@ -954,8 +966,13 @@ export function createFederatedWebAdapter({
       // A sleep announcement older than the window reads "offline", but an
       // ADE Cloud computer can sleep for days with no heartbeat: its last word
       // was that it went to sleep, so a person's connect still wakes it.
+      // The provider's own idle sleep says nothing to the account: an ADE
+      // Cloud computer that reads offline is asked about on the account server.
+      const serverComputer = !background && presence === "offline" && machine.sleepState !== "asleep"
+        ? await sleepingServerComputer(key)
+        : null;
       const asleep = !background && (
-        presence === "asleep" || (presence === "offline" && machine.sleepState === "asleep")
+        presence === "asleep" || (presence === "offline" && machine.sleepState === "asleep") || serverComputer != null
       );
       // "Asleep" is also how an ordinary computer with a recent heartbeat
       // reads, and this browser cannot tell the two apart here: a wake that
@@ -972,6 +989,13 @@ export function createFederatedWebAdapter({
             snapshot: manager.getSnapshot(),
             getClient: (targetId) => manager.getClient(targetId),
             machineKey: key,
+            wakeThroughServer: async (machineKey) => {
+              const api = accountClient.cloudApi();
+              const computer = serverComputer ?? await serverComputerOf(machineKey);
+              if (!api || !computer) return false;
+              await api.wake(computer.id);
+              return true;
+            },
           });
           woke = true;
         } catch (error) {

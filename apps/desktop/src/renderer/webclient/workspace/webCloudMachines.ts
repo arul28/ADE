@@ -136,14 +136,22 @@ export async function readWebCloudMachines(args: {
   return null;
 }
 
-/** Wake one cloud machine through a connected machine. Throws the cloud's own refusal. */
+/**
+ * Wake one cloud machine through a connected machine, else through the
+ * account server (`wakeThroughServer`: a person with no computer of their own
+ * connected wakes their ADE Cloud computer from the browser). Throws the
+ * cloud's own refusal.
+ */
 export async function wakeWebCloudMachine(args: {
   snapshot: WebMachineWorkspaceSnapshot;
   getClient: (targetId: string) => AdeSyncClient | null;
   machineKey: string;
+  /** False when the account server has no ADE Cloud computer with this key. */
+  wakeThroughServer?: (machineKey: string) => Promise<boolean>;
 }): Promise<void> {
   const capable = cloudCapableClients(args.snapshot, args.getClient, WRITE_ACTION);
   if (capable.length === 0) {
+    if (args.wakeThroughServer && await args.wakeThroughServer(args.machineKey)) return;
     throw new Error("Connect to one of your machines first: it wakes the cloud machine for you.");
   }
   let lastError: unknown = null;

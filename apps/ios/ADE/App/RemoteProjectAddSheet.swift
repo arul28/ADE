@@ -737,6 +737,9 @@ struct RemoteProjectAddSheet: View {
       return result.folder?.rootPath
     case .added, .copy:
       if result.folder == nil, openTarget(result) == nil {
+        if !syncService.accountHasOwnComputer(account.machines) {
+          return "It is on your ADE account. Send its first chat from the project and ADE Cloud starts a computer for it."
+        }
         return "It is on your ADE account with no copy yet. Put a copy on a computer to start work."
       }
       return result.folder?.rootPath
