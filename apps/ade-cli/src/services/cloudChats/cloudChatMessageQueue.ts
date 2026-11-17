@@ -46,6 +46,8 @@ type Logger = {
 
 /** Chats whose messages go side by side. */
 const CHAT_PARALLEL = 4;
+/** A round that left messages runs again after these waits (then the next wake drains). */
+const RETRY_DELAYS_MS = [30_000, 2 * 60_000, 5 * 60_000] as const;
 const MESSAGE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 export type CloudChatQueueDeps = {
@@ -134,6 +136,8 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
   const holdFor = deps.holdFor ?? (<T>(_reason: string, _ttlMs: number, run: () => Promise<T>) => run());
   let running: Promise<CloudChatQueueDrainResult> | null = null;
   let again = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retries = 0;
 
   const round = async (reason: string): Promise<CloudChatQueueDrainResult> => {
     const api = await deps.api().catch(() => null);
@@ -276,6 +280,26 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
     return { listed: messages.length, done };
   };
 
+  /**
+   * A round that left messages (a claim or a list that failed for a moment)
+   * runs again a few times, so a message never waits for the next wake. The
+   * timer never holds the computer awake or the process open.
+   */
+  const retryLater = (result: CloudChatQueueDrainResult) => {
+    if (result.done) {
+      retries = 0;
+      return;
+    }
+    if (result.error === "not_signed_in" || retryTimer || retries >= RETRY_DELAYS_MS.length) return;
+    const delayMs = RETRY_DELAYS_MS[retries++]!;
+    logger.info("cloud.chat_queue_retry_scheduled", { attempt: retries, delayMs });
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void drain("retry").catch((error: unknown) => logger.warn("cloud.chat_queue_drain_failed", { reason: "retry", error: errorText(error) }));
+    }, delayMs);
+    retryTimer.unref?.();
+  };
+
   const drain = (reason: string): Promise<CloudChatQueueDrainResult> => {
     if (running) {
       again = true;
@@ -292,6 +316,7 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
     })().finally(() => {
       running = null;
     });
+    void running.then(retryLater, () => {});
     return running;
   };
 

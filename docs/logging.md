@@ -937,7 +937,9 @@ The cloud computer's brain (`apps/ade-cli/src/services/cloudChats/`,
   `cloud.prepare_stop_rest_save_failed`, `cloud.subagent_copy_failed`.
 - The queue drain: `cloud.chat_queue_drain`, `cloud.chat_queue_drained`,
   `cloud.chat_queue_read_failed`, `cloud.chat_queue_chat_failed`,
-  `cloud.chat_queue_sign_in_report_failed`, `cloud.on_woke_failed`,
+  `cloud.chat_queue_sign_in_report_failed`, `cloud.chat_queue_retry_scheduled`
+  {attempt, delayMs} (a round that left messages, tried again up to 3 times),
+  `cloud.on_woke_failed`,
   `cloud.use_report_failed`.
 - Restore after a delete: `cloud.chat_restored` (with `kind: "cli"` for a CLI
   session), `cloud.restore_capsule_read_failed`,
@@ -959,9 +961,12 @@ Desktop main process (`apps/desktop/src/main/services/adeCloud/adeCloudReadIpc.t
 `ade_cloud.account_call_refused` (warn) {call, code, status}: an account call
 (CTO, automations, Linear, Jira and other account data) that the server
 refused; a 404 is not logged. In `cloudSignInStore.ts`:
-`cloud.cloud_key_store_read_failed` (warn) {id, reason} and
-`cloud.cloud_key_unmirror_failed` (warn) {id}, a read or a removal in the one
-API key store that failed (never the key). The ignored `.env` list logs
+`cloud.cloud_key_store_read_failed` (warn) {id, reason},
+`cloud.cloud_key_mirror_failed` (warn) {id} and
+`cloud.cloud_key_unmirror_failed` (warn) {id}, a read, a write or a removal in
+the one API key store that failed (never the key). The account server's
+`/cloud/sign-ins` route logs `cloud.cloud_key_mirror_failed` and
+`cloud.cloud_key_unmirror_failed` {id} too, and then answers 503. The ignored `.env` list logs
 `projects.dotenv_list_failed` (warn) {reason, exitCode or error class name}.
 The Linear quick view of a tab with no computer logs
 `ade_cloud.linear_quick_view_part_failed` {part, code} to the console when
