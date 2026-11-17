@@ -255,7 +255,6 @@ import {
   unconfirmedSend,
   unconfirmedSendsFor,
   type UnconfirmedSend,
-  type UnconfirmedSendRestore,
 } from "./chatUnconfirmedSends";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ChatMachineWakeBanner, ChatMachineWakeProvider } from "./useChatMachineWake";
@@ -2253,6 +2252,12 @@ type ComposerDraftStorageSnapshot = {
   appControlContextItems: AppControlContextItem[];
   builtInBrowserContextItems: BuiltInBrowserContextItem[];
   draftLaunchTargetId: string | null;
+  /**
+   * The send whose put-back wrote this draft. Any later edit writes a draft
+   * without it, so it is the one honest marker of "still exactly what that
+   * send restored".
+   */
+  restoredFor?: string;
   updatedAt: string;
 };
 
@@ -3878,6 +3883,7 @@ function normalizeStoredComposerDraft(
   if (!isRecord(value)) return null;
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
   const attachments = normalizeComposerFileAttachments(value.attachments);
+  const restoredFor = nonEmptyString(value.restoredFor);
   const updatedAt = nonEmptyString(value.updatedAt) ?? new Date(0).toISOString();
   const { fastMode, controls } = launchFastModeAndControls(
     readStoredFastMode(value),
@@ -3908,6 +3914,7 @@ function normalizeStoredComposerDraft(
     appControlContextItems: normalizeComposerAppControlContextItems(value.appControlContextItems),
     builtInBrowserContextItems: normalizeComposerBuiltInBrowserContextItems(value.builtInBrowserContextItems),
     draftLaunchTargetId: nonEmptyString(value.draftLaunchTargetId),
+    ...(restoredFor ? { restoredFor } : {}),
     updatedAt,
   };
 }
@@ -5043,6 +5050,17 @@ export function AgentChatPane({
    * delivered send's words are cleared only when something else put them back.
    */
   const lastUserDraftTextRef = useRef("");
+  /**
+   * What a saved draft's put-back restored into this composer, when the draft
+   * it came from still names its send (`restoredFor`): the arrays themselves,
+   * so the delivery cleanup can take back exactly those and nothing added
+   * since.
+   */
+  const restoredComposerRef = useRef<{
+    clientSendId: string;
+    attachments: AgentChatFileRef[];
+    contextAttachments: AgentChatContextAttachment[];
+  } | null>(null);
   // The draft as typed right now, for a send that awaits before it dispatches.
   const liveDraftRef = useMemo(() => ({
     get current() { return draftStore.get(); },
@@ -12659,6 +12677,9 @@ export function AgentChatPane({
       iosContextItems: restore.iosContextItems,
       appControlContextItems: restore.appControlContextItems,
       builtInBrowserContextItems: restore.builtInBrowserContextItems,
+      // Names the send this content belongs to, so its delivery can take it
+      // back; the person's next edit writes a draft without it.
+      ...(clientSendId ? { restoredFor: clientSendId } : {}),
       updatedAt: new Date().toISOString(),
     });
     window.dispatchEvent(new CustomEvent<UnsentTextRestoredDetail>(UNSENT_TEXT_RESTORED_EVENT, { detail: { storageKey, text: restore.text } }));
@@ -12707,6 +12728,13 @@ export function AgentChatPane({
       updateSubmittedDraftTextEdit(saved.submittedDraftTextEdit);
       draftAttachmentOwnerBindingRef.current = saved.attachmentOwnerBinding;
       setAttachmentsWithIds(saved.attachments, saved.attachmentDraftIds);
+      restoredComposerRef.current = saved.restoredFor
+        ? {
+          clientSendId: saved.restoredFor,
+          attachments: saved.attachments,
+          contextAttachments: saved.contextAttachments,
+        }
+        : null;
       setContextAttachments(orKeepEmptyArray(saved.contextAttachments));
       setIosElementContextItems(orKeepEmptyArray(saved.iosContextItems));
       setAppControlContextItems(orKeepEmptyArray(saved.appControlContextItems));
@@ -12737,6 +12765,7 @@ export function AgentChatPane({
     setDraft(savedText);
     updateSubmittedDraftTextEdit(null);
     draftAttachmentOwnerBindingRef.current = null;
+    restoredComposerRef.current = null;
     setAttachmentsWithIds([], []);
     setContextAttachments(keepEmptyArray);
     setIosElementContextItems(keepEmptyArray);
@@ -12774,24 +12803,29 @@ export function AgentChatPane({
     // after a delivered one is a message of its own, and clearing its draft
     // would lose what the person asked to send.
     for (const [, send] of unconfirmedSendsFor(sessionId)) texts.delete(send.draftText ?? "");
-    // The files and context a put-back restored for a delivered send go with
-    // its words; anything the person added since does not match and stays.
-    const restores = delivered.map((send) => send.restore).filter((restore): restore is UnconfirmedSendRestore => restore != null);
-    if (!texts.size && !restores.length) return;
-    const clearComposer = texts.has(draftStore.get());
-    if (clearComposer) setDraft("");
-    // The files and context a put-back restored go with its words, and only
-    // while the composer still holds exactly that put-back: a new message's
-    // own selections are never touched, even when it names the same file.
-    if (clearComposer) {
-      for (const restore of restores) {
-        if (restore.attachments.length && JSON.stringify(attachmentsRef.current) === JSON.stringify(restore.attachments)) {
-          setAttachmentsWithIds([], []);
-        }
-        const contextAttachments = JSON.stringify(restore.contextAttachments);
-        if (restore.contextAttachments.length) {
-          setContextAttachments((current) => (current.length && JSON.stringify(current) === contextAttachments ? keepEmptyArray(current) : current));
-        }
+    if (!texts.size && !delivered.some((send) => send.restore)) return;
+    const composerText = draftStore.get();
+    if (texts.has(composerText)) setDraft("");
+    // A put-back's files and context go back only while the composer still
+    // holds exactly what it restored: the very arrays it set, and its words
+    // unchanged. A selection made since is a new array and stays, even when it
+    // names the same file.
+    for (const send of delivered) {
+      const restore = send.restore;
+      if (!restore) continue;
+      const restored = restoredComposerRef.current;
+      const ownsAttachments = attachmentsRef.current === restore.attachments
+        || (restored?.clientSendId === send.clientSendId && attachmentsRef.current === restored.attachments);
+      const wordsStillTheirs = send.draftText ? composerText === send.draftText : composerText.trim().length === 0;
+      if (!ownsAttachments || !wordsStillTheirs) continue;
+      if (attachmentsRef.current.length) setAttachmentsWithIds([], []);
+      if (restore.contextAttachments.length) {
+        setContextAttachments((current) => (
+          current === restore.contextAttachments
+          || (restored?.clientSendId === send.clientSendId && current === restored.contextAttachments)
+            ? keepEmptyArray(current)
+            : current
+        ));
       }
     }
     flushPendingComposerDraftWrite();
@@ -12799,17 +12833,31 @@ export function AgentChatPane({
       const saved = readComposerDraftSnapshot(storageKey, initialNativeControls);
       if (!saved) continue;
       let next = saved;
-      // A draft the person edited since the put-back is theirs: only the
-      // put-back's own content is taken back.
-      const clearDraft = texts.has(saved.text);
-      if (clearDraft) next = { ...next, text: "", updatedAt: new Date().toISOString() };
-      for (const restore of clearDraft ? restores : []) {
-        if (restore.attachments.length && JSON.stringify(saved.attachments) === JSON.stringify(restore.attachments)) {
-          next = { ...next, attachments: [], attachmentDraftIds: [], updatedAt: new Date().toISOString() };
+      // A draft that still names its send is exactly the put-back's content:
+      // any edit writes a draft without the marker.
+      const restoredSend = saved.restoredFor
+        ? delivered.find((send) => send.clientSendId === saved.restoredFor)
+        : undefined;
+      if (restoredSend) {
+        const wordsStillTheirs = restoredSend.draftText
+          ? saved.text === restoredSend.draftText
+          : saved.text.trim().length === 0;
+        if (wordsStillTheirs) {
+          next = {
+            ...next,
+            text: "",
+            attachments: [],
+            attachmentDraftIds: [],
+            contextAttachments: [],
+            iosContextItems: [],
+            appControlContextItems: [],
+            builtInBrowserContextItems: [],
+            restoredFor: undefined,
+            updatedAt: new Date().toISOString(),
+          };
         }
-        if (restore.contextAttachments.length && JSON.stringify(saved.contextAttachments) === JSON.stringify(restore.contextAttachments)) {
-          next = { ...next, contextAttachments: [], updatedAt: new Date().toISOString() };
-        }
+      } else if (texts.has(saved.text)) {
+        next = { ...next, text: "", updatedAt: new Date().toISOString() };
       }
       if (next !== saved) writeComposerDraftSnapshot(storageKey, next);
     }
