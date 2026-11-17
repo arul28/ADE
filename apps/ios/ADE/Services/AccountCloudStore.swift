@@ -216,7 +216,9 @@ final class AccountCloudStore: ObservableObject {
   /// message moves on its own. A message that waits for a sign-in moves only
   /// after the person signs in, and the sign-in step reads the list again.
   /// The view's task cancels it when the chat closes.
-  /// `onDelivered` runs when a message left the queue (the computer is up).
+  /// `onDelivered` runs when a message left the queue (the computer is up),
+  /// in its own task: the list this read publishes changes the view's task
+  /// id, which cancels this follow, and the connect must still finish.
   func followQueue(machineKey: String, chatId: String, using sync: SyncService, onDelivered: @escaping @MainActor () async -> Void) async {
     let key = Self.chatKey(machineKey: machineKey, chatId: chatId)
     var delay: UInt64 = 3
@@ -232,7 +234,13 @@ final class AccountCloudStore: ObservableObject {
       let openAfter = Set((queued[key] ?? []).filter(\.isOpen).map(\.messageId))
       if openAfter != openBefore {
         delay = 3
-        if !openBefore.subtracting(openAfter).isEmpty { await onDelivered() }
+        if !openBefore.subtracting(openAfter).isEmpty {
+          let generation = accountGeneration
+          Task { @MainActor [weak self] in
+            guard let self, generation == self.accountGeneration else { return }
+            await onDelivered()
+          }
+        }
       } else {
         delay = min(delay + 2, 10)
       }
