@@ -9445,8 +9445,11 @@ function AgentChatComposerImpl({
                       <span className="truncate">{result.path}</span>
                     </button>
                   ))
+                ) : attachmentSearchError ? (
+                  // Why the search failed (a lane at rest needs its computer): a sentence to read, not a placeholder.
+                  <div className="px-3 py-2 text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/75">{attachmentSearchError}</div>
                 ) : (
-                  <div className="px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/25">{attachmentSearchError ?? "No matching files."}</div>
+                  <div className="px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/25">No matching files.</div>
                 )}
               </div>
             </div>
