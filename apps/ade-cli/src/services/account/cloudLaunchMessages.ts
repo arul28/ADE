@@ -10,7 +10,9 @@ import { randomBytes } from "node:crypto";
 import { CloudApiError } from "../../../../desktop/src/shared/cloudApiClient";
 import type { CloudBootLaunchDeps } from "./cloudBootLaunch";
 
-type MessageDeps = Pick<CloudBootLaunchDeps, "launchId" | "logger" | "stateFile" | "api" | "sendChatMessage" | "waitForChatIdle">;
+type MessageDeps = Pick<CloudBootLaunchDeps, "launchId" | "logger" | "stateFile" | "api" | "sendChatMessage" | "waitForChatIdle" | "typeIntoCli">;
+/** The chat the queued messages go to; `cli`: a restored CLI, so each one is typed at its prompt. */
+type MessageTarget = { sessionId: string; kind?: "cli" };
 
 /**
  * Which messages this computer claimed and sent, so a restart never sends one
@@ -179,12 +181,15 @@ export async function deliverInOrder<M extends OrderedMessage>(messages: readonl
  * (`deliverInOrder`). The first message started the chat, so it is not one
  * of them. True only when the queue was read and nothing is left to send.
  */
-export async function deliverQueuedMessages(deps: MessageDeps, projectId: string, sessionId: string): Promise<boolean> {
+export async function deliverQueuedMessages(deps: MessageDeps, projectId: string, target: MessageTarget): Promise<boolean> {
   const { launchId, logger } = deps;
+  const { sessionId } = target;
   const api = deps.api();
+  const cli = target.kind === "cli";
   // Nothing to read or send with (no account session yet): the messages are still owed.
-  if (!api || !deps.sendChatMessage) return false;
+  if (!api || (cli ? !deps.typeIntoCli : !deps.sendChatMessage)) return false;
   const sendChatMessage = deps.sendChatMessage;
+  const typeIntoCli = deps.typeIntoCli;
   const listed = await api.launchMessages(launchId).catch((error: unknown) => {
     logger.warn("cloud_boot_launch.messages_read_failed", { launchId, error: errorText(error) });
     return null;
@@ -202,9 +207,18 @@ export async function deliverQueuedMessages(deps: MessageDeps, projectId: string
     report: async (messageId, claimId, state, error) => {
       await api.reportLaunchMessage(launchId, messageId, { claimId, state, sessionId, ...(error ? { error } : {}) });
     },
-    ...(waitForChatIdle ? { waitIdle: () => waitForChatIdle(projectId, sessionId) } : {}),
+    // A CLI holds a message for a running turn itself (`holdUntilFree`).
+    ...(waitForChatIdle && !cli ? { waitIdle: () => waitForChatIdle(projectId, sessionId) } : {}),
     send: async (message) => {
-      await sendChatMessage(projectId, sessionId, { text: message.text, clientSendId: `launch-message-${launchId}-${message.messageId}` });
+      const clientSendId = `launch-message-${launchId}-${message.messageId}`;
+      if (cli && typeIntoCli) {
+        const outcome = await typeIntoCli(projectId, sessionId, { text: message.text, clientMessageId: clientSendId });
+        if (outcome === "ended") throw new Error("The CLI has ended, so ADE couldn't type this message.");
+        // Another runtime runs the CLI now: not typed, so a later round types it.
+        if (outcome === "deferred") throw Object.assign(new Error("The CLI is busy."), { code: "turn_in_flight" });
+        return;
+      }
+      await sendChatMessage!(projectId, sessionId, { text: message.text, clientSendId });
     },
     logger,
     logMeta: { launchId },
@@ -215,11 +229,11 @@ export async function deliverQueuedMessages(deps: MessageDeps, projectId: string
 export async function deliverQueuedMessagesWithRetry(
   deps: MessageDeps,
   projectId: string,
-  sessionId: string,
+  target: MessageTarget,
   sleep: (ms: number) => Promise<void>,
 ): Promise<boolean> {
   for (let attempt = 1; ; attempt += 1) {
-    if (await deliverQueuedMessages(deps, projectId, sessionId)) return true;
+    if (await deliverQueuedMessages(deps, projectId, target)) return true;
     if (attempt >= DELIVERY_ATTEMPTS) {
       deps.logger.warn("cloud_boot_launch.messages_owed", { launchId: deps.launchId, attempts: attempt });
       return false;

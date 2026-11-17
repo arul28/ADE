@@ -32371,6 +32371,18 @@ async function runServe(
     });
   };
   // A queued message waits until the chat's running turn is over (an event wait, at most 30 minutes).
+  // A tracked agent CLI takes a queued message at its prompt, held for a running turn.
+  const typeIntoCloudCli = async (projectId: string, sessionId: string, message: { text: string; clientMessageId: string }) => {
+    const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+    if (!chat) throw new Error("This ADE runtime has no chats.");
+    const typed = await chat.typeIntoAgentCliWhenFree({
+      sessionId,
+      text: message.text,
+      holdUntilFree: true,
+      clientMessageId: message.clientMessageId.slice(0, 128),
+    });
+    return typed.outcome;
+  };
   const waitCloudChatIdle = async (projectId: string, sessionId: string) => {
     const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
     if (!chat) return false;
@@ -32425,6 +32437,8 @@ async function runServe(
       // Claude takes a send during a turn and then fails that turn ("Turn already
       // active"), so a queued message waits for the running turn's end.
       waitForChatIdle: waitCloudChatIdle,
+      // A continued CLI's queued messages are typed at its prompt; a CLI row takes no chat send.
+      typeIntoCli: typeIntoCloudCli,
       // Fork-continue: the chat's old computer is gone; restore it here with the same id.
       continueChat: async (projectId, args) => {
         const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
@@ -32552,17 +32566,7 @@ async function runServe(
         if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType)) return "chat";
         return runtime.ptyService.hasLivePty(sessionId) ? "cli" : "cli_ended";
       },
-      typeIntoCli: async (projectId, sessionId, message) => {
-        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
-        if (!chat) throw new Error("This ADE runtime has no chats.");
-        const typed = await chat.typeIntoAgentCliWhenFree({
-          sessionId,
-          text: message.text,
-          holdUntilFree: true,
-          clientMessageId: message.clientMessageId.slice(0, 128),
-        });
-        return typed.outcome;
-      },
+      typeIntoCli: typeIntoCloudCli,
       signIn: {
         logger: headlessProjectLogger,
         providerReady: cloudProviderReady,

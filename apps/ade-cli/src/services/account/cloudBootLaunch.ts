@@ -131,6 +131,11 @@ export type CloudBootLaunchDeps = {
     sessionId: string,
     message: { text: string; clientSendId: string; attachments?: Array<{ path: string; type: "image" | "file" }> },
   ) => Promise<void>;
+  /**
+   * Types a queued message at a restored CLI's prompt (`typeIntoAgentCliWhenFree`
+   * with `holdUntilFree`): a CLI row takes no chat send.
+   */
+  typeIntoCli?: (projectId: string, sessionId: string, message: { text: string; clientMessageId: string }) => Promise<"delivered" | "held" | "deferred" | "ended">;
   /** Fork-continue: the person's picked settings, applied to the restored chat before its message (the queue's own apply). */
   applyChatSettings?: (projectId: string, sessionId: string, settings: CloudChatMessageSettings & { modelId?: string | null }) => Promise<void>;
   /**
@@ -172,9 +177,11 @@ type BootState = {
    */
   reported?: string | null;
   /** The chat whose queued messages aren't all sent yet: a later boot sends them. */
-  messagesOwed?: { sessionId: string } | null;
+  messagesOwed?: { sessionId: string; kind?: "cli" } | null;
   /** Fork-continue: the restored chat, named in the launch's report once the lane is done. */
   continuedSessionId?: string | null;
+  /** `cli`: the restored row is a CLI, so its queued messages are typed at its prompt. */
+  continuedKind?: "cli" | null;
   /**
    * Fork-continue still to do: `follow` restores the chat once the lane's
    * launch completes, then sends the person's message. Kept until the restore
@@ -382,7 +389,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
   const state = readState(deps.stateFile, logger);
   const known = state?.launchId === launchId ? state : null;
   // Messages a chat was still owed when the last boot stopped go first.
-  if (known?.messagesOwed && known.projectId) await deliverOwedMessages(deps, known.projectId, known.messagesOwed.sessionId, sleep);
+  if (known?.messagesOwed && known.projectId) await deliverOwedMessages(deps, known.projectId, known.messagesOwed, sleep);
   if (known?.phase === "ended") {
     // A setup failure whose report never landed: the caller (and an automation's run) still waits for it.
     if (known.unsent) {
@@ -715,8 +722,8 @@ async function reportFinal(report: ReportStages, update: CloudLaunchStagesUpdate
  * Sends a chat's queued messages, tried again with a backoff; once all are
  * sent, the state file stops naming them. True when nothing is left.
  */
-async function deliverOwedMessages(deps: CloudBootLaunchDeps, projectId: string, sessionId: string, sleep: (ms: number) => Promise<void>): Promise<boolean> {
-  const done = await deliverQueuedMessagesWithRetry(deps, projectId, sessionId, sleep).catch((error: unknown) => {
+async function deliverOwedMessages(deps: CloudBootLaunchDeps, projectId: string, owed: { sessionId: string; kind?: "cli" }, sleep: (ms: number) => Promise<void>): Promise<boolean> {
+  const done = await deliverQueuedMessagesWithRetry(deps, projectId, owed, sleep).catch((error: unknown) => {
     deps.logger.warn("cloud_boot_launch.messages_failed", { launchId: deps.launchId, error: errorText(error) });
     return false;
   });
@@ -758,6 +765,7 @@ async function follow(
   // Fork-continue: the chat is the restored one, not one the launch made.
   const ours = followed?.launchId === launchId ? followed : null;
   let continued = ours?.continuedSessionId ?? null;
+  let continuedKind = ours?.continuedKind ?? null;
   let pendingContinue = continued ? null : ours?.continueChat ?? null;
   const chatOf = (snapshot: ChatLaunchSnapshot): string | null =>
     snapshot.sessionCreated && snapshot.sessionId ? snapshot.sessionId : snapshot.phase === "completed" ? continued : null;
@@ -765,6 +773,7 @@ async function follow(
     ...state,
     ...(owed ? { messagesOwed: owed } : {}),
     ...(continued ? { continuedSessionId: continued } : {}),
+    ...(continued && continuedKind ? { continuedKind } : {}),
     ...(pendingContinue ? { continueChat: pendingContinue } : {}),
   });
   /**
@@ -800,6 +809,7 @@ async function follow(
         });
       }
       continued = restored.sessionId;
+      continuedKind = pending.kind === "cli" ? "cli" : null;
       pendingContinue = null;
       save({ launchId, phase: "handed_off", projectId });
       logger.info("cloud_boot_launch.chat_continued", { launchId });
@@ -818,10 +828,11 @@ async function follow(
     // can't go first (or meet the opening turn still starting).
     const sessionId = chatOf(snapshot);
     if (messagesSent || delivery || !sessionId || snapshot.phase !== "completed") return;
-    owed = { sessionId };
+    // A restored CLI keeps its kind: its messages are typed, never sent as a chat's.
+    owed = sessionId === continued && continuedKind === "cli" ? { sessionId, kind: "cli" } : { sessionId };
     const current = readState(deps.stateFile, logger);
     if (current?.launchId === launchId) save(current);
-    delivery = deliverOwedMessages(deps, projectId, sessionId, sleep).then((done) => {
+    delivery = deliverOwedMessages(deps, projectId, owed, sleep).then((done) => {
       delivery = null;
       if (done) {
         owed = null;
@@ -966,6 +977,7 @@ export type CloudBootLaunchHost = {
   sendChatMessage?: CloudBootLaunchDeps["sendChatMessage"];
   applyChatSettings?: CloudBootLaunchDeps["applyChatSettings"];
   waitForChatIdle?: CloudBootLaunchDeps["waitForChatIdle"];
+  typeIntoCli?: CloudBootLaunchDeps["typeIntoCli"];
   /** Fork-continue: restores the saved chat here (`cloudChatRestore.ts`). */
   continueChat?: CloudBootLaunchDeps["continueChat"];
 };
@@ -1055,6 +1067,7 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
       sendChatMessage: host.sendChatMessage,
       applyChatSettings: host.applyChatSettings,
       waitForChatIdle: host.waitForChatIdle,
+      typeIntoCli: host.typeIntoCli,
       continueChat: host.continueChat,
       launches: async (projectId) => {
         const service = await host.chatLaunchService(projectId);
