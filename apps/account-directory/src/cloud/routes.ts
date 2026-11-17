@@ -59,7 +59,7 @@ import {
   type CloudPlanId,
 } from "./contract";
 import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
-import { deleteBackupsForLane, deleteBackupsForMachines, markRestedWithBackups, routeLaneBackups } from "./laneBackups";
+import { deleteBackupsForLane, deleteBackupsWithComputer, markRestedWithBackups, routeLaneBackups } from "./laneBackups";
 import { freeCapRefuses } from "./costReport";
 import { ACCOUNT_BLOCKED_MESSAGE, accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
 import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
@@ -1106,18 +1106,17 @@ async function handleDelete(request: Request, env: CloudEnv, computer: ComputerR
     // A plain delete keeps no lane, even after an earlier freeing that didn't finish.
     await unmarkKeepLaneStatement(env, computer.instance_id).run();
   }
+  const reason = shortText(body.reason, 200) ?? (keepLane ? "freed" : "user");
   try {
-    await deleteComputer(env, provider, computer, { who, reason: shortText(body.reason, 200) ?? (keepLane ? "freed" : "user") }, now);
+    await deleteComputer(env, provider, computer, { who, reason }, now);
   } catch (error) {
     // Nothing was deleted: the mark goes, so a later close can't keep a lane nobody freed.
     if (keepLane) await unmarkKeepLaneStatement(env, computer.instance_id).run();
     throw error;
   }
-  // A delete that keeps no lane takes the lane's backups with it: the person deleted the lane.
-  if (!keepLane) {
-    await deleteBackupsForMachines(env, computer.user_id, [computer.machine_key]);
-    if (computer.lane_id) await deleteBackupsForLane(env, computer.user_id, computer.lane_id);
-  }
+  // Only the person's delete takes the lane's backups. A failed create, a cancelled
+  // launch, a move or a cleanup also keeps no lane here, but the backup may be the lane's only copy.
+  if (!keepLane) await deleteBackupsWithComputer(env, computer, reason === "user");
   const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
   // An agent's delete names its chat; a person's desktop leaves `who` unset.
   captureCloudAction(env, waitUntil, computer.user_id, { action: "delete", plan: await planIdFor(env, computer.user_id), origin: who ? "agent" : "person", tier: tierOf(size) }, computer.instance_id, now);

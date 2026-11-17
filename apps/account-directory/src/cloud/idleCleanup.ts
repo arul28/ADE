@@ -13,7 +13,7 @@ import { sendCloudEmail } from "./email";
 import { isCloudBlocked, notBlockedSql } from "./blocks";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import { cloudSizeFor, isRestingStatus, tierOf } from "./plans";
-import { BACKUP_STATE_CODES, saveBeforeDelete } from "./planCleanup";
+import { BACKUP_NEVER_SAVED_CODE, BACKUP_STATE_CODES, saveBeforeDelete } from "./planCleanup";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import {
   deleteComputer,
@@ -739,7 +739,8 @@ async function hold(env: CloudEnv, waitUntil: CloudWaitUntil, fresh: Fresh, reas
   reportCloudFailure(BACKUP_STATE_CODES.has(code) ? "cloud.idle_cleanup_not_saved" : "cloud.idle_cleanup_save_failed", { instanceId: computer.instance_id, code, first, count });
   await logStep(env, computer, "push_refused", code, now);
   captureCloudIdleCleanup(env, waitUntil, account.user_id, { step: "push_refused", plan: planIdOf(account), reason: code }, computer.instance_id, now);
-  if (first) await sendStepEmail(env, waitUntil, account, computer, "held", idleHeldEmail(computer, reason, retryAt, now), now);
+  // A computer that never saved is not a failure to tell the person about: it waits for its next rest.
+  if (first && code !== BACKUP_NEVER_SAVED_CODE) await sendStepEmail(env, waitUntil, account, computer, "held", idleHeldEmail(computer, reason, retryAt, now), now);
 }
 
 /** The owner's daily report line: what the idle cleanup did on `day`, and how many computers it keeps now because their save failed. */

@@ -10,7 +10,7 @@ import {
   type CloudPlanCleanupPick,
   type CloudPlanId,
 } from "./contract";
-import { CLOUD_COMPUTER_COMMANDS, type CloudSaveForRestReport } from "./contract";
+import { CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_COMPUTER_COMMANDS, type CloudSaveForRestReport } from "./contract";
 import { backupNotSavedReason } from "./laneBackups";
 import { sendCloudEmail } from "./email";
 import { isCloudBlocked, notBlockedSql } from "./blocks";
@@ -680,7 +680,9 @@ async function stillPicked(env: CloudEnv, userId: string, instanceId: string, ch
 }
 
 /** Codes for a lane whose work isn't saved: the person's own state, not ADE's to fix. */
-export const BACKUP_STATE_CODES = new Set(["backup_not_current"]);
+/** A resting computer that never reported a save: kept, with no email (nothing failed). */
+export const BACKUP_NEVER_SAVED_CODE = "backup_never_saved";
+export const BACKUP_STATE_CODES = new Set(["backup_not_current", BACKUP_NEVER_SAVED_CODE]);
 
 /** One picked computer, freed, kept or skipped, and its outcome on the pick's notice. */
 async function freePicked(env: CloudEnv, provider: CloudProvider, userId: string, choice: PlanCleanupChoice, computer: CleanupComputerRow, now: number): Promise<void> {
@@ -797,8 +799,10 @@ export async function saveBeforeDelete(env: CloudEnv, provider: CloudProvider, c
   if (!isMeteredStatus(instance.status)) {
     const row = await backupRestRow(env, computer.instance_id);
     if (row?.backup_rest_at != null) return { ok: true, metadata: instance.metadata, resting: true };
-    logCloud("cloud.save_before_delete_not_current", { instanceId: computer.instance_id, reason });
-    return { ok: false, reason: backupNotSavedReason(row ?? {}), code: "backup_not_current" };
+    logCloud("cloud.save_before_delete_not_current", { instanceId: computer.instance_id, reason, reported: row?.backup_report_id != null });
+    // It never reported a save (it rested before its ADE saved lane work): nothing failed, it is kept until it next rests.
+    if (row?.backup_report_id == null) return { ok: false, reason: CLOUD_BACKUP_NEVER_SAVED_SENTENCE, code: BACKUP_NEVER_SAVED_CODE };
+    return { ok: false, reason: backupNotSavedReason(row), code: "backup_not_current" };
   }
   // Agents stopped and chats saved first: anything still writing could land after the backup.
   const prepared = await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS);

@@ -579,8 +579,36 @@ export async function routeLaneBackups(request: Request, url: URL, path: string,
   return notFound();
 }
 
-/** Every backup made on these machine keys goes (the person deleted the lane with its computer). */
-export async function deleteBackupsForMachines(env: CloudEnv, userId: string, machineKeys: ReadonlyArray<string | null | undefined>): Promise<number> {
+/**
+ * After a delete that keeps no lane: which backups go with the computer.
+ * A backup can be a lane's only copy of its work, so this deletes less when in doubt:
+ * - The computer's own backups go only when no other live computer holds its
+ *   machine key (a copy or a move forks the disk, and the fork keeps the key).
+ * - The lane's backups on every machine key go only when the person deleted the
+ *   lane (`personDeletedLane`) and no other live computer holds the lane. A
+ *   failed create, a cancelled launch, a move or a cleanup keeps them: the lane's
+ *   earlier computer may be gone, and its backup is then the only copy.
+ */
+export async function deleteBackupsWithComputer(
+  env: CloudEnv,
+  computer: Pick<ComputerRow, "user_id" | "instance_id" | "machine_key" | "lane_id">,
+  personDeletedLane: boolean,
+): Promise<number> {
+  const liveOther = async (column: "machine_key" | "lane_id", value: string) => Boolean(await env.DB.prepare(
+    `select 1 from cloud_computers where user_id = ? and ${column} = ? and instance_id <> ? and deleted_at is null limit 1`,
+  ).bind(computer.user_id, value, computer.instance_id).first());
+  let removed = 0;
+  if (computer.machine_key && !(await liveOther("machine_key", computer.machine_key))) {
+    removed += await deleteBackupsForMachines(env, computer.user_id, [computer.machine_key]);
+  }
+  if (personDeletedLane && computer.lane_id && !(await liveOther("lane_id", computer.lane_id))) {
+    removed += await deleteBackupsForLane(env, computer.user_id, computer.lane_id);
+  }
+  return removed;
+}
+
+/** Every backup made on these machine keys goes. */
+async function deleteBackupsForMachines(env: CloudEnv, userId: string, machineKeys: ReadonlyArray<string | null | undefined>): Promise<number> {
   let removed = 0;
   for (const machineKey of new Set(machineKeys.filter((key): key is string => Boolean(key)))) {
     for (;;) {

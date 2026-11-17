@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { ClockCounterClockwise, DownloadSimple, GitBranch, Trash } from "@phosphor-icons/react";
 import type { CloudLaneBackup } from "../../../../../account-directory/src/cloud/contract";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
@@ -24,9 +24,55 @@ import "./cloudLane.css";
  * `CloudLaneSavedWork` shows one lane's (a lane without a computer, a
  * computer that can't wake). `CloudSavedLaneWorkCard` (Settings › ADE Cloud)
  * shows the saved work no lane row on that page shows, such as a deleted
- * project's, with Delete in its ⋯ menu. One read when either shows, never a
- * poll. Nothing shows when there is no saved work.
+ * project's, with Delete in its ⋯ menu. Every line and the card share one
+ * read of the account's list (`useLaneBackups`), never a poll. Nothing shows
+ * when there is no saved work.
  */
+
+/** The account's saved lane work, read once for every line on screen. */
+type BackupsSnapshot = { list: readonly CloudLaneBackup[]; at: number } | null;
+/** A read this recent serves a line that mounts now; a newer mount after it reads again. */
+const BACKUPS_FRESH_MS = 30_000;
+let backupsSnapshot: BackupsSnapshot = null;
+let backupsReading: Promise<void> | null = null;
+const backupsListeners = new Set<() => void>();
+
+function setBackups(next: BackupsSnapshot): void {
+  backupsSnapshot = next;
+  for (const listener of backupsListeners) listener();
+}
+
+function readBackupsIfStale(): void {
+  const read = window.ade?.cloud?.laneBackups;
+  if (!read || backupsReading || (backupsSnapshot && Date.now() - backupsSnapshot.at < BACKUPS_FRESH_MS)) return;
+  backupsReading = read(null).then(
+    (list) => setBackups({ list, at: Date.now() }),
+    // Not readable now: show nothing; the next mount tries again.
+    () => setBackups(backupsSnapshot ? { ...backupsSnapshot, at: 0 } : null),
+  ).finally(() => {
+    backupsReading = null;
+  });
+}
+
+function subscribeBackups(listener: () => void): () => void {
+  backupsListeners.add(listener);
+  return () => {
+    backupsListeners.delete(listener);
+  };
+}
+const backupsNow = () => backupsSnapshot;
+
+/** The account's saved lane work (the newest per lane), shared by every caller; reads when it is older than 30 s. */
+function useLaneBackups(): readonly CloudLaneBackup[] {
+  const snapshot = useSyncExternalStore(subscribeBackups, backupsNow, backupsNow);
+  useEffect(readBackupsIfStale, []);
+  return snapshot?.list ?? [];
+}
+
+function dropBackup(backup: CloudLaneBackup): void {
+  if (!backupsSnapshot) return;
+  setBackups({ ...backupsSnapshot, list: backupsSnapshot.list.filter((entry) => !(entry.machineKey === backup.machineKey && entry.laneId === backup.laneId)) });
+}
 
 export function savedWorkSentence(backup: CloudLaneBackup): string {
   const parts: string[] = [];
@@ -74,23 +120,20 @@ function useSavedWorkActions(backup: CloudLaneBackup, name: string) {
     showToast({ tone: "success", title: `Opened ${name}'s work in a new lane`, message: `It is on the branch ${branch}, on this computer only. Its uncommitted changes are its last commit.` });
   }, `Couldn't open ${name}'s work here`);
 
-  /** True when it was deleted. */
-  const forget = async (): Promise<boolean> => {
-    if (!cloud?.forgetLaneBackup) return false;
+  const forget = async (): Promise<void> => {
+    if (!cloud?.forgetLaneBackup) return;
     const ok = await confirmDialog({
       title: `Delete ${name}'s saved work?`,
       message: "ADE Cloud deletes its only copy of this lane's work that isn't on GitHub. Download the patch first if you might need it.",
       confirmLabel: "Delete saved work",
       destructive: true,
     });
-    if (!ok) return false;
-    let deleted = false;
+    if (!ok) return;
     await run("delete", async () => {
       await cloud.forgetLaneBackup!(backup.machineKey, backup.laneId);
-      deleted = true;
+      dropBackup(backup);
       showToast({ tone: "success", title: `Deleted ${name}'s saved work` });
     }, `Couldn't delete ${name}'s saved work`);
-    return deleted;
   };
 
   return { busy, canOpenHere, canDownload, canForget: Boolean(cloud?.forgetLaneBackup), download, openHere, forget };
@@ -126,26 +169,7 @@ function newestPerLane(list: readonly CloudLaneBackup[]): CloudLaneBackup[] {
 }
 
 export function CloudLaneSavedWork({ laneId, laneName, className }: { laneId: string; laneName?: string | null; className?: string }) {
-  const [backup, setBackup] = useState<CloudLaneBackup | null>(null);
-  const cloud = window.ade?.cloud;
-
-  useEffect(() => {
-    let live = true;
-    const read = cloud?.laneBackups;
-    if (!read) return;
-    void read(laneId).then(
-      (list) => {
-        if (live) setBackup(newestPerLane(list.filter((entry) => entry.laneId === laneId))[0] ?? null);
-      },
-      () => {
-        if (live) setBackup(null);
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [cloud, laneId]);
-
+  const backup = newestPerLane(useLaneBackups().filter((entry) => entry.laneId === laneId))[0] ?? null;
   if (!backup) return null;
   return <LaneSavedWorkLine backup={backup} name={laneName ?? backup.laneName ?? "this lane"} className={className} />;
 }
@@ -168,27 +192,7 @@ function LaneSavedWorkLine({ backup, name, className }: { backup: CloudLaneBacku
  * deleted. Hidden when there is none.
  */
 export function CloudSavedLaneWorkCard({ shownLaneIds }: { shownLaneIds: ReadonlySet<string> }) {
-  const [backups, setBackups] = useState<CloudLaneBackup[]>([]);
-  const cloud = window.ade?.cloud;
-
-  useEffect(() => {
-    let live = true;
-    const read = cloud?.laneBackups;
-    if (!read) return;
-    void read(null).then(
-      (list) => {
-        if (live) setBackups(newestPerLane(list));
-      },
-      () => {
-        if (live) setBackups([]);
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [cloud]);
-
-  const rows = backups.filter((backup) => !shownLaneIds.has(backup.laneId));
+  const rows = newestPerLane(useLaneBackups()).filter((backup) => !shownLaneIds.has(backup.laneId));
   if (rows.length === 0) return null;
   return (
     <section className="kit-card adecd-card" aria-label="Saved lane work" data-cloud-saved-lane-work>
@@ -200,14 +204,14 @@ export function CloudSavedLaneWorkCard({ shownLaneIds }: { shownLaneIds: Readonl
       </header>
       <div className="kit-card-body" data-flush="true">
         {rows.map((backup) => (
-          <SavedWorkRow key={`${backup.machineKey}/${backup.laneId}`} backup={backup} onGone={() => setBackups((list) => list.filter((entry) => entry !== backup))} />
+          <SavedWorkRow key={`${backup.machineKey}/${backup.laneId}`} backup={backup} />
         ))}
       </div>
     </section>
   );
 }
 
-function SavedWorkRow({ backup, onGone }: { backup: CloudLaneBackup; onGone: () => void }) {
+function SavedWorkRow({ backup }: { backup: CloudLaneBackup }) {
   const name = backup.laneName ?? backup.branchRef ?? "Lane";
   const actions = useSavedWorkActions(backup, name);
   return (
@@ -231,7 +235,7 @@ function SavedWorkRow({ backup, onGone }: { backup: CloudLaneBackup; onGone: () 
               icon: <Trash size={14} />,
               danger: true,
               disabled: actions.busy != null,
-              onSelect: () => void actions.forget().then((deleted) => { if (deleted) onGone(); }),
+              onSelect: () => void actions.forget(),
             }]}
           />
         ) : null}

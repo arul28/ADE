@@ -10,6 +10,7 @@ import { CloudMark, ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
 import { confirmDialog } from "../ui/dialog";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneComputerOfLane, cloudLaneLifeAvailable, cloudLaneWorkState, deleteCloudLane, freeCloudLane, pushCloudLaneWork } from "./cloudLaneActions";
 import { refreshCloudLanesWithoutComputer } from "./cloudLaneStores";
+import { CloudLaneSavedWork } from "./CloudLaneSavedWork";
 import "./cloudLane.css";
 
 /**
@@ -129,7 +130,8 @@ export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
     setDeletePhase(instanceId, "checking");
     // On an awake computer the check runs while the question is up, so a yes
     // rarely waits on it. Anywhere else it would wake the computer, so it waits for the yes.
-    const awake = adeCloudLaneComputersNow().some((computer) => computer.instanceId === instanceId && computer.state === "running");
+    const laneComputer = adeCloudLaneComputersNow().find((computer) => computer.instanceId === instanceId) ?? null;
+    const awake = laneComputer?.state === "running";
     let checking: Promise<CloudLaneWorkState> | null = awake || !input.askFirst ? readWork() : null;
     if (input.askFirst) {
       const confirmed = await confirmDialog({
@@ -163,6 +165,8 @@ export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
         children: ({ dismiss }) => (
           <div className="adecl-delete-body">
             {work.unpushedLanes.length ? <UnpushedList lanes={work.unpushedLanes} /> : null}
+            {/* The work ADE Cloud saved at its last rest: a download with no wake, also at 0 hours. */}
+            {laneComputer ? <CloudLaneSavedWork laneId={laneComputer.laneId} laneName={laneName} /> : null}
             <button
               type="button"
               className="kit-btn"

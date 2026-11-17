@@ -65,6 +65,9 @@ export async function prepareCloudComputerToStop(args: {
     args.logger?.warn("cloud.prepare_stop_flush_failed", { error: error instanceof Error ? error.message : String(error) });
     return { uploaded: 0, remaining: -1, timedOut: true };
   });
+  // The stop is "prepared" when the turns ended and the chats are saved, in time.
+  // The rest save below reports its own outcome (`backups`), so its time doesn't count.
+  const chatsLate = Date.now() >= deadline;
   // Lane backups, copies and Git summaries only with real time left: the chats come first.
   const restMs = deadline - Date.now();
   const rest: { sessions: number; git: number; backups?: CloudBackupSaveSummary | null } = args.saveForRest && restMs > 3_000
@@ -82,7 +85,7 @@ export async function prepareCloudComputerToStop(args: {
     sessionsSaved: rest.sessions,
     gitSaved: rest.git,
     backups: rest.backups ?? null,
-    timedOut: remaining > 0 || flush.timedOut || Date.now() >= deadline,
+    timedOut: remaining > 0 || flush.timedOut || chatsLate,
   };
   args.logger?.info("cloud.prepare_stop", result);
   return result;

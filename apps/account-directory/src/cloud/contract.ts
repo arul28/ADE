@@ -1400,6 +1400,8 @@ export const CLOUD_BACKUP_TOO_LARGE_SENTENCE = `This lane's work that isn't on G
 export const CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE = `This account's saved lane work is over ${CLOUD_BACKUP_MAX_ACCOUNT_BYTES / (1024 * 1024 * 1024)} GB, so ADE can't save more. Push lanes to GitHub or delete lanes you don't need. The computer is kept until then.`;
 /** The one sentence a cleanup gives when a lane has no current backup. */
 export const CLOUD_BACKUP_NOT_SAVED_SENTENCE = "ADE couldn't save this lane's work.";
+/** A resting computer whose ADE has not saved lane work yet (it rested before an update): kept until its next rest saves it. */
+export const CLOUD_BACKUP_NEVER_SAVED_SENTENCE = "ADE keeps this computer: it went to sleep before ADE saved lane work. The next time you use it and it sleeps again, ADE saves its lanes and can clean it up.";
 
 /** What the computer read from the lane when it made the backup. */
 export type CloudLaneBackupFacts = {
