@@ -447,6 +447,7 @@ import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
 import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
 import { CloudLaneHeaderButton } from "../cloudLane/CloudLaneHeaderButton";
 import { CloudLaneDeletingSoonBand } from "../cloudLane/CloudLaneDeletingSoonBand";
+import { newerLaunchDefaults, publishLaunchDefaults, readAccountLaunchDefaults } from "./accountLaunchDefaults";
 import { AdeCloudTray, CloudSizeButton, useCloudLaneWithoutComputerForChat } from "./AdeCloudComposerParts";
 import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
 import type { CloudAccountState } from "../../../shared/adeCloud";
@@ -18497,20 +18498,30 @@ export function AgentChatPane({
       launchDefaultsLoadedForKeyRef.current = launchDefaultsBindingKey;
       setMachineLaunchDefaults(null);
     }
+    const apply = (defaults: AgentChatLaunchDefaults | null) => {
+      const next = defaults ? launchConfigFromMachineDefaults(defaults, initialNativeControls) : null;
+      setMachineLaunchDefaults((current) => (current?.updatedAt === next?.updatedAt ? current : next));
+    };
     const load = () => {
+      // The account's row (`chat.launchDefaults.v1`): the last launch on any
+      // computer. Account level, no pin. With no machine picked yet (ADE
+      // Cloud, or a web tab with no computer) it alone seeds the draft.
+      const account = readAccountLaunchDefaults();
       // Optional call: a host bridge without it (an older embedder, a test
       // double) leaves the draft on this window's own memory.
-      // No machine picked yet: the draft keeps this window's memory.
       const defaultsPin = chatApiPin(draftExecutionBindingRef.current, isBoundScopePaneRef.current);
-      if (!defaultsPin) return;
-      void agentChatApiRef.current.launchDefaults?.(defaultsPin)
-        .then((defaults) => {
+      const machine = defaultsPin
+        ? agentChatApiRef.current.launchDefaults?.(defaultsPin) ?? Promise.resolve(null)
+        : Promise.resolve(null);
+      void Promise.all([machine, account])
+        .then(([defaults, accountDefaults]) => {
           if (cancelled) return;
           // The machine that will run this draft also owns the account policy
           // it enforces. Adopt its answer for the Fast-mode lock.
-          noteFastModeAllowedFromHost(defaults?.fastModeAllowed);
-          const next = defaults ? launchConfigFromMachineDefaults(defaults, initialNativeControls) : null;
-          setMachineLaunchDefaults((current) => (current?.updatedAt === next?.updatedAt ? current : next));
+          if (defaults) noteFastModeAllowedFromHost(defaults.fastModeAllowed);
+          // The machine's newer pick goes to the account for the others.
+          if (defaults) void publishLaunchDefaults(defaults, accountDefaults);
+          apply(newerLaunchDefaults(defaults, accountDefaults));
         })
         .catch(() => {
           if (!cancelled) setMachineLaunchDefaults(null);
@@ -18518,9 +18529,12 @@ export function AgentChatPane({
     };
     load();
     window.addEventListener("focus", load);
+    // Another computer launched: the account store says so (no poll).
+    const offAccount = window.ade?.accountSettings?.onChanged?.(load) ?? null;
     return () => {
       cancelled = true;
       window.removeEventListener("focus", load);
+      offAccount?.();
     };
   }, [initialNativeControls, launchDefaultsBindingKey, lockSessionId, newestSessionKey]);
   /**

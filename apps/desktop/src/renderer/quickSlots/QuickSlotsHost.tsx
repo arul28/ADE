@@ -28,6 +28,7 @@ import {
 } from "./commands";
 import { getQuickSlotComposer } from "./composerTarget";
 import { useQuickSlotsStore } from "./quickSlotsStore";
+import { useQuickSlotsAccountSync } from "./useQuickSlotsAccountSync";
 import "./quickSlots.css";
 import { useTabCopyPin } from "../state/repositoryScope";
 
@@ -110,6 +111,8 @@ function resolveSlots(
  * context captures `caretInsideComposer` once, when the panel opens.
  */
 export function QuickSlotsHost() {
+  // The slots follow the account; this computer keeps its own copy too.
+  useQuickSlotsAccountSync();
   const navigate = useNavigate();
   const { slots, profiles, leader, keepOpenAfterRelease } = useQuickSlotsStore(
     useShallow((state) => ({
