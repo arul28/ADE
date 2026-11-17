@@ -23795,13 +23795,20 @@ export function createAgentChatService(args: {
    * loaded the chat, and its cut turn was never resumed.
    */
   const reopenSessionRowForThisProcess = (sessionId: string): void => {
-    sessionService.reopen(sessionId);
+    // Stamp this process BEFORE reopening. A reopen first leaves a window where
+    // the row reads `running` under the dead owner it named, and another brain's
+    // stranded-row cleanup (which matches by that owner) can end it: completed,
+    // so a later crash would not resume the turn this process is starting.
+    // Owned first, that cleanup's owner predicate no longer matches; if it
+    // already ended the row, the reopen below moves it back to running.
     const startedAt = processRegistry?.startedAt ?? null;
-    if (!processRegistry || !startedAt) return;
-    const row = sessionService.get(sessionId);
-    if (row && (row.ownerPid !== processRegistry.pid || row.ownerProcessStartedAt !== startedAt)) {
-      sessionService.setOwnerPid(sessionId, processRegistry.pid, startedAt);
+    if (processRegistry && startedAt) {
+      const row = sessionService.get(sessionId);
+      if (row && (row.ownerPid !== processRegistry.pid || row.ownerProcessStartedAt !== startedAt)) {
+        sessionService.setOwnerPid(sessionId, processRegistry.pid, startedAt);
+      }
     }
+    sessionService.reopen(sessionId);
   };
 
   /**
