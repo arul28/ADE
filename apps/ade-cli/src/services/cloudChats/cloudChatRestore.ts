@@ -13,6 +13,10 @@
  * 5. lets this computer's uploader go on from the saved copy's last part.
  *
  * The caller then sends the person's message to the chat.
+ *
+ * A CLI row has no saved chat, only a session copy and (Claude Code, Codex)
+ * a CLI capsule. It restores as a CLI with the same id
+ * (`agentChatService.restoreSavedCloudCli`), which types the message itself.
  */
 
 import { gunzipSync } from "node:zlib";
@@ -53,11 +57,23 @@ export type CloudChatRestoreDeps = {
   hold: (sessionId: string) => void;
   /** Ends the hold after a failed restore (`releaseRestoringCloudChat`). */
   release: (sessionId: string) => void;
+  /** Restores a CLI row and types the message into it; left out, a CLI row can't continue. */
+  restoreCli?: (args: {
+    sessionId: string;
+    laneId: string;
+    toolType: string;
+    title: string | null;
+    capsule: AgentChatCrossMachineHandoffCapsule | null;
+    prompt: string;
+    clientMessageId: string;
+  }) => Promise<{ sessionId: string; restoredWith: "capsule" | "fresh" | "earlier" }>;
 };
 
 export type CloudChatRestoreResult = {
   sessionId: string;
-  restoredWith: "capsule" | "replay" | "earlier";
+  restoredWith: "capsule" | "replay" | "earlier" | "fresh";
+  /** A CLI restore typed the person's message already; the caller sends nothing. */
+  promptSent: boolean;
   /** The saved copy is under this computer's machine key now. */
   moved: boolean;
   /** The saved transcript was longer than one restore reads: its oldest part is not in the chat here. */
@@ -124,6 +140,7 @@ async function readCapsule(
   machineKey: string,
   chatId: string,
   logger: Logger,
+  kind: "chat" | "cli" = "chat",
 ): Promise<AgentChatCrossMachineHandoffCapsule | null> {
   let manifest: CloudCapsuleManifest | null;
   try {
@@ -132,7 +149,7 @@ async function readCapsule(
     logger.warn("cloud.restore_capsule_read_failed", { chatId, error: errorText(error) });
     return null;
   }
-  if (!manifest || manifest.sessionKind !== "chat") return null;
+  if (!manifest || manifest.sessionKind !== kind) return null;
   if (manifest.bytes <= 0 || manifest.bytes > CLOUD_CAPSULE_MAX_BYTES || manifest.parts <= 0) return null;
   try {
     const parts: Buffer[] = [];
@@ -147,7 +164,8 @@ async function readCapsule(
     const json = gunzipSync(Buffer.concat(parts), { maxOutputLength: MAX_CAPSULE_JSON_BYTES }).toString("utf8");
     const parsed = JSON.parse(json) as { v?: unknown; capsule?: AgentChatCrossMachineHandoffCapsule };
     const capsule = parsed?.v === 1 ? parsed.capsule : null;
-    if (!capsule || capsule.version !== 1 || typeof capsule.source?.provider !== "string" || !capsule.forkTransport) return null;
+    if (!capsule || capsule.version !== 1 || typeof capsule.source?.provider !== "string") return null;
+    if (kind === "chat" ? !capsule.forkTransport : !capsule.cli) return null;
     return capsule;
   } catch (error) {
     logger.warn("cloud.restore_capsule_unreadable", { chatId, error: errorText(error) });
@@ -155,9 +173,47 @@ async function readCapsule(
   }
 }
 
+export type CloudChatRestoreArgs = {
+  fromMachineKey: string;
+  chatId: string;
+  laneId: string;
+  modelId: string | null;
+  /** The person's message: a CLI restore types it itself. */
+  prompt: string;
+  clientMessageId: string;
+};
+
+/**
+ * A CLI row: the session copy names its CLI; a CLI capsule (Claude Code,
+ * Codex) carries its conversation. Null when neither is saved.
+ */
+async function restoreCloudCli(deps: CloudChatRestoreDeps, args: CloudChatRestoreArgs): Promise<CloudChatRestoreResult | null> {
+  const { api, logger, machineKey } = deps;
+  if (!deps.restoreCli) return null;
+  const keys = args.fromMachineKey === machineKey ? [machineKey] : [args.fromMachineKey, machineKey];
+  for (const key of keys) {
+    const copy = await api.savedSession(key, args.chatId).catch(() => null);
+    const capsule = await readCapsule(api, key, args.chatId, logger, "cli");
+    const toolType = (copy?.session.kind === "cli" ? copy.session.toolType : null) ?? capsule?.cli?.toolType ?? null;
+    if (!toolType) continue;
+    const restored = await deps.restoreCli({
+      sessionId: args.chatId,
+      laneId: args.laneId,
+      toolType,
+      title: copy?.session.title ?? capsule?.source.title ?? null,
+      capsule,
+      prompt: args.prompt,
+      clientMessageId: args.clientMessageId,
+    });
+    logger.info("cloud.chat_restored", { chatId: args.chatId, kind: "cli", restoredWith: restored.restoredWith });
+    return { sessionId: restored.sessionId, restoredWith: restored.restoredWith, promptSent: true, moved: false, olderPartLeftOut: false };
+  }
+  return null;
+}
+
 export async function restoreCloudChat(
   deps: CloudChatRestoreDeps,
-  args: { fromMachineKey: string; chatId: string; laneId: string; modelId: string | null },
+  args: CloudChatRestoreArgs,
 ): Promise<CloudChatRestoreResult> {
   const { api, logger, machineKey } = deps;
   // A restore that ran before moved the copy here already: read it from here.
@@ -167,7 +223,11 @@ export async function restoreCloudChat(
     saved = await readSavedTranscript(api, machineKey, args.chatId);
     if (saved) from = machineKey;
   }
-  if (!saved) throw new Error("ADE couldn't find this chat's saved copy, so it can't continue it here.");
+  if (!saved) {
+    const cli = await restoreCloudCli(deps, args);
+    if (cli) return cli;
+    throw new Error("ADE couldn't find this chat's saved copy, so it can't continue it here.");
+  }
   const capsule = await readCapsule(api, from, args.chatId, logger);
   const modelId = capsule?.target.targetModelId || args.modelId || saved.chat.model;
   if (!modelId) throw new Error("ADE can't tell which model this chat used, so it can't continue it here.");
@@ -212,5 +272,5 @@ export async function restoreCloudChat(
     events: envelopes.length,
     olderPartLeftOut: saved.olderPartLeftOut,
   });
-  return { sessionId: restored.sessionId, restoredWith: restored.restoredWith, moved, olderPartLeftOut: saved.olderPartLeftOut };
+  return { sessionId: restored.sessionId, restoredWith: restored.restoredWith, promptSent: false, moved, olderPartLeftOut: saved.olderPartLeftOut };
 }

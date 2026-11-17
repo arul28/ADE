@@ -90,6 +90,11 @@ export type CloudRestSaveDeps = {
   flushChats: (timeoutMs: number) => Promise<CloudChatUploadPendingResult>;
   /** The signed-in account's user id: an account topic names it. */
   accountUserId: () => string | null;
+  /**
+   * One native subagent's saved copy, as a chat row under its parent
+   * (`uploadSubagentCloudCopy`). Left out, no subagent is saved.
+   */
+  uploadSubagentCopy?: (parentSessionId: string, copy: { chatId: string; text: string; title: string | null; lastActivityAt: string | null }) => Promise<boolean>;
 };
 
 export type CloudRestSave = {
@@ -108,6 +113,10 @@ type RestSaveState = {
   capsules: Record<string, string>;
   /** The event-wake topics the server holds for this computer, sorted; null before the first write. */
   eventWakes?: string[] | null;
+  /** Subagent copy id → the mark of what was saved (message count and last message id). */
+  subagents?: Record<string, string>;
+  /** Parent chat id → the activity mark its subagents were last read at. */
+  subagentScans?: Record<string, string>;
 };
 
 const emptyState = (machineKey: string | null): RestSaveState => ({ v: 1, machineKey, sessions: {}, git: {}, capsules: {}, eventWakes: null });
@@ -248,6 +257,109 @@ export async function readLaneGitSummary(worktreePath: string, now: number): Pro
   };
 }
 
+/** Chats whose own runtime keeps native subagent transcripts that `getSubagentTranscript` reads. */
+const SUBAGENT_COPY_PROVIDERS = new Set(["claude", "muse", "opencode"]);
+/** The newest subagents saved per chat. */
+const SUBAGENTS_PER_CHAT = 20;
+/** One subagent copy is one part: at most this much text (under `CLOUD_CHAT_MAX_PART_BYTES`). */
+const SUBAGENT_COPY_MAX_BYTES = 4 * 1024 * 1024;
+/** How much of the parent's transcript is read for its subagent starts. */
+const SUBAGENT_SCAN_BYTES = 4 * 1024 * 1024;
+
+/** A saved row id for one subagent (the server's `[A-Za-z0-9._:-]{1,160}`). */
+export function subagentCopyId(parentSessionId: string, agentId: string): string {
+  const clean = (value: string) => value.replace(/[^A-Za-z0-9._-]/g, "-");
+  return `${clean(parentSessionId)}:sub:${clean(agentId)}`.slice(0, 160);
+}
+
+/**
+ * The native subagents a chat started (`subagent_started` with no
+ * `provider`: an ADE child chat has one, and is saved as its own chat), the
+ * newest `SUBAGENTS_PER_CHAT`, oldest first.
+ */
+export function readNativeSubagents(transcriptPath: string): Array<{ agentId: string; taskId: string | null; description: string | null }> {
+  let text = "";
+  try {
+    const fd = fs.openSync(transcriptPath, "r");
+    try {
+      const size = fs.fstatSync(fd).size;
+      const length = Math.min(size, SUBAGENT_SCAN_BYTES);
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, size - length);
+      text = buffer.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return [];
+  }
+  const byAgent = new Map<string, { agentId: string; taskId: string | null; description: string | null }>();
+  for (const line of text.split("\n")) {
+    if (!line.includes('"subagent_started"')) continue;
+    try {
+      const event = (JSON.parse(line) as { event?: Record<string, unknown> }).event;
+      if (!event || event.type !== "subagent_started" || event.provider) continue;
+      const agentId = typeof event.agentId === "string" && event.agentId.trim() ? event.agentId.trim() : null;
+      if (!agentId) continue;
+      // The newest start of an agent goes last.
+      byAgent.delete(agentId);
+      byAgent.set(agentId, {
+        agentId,
+        taskId: typeof event.taskId === "string" ? event.taskId : null,
+        description: typeof event.description === "string" ? event.description.slice(0, 300) : null,
+      });
+    } catch {
+      // A line cut by the read window, or not JSON.
+    }
+  }
+  return [...byAgent.values()].slice(-SUBAGENTS_PER_CHAT);
+}
+
+/** A subagent message's words: its own text, else the text blocks of its content. */
+function subagentMessageText(message: { text?: string | null; message: unknown }): string {
+  if (typeof message.text === "string" && message.text.trim()) return message.text;
+  const content = (message.message as { content?: unknown } | null)?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text" ? String((block as { text?: unknown }).text ?? "") : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * The subagent's messages as saved chat events (JSON lines): its prompts as
+ * `user_message`, its answers as `text`, the newest that fit in one part.
+ */
+export function subagentCopyText(
+  chatId: string,
+  messages: ReadonlyArray<{ type: string; uuid: string; text?: string | null; message: unknown; timestamp?: string | null }>,
+): { text: string; lastAt: string | null } {
+  const lines: string[] = [];
+  let bytes = 0;
+  let lastAt: string | null = null;
+  const now = new Date().toISOString();
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.type !== "user" && message.type !== "assistant") continue;
+    const words = subagentMessageText(message);
+    if (!words.trim()) continue;
+    const timestamp = message.timestamp || now;
+    lastAt ??= message.timestamp ?? null;
+    const line = JSON.stringify({
+      sessionId: chatId,
+      timestamp,
+      sequence: index + 1,
+      event: message.type === "user" ? { type: "user_message", text: words } : { type: "text", text: words, messageId: message.uuid },
+    });
+    const size = Buffer.byteLength(line, "utf8") + 1;
+    if (bytes + size > SUBAGENT_COPY_MAX_BYTES) break;
+    bytes += size;
+    lines.push(line);
+  }
+  return { text: lines.reverse().join("\n"), lastAt };
+}
+
 /** At most this many topics (`CLOUD_EVENT_WAKE_MAX_TOPICS`). */
 const MAX_EVENT_WAKE_TOPICS = 20;
 const TOPIC_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
@@ -323,6 +435,8 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
           git: parsed.git ?? {},
           capsules: parsed.capsules ?? {},
           eventWakes: Array.isArray(parsed.eventWakes) ? parsed.eventWakes : null,
+          subagents: parsed.subagents ?? {},
+          subagentScans: parsed.subagentScans ?? {},
         };
       }
     } catch {
@@ -564,8 +678,63 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
       }
     }
 
-    // Git first (small), then capsules (what a continue needs), then the copies.
-    const notStarted = await runLimited([...gitTasks, ...capsuleTasks, ...sessionTasks], UPLOAD_PARALLEL, deadline);
+    // 4b. Native subagents (Claude, Muse, OpenCode): each one's transcript as a saved chat under its parent.
+    const subagentTasks: Array<() => Promise<void>> = [];
+    if (deps.uploadSubagentCopy) {
+      const upload = deps.uploadSubagentCopy;
+      state.subagents ??= {};
+      state.subagentScans ??= {};
+      for (const runtime of runtimes) {
+        const chat = runtime.agentChatService;
+        if (!chat) continue;
+        let rows: TerminalSessionSummary[] = [];
+        try {
+          rows = runtime.sessionService.list({ limit: 200, includeArchived: false });
+        } catch (error) {
+          logger.warn("cloud.rest_save_sessions_read_failed", { error: errorText(error) });
+        }
+        for (const row of rows) {
+          if (!isChatToolType(row.toolType)) continue;
+          subagentTasks.push(async () => {
+            if (!idle()) return;
+            try {
+              const summary = await chat.getSessionSummary(row.id);
+              if (!summary || !SUBAGENT_COPY_PROVIDERS.has(summary.provider)) return;
+              // OpenCode's subagents are read through its server; the idle step never starts one.
+              if (summary.provider === "opencode" && options.reason === "idle") return;
+              const scanMark = summary.lastActivityAt ?? "";
+              if (state.subagentScans![row.id] === scanMark) return;
+              const spawned = readNativeSubagents(path.join(runtime.paths.chatTranscriptsDir, `${row.id}.jsonl`));
+              let complete = true;
+              for (const sub of spawned) {
+                if (!idle() || Date.now() >= deadline) {
+                  complete = false;
+                  break;
+                }
+                const messages = await chat.getSubagentTranscript({ sessionId: row.id, agentId: sub.agentId, ...(sub.taskId ? { taskId: sub.taskId } : {}) }).catch(() => null);
+                if (!messages?.length) continue;
+                const chatId = subagentCopyId(row.id, sub.agentId);
+                const mark = `${messages.length}|${messages[messages.length - 1]?.uuid ?? ""}`;
+                if (state.subagents![chatId] === mark) continue;
+                const copy = subagentCopyText(chatId, messages);
+                if (!copy.text) continue;
+                if (await upload(row.id, { chatId, text: copy.text, title: sub.description, lastActivityAt: copy.lastAt })) {
+                  state.subagents![chatId] = mark;
+                } else {
+                  complete = false;
+                }
+              }
+              if (complete) state.subagentScans![row.id] = scanMark;
+            } catch (error) {
+              logger.warn("cloud.rest_save_subagents_failed", { sessionId: row.id, error: errorText(error) });
+            }
+          });
+        }
+      }
+    }
+
+    // Git first (small), then capsules (what a continue needs), then the copies, then subagents.
+    const notStarted = await runLimited([...gitTasks, ...capsuleTasks, ...sessionTasks, ...subagentTasks], UPLOAD_PARALLEL, deadline);
     // 5. The events that wake this computer at rest: a Linear workspace or webhook a rule here acts on.
     if (idle()) {
       const topics = eventWakeTopics(runtimes, deps.accountUserId());

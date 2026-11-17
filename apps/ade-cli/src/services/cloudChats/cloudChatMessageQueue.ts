@@ -14,6 +14,12 @@
  * message shows (`waiting_for_sign_in` + `signIn`), as a launch does.
  * The journal (`<ADE_HOME>/cloud/chat-messages.json`) makes a restart safe:
  * a message is never sent twice (`deliverInOrder`).
+ *
+ * A message for an agent CLI is typed at the CLI's prompt through the same
+ * path the Work input box uses (`typeIntoAgentCliWhenFree`): typed now when
+ * the prompt is free, else held on this brain and typed at the CLI's next
+ * free prompt. A sleep keeps the CLI's process, so it still runs after a
+ * wake; after a cold restart the process is gone and the message fails.
  */
 
 import fs from "node:fs";
@@ -56,6 +62,10 @@ export type CloudChatQueueDeps = {
   /** Resolves when the chat has no running turn (an event wait, never a poll); false at the wait's limit. */
   waitForChatIdle: (projectId: string, sessionId: string) => Promise<boolean>;
   sendChatMessage: (projectId: string, sessionId: string, message: { text: string; clientSendId: string; attachments?: QueuedFile[] }) => Promise<void>;
+  /** `cli`: a tracked agent CLI whose process runs here; `cli_ended`: its process is gone; else a chat. */
+  sessionKind?: (projectId: string, sessionId: string) => Promise<"chat" | "cli" | "cli_ended">;
+  /** Types the text at the CLI's prompt (`typeIntoAgentCliWhenFree` with `holdUntilFree`). */
+  typeIntoCli?: (projectId: string, sessionId: string, message: { text: string; clientMessageId: string }) => Promise<"delivered" | "held" | "deferred" | "ended">;
   /** The provider sign-in wait (`cloudLaunchSignInWait.ts`); left out, nothing waits. */
   signIn?: SignInWaitDeps;
   /** Holds the computer awake for one named step, up to `ttlMs`. */
@@ -82,6 +92,13 @@ export type CloudChatMessageQueue = {
 
 /** A file a queued message carries, downloaded here. */
 type QueuedFile = { path: string; type: "image" | "file" };
+
+/** The CLI's process is gone (a cold restart): nothing ADE types reaches it. */
+const CLI_ENDED_SENTENCE = "This CLI isn't running on its computer any more (the computer restarted), so ADE couldn't type the message. Open the CLI and send the message again.";
+
+/** A CLI reads files by path: a message for a CLI names its downloaded files after its text. */
+const withFilePaths = (text: string, files: readonly QueuedFile[]): string =>
+  files.length ? [text, "", "Attached files:", ...files.map((file) => `- ${file.path}`)].join("\n") : text;
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -158,6 +175,11 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
         if (located === undefined) located = await deps.locateChat(first).catch(() => null);
         return located;
       };
+      let kind: "chat" | "cli" | "cli_ended" | undefined;
+      const kindOf = async (projectId: string) => {
+        kind ??= deps.sessionKind ? await deps.sessionKind(projectId, sessionId).catch(() => "chat" as const) : "chat";
+        return kind;
+      };
       return await deliverInOrder(list, {
         journal,
         saveJournal: () => writeMessageJournal(journalFile, journal),
@@ -170,6 +192,10 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
         beforeSend: async (message, claimId) => {
           const where = await locate();
           if (!where) return { kind: "failed", error: "This chat is not on its computer any more. Send the message again." };
+          const sessionKind = await kindOf(where.projectId);
+          if (sessionKind === "cli_ended") return { kind: "failed", error: CLI_ENDED_SENTENCE };
+          // A running CLI is signed in already; its own prompt waits for the turn.
+          if (sessionKind === "cli") return deps.typeIntoCli ? { kind: "go" } : { kind: "failed", error: "This computer's ADE can't type into a CLI. Update ADE, then send the message again." };
           const provider = message.provider ?? await deps.chatProvider(where.projectId, sessionId).catch(() => null);
           if (!provider) return { kind: "failed", error: "This chat is not on its computer any more. Send the message again." };
           if (!deps.signIn) return { kind: "go" };
@@ -198,12 +224,25 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
         },
         waitIdle: async () => {
           const where = await locate();
-          return where ? await deps.waitForChatIdle(where.projectId, sessionId) : false;
+          if (!where) return false;
+          // A CLI's queued text is held on the brain and typed at its next free prompt.
+          if ((await kindOf(where.projectId)) === "cli") return true;
+          return await deps.waitForChatIdle(where.projectId, sessionId);
         },
         send: async (message) => {
           const where = await locate();
           if (!where) throw new Error("This chat is not on its computer any more.");
           const attachments = await downloadAttachments(api, where.rootPath, message.messageId, message.attachments ?? []);
+          if ((await kindOf(where.projectId)) === "cli" && deps.typeIntoCli) {
+            const outcome = await deps.typeIntoCli(where.projectId, sessionId, {
+              text: withFilePaths(message.text, attachments),
+              clientMessageId: message.clientSendId || message.messageId,
+            });
+            if (outcome === "ended") throw new Error(CLI_ENDED_SENTENCE);
+            // Another runtime runs the CLI now: not typed, so a later round types it.
+            if (outcome === "deferred") throw Object.assign(new Error("The CLI is busy."), { code: "turn_in_flight" });
+            return;
+          }
           await deps.sendChatMessage(where.projectId, sessionId, {
             text: message.text,
             clientSendId: message.clientSendId || message.messageId,

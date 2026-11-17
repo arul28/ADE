@@ -32350,6 +32350,7 @@ async function runServe(
           machineKey: machineCloudRelayStore.getMachineIdentity().machineKey,
           logger: headlessProjectLogger,
           restore: (restoreArgs) => chat.restoreSavedCloudChat(restoreArgs),
+          restoreCli: (restoreArgs) => chat.restoreSavedCloudCli(restoreArgs),
           adopt: adoptRestoredCloudChat,
           hold: holdRestoringCloudChat,
           release: releaseRestoringCloudChat,
@@ -32407,7 +32408,7 @@ async function runServe(
 
   // ADE Cloud computer: the rest save and the queue of messages for its chats.
   if (!embedded && cloudInstanceId && isAdeCloudComputer() && cloudKeepAwake) {
-    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats }] = await Promise.all([
+    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }] = await Promise.all([
       import("./services/cloudChats/cloudRestSave"),
       import("./services/cloudChats/cloudChatMessageQueue"),
       import("./services/cloudChats/cloudChatUploader"),
@@ -32435,6 +32436,7 @@ async function runServe(
       },
       flushChats: (timeoutMs) => uploadPendingCloudChats(timeoutMs),
       accountUserId: () => brainAccountAuthService.getStatus().userId ?? null,
+      uploadSubagentCopy: uploadSubagentCloudCopy,
     });
     cloudRest.queue = createCloudChatMessageQueue({
       instanceId: cloudInstanceId,
@@ -32457,6 +32459,25 @@ async function runServe(
       },
       waitForChatIdle: waitCloudChatIdle,
       sendChatMessage: sendCloudChatMessage,
+      // A tracked agent CLI takes the message at its prompt; a sleep keeps its process, a cold restart does not.
+      sessionKind: async (projectId, sessionId) => {
+        const { runtime } = await scopeRegistry.get(projectId);
+        const row = runtime.sessionService.get(sessionId);
+        const { isTrackedAgentCliToolType } = await import("../../desktop/src/shared/types/sessions");
+        if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType)) return "chat";
+        return runtime.ptyService.hasLivePty(sessionId) ? "cli" : "cli_ended";
+      },
+      typeIntoCli: async (projectId, sessionId, message) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        if (!chat) throw new Error("This ADE runtime has no chats.");
+        const typed = await chat.typeIntoAgentCliWhenFree({
+          sessionId,
+          text: message.text,
+          holdUntilFree: true,
+          clientMessageId: message.clientMessageId.slice(0, 128),
+        });
+        return typed.outcome;
+      },
       signIn: {
         logger: headlessProjectLogger,
         providerReady: cloudProviderReady,

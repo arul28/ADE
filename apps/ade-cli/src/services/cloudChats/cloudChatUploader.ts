@@ -40,8 +40,10 @@ type StateFile = {
   chats: Record<string, Entry>;
   /** Deletes the server hasn't confirmed; sent again before the next upload. */
   deletes: Array<{ chatId?: string; laneId?: string }>;
+  /** Parent chat id → the saved copies of its native subagents (`uploadSubagentCopy`), so they go with it. */
+  subagentCopies?: Record<string, string[]>;
 };
-const emptyState = (): StateFile => ({ v: 1, machineKey: null, chats: {}, deletes: [] });
+const emptyState = (): StateFile => ({ v: 1, machineKey: null, chats: {}, deletes: [], subagentCopies: {} });
 
 export type CloudChatUploaderDeps = {
   env?: NodeJS.ProcessEnv;
@@ -79,6 +81,13 @@ export type CloudChatUploader = {
    * transcript's end as it is now. False when this project has no such chat.
    */
   adoptRestored(sessionId: string, seq: number, laneId: string | null): Promise<boolean>;
+  /**
+   * One native subagent's saved copy, as a chat row of its own under its
+   * parent (`parentChatId`, `spawnKind: "native_subagent"`). The copy is one
+   * part, replaced each time (the server takes a newer newest part). Null
+   * when this project has no such parent chat.
+   */
+  uploadSubagentCopy(parentSessionId: string, copy: { chatId: string; text: string; title: string | null; lastActivityAt: string | null }): Promise<boolean | null>;
   dispose(): void;
 };
 
@@ -101,6 +110,18 @@ export function releaseRestoringCloudChat(sessionId: string): void {
 }
 
 /** The restored chat's upload goes on from `seq` in the project that holds it (`CloudChatUploader.adoptRestored`). */
+/** Uploads one native subagent's copy through the uploader of the project that holds its parent. */
+export async function uploadSubagentCloudCopy(
+  parentSessionId: string,
+  copy: { chatId: string; text: string; title: string | null; lastActivityAt: string | null },
+): Promise<boolean> {
+  for (const uploader of uploaders) {
+    const result = await uploader.uploadSubagentCopy(parentSessionId, copy);
+    if (result !== null) return result;
+  }
+  return false;
+}
+
 export async function adoptRestoredCloudChat(sessionId: string, seq: number, laneId: string | null): Promise<boolean> {
   try {
     for (const uploader of uploaders) {
@@ -471,6 +492,9 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       delete state.chats[sessionId];
       rerun.delete(sessionId);
       state.deletes.push({ chatId: sessionId });
+      // Its subagents' saved copies go with it.
+      for (const subId of state.subagentCopies?.[sessionId] ?? []) state.deletes.push({ chatId: subId });
+      if (state.subagentCopies) delete state.subagentCopies[sessionId];
       persist();
       void runDeletes();
       const upload = running.get(sessionId);
@@ -527,6 +551,45 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       currentMachineKey();
       state.chats[sessionId] = { offset: reader.size, seq, dirty: false, laneId };
       persist();
+      return true;
+    },
+    async uploadSubagentCopy(parentSessionId, copy) {
+      if (disposed || !parentSessionId) return null;
+      if (!openTranscript(deps.chatTranscriptsDir, parentSessionId)) return null;
+      const base = deps.directoryBaseUrl();
+      const machineKey = currentMachineKey();
+      const headers = await authHeaders();
+      if (!base || !machineKey || !headers || !instanceId) return false;
+      const parentRow = await deps.readChatRow(parentSessionId).catch(() => null);
+      if (!parentRow) return false;
+      const row: CloudSavedChatRowInput = {
+        ...parentRow,
+        title: copy.title ?? parentRow.title,
+        status: "idle",
+        lastActivityAt: copy.lastActivityAt ?? parentRow.lastActivityAt,
+        parentChatId: parentSessionId,
+        spawnKind: "native_subagent",
+      };
+      try {
+        const response = await fetcher(cloudSavedChatPartUrl(base, machineKey, copy.chatId, 1), {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ instanceId, text: deps.redactSecrets(copy.text), row }),
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+        if (!response.ok) {
+          log?.warn("cloud.subagent_copy_failed", { status: response.status });
+          return false;
+        }
+      } catch (error) {
+        log?.warn("cloud.subagent_copy_failed", { error: error instanceof Error ? error.name : "unknown" });
+        return false;
+      }
+      const known = new Set(state.subagentCopies?.[parentSessionId] ?? []);
+      if (!known.has(copy.chatId)) {
+        state.subagentCopies = { ...(state.subagentCopies ?? {}), [parentSessionId]: [...known, copy.chatId] };
+        persist();
+      }
       return true;
     },
     dispose() {

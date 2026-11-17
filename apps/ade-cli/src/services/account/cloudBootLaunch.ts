@@ -133,7 +133,15 @@ export type CloudBootLaunchDeps = {
    * with the same chat id (`cloudChatRestore.ts`). Left out, a continue
    * launch starts a new chat, as an older computer does.
    */
-  continueChat?: (projectId: string, args: { fromMachineKey: string; chatId: string; laneId: string; modelId: string | null }) => Promise<{ sessionId: string }>;
+  continueChat?: (projectId: string, args: {
+    fromMachineKey: string;
+    chatId: string;
+    laneId: string;
+    modelId: string | null;
+    /** The person's message; a restored CLI types it itself (`promptSent`). */
+    prompt: string;
+    clientMessageId: string;
+  }) => Promise<{ sessionId: string; promptSent?: boolean }>;
   /**
    * Waits until the chat's running turn is over; false when it still runs at the
    * wait's limit. Claude takes a send during a turn and then fails that turn, so
@@ -467,13 +475,17 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
             chatId: continuing.chatId,
             laneId: ended.laneId || request.lane.id,
             modelId: request.chat.modelId || null,
+            prompt: withAttachmentPaths(request.chat.prompt, attachments),
+            clientMessageId: request.chat.messageId ?? launchId,
           });
           // The person's message, as the chat's next message: the same id as their send, so a retry is the same message.
-          await deps.sendChatMessage?.(project.projectId, restored.sessionId, {
-            text: request.chat.prompt,
-            clientSendId: request.chat.messageId ?? launchId,
-            ...(attachments.length ? { attachments } : {}),
-          });
+          if (!restored.promptSent) {
+            await deps.sendChatMessage?.(project.projectId, restored.sessionId, {
+              text: request.chat.prompt,
+              clientSendId: request.chat.messageId ?? launchId,
+              ...(attachments.length ? { attachments } : {}),
+            });
+          }
           writeState(deps.stateFile, { launchId, phase: "handed_off", projectId: project.projectId, continuedSessionId: restored.sessionId });
           logger.info("cloud_boot_launch.chat_continued", { launchId });
           return;
@@ -499,6 +511,12 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
     await follow(deps, after.projectId, report, after.reported ?? "");
     await reportAutomationRunEnd(deps, after.projectId);
   }
+}
+
+/** A CLI reads files by path: a message for a CLI names its downloaded files after its text. */
+export function withAttachmentPaths(text: string, attachments: ReadonlyArray<{ path: string }>): string {
+  if (!attachments.length) return text;
+  return [text, "", "Attached files:", ...attachments.map((file) => `- ${file.path}`)].join("\n");
 }
 
 /** A lane's setup can take this long before a fork-continue gives up on it. */
