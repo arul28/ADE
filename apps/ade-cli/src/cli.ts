@@ -30027,8 +30027,10 @@ async function runServe(
     { setSyncRuntimeRpcHandlerFactory },
     { buildProjectlessSyncSnapshot },
     { resolveBrainMachineSyncStores, createProjectlessSyncControls },
-    { createMachineUpdateControls },
+    { createMachineUpdateControls, runMachineUpdateAndRestart },
     { resolveContinueAfterRestart },
+    { joinOrStartMachineUpdate },
+    { setMachineUpdateRemoteCommands },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -30045,6 +30047,8 @@ async function runServe(
     import("./services/sync/brainMachineSyncStores"),
     import("./services/runtime/machineUpdateAndRestart"),
     import("./services/runtime/continueAfterRestartStore"),
+    import("./services/runtime/machineUpdateInFlight"),
+    import("./services/sync/machineUpdateRemoteCommands"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -31749,21 +31753,18 @@ async function runServe(
   // The phone's "Update & restart" (sync commands), installed before any
   // project boots so every project host registers it. Same run as the
   // desktop's `machine.updateAndRestart` RPC below.
-  const { joinOrStartMachineUpdate } = await import("./services/runtime/machineUpdateInFlight");
   const clearMachineUpdateRemoteCommands = machineUpdateControls
-    ? await import("./services/sync/machineUpdateRemoteCommands").then(({ setMachineUpdateRemoteCommands }) =>
-      setMachineUpdateRemoteCommands({
+    ? setMachineUpdateRemoteCommands({
         updateImpact: async () => await readMachineUpdateImpact({
           projectRegistry,
           scopeRegistry,
           personalChatScope,
           readContinueAfterRestart: () => resolveContinueAfterRestart(),
         }),
-        updateAndRestart: (targetVersion, requestedBy) => joinOrStartMachineUpdate(async () => {
-          const { runMachineUpdateAndRestart } = await import("./services/runtime/machineUpdateAndRestart");
-          return await runMachineUpdateAndRestart(machineUpdateControls, targetVersion, requestedBy);
-        }),
-      }))
+        updateAndRestart: (targetVersion, requestedBy) => joinOrStartMachineUpdate(
+          () => runMachineUpdateAndRestart(machineUpdateControls, targetVersion, requestedBy),
+        ),
+      })
     : () => {};
 
   // Ask once, off the boot path: agents and `ade cloud` read this answer, and a

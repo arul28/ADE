@@ -40,19 +40,17 @@ export type MachineUpdateRemoteCommands = {
   ): Promise<MachineUpdateAndRestartResult>;
 };
 
+/** The pairing record's fields that name who asked. */
+export type MachineUpdatePairing = { peerName?: string | null; peerDeviceType?: string | null };
+
 let configured: MachineUpdateRemoteCommands | null = null;
 
 /** Installs this brain's update commands. Returns the uninstall. */
-export function setMachineUpdateRemoteCommands(commands: MachineUpdateRemoteCommands | null): () => void {
-  const previous = configured;
+export function setMachineUpdateRemoteCommands(commands: MachineUpdateRemoteCommands): () => void {
   configured = commands;
   return () => {
-    if (configured === commands) configured = previous;
+    if (configured === commands) configured = null;
   };
-}
-
-export function getMachineUpdateRemoteCommands(): MachineUpdateRemoteCommands | null {
-  return configured;
 }
 
 export function isMachineUpdateRemoteCommandAction(action: string): action is MachineUpdateRemoteCommandAction {
@@ -90,10 +88,7 @@ function clientKindOfPeerDeviceType(deviceType: string | null | undefined): Upda
  * Who asked, for the logs and the next start's continue message (never the
  * routing). The paired record's name and type win over the client's claim.
  */
-export function machineUpdateRequester(
-  claimed: unknown,
-  pairing: { peerName?: string | null; peerDeviceType?: string | null } | null,
-): UpdateRequestedBy {
+export function machineUpdateRequester(claimed: unknown, pairing: MachineUpdatePairing | null): UpdateRequestedBy {
   const claim = sanitizeUpdateRequestedBy(claimed);
   const machineName = sanitizeMachineName(pairing?.peerName) ?? claim?.machineName ?? null;
   const clientKind = clientKindOfPeerDeviceType(pairing?.peerDeviceType) ?? claim?.clientKind ?? "unknown";
@@ -104,7 +99,7 @@ export function machineUpdateRequester(
 export async function runMachineUpdateRemoteCommand(
   action: MachineUpdateRemoteCommandAction,
   args: Record<string, unknown>,
-  pairing: { peerName?: string | null; peerDeviceType?: string | null } | null,
+  pairing: MachineUpdatePairing | null,
 ): Promise<unknown> {
   const commands = configured;
   if (!commands) throw new Error("This ADE runtime cannot update itself.");

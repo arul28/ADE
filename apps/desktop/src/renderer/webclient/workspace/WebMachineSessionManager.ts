@@ -436,6 +436,11 @@ export class WebMachineSessionManager {
         capabilities: {
           projects: true,
           machineProjects: {},
+          // An older brain does not offer the command; its Update stays hidden.
+          // Read from the last hello, so a reconnect does not flip it.
+          ...(session?.client && session.client.getCommandDescriptors().length > 0
+            ? { remoteUpdate: session.client.getCommandDescriptors().some((entry) => entry.action === "machine.updateAndRestart") }
+            : {}),
         },
         projects,
         lastError: status?.error ?? null,

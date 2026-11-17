@@ -536,7 +536,7 @@ import {
   startCrossChannelSyncHostConflictCheck,
 } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService, shouldShowInstalledNotice, WINDOWS_PREPARE_WATCHDOG_MS } from "./services/updates/autoUpdateService";
-import { createLatestByTrackReader } from "./services/updates/latestByTrack";
+import { createLatestByTrackReader } from "../shared/latestByTrack";
 import { fetchAdeLatestRelease } from "./services/github/adeReleaseFeed";
 import { fetchReleaseManifestJson } from "../../../ade-cli/src/lib/releaseAssets";
 import { resolveContinueAfterRestart } from "../../../ade-cli/src/services/runtime/continueAfterRestartStore";

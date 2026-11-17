@@ -4,9 +4,8 @@ import {
   parseReleaseManifest,
   updateTrackOfVersion,
   type UpdateTrack,
-} from "../../../shared/updateTrack";
-import type { AutoUpdateLatestByTrack } from "../../../shared/types";
-import type { Logger } from "../logging/logger";
+} from "./updateTrack";
+import type { AutoUpdateLatestByTrack } from "./types/core";
 
 /**
  * The newest published build of BOTH tracks, whichever one this computer
@@ -19,6 +18,9 @@ import type { Logger } from "../logging/logger";
  * (startup, every 30 minutes, "Check for updates"), never on its own timer.
  * A failed or unreadable answer keeps the last version that track had, so an
  * offline check never takes a known build away and never invents one.
+ *
+ * Shared: the desktop reads both tracks itself, and the account directory
+ * reads them once for the phone and ADE Web (`GET /releases/latest`).
  */
 export type LatestByTrackReader = {
   /** The last known value; null for a track never read successfully. */
@@ -43,7 +45,7 @@ export function createLatestByTrackReader(args: {
    * predates `release-manifest.json` (the manifest answers 404).
    */
   fetchStableFallback?: () => Promise<string | null>;
-  logger?: Pick<Logger, "warn">;
+  logger?: { warn(event: string, data: Record<string, unknown>): void };
   /** A "Check for updates" pressed again right away reuses the last read. */
   minIntervalMs?: number;
   nowMs?: () => number;
@@ -94,7 +96,7 @@ export function createLatestByTrackReader(args: {
 }
 
 /** The version, only when it really is a build of `track`; a feed that disagrees is not trusted. */
-function validVersionOn(track: UpdateTrack, version: string | null | undefined): string | null {
+export function validVersionOn(track: UpdateTrack, version: string | null | undefined): string | null {
   const trimmed = version?.trim().replace(/^v/i, "") ?? "";
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(trimmed)) return null;
   return updateTrackOfVersion(trimmed) === track ? trimmed : null;

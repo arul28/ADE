@@ -18,63 +18,6 @@ private let machineUpdateLog = Logger(subsystem: "com.ade.ios", category: "Machi
 let machineUpdateImpactRemoteAction = "machine.updateImpact"
 let machineUpdateAndRestartRemoteAction = "machine.updateAndRestart"
 
-// MARK: - Versions
-
-/// The same ordering as desktop's `compareUpdateVersions`
-/// (`apps/desktop/src/shared/updateVersions.ts`): numeric core first, then
-/// prerelease precedence, where a release outranks any prerelease of its core.
-func compareAdeVersions(_ left: String, _ right: String) -> Int {
-  func parse(_ version: String) -> (core: [Int], prerelease: [String]) {
-    var text = version.trimmingCharacters(in: .whitespacesAndNewlines)
-    if text.first == "v" || text.first == "V" { text.removeFirst() }
-    if let plus = text.firstIndex(of: "+") { text = String(text[..<plus]) }
-    let coreText: Substring
-    let prereleaseText: Substring
-    if let dash = text.firstIndex(of: "-") {
-      coreText = text[..<dash]
-      prereleaseText = text[text.index(after: dash)...]
-    } else {
-      coreText = Substring(text)
-      prereleaseText = ""
-    }
-    let core = coreText.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) ?? 0 }
-    let prerelease = prereleaseText.isEmpty ? [] : prereleaseText.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
-    return (core, prerelease)
-  }
-  let lhs = parse(left)
-  let rhs = parse(right)
-  for index in 0..<max(lhs.core.count, rhs.core.count, 3) {
-    let delta = (index < lhs.core.count ? lhs.core[index] : 0) - (index < rhs.core.count ? rhs.core[index] : 0)
-    if delta != 0 { return delta }
-  }
-  if lhs.prerelease.isEmpty && !rhs.prerelease.isEmpty { return 1 }
-  if !lhs.prerelease.isEmpty && rhs.prerelease.isEmpty { return -1 }
-  for index in 0..<max(lhs.prerelease.count, rhs.prerelease.count) {
-    guard index < lhs.prerelease.count else { return -1 }
-    guard index < rhs.prerelease.count else { return 1 }
-    let leftPart = lhs.prerelease[index]
-    let rightPart = rhs.prerelease[index]
-    switch (Int(leftPart), Int(rightPart)) {
-    case let (l?, r?):
-      if l != r { return l - r }
-    case (_?, nil):
-      return -1
-    case (nil, _?):
-      return 1
-    case (nil, nil):
-      if leftPart != rightPart { return leftPart < rightPart ? -1 : 1 }
-    }
-  }
-  return 0
-}
-
-/// True when `version` is older than `target`. A dev build or a version the
-/// phone has not heard is never "behind": nothing here can say so.
-func adeVersionIsBehind(_ version: String?, target: String) -> Bool {
-  guard let version = nonEmptyTrimmed(version), !adeVersionIsDevBuild(version) else { return false }
-  return compareAdeVersions(version, target) < 0
-}
-
 // MARK: - What an update stops
 
 /// What a restart of one machine's ADE stops, as that machine answers
@@ -155,10 +98,17 @@ struct MachineUpdateImpact: Equatable {
     guard checked else { return "Anything running there stops when ADE restarts." }
     guard cliSessions + terminals > 0 else { return nil }
     let cliReopen = cliSessions > 0 && cliSessionsReopen && continueAfterRestart != false
-    guard cliReopen else { return "CLI sessions and terminals close and don’t reopen." }
-    return terminals > 0
-      ? "CLI sessions reopen after the update. Terminals close and don’t reopen."
-      : "CLI sessions reopen after the update."
+    // Name only what is open: CLI sessions, terminals, or both.
+    let cliClose = cliSessions > 0 && !cliReopen
+    let terminalsClose = terminals > 0
+    let closeLine: String?
+    switch (cliClose, terminalsClose) {
+    case (true, true): closeLine = "CLI sessions and terminals close and don’t reopen."
+    case (true, false): closeLine = "CLI sessions close and don’t reopen."
+    case (false, true): closeLine = "Terminals close and don’t reopen."
+    case (false, false): closeLine = nil
+    }
+    return [cliReopen ? "CLI sessions reopen after the update." : nil, closeLine].compactMap { $0 }.joined(separator: " ")
   }
 
   /// The machine's "Continue chats after restarts", when it said, or the
@@ -402,9 +352,11 @@ final class MachineUpdateStore: ObservableObject {
         stableVersion = stableVersion ?? manifestStable
         betaVersion = betaVersion ?? manifestBeta
       }
-      if let stableVersion { self.latestStable = stableVersion }
-      if let betaVersion { self.latestBeta = betaVersion }
-      self.lastManifestRead = Date()
+      // A track only takes a build of that track, as the desktop's reader does.
+      if let stableVersion, !adeVersionIsBetaTrack(stableVersion) { self.latestStable = stableVersion }
+      if let betaVersion, adeVersionIsBetaTrack(betaVersion) { self.latestBeta = betaVersion }
+      // Only an answer is reused; a read that got nothing tries again next time.
+      if stableVersion != nil || betaVersion != nil { self.lastManifestRead = Date() }
     }
     manifestRead = task
     await task.value
@@ -426,6 +378,7 @@ final class MachineUpdateStore: ObservableObject {
             let record = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
       return (Self.validVersion(record["stable"] as? String), Self.validVersion(record["beta"] as? String))
     } catch {
+      machineUpdateLog.notice("account latest releases read failed error=\(error.localizedDescription, privacy: .public)")
       return nil
     }
   }
@@ -579,6 +532,16 @@ final class MachineUpdateStore: ObservableObject {
           timeoutNanoseconds: Self.updateTimeoutNanoseconds
         )
         attempt = MachineUpdateAttempt.fromResult(raw, name: target.name, now: Date())
+      } catch let error where Self.lostAnswer(error) {
+        // Sent, and the answer lost to the restart or the link: wait for the
+        // machine to come back on the version it was sent.
+        attempt = MachineUpdateAttempt(
+          ok: true,
+          message: "Lost touch with \(target.name) while it updated — checking when it’s back.",
+          pendingVersion: target.targetVersion,
+          downloading: false,
+          startedAt: Date()
+        )
       } catch {
         attempt = .failed(Self.sendFailureMessage(error, name: target.name), now: Date())
       }
@@ -591,7 +554,19 @@ final class MachineUpdateStore: ObservableObject {
   }
 
   /// The restart drops the link the reply would come back on. A reply lost
-  /// that way is not a failure; the reconnect tells.
+  /// that way is not a failure; the reconnect tells. An answered error, or a
+  /// refusal before anything was sent, is.
+  ///
+  /// Refused before sending: 15 (the focused link is not live) and 41 (`send`
+  /// found no live link). A closed link fails what it sent with 26 (focused)
+  /// or 14 (a machine's own link, which `send` checked was live first). The
+  /// update is runtime-scoped, so 26's "needs the lane's project" never applies.
+  private static func lostAnswer(_ error: Error) -> Bool {
+    if isRemoteCommandApplicationError(error) || isSyncHostUnavailableError(error) { return false }
+    let nsError = error as NSError
+    return !(nsError.domain == "ADE" && [15, 41].contains(nsError.code))
+  }
+
   private static func sendFailureMessage(_ error: Error, name: String) -> String {
     let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
     return message.isEmpty ? "ADE could not ask \(name) to update." : message
@@ -611,6 +586,7 @@ final class MachineUpdateStore: ObservableObject {
       )
       return MachineUpdateImpact(json: raw) ?? .unknown
     } catch {
+      machineUpdateLog.notice("update impact read failed machine=\(machineKey, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
       return .unknown
     }
   }
@@ -626,7 +602,9 @@ final class MachineUpdateStore: ObservableObject {
         timeoutNanoseconds: timeoutNanoseconds
       )
     }
-    guard let connection = fleet?.connection(for: machineKey) else { throw Self.unreachable }
+    // Live before sending, so a failure after this is the link closing under it.
+    guard let connection = fleet?.connection(for: machineKey),
+          fleet?.isLive(machineKey) == true else { throw Self.unreachable }
     return try await connection.sendCommand(
       action: action,
       args: args,

@@ -178,16 +178,19 @@ roster socket, or a socket parked there while the host is down). Policy is
 `controllerAllowed` only, never queueable: any paired phone or browser may
 run them, while a desktop viewer, an unpaired socket or a lane-share guest is
 refused. The requester's name comes from the pairing record when there is
-one, not from the client's claim. Only a brain started by `ade serve` that
+one, not from the client's claim: the brain ingress reads its peer's record,
+and the project host passes its peer's record to `machine.*` commands
+(`SyncRemoteCommandExecutionContext.requester`). Only a brain started by `ade serve` that
 owns its machine installs them (`setMachineUpdateRemoteCommands`). An
 embedded runtime installs nothing, advertises nothing, and the phone keeps
 "Update ADE on that computer". ADE Web sends the same two commands from its
 `remoteRuntime.updateAndRestart` / `getUpdateImpact` (`webclient/adapter/federated.ts`),
 so the desktop's own update screens work in a browser tab. The phone and the
 web learn which build is newest from the account directory's
-`GET /releases/latest`, which reads the same two release manifests the
-desktop reads (`latestByTrack.ts`). The phone falls back to the manifests
-directly when signed out. No client moves a machine across tracks.
+`GET /releases/latest`, which runs the desktop's own reader
+(`apps/desktop/src/shared/latestByTrack.ts`) over the same two release
+manifests; a track only takes a build of that track. The phone falls back to
+the manifests directly when signed out. No client moves a machine across tracks.
 
 `cto.getAttention` is optional for the same reason. The phone checks
 `supportsRemoteAction("cto.getAttention")` before probing, so against an older

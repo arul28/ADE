@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BETA_FEED_MANIFEST_URL, LATEST_STABLE_MANIFEST_URL } from "../../../shared/updateTrack";
+import { BETA_FEED_MANIFEST_URL, LATEST_STABLE_MANIFEST_URL } from "./updateTrack";
 import { createLatestByTrackReader } from "./latestByTrack";
 
 /**

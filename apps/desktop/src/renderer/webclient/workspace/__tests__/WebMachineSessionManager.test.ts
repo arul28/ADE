@@ -108,6 +108,10 @@ class FakeSyncClient {
     return null;
   }
 
+  getCommandDescriptors(): [] {
+    return [];
+  }
+
   getProjectCatalog = vi.fn(async () => ({
     projects: [
       this.project(`project-${this.status.selectedEnvId}`),

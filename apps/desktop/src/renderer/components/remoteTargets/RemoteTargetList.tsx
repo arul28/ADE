@@ -1243,7 +1243,10 @@ export function RemoteTargetList({
               ? updateAttempt.pendingVersion
               // A cloud computer updates itself; its card shows that line instead.
               : row.connected && !extras.selfUpdating
-                ? machineUpdateTargetVersion({ version: row.version }, knownVersions)
+                ? machineUpdateTargetVersion(
+                    { version: row.version, canUpdate: row.status?.capabilities?.remoteUpdate !== false },
+                    knownVersions,
+                  )
                 : null
           }
           manualDownloadUrl={machineUpdateIsManual(row.status ?? {}, updateAttempt) ? row.status?.downloadUrl ?? updateAttempt?.downloadUrl ?? null : undefined}

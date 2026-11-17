@@ -1,5 +1,7 @@
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { CLOUD_PATHS } from "../../../../../account-directory/src/cloud/contract";
+import { LATEST_RELEASES_PATH, type LatestReleasesResponse } from "../../../../../account-directory/src/latestReleasesContract";
+import { validVersionOn } from "../../../shared/latestByTrack";
 import { captureError } from "../../../shared/sentry/capture";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 // Loaded on the first read, so the signed-out page does not pay for it.
@@ -1209,8 +1211,13 @@ export class BrowserAccountClient {
    * downloads, so the account directory reads them. One read per ten minutes;
    * null for a track never read. Never rejects.
    */
-  async readLatestReleases(): Promise<{ stable: string | null; beta: string | null }> {
-    const empty = { stable: null, beta: null };
+  /** The last `readLatestReleases` answer, without a read. */
+  peekLatestReleases(): LatestReleasesResponse {
+    return this.latestReleases?.value ?? { stable: null, beta: null };
+  }
+
+  async readLatestReleases(): Promise<LatestReleasesResponse> {
+    const empty: LatestReleasesResponse = { stable: null, beta: null };
     const config = this.config;
     if (!config || !browserAccountIsSignedIn(this.snapshot.state)) return this.latestReleases?.value ?? empty;
     if (this.latestReleases && Date.now() - this.latestReleases.atMs < LATEST_RELEASES_REUSE_MS) return this.latestReleases.value;
@@ -1220,7 +1227,7 @@ export class BrowserAccountClient {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), DIRECTORY_MUTATION_TIMEOUT_MS);
         try {
-          const response = await (this.options.fetchImpl ?? fetch)(`${config.directoryBaseUrl}/releases/latest`, {
+          const response = await (this.options.fetchImpl ?? fetch)(`${config.directoryBaseUrl}${LATEST_RELEASES_PATH}`, {
             method: "GET",
             headers: { accept: "application/json", authorization: `Bearer ${token}` },
             credentials: "omit",
@@ -1229,20 +1236,23 @@ export class BrowserAccountClient {
             redirect: "error",
             signal: controller.signal,
           });
-          if (!response.ok) return this.latestReleases?.value ?? empty;
+          if (!response.ok) {
+            forwardSignalToSentry("web.latest_releases_read_failed", { status: response.status }, "latest_releases_read_failed", "info");
+            return this.latestReleases?.value ?? empty;
+          }
           const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-          const version = (raw: unknown): string | null =>
-            typeof raw === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(raw.trim()) ? raw.trim() : null;
-          const value = {
-            stable: version(body?.stable) ?? this.latestReleases?.value.stable ?? null,
-            beta: version(body?.beta) ?? this.latestReleases?.value.beta ?? null,
+          const read = (raw: unknown) => (typeof raw === "string" ? raw : null);
+          const value: LatestReleasesResponse = {
+            stable: validVersionOn("stable", read(body?.stable)) ?? this.latestReleases?.value.stable ?? null,
+            beta: validVersionOn("beta", read(body?.beta)) ?? this.latestReleases?.value.beta ?? null,
           };
           this.latestReleases = { value, atMs: Date.now() };
           return value;
         } finally {
           clearTimeout(timer);
         }
-      } catch {
+      } catch (error) {
+        forwardSignalToSentry("web.latest_releases_read_failed", { message: error instanceof Error ? error.message : String(error) }, "latest_releases_read_failed", "info");
         return this.latestReleases?.value ?? empty;
       } finally {
         this.latestReleasesRead = null;
@@ -1251,8 +1261,8 @@ export class BrowserAccountClient {
     return await this.latestReleasesRead;
   }
 
-  private latestReleases: { value: { stable: string | null; beta: string | null }; atMs: number } | null = null;
-  private latestReleasesRead: Promise<{ stable: string | null; beta: string | null }> | null = null;
+  private latestReleases: { value: LatestReleasesResponse; atMs: number } | null = null;
+  private latestReleasesRead: Promise<LatestReleasesResponse> | null = null;
 
   /**
    * The account's project list, read from the account directory (S14). The

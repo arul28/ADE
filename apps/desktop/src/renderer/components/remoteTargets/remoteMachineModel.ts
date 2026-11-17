@@ -863,6 +863,8 @@ export type ConnectedMachine = {
   arch?: string | null;
   updateInstallMode?: RemoteRuntimeConnectionStatus["updateInstallMode"];
   downloadUrl?: string | null;
+  /** False when this client cannot ask it to update (`RemoteRuntimeCapabilities.remoteUpdate`). */
+  canUpdate?: boolean;
 };
 
 /** The machines a connection snapshot says are connected right now. */
@@ -883,6 +885,7 @@ export function connectedMachinesFromSnapshot(
         arch: connection.arch ?? connection.target.lastSeenArch ?? null,
         updateInstallMode: connection.updateInstallMode,
         downloadUrl: connection.downloadUrl,
+        canUpdate: connection.capabilities?.remoteUpdate !== false,
       };
     });
 }
@@ -931,17 +934,28 @@ export function newestKnownVersionOnTrack(known: readonly string[], track: Updat
 }
 
 /**
- * The version to offer `machine`: the newest this computer knows on the
- * machine's own track, when the machine is behind it. Null when it is level,
- * when its version cannot be read, or when this computer knows no build on
- * that track; it is then not called behind, since nothing here can say so.
+ * The newest build this computer knows on the machine's own track, when the
+ * machine is behind it. Null when it is level, when its version cannot be
+ * read, or when this computer knows no build on that track; it is then not
+ * called behind, since nothing here can say so.
  */
-export function machineUpdateTargetVersion(
+export function machineBehindVersion(
   machine: Pick<ConnectedMachine, "version" | "track">,
   known: readonly string[],
 ): string | null {
   const target = newestKnownVersionOnTrack(known, machineUpdateTrack(machine));
   return target && isMachineVersionOutdated(machine.version, target) ? target : null;
+}
+
+/**
+ * The version to offer `machine`: `machineBehindVersion`, unless its ADE
+ * cannot be updated from here (`canUpdate` false; it is updated on itself).
+ */
+export function machineUpdateTargetVersion(
+  machine: Pick<ConnectedMachine, "version" | "track" | "canUpdate">,
+  known: readonly string[],
+): string | null {
+  return machine.canUpdate === false ? null : machineBehindVersion(machine, known);
 }
 
 /** A machine to update, and the version on its own track it is sent. */

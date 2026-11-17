@@ -4,6 +4,7 @@ import {
   type AppResourceUsageSnapshot,
   type AppWelcomeVideoState,
   type AutoUpdatePreferences,
+  type AutoUpdateSnapshot,
   type ProjectInfo,
   type UpdateInstallImpact,
 } from "../../../shared/types";
@@ -260,7 +261,7 @@ export const webKeepAwakeMethods = {
 };
 
 export const webUpdateMethods = {
-  async updateGetState() {
+  async updateGetState(): Promise<AutoUpdateSnapshot> {
     return {
       status: "idle",
       currentVersion: "",

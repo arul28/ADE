@@ -127,6 +127,7 @@ import {
 import { evaluateRemoteCommandPolicy } from "./syncRemoteCommandService";
 import {
   isMachineUpdateRemoteCommandAction,
+  MACHINE_UPDATE_AND_RESTART_ACTION,
   machineUpdateRemoteCommandDescriptors,
   runMachineUpdateRemoteCommand,
 } from "./machineUpdateRemoteCommands";
@@ -1214,6 +1215,38 @@ export function createBrainProjectActionsSyncHandler(
           : envelope.requestId ?? "";
         const action = typeof payload?.action === "string" ? payload.action : "";
         const commandArgs = payload?.args ?? {};
+        // The answers every command handled here gives: a refusal, or an
+        // acceptance followed by the result or the failure.
+        const rejectCommand = (code: string, message: string): void => {
+          send(peer.ws, "command_ack", { commandId, accepted: false, status: "rejected", message }, envelope.requestId);
+          send(peer.ws, "command_result", { commandId, ok: false, error: { code, message } }, envelope.requestId);
+        };
+        const acceptCommand = (): void => {
+          send(peer.ws, "command_ack", {
+            commandId,
+            accepted: true,
+            status: "accepted",
+            message: `Executing ${action}.`,
+          }, envelope.requestId);
+        };
+        const failCommand = (error: unknown): void => {
+          send(peer.ws, "command_result", {
+            commandId,
+            ok: false,
+            error: { code: "command_failed", message: error instanceof Error ? error.message : String(error) },
+          }, envelope.requestId);
+        };
+        const runAcceptedCommand = async (run: () => Promise<unknown>): Promise<void> => {
+          acceptCommand();
+          try {
+            const result = await run();
+            if (!isCurrent()) return;
+            send(peer.ws, "command_result", { commandId, ok: true, result }, envelope.requestId);
+          } catch (error) {
+            if (!isCurrent()) return;
+            failCommand(error);
+          }
+        };
         if (action === SYNC_HOST_DIAGNOSE_ACTION || action === SYNC_HOST_RECOVER_ACTION) {
           const authorized = canManageSyncHost(peer);
           if (action === SYNC_HOST_RECOVER_ACTION && !authorized) {
@@ -1222,25 +1255,10 @@ export function createBrainProjectActionsSyncHandler(
               peerDeviceId: peer.metadata?.deviceId ?? null,
               peerDeviceType: peer.pairingRecord?.peerDeviceType ?? null,
             });
-            send(peer.ws, "command_ack", {
-              commandId,
-              accepted: false,
-              status: "rejected",
-              message,
-            }, envelope.requestId);
-            send(peer.ws, "command_result", {
-              commandId,
-              ok: false,
-              error: { code: "forbidden_command", message },
-            }, envelope.requestId);
+            rejectCommand("forbidden_command", message);
             break;
           }
-          send(peer.ws, "command_ack", {
-            commandId,
-            accepted: true,
-            status: "accepted",
-            message: `Executing ${action}.`,
-          }, envelope.requestId);
+          acceptCommand();
           try {
             if (action === SYNC_HOST_DIAGNOSE_ACTION) {
               // An explicit diagnose request is the one caller that pays for
@@ -1310,14 +1328,7 @@ export function createBrainProjectActionsSyncHandler(
               action,
               errorType: error instanceof Error ? error.name : typeof error,
             });
-            send(peer.ws, "command_result", {
-              commandId,
-              ok: false,
-              error: {
-                code: "command_failed",
-                message: error instanceof Error ? error.message : String(error),
-              },
-            }, envelope.requestId);
+            failCommand(error);
           }
           break;
         }
@@ -1340,76 +1351,37 @@ export function createBrainProjectActionsSyncHandler(
               peerDeviceId: peer.metadata?.deviceId ?? null,
               peerDeviceType: peer.pairingRecord?.peerDeviceType ?? null,
             });
-            send(peer.ws, "command_ack", {
-              commandId,
-              accepted: false,
-              status: "rejected",
-              message: rejection.message,
-            }, envelope.requestId);
-            send(peer.ws, "command_result", {
-              commandId,
-              ok: false,
-              error: { code: rejection.code, message: rejection.message },
-            }, envelope.requestId);
+            rejectCommand(rejection.code, rejection.message);
             break;
           }
-          send(peer.ws, "command_ack", {
-            commandId,
-            accepted: true,
-            status: "accepted",
-            message: `Executing ${action}.`,
-          }, envelope.requestId);
-          try {
-            const result = await runMachineUpdateRemoteCommand(
-              action,
-              commandArgs as Record<string, unknown>,
-              peer.pairingRecord,
-            );
-            if (!isCurrent()) return;
-            send(peer.ws, "command_result", { commandId, ok: true, result }, envelope.requestId);
-          } catch (error) {
-            if (!isCurrent()) return;
-            send(peer.ws, "command_result", {
-              commandId,
-              ok: false,
-              error: {
-                code: "command_failed",
-                message: error instanceof Error ? error.message : String(error),
-              },
-            }, envelope.requestId);
+          const runUpdate = runAcceptedCommand(() => runMachineUpdateRemoteCommand(
+            action,
+            commandArgs as Record<string, unknown>,
+            peer.pairingRecord,
+          ));
+          // An update runs for minutes: off this socket's queue, so its
+          // heartbeats and reads keep flowing while it downloads.
+          if (action === MACHINE_UPDATE_AND_RESTART_ACTION) {
+            void runUpdate.catch((error) => {
+              args.logger.warn("sync_brain.machine_update_detached_failed", {
+                action,
+                commandId,
+                errorType: error instanceof Error ? error.name : typeof error,
+              });
+            });
+          } else {
+            await runUpdate;
           }
           break;
         }
         const descriptor = action.startsWith("personalChats.")
           ? personalChatCommandDescriptors(args.personalChatScope).find((entry) => entry.action === action)
           : undefined;
-        if (action.startsWith("personalChats.") && args.personalChatScope && descriptor) {
-          send(peer.ws, "command_ack", {
-            commandId,
-            accepted: true,
-            status: "accepted",
-            message: `Executing ${action}.`,
-          }, envelope.requestId);
-          try {
-            const result = action === "personalChats.streamEvents"
-              ? await args.personalChatScope.streamEvents(commandArgs)
-              : (await args.personalChatScope.call(
-                  action.slice("personalChats.".length),
-                  commandArgs,
-                )).result;
-            if (!isCurrent()) return;
-            send(peer.ws, "command_result", { commandId, ok: true, result }, envelope.requestId);
-          } catch (error) {
-            if (!isCurrent()) return;
-            send(peer.ws, "command_result", {
-              commandId,
-              ok: false,
-              error: {
-                code: "command_failed",
-                message: error instanceof Error ? error.message : String(error),
-              },
-            }, envelope.requestId);
-          }
+        const personalChatScope = args.personalChatScope;
+        if (action.startsWith("personalChats.") && personalChatScope && descriptor) {
+          await runAcceptedCommand(async () => action === "personalChats.streamEvents"
+            ? await personalChatScope.streamEvents(commandArgs)
+            : (await personalChatScope.call(action.slice("personalChats.".length), commandArgs)).result);
           break;
         }
         const envelopeProjectId = optionalString(envelope.projectId);

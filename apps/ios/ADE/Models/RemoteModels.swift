@@ -491,6 +491,59 @@ func adeVersionIsBetaTrack(_ version: String?) -> Bool {
   return prerelease.split(separator: ".", omittingEmptySubsequences: false).first?.lowercased() == "beta"
 }
 
+/// The same ordering as desktop's `compareUpdateVersions`
+/// (`apps/desktop/src/shared/updateVersions.ts`): numeric core first, then
+/// prerelease precedence, where a release outranks any prerelease of its core.
+func compareAdeVersions(_ left: String, _ right: String) -> Int {
+  func parse(_ version: String) -> (core: [Int], prerelease: [String]) {
+    let text = adeVersionCore(version)
+    let coreText: Substring
+    let prereleaseText: Substring
+    if let dash = text.firstIndex(of: "-") {
+      coreText = text[..<dash]
+      prereleaseText = text[text.index(after: dash)...]
+    } else {
+      coreText = Substring(text)
+      prereleaseText = ""
+    }
+    let core = coreText.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) ?? 0 }
+    let prerelease = prereleaseText.isEmpty ? [] : prereleaseText.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+    return (core, prerelease)
+  }
+  let lhs = parse(left)
+  let rhs = parse(right)
+  for index in 0..<max(lhs.core.count, rhs.core.count, 3) {
+    let delta = (index < lhs.core.count ? lhs.core[index] : 0) - (index < rhs.core.count ? rhs.core[index] : 0)
+    if delta != 0 { return delta }
+  }
+  if lhs.prerelease.isEmpty && !rhs.prerelease.isEmpty { return 1 }
+  if !lhs.prerelease.isEmpty && rhs.prerelease.isEmpty { return -1 }
+  for index in 0..<max(lhs.prerelease.count, rhs.prerelease.count) {
+    guard index < lhs.prerelease.count else { return -1 }
+    guard index < rhs.prerelease.count else { return 1 }
+    let leftPart = lhs.prerelease[index]
+    let rightPart = rhs.prerelease[index]
+    switch (Int(leftPart), Int(rightPart)) {
+    case let (l?, r?):
+      if l != r { return l - r }
+    case (_?, nil):
+      return -1
+    case (nil, _?):
+      return 1
+    case (nil, nil):
+      if leftPart != rightPart { return leftPart < rightPart ? -1 : 1 }
+    }
+  }
+  return 0
+}
+
+/// True when `version` is older than `target`. A dev build or a version the
+/// phone has not heard is never "behind": nothing here can say so.
+func adeVersionIsBehind(_ version: String?, target: String) -> Bool {
+  guard let version = nonEmptyTrimmed(version), !adeVersionIsDevBuild(version) else { return false }
+  return compareAdeVersions(version, target) < 0
+}
+
 struct SyncAddressCandidate: Codable, Equatable, Identifiable {
   var id: String { "\(kind):\(host)" }
   var host: String

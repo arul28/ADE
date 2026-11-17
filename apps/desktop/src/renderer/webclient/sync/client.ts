@@ -106,6 +106,8 @@ export type WebAccountSessionLease = Readonly<{
 export type SendCommandOptions = {
   projectId?: string | null;
   timeoutMs?: number;
+  /** Called once when the machine accepts the command (its `command_ack`). */
+  onAccepted?: () => void;
 };
 
 export type FileRequestOptions = {
@@ -140,6 +142,7 @@ type PendingRequest<T> = {
 type PendingCommand = PendingRequest<unknown> & {
   commandId: string;
   acked: boolean;
+  onAccepted?: () => void;
 };
 
 type ChatSubscription = {
@@ -869,6 +872,7 @@ export class AdeSyncClient {
       const pending: PendingCommand = {
         commandId,
         acked: false,
+        onAccepted: opts.onAccepted,
         resolve,
         reject,
         generation,
@@ -1544,6 +1548,7 @@ export class AdeSyncClient {
       return;
     }
     pending.acked = true;
+    pending.onAccepted?.();
   }
 
   private handleCommandResult(payload: SyncCommandResultPayload): void {

@@ -439,10 +439,10 @@ import { createWebhookRemoteCommandHandlers, type WebhookRemoteSource } from "./
 import { createAutomationRuleRemoteCommandHandlers, type AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 import { readAgentSkill } from "../skills/agentSkillCatalogService";
 import {
-  getMachineUpdateRemoteCommands,
-  MACHINE_UPDATE_REMOTE_COMMAND_ACTIONS,
-  MACHINE_UPDATE_REMOTE_COMMAND_POLICY,
+  isMachineUpdateRemoteCommandAction,
+  machineUpdateRemoteCommandDescriptors,
   runMachineUpdateRemoteCommand,
+  type MachineUpdatePairing,
 } from "./machineUpdateRemoteCommands";
 
 export type ExternalSessionsRemoteService = {
@@ -832,6 +832,12 @@ export type SyncRemoteCommandExecutionContext = {
    * before it acts (`expectedTurnId`). Absent: no check.
    */
   expectedTurnId?: string | null;
+  /**
+   * Set only by the host, for `machine.*` commands: the invoking peer's
+   * pairing record, so "who asked for this update" names the paired device
+   * rather than what the client says it is. Null: not a paired peer.
+   */
+  requester?: MachineUpdatePairing | null;
 };
 
 /** The turn a host-set `expectedTurnId` names, added to a guest's args. */
@@ -5948,13 +5954,14 @@ function registerPersonalChatRemoteCommands({ args, register }: RemoteCommandReg
  * host's socket. Registered only on a brain that can update itself.
  */
 function registerMachineUpdateRemoteCommands({ register }: RemoteCommandRegistrationDeps): void {
-  if (!getMachineUpdateRemoteCommands()) return;
-  for (const action of MACHINE_UPDATE_REMOTE_COMMAND_ACTIONS) {
+  // The descriptors the hello advertises; none when this brain cannot update itself.
+  for (const { action, policy, scope } of machineUpdateRemoteCommandDescriptors()) {
+    if (!isMachineUpdateRemoteCommandAction(action)) continue;
     register(
       action,
-      { ...MACHINE_UPDATE_REMOTE_COMMAND_POLICY },
-      async (payload) => await runMachineUpdateRemoteCommand(action, payload, null),
-      "runtime",
+      policy,
+      async (payload, context) => await runMachineUpdateRemoteCommand(action, payload, context.requester ?? null),
+      scope,
     );
   }
 }
