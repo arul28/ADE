@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PendingInputRequest } from "../../../shared/types";
-import { createCodexPlanDecisions, readCodexPlanHandoffs, type CodexPlanHandoffRecord } from "./codexPlanHandoff";
+import { createCodexPlanDecisions, readCodexPlanHandoffs, type CodexPlanHandoffRecord, type PlanPresence } from "./codexPlanHandoff";
 
 /**
  * The plan-handoff coordinator is a state machine with no UI and no provider:
@@ -46,7 +46,7 @@ function deps(records: CodexPlanHandoffRecord[]) {
         existing.add(record.implementationSessionId);
       }),
       exists: (id: string) => existing.has(id),
-      hasPlan: vi.fn(async (id: string) => withPlan.has(id)),
+      hasPlan: vi.fn(async (id: string): Promise<PlanPresence> => (withPlan.has(id) ? "present" : "absent")),
       send: vi.fn(async (id: string, plan: string) => {
         sent.push({ sessionId: id, plan });
         withPlan.add(id);

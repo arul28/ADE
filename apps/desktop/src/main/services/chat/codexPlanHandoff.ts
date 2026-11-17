@@ -16,6 +16,15 @@ export type CodexPlanHandoffRecord = {
   submitted: boolean;
 };
 
+/**
+ * Whether the destination chat holds the plan.
+ *
+ * `unknown` is its own answer on purpose: a transcript read that fails must not
+ * be mistaken for "the plan was never sent", which would delete a chat that
+ * already owns it and send the plan a second time.
+ */
+export type PlanPresence = "present" | "absent" | "unknown";
+
 /** How many approvals a chat remembers; the oldest finished one is dropped first. */
 const MAX_PLAN_HANDOFFS = 32;
 
@@ -123,7 +132,7 @@ export function createCodexPlanDecisions() {
       /** The destination's chat row still exists. */
       exists: (sessionId: string) => boolean;
       /** The destination already holds this plan (its durable `user_message`). */
-      hasPlan: (sessionId: string, itemId: string) => Promise<boolean>;
+      hasPlan: (sessionId: string, itemId: string) => Promise<PlanPresence>;
       send: (sessionId: string, plan: string) => Promise<void>;
       /** The send threw, but the destination kept the plan; it owns the retry. */
       onAcceptedSendError: (error: unknown) => void;
@@ -198,20 +207,25 @@ export function createCodexPlanDecisions() {
               if (!await args.pending()) {
                 throw new Error("This plan was answered or cancelled while its implementation chat was starting.");
               }
-              if (!await args.hasPlan(record.implementationSessionId, args.itemId)) {
+              const presence = await args.hasPlan(record.implementationSessionId, args.itemId);
+              if (presence === "unknown") {
+                throw new Error("Couldn't read the implementation chat to confirm the plan. Nothing was sent; retry in a moment.");
+              }
+              if (presence === "absent") {
                 try {
                   await args.send(record.implementationSessionId, plan);
                 } catch (error) {
-                  if (!await args.hasPlan(record.implementationSessionId, args.itemId)) throw error;
+                  // Only a confirmed "absent" may send again; an unreadable
+                  // destination keeps the plan where it is.
+                  if (await args.hasPlan(record.implementationSessionId, args.itemId) === "absent") throw error;
                   // The prompt is in the destination's transcript, so that chat
                   // owns recovery. Sending it again would put it in twice.
                   args.onAcceptedSendError(error);
                 }
               }
             } catch (error) {
-              if (!await args.hasPlan(record.implementationSessionId, args.itemId).catch(() => false)) {
-                await dropReservation(record);
-              }
+              const presence = await args.hasPlan(record.implementationSessionId, args.itemId).catch(() => "unknown" as const);
+              if (presence === "absent") await dropReservation(record);
               throw error;
             }
             record.submitted = true;

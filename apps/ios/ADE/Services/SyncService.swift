@@ -17751,10 +17751,19 @@ final class SyncService: ObservableObject {
     // lets the next screen read it; the row itself arrives with the next
     // refresh.
     if let implementationSessionId = result.implementationSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !implementationSessionId.isEmpty,
-       chatCommandScopeBySession[implementationSessionId] == nil,
-       let scope = chatCommandScopeBySession[sessionId] {
-      chatCommandScopeBySession[implementationSessionId] = scope
+       !implementationSessionId.isEmpty {
+      // The destination lives on the planning chat's computer, exactly like a
+      // side chat does. Copying only the project would leave navigation unable
+      // to build its remote context until the next roster update, so reads could
+      // go to whichever computer is focused.
+      if let remote = remoteMachineChatsBySession[sessionId] {
+        viewOwnedRemoteChatIds.insert(implementationSessionId)
+        remoteMachineChatsBySession[implementationSessionId] = remote
+      }
+      if chatCommandScopeBySession[implementationSessionId] == nil,
+         let scope = chatCommandScopeBySession[sessionId] {
+        chatCommandScopeBySession[implementationSessionId] = scope
+      }
     }
     return result
   }

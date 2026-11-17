@@ -1,4 +1,4 @@
-import { createCodexPlanDecisions, readCodexPlanHandoffs, type CodexPlanHandoffRecord } from "./codexPlanHandoff";
+import { createCodexPlanDecisions, readCodexPlanHandoffs, type CodexPlanHandoffRecord, type PlanPresence } from "./codexPlanHandoff";
 import { cutTextAtCodePoint, tailTextAtCodePoint } from "../../../shared/codePointText";
 import { StringDecoder } from "node:string_decoder";
 import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
@@ -76148,17 +76148,20 @@ export function createAgentChatService(args: {
    * is what stops a crash between the send and its receipt from putting the
    * plan — and a second implementation turn — into the chat twice.
    */
-  const implementationChatHasPlan = async (sessionId: string, itemId: string): Promise<boolean> => {
-    if (!sessionService.get(sessionId)) return false;
+  const implementationChatHasPlan = async (sessionId: string, itemId: string): Promise<PlanPresence> => {
+    if (!sessionService.get(sessionId)) return "absent";
     const history = await getChatEventHistory(sessionId, { maxEvents: 512 }).catch(() => null);
-    if (!history) return false;
-    if (history.truncated) return true;
-    return history.events.some(({ event }) => {
+    // A read that failed says nothing about the chat. Reporting `absent` would
+    // delete a destination that already holds the plan and send it again.
+    if (!history) return "unknown";
+    if (history.truncated) return "present";
+    const found = history.events.some(({ event }) => {
       if (event.type !== "user_message") return false;
       const marker = event.metadata?.planHandoff;
       return Boolean(marker) && typeof marker === "object"
         && (marker as { itemId?: unknown }).itemId === itemId;
     });
+    return found ? "present" : "absent";
   };
 
   const implementCodexPlanInNewChat = async (input: AgentChatRespondToInputArgs): Promise<{ implementationSessionId: string }> => {
@@ -76196,6 +76199,16 @@ export function createAgentChatService(args: {
           if (existing) {
             if (existing.laneId !== managed.session.laneId || !isChatToolType(existing.toolType)) {
               throw new Error("The reserved implementation chat no longer matches this plan.");
+            }
+            // A row written by a create that then failed never got the plan's
+            // access. Give it the same access once, and only while it has run no
+            // turn: after that the destination's own choice is the truth.
+            const reused = ensureManagedSession(existing.id);
+            if (!reused.session.threadId && reused.session.status === "idle" && !reused.session.permissionPolicy) {
+              applyLegacyPermissionModeToNativeControls(reused.session, "full-auto");
+              reused.session.interactionMode = "default";
+              reassertIdentityPermissionMode(reused.session);
+              persistChatState(reused, { fsync: true });
             }
             return;
           }
@@ -76265,13 +76278,19 @@ export function createAgentChatService(args: {
         complete: async (record) => {
           if (managed.deleted) throw new Error("The planning chat was deleted.");
           if (!sessionService.get(record.implementationSessionId)) {
-            // The chat this plan went to is gone. Put the card back rather than
-            // leaving a dead end: the plan is still in this conversation, so the
-            // person can implement here or start another chat.
+            // The chat this plan went to is gone. Drop the reservation so a later
+            // handoff starts a new chat instead of reopening a dead id. The card
+            // is only still open while no receipt was written; once the person
+            // approved, that approval stands (the transcript receipt is
+            // append-only), and the message says which of the two it is.
             const index = records.indexOf(record);
             if (index >= 0) records.splice(index, 1);
             save();
-            throw new Error("The implementation chat was deleted. The plan is still in this conversation, so choose Implement here or start another new chat.");
+            const settled = (await getChatEventHistory(input.sessionId, { maxEvents: 64 }).catch(() => null))?.events.some(({ event }) =>
+              event.type === "pending_input_resolved" && event.itemId === input.itemId);
+            throw new Error(settled
+              ? "That implementation chat was deleted. This plan is still in this conversation, and it was already approved, so ask Codex for a new plan to implement it again."
+              : "The implementation chat was deleted. The plan is still in this conversation, so choose Implement here or start another new chat.");
           }
           // Durable before the receipt: from here a restart reopens the same
           // chat instead of creating a second one, and the card can settle for
@@ -76366,8 +76385,14 @@ export function createAgentChatService(args: {
       }
       const reserved = managed.codexPlanHandoffs?.find((record) => record.itemId === args.itemId);
       if (reserved) {
-        if (reserved.submitted || await implementationChatHasPlan(reserved.implementationSessionId, args.itemId)) {
+        const presence = reserved.submitted
+          ? "present" as const
+          : await implementationChatHasPlan(reserved.implementationSessionId, args.itemId);
+        if (presence === "present") {
           throw new Error("This plan already has an implementation chat. Retry Implement in a new chat to open it.");
+        }
+        if (presence === "unknown") {
+          throw new Error("Couldn't read the implementation chat for this plan. Nothing was changed; retry in a moment.");
         }
         if (sessionService.get(reserved.implementationSessionId)) await deleteSession({ sessionId: reserved.implementationSessionId });
         managed.codexPlanHandoffs = managed.codexPlanHandoffs?.filter((record) => record !== reserved);
