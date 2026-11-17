@@ -278,7 +278,11 @@ One full-bleed row, three lines:
 machine, branch, provider, PR, parent thread, spawn kind, live children,
 import source, grid membership, Claude tag, next wake, non-zero exit and the
 cleanup hint. PR and parent are links. Row-to-row movement opens the next card
-at once; scroll and resize cancel it.
+at once; scroll and resize cancel it. A key press, or a press outside the
+card, cancels or closes it, and cards then stay closed until the pointer moves
+3 px; the row under the pointer then starts its delay again. A list that
+re-sorts under a resting pointer therefore opens no card over the composer.
+A press or a key inside the card keeps it open.
 
 A card with `disabledReason` (its lane is being deleted) blocks selection,
 drag and its menu and shows a status overlay. Selection and hover use the row

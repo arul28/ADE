@@ -63,11 +63,26 @@ let waitForPointerMove = false;
 let pointerMoveListener: ((event: PointerEvent) => void) | null = null;
 /** Movement that counts as the person moving the pointer, in CSS pixels. */
 const POINTER_MOVE_THRESHOLD_PX = 3;
+/**
+ * The row the pointer is resting on, so the end of a hold can restart that
+ * row's delay instead of making the person leave and come back. Rows set it on
+ * enter and clear it on leave; the release only acts on it while the row still
+ * reports hover, so a row the list scrolled away under a still pointer cannot
+ * open a card for a pointer that has moved on.
+ */
+let hoveredRow: { element: HTMLElement; reopen: () => void } | null = null;
 
-function holdCardsUntilPointerMoves(): void {
+/**
+ * `from` is where the press that armed the hold happened, when it was a
+ * pointer press. Measuring the first `pointermove` against it means a fast
+ * move that arrives as a single event still counts; without it the first
+ * event could only seed the origin, and a pointer that then stopped would
+ * leave every card shut.
+ */
+function holdCardsUntilPointerMoves(from: { x: number; y: number } | null): void {
   waitForPointerMove = true;
   if (pointerMoveListener || typeof window === "undefined") return;
-  let origin: { x: number; y: number } | null = null;
+  let origin = from;
   pointerMoveListener = (event: PointerEvent) => {
     if (!origin) {
       origin = { x: event.clientX, y: event.clientY };
@@ -75,11 +90,33 @@ function holdCardsUntilPointerMoves(): void {
     }
     const moved = Math.abs(event.clientX - origin.x) + Math.abs(event.clientY - origin.y);
     if (moved < POINTER_MOVE_THRESHOLD_PX) return;
-    waitForPointerMove = false;
-    if (pointerMoveListener) window.removeEventListener("pointermove", pointerMoveListener, true);
-    pointerMoveListener = null;
+    releasePointerHold();
   };
   window.addEventListener("pointermove", pointerMoveListener, { capture: true, passive: true });
+}
+
+function releasePointerHold(): void {
+  waitForPointerMove = false;
+  if (pointerMoveListener) window.removeEventListener("pointermove", pointerMoveListener, true);
+  pointerMoveListener = null;
+  const resting = hoveredRow;
+  if (resting?.element.isConnected && resting.element.matches(":hover")) resting.reopen();
+}
+
+/**
+ * A press, a key, or a text selection on the card's own activatable rows
+ * belongs to the card — the branch and tag rows exist to be copied
+ * character-exact, and a key press must not unmount the selection first.
+ */
+function belongsToHoverCard(event: Event): boolean {
+  const target = event.target;
+  if (target instanceof Element && target.closest("[data-session-hover-card]")) return true;
+  if (event.type !== "keydown" || typeof window === "undefined") return false;
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+  const node = selection.getRangeAt(0).commonAncestorContainer;
+  const element = node instanceof Element ? node : node.parentElement;
+  return element?.closest("[data-session-hover-card]") != null;
 }
 
 export type SessionHoverCardRow = {
@@ -170,8 +207,6 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
 
   const scheduleOpen = React.useCallback(
     (element: HTMLElement, directHandoff: boolean) => {
-      // A key press or a click since the pointer last moved: not a rest.
-      if (waitForPointerMove) return;
       // One hover pane at a time. A direct sibling handoff opens below without
       // delay; every other arrival dismisses stale UI and earns a fresh second.
       activeHoverCard?.dismiss();
@@ -180,7 +215,9 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
 
       const open = () => {
         setPendingOpen(false);
-        // A key press or a click came while the delay ran.
+        // A key press or a click landed while the delay ran and the pointer has
+        // not moved since, so this is still a list re-sorting under a resting
+        // pointer, not a rest of its own.
         if (waitForPointerMove) return;
         // The pointer moved onto the PR pill (or its list) while the delay ran.
         if (isPointerOnRowHoverSuppress()) return;
@@ -212,6 +249,7 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
     (event: React.MouseEvent<HTMLElement>) => {
       if (disabled) return;
       const element = event.currentTarget;
+      hoveredRow = { element, reopen: () => scheduleOpen(element, false) };
       const related = event.relatedTarget;
       const sourceRow = related instanceof Element
         ? related.closest<HTMLElement>("[data-session-row]")
@@ -247,7 +285,8 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
     [close, disabled, scheduleOpen],
   );
 
-  const onMouseLeave = React.useCallback(() => {
+  const onMouseLeave = React.useCallback((event: React.MouseEvent<HTMLElement>) => {
+    if (hoveredRow?.element === event.currentTarget) hoveredRow = null;
     pointerOnNestedControlRef.current = false;
     if (openTimerRef.current != null) {
       // Still waiting: a leave cancels outright, with no close grace.
@@ -270,17 +309,18 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
 
   // A scrolled list moves the anchor out from under the card, and re-measuring
   // mid-scroll would make it chase the row. Cancel instead — the pointer has
-  // not "rested" on anything while the list is moving. A key press or a click
-  // cancels too, and holds every card until the pointer moves again. The
+  // not "rested" on anything while the list is moving. A key press or a press
+  // outside the card cancels too, and holds every card until the pointer moves
+  // again; `releasePointerHold` resumes the row the pointer never left. The
   // listeners exist only while a card is open or waiting to open.
   React.useEffect(() => {
     if (!anchor && !pendingOpen) return undefined;
     const cancel = () => close();
     const yieldToAction = (event: Event) => {
-      // A click inside the open card (an activatable row) belongs to the card.
-      if (event.type === "pointerdown" && event.target instanceof Element
-        && event.target.closest("[data-session-hover-card]")) return;
-      holdCardsUntilPointerMoves();
+      if (belongsToHoverCard(event)) return;
+      holdCardsUntilPointerMoves(
+        event instanceof MouseEvent ? { x: event.clientX, y: event.clientY } : null,
+      );
       close();
     };
     window.addEventListener("scroll", cancel, true);
@@ -308,11 +348,8 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
 /** Test seam: the active cross-row handoff is module state. */
 export function resetSessionHoverCardGroupForTests(): void {
   activeHoverCard = null;
-  waitForPointerMove = false;
-  if (pointerMoveListener && typeof window !== "undefined") {
-    window.removeEventListener("pointermove", pointerMoveListener, true);
-  }
-  pointerMoveListener = null;
+  hoveredRow = null;
+  releasePointerHold();
 }
 
 export function SessionHoverCard({
