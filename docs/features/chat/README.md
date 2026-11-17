@@ -3620,10 +3620,13 @@ What the chat shows:
 - **No sent bubble.** When the queue took a send, the pane clears the
   outgoing bubble (`adeCloudQueueHoldsMessage`). The queued row stands for
   the message, so a cancelled message never reads as sent.
-- **Delivered.** The live `user_message` event has no send id, so a queued
-  row goes when a user message with the same text arrives after the row
-  showed. One arrival takes away one row, the oldest, so two queued messages
-  with the same words go one at a time.
+- **Delivered.** The `user_message` event carries the `clientSendId` of its
+  send, which is the queued row's `messageId`. A row goes when a user message
+  with its id arrives. An older host writes no id: then a row goes when a user
+  message with the same text and no id arrives after the row showed. One
+  arrival takes away one row, the oldest, so two queued messages with the
+  same words go one at a time. Words typed in the live chat (a message with
+  an id) never clear a queued row.
 - **Failed messages** stay with the server's sentence until the person acts:
   **Put back** adds the text to the box (after any typed words) and drops the
   row; **Dismiss** drops it. The choice is kept in this browser

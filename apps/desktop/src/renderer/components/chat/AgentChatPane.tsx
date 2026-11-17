@@ -6299,23 +6299,35 @@ export function AgentChatPane({
   // computer is asleep or a new one is set up. Account level, by the chat's
   // machine key; read on open and focus only (`useAdeCloudChatQueue`).
   const cloudQueue = useAdeCloudChatQueue({ pin: chatForeignPin, sessionId: selectedSessionId });
-  // The transcript event carries no send id (the chat service drops
-  // `clientSendId` before it writes the user message), so a queued row goes
-  // when a user message with its text arrives after the row showed. Counted:
-  // an older message with the same words does not hide it, and one arrival
-  // takes away one row, the oldest, so two queued sends of the same words
-  // go one at a time.
+  // A queued row goes when its message arrives in the transcript. The user
+  // message carries the `clientSendId` of its send, which is the row's
+  // `messageId`, so a row matches by id first. An older host writes no id:
+  // then a row goes when a user message with its text arrives after the row
+  // showed. Counted: an older message with the same words does not hide it,
+  // and one arrival takes away one row, the oldest, so two queued sends of
+  // the same words go one at a time. A message with an id never counts as a
+  // text match, so words typed in the live chat never clear a queued row.
   const queuedTextBaselineRef = useRef(new Map<string, number>());
   useEffect(() => {
     if (cloudQueue.messages.length === 0 || renderedSessionId !== selectedSessionId) return;
+    const sentIds = new Set<string>();
     const counts = new Map<string, number>();
     for (const envelope of selectedEvents) {
       if (envelope.event.type !== "user_message") continue;
+      if (envelope.event.clientSendId) {
+        sentIds.add(envelope.event.clientSendId);
+        continue;
+      }
       const text = envelope.event.text.trim();
       counts.set(text, (counts.get(text) ?? 0) + 1);
     }
     const baselines = queuedTextBaselineRef.current;
     for (const message of cloudQueue.messages) {
+      if (sentIds.has(message.messageId)) {
+        baselines.delete(message.messageId);
+        markAdeCloudQueuedMessageDelivered(message.messageId);
+        continue;
+      }
       const seen = counts.get(message.text.trim()) ?? 0;
       const baseline = baselines.get(message.messageId);
       if (baseline === undefined) baselines.set(message.messageId, seen);
