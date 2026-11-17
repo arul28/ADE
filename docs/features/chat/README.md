@@ -2132,14 +2132,19 @@ Channel constants: `apps/desktop/src/shared/ipc.ts`. Handlers: `apps/desktop/src
 
 - Cross-machine fork also transports provider-native history for Claude, Codex and OpenCode; cross-machine Cursor and Droid handoffs are brief-only.
 
-**Steer dispatch (`steer`, `dispatchSteer`).** Accepted modes per provider come from `ACTIVE_TURN_DISPATCH_MODES`, one guard rather than a per-provider ladder. Other modes are rejected with `unsupportedActiveTurnDispatchModeMessage` (every mode on queue-only Droid, Pi and ACP; `"interrupt"` on Codex and OpenCode).
+**Steer dispatch (`steer`, `dispatchSteer`).** Accepted modes per provider come from `ACTIVE_TURN_DISPATCH_MODES` (`shared/types/chat.ts`), one guard rather than a per-provider ladder. A mode a provider does not list is rejected with `unsupportedActiveTurnDispatchModeMessage`; a provider with no entry (Droid) has no active-turn mode.
 
-| Provider | `inline` | `interrupt` |
-|---|---|---|
-| Claude | SDK `priority: "next"` | SDK `priority: "now"` |
-| Codex | `turn/steer` folded into the running turn | rejected |
-| Cursor | `Run.steer()` into the live local run | cancel + resend on the same thread |
-| OpenCode | v2 session prompt `delivery: "steer"` | rejected |
+| Provider | Modes | `inline` | `interrupt` |
+|---|---|---|---|
+| Claude | inline, queue, interrupt | SDK `priority: "next"` | SDK `priority: "now"` |
+| Codex | inline, queue | `turn/steer` folded into the running turn | rejected |
+| Cursor | inline, queue, interrupt | `Run.steer()` into the live local run | cancel + resend on the same thread |
+| OpenCode | inline, queue | v2 session prompt `delivery: "steer"` | rejected |
+| Muse | inline, queue, interrupt | `turn/steer` into the live turn | `turn/interrupt`, then a fresh turn |
+| Pi | inline, queue | the SDK's `steer` into the running turn | rejected |
+| Copilot | inline, queue | live-turn steer | rejected |
+| Kimi | queue, interrupt | rejected | interrupt, then send |
+| Qwen, Grok, Antigravity | queue | rejected | rejected |
 
 - `steer` without a mode stages the message, except on the CTO thread (queue cap zero), where it resolves to the provider's first non-queue mode.
 - A refused Cursor or OpenCode `inline` steer is not an error: the message is staged as a queued send, gets one "will send as a new message" notice, the queue head flushes if the turn boundary passed, and `queued: true` tells the truth.
