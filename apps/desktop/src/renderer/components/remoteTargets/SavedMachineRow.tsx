@@ -55,7 +55,7 @@ import {
   nameStyle,
   subTextStyle,
 } from "./remoteTargetListStyles";
-import { adeCloudLaneLabelForMachine, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { adeCloudMachineLabel, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 
 const CONNECTING_STALE_MS = 20_000;
 
@@ -205,9 +205,9 @@ export function SavedMachineRow({
   accountLastSeenAt = null,
 }: SavedMachineRowProps) {
   const { target, status } = row;
-  const { computers: cloudComputers } = useAdeCloudLaneComputers();
+  const cloudIndex = useAdeCloudLaneComputers();
   // A cloud computer reads "Cloud · <lane>"; its own name moves to the tooltip.
-  const cloudLabel = adeCloudLaneLabelForMachine({ hostname: target.hostname, machineKey: target.pairedMachine?.machineKey ?? null }, cloudComputers);
+  const cloudLabel = adeCloudMachineLabel({ hostname: target.hostname, machineKey: target.pairedMachine?.machineKey ?? null }, cloudIndex);
   const shownName = cloudLabel ?? target.name;
   // Covers this computer's own connect and main's automatic reconnect.
   const targetConnecting =

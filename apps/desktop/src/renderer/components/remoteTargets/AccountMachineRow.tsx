@@ -48,7 +48,7 @@ import {
 
   subTextStyle,
 } from "./remoteTargetListStyles";
-import { adeCloudLaneLabelForMachine, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { adeCloudMachineLabel, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 
 type AccountMachineRowProps = {
   row: AccountMachineRowModel;
@@ -169,9 +169,9 @@ export function AccountMachineRow({
   const { machine } = row;
   const displayName = accountMachineDisplayName(machine) ?? "Unnamed machine";
   // What the row shows: a cloud lane computer reads "Cloud · <lane>" (its own name stays in the tooltip and rename field).
-  const { computers: cloudComputers } = useAdeCloudLaneComputers();
+  const cloudIndex = useAdeCloudLaneComputers();
   // A cloud computer reads "Cloud · <lane>"; its own name moves to the tooltip.
-  const cloudLabel = adeCloudLaneLabelForMachine({ machineKey: machine.machineKey, hostname: machine.name }, cloudComputers);
+  const cloudLabel = adeCloudMachineLabel({ machineKey: machine.machineKey, hostname: machine.name }, cloudIndex);
   const shownName = cloudLabel ?? displayName;
   const installLabel = accountMachineInstallLabel(machine);
   const installTag = installLabel && installLabel !== "ADE" ? installLabel : null;

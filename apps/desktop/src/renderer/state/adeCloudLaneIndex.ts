@@ -228,22 +228,6 @@ export function adeCloudInstanceIdForMachine(
 }
 
 /**
- * What a person sees for any ADE Cloud computer: "ADE Cloud", the one machine
- * every account has. Never a computer's generated name (an instance id as its
- * host name, a lane-derived computer name). Rows show the lane name on their
- * own; the generated names stay in logs, support views and tooltips.
- */
-export const ADE_CLOUD_MACHINE_LABEL = ADE_CLOUD_NAME;
-
-/**
- * The machine label of a lane's cloud computer: "ADE Cloud". The lane name is
- * not part of it: ADE Cloud is one machine, and the row names the lane.
- */
-export function adeCloudLaneLabel(_laneName?: string): string {
-  return ADE_CLOUD_NAME;
-}
-
-/**
  * The name a person sees for the machine a binding targets: "ADE Cloud" for
  * any of the account's ADE Cloud computers, else the machine's own (device)
  * name or "This computer" (`machineNameForBinding`). A label only: routing
@@ -297,14 +281,3 @@ export function adeCloudMachineLabel(
   return isAdeCloudComputer(machine, index) ? ADE_CLOUD_NAME : null;
 }
 
-/**
- * "ADE Cloud" when the machine is an ADE Cloud lane computer, else null: for
- * a row that shows the machine's own name too (as the tooltip) only when the
- * label replaced it.
- */
-export function adeCloudLaneLabelForMachine(
-  machine: { hostname?: string | null; machineKey?: string | null },
-  computers: readonly AdeCloudLaneComputer[] = state.computers,
-): string | null {
-  return adeCloudMachineLabel(machine, { computers, cloudComputers: state.cloudComputers });
-}

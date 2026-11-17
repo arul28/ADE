@@ -12,7 +12,8 @@
 
 import type { CloudMachine } from "../../shared/adeCloud";
 import { watchedCloudMachines } from "../components/remoteTargets/useCloudMachines";
-import { ADE_CLOUD_MACHINE_LABEL, adeCloudLaneComputersNow, adeCloudLaneLabel, type AdeCloudLaneComputer } from "../state/adeCloudLaneIndex";
+import { adeCloudLaneComputersNow, type AdeCloudLaneComputer } from "../state/adeCloudLaneIndex";
+import { ADE_CLOUD_NAME } from "../../shared/adeCloudMachine";
 import { extractError, ipcErrorMessage } from "./format";
 import { formatSessionActionError } from "./sessions";
 
@@ -36,11 +37,11 @@ export function withCloudComputerLabels(
   if (!text) return text;
   const labels = new Map<string, string>();
   for (const box of boxes ?? []) {
-    if (box.instanceId.trim()) labels.set(box.instanceId.trim().toLowerCase(), ADE_CLOUD_MACHINE_LABEL);
+    if (box.instanceId.trim()) labels.set(box.instanceId.trim().toLowerCase(), ADE_CLOUD_NAME);
   }
   for (const computer of computers) {
     const id = computer.instanceId.trim().toLowerCase();
-    if (id) labels.set(id, computer.laneName.trim() ? adeCloudLaneLabel(computer.laneName.trim()) : ADE_CLOUD_MACHINE_LABEL);
+    if (id) labels.set(id, ADE_CLOUD_NAME);
   }
   let out = text;
   for (const [id, label] of labels) {

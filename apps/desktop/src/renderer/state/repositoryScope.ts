@@ -99,14 +99,6 @@ export function useActiveRepositoryTab(): RepositoryTab | null {
 }
 
 /**
- * The repository tab on screen. A tab with no own computer online is bound to
- * ADE Cloud, so this is always the project tab.
- */
-export function useVisibleRepositoryTab(): RepositoryTab | null {
-  return useActiveRepositoryTab();
-}
-
-/**
  * The copy the tab is bound to today, or null. Null also while that copy's
  * computer is offline: the page then shows its no-computer state and calls
  * nothing, instead of a connection error. A copy on this computer is always
