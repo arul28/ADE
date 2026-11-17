@@ -261,6 +261,7 @@ func cloudServerFailureMessage(_ error: Error) -> String {
   switch error as? CloudServerClient.Failure {
   case .noAccess: return "ADE Cloud isn't open for this account."
   case .unauthorized: return "Sign in to ADE again, then try again."
+  case .refused(_, let message): return message
   case .server(_, let message?): return message
   case .server(let status, nil): return "ADE Cloud answered with an error (\(status)). Try again soon."
   case .transport: return "ADE Cloud didn't answer. Check the connection, then try again."
@@ -445,25 +446,48 @@ final class AccountCloudLaunchStore: ObservableObject {
     poll(using: sync)
   }
 
-  /// Starts a chat on ADE Cloud for one of the account's projects.
-  func start(accountProjectId: String, origin: String, prompt: String, provider: String, modelId: String, using sync: SyncService) async {
+  /// Starts a chat on ADE Cloud for one of the account's projects: on a new
+  /// cloud lane named from the prompt, or on an existing cloud lane
+  /// (`existingLane`, its lane id and name), with or without a computer.
+  /// Answers the launch id.
+  @discardableResult
+  func start(
+    accountProjectId: String,
+    origin: String,
+    prompt: String,
+    provider: String,
+    modelId: String,
+    effort: String? = nil,
+    existingLane: (id: String, name: String)? = nil,
+    newLaneName: String? = nil,
+    using sync: SyncService
+  ) async -> String {
     UserDefaults.standard.set(["provider": provider, "modelId": modelId], forKey: Self.lastModelKey)
     let launchId = UUID().uuidString.lowercased()
     let messageId = "msg_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(24)
-    let body: RemoteJSONValue = .object([
+    var chat: [String: RemoteJSONValue] = [
+      "provider": .string(provider),
+      "modelId": .string(modelId),
+      "permissions": .string("default"),
+      "prompt": .string(prompt),
+      "messageId": .string(String(messageId)),
+    ]
+    if let effort = effort.flatMap({ nonEmptyTrimmed($0) }) { chat["effort"] = .string(effort) }
+    var fields: [String: RemoteJSONValue] = [
       "launchId": .string(launchId),
       "kind": .string("chat"),
       // The server reads the origin from the account's project.
       "project": .object(["accountProjectId": .string(accountProjectId)]),
-      "chat": .object([
-        "provider": .string(provider),
-        "modelId": .string(modelId),
-        "permissions": .string("default"),
-        "prompt": .string(prompt),
-        "messageId": .string(String(messageId)),
-      ]),
+      "chat": .object(chat),
       "madeBy": .object(["kind": .string("person")]),
-    ])
+    ]
+    if let existingLane {
+      fields["lane"] = .object(["id": .string(existingLane.id), "name": .string(existingLane.name)])
+    } else if let newLaneName = newLaneName.flatMap({ nonEmptyTrimmed($0) }) {
+      // The computer's brain renames the lane and its branch with the AI name.
+      fields["lane"] = .object(["name": .string(newLaneName), "autoName": .bool(true)])
+    }
+    let body: RemoteJSONValue = .object(fields)
     entries.insert(Entry(
       launchId: launchId,
       origin: origin.lowercased(),
@@ -473,6 +497,7 @@ final class AccountCloudLaunchStore: ObservableObject {
       body: body
     ), at: 0)
     await runStart(launchId, body: body, using: sync)
+    return launchId
   }
 
   /// Starts again a launch whose start failed, or whose computer failed

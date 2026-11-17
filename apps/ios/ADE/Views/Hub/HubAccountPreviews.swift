@@ -355,8 +355,6 @@ enum AccountProjectScreenPreviews {
       return AnyView(AccountSettingsPreviewHost())
     case "duo-account-prs":
       return AnyView(AccountDirectPrsPreviewHost())
-    case "duo-account-cloud-chat":
-      return AnyView(AccountCloudChatPreviewHost())
     default:
       return nil
     }
@@ -639,80 +637,6 @@ private struct AccountDirectPrsPreviewHost: View {
       next.directComputerName = "Mac Studio"
       inputs = next
     }
-  }
-}
-/// The project sheet of a person with no computer, chatting on ADE Cloud,
-/// in the state `-adeCloudChatState` names: `models` (the model list),
-/// `no-models` (the list didn't load: Send is off), `waiting` (a launch at
-/// Sign in, with Open sign-in and the code field), `signed-in` (after the
-/// code: the chat starts), `failed` (Retry and Hide).
-private struct AccountCloudChatPreviewHost: View {
-  @State private var projectId: String?
-
-  var body: some View {
-    ADEColor.pageBackground.ignoresSafeArea()
-      .sheet(isPresented: Binding(get: { projectId != nil }, set: { if !$0 { projectId = nil } })) {
-        // Dark, as this simulator's app is set: the fixture skips the app's own appearance setting.
-        if let projectId { AccountProjectHomeScreen(projectId: projectId).preferredColorScheme(.dark) }
-      }
-      .preferredColorScheme(.dark)
-      .task {
-        HubAccountPreviewData.seed(state: "zero-computers")
-        let state: String = {
-          let arguments = ProcessInfo.processInfo.arguments
-          guard let index = arguments.firstIndex(of: "-adeCloudChatState"), arguments.index(after: index) < arguments.endIndex else { return "models" }
-          return arguments[arguments.index(after: index)]
-        }()
-        let project = HubAccountPreviewData.project("h", owner: "octocat", name: "Hello-World")
-        AccountProjectStore.shared.seedPreview(projects: [project], display: [:], phase: .ready, lastSuccessAt: Date())
-        AccountCloudLaunchStore.shared.seedPreview(
-          catalog: state == "no-models" ? nil : Self.catalog,
-          catalogError: state == "no-models" ? "ADE Cloud didn't answer. Check your connection and try again." : nil,
-          entries: Self.entries(state)
-        )
-        projectId = project.id
-      }
-  }
-
-  private static func decode<T: Decodable>(_ json: String) -> T {
-    try! JSONDecoder().decode(T.self, from: Data(json.utf8))
-  }
-
-  static var catalog: CloudModelCatalog {
-    decode(#"""
-    {"providers":[
-      {"provider":"claude","label":"Claude","remoteSignIn":"url_paste","defaultModelId":"anthropic/claude-haiku-4-5","models":[{"id":"anthropic/claude-haiku-4-5","displayName":"Claude Haiku 4.5"},{"id":"anthropic/claude-sonnet-4-5","displayName":"Claude Sonnet 4.5"}]},
-      {"provider":"codex","label":"Codex","remoteSignIn":"device","defaultModelId":"openai/gpt-5.1-codex","models":[{"id":"openai/gpt-5.1-codex","displayName":"GPT-5.1 Codex"}]}
-    ]}
-    """#)
-  }
-
-  static func entries(_ state: String) -> [AccountCloudLaunchStore.Entry] {
-    let stages: String
-    let record: String
-    switch state {
-    case "waiting":
-      stages = #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"done"}]"#
-      record = #"{"launchId":"l_wait","state":"waiting_for_sign_in","projectOrigin":"github.com/octocat/hello-world","laneName":"Fix the README typo","instanceId":"i_wait","stages":\#(stages),"signIn":{"provider":"claude","label":"Claude","kind":"url_paste","jobId":"j1","url":"https://claude.ai/oauth/authorize","needsPastedCode":true,"reason":"Open the sign-in page, approve, then paste the code it shows."},"request":{"chat":{"provider":"claude","modelId":"anthropic/claude-haiku-4-5","prompt":"Fix the README typo"}}}"#
-    case "signed-in":
-      stages = #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"done"},{"id":"agent","status":"running"}]"#
-      record = #"{"launchId":"l_signed","state":"joined","projectOrigin":"github.com/octocat/hello-world","laneName":"Fix the README typo","instanceId":"i_wait","stages":\#(stages),"request":{"chat":{"provider":"claude","modelId":"anthropic/claude-haiku-4-5","prompt":"Fix the README typo"}}}"#
-    case "failed":
-      stages = #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"failed"}]"#
-      record = #"{"launchId":"l_failed","state":"failed","projectOrigin":"github.com/octocat/hello-world","laneName":"Fix the README typo","instanceId":"i_failed","stages":\#(stages),"error":"The computer couldn't clone octocat/Hello-World.","request":{"chat":{"provider":"claude","modelId":"anthropic/claude-haiku-4-5","prompt":"Fix the README typo"}}}"#
-    default:
-      return []
-    }
-    return [AccountCloudLaunchStore.Entry(
-      launchId: state,
-      origin: "github.com/octocat/hello-world",
-      prompt: "Fix the README typo",
-      provider: "claude",
-      modelId: "anthropic/claude-haiku-4-5",
-      record: decode(record),
-      startError: nil,
-      body: nil
-    )]
   }
 }
 #endif

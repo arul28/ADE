@@ -7,8 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C1AE00000000000000B00004 /* CloudNoComputerPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00004 /* CloudNoComputerPreviews.swift */; };
+		C1AE00000000000000B00003 /* WorkCloudMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00003 /* WorkCloudMachine.swift */; };
+		C1AE00000000000000B00002 /* AccountCloudStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00002 /* AccountCloudStore.swift */; };
+		C1AE00000000000000B00001 /* CloudServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00001 /* CloudServerClient.swift */; };
 		C1AD000000000000000B0003 /* SettingsCloudAccountProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AD000000000000000A0003 /* SettingsCloudAccountProviders.swift */; };
-		C1AD000000000000000B0002 /* AccountProjectCloudChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AD000000000000000A0002 /* AccountProjectCloudChat.swift */; };
 		C1AD000000000000000B0001 /* AccountCloudLaunches.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AD000000000000000A0001 /* AccountCloudLaunches.swift */; };
 		DV1000000000000000000001 /* LiveInspectModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000001 /* LiveInspectModels.swift */; };
 		DV1000000000000000000002 /* LiveInspectGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000002 /* LiveInspectGeometry.swift */; };
@@ -566,8 +569,11 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C1AE00000000000000A00004 /* CloudNoComputerPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudNoComputerPreviews.swift; path = ADE/Views/Cloud/CloudNoComputerPreviews.swift; sourceTree = "<group>"; };
+		C1AE00000000000000A00003 /* WorkCloudMachine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCloudMachine.swift; path = ADE/Views/Work/WorkCloudMachine.swift; sourceTree = "<group>"; };
+		C1AE00000000000000A00002 /* AccountCloudStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountCloudStore.swift; path = ADE/Services/AccountCloudStore.swift; sourceTree = "<group>"; };
+		C1AE00000000000000A00001 /* CloudServerClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudServerClient.swift; path = ADE/Services/CloudServerClient.swift; sourceTree = "<group>"; };
 		C1AD000000000000000A0003 /* SettingsCloudAccountProviders.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsCloudAccountProviders.swift; path = ADE/Views/Settings/SettingsCloudAccountProviders.swift; sourceTree = "<group>"; };
-		C1AD000000000000000A0002 /* AccountProjectCloudChat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountProjectCloudChat.swift; path = ADE/Views/Hub/AccountProjectCloudChat.swift; sourceTree = "<group>"; };
 		C1AD000000000000000A0001 /* AccountCloudLaunches.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountCloudLaunches.swift; path = ADE/Services/AccountCloudLaunches.swift; sourceTree = "<group>"; };
 		DV0000000000000000000001 /* LiveInspectModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveInspectModels.swift; path = ADE/Views/Duo/LiveInspectModels.swift; sourceTree = "<group>"; };
 		DV0000000000000000000002 /* LiveInspectGeometry.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveInspectGeometry.swift; path = ADE/Views/Duo/LiveInspectGeometry.swift; sourceTree = "<group>"; };
@@ -1165,6 +1171,7 @@
 			children = (
 				A37A0000000000000000A002 /* CloudPaneSheet.swift */,
 				A37A0000000000000000A0F1 /* CloudPreviews.swift */,
+				C1AE00000000000000A00004 /* CloudNoComputerPreviews.swift */,
 				C10D000000000000000A0001 /* CloudDashboardCards.swift */,
 				C10D000000000000000A0002 /* CloudMachineScreen.swift */,
 				C10D000000000000000A0003 /* CloudLimitsScreen.swift */,
@@ -1302,7 +1309,6 @@
 				D20000000000000000000F03 /* HubMachineSections.swift */,
 				D2000000000000000000DE09 /* HubAccountPreviews.swift */,
 				D2000000000000000000DE08 /* HubAccountProjects.swift */,
-				C1AD000000000000000A0002 /* AccountProjectCloudChat.swift */,
 				D2000000000000000000DE0E /* HubAccountCards.swift */,
 				D2000000000000000000DE1F /* HubRemoveProjects.swift */,
 				D2000000000000000000DE0F /* HubPhoneLayout.swift */,
@@ -1453,6 +1459,7 @@
 				T3F002F00000000000000000 /* WorkMessageLinks.swift */,
 				D10000000000000000000041 /* WorkNewChatScreen.swift */,
 				D20000000000000000000F32 /* WorkNewChatMachinePicker.swift */,
+				C1AE00000000000000A00003 /* WorkCloudMachine.swift */,
 				D30000000000000000000041 /* WorkUsageActivityCarousel.swift */,
 				D30000000000000000005C01 /* WorkUsageSkyline.swift */,
 				D30000000000000000000042 /* WorkUsageLimitsModule.swift */,
@@ -1647,6 +1654,8 @@
 				B80000000000000000000007 /* SyncService+MachineWake.swift */,
 				A37A0000000000000000A001 /* SyncService+Cloud.swift */,
 				C1AD000000000000000A0001 /* AccountCloudLaunches.swift */,
+				C1AE00000000000000A00002 /* AccountCloudStore.swift */,
+				C1AE00000000000000A00001 /* CloudServerClient.swift */,
 				C10D000000000000000A0006 /* ProviderLoginsPhoneStatus.swift */,
 				5E77000000000000000A0007 /* SyncService+SettingsPages.swift */,
 				CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */,
@@ -2324,8 +2333,11 @@
 				B80000000000000000000008 /* SyncService+MachineWake.swift in Sources */,
 				A37A0000000000000000B001 /* SyncService+Cloud.swift in Sources */,
 				C1AD000000000000000B0001 /* AccountCloudLaunches.swift in Sources */,
+				C1AE00000000000000B00002 /* AccountCloudStore.swift in Sources */,
+				C1AE00000000000000B00001 /* CloudServerClient.swift in Sources */,
 				A37A0000000000000000B002 /* CloudPaneSheet.swift in Sources */,
 				A37A0000000000000000B0F1 /* CloudPreviews.swift in Sources */,
+				C1AE00000000000000B00004 /* CloudNoComputerPreviews.swift in Sources */,
 				C10D000000000000000B0001 /* CloudDashboardCards.swift in Sources */,
 				C10D000000000000000B0002 /* CloudMachineScreen.swift in Sources */,
 				C10D000000000000000B0003 /* CloudLimitsScreen.swift in Sources */,
@@ -2360,7 +2372,6 @@
 				E20000000000000000000F03 /* HubMachineSections.swift in Sources */,
 				E2000000000000000000DE09 /* HubAccountPreviews.swift in Sources */,
 				E2000000000000000000DE08 /* HubAccountProjects.swift in Sources */,
-				C1AD000000000000000B0002 /* AccountProjectCloudChat.swift in Sources */,
 				E2000000000000000000DE0E /* HubAccountCards.swift in Sources */,
 				E2000000000000000000DE1F /* HubRemoveProjects.swift in Sources */,
 				E2000000000000000000DE0F /* HubPhoneLayout.swift in Sources */,
@@ -2507,6 +2518,7 @@
 				T3F002B00000000000000000 /* WorkMessageLinks.swift in Sources */,
 				E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */,
 				E20000000000000000000F32 /* WorkNewChatMachinePicker.swift in Sources */,
+				C1AE00000000000000B00003 /* WorkCloudMachine.swift in Sources */,
 				E30000000000000000000041 /* WorkUsageActivityCarousel.swift in Sources */,
 				E30000000000000000005C01 /* WorkUsageSkyline.swift in Sources */,
 				E30000000000000000000042 /* WorkUsageLimitsModule.swift in Sources */,

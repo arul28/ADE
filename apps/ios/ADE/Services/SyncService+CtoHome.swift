@@ -34,7 +34,7 @@ func ctoHomeOfflineCopy(sync: SyncService) -> (line: String, message: String) {
   }
   return (
     "Asleep on ADE Cloud",
-    "Open ADE on a computer to wake it, or pick another home."
+    "Its notes and recent chat stay readable. Sending the CTO a message wakes it."
   )
 }
 
@@ -55,7 +55,7 @@ extension SyncService {
   var ctoHomeNeedsChoice: Bool { ctoHomeProjectId == activeProjectId && !ctoHomeChosen }
 
   /// Whether the home is an ADE Cloud computer: it sleeps when idle instead of
-  /// being offline, and only ADE on a computer can wake it.
+  /// being offline, and a send (or Reconnect) wakes it through the server.
   var ctoHomeIsCloudComputer: Bool { nonEmptyTrimmed(ctoHomeCloudInstanceId) != nil }
 
   /// Whether the CTO's home cannot be reached right now. The primary machine's

@@ -360,6 +360,8 @@ struct WorkRootScreen: View {
 
 struct WorkRootListScreen: View, Equatable {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
+  /// ADE Cloud launches change rarely (a read with backoff while one runs).
+  @ObservedObject var cloudLaunches = AccountCloudLaunchStore.shared
   /// Regular width (the Duo's inner display): the list and the chat sit side by
   /// side instead of the chat being pushed over the list. Read here rather than
   /// passed down so a fold or unfold needs no navigation-path rewrite.
@@ -630,6 +632,18 @@ struct WorkRootListScreen: View, Equatable {
     if WorkRootPreviewFixture.active?.forcesLive == true { return true }
     #endif
     return syncService.connectionState == .connected && syncService.projectHostIsLive
+  }
+
+  /// The open project's ADE Cloud launches that are not hidden.
+  var cloudLaunchEntries: [AccountCloudLaunchStore.Entry] {
+    guard let project = syncService.activeAccountProjectForCloud else { return [] }
+    return cloudLaunches.entries(forOrigin: "\(project.host)/\(project.owner)/\(project.name)")
+  }
+
+  /// Whether New chat can start: the project's computer is live, or ADE
+  /// Cloud can take it (every signed-in account has ADE Cloud).
+  var canStartNewChat: Bool {
+    inputs.isLive || syncService.isAccountProjectScope || AccountService.shared.isSignedIn
   }
 
   var isLoadingSkeleton: Bool {
@@ -1267,7 +1281,7 @@ struct WorkRootListScreen: View, Equatable {
             }
         } else {
           DuoWorkEmptyDetail(
-            canCreate: inputs.isLive,
+            canCreate: canStartNewChat,
             showsNewChatButton: true,
             onNewChat: pushNewChatRoute
           )
@@ -1347,12 +1361,12 @@ struct WorkRootListScreen: View, Equatable {
         Button(action: pushNewChatRoute) {
           Image(systemName: "square.and.pencil")
             .font(.system(size: 17, weight: .medium))
-            .foregroundStyle(inputs.isLive ? ADEColor.textPrimary : ADEColor.textMuted)
+            .foregroundStyle(canStartNewChat ? ADEColor.textPrimary : ADEColor.textMuted)
             .frame(width: 36, height: 36)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!inputs.isLive)
+        .disabled(!canStartNewChat)
         .accessibilityLabel("New chat")
       }
     }
@@ -1376,7 +1390,7 @@ struct WorkRootListScreen: View, Equatable {
     // A plain toolbar button: the edge bar lifts a custom-styled item
     // (.glassProminent) out of the rail as an empty floating capsule.
     Button("New chat", systemImage: "square.and.pencil", action: pushNewChatRoute)
-      .disabled(!inputs.isLive)
+      .disabled(!canStartNewChat)
       .accessibilityIdentifier("Duo.Work.Rail.NewChat")
   }
 
@@ -1605,12 +1619,12 @@ struct WorkRootListScreen: View, Equatable {
       Button(action: pushNewChatRoute) {
         Image(systemName: "square.and.pencil")
           .font(.system(size: 18, weight: .medium))
-          .foregroundStyle(inputs.isLive ? ADEColor.textPrimary : ADEColor.textMuted)
+          .foregroundStyle(canStartNewChat ? ADEColor.textPrimary : ADEColor.textMuted)
           .frame(width: 32, height: 44)
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .disabled(!inputs.isLive)
+      .disabled(!canStartNewChat)
       .accessibilityLabel("New chat")
       .accessibilityIdentifier("Duo.Work.NewChat")
       WorkHeaderOverflowMenu(
@@ -1786,6 +1800,14 @@ struct WorkRootListScreen: View, Equatable {
         let sessionId = snapshot.chatSessionId
         selectedSessionTransitionId = nil
         await showNewChatRoute(WorkSessionRoute(sessionId: sessionId))
+      },
+      onCloudChatReady: { chatId in
+        // A chat started on ADE Cloud runs: read the server's list so the
+        // chat routes to its lane's computer, then open it.
+        syncService.refreshCloudServerIfStale(force: true)
+        await syncService.cloudServerReadTask?.value
+        selectedSessionTransitionId = nil
+        await showNewChatRoute(WorkSessionRoute(sessionId: chatId))
       }
     )
     .environmentObject(syncService)
@@ -1855,6 +1877,22 @@ struct WorkRootListScreen: View, Equatable {
               .listRowSeparator(.hidden)
           }
 
+          // Chats starting on ADE Cloud for this project, from this phone or
+          // another device: each one's setup card until it runs.
+          ForEach(cloudLaunchEntries) { entry in
+            WorkCloudLaunchCard(entry: entry) {
+              guard let chatId = entry.record?.sessionId else { return }
+              Task { @MainActor in
+                syncService.refreshCloudServerIfStale(force: true)
+                await syncService.cloudServerReadTask?.value
+                await showNewChatRoute(WorkSessionRoute(sessionId: chatId))
+              }
+            }
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+          }
+
           if let errorMessage,
             inputs.workStatus.phase == .ready,
             !inputs.hostUnreachable
@@ -1896,7 +1934,7 @@ struct WorkRootListScreen: View, Equatable {
                 }
                 .buttonStyle(.glassProminent)
                 .tint(ADEColor.accent)
-                .disabled(!inputs.isLive)
+                .disabled(!canStartNewChat)
               }
             }
             .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 16, trailing: 16))

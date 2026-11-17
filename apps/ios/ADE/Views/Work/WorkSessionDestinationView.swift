@@ -1688,16 +1688,17 @@ struct WorkSessionDestinationView: View {
   /// sits, never what it is.
   private var chatColumnPresentations: some View {
     AnyView(sessionDestinationRoot)
-      // A chat on an ADE Cloud computer that is asleep: opening it wakes the
-      // computer, and the chat says so until the computer answers.
-      .wakesCloudComputer(
-        machineKey: sessionCloudMachineKey,
-        wakingName: syncService.wakingCloudMachineName(fleetKey: sessionCloudMachineKey),
-        wakeFailure: syncService.cloudWakeFailure(fleetKey: sessionCloudMachineKey),
+      // A chat on an ADE Cloud computer: its state shows at the top, and an
+      // asleep one reads from the saved copy. Opening it never wakes the
+      // computer; a send does.
+      .showsCloudLaneState(
+        fleetKey: sessionCloudMachineKey,
         // A chat with no cached row loaded nothing while the computer slept:
         // read it now that the computer answers.
         onAwake: { await loadMissingSessionWhenLive() }
       )
+      // Messages ADE Cloud holds for this chat until its computer is up.
+      .followsCloudQueue(fleetKey: sessionCloudMachineKey, sessionId: sessionId)
       // The wake can return before this chat's link reads as live.
       .onChange(of: isLiveAndReachable) { _, live in
         guard live, session == nil, initialLoadCompleted else { return }

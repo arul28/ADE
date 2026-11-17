@@ -4349,6 +4349,13 @@ final class SyncService: ObservableObject {
   }
   @Published private(set) var projects: [MobileProjectSummary] = []
   @Published private(set) var activeProjectId: String?
+  /// The account project the tabs show when no computer's copy of it is
+  /// open (`openAccountProjectScope`): ADE Cloud and GitHub serve it. Nil
+  /// while a computer's project is open (that project names its account
+  /// project itself) or on the Hub.
+  @Published private(set) var activeAccountProjectId: String? =
+    UserDefaults.standard.string(forKey: SyncService.activeAccountProjectIdKey)
+  static let activeAccountProjectIdKey = "ade.sync.activeAccountProjectId"
   @Published private(set) var activeProjectRootPath: String?
   /// Published so per-project UI state can be scoped by host: the same project
   /// id can exist on two paired machines and each deserves its own view.
@@ -5345,12 +5352,69 @@ final class SyncService: ObservableObject {
   }
 
   var shouldShowProjectHub: Bool {
-    projectHubPresented || activeProjectId == nil
+    projectHubPresented || (activeProjectId == nil && activeAccountProjectSummary == nil)
   }
 
   var activeProject: MobileProjectSummary? {
-    guard activeProjectId != nil else { return nil }
+    guard activeProjectId != nil else { return activeAccountProjectSummary }
     return projects.first { isActiveProject($0) }
+  }
+
+  /// The tabs' project when no computer's copy is open: the account project
+  /// as a summary with no folder. Its owner and name match every machine's
+  /// copy, ADE Cloud lanes included. Nil once the project left the account.
+  var activeAccountProjectSummary: MobileProjectSummary? {
+    guard activeProjectId == nil, let id = activeAccountProjectId,
+          let project = AccountProjectStore.shared.liveProjects.first(where: { $0.id == id })
+    else { return nil }
+    var summary = MobileProjectSummary(
+      id: "account:\(project.id)",
+      displayName: project.name,
+      rootPath: nil,
+      repoOwner: project.owner,
+      repoName: project.name,
+      defaultBaseRef: project.defaultBranch,
+      laneCount: 0,
+      isAvailable: true,
+      isCached: true
+    )
+    summary.accountProjectId = project.id
+    summary.githubRepoId = project.repoId
+    return summary
+  }
+
+  /// True while the tabs show an account project with no computer's copy.
+  var isAccountProjectScope: Bool {
+    activeProjectId == nil && activeAccountProjectSummary != nil
+  }
+
+  /// The account project behind the open tabs: the account scope's, else
+  /// the one the open computer's project belongs to.
+  var activeAccountProjectForCloud: AccountProject? {
+    if let id = activeAccountProjectId, activeProjectId == nil {
+      return AccountProjectStore.shared.liveProjects.first { $0.id == id }
+    }
+    return accountProjectForActiveProject()
+  }
+
+  /// Opens an account project's tabs with no computer's copy: its cloud
+  /// lanes, saved chats and GitHub data show, and a new chat starts on ADE
+  /// Cloud. A computer's copy that comes online later opens through the
+  /// usual project route.
+  func openAccountProjectScope(_ accountProjectId: String) {
+    if activeProjectId != nil { setActiveProjectId(nil) }
+    activeAccountProjectId = accountProjectId
+    UserDefaults.standard.set(accountProjectId, forKey: Self.activeAccountProjectIdKey)
+    projectHubPresented = false
+    machineFleet?.scheduleProjectMachinesUpdate()
+    refreshCloudServerIfStale()
+  }
+
+  /// Leaves the account project scope (a computer's project opened, sign-out).
+  func clearAccountProjectScope() {
+    guard activeAccountProjectId != nil else { return }
+    activeAccountProjectId = nil
+    UserDefaults.standard.removeObject(forKey: Self.activeAccountProjectIdKey)
   }
 
   func isActiveProject(id: String, rootPath: String?) -> Bool {
@@ -6954,6 +7018,8 @@ final class SyncService: ObservableObject {
     activeProjectId = projectId
     activeProjectRootPath = nextRootPath
     database.setActiveProjectId(projectId)
+    // A computer's copy is open now: it names its account project itself.
+    if projectId != nil { clearAccountProjectScope() }
     if scopeChanged {
       bumpProjectionRevisions(for: Set())
     }
@@ -14860,6 +14926,13 @@ final class SyncService: ObservableObject {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return false }
     if let remote = routedRemoteMachineChat(trimmedSessionId) {
+      // An ADE Cloud chat whose computer has no live link: show the saved
+      // copy now. A paired computer's subscription below streams it once it
+      // is up; nothing here wakes it.
+      if let key = chatThreadKey(for: trimmedSessionId),
+         let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
+        AccountCloudStore.shared.loadSavedTranscript(key: key, accountMachineKey: accountKey, using: self)
+      }
       guard let connection = machineFleet?.connection(for: remote.machineKey) else { return false }
       return connection.subscribeChat(
         sessionId: trimmedSessionId,
@@ -16785,6 +16858,26 @@ final class SyncService: ObservableObject {
     if let compactFirst { args["compactFirst"] = compactFirst }
     if includeThreadComments {
       args["includeThreadComments"] = true
+    }
+    // A chat on an ADE Cloud computer with no live link (asleep, or deleted):
+    // the server holds the message, wakes the lane's own computer (or makes
+    // a new one that continues this chat), and delivers it once. The phone
+    // may close meanwhile. An older server has no queue: wake, then send.
+    if (attachments ?? []).isEmpty,
+       let key = chatThreadKey(for: sessionId),
+       let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
+      let messageId = (args["clientSendId"] as? String) ?? UUID().uuidString
+      switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, using: self) {
+      case .queued:
+        return .queued(steerId: nil)
+      case .refused(let message), .failed(let message):
+        throw NSError(domain: "ADE", code: 46, userInfo: [NSLocalizedDescriptionKey: message])
+      case .routeMissing:
+        _ = await machineFleet?.connect(machineKey: key.machineKey, timeout: Self.cloudWakeConnectTimeout)
+      }
+    } else if let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil {
+      // Files ride a live link only: wake the computer first.
+      _ = await machineFleet?.connect(machineKey: key.machineKey, timeout: Self.cloudWakeConnectTimeout)
     }
     let response = try await sendCommand(
       action: chatActionName("chat.send", sessionId: sessionId),
@@ -19760,6 +19853,16 @@ final class SyncService: ObservableObject {
 
   private func commandPolicy(for action: String) -> SyncRemoteCommandPolicy? {
     commandDescriptor(for: action)?.policy
+  }
+
+  /// The tabs show an account project that no computer's copy serves: a
+  /// command for "the open project" has nowhere to go. It must never be
+  /// sent to the focused computer or queued for a later one, which does not
+  /// hold that project.
+  private func refuseAccountProjectScopeCommand(action: String, targetProjectId: String?) throws {
+    guard isAccountProjectScope, !commandIsRuntimeScoped(action),
+          syncNormalizedCommandScopeValue(targetProjectId) == nil else { return }
+    throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "Pick a lane on a computer or on ADE Cloud."])
   }
 
   private func commandIsRuntimeScoped(_ action: String) -> Bool {
@@ -25494,6 +25597,7 @@ final class SyncService: ObservableObject {
       targetProjectRootPath = rootPath
       args = focusedArgs
     }
+    try refuseAccountProjectScopeCommand(action: action, targetProjectId: targetProjectId)
     let runtimeScoped = commandIsRuntimeScoped(action)
     if !runtimeScoped && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
@@ -25581,6 +25685,7 @@ final class SyncService: ObservableObject {
       targetProjectRootPath = rootPath
       args = focusedArgs
     }
+    try refuseAccountProjectScopeCommand(action: action, targetProjectId: targetProjectId)
     if !commandIsRuntimeScoped(action) && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
     }
@@ -28866,7 +28971,23 @@ extension SyncService: ChatThreadTransport {
     return ChatThreadKey(machineKey: machineKey, sessionId: trimmedSessionId, scope: scope)
   }
 
+  /// The account machine key of a chat whose ADE Cloud computer has no live
+  /// link to this phone (asleep, or deleted): its transcript is the saved
+  /// copy on the account server. Nil for any other chat.
+  func savedCloudChatAccountKey(forThreadKey key: ChatThreadKey) -> String? {
+    guard key.machineKey != focusedMachineKey, isCloudFleetKey(key.machineKey),
+          fleetConnection(forThreadKey: key)?.isLive != true
+    else { return nil }
+    return cloudAccountMachineKey(fleetKey: key.machineKey)
+  }
+
   func chatThreadRequestSnapshot(_ key: ChatThreadKey, reason: String) {
+    // An asleep or deleted ADE Cloud computer: read the saved copy. It
+    // never wakes the computer.
+    if let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
+      AccountCloudStore.shared.loadSavedTranscript(key: key, accountMachineKey: accountKey, using: self)
+      return
+    }
     if let connection = fleetConnection(forThreadKey: key) {
       connection.requestChatSnapshot(sessionId: key.sessionId)
       return
@@ -28895,6 +29016,9 @@ extension SyncService: ChatThreadTransport {
     _ key: ChatThreadKey,
     request: ChatThreadOlderRequest
   ) async throws -> ChatThreadOlderPageInput {
+    if let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
+      return try await AccountCloudStore.shared.olderSavedPage(key: key, accountMachineKey: accountKey, using: self)
+    }
     if let connection = fleetConnection(forThreadKey: key) {
       return try await connection.fetchOlderPage(sessionId: key.sessionId, request: request)
     }

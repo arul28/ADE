@@ -130,11 +130,7 @@ extension LanesTabView {
     // Every lane the list can show counts: this machine's, then the other
     // machines' the machine filter keeps.
     let remoteCounted = remoteLanes.machines.flatMap { machine -> [LaneListSnapshot] in
-      switch machineFilter {
-      case .focused: return []
-      case .machine(let key) where key != machine.machineKey: return []
-      default: return machine.snapshots
-      }
+      machineFilterKeeps(machine.machineKey) ? machine.snapshots : []
     }
     let counted = (showsFocusedMachineLanes ? visible : []) + remoteCounted
     var counts: [LaneQuickFilter: Int] = [:]
@@ -153,6 +149,17 @@ extension LanesTabView {
     )
     guard next != laneListPresentation else { return }
     laneListPresentation = next
+  }
+
+  /// Whether the machine filter shows another machine's lanes. "ADE Cloud"
+  /// is one machine: its chip keeps every cloud lane's computer.
+  func machineFilterKeeps(_ machineKey: String) -> Bool {
+    switch machineFilter {
+    case .all: return true
+    case .focused: return false
+    case .machine(let key):
+      return key == ADECloudMachine.id ? syncService.isCloudFleetKey(machineKey) : key == machineKey
+    }
   }
 
   /// The focused machine's name for its chip and filter.
@@ -188,11 +195,7 @@ extension LanesTabView {
   var visibleRemoteMachineLanes: [(machine: LaneRemoteMachinesModel.MachineLanes, snapshots: [LaneListSnapshot])] {
     let liveFirst = remoteLanes.machines.filter(\.isLive) + remoteLanes.machines.filter { !$0.isLive }
     return liveFirst.compactMap { machine in
-      switch machineFilter {
-      case .focused: return nil
-      case .machine(let key) where key != machine.machineKey: return nil
-      default: break
-      }
+      guard machineFilterKeeps(machine.machineKey) else { return nil }
       let filtered = laneListFilteredSnapshots(
         machine.snapshots.filter(quickFilter.matches),
         scope: quickFilter.scope,
@@ -216,15 +219,18 @@ extension LanesTabView {
         ) {
           machineFilter = .all
         }
-        LaneMachineFilterChip(
-          title: focusedMachineName,
-          symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: focusedMachineName),
-          liveDot: true,
-          selected: machineFilter == .focused
-        ) {
-          machineFilter = machineFilter == .focused ? .all : .focused
+        // A project with no computer's copy (account scope) has no focused machine.
+        if !syncService.isAccountProjectScope, !syncService.isCloudFleetKey(syncService.focusedMachineKey) {
+          LaneMachineFilterChip(
+            title: focusedMachineName,
+            symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: focusedMachineName),
+            liveDot: true,
+            selected: machineFilter == .focused
+          ) {
+            machineFilter = machineFilter == .focused ? .all : .focused
+          }
         }
-        ForEach(remoteLanes.machines) { machine in
+        ForEach(remoteLanes.machines.filter { !syncService.isCloudFleetKey($0.machineKey) }) { machine in
           LaneMachineFilterChip(
             title: machine.name,
             symbol: machineSymbol(machineKey: machine.machineKey, name: machine.name),
@@ -232,6 +238,19 @@ extension LanesTabView {
             selected: machineFilter == .machine(machine.machineKey)
           ) {
             machineFilter = machineFilter == .machine(machine.machineKey) ? .all : .machine(machine.machineKey)
+          }
+        }
+        // Every cloud lane's computer under one chip.
+        let cloudMachines = remoteLanes.machines.filter { syncService.isCloudFleetKey($0.machineKey) }
+        if !cloudMachines.isEmpty || syncService.isAccountProjectScope {
+          let cloudFilter = LaneMachineFilter.machine(ADECloudMachine.id)
+          LaneMachineFilterChip(
+            title: ADECloudMachine.name,
+            symbol: ADECloudMachine.symbol,
+            liveDot: cloudMachines.contains(where: \.isLive),
+            selected: machineFilter == cloudFilter
+          ) {
+            machineFilter = machineFilter == cloudFilter ? .all : cloudFilter
           }
         }
       }
@@ -246,7 +265,7 @@ extension LanesTabView {
   /// "Show only <machine>" for a lane's machine, from its long-press menu.
   func showOnlyMachine(ofLaneId laneId: String) {
     if let remote = workParseRemoteLaneId(laneId) {
-      machineFilter = .machine(remote.machineKey)
+      machineFilter = .machine(syncService.isCloudFleetKey(remote.machineKey) ? ADECloudMachine.id : remote.machineKey)
     } else {
       machineFilter = .focused
     }
@@ -279,10 +298,8 @@ extension LanesTabView {
         onRefreshRoot: { await reload(refreshRemote: true) }
       )
       // The focused computer can be an ADE Cloud computer that is asleep.
-      .wakesCloudComputer(
-        machineKey: syncService.focusedMachineKey,
-        wakingName: syncService.wakingCloudMachineName(fleetKey: syncService.focusedMachineKey),
-        wakeFailure: syncService.cloudWakeFailure(fleetKey: syncService.focusedMachineKey),
+      .showsCloudLaneState(
+        fleetKey: syncService.focusedMachineKey,
         onAwake: { await reload(refreshRemote: true) }
       )
     } else if let machine = remoteLanes.machines.first(where: { $0.snapshots.contains { $0.lane.id == route.laneId } }),
@@ -297,12 +314,10 @@ extension LanesTabView {
         machineName: machine.name,
         onRefreshRoot: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
       )
-      // A lane on an ADE Cloud computer that is asleep: opening it wakes the
-      // computer, and the lane reads again once the computer answers.
-      .wakesCloudComputer(
-        machineKey: machine.machineKey,
-        wakingName: syncService.wakingCloudMachineName(fleetKey: machine.machineKey),
-        wakeFailure: syncService.cloudWakeFailure(fleetKey: machine.machineKey),
+      // A lane on an ADE Cloud computer: its state and the "deleting soon"
+      // notice show; opening it never wakes the computer.
+      .showsCloudLaneState(
+        fleetKey: machine.machineKey,
         onAwake: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
       )
     } else {
@@ -417,7 +432,16 @@ extension LanesTabView {
     // Built once per pass, not once per row.
     let chips = laneMachineChips
     let remoteSections = visibleRemoteMachineLanes
-    if !syncService.focusedMachineListsWork, remoteLanes.machines.isEmpty, machineFilter == .all {
+    if syncService.isAccountProjectScope, remoteLanes.machines.isEmpty {
+      // No computer's copy, and no cloud lane yet.
+      ADEEmptyStateView(
+        symbol: ADECloudMachine.symbol,
+        title: "No lanes on ADE Cloud yet",
+        message: "A chat you start on ADE Cloud in Work makes its own lane."
+      )
+      .padding(.top, 32)
+      .adeFlatRow(separator: .hidden)
+    } else if !syncService.focusedMachineListsWork, remoteLanes.machines.isEmpty, machineFilter == .all {
       // Nothing to list until a computer is back: say so, not "No lanes".
       ADEEmptyStateView(
         symbol: "wifi.slash",

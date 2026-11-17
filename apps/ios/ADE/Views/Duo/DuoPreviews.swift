@@ -31,6 +31,7 @@ enum DuoPreviewRouter {
       DuoFoldPreviews.view,
       LiveInspectMarkupPreviews.view,
       CloudPreviews.view,
+      CloudNoComputerPreviews.view,
       AccountProjectScreenPreviews.view,
     ]
     for provider in providers {

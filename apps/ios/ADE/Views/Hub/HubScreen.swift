@@ -72,7 +72,6 @@ struct HubScreen: View {
   @State var accountOnlyProjects: [String: AccountProject] = [:]
   /// The live account projects by id, for each card's computer chip.
   @State var accountProjectById: [String: AccountProject] = [:]
-  @State private var accountHomeTarget: HubAccountHomeTarget?
   /// The saved order came from the per-machine layout and still names that
   /// machine's ids; the next rebuild maps them to account project ids.
   @State private var legacyOrderPending = false
@@ -134,12 +133,7 @@ struct HubScreen: View {
     .sheet(isPresented: $addProjectSheetPresented) {
       RemoteProjectAddSheet().environmentObject(syncService)
     }
-    .hubAccountProjectSheets(
-      home: $accountHomeTarget,
-      location: $locationTarget,
-      onConnectComputer: { syncService.settingsPresented = true },
-      onNotice: { text in projectOpenFailureToast = ADEToastMessage(text: text) }
-    )
+    .hubAccountProjectSheets(location: $locationTarget)
     .sheet(item: $removalTarget) { target in
       HubRemoveProjectsSheet(items: target.items, fleet: machineFleet, onFinished: handleRemovalFinish)
         .hubAccountPageDetents()
@@ -610,7 +604,9 @@ struct HubScreen: View {
         if selecting {
           toggleSelection(project.id)
         } else if let accountOnly {
-          accountHomeTarget = HubAccountHomeTarget(id: accountOnly.id)
+          // No computer shows this project: its tabs open with ADE Cloud
+          // and GitHub, the same tabs as with a computer.
+          syncService.openAccountProjectScope(accountOnly.id)
         } else {
           openHubProject(project)
         }
@@ -741,6 +737,14 @@ struct HubScreen: View {
     let request = UUID()
     pendingHubChatOpen = request
     Task { @MainActor in
+      // An ADE Cloud chat opens from its saved copy: reading never wakes the
+      // computer. One the server lists awake connects on the way.
+      if syncService.isCloudFleetKey(owner.machineKey) {
+        _ = await machineFleet.connect(machineKey: owner.machineKey, timeout: .seconds(3), wake: false)
+        guard pendingHubChatOpen == request else { return }
+        openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat, machineKey: owner.machineKey)
+        return
+      }
       if state != .needsUpdate, await machineFleet.connect(machineKey: owner.machineKey, timeout: .seconds(8)) {
         guard pendingHubChatOpen == request else { return }
         openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat, machineKey: owner.machineKey)
