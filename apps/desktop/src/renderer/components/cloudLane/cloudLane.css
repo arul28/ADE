@@ -133,6 +133,8 @@
 .adecl-nocomp-mark { display: grid; place-items: center; flex: none; opacity: 0.7; }
 .adecl-nocomp-text { display: flex; flex: 1 1 220px; flex-direction: column; gap: 2px; min-width: 0; color: var(--color-fg); line-height: 1.4; }
 .adecl-nocomp-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+/* A lane's saved work at rest: one quiet line and its two downloads, under its notice. */
+.adecl-saved-work { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; line-height: 1.4; }
 
 
 /*

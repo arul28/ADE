@@ -183,6 +183,32 @@ struct CloudChatTranscriptPage: Decodable {
 }
 
 /// A lane whose computer is gone while the lane stays (`CloudLaneWithoutComputer`).
+/// One lane backup (`CloudLaneBackup` in contract.ts), as the phone shows and downloads it.
+struct CloudLaneBackupRow: Decodable, Equatable, Identifiable {
+  let machineKey: String
+  let laneId: String
+  let laneName: String?
+  let branchRef: String?
+  let commits: Int
+  let files: Int
+  let snapshotSha: String?
+  let patchParts: Int
+  let patchBytes: Int
+  let savedAt: Double
+  var id: String { "\(machineKey)/\(laneId)" }
+
+  /// The same words as the desktop (`CloudLaneSavedWork.tsx`).
+  var sentence: String {
+    var parts: [String] = []
+    if commits > 0 { parts.append("\(commits) \(commits == 1 ? "commit" : "commits")") }
+    if snapshotSha != nil { parts.append(files > 0 ? "\(files) uncommitted \(files == 1 ? "file" : "files")" : "uncommitted changes") }
+    let when = Date(timeIntervalSince1970: savedAt / 1000).formatted(date: .abbreviated, time: .shortened)
+    return "ADE Cloud saved this lane's work that isn't on GitHub (\(parts.isEmpty ? "its changes" : parts.joined(separator: " and "))) on \(when)."
+  }
+}
+
+private struct LaneBackupList: Decodable { let backups: [CloudLaneBackupRow] }
+
 struct CloudLaneWithoutComputer: Decodable, Equatable {
   let laneId: String
   let laneName: String
@@ -332,6 +358,24 @@ struct CloudServerClient {
 
   func lanesWithoutComputer() async throws -> [CloudLaneWithoutComputer] {
     try decode(LanesWithoutComputer.self, from: try await send("GET", "cloud/lanes/without-computer")).lanes
+  }
+
+  /// The lane's saved work that isn't on GitHub (`laneBackups.ts`), newest first. Reads with no wake and no hours.
+  func laneBackups(laneId: String) async throws -> [CloudLaneBackupRow] {
+    try decode(LaneBackupList.self, from: try await send("GET", "cloud/backups", query: [URLQueryItem(name: "laneId", value: laneId)], timeout: 30)).backups
+  }
+
+  /// The backup's patch, every part, in a file in the app's temporary folder to share or save. The phone never gets the bundle.
+  func laneBackupPatchFile(_ backup: CloudLaneBackupRow) async throws -> URL {
+    var bytes = Data()
+    for part in 1...max(1, backup.patchParts) {
+      bytes.append(try await send("GET", "cloud/backups/\(segment(backup.machineKey))/\(segment(backup.laneId))/patch/\(part)", timeout: 120))
+    }
+    guard bytes.count == backup.patchBytes else { throw Failure.unreadable }
+    let name = (backup.laneName ?? backup.branchRef ?? "lane").replacingOccurrences(of: "[^A-Za-z0-9._-]+", with: "-", options: .regularExpression)
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(name.prefix(60))-saved-work.patch")
+    try bytes.write(to: url, options: [.atomic, .completeFileProtection])
+    return url
   }
 
   func start(instanceId: String) async throws {

@@ -727,12 +727,12 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       const madeFromBackup = deps.projectRoot && cloudLaneRestoreInstalled()
         ? await prepareCloudLaneBranch({ laneId: record.snapshot.laneId, branchRef: config.branchRef, projectRoot: deps.projectRoot }).catch((error: unknown) => {
             logger.warn("chat_launch.cloud_branch_prepare_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
-            return false;
+            return null;
           })
-        : false;
+        : null;
       lane = await deps.laneService.importBranch(
         {
-          branchRef: config.branchRef,
+          branchRef: madeFromBackup ?? config.branchRef,
           name: record.snapshot.laneName,
           ...(madeFromBackup ? { publishUpstream: false } : {}),
         },

@@ -150,7 +150,7 @@ import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInv
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
-import type { CloudCarriedSignIns, CloudLaunchRecord as AccountCloudLaunchRecord } from "../../../account-directory/src/cloud/contract";
+import type { CloudCarriedSignIns, CloudLaneBackup, CloudLaunchRecord as AccountCloudLaunchRecord } from "../../../account-directory/src/cloud/contract";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
 import {
@@ -14340,9 +14340,17 @@ const adeBridge = {
     listMachines: (): Promise<CloudMachinesResult | null> => ipcRenderer.invoke(IPC.cloudListMachines),
     /** True while this window is in front and the person moved or typed in the last few minutes. */
     personIsHere: (): Promise<boolean> => ipcRenderer.invoke(IPC.cloudPersonIsHere),
-    /** Wakes a computer (free once a day at 0 hours) and pushes its lanes' work to GitHub. */
+    /** The person's "Push all work to GitHub" (Delete lane): wakes the computer (use, metered) and pushes its lanes' work. */
     pushAllWork: (instanceId: string): Promise<CloudMachineActionResult> =>
       ipcRenderer.invoke(IPC.cloudPushAllWork, { instanceId }),
+    /** The account's lane backups (of one lane): read with no wake and no hours. */
+    laneBackups: (laneId?: string | null): Promise<CloudLaneBackup[]> => ipcRenderer.invoke(IPC.cloudLaneBackups, { laneId: laneId ?? null }),
+    /** Saves a lane backup's patch where the person picks; `savedTo` null when they cancel. */
+    saveLaneBackupPatch: (machineKey: string, laneId: string): Promise<{ savedTo: string | null }> =>
+      ipcRenderer.invoke(IPC.cloudLaneBackupSavePatch, { machineKey, laneId }),
+    /** Puts a lane backup on a new branch of the clone at `projectRoot` on this computer; never pushes. */
+    laneBackupToBranch: (machineKey: string, laneId: string, projectRoot: string): Promise<{ branch: string }> =>
+      ipcRenderer.invoke(IPC.cloudLaneBackupToBranch, { machineKey, laneId, projectRoot }),
     /** "Keep it" on an idle cleanup warning: restarts the computer's idle clock, no wake. Account level, by its ADE Cloud id. */
     keepIdleComputer: (instanceId: string): Promise<{ ok: boolean; message?: string }> =>
       ipcRenderer.invoke(IPC.cloudKeepIdleComputer, { instanceId }),

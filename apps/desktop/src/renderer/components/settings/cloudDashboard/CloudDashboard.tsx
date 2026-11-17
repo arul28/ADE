@@ -834,7 +834,7 @@ function PlanNotices({ account, onChanged }: { account: CloudAccountState; onCha
             busy: true,
             title: `ADE is freeing ${freeingCount === 1 ? "1 computer" : `${freeingCount} computers`} to fit ${plan}`,
             detail: freeing.push
-              ? "It pushes each lane's work to GitHub first. Their lanes and chats stay."
+              ? "Each goes once its lanes' work is saved in ADE Cloud. Nothing is pushed. Their lanes and chats stay."
               : "Their lanes and chats stay.",
             report: false,
           }}

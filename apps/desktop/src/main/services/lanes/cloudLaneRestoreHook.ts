@@ -14,7 +14,7 @@
  * server for the person, and the answer is a note for the launch card.
  */
 
-export type CloudLaneBranchPrepare = (args: { laneId: string; branchRef: string; projectRoot: string }) => Promise<{ created: boolean }>;
+export type CloudLaneBranchPrepare = (args: { laneId: string; branchRef: string; projectRoot: string }) => Promise<{ created: boolean; branch?: string | null }>;
 export type CloudLaneRestore = (args: { laneId: string; worktreePath: string; projectRoot: string }) => Promise<string | null>;
 
 let prepare: CloudLaneBranchPrepare | null = null;
@@ -29,10 +29,14 @@ export function cloudLaneRestoreInstalled(): boolean {
   return restore != null;
 }
 
-/** True when the branch was made here from the lane's backup (the import must not publish it). */
-export async function prepareCloudLaneBranch(args: { laneId: string; branchRef: string; projectRoot: string }): Promise<boolean> {
-  if (!prepare) return false;
-  return (await prepare(args)).created;
+/**
+ * The local branch made here from the lane's backup (the import uses it and
+ * must not publish it), or null when the branch is here or on GitHub already.
+ */
+export async function prepareCloudLaneBranch(args: { laneId: string; branchRef: string; projectRoot: string }): Promise<string | null> {
+  if (!prepare) return null;
+  const made = await prepare(args);
+  return made.created ? made.branch ?? null : null;
 }
 
 /** A note for the launch card, or null. Throws only when the hook itself throws; the caller keeps the launch going. */

@@ -58,6 +58,7 @@ import { accountAppConnection, cloudGitPreflight } from "./cloudGitCredential";
 import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
+import { registerCloudLaneBackupIpc } from "./cloudLaneBackupIpc";
 import type { CloudProvider } from "./cloudProvider";
 import { setCloudAsleepCheck, setCloudRestChanged, setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
 import { startCloudSleepWatch } from "./cloudSleepWatch";
@@ -269,6 +270,8 @@ export function registerCloudIpc(args: {
     if (!baseUrl) throw new AdeExpectedError("ADE's account service isn't set up on this computer.", "environment");
     return createCloudApiClient({ baseUrl, accessToken: () => getAccountToken() });
   };
+  // A lane's saved work (`laneBackups.ts`): read with no wake and no hours, account level.
+  registerCloudLaneBackupIpc({ accountApi, logger });
   ipcMain.handle(IPC.cloudChatMessageSend, async (event, arg?: Record<string, unknown>): Promise<CloudChatSendAnswer> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudChatMessageSend)) throw new Error("ADE can't do that from here.");
     const text = (value: unknown, max: number) => (typeof value === "string" && value.trim() && value.length <= max ? value : null);

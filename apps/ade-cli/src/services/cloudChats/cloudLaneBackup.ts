@@ -540,7 +540,7 @@ export async function prepareLaneBranchFromBackup(args: {
   branchRef: string;
   projectRoot: string;
   logger: Logger;
-}): Promise<{ created: boolean }> {
+}): Promise<{ created: boolean; branch?: string }> {
   const branch = args.branchRef.replace(/^refs\/heads\//, "").replace(/^origin\//, "");
   const cwd = args.projectRoot;
   if (await resolveCommit(cwd, `refs/heads/${branch}`)) return { created: false };
@@ -567,7 +567,7 @@ export async function prepareLaneBranchFromBackup(args: {
     // Create only: an empty old value never moves a branch that appeared meanwhile.
     await git(cwd, ["update-ref", `refs/heads/${branch}`, backup.headSha, ""]);
     args.logger.info("cloud.lane_branch_from_backup", { laneId: args.laneId, commits: backup.commits });
-    return { created: true };
+    return { created: true, branch };
   } finally {
     await runGit(["update-ref", "-d", tempRef], { cwd, timeoutMs: 15_000 });
     fs.rmSync(tempDir, { recursive: true, force: true });

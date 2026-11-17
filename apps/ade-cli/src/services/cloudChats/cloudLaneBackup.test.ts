@@ -242,9 +242,10 @@ describe("lane backups", () => {
     const project = path.join(root, "project");
     git(root, "clone", "-q", origin, project);
 
-    const made = await prepareLaneBranchFromBackup({ api: server.api, machineKey: "key-new", laneId: LANE, branchRef: "ade/never-pushed", projectRoot: project, logger });
+    // The desktop's restart names `origin/<branch>`; the server's continue names the branch.
+    const made = await prepareLaneBranchFromBackup({ api: server.api, machineKey: "key-new", laneId: LANE, branchRef: "origin/ade/never-pushed", projectRoot: project, logger });
 
-    expect(made).toEqual({ created: true });
+    expect(made).toEqual({ created: true, branch: "ade/never-pushed" });
     expect(git(project, "rev-parse", "refs/heads/ade/never-pushed")).toBe(git(source, "rev-parse", "HEAD"));
     git(project, "checkout", "-q", "ade/never-pushed");
     expect(await restoreLaneBackupIfNeeded({ api: server.api, instanceId: "box2", machineKey: "key-new", laneId: LANE, worktreePath: project, projectRoot: project, logger })).toBe("applied");

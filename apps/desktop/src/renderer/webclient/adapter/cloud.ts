@@ -320,6 +320,26 @@ export function createWebCloudNamespace(
           throw new Error("Do this in the ADE desktop app. This window can't change ADE Cloud lanes.");
       }
     }) as NonNullable<Window["ade"]["cloud"]>["laneLife"],
+    // A lane's saved work at rest (`laneBackups.ts`): the list and its patch only; the bundle stays native.
+    laneBackups: async (laneId?: string | null) => (await accountClient.cloudApi()?.laneBackups(laneId ?? null)) ?? [],
+    saveLaneBackupPatch: async (machineKey: string, laneId: string) => {
+      const api = accountClient.cloudApi();
+      if (!api) throw new Error("Sign in to ADE to download your lane's work.");
+      const backup = await api.laneBackup(machineKey, laneId);
+      if (!backup || !backup.patchParts) throw new Error("ADE Cloud has no saved work for that lane to download.");
+      const parts: ArrayBuffer[] = [];
+      for (let part = 1; part <= backup.patchParts; part += 1) parts.push(await api.readLaneBackupPart(machineKey, laneId, "patch", part));
+      const blob = new Blob(parts, { type: "text/x-patch" });
+      if (blob.size !== backup.patchBytes) throw new Error("This lane's saved work arrived damaged. Try again.");
+      const name = `${(backup.laneName ?? backup.branchRef ?? "lane").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 60)}-saved-work.patch`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = name;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      return { savedTo: name };
+    },
     carriedSignIns: async () => {
       const answer = await accountClient.cloudApi()?.accountSignIns().catch(() => null);
       return answer?.carried ?? null;

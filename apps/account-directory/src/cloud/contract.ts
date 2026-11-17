@@ -931,15 +931,15 @@ export function ignoredFilesList(ignored: Pick<CloudIgnoredFiles, "paths" | "mor
  * that the computer hasn't said yet.
  */
 export function ignoredFilesSentence(ignored: CloudIgnoredFiles | null | undefined): string {
-  if (!ignored) return "ADE doesn't know yet which files git ignores on it (such as .env or a local database); those are never pushed, so they won't be kept.";
+  if (!ignored) return "ADE doesn't know yet which files git ignores on it (such as .env or a local database); those are never saved, so they won't be kept.";
   const list = ignoredFilesList(ignored);
   const builds = ignored.rebuildable > 0 ? " Build and install folders such as node_modules aren't listed: they come back when you build." : "";
   if (ignored.incomplete) {
-    if (!list) return `ADE couldn't read every lane on it to see which files git ignores (such as .env or a local database); those are never pushed, so they won't be kept.${builds}`;
-    return `Files git ignores are never pushed, so these won't be kept: ${list}. ADE couldn't read every lane on it, so there may be more.${builds}`;
+    if (!list) return `ADE couldn't read every lane on it to see which files git ignores (such as .env or a local database); those are never saved, so they won't be kept.${builds}`;
+    return `Files git ignores are never saved, so these won't be kept: ${list}. ADE couldn't read every lane on it, so there may be more.${builds}`;
   }
   if (!list) return `No files that git ignores were found on it.${builds}`;
-  return `Files git ignores are never pushed, so these won't be kept: ${list}.${builds}`;
+  return `Files git ignores are never saved, so these won't be kept: ${list}.${builds}`;
 }
 
 /** "in 1 day", "in 5 hours", "within the hour": how far away a time is. */
