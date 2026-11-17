@@ -2869,6 +2869,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         deltaEnabled={!foreignRow}
         githubStack={isChatToolType(session.toolType) ? sessionPr?.stack ?? null : null}
         disabledReason={disabledReason}
+        readOnly={!foreignRow && reconnectingMachineName != null}
         disabledBusy={!foreignRow}
       />
     );
@@ -4416,6 +4417,20 @@ export const SessionListPane = React.memo(function SessionListPane({
       ))}
 
       <CloudLanesWithoutComputerBlock className="mx-2 mt-1.5" />
+
+      {/* The tab's machine dropped: its rows are what it last sent, and they
+          wait for it. Said once above the list, not on every row. */}
+      {reconnectingMachineName && hasAnySessions ? (
+        <div
+          className="mx-2 mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-fg/70"
+          role="status"
+        >
+          <ArrowClockwise size={11} weight="bold" className="shrink-0" aria-hidden />
+          <span className="min-w-0 truncate">
+            Reconnecting to {reconnectingMachineName}… These are the chats it last sent.
+          </span>
+        </div>
+      ) : null}
 
       {/* Session list */}
       <div

@@ -510,6 +510,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   liveChildrenCount = 0,
   parentSessionTitle = null,
   disabledReason = null,
+  readOnly = false,
   disabledBusy = true,
   runtimePin = null,
   deltaEnabled = true,
@@ -559,6 +560,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   parentSessionTitle?: string | null;
   /** When present, blocks interaction while the owning lane is being removed. */
   disabledReason?: string | null;
+  /**
+   * The row's machine is reconnecting: the row still opens to read what it
+   * last sent, but its menu and actions wait for the machine.
+   */
+  readOnly?: boolean;
   /** Busy rows spin; rows blocked on an unresolved binding show a machine glyph. */
   disabledBusy?: boolean;
   /** Runtime that owns this session when it differs from the active project. */
@@ -1354,7 +1360,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       timestampLabel={suppressStatusLabel ? "" : relativeTimeCompact(session.endedAt ?? session.startedAt)}
       snoozed={snoozed}
       settled={settled}
-      actionsEnabled={!disabledReason}
+      actionsEnabled={!disabledReason && !readOnly}
       compact={compact}
       runtimePin={runtimePin}
       clockMs={statusClockMs}
@@ -1372,7 +1378,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         sessionId={session.id}
         runtimePin={runtimePin}
         canStop={isChatToolType(session.toolType) || isTrackedAgentCliToolType(session.toolType)}
-        disabled={Boolean(disabledReason)}
+        disabled={Boolean(disabledReason) || readOnly}
         size={11}
       />
       <SideChatBadge mainSessionId={session.id} rowSideChatSessionId={session.sideChatSessionId ?? null} size={11} />
@@ -1803,7 +1809,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
          row's own interactions are untouched. */
       {...hoverCard.triggerProps}
       onContextMenu={
-        disabledReason
+        disabledReason || readOnly
           ? undefined
           : (event) => {
             // The context menu is the other thing that opens next to this row;

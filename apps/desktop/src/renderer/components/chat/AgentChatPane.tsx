@@ -263,7 +263,7 @@ import {
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecyclePillVisible } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
-import { useRemoteConnectionMark } from "../../state/projectMachines";
+import { useRemoteConnectionMark, useRemoteTargetReconnecting } from "../../state/projectMachines";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { isWebRuntimePinUnroutableError } from "../../webclient/adapter/runtimePinGuard";
 import {
@@ -13815,6 +13815,13 @@ export function AgentChatPane({
         pin,
       );
     } catch (launchError) {
+      if (isRemoteCallNotSentError(launchError)) {
+        // Nothing reached the machine (it is reconnecting): the chat exists
+        // only here, and the prompt stays in the composer.
+        onOpeningMessageOut?.(false);
+        await cleanupDraftChatSession({ id: sessionId }, targetLane, pin, { deleteOnMachine: false });
+        throw new Error(`Can't reach ${chatMachineNameRef.current || "that machine"}, so the chat was not started. Your message is still in the composer.`);
+      }
       if (!isRemoteOutcomeUnknownError(launchError)) {
         // A brain error: the brain deleted the chat after a failed send. The
         // window's own rollback runs too; a second delete is a no-op.
@@ -17767,7 +17774,13 @@ export function AgentChatPane({
   // "Start on" for the open repository: a new chat starts on the machine of
   // its first available copy unless the person picks another.
   const { choices: draftStartOnChoices, defaultChoice: draftStartOnChoice } = useActiveStartOn(showDraftLaunchControls);
-  const draftStartOnMachineId = draftStartOnChoice?.kind === "copy" ? draftStartOnChoice.copy.machineId : null;
+  // The tab's machine is reconnecting: a new chat keeps starting there instead
+  // of moving to the first copy that is online now.
+  const draftTabTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
+  const draftTabMachineReconnecting = useRemoteTargetReconnecting(showDraftLaunchControls ? draftTabTargetId : null);
+  const draftStartOnMachineId = draftTabMachineReconnecting
+    ? draftTabTargetId
+    : draftStartOnChoice?.kind === "copy" ? draftStartOnChoice.copy.machineId : null;
   const draftRepositoryTabId = useActiveRepositoryTab()?.id ?? null;
   const {
     machineOptions: routedLaneMachineOptions,
@@ -18095,7 +18108,12 @@ export function AgentChatPane({
     const cloneRows = draftSetupMachineRows.filter((row) => draftCloneRowTargetId(row.id) != null);
     const wakeRows = draftSetupMachineRows.filter((row) => draftCloneRowTargetId(row.id) == null);
     const connected: Array<DraftMachineOption & { order: number }> = [
-      ...laneMachineOptions.map((option) => ({ id: option.id, name: option.name, order: orderOf(option.id) })),
+      ...laneMachineOptions.map((option) => ({
+        id: option.id,
+        name: option.name,
+        ...(option.reconnecting ? { detail: "Reconnecting…" } : {}),
+        order: orderOf(option.id),
+      })),
       ...cloneRows.map((row) => ({
         ...(parallelChatMode ? { ...row, unavailableReason: PARALLEL_MODELS_HERE_ONLY } : row),
         order: orderOf(draftCloneRowTargetId(row.id)!),

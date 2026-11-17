@@ -255,6 +255,30 @@ export function useDraftMachineRouting({
       localProjects: knownLocalProjects,
       cloudIndex,
     });
+    // The tab's machine is reconnecting: it stays in the list as the bound
+    // machine, marked, so a draft does not move to This computer meanwhile.
+    if (
+      boundConnection
+      && boundConnection.state === "error"
+      && boundConnection.recovery === "reconnecting"
+      && !options.some((option) => option.isBound)
+    ) {
+      options.push({
+        id: boundConnection.target.id,
+        name: boundConnection.target.name,
+        targetId: boundConnection.target.id,
+        hostname: boundConnection.target.hostname ?? null,
+        transport: boundConnection.target.transport ?? "ssh",
+        version: boundConnection.version ?? null,
+        freeBytes: null,
+        activeLaneCount: null,
+        repoMatch: "matched",
+        project: boundProject,
+        isBound: true,
+        machineKey: boundConnection.target.pairedMachine?.machineKey?.trim() || boundConnection.target.id,
+        reconnecting: true,
+      });
+    }
     return [
       ...options.filter((option) => option.isBound),
       ...options.filter((option) => !option.isBound),
