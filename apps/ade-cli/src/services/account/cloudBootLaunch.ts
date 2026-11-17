@@ -141,6 +141,8 @@ export type CloudBootLaunchDeps = {
     /** The person's message; a restored CLI types it itself (`promptSent`). */
     prompt: string;
     clientMessageId: string;
+    /** `cli`: the saved row is a CLI session copy. Left out (an older server): a chat, then a CLI. */
+    kind?: "chat" | "cli";
   }) => Promise<{ sessionId: string; promptSent?: boolean }>;
   /**
    * Waits until the chat's running turn is over; false when it still runs at the
@@ -477,6 +479,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
             modelId: request.chat.modelId || null,
             prompt: withAttachmentPaths(request.chat.prompt, attachments),
             clientMessageId: request.chat.messageId ?? launchId,
+            ...(continuing.kind === "cli" ? { kind: "cli" as const } : {}),
           });
           // The person's message, as the chat's next message: the same id as their send, so a retry is the same message.
           if (!restored.promptSent) {

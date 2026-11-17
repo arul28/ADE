@@ -181,6 +181,8 @@ export type CloudChatRestoreArgs = {
   /** The person's message: a CLI restore types it itself. */
   prompt: string;
   clientMessageId: string;
+  /** `cli`: the saved row is a CLI session copy, so no saved chat is read. */
+  kind?: "chat" | "cli";
 };
 
 /**
@@ -216,6 +218,11 @@ export async function restoreCloudChat(
   args: CloudChatRestoreArgs,
 ): Promise<CloudChatRestoreResult> {
   const { api, logger, machineKey } = deps;
+  if (args.kind === "cli") {
+    const cli = await restoreCloudCli(deps, args);
+    if (cli) return cli;
+    throw new Error("ADE couldn't find this CLI's saved copy, so it can't continue it here.");
+  }
   // A restore that ran before moved the copy here already: read it from here.
   let from = args.fromMachineKey;
   let saved = await readSavedTranscript(api, from, args.chatId);
