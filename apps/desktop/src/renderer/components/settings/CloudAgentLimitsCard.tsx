@@ -199,7 +199,19 @@ export function CloudAgentLimitsCard() {
 
         <p className="adecd-limits-note"><Lock size={12} weight="fill" /> Always yours to decide: changing a computer's size, keeping one awake for good, raising these limits, and deleting a computer an agent didn't make.</p>
         {error ? (
-          <Banner layout="inline" model={{ id: "cloud-limits-error", tone: "error", title: "What agents may do", detail: error, actions: [{ label: "Dismiss", onClick: () => setError(null) }] }} />
+          // A 409 means another device saved first and ADE loaded its limits:
+          // news, not a bug, so it has no Report.
+          <Banner
+            layout="inline"
+            model={{
+              id: "cloud-limits-error",
+              tone: error === LIMITS_CHANGED_SENTENCE ? "info" : "error",
+              title: "What agents may do",
+              detail: error,
+              actions: [{ label: "Dismiss", onClick: () => setError(null) }],
+              ...(error === LIMITS_CHANGED_SENTENCE ? { report: false as const } : {}),
+            }}
+          />
         ) : null}
       </div>
     </section>
