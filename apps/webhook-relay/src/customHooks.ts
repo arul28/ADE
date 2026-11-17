@@ -29,6 +29,7 @@ import {
   text,
   type RelayEnv,
 } from "./shared";
+import { wakeCloudComputersForTopics } from "./cloudEventWakes";
 
 export const MAX_CUSTOM_HOOK_BODY_BYTES = 1024 * 1024;
 const MAX_CUSTOM_HOOK_REGISTRATION_BYTES = 8 * 1024;
@@ -428,6 +429,8 @@ export async function handleCustomHookDelivery(
     await Promise.all([
       // A forwarded hook's deliveries go to ADE Cloud; its machines aren't woken for them.
       hook.forward_url ? forwardHeld(env, hook) : notifyLinearTopic(env, hookTopic(hook.account_id), { t: "hook_delivery" }),
+      // A resting cloud computer of the account holds no socket: the account directory wakes it.
+      hook.forward_url ? Promise.resolve() : wakeCloudComputersForTopics(env, [hookTopic(hook.account_id)]),
       pruneExpiredHookEvents(env),
     ]);
   });

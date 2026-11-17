@@ -86,6 +86,11 @@ npm run deploy
 ```
 
 `GITHUB_WEBHOOK_SECRET` must match the GitHub App webhook secret.
+`CLOUD_EVENT_WAKE_SECRET` is optional. Set the same value on both account
+directories. With it, the relay asks the account directories to wake resting
+ADE Cloud computers that listen to a Linear or custom-webhook topic after it
+stores a delivery (`src/cloudEventWakes.ts`). Without it, no event wakes a
+resting cloud computer.
 `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` are optional but recommended. They
 let the relay verify a repository installation live through GitHub's App API
 when webhook state has not arrived yet or the user presses Refresh in Settings.
