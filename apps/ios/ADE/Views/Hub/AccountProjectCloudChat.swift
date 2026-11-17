@@ -241,21 +241,30 @@ struct AccountProjectCloudSetupCard: View {
             .font(.system(size: 13))
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
-          Button {
-            retrying = true
-            Task {
-              await launches.retry(entry.launchId, using: syncService)
-              retrying = false
+          HStack(spacing: 8) {
+            Button {
+              retrying = true
+              Task {
+                await launches.retry(entry.launchId, using: syncService)
+                retrying = false
+              }
+            } label: {
+              if retrying { ProgressView().controlSize(.small) } else { Text("Retry") }
             }
-          } label: {
-            if retrying { ProgressView().controlSize(.small) } else { Text("Retry") }
+            .buttonStyle(ADEKitButtonStyle(tone: .crit))
+            .disabled(retrying || (entry.body == nil && entry.record?.request == nil))
+            Button("Hide") { launches.hide(entry.launchId) }
+              .buttonStyle(ADEKitButtonStyle())
+              .disabled(retrying)
           }
-          .buttonStyle(ADEKitButtonStyle(tone: .crit))
-          .disabled(retrying || (entry.body == nil && entry.record?.request == nil))
         }
       } else if running {
-        Button("Open chat", action: onOpenChat)
-          .buttonStyle(ADEKitButtonStyle(prominent: true))
+        HStack(spacing: 8) {
+          Button("Open chat", action: onOpenChat)
+            .buttonStyle(ADEKitButtonStyle(prominent: true))
+          Button("Hide") { launches.hide(entry.launchId) }
+            .buttonStyle(ADEKitButtonStyle())
+        }
       } else {
         Text("You can close the app. ADE Cloud keeps your message and sends it when the agent is ready.")
           .font(.system(size: 12))

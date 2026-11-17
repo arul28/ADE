@@ -144,12 +144,20 @@ export function CloneToMachineDialog({
   useEffect(() => {
     if (open) sentRef.current = false;
   }, [open]);
+  // The clone finishes after the dialog closes, but a closed dialog opens nothing over where the person went.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const start = () => {
     if (!folder) return;
     rememberCloneFolder(machine.machineId, folder);
     // A failed job runs again with the folder picked now.
     startCopyJob({ repoKey, url, name: repoName, parentDir: folder, displayName: repoName, machine }, (target) => {
-      if (sentRef.current) return;
+      if (sentRef.current || !mountedRef.current) return;
       sentRef.current = true;
       onReady(target);
     });

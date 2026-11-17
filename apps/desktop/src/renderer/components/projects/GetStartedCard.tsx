@@ -58,7 +58,7 @@ export function useGetStartedState({ priorWork }: { priorWork: boolean | null })
   const projects = list.state === "ready" ? list.projects : [];
   const githubDone = github.connected;
   const projectDone = projects.length > 0;
-  const chatDone = priorWork === true || launches.entries.length > 0 || cloudLanes.computers.length > 0;
+  const chatDone = priorWork === true || launches.entries.some((entry) => Boolean(entry.record?.sessionId)) || cloudLanes.computers.length > 0;
   const allDone = githubDone && projectDone && chatDone;
   // Unknown is not "to do": the card waits for the reads before it shows.
   const known = github.loaded && list.state === "ready" && launches.known && priorWork != null;

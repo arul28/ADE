@@ -345,6 +345,8 @@ final class AccountCloudLaunchStore: ObservableObject {
   }
 
   @Published private(set) var entries: [Entry] = []
+  /// Finished or failed launches the person hid on this phone (until the account changes).
+  @Published private var hiddenIds: Set<String> = []
   @Published private(set) var catalog: CloudModelCatalog?
   @Published private(set) var catalogError: String?
 
@@ -358,7 +360,12 @@ final class AccountCloudLaunchStore: ObservableObject {
 
   func entries(forOrigin origin: String) -> [Entry] {
     let key = origin.lowercased()
-    return entries.filter { $0.origin == key && $0.record?.state != "cancelled" }
+    return entries.filter { $0.origin == key && $0.record?.state != "cancelled" && !hiddenIds.contains($0.launchId) }
+  }
+
+  /// Hide: a finished or failed launch's card leaves this phone's project page.
+  func hide(_ launchId: String) {
+    hiddenIds.insert(launchId)
   }
 
   func loadCatalogIfNeeded(using sync: SyncService) async {
@@ -585,6 +592,7 @@ final class AccountCloudLaunchStore: ObservableObject {
     pollGeneration += 1
     accountGeneration += 1
     entries = []
+    hiddenIds = []
     activeReadAt = nil
   }
 }
