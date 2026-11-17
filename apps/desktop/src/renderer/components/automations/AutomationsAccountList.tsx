@@ -26,7 +26,10 @@ const HOME_PREFIX = "automations.home.";
 type SettingsRead =
   | { status: "loading" }
   | { status: "ready"; rows: AccountSettingRow[] }
+  /** No settings store here (an older ADE) or no repository: nothing to read. */
   | { status: "unavailable" }
+  /** The account answered but did not give the rows (signed out, refused). */
+  | { status: "refused"; message: string }
   | { status: "failed"; message: string };
 
 /** The repository's account settings rows, read once per open (and on Retry). */
@@ -44,7 +47,7 @@ function useRepositorySettings(scope: string | null, attempt: number): SettingsR
       (answer) => {
         if (cancelled) return;
         if (answer.ok) setRead({ status: "ready", rows: answer.value });
-        else setRead({ status: "unavailable" });
+        else setRead({ status: "refused", message: answer.message });
       },
       (error: unknown) => {
         if (!cancelled) setRead({ status: "failed", message: error instanceof Error ? error.message : "ADE couldn't read your account settings." });
@@ -150,9 +153,11 @@ export function AutomationsAccountList({ origin, active }: { origin: string | nu
   const settingsRows = settings.status === "ready" ? settings.rows : [];
   const rows = useMemo(() => rowsOf(settingsRows, cloudRows), [cloudRows, settingsRows]);
   // Nothing could be read at all: say so, never an empty list.
-  const nothingRead = (settings.status === "failed" || settings.status === "unavailable")
+  // A refused settings read is a failed read: the rules it holds are missing.
+  const settingsFailed = settings.status === "failed" || settings.status === "refused";
+  const nothingRead = (settingsFailed || settings.status === "unavailable")
     && (cloud.status === "failed" || cloud.status === "unsupported");
-  const partialFailure = !nothingRead && (settings.status === "failed" || cloud.status === "failed");
+  const partialFailure = !nothingRead && (settingsFailed || cloud.status === "failed");
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-auto px-6 py-5" data-testid="automations-account-list">
@@ -172,7 +177,7 @@ export function AutomationsAccountList({ origin, active }: { origin: string | nu
             code={cloud.status === "failed" ? cloud.code : "unavailable"}
             message={cloud.status === "failed"
               ? cloud.message
-              : settings.status === "failed" ? settings.message : "Your ADE account didn't answer. Try again."}
+              : settingsFailed ? settings.message : "Your ADE account didn't answer. Try again."}
             onRetry={retry}
           />
         ) : null}
@@ -181,7 +186,7 @@ export function AutomationsAccountList({ origin, active }: { origin: string | nu
             id="automations-account-part"
             what={cloud.status === "failed" ? "the runs on ADE Cloud" : "every rule"}
             code={cloud.status === "failed" ? cloud.code : "unavailable"}
-            message={cloud.status === "failed" ? cloud.message : settings.status === "failed" ? settings.message : ""}
+            message={cloud.status === "failed" ? cloud.message : settingsFailed ? settings.message : ""}
             onRetry={retry}
           />
         ) : null}
