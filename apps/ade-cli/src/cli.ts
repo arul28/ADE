@@ -32317,6 +32317,31 @@ async function runServe(
     const { waitForChatIdleByEvents } = await import("./services/cloudChats/chatIdleWait");
     return await waitForChatIdleByEvents(chat, sessionId);
   };
+  // The settings picked with a queued message or a fork-continue, applied
+  // before the message goes. Only what differs from the chat now: the queue
+  // sends the chat's own model with every message.
+  const applyCloudChatSettings = async (
+    projectId: string,
+    sessionId: string,
+    settings: import("../../account-directory/src/cloud/contract").CloudChatMessageSettings & { modelId?: string | null },
+  ): Promise<void> => {
+    const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+    if (!chat) return;
+    const summary = await chat.getSessionSummary(sessionId).catch(() => null);
+    const update: Parameters<typeof chat.updateSession>[0] = { sessionId };
+    if (settings.presetId !== undefined) update.presetId = settings.presetId;
+    const modelId = settings.modelId?.trim();
+    if (modelId && modelId !== (summary?.modelId ?? summary?.model)) update.modelId = modelId;
+    if (settings.reasoningEffort !== undefined && settings.reasoningEffort !== (summary?.reasoningEffort ?? null)) {
+      update.reasoningEffort = settings.reasoningEffort;
+    }
+    if (settings.fastMode !== undefined) {
+      update.fastMode = settings.fastMode;
+      if (settings.fastTier !== undefined) update.fastTier = settings.fastTier;
+    }
+    if (Object.keys(update).length === 1) return;
+    await chat.updateSession(update);
+  };
   if (bootLaunchEnv) {
     startCloudBootLaunch(bootLaunchEnv, {
       cloudInstanceId,
@@ -32336,6 +32361,7 @@ async function runServe(
       // The person's messages sent before the chat existed (the server keeps them).
       // `waitForChatIdle` runs first (cloudLaunchMessages), so this is one send.
       sendChatMessage: sendCloudChatMessage,
+      applyChatSettings: applyCloudChatSettings,
       // Claude takes a send during a turn and then fails that turn ("Turn already
       // active"), so a queued message waits for the running turn's end.
       waitForChatIdle: waitCloudChatIdle,
@@ -32457,27 +32483,7 @@ async function runServe(
       },
       waitForChatIdle: waitCloudChatIdle,
       sendChatMessage: sendCloudChatMessage,
-      // The settings picked with a queued message, applied before it goes.
-      // Only what differs from the chat now: the queue sends the chat's own
-      // model with every message.
-      applyChatSettings: async (projectId, sessionId, settings) => {
-        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
-        if (!chat) return;
-        const summary = await chat.getSessionSummary(sessionId).catch(() => null);
-        const update: Parameters<typeof chat.updateSession>[0] = { sessionId };
-        if (settings.presetId !== undefined) update.presetId = settings.presetId;
-        const modelId = settings.modelId?.trim();
-        if (modelId && modelId !== (summary?.modelId ?? summary?.model)) update.modelId = modelId;
-        if (settings.reasoningEffort !== undefined && settings.reasoningEffort !== (summary?.reasoningEffort ?? null)) {
-          update.reasoningEffort = settings.reasoningEffort;
-        }
-        if (settings.fastMode !== undefined) {
-          update.fastMode = settings.fastMode;
-          if (settings.fastTier !== undefined) update.fastTier = settings.fastTier;
-        }
-        if (Object.keys(update).length === 1) return;
-        await chat.updateSession(update);
-      },
+      applyChatSettings: applyCloudChatSettings,
       // A tracked agent CLI takes the message at its prompt; a sleep keeps its process, a cold restart does not.
       sessionKind: async (projectId, sessionId) => {
         const { runtime } = await scopeRegistry.get(projectId);

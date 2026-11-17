@@ -40,6 +40,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type {
+  CloudChatMessageSettings,
   CloudLaunchRecord,
   CloudLaunchStage,
   CloudLaunchStagesUpdate,
@@ -47,6 +48,7 @@ import type {
   CloudServerLaunchRequest,
 } from "../../../../account-directory/src/cloud/contract";
 import {
+  cloudChatMessageSettingsOf,
   CLOUD_AUTOMATION_RUN_STAGE,
   CLOUD_LAUNCH_ENV,
   CLOUD_LAUNCH_MAX_STAGES,
@@ -129,6 +131,8 @@ export type CloudBootLaunchDeps = {
     sessionId: string,
     message: { text: string; clientSendId: string; attachments?: Array<{ path: string; type: "image" | "file" }> },
   ) => Promise<void>;
+  /** Fork-continue: the person's picked settings, applied to the restored chat before its message (the queue's own apply). */
+  applyChatSettings?: (projectId: string, sessionId: string, settings: CloudChatMessageSettings & { modelId?: string | null }) => Promise<void>;
   /**
    * Fork-continue (`continueChat`): restores the saved chat in its lane here,
    * with the same chat id (`cloudChatRestore.ts`). Left out, a continue
@@ -192,6 +196,8 @@ type PendingContinue = {
   /** The same id as the person's send, so a retry is the same message. */
   clientMessageId: string;
   attachments: Array<{ path: string; type: "image" | "file" }>;
+  /** The person's picked settings (a chat only, never a CLI); applied once the chat is restored. */
+  settings?: CloudChatMessageSettings;
 };
 
 /** A just-booted computer's device sign-in is tried this many times (each one retries the network itself). */
@@ -496,6 +502,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
           text: request.chat.prompt,
           clientMessageId: request.chat.messageId ?? launchId,
           attachments,
+          ...(continuing.settings ? { settings: continuing.settings } : {}),
         };
       }
     } catch (error) {
@@ -779,6 +786,13 @@ async function follow(
         ...(pending.kind === "cli" ? { kind: "cli" as const } : {}),
       });
       if (!restored.promptSent) {
+        // Older servers send no settings; the same checks as the server's. A refused setting never loses the message.
+        const settings = pending.kind === "cli" ? null : cloudChatMessageSettingsOf(pending.settings);
+        if (settings && deps.applyChatSettings) {
+          await deps.applyChatSettings(projectId, restored.sessionId, { ...settings, modelId: pending.modelId }).catch((error: unknown) => {
+            logger.warn("cloud_boot_launch.continue_settings_failed", { launchId, error: errorText(error) });
+          });
+        }
         await deps.sendChatMessage?.(projectId, restored.sessionId, {
           text: pending.text,
           clientSendId: pending.clientMessageId,
@@ -950,6 +964,7 @@ export type CloudBootLaunchHost = {
   refreshVault?: CloudBootLaunchDeps["refreshVault"];
   /** The person's queued messages reach the chat through it. */
   sendChatMessage?: CloudBootLaunchDeps["sendChatMessage"];
+  applyChatSettings?: CloudBootLaunchDeps["applyChatSettings"];
   waitForChatIdle?: CloudBootLaunchDeps["waitForChatIdle"];
   /** Fork-continue: restores the saved chat here (`cloudChatRestore.ts`). */
   continueChat?: CloudBootLaunchDeps["continueChat"];
@@ -1038,6 +1053,7 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
       remoteSignIn: host.remoteSignIn,
       refreshVault: host.refreshVault,
       sendChatMessage: host.sendChatMessage,
+      applyChatSettings: host.applyChatSettings,
       waitForChatIdle: host.waitForChatIdle,
       continueChat: host.continueChat,
       launches: async (projectId) => {
