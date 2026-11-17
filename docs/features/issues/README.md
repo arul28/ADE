@@ -120,13 +120,22 @@ clickable.
 
 ## Jira
 
-Settings → Integrations → Jira connects this machine to one Jira Cloud site
-with an Atlassian API token. The site URL, the account email and the token are
-stored in the machine's encrypted credential store under `jira.siteUrl`,
-`jira.email` and `jira.apiToken`. The token is never logged and never sent back
-to a client. The site URL must be `https://`; plain `http://` is accepted only
-for a loopback host, so the test server below works. Jira URLs use
-`/browse/KEY-123`.
+Settings → Integrations → Jira connects the project to one Jira Cloud site
+with an Atlassian API token. Each project keeps its own connection, encrypted
+in `<project>/.ade/secrets` (`jira.siteUrl`, `jira.email`, `jira.apiToken`;
+`jiraCredentialService.ts`).
+
+- The connection follows the project to every computer on the account through
+  the account vault: scope `repo:<host>/<owner>/<repo>`, kind `integration`,
+  key `jira`. ADE Cloud computers use it too.
+- A project with no remote keeps its connection on that computer, and the
+  status says so.
+- A project with no connection of its own adopts the computer's older
+  machine-wide connection on first read.
+
+The token is never logged and never sent back to a client. The site URL must
+be `https://`; plain `http://` is accepted only for a loopback host, so the
+test server below works. Jira URLs use `/browse/KEY-123`.
 
 The project binding is `issueTrackers.jira.projectKeys` in this project's
 `.ade/local.yaml`. It is the one place ADE reads Jira project keys from: the
@@ -137,7 +146,7 @@ read.
 The runtime exposes Jira as `window.ade.jira` (runtime-only; see
 [ARCHITECTURE](../../ARCHITECTURE.md)). Its actions are in the `jira` action
 domain. Connecting and disconnecting are CTO-only, because the credential is
-machine-wide.
+a secret that no agent may hold.
 
 The Jira viewer edits the title and Markdown description inline. Its property
 box changes status through the workflow transitions Jira offers, and edits
@@ -172,6 +181,42 @@ an agent: `status`, `connect` (CTO role; the token comes from stdin with
 `list` (paged; pass the returned cursor to `--cursor`), `issue`, `create`,
 `edit`, `comment`, `transition`, `assign`, `label` and `unlabel`. Add `--text`
 for a readable answer; the default is JSON.
+
+## With no computer: reads through the account
+
+The web Linear and Jira panes, the iPhone Linear pane, and a desktop tab bound
+to ADE Cloud read issues through the ADE account server when no computer
+answers. The server reads the project's vault connection with the caller's
+own bearer. The token stays in that request's memory: it is never stored,
+logged or sent back.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /cloud/integrations/jira/search` | `{ origin, jql, fields?, maxResults?, nextPageToken? }` | `{ siteUrl, issues, nextPageToken }` |
+| `POST /cloud/integrations/jira/issue` | `{ origin, key }` | `{ siteUrl, issue }`, with comments |
+| `POST /cloud/integrations/linear/query` | `{ origin, op, vars? }` | Linear's `data` (see [Linear](../linear-integration/README.md#with-no-computer)) |
+
+- `origin` is the project's git origin. It picks the vault scope.
+- Jira calls go only to `https://<site>.atlassian.net`. Any other site
+  answers `jira_site_unsupported`, so the server never calls an address a
+  person typed. A search returns at most 100 issues a page (50 by default).
+- Linear and Jira together allow 30 requests a minute per account.
+- Reads only. An edit, a comment, a transition or a launch needs a computer,
+  and the pane says so.
+- The answers are Jira's and Linear's own objects. `shared/jiraIssueMapping.ts`
+  and `shared/linearIssueNormalize.ts` turn them into the panes' shapes
+  (`shared/adeCloud/integrationReads.ts`).
+- An older server answers `404`, and the client keeps its old behavior.
+
+Refusals (clients show the server's `message`):
+
+| Code | Status | When |
+|---|---|---|
+| `jira_not_connected` | 409 | No Jira connection for the project, or Jira refused it. |
+| `jira_site_unsupported` | 409 | The site is not at `atlassian.net`. |
+| `linear_not_connected`, `linear_renewing`, `linear_needs_renewal` | 409 | See the Linear doc. |
+| `rate_limited` | 429 | Over 30 requests a minute, or the tracker asked ADE to slow down. |
+| `integration_failed` | 502 | The tracker failed or timed out (15 s). |
 
 ## Creating issues
 
@@ -382,6 +427,11 @@ Issues tab and the sheet. Turning Linear off is signing out.
   the machine credential store).
 - `apps/desktop/scripts/fake-jira-server.mjs` — the test server (see "Testing
   without a Jira site").
+- `apps/account-directory/src/cloud/integrations.ts` — the account server's
+  Linear and Jira reads (`jiraSiteOrigin` is the site guard); the types are
+  in `cloud/contract.ts` (`CLOUD_EDGE_PATHS`, `CLOUD_INTEGRATION_ERROR_CODES`).
+- `apps/desktop/src/shared/adeCloud/integrationReads.ts` and
+  `shared/jiraIssueMapping.ts` — the client side of those reads.
 - `apps/ade-cli/src/cliIssue.ts` — `ade issue`; `apps/ade-cli/src/cliJira.ts` —
   `ade jira`.
 - `apps/desktop/src/main/services/chat/agentChatService.ts` —

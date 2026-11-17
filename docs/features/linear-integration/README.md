@@ -49,7 +49,7 @@ Also:
 - `apps/desktop/src/shared/linearIssueNormalize.ts`: issue normalization,
   shared by the desktop client and the account reads. Pure.
 
-### With no computer
+### Account server and relay
 
 | File | What |
 |---|---|
