@@ -110,7 +110,7 @@ const ENV_KEY_PROVIDERS: Record<string, string> = {
   cursor: "CURSOR_API_KEY",
   moonshotai: "MOONSHOT_API_KEY",
   // The keys ADE Cloud's sign-ins save, so one store holds each of them
-  // (`CLOUD_KEY_API_PROVIDER`, providerLoginSyncShared.ts).
+  // (`CLOUD_KEY_API_PROVIDER`, shared/cloudSignIns.ts).
   factory: "FACTORY_API_KEY",
   copilot: "COPILOT_GITHUB_TOKEN",
   "devin-cli": "WINDSURF_API_KEY",

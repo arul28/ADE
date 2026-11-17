@@ -1,5 +1,6 @@
 import {
   CLAUDE_PASS_VAULT_KIND,
+  CLOUD_KEY_API_STORE_KIND,
   CLOUD_SIGN_INS,
   CLOUD_SIGN_IN_KEY_KIND,
   CLOUD_SIGN_IN_VAULT_SCOPE,
@@ -9,7 +10,10 @@ import {
   cloudSignInVaultKey,
   encodeCloudSignIn,
   isPastedClaudeToken,
+  mirrorCloudKeyToApiStore,
   parseCloudSignIn,
+  unmirrorCloudKeyFromApiStore,
+  type CloudKeyApiStore,
   type CloudSignInId,
 } from "../../../desktop/src/shared/cloudSignIns";
 import { CLAUDE_PASS_KEY_PREFIX, isProviderLoginProvider } from "../../../desktop/src/shared/types/providerLogins";
@@ -29,7 +33,8 @@ import { logCloud } from "./store";
  * The items are the ones the desktop's Settings card and every cloud
  * computer's brain already use, in the stored form all three share
  * (desktop `shared/cloudSignIns.ts`): scope `all`, kind `integration`, key
- * `cloud-key-<id>` for a pasted key; kind `provider_login`, key
+ * `cloud-key-<id>` for a pasted key, mirrored into the one API key store
+ * (kind `provider_api_key`) as the desktop does; kind `provider_login`, key
  * `claude-pass/<12 hex>` for a Claude pass. A value passes through memory
  * only: never stored here, never logged, never sent back. Answers carry
  * status only.
@@ -207,6 +212,40 @@ async function deleteItem(env: RelayEnv, authorization: string, kind: string, ke
   }
 }
 
+/** One live item's value; null when absent; undefined when the vault didn't answer. A relay without the item route takes the full read. */
+async function readOneValue(env: RelayEnv, authorization: string, kind: string, key: string): Promise<string | null | undefined> {
+  const read = await readVaultItem(env, authorization, { scope: SCOPE, kind, key });
+  if (read.ok) return read.value?.value ?? null;
+  if (read.reason === "failed") return undefined;
+  const items = await readItems(env, authorization);
+  if (!items) return undefined;
+  const item = items.find((row) => row.kind === kind && row.key === key);
+  return typeof item?.value === "string" ? item.value : null;
+}
+
+/**
+ * The one API key store (`provider_api_key`), which cloud computers read
+ * before `cloud-key-<id>`: a key saved or removed here must change it the way
+ * the desktop does (`mirrorCloudKeyToApiStore`), or a cloud computer keeps the
+ * older key.
+ */
+function apiStoreOf(env: RelayEnv, authorization: string): CloudKeyApiStore {
+  return {
+    read: async (key) => {
+      const value = await readOneValue(env, authorization, CLOUD_KEY_API_STORE_KIND, key);
+      return value === undefined ? undefined : value?.trim() || null;
+    },
+    write: (key, token) => writeItem(env, authorization, { kind: CLOUD_KEY_API_STORE_KIND, key, value: token }),
+    remove: (key) => deleteItem(env, authorization, CLOUD_KEY_API_STORE_KIND, key),
+  };
+}
+
+/** The key a sign-in's item holds now (null when none); undefined when the vault didn't answer. */
+async function heldKeyOf(env: RelayEnv, authorization: string, id: CloudSignInId): Promise<string | null | undefined> {
+  const raw = await readOneValue(env, authorization, KEY_KIND, cloudSignInVaultKey(id));
+  return raw === undefined ? undefined : parseCloudSignIn(raw)?.token ?? null;
+}
+
 function signInIdOf(raw: string | undefined): CloudAccountSignInId | null {
   return CLOUD_SIGN_INS.find((spec) => spec.id === raw)?.id ?? null;
 }
@@ -237,7 +276,14 @@ export async function routeAccountSignIns(request: Request, path: string, env: R
       const value = JSON.stringify(claudePassPayload({ token: cleaned.key, createdAt: now }));
       landed = await writeItem(env, authorization, { kind: PASS_KIND, key: `${CLAUDE_PASS_KEY_PREFIX}${randomHex(6)}`, value });
     } else {
+      const held = await heldKeyOf(env, authorization, id);
+      if (held === undefined) return unavailable();
       landed = await writeItem(env, authorization, { kind: KEY_KIND, key: cloudSignInVaultKey(id), value: encodeCloudSignIn(cleaned.key, now) });
+      // Saved but not in the one store: cloud computers would keep the older key, so the person is told to try again.
+      if (landed && !(await mirrorCloudKeyToApiStore(apiStoreOf(env, authorization), id, cleaned.key, held))) {
+        logCloud("cloud.cloud_key_mirror_failed", { id });
+        return unavailable();
+      }
     }
     if (!landed) return unavailable();
     logCloud("cloud.sign_in_saved", { id });
@@ -253,8 +299,15 @@ export async function routeAccountSignIns(request: Request, path: string, env: R
       const keys = items.flatMap((item) => (item.kind === PASS_KIND && typeof item.key === "string" && item.key.startsWith(CLAUDE_PASS_KEY_PREFIX) ? [item.key] : []));
       for (const key of keys) if (!await deleteItem(env, authorization, PASS_KIND, key)) return unavailable();
       if (!await deleteItem(env, authorization, KEY_KIND, LEGACY_CLAUDE_SIGN_IN_KEY)) return unavailable();
-    } else if (!await deleteItem(env, authorization, KEY_KIND, cloudSignInVaultKey(id))) {
-      return unavailable();
+    } else {
+      const held = await heldKeyOf(env, authorization, id);
+      if (held === undefined) return unavailable();
+      if (!await deleteItem(env, authorization, KEY_KIND, cloudSignInVaultKey(id))) return unavailable();
+      // A copy left in the one store would still sign cloud computers in.
+      if (!(await unmirrorCloudKeyFromApiStore(apiStoreOf(env, authorization), id, held))) {
+        logCloud("cloud.cloud_key_unmirror_failed", { id });
+        return unavailable();
+      }
     }
     logCloud("cloud.sign_in_removed", { id });
     return json(await statusOf(env, authorization));

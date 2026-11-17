@@ -229,7 +229,10 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
     isCurrent: () => boolean,
     expectedAccountUserId: string,
   ): Promise<AccountMigrationSourceResult> => {
-    const { CLOUD_KEY_API_PROVIDER, savedKeyTokenOf } = await import("../providerLogins/providerLoginSyncShared");
+    const [{ savedKeyTokenOf }, { CLOUD_KEY_API_PROVIDER }] = await Promise.all([
+      import("../providerLogins/providerLoginSyncShared"),
+      import("../../../shared/cloudSignIns"),
+    ]);
     const listed = await listVaultItems("all");
     if (!listed || !isCurrent()) return { moved: 0, skipped: 0, complete: false };
     const rows = new Map(

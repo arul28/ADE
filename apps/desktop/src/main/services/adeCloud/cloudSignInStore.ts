@@ -12,16 +12,20 @@
 
 import {
   CLAUDE_TOKEN_PATTERN,
+  CLOUD_KEY_API_STORE_KIND,
   CLOUD_SIGN_INS,
+  cloudKeyApiStoreRows,
   cloudSignInVaultKey,
   encodeCloudSignIn,
+  mirrorCloudKeyToApiStore,
   parseCloudSignIn,
+  unmirrorCloudKeyFromApiStore,
+  type CloudKeyApiStore,
   type CloudSignInId,
   type CloudSignInStatus,
   type StoredCloudSignIn,
 } from "../../../shared/cloudSignIns";
 import type { CloudVault, CloudVaultKind } from "./cloudAccess";
-import { CLOUD_KEY_API_PROVIDER } from "../providerLogins/providerLoginSyncShared";
 
 type Logger = { warn?(event: string, meta?: Record<string, unknown>): void } | null | undefined;
 
@@ -32,17 +36,11 @@ type Logger = { warn?(event: string, meta?: Record<string, unknown>): void } | n
  */
 export type CloudSignInVaults = (vaultKey: string, kind?: CloudVaultKind) => CloudVault | null;
 
-/* ---- The one API key store (`provider_api_key`, apiKeyStore.ts) ---- */
-
-/** The provider's own key, then the copy ADE Cloud saved beside a different one. */
-function apiStoreKeysFor(id: CloudSignInId): { own: string; cloud: string } | null {
-  const provider = CLOUD_KEY_API_PROVIDER[id];
-  return provider ? { own: provider, cloud: `${provider}#ade-cloud` } : null;
-}
+/* ---- The one API key store (`provider_api_key`; the mirror rule is shared/cloudSignIns.ts) ---- */
 
 /** One row of the one key store; undefined when the vault can't answer (logged by id, never the key). */
 async function readApiStore(vaults: CloudSignInVaults, key: string, id: CloudSignInId, logger?: Logger): Promise<string | null | undefined> {
-  const vault = vaults(key, "provider_api_key");
+  const vault = vaults(key, CLOUD_KEY_API_STORE_KIND);
   if (!vault) return undefined;
   try {
     const read = await vault.get();
@@ -56,49 +54,17 @@ async function readApiStore(vaults: CloudSignInVaults, key: string, id: CloudSig
   }
 }
 
-/** Removes one row of the one key store; a failure is logged by id. */
-async function removeApiStoreRow(vaults: CloudSignInVaults, key: string, id: CloudSignInId, logger?: Logger): Promise<boolean> {
-  const removed = await vaults(key, "provider_api_key")?.remove().catch(() => false);
-  if (!removed) logger?.warn?.("cloud.cloud_key_unmirror_failed", { id });
-  return removed === true;
+function apiStoreOf(vaults: CloudSignInVaults, id: CloudSignInId, logger?: Logger): CloudKeyApiStore {
+  return {
+    read: (key) => readApiStore(vaults, key, id, logger),
+    write: async (key, token) => (await vaults(key, CLOUD_KEY_API_STORE_KIND)?.set(token).catch(() => false)) === true,
+    remove: async (key) => (await vaults(key, CLOUD_KEY_API_STORE_KIND)?.remove().catch(() => false)) === true,
+  };
 }
 
-/**
- * Mirrors a saved ADE Cloud key into the one API key store, so every
- * computer and ADE Cloud see one key. The provider's own row takes it when it
- * is empty or already holds it; a different key there stays, and this one
- * goes beside it as `<provider>#ade-cloud` (which cloud computers read
- * first). Best effort: the `cloud-key-<id>` item stays the copy older cloud
- * computers read, so a failed mirror loses nothing.
- */
-async function mirrorToApiStore(vaults: CloudSignInVaults, id: CloudSignInId, token: string, logger?: Logger): Promise<void> {
-  const keys = apiStoreKeysFor(id);
-  if (!keys) return;
-  const own = await readApiStore(vaults, keys.own, id, logger);
-  if (own === undefined) return;
-  if (own !== null && own !== token) {
-    // A different key of a computer's own: this one goes beside it.
-    const ok = await vaults(keys.cloud, "provider_api_key")?.set(token).catch(() => false);
-    if (!ok) logger?.warn?.("cloud.cloud_key_mirror_failed", { id });
-    return;
-  }
-  if (own === null && !(await vaults(keys.own, "provider_api_key")?.set(token).catch(() => false))) {
-    logger?.warn?.("cloud.cloud_key_mirror_failed", { id });
-    return;
-  }
-  // The provider's row holds this key now: an older copy beside it would shadow it on cloud computers.
-  if ((await readApiStore(vaults, keys.cloud, id, logger)) != null) await removeApiStoreRow(vaults, keys.cloud, id, logger);
-}
-
-/** Removes ADE Cloud's copy from the one store: its `#ade-cloud` row, and the provider's row when it holds the same key. */
-async function unmirrorFromApiStore(vaults: CloudSignInVaults, id: CloudSignInId, token: string | null, logger?: Logger): Promise<void> {
-  const keys = apiStoreKeysFor(id);
-  if (!keys) return;
-  const cloud = await readApiStore(vaults, keys.cloud, id, logger);
-  if (cloud) await removeApiStoreRow(vaults, keys.cloud, id, logger);
-  if (!token) return;
-  const own = await readApiStore(vaults, keys.own, id, logger);
-  if (own === token) await removeApiStoreRow(vaults, keys.own, id, logger);
+/** The key a sign-in's item holds now; null when none or unreadable (the mirror then keeps a computer's own key). */
+async function heldToken(vault: CloudVault, id: CloudSignInId): Promise<string | null> {
+  return await vault.get().then((read) => (read.ok ? parseStored(id, read.value)?.token ?? null : null), () => null);
 }
 
 // The stored form (vault keys, values, the token pattern) is shared with the account server (shared/cloudSignIns.ts).
@@ -117,12 +83,17 @@ export async function saveCloudSignIn(
 ): Promise<boolean> {
   const vault = vaults(cloudSignInVaultKey(id));
   if (!vault) return false;
+  // The key it replaces: the provider's row that holds it is ADE Cloud's copy, not a computer's own.
+  const held = id === "claude" ? null : await heldToken(vault, id);
   const ok = await vault.set(encodeCloudSignIn(token, Date.now())).catch(() => {
     logger?.warn?.("cloud.cloud_sign_in_save_threw", { id, reason: "vault_write_threw" });
     return false;
   });
   if (!ok) logger?.warn?.("cloud.cloud_sign_in_save_failed", { id });
-  else if (id !== "claude") await mirrorToApiStore(vaults, id, token, logger);
+  // Best effort: the `cloud-key-<id>` item stays the copy older cloud computers read, so a failed mirror loses nothing.
+  else if (id !== "claude" && !(await mirrorCloudKeyToApiStore(apiStoreOf(vaults, id, logger), id, token, held))) {
+    logger?.warn?.("cloud.cloud_key_mirror_failed", { id });
+  }
   return ok;
 }
 
@@ -135,12 +106,14 @@ export async function removeCloudSignIn(
   const vault = vaults(cloudSignInVaultKey(id));
   if (!vault) return false;
   // The key it held, so the one store's copy of the same key goes with it.
-  const held = id === "claude" ? null : await vault.get().then((read) => (read.ok ? parseStored(id, read.value)?.token ?? null : null), () => null);
+  const held = id === "claude" ? null : await heldToken(vault, id);
   const removed = await vault.remove().catch(() => {
     logger?.warn?.("cloud.cloud_sign_in_remove_threw", { id, reason: "vault_remove_threw" });
     return false;
   });
-  if (removed && id !== "claude") await unmirrorFromApiStore(vaults, id, held, logger);
+  if (removed && id !== "claude" && !(await unmirrorCloudKeyFromApiStore(apiStoreOf(vaults, id, logger), id, held))) {
+    logger?.warn?.("cloud.cloud_key_unmirror_failed", { id });
+  }
   return removed;
 }
 
@@ -157,7 +130,7 @@ async function readAll(vaults: CloudSignInVaults | null, logger: Logger): Promis
       if (!read.ok) return { id, stored: null, readable: false };
       const stored = parseStored(id, read.value);
       // A key saved on a computer's Providers page is ADE Cloud's key too (the one store).
-      const keys = stored || id === "claude" ? null : apiStoreKeysFor(id);
+      const keys = stored || id === "claude" ? null : cloudKeyApiStoreRows(id);
       const inApiStore = keys
         ? Boolean((await readApiStore(vaults, keys.cloud, id, logger)) || (await readApiStore(vaults, keys.own, id, logger)))
         : false;

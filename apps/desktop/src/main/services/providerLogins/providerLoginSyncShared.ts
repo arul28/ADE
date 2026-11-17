@@ -23,7 +23,7 @@ import {
   type ProviderLoginSignIn,
   type ProviderLoginStatus,
 } from "../../../shared/types/providerLogins";
-import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
+import { CLOUD_SIGN_INS, cloudKeyApiStoreRows } from "../../../shared/cloudSignIns";
 import {
   PROVIDER_LOGINS_CLOUD_SETTING,
   cloudChoiceKey,
@@ -111,28 +111,10 @@ export const SAVED_KEYS: ReadonlyArray<{ id: string; env: string; provider: Prov
     provider: spec.providers.length === 1 ? spec.providers[0]! : null,
   }));
 
-/**
- * The provider id each ADE Cloud key has in the one API key store
- * (`provider_api_key`, `apiKeyStore.ts`). The desktop moves `cloud-key-<id>`
- * there; a key that clashed with a different key of this computer's went to
- * `<provider>#ade-cloud`.
- */
-export const CLOUD_KEY_API_PROVIDER: Readonly<Record<string, string>> = {
-  codex: "openai",
-  cursor: "cursor",
-  grok: "xai",
-  openrouter: "openrouter",
-  droid: "factory",
-  devin: "devin-cli",
-  muse: "meta",
-  copilot: "copilot",
-  qwen: "dashscope",
-};
-
 /** The `provider_api_key` vault keys a cloud computer reads for one ADE Cloud key, in order. */
 export function cloudKeyApiStoreKeys(id: string): string[] {
-  const provider = CLOUD_KEY_API_PROVIDER[id];
-  return provider ? [`${provider}#ade-cloud`, provider] : [];
+  const rows = cloudKeyApiStoreRows(id);
+  return rows ? [rows.cloud, rows.own] : [];
 }
 
 /** A `provider_api_key` value: the key as plain text (`apiKeyStore.ts` stores it so). */

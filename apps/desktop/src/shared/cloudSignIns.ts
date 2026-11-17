@@ -178,6 +178,73 @@ export function cloudSignInVaultKey(id: CloudSignInId): string {
   return id === "claude" ? LEGACY_CLAUDE_SIGN_IN_KEY : `cloud-key-${id}`;
 }
 
+/* ---- The one API key store (scope `all`, kind `provider_api_key`, apiKeyStore.ts) ---- */
+
+export const CLOUD_KEY_API_STORE_KIND = "provider_api_key";
+
+/**
+ * The provider id each ADE Cloud key has in the one API key store. A key that
+ * clashed with a different key of a computer's own goes to `<provider>#ade-cloud`.
+ */
+export const CLOUD_KEY_API_PROVIDER: Readonly<Record<string, string>> = {
+  codex: "openai",
+  cursor: "cursor",
+  grok: "xai",
+  openrouter: "openrouter",
+  droid: "factory",
+  devin: "devin-cli",
+  muse: "meta",
+  copilot: "copilot",
+  qwen: "dashscope",
+};
+
+/** One ADE Cloud key's two rows in the one store: the provider's own, then the copy beside a different key. */
+export function cloudKeyApiStoreRows(id: string): { own: string; cloud: string } | null {
+  const provider = CLOUD_KEY_API_PROVIDER[id];
+  return provider ? { own: provider, cloud: `${provider}#ade-cloud` } : null;
+}
+
+/** The one store's rows, as each caller reaches them. `read` answers undefined when the vault can't answer. */
+export type CloudKeyApiStore = {
+  read(key: string): Promise<string | null | undefined>;
+  write(key: string, token: string): Promise<boolean>;
+  remove(key: string): Promise<boolean>;
+};
+
+/**
+ * Puts a saved ADE Cloud key into the one API key store, so computers and
+ * cloud computers read one key. The provider's row takes it when the row is
+ * empty, holds this key, or holds the key ADE Cloud had before (`held`). Any
+ * other key there is a computer's own: it stays, and this one goes beside it
+ * as `<provider>#ade-cloud`, which cloud computers read first. False when the
+ * store didn't answer or a write failed.
+ */
+export async function mirrorCloudKeyToApiStore(store: CloudKeyApiStore, id: string, token: string, held: string | null): Promise<boolean> {
+  const rows = cloudKeyApiStoreRows(id);
+  if (!rows) return true;
+  const own = await store.read(rows.own);
+  if (own === undefined) return false;
+  if (own !== null && own !== token && own !== held) return await store.write(rows.cloud, token);
+  if (own !== token && !(await store.write(rows.own, token))) return false;
+  // The provider's row holds this key now: an older copy beside it would shadow it on cloud computers.
+  const beside = await store.read(rows.cloud);
+  if (beside === undefined) return false;
+  return beside === null || (await store.remove(rows.cloud));
+}
+
+/** Removes ADE Cloud's copy from the one store: the row beside, and the provider's row when it holds the key ADE Cloud had. */
+export async function unmirrorCloudKeyFromApiStore(store: CloudKeyApiStore, id: string, held: string | null): Promise<boolean> {
+  const rows = cloudKeyApiStoreRows(id);
+  if (!rows) return true;
+  const beside = await store.read(rows.cloud);
+  if (beside === undefined) return false;
+  if (beside !== null && !(await store.remove(rows.cloud))) return false;
+  if (!held) return true;
+  const own = await store.read(rows.own);
+  if (own === undefined) return false;
+  return own !== held || (await store.remove(rows.own));
+}
+
 /** Claude Code's subscription token (`sk-ant-oat01-…`), found anywhere in text. */
 export const CLAUDE_TOKEN_PATTERN = /\bsk-ant-oat\d{2}-[A-Za-z0-9_-]{20,}/;
 /**
