@@ -1624,6 +1624,10 @@ function createUsageStubs(call: MiscCall, infra: AdapterInfra): Partial<Window["
     // An older host without the command answers null: ADE-only counts.
     getGithubContributions: () => call("usage.getGithubContributions", {}, null),
     getSnapshot: () => call("usage.getQuotaSnapshot", {}, null),
+    // Web only: whether a computer is connected that can give provider
+    // limits. With none (only the account answers), the band says where the
+    // numbers come from instead of waiting for a reading that never comes.
+    liveReadings: () => infra.commands.hasAction("usage.getQuotaSnapshot"),
     // Refresh is the user pressing the button: mark it non-idempotent so it
     // reaches the host instead of replaying a cached read, and so a failure
     // surfaces rather than resolving to a fake null snapshot.
