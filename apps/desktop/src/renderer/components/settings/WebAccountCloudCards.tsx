@@ -73,8 +73,15 @@ export function WebSignInSharingCard() {
     setError(null);
     // Read again right before the write, so a change from another device to
     // the other fields is kept.
+    // If that read fails, nothing is written: a write with no base would
+    // erase the picks and the keys switched off.
     const fresh = await readAccountSetting(PROVIDER_LOGINS_CLOUD_SETTING);
-    const base = fresh.ok && fresh.value && typeof fresh.value === "object" && !Array.isArray(fresh.value)
+    if (!fresh.ok) {
+      setError(READ_FAILED);
+      setPending(null);
+      return;
+    }
+    const base = fresh.value && typeof fresh.value === "object" && !Array.isArray(fresh.value)
       ? (fresh.value as Record<string, unknown>)
       : {};
     const value = { ...base, v: 1, enabled: next };
