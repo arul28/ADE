@@ -1154,6 +1154,80 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("leaves no row running after a clean stop, and closes rows an earlier clean stop stranded but never a synced machine's", async () => {
+    const { createProcessRegistryService } = await import("../runtime/processRegistryService");
+    const logger = createLogger() as any;
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), logger);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    const otherMachineRoot = makeProjectRoot("ade-session-service-peer-");
+    const otherMachineDb = await openFreshKvDb(path.join(otherMachineRoot, ".ade", "ade.db"), logger);
+    activeDisposers.push(async () => otherMachineDb.close());
+    insertProjectGraph(otherMachineDb);
+    const otherMachine = createSessionService({ db: otherMachineDb });
+
+    // Pids alive on this computer: the new brain and a sibling brain.
+    const OLD_BRAIN = 1_111;
+    const NEW_BRAIN = 3_333;
+    const SIBLING = 4_444;
+    const livePids = new Set([NEW_BRAIN, SIBLING]);
+    const registryFor = (pid: number) => createProcessRegistryService({
+      db,
+      logger,
+      pid,
+      role: "ade-serve-daemon",
+      pidLivenessCheck: (candidate) => livePids.has(candidate),
+    });
+    const createChat = (target: typeof service, sessionId: string, owner: { pid: number; startedAt: string | null }) => target.create({
+      sessionId,
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: sessionId,
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: `/tmp/${sessionId}.log`,
+      toolType: "claude-chat",
+      ownerPid: owner.pid,
+      ownerProcessStartedAt: owner.startedAt,
+    });
+
+    // A brain from before this fix stopped cleanly: its registry row is gone, its chat still reads running.
+    const oldBrain = registryFor(OLD_BRAIN);
+    oldBrain.start();
+    createChat(service, "stranded-chat", { pid: OLD_BRAIN, startedAt: oldBrain.startedAt });
+    oldBrain.stop();
+    // Another machine's chat arrives by sync. Its owner pid is not running here, and that proves nothing.
+    createChat(otherMachine, "other-machine-chat", { pid: OLD_BRAIN, startedAt: "2026-03-17T00:01:00.000Z" });
+    db.sync!.applyChanges(otherMachineDb.sync!.exportChangesSince(0).filter((change) => change.table === "terminal_sessions"));
+    const sibling = registryFor(SIBLING);
+    sibling.start();
+    createChat(service, "sibling-chat", { pid: SIBLING, startedAt: sibling.startedAt });
+
+    const newBrain = registryFor(NEW_BRAIN);
+    newBrain.start();
+    service.reconcileStaleRunningSessions({
+      status: "detached",
+      ...newBrain.staleSessionOwnerScope(service.listRunningOwnersWrittenHere()),
+    });
+
+    expect(service.get("stranded-chat")?.status).toBe("detached");
+    expect(service.get("other-machine-chat")?.status).toBe("running");
+    expect(service.get("sibling-chat")?.status).toBe("running");
+
+    // The new brain picks a chat up, then stops cleanly the way both hosts do.
+    createChat(service, "new-brain-chat", { pid: NEW_BRAIN, startedAt: newBrain.startedAt });
+    service.detachRunningSessionsOwnedBy({ pid: newBrain.pid, startedAt: newBrain.startedAt });
+    newBrain.stop();
+
+    expect(service.get("new-brain-chat")).toEqual(expect.objectContaining({ status: "detached", ptyId: null }));
+    expect(service.get("new-brain-chat")?.endedAt).toEqual(expect.any(String));
+    expect(service.get("sibling-chat")?.status).toBe("running");
+    expect(service.get("other-machine-chat")?.status).toBe("running");
+    sibling.stop();
+  });
+
   it("does not reconcile running sessions with fresh startup or output", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

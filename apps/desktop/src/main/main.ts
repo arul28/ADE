@@ -4778,11 +4778,7 @@ app.whenReady().then(async () => {
     const reconcileStaleRunningSessions = (reason: "startup" | "owner-liveness-expired") => {
       const reconciledSessions = sessionService.reconcileStaleRunningSessions({
         status: "detached",
-        liveOwnerPids: processRegistry.listLivePids(),
-        liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
-        knownOwnerPids: processRegistry.listKnownPids(),
-        knownOwnerIdentities: processRegistry.listKnownProcessIdentities(),
-        deadOwnerIdentities: processRegistry.listDeadProcessIdentities(),
+        ...processRegistry.staleSessionOwnerScope(sessionService.listRunningOwnersWrittenHere()),
       });
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {
@@ -8083,6 +8079,18 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.syncHostService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      // The rows this process still holds `running` become `detached` before
+      // it leaves the registry (`detachRunningSessionsOwnedBy`).
+      if (ctx.processRegistry) {
+        ctx.sessionService?.detachRunningSessionsOwnedBy({
+          pid: ctx.processRegistry.pid,
+          startedAt: ctx.processRegistry.startedAt,
+        });
+      }
     } catch {
       // ignore
     }

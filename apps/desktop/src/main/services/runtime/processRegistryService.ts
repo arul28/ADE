@@ -254,13 +254,39 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
      * without this its chats waited the whole grace after each restart. A
      * registry this process opened earlier (a project reopened) started after
      * it and stays out. The table is local, never synced.
+     *
+     * `candidates` replaces the registry's own list with identities the
+     * caller already proved are from this computer, such as the owners of
+     * rows a clean stop left `running` before it removed its registry row
+     * (`listRunningOwnersWrittenHere`). The same rule applies to them.
      */
-    listDeadProcessIdentities(): RuntimeProcessIdentity[] {
-      return this.listKnownProcessIdentities().filter((identity) => (
+    listDeadProcessIdentities(candidates?: readonly RuntimeProcessIdentity[]): RuntimeProcessIdentity[] {
+      return (candidates ?? this.listKnownProcessIdentities()).filter((identity) => (
         identity.pid === pid
           ? identity.startedAt !== ownStartedAt && Date.parse(identity.startedAt) < PROCESS_STARTED_MS - PROCESS_START_SLACK_MS
           : !pidLivenessCheck(identity.pid)
       ));
+    },
+
+    /**
+     * The owner scope a host passes to `reconcileStaleRunningSessions`.
+     *
+     * `localOwners` are owners of `running` rows that this computer wrote
+     * (`listRunningOwnersWrittenHere`). Those whose process is gone count as
+     * known and dead even when no registry row names them any more: a clean
+     * stop removed its row while its rows stayed `running`. Every other owner
+     * the registry does not know stays out, because a synced row from another
+     * machine carries that machine's pid.
+     */
+    staleSessionOwnerScope(localOwners: readonly RuntimeProcessIdentity[] = []) {
+      const strandedOwners = this.listDeadProcessIdentities(localOwners);
+      return {
+        liveOwnerPids: this.listLivePids(),
+        liveOwnerIdentities: this.listLiveProcessIdentities(),
+        knownOwnerPids: this.listKnownPids(),
+        knownOwnerIdentities: [...this.listKnownProcessIdentities(), ...strandedOwners],
+        deadOwnerIdentities: [...this.listDeadProcessIdentities(), ...strandedOwners],
+      };
     },
 
     /** Quick "is this peer still heartbeating" check. */

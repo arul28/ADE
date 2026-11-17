@@ -1923,6 +1923,97 @@ export function createSessionService({
       return rows.length;
     },
 
+    /**
+     * Mark `detached` every row that one stopping process still holds
+     * `running`, before that process removes its registry row.
+     *
+     * The stale-row rescan closes a row only when its owner is in this
+     * computer's process registry (`reconcileStaleRunningSessions`). A clean
+     * stop removes the owner from the registry, so a row it left `running`
+     * matched nothing and stayed `running` for good. A crash keeps the
+     * registry row, and the next start closes the rows as `detached`; a clean
+     * stop now leaves the same state at once, so restart recovery treats both
+     * stops the same.
+     *
+     * Exact identity only (pid and registry start time): another process on
+     * this computer, or a row synced from another machine, never matches.
+     */
+    detachRunningSessionsOwnedBy(owner: { pid: number; startedAt: string | null }, endedAt?: string): number {
+      const ownerPid = normalizeOwnerPid(owner?.pid);
+      const ownerStartedAt = normalizeOwnerProcessStartedAt(owner?.startedAt);
+      if (ownerPid == null || ownerStartedAt == null) return 0;
+      const whereSql = "status = 'running' and owner_pid = ? and owner_process_started_at = ?";
+      const rows = db.all<{ id: string }>(
+        `select id from terminal_sessions where ${whereSql}`,
+        [ownerPid, ownerStartedAt],
+      );
+      if (!rows.length) return 0;
+      db.run(
+        `update terminal_sessions set ended_at = ?, exit_code = null, status = 'detached', pty_id = null where ${whereSql}`,
+        [endedAt ?? new Date().toISOString(), ownerPid, ownerStartedAt],
+      );
+      for (const row of rows) {
+        if (typeof row.id === "string" && row.id.trim().length) {
+          emitChanged({ sessionId: row.id, reason: "meta-updated" });
+        }
+      }
+      return rows.length;
+    },
+
+    /**
+     * The owners of `running` rows that this database wrote itself: the
+     * owner columns and the status were last written by this computer, not
+     * merged from another machine by sync.
+     *
+     * Rows synced from another machine carry that machine's pids, which mean
+     * nothing here. That is why the rescan closes only rows of owners in this
+     * computer's registry. Before clean stops detached their rows, a stopped
+     * process left rows `running` with an owner the registry no longer knows.
+     * This list lets the host prove such an owner is from this computer, so it
+     * can check whether the process is gone and close its rows.
+     *
+     * The proof is the cr-sqlite clock: site ordinal 0 is this database's own
+     * writes. A database that is not set up for sync has no clock, so it
+     * proves nothing and the list is empty.
+     */
+    listRunningOwnersWrittenHere(): Array<{ pid: number; startedAt: string }> {
+      const hasClock = db.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name = 'terminal_sessions__crsql_clock' limit 1",
+      );
+      const hasPks = db.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name = 'terminal_sessions__crsql_pks' limit 1",
+      );
+      if (!hasClock || !hasPks) return [];
+      const localColumn = (column: string) => `exists (
+        select 1 from terminal_sessions__crsql_clock c
+         where c.key = p.__crsql_key and c.col_name = '${column}' and c.site_id = 0
+      )`;
+      try {
+        const rows = db.all<{ pid: number; startedAt: string }>(
+          `
+            select distinct s.owner_pid as pid, s.owner_process_started_at as startedAt
+              from terminal_sessions s
+              join terminal_sessions__crsql_pks p on p.id = s.id
+             where s.status = 'running'
+               and s.owner_pid is not null
+               and s.owner_process_started_at is not null
+               and ${localColumn("owner_pid")}
+               and ${localColumn("owner_process_started_at")}
+               and ${localColumn("status")}
+          `,
+        );
+        return rows
+          .map((row) => ({
+            pid: normalizeOwnerPid(row.pid),
+            startedAt: normalizeOwnerProcessStartedAt(row.startedAt),
+          }))
+          .filter((row): row is { pid: number; startedAt: string } => row.pid != null && row.startedAt != null);
+      } catch {
+        // A clock this cr-sqlite version lays out differently proves nothing.
+        return [];
+      }
+    },
+
     get(sessionId: string): TerminalSessionDetail | null {
       const row = db.get<SessionRow>(
         `
