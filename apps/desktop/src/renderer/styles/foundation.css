@@ -50,13 +50,16 @@
   --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
   --animate-pulse: ade-duty-pulse 2s infinite;
   --animate-ping: ade-duty-ping 2s infinite;
-  /* Every spinner turns in 30 steps a second, never at display rate. Electron
+  /* Every spinner turns in 20 steps a second, never at display rate. Electron
      does not composite these rotations: each frame re-runs paint and layerize
      for the whole window, then the GPU composites it. On a 240 Hz Windows
      display one 16px `linear` spinner cost ~58% of a core (renderer + GPU);
-     at steps(30) it is lost in idle noise. Custom spin keyframes follow the
-     same rule: steps = duration in seconds x 30. */
-  --animate-spin: spin 1s steps(30) infinite;
+     stepped it is lost in idle noise. 20 steps a second puts each step on
+     the work beat (lib/workBeat.ts): the job and tool spinners in a working
+     chat share the thinking row's frames instead of adding their own. A
+     custom spin that shows while an agent works follows the same rule:
+     steps = duration in seconds x 20. */
+  --animate-spin: spin 1s steps(20) infinite;
 
   --shadow-card: 0 4px 16px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(45, 40, 64, 0.25);
   --shadow-card-hover: 0 8px 30px -6px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(167, 139, 250, 0.15);

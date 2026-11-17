@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { Muxer, StreamTarget } from "mp4-muxer";
+import type { Muxer, StreamTarget } from "mp4-muxer";
+import { loadMp4Muxer } from "../shared/lazyPackages";
 import type {
   AndroidRecording,
   AndroidRecordingSegment,
@@ -40,7 +41,8 @@ import type { ScrcpyVideoPacket } from "./scrcpyVideo";
  * segments as `<id>-2.mp4`, …). After the stop only the demo `<id>.mp4` and
  * a `<id>.json` sidecar with the `AndroidRecording` stay.
  *
- * Node built-ins, `mp4-muxer` and relative imports only, so it runs under `tsx`.
+ * Node built-ins, `mp4-muxer` (required at the first segment, see
+ * `loadMp4Muxer`) and relative imports only.
  */
 
 const NAL_SPS = 7;
@@ -118,8 +120,9 @@ class SegmentWriter {
   constructor(readonly filePath: string, readonly sets: ParameterSets) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     this.fd = fs.openSync(filePath, "w");
-    this.muxer = new Muxer({
-      target: new StreamTarget({
+    const mp4 = loadMp4Muxer();
+    this.muxer = new mp4.Muxer({
+      target: new mp4.StreamTarget({
         onData: (data, position) => {
           fs.writeSync(this.fd, data, 0, data.length, position);
           this.bytesWritten = Math.max(this.bytesWritten, position + data.length);

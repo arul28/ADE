@@ -1,5 +1,5 @@
 import path from "node:path";
-import YAML from "yaml";
+import { YAML } from "../shared/lazyPackages";
 import type {
   OnboardingDetectionIndicator,
   ProjectConfigFile,

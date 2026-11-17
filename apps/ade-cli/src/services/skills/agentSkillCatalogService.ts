@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { parse as parseYaml } from "yaml";
+import { parseYaml } from "../../../../desktop/src/main/services/shared/lazyPackages";
 import { isPathEscapeError, readFileWithinRootSecure } from "../../../../desktop/src/main/services/shared/utils";
 
 import {

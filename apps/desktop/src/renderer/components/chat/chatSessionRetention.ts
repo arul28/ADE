@@ -101,6 +101,14 @@ type RetainedChatSession = {
 let retentionHost: ChatSessionRetentionHost | null = null;
 
 /**
+ * Open holds (`holdRetainedChatFlushes`). While one is open, a flush timer
+ * that fires leaves its batch buffered and notes the session here; the last
+ * release drains them.
+ */
+let retentionFlushHolds = 0;
+const heldRetentionFlushes = new Set<string>();
+
+/**
  * Insertion-ordered, so the cap evicts the least recently retained session.
  */
 const retainedChatSessions = new Map<string, RetainedChatSession>();
@@ -141,6 +149,30 @@ function drainRetainedChatSession(sessionId: string, entry: RetainedChatSession)
   } catch {
     // The cache write is best-effort; a throwing host must not kill retention.
   }
+}
+
+/**
+ * Hold the background flushes while a chat that was just opened paints its
+ * transcript. The batches stay buffered and nothing is dropped: the last
+ * release drains every held session. Adoption and release still flush at
+ * once, so a pane that takes a session back always reads a complete view.
+ * Returns the release; calling it more than once does nothing.
+ */
+export function holdRetainedChatFlushes(): () => void {
+  retentionFlushHolds += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    retentionFlushHolds -= 1;
+    if (retentionFlushHolds > 0) return;
+    const held = [...heldRetentionFlushes];
+    heldRetentionFlushes.clear();
+    for (const sessionId of held) {
+      const entry = retainedChatSessions.get(sessionId);
+      if (entry) drainRetainedChatSession(sessionId, entry);
+    }
+  };
 }
 
 /**
@@ -223,6 +255,10 @@ export function retainChatSession(
       }
       entry.flushHandle = window.setTimeout(() => {
         entry.flushHandle = null;
+        if (retentionFlushHolds > 0) {
+          heldRetentionFlushes.add(sessionId);
+          return;
+        }
         drainRetainedChatSession(sessionId, entry);
       }, CHAT_SESSION_RETENTION_FLUSH_MS);
     });

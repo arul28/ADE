@@ -100,14 +100,17 @@
 .cto-av[data-anim="on"][data-life="on"][data-state="idle"][data-eyes="caret"] .cto-av-blink { animation: cto-av-caret-blink 6s step-end infinite; }
 .cto-av[data-anim="on"][data-life="on"][data-state="idle"] .cto-av-gaze { animation: cto-av-glance 11s step-end infinite; }
 
-/* ── Working: a bob, eyes reading in saccades, a commit dot in orbit ── */
+/* ── Working: a bob, eyes reading in saccades, a commit dot in orbit ──
+   Every step lands on a 50 ms multiple of its loop, the work beat
+   (lib/workBeat.ts), so the avatar shares the frames of the chat's other
+   work signals. */
 
-.cto-av[data-anim="on"][data-state="working"] .cto-av-body { animation: cto-av-bob 1.5s steps(4, end) infinite; }
+.cto-av[data-anim="on"][data-state="working"] .cto-av-body { animation: cto-av-bob 1.6s steps(4, end) infinite; }
 .cto-av[data-anim="on"][data-state="working"][data-energy="calm"] .cto-av-body { animation-name: cto-av-bob-calm; }
-.cto-av[data-anim="on"][data-state="working"] .cto-av-gaze { animation: cto-av-scan 2.4s step-end infinite; }
-.cto-av[data-anim="on"][data-state="working"][data-energy="calm"] .cto-av-gaze { animation-name: cto-av-scan-calm; }
-.cto-av[data-anim="on"][data-state="working"] .cto-av-orbit { opacity: 1; animation: cto-av-orbit 3s steps(64, end) infinite; }
-.cto-av[data-anim="on"][data-state="working"][data-energy="calm"] .cto-av-orbit { animation-duration: 4.5s; animation-timing-function: steps(48, end); }
+.cto-av[data-anim="on"][data-state="working"] .cto-av-gaze { animation: cto-av-scan 2.5s step-end infinite; }
+.cto-av[data-anim="on"][data-state="working"][data-energy="calm"] .cto-av-gaze { animation-name: cto-av-scan-calm; animation-duration: 2.4s; }
+.cto-av[data-anim="on"][data-state="working"] .cto-av-orbit { opacity: 1; animation: cto-av-orbit 3s steps(60, end) infinite; }
+.cto-av[data-anim="on"][data-state="working"][data-energy="calm"] .cto-av-orbit { animation-duration: 4.5s; animation-timing-function: steps(45, end); }
 
 /* ── Thinking (writing its reply): the eyes become typing dots ── */
 

@@ -53,6 +53,8 @@ const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
 const IDENTIFY_DAILY_BUDGET = 3;
 const IDENTIFY_MINUTE_BUDGET = 2;
 const STATE_LOCK_STALE_MS = 5_000;
+/** Fallback stat poll of the opt-out marker; the directory watch is the fast path. */
+const OPT_OUT_MARKER_FALLBACK_POLL_MS = 5_000;
 const RANDOM_UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /**
  * A once-only milestone counts as sent only after delivery is confirmed. One
@@ -769,8 +771,11 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       optOutDirectoryWatcher = null;
     }
     // Polling remains as a portable fallback for filesystems that coalesce or
-    // do not support native directory notifications.
-    fs.watchFile(optOutMarkerPath, { interval: 100, persistent: false }, onOptOutMarkerChanged);
+    // do not support native directory notifications. It is slow on purpose:
+    // every capture checks the marker itself (`effective`), so the poll only
+    // stops an idle client sooner, and a 100 ms poll woke the brain 10 times a
+    // second all day.
+    fs.watchFile(optOutMarkerPath, { interval: OPT_OUT_MARKER_FALLBACK_POLL_MS, persistent: false }, onOptOutMarkerChanged);
   };
 
   const stopOptOutWatcher = (): void => {

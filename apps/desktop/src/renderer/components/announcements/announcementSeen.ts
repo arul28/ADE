@@ -13,6 +13,12 @@ import {
  * the account (`announcementSeenSync.ts`), so a page seen on one computer or
  * in ADE Web does not show again on another. Signed out, the local copy is all
  * there is. When this computer last showed a page stays per computer.
+ *
+ * A page added before the signed-in account was created never shows by
+ * itself: a new account starts with only what is new after it joined
+ * (`setAnnouncementsAccountCreatedAt`, from the sync pass). Nothing is written
+ * for this, so it cannot hide a page from an existing account through a sync
+ * race; Help › What's new still lists every page.
  */
 
 /** Same key as before the catalogue: its values were revisions, and any value means shown. */
@@ -44,6 +50,14 @@ const lastShownStore = createLocalStore({
   parse: (stored) => finiteNumber(stored) ?? 0,
 });
 
+/** When the signed-in account was created; null when signed out or unknown. */
+let accountCreatedAt: number | null = null;
+
+/** Set by the account sync pass (`announcementSeenSync.ts`) before it resolves. */
+export function setAnnouncementsAccountCreatedAt(createdAt: number | null): void {
+  accountCreatedAt = createdAt;
+}
+
 function addedAt(page: AnnouncementPageDef): number {
   const time = Date.parse(`${page.added}T12:00:00Z`);
   return Number.isFinite(time) ? time : 0;
@@ -57,10 +71,19 @@ function newestFirst(pages: readonly AnnouncementPageDef[]): AnnouncementPageDef
     .map(({ page }) => page);
 }
 
-/** The next pages to show by themselves: unseen, still fresh, newest first, at most three. */
-export function dueAnnouncements(seen: SeenMap = seenStore.get(), now = Date.now()): AnnouncementPageDef[] {
+/**
+ * The next pages to show by themselves: unseen, still fresh, added after the
+ * account was created, newest first, at most three.
+ */
+export function dueAnnouncements(
+  seen: SeenMap = seenStore.get(),
+  now = Date.now(),
+  createdAt: number | null = accountCreatedAt,
+): AnnouncementPageDef[] {
   return newestFirst(ANNOUNCEMENT_PAGES)
-    .filter((page) => seen[page.id] === undefined && now - addedAt(page) <= FRESH_MS)
+    .filter((page) => seen[page.id] === undefined
+      && now - addedAt(page) <= FRESH_MS
+      && (createdAt == null || addedAt(page) >= createdAt))
     .slice(0, PAGES_PER_SHOWING);
 }
 

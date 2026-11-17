@@ -6769,15 +6769,21 @@ describe("AgentChatMessageList turn fold — scrolling, jumps, and row-indexed f
       }
     });
 
-    it("anchors to the fold row when the row being read is itself folded", async () => {
-      const restore = stubRowLayout(50);
+    // Reading "Checking the lockfile." (index 4), which the fold hides. With
+    // only that row on screen, the fold row (index 1) takes its place. With the
+    // answer (index 6, top 200) also on screen, the answer stays where it was
+    // (now index 2): a long turn that ends under the reader keeps their place
+    // instead of jumping to the turn's top.
+    it.each([
+      { case: "only the folded row is on screen", clientHeight: 50, scrollTop: 100 },
+      { case: "a row that stays is also on screen", clientHeight: 300, scrollTop: 0 },
+    ])("anchors a folded reading row: $case", async ({ clientHeight, scrollTop }) => {
+      const restore = stubRowLayout(clientHeight);
       try {
         const view = renderMessageList(liveTurn(), { sessionId: SESSION, showStreamingIndicator: true });
-        // Reading "Checking the lockfile." (index 4), which the fold hides.
         await detachAt(400);
         rerenderList(view, [...liveTurn(), done()]);
-        // The fold row (index 1) now sits where that row was.
-        expect(timelinePane().scrollTop).toBe(100);
+        expect(timelinePane().scrollTop).toBe(scrollTop);
         expect(foldButton().getAttribute("aria-expanded")).toBe("false");
       } finally {
         restore();

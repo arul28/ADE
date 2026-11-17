@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parse as parseYaml } from "yaml";
+import { parseYaml } from "../shared/lazyPackages";
 
 export type DiscoveredMarkdownSlashCommand = {
   name: string;

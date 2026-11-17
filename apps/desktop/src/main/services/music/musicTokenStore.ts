@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { safeStorage } from "electron";
-import { isSecureStorageAvailable } from "../shared/secureStorage";
+import { isSecureStorageAvailable, isSecureStorageCheckPending } from "../shared/secureStorage";
 
 /**
  * Where a music provider's sign-in lives: one small file per provider in this
@@ -31,6 +31,9 @@ export function createMusicTokenStore(args: {
 
   const load = () => {
     if (loaded) return;
+    // Not read yet, so not "read and empty": a save now would replace the file
+    // with only the new values. `save` refuses until the key is known.
+    if (isSecureStorageCheckPending()) return;
     loaded = true;
     try {
       if (!fs.existsSync(file) || !isSecureStorageAvailable(safeStorage)) return;

@@ -721,7 +721,7 @@ describe("createAgentChatService", () => {
       expect(Buffer.byteLength(historyEvent.event.output, "utf8")).toBeLessThan(20 * 1024);
     });
 
-    it("bounds stored Codex command output while streaming deltas", async () => {
+    it("joins Codex command output deltas in order and bounds the stored copy", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -752,35 +752,34 @@ describe("createAgentChatService", () => {
         `${"z".repeat(4096)}\nafter-close-1`,
         `${"z".repeat(4096)}\nafter-close-2`,
       ];
-      for (const chunk of chunks) {
-        mockState.emitCodexPayload({
-          jsonrpc: "2.0",
-          method: "item/commandExecution/outputDelta",
-          params: {
-            turnId: "turn-1",
-            itemId: "cmd-stream-output",
-            delta: chunk,
-          },
-        });
-      }
-
-      await vi.waitFor(() => {
-        expect(events.filter((event) =>
-          event.event.type === "command" && event.event.itemId === "cmd-stream-output"
-        )).toHaveLength(4);
+      const emitDelta = (itemId: string, delta: string) => mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/commandExecution/outputDelta",
+        params: { turnId: "turn-1", itemId, delta },
       });
+      const liveOutputs = (itemId: string) => events
+        .filter((event) => event.event.type === "command" && event.event.itemId === itemId)
+        .map((event) => (event.event.type === "command" ? event.event.output : ""));
 
-      const commandEvents = events.filter((event) =>
-        event.event.type === "command" && event.event.itemId === "cmd-stream-output"
-      );
-      expect(commandEvents.map((event) =>
-        event.event.type === "command" ? event.event.output : "",
-      )).toEqual(chunks);
+      // One burst crosses the stored cap, so the stored copy closes; the next
+      // burst is live only.
+      emitDelta("cmd-stream-output", chunks[0]!);
+      emitDelta("cmd-stream-output", chunks[1]!);
+      await vi.waitFor(() => expect(liveOutputs("cmd-stream-output")).toHaveLength(1));
+      emitDelta("cmd-stream-output", chunks[2]!);
+      emitDelta("cmd-stream-output", chunks[3]!);
+      await vi.waitFor(() => expect(liveOutputs("cmd-stream-output")).toHaveLength(2));
+
+      // A burst goes out as one event, in order, with nothing lost.
+      expect(liveOutputs("cmd-stream-output")).toEqual([
+        `${chunks[0]}${chunks[1]}`,
+        `${chunks[2]}${chunks[3]}`,
+      ]);
 
       const storedCommandEvents = (await service.getChatEventHistory(session.id)).events.filter((event) =>
         event.event.type === "command" && event.event.itemId === "cmd-stream-output"
       );
-      expect(storedCommandEvents).toHaveLength(2);
+      expect(storedCommandEvents).toHaveLength(1);
       const compactedEvent = storedCommandEvents.at(-1);
       expect(compactedEvent?.event.type).toBe("command");
       if (compactedEvent?.event.type !== "command") throw new Error("Expected compacted command event");
@@ -790,12 +789,26 @@ describe("createAgentChatService", () => {
       expect(compactedEvent.event.output).not.toContain("after-close");
       expect(compactedEvent.event.outputOriginalBytes).toBe(Buffer.byteLength(`${chunks[0]}${chunks[1]}`, "utf8"));
       expect(compactedEvent.event.outputOmittedBytes).toBeGreaterThan(0);
-      expect(Buffer.byteLength(storedCommandEvents.map((event) =>
-        event.event.type === "command" ? event.event.output : "",
-      ).join(""), "utf8")).toBeLessThan(12 * 1024);
-      expect(storedCommandEvents.some((event) =>
-        event.event.type === "command" && event.event.output.includes("after-close")
-      )).toBe(false);
+      expect(Buffer.byteLength(compactedEvent.event.output, "utf8")).toBeLessThan(12 * 1024);
+
+      // Output buffered before another event goes out ahead of it.
+      emitDelta("cmd-ordered", "one\n");
+      emitDelta("cmd-ordered", "two\n");
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-1", itemId: "msg-between", delta: "Between the outputs." },
+      });
+      emitDelta("cmd-ordered", "three\n");
+      await vi.waitFor(() => expect(liveOutputs("cmd-ordered")).toHaveLength(2));
+      await vi.waitFor(() => expect(events.some((event) => event.event.type === "text" && event.event.itemId === "msg-between")).toBe(true));
+      expect(liveOutputs("cmd-ordered")).toEqual(["one\ntwo\n", "three\n"]);
+      const orderOf = (match: (event: AgentChatEventEnvelope) => boolean) => events.findIndex(match);
+      const firstOutput = orderOf((event) => event.event.type === "command" && event.event.itemId === "cmd-ordered");
+      const between = orderOf((event) => event.event.type === "text" && event.event.itemId === "msg-between");
+      const lastOutput = events.map((event) => event.event.type === "command" && event.event.itemId === "cmd-ordered").lastIndexOf(true);
+      expect(firstOutput).toBeLessThan(between);
+      expect(between).toBeLessThan(lastOutput);
     });
 
     it("omits oversized inline Codex image data from history without changing live previews", async () => {

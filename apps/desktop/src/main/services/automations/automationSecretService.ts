@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import YAML from "yaml";
+import { YAML } from "../shared/lazyPackages";
 import type { Logger } from "../logging/logger";
 import { isRecord, nowIso } from "../shared/utils";
 import { createFileVersionTracker } from "../state/durableFile";

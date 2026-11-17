@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import YAML, { isMap, isScalar, type Document } from "yaml";
+import type { Document } from "yaml";
+import { YAML, isYamlMap as isMap, isYamlScalar as isScalar } from "../shared/lazyPackages";
 import type { PlaintextApiKeyOutcome } from "../ai/apiKeyStore";
 import { writeFileAtomic } from "../state/durableFile";
 

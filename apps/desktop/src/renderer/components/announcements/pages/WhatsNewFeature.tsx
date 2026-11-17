@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import { useAppStore } from "../../../state/appStore";
 import { useAppearanceStore } from "../../../state/appearanceStore";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
+import { useWindowInFront } from "../../../hooks/useWindowInFront";
 import { ADE_TIPS, runTipAction, tipActionAvailable } from "../../../onboarding/adeTips";
 import { markTipTried } from "../../../onboarding/situationalSuggestions";
 import { useGoTo } from "../../onboarding/spotlight/useGoTo";
@@ -100,6 +101,15 @@ export function WhatsNewFeature({ close, place, headline, sentence, media, actio
 
 function Recording({ media }: { media: RecordingMedia }) {
   const reduceMotion = useReduceMotion();
+  const inFront = useWindowInFront();
+  const ref = useRef<HTMLVideoElement>(null);
+  // Plays while the window is in front; behind other windows it holds its frame.
+  useEffect(() => {
+    const video = ref.current;
+    if (!video) return;
+    if (inFront) void video.play().catch(() => undefined);
+    else video.pause();
+  }, [inFront, reduceMotion]);
   if (reduceMotion) {
     return (
       <img
@@ -115,13 +125,13 @@ function Recording({ media }: { media: RecordingMedia }) {
   }
   return (
     <video
+      ref={ref}
       className="ade-wnf-plate"
       src={media.video}
       poster={media.still}
       width={media.width}
       height={media.height}
       aria-label={media.alt}
-      autoPlay
       loop
       muted
       playsInline
@@ -199,19 +209,23 @@ function Crossfade({ media }: { media: ImagesMedia }) {
   );
 }
 
-/** A video in the crossfade: it plays from the start each time it fades in, and stops when it fades out. */
+/**
+ * A video in the crossfade: it plays from the start each time it fades in, and
+ * stops when it fades out. Behind other windows it holds its frame.
+ */
 function ShotVideo({ shot, active, loop, onEnded }: { shot: Shot; active: boolean; loop: boolean; onEnded: () => void }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const inFront = useWindowInFront();
+  useEffect(() => {
+    const video = ref.current;
+    if (video && active) video.currentTime = 0;
+  }, [active]);
   useEffect(() => {
     const video = ref.current;
     if (!video) return;
-    if (active) {
-      video.currentTime = 0;
-      void video.play().catch(() => undefined);
-    } else {
-      video.pause();
-    }
-  }, [active]);
+    if (active && inFront) void video.play().catch(() => undefined);
+    else video.pause();
+  }, [active, inFront]);
   return (
     <video
       ref={ref}

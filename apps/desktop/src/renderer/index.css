@@ -37,6 +37,16 @@ html.caret-resting * {
   caret-animation: manual;
 }
 
+/* The same quiet spell rests a looping signal that only asks for attention
+   (a pending update, a usage warning). It stays drawn, solid, at full
+   opacity, and loops again on the first input. One small looping pulse keeps
+   the compositor drawing frames: a 16 px duty-cycled pulse cost about 1.3 %
+   of a core in Chromium at rest, more than the rest of an idle window. Not
+   for signs of work that runs (spinners of a turn, a working row). */
+html.caret-resting .ade-rests-when-idle {
+  animation: none !important;
+}
+
 /* The app's text selection color. Chromium inherits ::selection from the
    parent's ::selection, so one rule on the app root colors every descendant,
    and a nested `selection:` class still wins for its own subtree. Tailwind's
@@ -2338,50 +2348,47 @@ button, [role="button"] {
    the time where cubic-bezier(0.42, 0, 0.58, 1), rounded to the nearest 0.02,
    changes value. The `step-end` timing in SessionStatusLabel is load-bearing: a
    smooth opacity animation makes the compositor draw every display frame. Each
-   stop then sits on the nearest 1/30 s of the 2.6 s loop (78 slots, k/78), the
-   grid the chat's thinking indicator steps on, so the two share their frames
-   instead of each drawing its own. To change the range, re-derive the stops
+   stop then sits on the nearest 50 ms of the 2.6 s loop (52 slots, k/52), the
+   work beat (lib/workBeat.ts) the chat's thinking indicator steps on, so the
+   two share their frames instead of each drawing its own. Two levels that
+   round to the same slot show the later one. To change the range, re-derive the stops
    from the same curve and round them to that grid. */
 @keyframes ade-session-working-breathe {
   0% { opacity: 1.00; }
-  5.1282% { opacity: 0.98; }
-  10.2564% { opacity: 0.96; }
-  12.8205% { opacity: 0.94; }
+  5.7692% { opacity: 0.98; }
+  9.6154% { opacity: 0.96; }
+  13.4615% { opacity: 0.94; }
   15.3846% { opacity: 0.92; }
-  16.6667% { opacity: 0.90; }
+  17.3077% { opacity: 0.90; }
   19.2308% { opacity: 0.88; }
-  20.5128% { opacity: 0.86; }
-  21.7949% { opacity: 0.84; }
+  21.1538% { opacity: 0.84; }
   23.0769% { opacity: 0.82; }
-  25.641% { opacity: 0.80; }
+  25% { opacity: 0.80; }
   26.9231% { opacity: 0.78; }
-  28.2051% { opacity: 0.76; }
-  29.4872% { opacity: 0.74; }
+  28.8462% { opacity: 0.74; }
   30.7692% { opacity: 0.72; }
-  33.3333% { opacity: 0.70; }
+  32.6923% { opacity: 0.70; }
   34.6154% { opacity: 0.68; }
-  37.1795% { opacity: 0.66; }
-  39.7436% { opacity: 0.64; }
-  44.8718% { opacity: 0.62; }
-  55.1282% { opacity: 0.64; }
-  60.2564% { opacity: 0.66; }
-  62.8205% { opacity: 0.68; }
+  36.5385% { opacity: 0.66; }
+  40.3846% { opacity: 0.64; }
+  44.2308% { opacity: 0.62; }
+  55.7692% { opacity: 0.64; }
+  59.6154% { opacity: 0.66; }
+  63.4615% { opacity: 0.68; }
   65.3846% { opacity: 0.70; }
-  66.6667% { opacity: 0.72; }
+  67.3077% { opacity: 0.72; }
   69.2308% { opacity: 0.74; }
-  70.5128% { opacity: 0.76; }
-  71.7949% { opacity: 0.78; }
+  71.1538% { opacity: 0.78; }
   73.0769% { opacity: 0.80; }
-  75.641% { opacity: 0.82; }
+  75% { opacity: 0.82; }
   76.9231% { opacity: 0.84; }
-  78.2051% { opacity: 0.86; }
-  79.4872% { opacity: 0.88; }
+  78.8462% { opacity: 0.88; }
   80.7692% { opacity: 0.90; }
-  83.3333% { opacity: 0.92; }
+  82.6923% { opacity: 0.92; }
   84.6154% { opacity: 0.94; }
-  87.1795% { opacity: 0.96; }
-  89.7436% { opacity: 0.98; }
-  94.8718% { opacity: 1.00; }
+  86.5385% { opacity: 0.96; }
+  90.3846% { opacity: 0.98; }
+  94.2308% { opacity: 1.00; }
 }
 
 
@@ -2391,12 +2398,12 @@ button, [role="button"] {
   0%,
   40% {
     opacity: 1;
-    animation-timing-function: steps(6);
+    animation-timing-function: steps(4);
   }
   50%,
   90% {
     opacity: 0.5;
-    animation-timing-function: steps(6);
+    animation-timing-function: steps(4);
   }
   100% {
     opacity: 1;
@@ -2944,7 +2951,8 @@ button, [role="button"] {
 }
 
 /* The agent is driving it: the ring travels. One rotated layer (a
-   compositor transform), stepped at 30 steps a turn, so an agent at work
+   compositor transform), stepped at 26 steps a turn (one each 100 ms, on the
+   work beat), so an agent at work
    costs a few composites a second rather than one per display refresh. */
 .ade-tool-tile-ring {
   position: absolute;
@@ -2970,7 +2978,7 @@ button, [role="button"] {
     var(--tool-color) 0.95turn,
     transparent 1turn
   );
-  animation: ade-tool-tile-spin 2.6s steps(30) infinite;
+  animation: ade-tool-tile-spin 2.6s steps(26) infinite;
 }
 
 @keyframes ade-tool-tile-spin {
@@ -5261,16 +5269,18 @@ button, [role="button"] {
   box-shadow: 0 0 6px 1px rgba(239, 68, 68, 0.3);
 }
 
+/* Each ramp is 200 ms in 4 steps, starting on a 50 ms multiple of the loop,
+   so the dot changes on the work beat (lib/workBeat.ts). */
 @keyframes ade-thinking-pulse {
-  0%, 40% {
+  0%, 37.5% {
     opacity: 0.3;
     transform: scale(0.85);
-    animation-timing-function: steps(6);
+    animation-timing-function: steps(4);
   }
-  50%, 90% {
+  50%, 87.5% {
     opacity: 1;
     transform: scale(1.15);
-    animation-timing-function: steps(6);
+    animation-timing-function: steps(4);
   }
   100% { opacity: 0.3; transform: scale(0.85); }
 }
@@ -5280,14 +5290,18 @@ button, [role="button"] {
 
 /* ThinkingIndicator (components/ui/ThinkingIndicator.tsx): a sparkle that
    melts into a circle and back, a twinkle at the turn, a sheen across the
-   label. Every loop is stepped at 30 changes a second and moves only transform
-   or opacity, so the compositor runs it and the main thread paints nothing per
-   step. The indicator is `data-loop-clock="off"`: the stepped loop clock would
-   seek each loop from the main thread instead. A step count applies to each
-   keyframe segment, so each segment gets 30 x its seconds: 36 steps for a
-   1.2 s segment, 24 for 0.8 s.
-   - The shape morph is a strip of its 120 shapes (drawn once, in the
+   label. Every loop is stepped at 20 changes a second, on the work beat
+   (lib/workBeat.ts), and moves only transform or opacity, so the compositor
+   runs it, the main thread paints nothing per step, and all of them change in
+   one frame. The indicator is `data-loop-clock="off"`: the stepped loop clock
+   would seek each loop from the main thread instead. A step count applies to
+   each keyframe segment, so each segment gets 20 x its seconds: 24 steps for
+   a 1.2 s segment, 16 for 0.8 s.
+   - The shape morph is a strip of its 80 shapes (drawn once, in the
      component) behind a one-shape window; one step moves the strip one shape.
+     A worker that drew the glyph into an OffscreenCanvas sent frames of its
+     own, which the display drew apart from the sheen's: about 37 window
+     composites a second for one working chat instead of 21.
    - The sheen is the label's bright copy (the window's `::before`) seen through
      a soft gradient window. The window is 250% of the label wide and slides
      right while the copy slides left by the same distance, so the text holds
@@ -5295,21 +5309,21 @@ button, [role="button"] {
      `background-position` sweep it replaces.
    Measured with `loop-cost.mjs thinking` (docs/perf/macos-baseline.md). */
 /* In em, not %: a transform that depends on the box's size is not composited.
-   One shape is the glyph box, 1.3em (ThinkingIndicator.tsx); the strip is 120. */
+   One shape is the glyph box, 1.3em (ThinkingIndicator.tsx); the strip is 80. */
 @keyframes ade-thinking-glyph-strip {
   from { transform: translateX(0); }
-  to { transform: translateX(calc(-120 * 1.3em)); }
+  to { transform: translateX(calc(-80 * 1.3em)); }
 }
 @keyframes ade-thinking-glyph-turn {
-  0% { transform: rotate(0deg) scale(1); animation-timing-function: steps(36, jump-none); }
-  30% { transform: rotate(108deg) scale(0.9); animation-timing-function: steps(24, jump-none); }
-  50% { transform: rotate(180deg) scale(0.78); animation-timing-function: steps(24, jump-none); }
-  70% { transform: rotate(252deg) scale(0.9); animation-timing-function: steps(36, jump-none); }
+  0% { transform: rotate(0deg) scale(1); animation-timing-function: steps(24, jump-none); }
+  30% { transform: rotate(108deg) scale(0.9); animation-timing-function: steps(16, jump-none); }
+  50% { transform: rotate(180deg) scale(0.78); animation-timing-function: steps(16, jump-none); }
+  70% { transform: rotate(252deg) scale(0.9); animation-timing-function: steps(24, jump-none); }
   100% { transform: rotate(360deg) scale(1); }
 }
 @keyframes ade-thinking-twinkle {
-  0%, 30% { opacity: 0; transform: rotate(0deg) scale(0.2); animation-timing-function: steps(24, jump-none); }
-  50% { opacity: 1; transform: rotate(90deg) scale(1); animation-timing-function: steps(24, jump-none); }
+  0%, 30% { opacity: 0; transform: rotate(0deg) scale(0.2); animation-timing-function: steps(16, jump-none); }
+  50% { opacity: 1; transform: rotate(90deg) scale(1); animation-timing-function: steps(16, jump-none); }
   70%, 100% { opacity: 0; transform: rotate(0deg) scale(0.2); }
 }
 /* The window's -60% is the gradient's 100% `background-position` (its 250%
@@ -5330,9 +5344,10 @@ button, [role="button"] {
   animation: ade-thinking-glyph-turn 4s infinite;
 }
 .ade-thinking-glyph-strip {
-  width: calc(120 * 1.3em);
-  /* steps(120, end) shows offsets 0 .. 119/120 of the strip: one shape per 1/30 s. */
-  animation: ade-thinking-glyph-strip 4s steps(120, end) infinite;
+  width: calc(80 * 1.3em);
+  /* steps(80, end) shows offsets 0 .. 79/80 of the strip: one shape per 50 ms,
+     the work beat (lib/workBeat.ts). */
+  animation: ade-thinking-glyph-strip 4s steps(80, end) infinite;
 }
 .ade-thinking-twinkle {
   transform-origin: 79% 21%;
@@ -5352,7 +5367,7 @@ button, [role="button"] {
   pointer-events: none;
   -webkit-mask-image: linear-gradient(90deg, transparent calc(50% - var(--ade-thinking-spread)), #000, transparent calc(50% + var(--ade-thinking-spread)));
   mask-image: linear-gradient(90deg, transparent calc(50% - var(--ade-thinking-spread)), #000, transparent calc(50% + var(--ade-thinking-spread)));
-  animation: ade-thinking-sheen-window 2s steps(60, jump-none) infinite;
+  animation: ade-thinking-sheen-window 2s steps(40, jump-none) infinite;
 }
 .ade-thinking-sheen-window::before {
   content: attr(data-label);
@@ -5365,7 +5380,7 @@ button, [role="button"] {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--color-fg);
-  animation: ade-thinking-sheen-text 2s steps(60, jump-none) infinite;
+  animation: ade-thinking-sheen-text 2s steps(40, jump-none) infinite;
 }
 /* ADE is not the focused app: no loops at all. Every part rests where its loop
    starts (the sheen at its 0% position, as the old sweep did). The label keeps
@@ -5425,7 +5440,7 @@ button, [role="button"] {
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
-  animation: ade-thinking-shimmer 5s steps(120) infinite;
+  animation: ade-thinking-shimmer 5s steps(100) infinite;
 }
 
 @keyframes ade-thinking-shimmer {
@@ -5485,7 +5500,7 @@ button, [role="button"] {
   width: 45%;
   background: var(--chat-streaming-shimmer);
   transform: translateX(-100%);
-  animation: ade-scene-drawing-sweep 2.4s steps(72) infinite;
+  animation: ade-scene-drawing-sweep 2.4s steps(48) infinite;
   pointer-events: none;
 }
 @keyframes ade-scene-drawing-sweep {

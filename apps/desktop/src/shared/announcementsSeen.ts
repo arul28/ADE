@@ -56,6 +56,33 @@ export function mergeSeenAnnouncements(
   return merged;
 }
 
+const KSUID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+/** KSUID time 0 (2014-05-13T16:53:20Z), in seconds. */
+const KSUID_EPOCH_S = 1_400_000_000;
+/** Before ADE had accounts; an earlier time means the id is not what this reads it as. */
+const EARLIEST_ACCOUNT_MS = Date.UTC(2023, 0, 1);
+
+/**
+ * When an account was created, read from its Clerk user id, or null.
+ *
+ * A Clerk user id is `user_` and a 27-character KSUID, whose first 4 bytes are
+ * the creation time in seconds after the KSUID epoch. Every computer and ADE
+ * Web reads the same time from the same id, with no request. Anything that
+ * does not parse, or gives a time before 2023 or in the future, gives null,
+ * and the caller then treats the account as an existing one.
+ */
+export function accountCreatedAtFromUserId(userId: string | null | undefined, now = Date.now()): number | null {
+  const match = /^user_([0-9A-Za-z]{27})$/.exec(userId?.trim() ?? "");
+  if (!match) return null;
+  let value = 0n;
+  for (const char of match[1]) value = value * 62n + BigInt(KSUID_ALPHABET.indexOf(char));
+  // 20 bytes: 4 of time, 16 of payload. A larger value is not a KSUID.
+  if (value >= 1n << 160n) return null;
+  const createdAt = (Number(value >> 128n) + KSUID_EPOCH_S) * 1000;
+  if (createdAt < EARLIEST_ACCOUNT_MS || createdAt > now + 24 * 60 * 60 * 1000) return null;
+  return createdAt;
+}
+
 /** True when `copy` already holds every id of `merged` at the same time: nothing to write. */
 export function seenAnnouncementsCover(copy: SeenAnnouncementsMap, merged: SeenAnnouncementsMap): boolean {
   return Object.entries(merged).every(([id, seenAt]) => copy[id] === seenAt);

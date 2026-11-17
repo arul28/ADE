@@ -377,7 +377,7 @@ export function HeaderUsageControl({
       <Gauge
         size={12}
         weight="regular"
-        className={cn("shrink-0", hasErrors && "animate-pulse")}
+        className={cn("shrink-0", hasErrors && "animate-pulse ade-rests-when-idle")}
         style={{ color: hasErrors ? WARNING_COLOR : "var(--color-accent)" }}
       />
       <span className="min-w-0 flex-1 truncate">Usage</span>
@@ -415,7 +415,7 @@ export function HeaderUsageControl({
         <Gauge
           size={18}
           weight="regular"
-          className={cn(hasErrors && "animate-pulse")}
+          className={cn(hasErrors && "animate-pulse ade-rests-when-idle")}
           style={{ color: hasErrors ? WARNING_COLOR : "var(--color-accent)" }}
         />
       )}

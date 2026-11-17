@@ -1,4 +1,5 @@
 import { peekLocalSyncStatus } from "../../lib/localSyncStatusReader";
+import { msToNextBeat } from "../../lib/workBeat";
 import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { Suspense, lazy, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
@@ -394,6 +395,7 @@ import {
 import {
   adoptRetainedSession,
   configureChatSessionRetention,
+  holdRetainedChatFlushes,
   releaseRetainedChatSession,
   retainChatSession,
 } from "./chatSessionRetention";
@@ -1335,6 +1337,17 @@ function useOpenedOnce(open: boolean): boolean {
  * other event commits the whole reply at once.
  */
 const QUIET_EVENTS_COMMIT_MS = 1_000;
+/**
+ * A flush less than this long after the last one is part of a running stream:
+ * it waits for the next work beat (`lib/workBeat.ts`) instead of the next
+ * frame. The first text after a pause still shows in the next frame.
+ */
+const STREAM_FLUSH_GAP_MS = 250;
+/**
+ * Longest a chat that was just opened holds the other chats' background work
+ * while it waits for its transcript (see `openPaintHoldRef`).
+ */
+const OPEN_PAINT_HOLD_MAX_MS = 1_000;
 
 type LiveTranscript = {
   store: ChatLiveEventsStore;
@@ -5602,6 +5615,18 @@ export function AgentChatPane({
   const olderHistoryPaneUnmountedRef = useRef(false);
   const eventFlushTimerRef = useRef<number | null>(null);
   const eventFlushFrameRef = useRef<number | null>(null);
+  /** When the last queued-event flush ran (document timeline), for STREAM_FLUSH_GAP_MS. */
+  const lastEventFlushAtRef = useRef(-Infinity);
+  /**
+   * The chat this pane just opened, from the commit that shows it until the
+   * frame after its transcript is drawn. Meanwhile the streamed events of
+   * OTHER chats stay queued (`flushQueuedEvents`), and so do the retained
+   * chats' cache writes and the list refresh those events ask for. The opened
+   * chat's own events flush as before.
+   */
+  const openPaintHoldRef = useRef<{ sessionId: string; release: () => void } | null>(null);
+  /** A list refresh that another chat's event asked for during an open hold. */
+  const deferredSessionsRefreshRef = useRef(false);
   const refreshSessionsTimerRef = useRef<number | null>(null);
   const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
   /**
@@ -10987,9 +11012,17 @@ export function AgentChatPane({
   }, [isBoundScopePane, isRemoteChat, isTileActive, readableSessionId, turnActive]);
 
   const flushQueuedEvents = useCallback(() => {
-    const queued = pendingEventQueueRef.current;
+    let queued = pendingEventQueueRef.current;
     if (!queued.length) return;
     pendingEventQueueRef.current = [];
+    const openHold = openPaintHoldRef.current;
+    if (openHold && queued.some((envelope) => envelope.sessionId !== openHold.sessionId)) {
+      // A chat just opened: other chats' events wait for its first paint.
+      pendingEventQueueRef.current = queued.filter((envelope) => envelope.sessionId !== openHold.sessionId);
+      queued = queued.filter((envelope) => envelope.sessionId === openHold.sessionId);
+      if (!queued.length) return;
+    }
+    lastEventFlushAtRef.current = performance.now();
 
     // Build the next events map from the ref (latest committed state) so
     // that derived state (turnActive, approvals) can be computed and applied
@@ -11096,10 +11129,12 @@ export function AgentChatPane({
     liveEventsStore.notify();
     if (quiet) {
       if (quietNeedsCommit && quietEventsCommitTimerRef.current == null) {
+        // On a work beat, so the commit shares a frame with the thinking row.
+        const delayMs = QUIET_EVENTS_COMMIT_MS + msToNextBeat(undefined, performance.now() + QUIET_EVENTS_COMMIT_MS);
         quietEventsCommitTimerRef.current = window.setTimeout(() => {
           quietEventsCommitTimerRef.current = null;
           setEventsBySession(eventsBySessionRef.current);
-        }, QUIET_EVENTS_COMMIT_MS);
+        }, delayMs);
       }
       return;
     }
@@ -11133,17 +11168,25 @@ export function AgentChatPane({
     eventFlushFrameRef.current = null;
   }, []);
 
-  // One flush for a burst of events, at the start of the next frame: the
-  // live-events subscribers render inside that frame, so streamed text shows
-  // in the first frame after it arrives. From a 16 ms timer it waited for the
-  // timer and then for the frame after it. The timer stays as the fallback for
-  // a window that draws no frames (hidden), whichever comes first.
+  // One flush for a burst of events. The first after a pause runs at the
+  // start of the next frame: the live-events subscribers render inside that
+  // frame, so the first streamed text shows in the first frame after it
+  // arrives (the 16 ms timer is the fallback for a window that draws no
+  // frames). While a stream runs, a flush waits for the next work beat
+  // instead (at most 50 ms), so the growing text and its scroll change in the
+  // frame the thinking indicator already draws: on macOS each frame is a
+  // whole-window composite, and words that land between beats would each
+  // cost one more.
   const scheduleQueuedEventFlush = useCallback(() => {
     if (eventFlushTimerRef.current != null) return;
     const flush = () => {
       cancelQueuedEventFlush();
       flushQueuedEvents();
     };
+    if (performance.now() - lastEventFlushAtRef.current < STREAM_FLUSH_GAP_MS) {
+      eventFlushTimerRef.current = window.setTimeout(flush, msToNextBeat());
+      return;
+    }
     eventFlushTimerRef.current = window.setTimeout(flush, 16);
     eventFlushFrameRef.current = window.requestAnimationFrame(flush);
   }, [cancelQueuedEventFlush, flushQueuedEvents]);
@@ -11155,6 +11198,57 @@ export function AgentChatPane({
       void refreshSessions().catch(() => {});
     }, 120);
   }, [refreshSessions]);
+
+  // The open hold (`openPaintHoldRef`). It starts in the commit that shows a
+  // chat and ends in the task after the frame that draws its transcript, or
+  // after OPEN_PAINT_HOLD_MAX_MS when the transcript is slow to arrive. The
+  // release puts the waiting work on the next work beat. The callbacks are read
+  // through refs, so a new callback never restarts a hold.
+  const holdReleaseWorkRef = useRef({ flushQueuedEvents, cancelQueuedEventFlush, scheduleSessionsRefresh });
+  holdReleaseWorkRef.current = { flushQueuedEvents, cancelQueuedEventFlush, scheduleSessionsRefresh };
+  useLayoutEffect(() => {
+    if (!renderedSessionId || !isTileVisible) return undefined;
+    const releaseRetainedFlushes = holdRetainedChatFlushes();
+    let released = false;
+    let capTimer: number | null = null;
+    const hold = {
+      sessionId: renderedSessionId,
+      release: () => {
+        if (released) return;
+        released = true;
+        if (capTimer != null) window.clearTimeout(capTimer);
+        if (openPaintHoldRef.current === hold) openPaintHoldRef.current = null;
+        releaseRetainedFlushes();
+        const work = holdReleaseWorkRef.current;
+        if (pendingEventQueueRef.current.length && eventFlushTimerRef.current == null) {
+          eventFlushTimerRef.current = window.setTimeout(() => {
+            holdReleaseWorkRef.current.cancelQueuedEventFlush();
+            holdReleaseWorkRef.current.flushQueuedEvents();
+          }, msToNextBeat());
+        }
+        if (deferredSessionsRefreshRef.current) {
+          deferredSessionsRefreshRef.current = false;
+          work.scheduleSessionsRefresh();
+        }
+      },
+    };
+    openPaintHoldRef.current = hold;
+    capTimer = window.setTimeout(hold.release, OPEN_PAINT_HOLD_MAX_MS);
+    return hold.release;
+  }, [isTileVisible, renderedSessionId]);
+  useLayoutEffect(() => {
+    const hold = openPaintHoldRef.current;
+    if (!hold || !isTileVisible || hold.sessionId !== renderedSessionId || selectedChatCold) return undefined;
+    // The transcript is in this commit: release once its frame is drawn.
+    let timer: number | null = null;
+    const frame = window.requestAnimationFrame(() => {
+      timer = window.setTimeout(hold.release, 0);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [isTileVisible, renderedSessionId, selectedChatCold]);
 
   const patchSessionSummary = useCallback((sessionId: string, patch: Partial<AgentChatSessionSummary>) => {
     setSessions((prev) => {
@@ -11408,6 +11502,10 @@ export function AgentChatPane({
       }
 
       pendingEventQueueRef.current.push(envelope);
+      // Another chat's event while a chat just opened here waits in the queue;
+      // the hold's release schedules the flush (see `openPaintHoldRef`).
+      const heldForOpen = openPaintHoldRef.current != null
+        && openPaintHoldRef.current.sessionId !== envelope.sessionId;
       if (pendingSendListPatchRef.current?.sessionId === envelope.sessionId) {
         pendingSendListPatchRef.current.flush();
       }
@@ -11432,13 +11530,15 @@ export function AgentChatPane({
       }
 
       // User messages and lifecycle edges must flush immediately so the
-      // optimistic bubble cannot disappear behind the 16ms debounce and
-      // visible grid tiles show fresh activity without requiring focus.
-      if (
+      // optimistic bubble cannot disappear behind the 16ms debounce. A visible
+      // grid tile streams on the scheduled flush like any pane: it needs no
+      // focus, and a flush per event cost a frame per event for each tile.
+      if (heldForOpen) {
+        // Flushed when the hold ends.
+      } else if (
         envelope.event.type === "done"
         || envelope.event.type === "user_message"
         || envelope.event.type === "status"
-        || (layoutVariant === "grid-tile" && isTileVisible)
       ) {
         cancelQueuedEventFlush();
         flushQueuedEvents();
@@ -11459,7 +11559,8 @@ export function AgentChatPane({
       }
 
       if (shouldRefreshSessionListForChatEvent(envelope)) {
-        scheduleSessionsRefresh();
+        if (heldForOpen) deferredSessionsRefreshRef.current = true;
+        else scheduleSessionsRefresh();
       }
 
       // Refresh sessions when permission mode changes so the UI permission

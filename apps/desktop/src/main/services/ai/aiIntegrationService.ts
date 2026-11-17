@@ -268,6 +268,7 @@ export type AiIntegrationStatus = {
     macosKeychainError?: string | null;
     legacyPlaintextDetected: boolean;
     decryptionFailed: boolean;
+    secureStorageChecking?: boolean;
     encryptedStorePath?: string | null;
     legacyPlaintextPath?: string | null;
   };
@@ -2612,8 +2613,14 @@ export function createAiIntegrationService(args: {
             ...timeSyncPhase("harness_brains", () => readHarnessBrains()),
           };
           // An older read that a key or sign-in change outran must not become
-          // the cache, nor the fallback a later slow read answers with.
-          if (requestGeneration === providerReadinessCacheGeneration && loginGeneration === providerLoginGeneration()) {
+          // the cache, nor the fallback a later slow read answers with. A read
+          // made while the OS credential store has not answered is not cached:
+          // the next read shows the keys once it answers.
+          if (
+            requestGeneration === providerReadinessCacheGeneration
+            && loginGeneration === providerLoginGeneration()
+            && !result.apiKeyStore?.secureStorageChecking
+          ) {
             statusCache = {
               result,
               cachedAt: Date.now(),

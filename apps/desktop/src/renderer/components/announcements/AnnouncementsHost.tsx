@@ -27,6 +27,7 @@ import { AdeWordmark, useAdeWordmarkSrc } from "../ui/AdeWordmark";
 import type { ScreenBox } from "../ui/LiquidGlassLogoReveal";
 import { afterBootSplash, bootSplashLogoBox } from "../app/BootSplashReveal";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
+import { useWindowInFront } from "../../hooks/useWindowInFront";
 import { useArrivalDialogReady, WhatsNewLogoFlight } from "./WhatsNewArrival";
 import {
   attachWhatsNewHost,
@@ -45,18 +46,29 @@ import {
  *   for it (`openWhatsNewAfterUpdate`) in place of its old notice. It waits
  *   for the boot splash to go, then arrives: the logo flies from the splash
  *   into the header while the window opens around it (`WhatsNewArrival`).
+ *   If the person typed or clicked since launch, or is writing (a focused
+ *   field with text, a terminal, an IME composition), it waits for a quiet
+ *   moment like the in-project showing, and the logo then rises in the middle
+ *   of the window instead.
  *   The other two ways open with the plain dialog fade.
  * - **Inside a project**, by itself: up to three unseen catalogue pages, at
  *   most once a day (an after-update showing counts), and only when nothing
  *   else wants the user's attention — onboarding finished or was skipped
- *   before this launch, no dialog, setup screen or tour card is up, and the
- *   project has been open a few seconds.
+ *   before this launch, no dialog, setup screen or tour card is up, the
+ *   project has been open a few seconds, nothing was typed or clicked for
+ *   8 s, and the person is not writing (a focused field that holds text, a
+ *   focused terminal, or an IME composition). An empty focused composer does
+ *   not hold it: ADE focuses the composer by itself.
  * - **Help › What's new** or the command palette: every catalogue page,
  *   newest first, then this version's notes.
+ *
+ * A showing that opens by itself focuses the panel, not a button, so a key
+ * meant for the work behind it (an Enter) does nothing.
  *
  * A catalogue page counts as seen once it is on screen, whichever way it
  * opened, and never shows by itself again (`announcementSeen.ts`), on this
  * computer or anywhere else the account is used (`announcementSeenSync.ts`).
+ * A page added before the account was created never shows by itself.
  *
  * Cost: with nothing due (the usual case) this renders nothing and holds one
  * storage subscription. With pages due it checks the conditions every few
@@ -82,6 +94,8 @@ type Arrival = { version: string; from: ScreenBox | null };
 type Showing = {
   pages: readonly AnnouncementPageDef[];
   notes: NotesPage | null;
+  /** Opened by itself (after an update, or in a project), not from Help. */
+  unasked?: boolean;
   onClose?: () => void;
   /** After an update: the logo flies in, from the splash's last logo box when there is one. */
   arrival?: Arrival;
@@ -112,30 +126,47 @@ export function AnnouncementsHost() {
       markShowing();
       setShownThisLaunch(true);
       cancelArrival();
+      const inputWatch = watchInput();
       // The account's copy is read while the splash plays, and the pages are
       // picked once it is in (or given up on), like the in-project showing.
       const accountRead = reconcileSeenAnnouncements();
       let cancelled = false;
+      let quietTimer: number | null = null;
+      const show = (from: ScreenBox | null) => {
+        inputWatch.stop();
+        setShowing({
+          pages: dueAnnouncements(),
+          notes: {
+            digest: releaseNotesDigest(detail.version, detail.fromVersion),
+            resumedChats: detail.resumedChats,
+            changelogUrl: detail.changelogUrl,
+            githubReleaseUrl: detail.githubReleaseUrl,
+          },
+          onClose: detail.onClose,
+          arrival: { version: detail.version, from },
+          unasked: true,
+        });
+      };
       const cancelSplash = afterBootSplash(() => {
         const from = bootSplashLogoBox();
         void accountRead.then(() => {
           if (cancelled) return;
-          setShowing({
-            pages: dueAnnouncements(),
-            notes: {
-              digest: releaseNotesDigest(detail.version, detail.fromVersion),
-              resumedChats: detail.resumedChats,
-              changelogUrl: detail.changelogUrl,
-              githubReleaseUrl: detail.githubReleaseUrl,
-            },
-            onClose: detail.onClose,
-            arrival: { version: detail.version, from },
-          });
+          // Straight from the splash only when nobody has touched ADE yet.
+          if (inputWatch.lastInputAt() === null && quietNow(inputWatch, null)) return show(from);
+          // Otherwise wait for a quiet moment, then rise in the middle.
+          quietTimer = window.setInterval(() => {
+            if (cancelled || !quietNow(inputWatch, inputWatch.lastInputAt())) return;
+            if (quietTimer != null) window.clearInterval(quietTimer);
+            quietTimer = null;
+            show(null);
+          }, CHECK_INTERVAL_MS);
         });
       });
       cancelArrival = () => {
         cancelled = true;
         cancelSplash();
+        inputWatch.stop();
+        if (quietTimer != null) window.clearInterval(quietTimer);
       };
     };
     window.addEventListener(WHATS_NEW_OPEN_EVENT, openAll);
@@ -155,12 +186,7 @@ export function AnnouncementsHost() {
   useEffect(() => {
     if (!waiting) return undefined;
     const since = Date.now();
-    let lastInputAt = since;
-    const noteInput = () => { lastInputAt = Date.now(); };
-    window.addEventListener("keydown", noteInput, { capture: true, passive: true });
-    window.addEventListener("pointerdown", noteInput, { capture: true, passive: true });
-    // An IME composition counts as typing from its first key, before any keydown commits text.
-    window.addEventListener("compositionstart", noteInput, { capture: true, passive: true });
+    const input = watchInput();
     // Pages seen on another computer or in ADE Web are not due here: the
     // account's copy is read (or given up on) before anything shows.
     let accountRead = false;
@@ -168,22 +194,26 @@ export function AnnouncementsHost() {
       accountRead = true;
     });
     const check = () => {
-      if (!accountRead || document.hidden || Date.now() - since < SETTLE_MS) return;
-      if (Date.now() - lastInputAt < INPUT_QUIET_MS || editingTextNow()) return;
-      if (!onboardingSettledBeforeThisLaunch() || floatingLayerBusy() || launchGateOpen()) return;
+      if (!accountRead || Date.now() - since < SETTLE_MS) return;
+      if (!quietNow(input, input.lastInputAt() ?? since)) return;
+      // Onboarding that was not done before this launch cannot become so
+      // until the next one: this launch's chance is gone, so the check stops.
+      if (!onboardingSettledBeforeThisLaunch()) {
+        setShownThisLaunch(true);
+        return;
+      }
+      if (launchGateOpen()) return;
       setShownThisLaunch(true);
       if (!inProjectShowingAllowed()) return;
       const pages = dueAnnouncements();
       if (pages.length === 0) return;
       markShowing();
-      setShowing({ pages, notes: null });
+      setShowing({ pages, notes: null, unasked: true });
     };
     const interval = window.setInterval(check, CHECK_INTERVAL_MS);
     return () => {
       window.clearInterval(interval);
-      window.removeEventListener("keydown", noteInput, { capture: true });
-      window.removeEventListener("pointerdown", noteInput, { capture: true });
-      window.removeEventListener("compositionstart", noteInput, { capture: true });
+      input.stop();
     };
   }, [waiting]);
 
@@ -194,7 +224,63 @@ export function AnnouncementsHost() {
     setShowing(null);
   }, []);
   if (!showing || (showing.pages.length === 0 && !showing.notes)) return null;
-  return <AnnouncementsModal pages={showing.pages} notes={showing.notes} arrival={showing.arrival ?? null} onClose={close} />;
+  return (
+    <AnnouncementsModal
+      pages={showing.pages}
+      notes={showing.notes}
+      arrival={showing.arrival ?? null}
+      unasked={showing.unasked === true}
+      onClose={close}
+    />
+  );
+}
+
+type InputWatch = {
+  /** The last key, click or IME event; null while there was none. */
+  lastInputAt: () => number | null;
+  /** An IME composition is open (it can last longer than the quiet spell). */
+  composing: () => boolean;
+  stop: () => void;
+};
+
+/** Watches for the person's own input (a key, a click, an IME composition) until stopped. */
+function watchInput(): InputWatch {
+  let lastInputAt: number | null = null;
+  let composing = false;
+  const noteInput = () => { lastInputAt = Date.now(); };
+  // An IME composition counts as typing from its first key, before any keydown commits text.
+  const onCompositionStart = () => { composing = true; noteInput(); };
+  const onCompositionEnd = () => { composing = false; noteInput(); };
+  const options = { capture: true, passive: true } as const;
+  window.addEventListener("keydown", noteInput, options);
+  window.addEventListener("pointerdown", noteInput, options);
+  window.addEventListener("compositionstart", onCompositionStart, options);
+  window.addEventListener("compositionend", onCompositionEnd, options);
+  let stopped = false;
+  return {
+    lastInputAt: () => lastInputAt,
+    composing: () => composing,
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      window.removeEventListener("keydown", noteInput, { capture: true });
+      window.removeEventListener("pointerdown", noteInput, { capture: true });
+      window.removeEventListener("compositionstart", onCompositionStart, { capture: true });
+      window.removeEventListener("compositionend", onCompositionEnd, { capture: true });
+    },
+  };
+}
+
+/**
+ * A moment the modal may open over the person's work: the window shows, no
+ * dialog or hint is up, the person is not writing (a focused field with text,
+ * a focused terminal, an open IME composition), and nothing was typed or
+ * clicked for `INPUT_QUIET_MS` (`since` null: nothing yet). An empty focused
+ * composer may show it.
+ */
+function quietNow(input: InputWatch, since: number | null): boolean {
+  if (document.hidden || floatingLayerBusy() || editingTextNow() || input.composing()) return false;
+  return since === null || Date.now() - since >= INPUT_QUIET_MS;
 }
 
 /**
@@ -228,11 +314,14 @@ function AnnouncementsModal({
   pages,
   notes,
   arrival,
+  unasked,
   onClose,
 }: {
   pages: readonly AnnouncementPageDef[];
   notes: NotesPage | null;
   arrival: Arrival | null;
+  /** Opened by itself: the panel takes focus, so no button catches a stray Enter. */
+  unasked: boolean;
   onClose: () => void;
 }) {
   const appReduceMotion = useAppearanceStore((state) => state.interfacePreferences.reduceMotion);
@@ -244,6 +333,7 @@ function AnnouncementsModal({
   const brandMarkRef = useRef<HTMLSpanElement>(null);
   const version = arrival?.version ?? null;
   const wordmarkSrc = useAdeWordmarkSrc();
+  const windowInFront = useWindowInFront();
   const items = useMemo<ModalItem[]>(() => [
     ...pages.map((page) => ({ key: page.id, title: page.title, page })),
     ...(notes ? [{ key: "and-more", title: pages.length > 0 ? "And more" : "What changed", page: null }] : []),
@@ -289,6 +379,7 @@ function AnnouncementsModal({
         bodyPadding={false}
         panelClassName={arrives ? `ade-whats-new ade-whats-new--arrive${turned ? "" : " ade-whats-new--intro"}` : "ade-whats-new"}
         panelStyle={glowColors}
+        preventAutoFocus={unasked}
         testId="whats-new"
         footer={(
           <div className="ade-whats-new-foot">
@@ -330,7 +421,13 @@ function AnnouncementsModal({
         )}
       >
         {/* Colour from the window's background, drifting; each page moves it somewhere new. */}
-        <div className="ade-whats-new-glow" data-page={index % 3} aria-hidden>
+        <div
+          className="ade-whats-new-glow"
+          data-page={index % 3}
+          data-resting={windowInFront ? undefined : "true"}
+          data-loop-clock="off"
+          aria-hidden
+        >
           <span />
           <span />
           <span />

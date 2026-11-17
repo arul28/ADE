@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import YAML from "yaml";
+import { YAML } from "../../../../desktop/src/main/services/shared/lazyPackages";
 
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { captureError } from "../../../../desktop/src/shared/sentry/capture";

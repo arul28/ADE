@@ -1994,15 +1994,20 @@ export function createSyncService(args: SyncServiceArgs) {
       }
       const cluster = deviceRegistryService.getClusterState();
       const savedDraft = readSavedDraft();
+      // This machine's own row was read just above. On a host, the cluster
+      // names it as brain and host, and a second read of the row would give
+      // the same answer (a status read runs every 5 s on a signed-in brain).
+      const readClusterDevice = (deviceId: string) =>
+        deviceId === localDevice.deviceId ? localDevice : deviceRegistryService.getDevice(deviceId);
       const rawCurrentBrain = cluster
-        ? deviceRegistryService.getDevice(cluster.brainDeviceId)
+        ? readClusterDevice(cluster.brainDeviceId)
         : localDevice;
       const currentBrain = rawCurrentBrain?.deviceId === localDevice.deviceId
         ? localDevice
         : rawCurrentBrain;
       const currentHostId = cluster?.hostDeviceId ?? cluster?.brainDeviceId ?? null;
       const rawCurrentHost = currentHostId
-        ? deviceRegistryService.getDevice(currentHostId)
+        ? readClusterDevice(currentHostId)
         : localDevice;
       const currentRuntime = rawCurrentHost?.deviceId === localDevice.deviceId
         ? localDevice

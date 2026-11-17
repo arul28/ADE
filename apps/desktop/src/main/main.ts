@@ -2,7 +2,7 @@ import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../s
 import { createLocalPasswordsAccess, registerBrowserTabPasswordsIpc } from "./services/passwords/localPasswordsBridge";
 import { createMessagesIntegrationService } from "./services/messagesIntegration/messagesIntegrationService";
 import { readMessagesInWorker, sendMessage, terminateMessagesReadWorkers } from "./services/messages";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, session, type WebContents } from "electron";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { reportsAsPackagedRelease } from "./sentry/releaseBuild";
 import {
@@ -227,7 +227,7 @@ import {
   trustGitSafeDirectory,
 } from "./services/git/git";
 import { ACTION_NOT_CALLABLE_CODE, codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError, isUnsupportedAdeActionError, PROJECT_FOLDER_TOO_SLOW_CODE } from "../shared/codedError";
-import { markExpected } from "../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../shared/expectedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
@@ -261,6 +261,7 @@ import {
   emitPrCardsForChange,
 } from "./services/prs/prChatCards";
 import { openExternalUrl } from "./services/shared/externalLinks";
+import { armLaunchQuiet } from "./services/shared/launchQuiet";
 import {
   CaptureHelper,
   resolveCaptureHelperExecutablePath,
@@ -416,6 +417,7 @@ import {
 import { adoptFileBackedCredentials } from "../../../ade-cli/src/services/credentials/credentialStoreAdoption";
 import { readExistingOsBoundKeyMaterialAsync } from "../../../ade-cli/src/services/credentials/osBoundKeyMaterial";
 import {
+  createLazyCredentialStore,
   createRoutedCredentialStore,
   createUnavailableCredentialStore,
 } from "../../../ade-cli/src/services/credentials/credentialStoreRouting";
@@ -527,7 +529,11 @@ import { renderScenePreview } from "./services/scenes/scenePreviewRenderer";
 import { configureBuiltInBrowserWebAuthn, openBuiltInBrowserSession } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
-import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
+import {
+  blockPackagedLaunchForCrossChannelSyncConflict,
+  resolveLaunchingDesktopAppName,
+  startCrossChannelSyncHostConflictCheck,
+} from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService, shouldShowInstalledNotice, WINDOWS_PREPARE_WATCHDOG_MS } from "./services/updates/autoUpdateService";
 import { createLatestByTrackReader } from "./services/updates/latestByTrack";
 import { fetchAdeLatestRelease } from "./services/github/adeReleaseFeed";
@@ -546,7 +552,8 @@ import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrai
 import { runUpdateTransaction } from "./services/updates/updateTransaction";
 import { createInstallOnQuitController, type InstallOnQuitDecision } from "./services/updates/installOnQuit";
 import { recordInstalledDesktopApp } from "./services/native/nativeHelperPaths";
-import { isSecureStorageAvailable } from "./services/shared/secureStorage";
+import { isSecureStorageAvailable, isSecureStorageCheckPending, startSecureStorageCheck } from "./services/shared/secureStorage";
+import { resolveSafeStorageKeyName } from "./safeStorageKeyName";
 import {
   checkRuntimeIdentity,
   runVerifiedRuntimeRestart,
@@ -728,6 +735,20 @@ function configureDesktopUserDataPath(): void {
 }
 
 configureDesktopUserDataPath();
+// Before ready: Electron names the safeStorage key from the app name when it
+// sets the key up. A channel install with nothing sealed yet gets its own key
+// (`safeStorageKeyName.ts`); Stable and installs with sealed files keep theirs.
+{
+  const safeStorageKeyName = app.isPackaged
+    ? resolveSafeStorageKeyName({
+      channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+      platform: process.platform,
+      userDataPath: app.getPath("userData"),
+      adeHome: process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade"),
+    })
+    : null;
+  if (safeStorageKeyName && safeStorageKeyName !== app.getName()) app.setName(safeStorageKeyName);
+}
 // Error tracking starts here: the earliest point where its crash dumps and
 // offline queue have a userData directory to live in.
 initMainSentry({
@@ -996,10 +1017,58 @@ function getRendererUrl(): string {
   return pathToFileURL(path.join(__dirname, "../renderer/index.html")).toString();
 }
 
+/**
+ * The desktop's machine credential store. File-backed keys (the account
+ * session, the GitHub App token) go to the shared file, which needs no
+ * keychain. Every other key goes to the Electron-only store, and that store,
+ * with the one-time adoption that reads it, is built on the first call for
+ * such a key (`createLazyCredentialStore`), not here.
+ *
+ * Making a store must not touch safeStorage. On macOS its first use reads the
+ * app's key from the Keychain; a build with a new signature gets a prompt, and
+ * that read holds the main process until the person answers. These stores are
+ * made before the first window, so a read here kept the window from opening.
+ */
 function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   const legacyStore = new EncryptedFileCredentialStore({ secretsDir });
+  return createRoutedCredentialStore({
+    primary: createLazyCredentialStore(() => buildDesktopPrimaryCredentialStore(secretsDir, legacyStore)),
+    fileStore: legacyStore,
+  });
+}
+
+let keychainReadBeforeWindowLogged = false;
+let keychainPendingReadLogged = false;
+
+function buildDesktopPrimaryCredentialStore(
+  secretsDir: string,
+  legacyStore: EncryptedFileCredentialStore,
+): SyncCredentialStore {
+  if (isSecureStorageCheckPending()) {
+    // Not built yet, and not kept: the next call builds again. Reads as
+    // unreadable meanwhile (`createLazyCredentialStore`). A keychain that has
+    // not answered (its prompt is up) is a state, not a failure: the mark
+    // keeps it out of the service-failure count, Sentry and warn logs, and the
+    // one line below is its record.
+    if (!keychainPendingReadLogged) {
+      keychainPendingReadLogged = true;
+      getMachineMainLogger().info("credential_store.keychain_pending_read", {});
+    }
+    throw new AdeExpectedError(
+      "The system keychain has not answered yet; ADE will read these credentials once it does.",
+      "environment",
+    );
+  }
   const safeCredentialsPath = path.join(secretsDir, "credentials.safe.enc");
   const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
+  if (!keychainReadBeforeWindowLogged && BrowserWindow.getAllWindows().length === 0) {
+    // Not stopped: the caller needs the key. Named, so the launch path that
+    // asked for it can be moved after the window.
+    keychainReadBeforeWindowLogged = true;
+    getMachineMainLogger().warn("credential_store.keychain_read_before_window", {
+      stack: new Error().stack?.split("\n").slice(2, 8).join(" | ") ?? null,
+    });
+  }
   try {
     // Electron reports encryption available for Linux's basic_text backend,
     // even though its fixed key offers no OS credential-store protection.
@@ -1014,7 +1083,7 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
       // store cannot see them, and a build that wrote one into it signs the
       // brain out.
       adoptFileBackedCredentials({ primary, fileStore: legacyStore, identity: secretsDir });
-      return createRoutedCredentialStore({ primary, fileStore: legacyStore });
+      return primary;
     }
   } catch {
     // Fall through to the file store when Electron cannot reach the OS keychain.
@@ -1025,12 +1094,9 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   ) {
     // The shared file needs no keychain, so the credentials the brain co-owns
     // stay reachable even while the Electron-only ones are locked away.
-    return createRoutedCredentialStore({
-      primary: createUnavailableCredentialStore(
-        "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.",
-      ),
-      fileStore: legacyStore,
-    });
+    return createUnavailableCredentialStore(
+      "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.",
+    );
   }
   return legacyStore;
 }
@@ -1692,6 +1758,21 @@ if (process.platform === "win32") {
   app.setAppUserModelId(ADE_WINDOWS_APP_USER_MODEL_ID);
 }
 
+// macOS: no Electron default menu. With no menu set by now, Electron builds
+// its default one while the app finishes launching, and AppKit then looks up
+// an SF Symbol for each item (about 0.7 MB of the CoreGlyphs catalog on a cold
+// disk), all before `ready`. ADE replaces that menu with its own right after
+// the first window is created (`installApplicationMenuOnce`), so the default
+// one was built only to be thrown away. Windows and Linux keep theirs: there
+// the menu belongs to each window.
+if (process.platform === "darwin") {
+  Menu.setApplicationMenu(null);
+}
+
+// Background provider CLI work (usage polls, model list warms) waits out the
+// first seconds of the launch; see `launchQuiet.ts`.
+armLaunchQuiet();
+
 const pendingAppNavigationRequests: AppNavigationRequest[] = [];
 let dispatchAppNavigationRequest: ((request: AppNavigationRequest) => void) | null = null;
 let dispatchAppNavigationForProjectRoot:
@@ -1854,7 +1935,17 @@ if (process.platform !== "darwin") {
 // report, and the usage tracker publishes it in the header meter.
 const museQuota = createMuseQuotaStore();
 
+// The cross-channel phone-sync check reads a lock file and lists listeners with
+// `lsof` and `ps`. It needs no Electron API, so it starts here and runs while
+// Chromium starts; the gate at the top of `whenReady` reads the answer. A lock
+// loser has exited by now, and the channel defaults are set.
+const crossChannelSyncHostConflictCheck = startCrossChannelSyncHostConflictCheck({ isPackaged: app.isPackaged });
+
 app.whenReady().then(async () => {
+  // Asks the OS credential store for the safeStorage key off the main thread
+  // (`secureStorage.ts`). A Keychain prompt then never holds main; the secrets
+  // that need the key wait for the answer.
+  startSecureStorageCheck(safeStorage);
   markMainBoot("appReadyMs");
   // Perf run init — must come first so subsequent IPC + sampler hooks can see the active run.
   const perfRun = initPerfRunFromEnv();
@@ -1865,6 +1956,7 @@ app.whenReady().then(async () => {
   if (await blockPackagedLaunchForCrossChannelSyncConflict({
     isPackaged: app.isPackaged,
     channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    pendingConflict: crossChannelSyncHostConflictCheck,
   })) {
     return;
   }
@@ -9187,6 +9279,28 @@ app.whenReady().then(async () => {
     }
   };
 
+  /**
+   * The quit while the first keychain read still waits on its prompt.
+   *
+   * That read runs on one of Chromium's worker threads and blocks inside the
+   * Keychain call until the person answers. Chromium's own shutdown (app.exit,
+   * and a plain process exit through it) waits for that thread, so the process
+   * stayed alive with no window until the prompt was answered. The shutdown
+   * work is done by now (windows, children, logs), so this writes what the web
+   * storage holds and ends the process at once. Only in this state: every other
+   * quit exits as before.
+   */
+  const exitWithoutKeychainWait = (exitCode: number): void => {
+    try {
+      session.defaultSession.flushStorageData();
+    } catch {
+      // The end below is the point; a failed flush must not stop it.
+    }
+    logMachineEvent("info", "desktop.exit_skips_keychain_wait", { pid: process.pid, exitCode });
+    flushMachineMainLog();
+    process.kill(process.pid, "SIGKILL");
+  };
+
   const finalizeAppExit = (exitCode: number): void => {
     if (shutdownFinalized) return;
     shutdownFinalized = true;
@@ -9198,6 +9312,10 @@ app.whenReady().then(async () => {
     runImmediateProcessCleanup("process_exit_finalize");
     recordMainExit(shutdownReason ?? "finalize", exitCode);
     const exitNow = (): void => {
+      if (process.platform === "darwin" && isSecureStorageCheckPending()) {
+        exitWithoutKeychainWait(exitCode);
+        return;
+      }
       if (app.isReady()) {
         app.exit(exitCode);
         return;
@@ -10537,19 +10655,23 @@ app.whenReady().then(async () => {
         fallback,
       );
     };
+    const menuProductName = resolveLaunchingDesktopAppName(normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL));
     const template: Electron.MenuItemConstructorOptions[] = [
       ...(process.platform === "darwin"
         ? [{
-            label: app.name,
+            // Electron labels these roles with `app.name`, which is the
+            // package name ("ade-desktop", or "ade-desktop-alpha" for an Alpha
+            // with its own key, see safeStorageKeyName.ts), not the product.
+            label: menuProductName,
             submenu: [
-              { role: "about" as const },
+              { role: "about" as const, label: `About ${menuProductName}` },
               nativeUpdateMenuItem(autoUpdateService.getSnapshot(), runUpdateFromNativeUi),
               { type: "separator" as const },
-              { role: "hide" as const },
+              { role: "hide" as const, label: `Hide ${menuProductName}` },
               { role: "hideOthers" as const },
               { role: "unhide" as const },
               { type: "separator" as const },
-              { role: "quit" as const },
+              { role: "quit" as const, label: `Quit ${menuProductName}` },
             ],
           }]
         : []),
@@ -10663,14 +10785,29 @@ app.whenReady().then(async () => {
     Menu.setApplicationMenu(Menu.buildFromTemplate(template));
   };
 
-  installApplicationMenu();
+  // Windows and Linux attach the menu to each window, so it is in place before
+  // the first one. macOS installs it right after the first window is created
+  // (below, next to `createWindow`): the menu bar's symbol reads then overlap
+  // the page load instead of coming before the window. The timer is a guard
+  // for a launch that never gets that far.
+  let applicationMenuInstalled = false;
+  const installApplicationMenuOnce = (): void => {
+    if (applicationMenuInstalled) return;
+    applicationMenuInstalled = true;
+    installApplicationMenu();
+  };
+  if (process.platform === "darwin") {
+    setTimeout(installApplicationMenuOnce, 3_000);
+  } else {
+    installApplicationMenuOnce();
+  }
   // The update item's label follows the updater; rebuild only when it changes.
   let nativeUpdateLabel = nativeUpdateMenuLabel(autoUpdateService.getSnapshot());
   autoUpdateService.onStateChange((snapshot) => {
     const label = nativeUpdateMenuLabel(snapshot);
     if (label === nativeUpdateLabel) return;
     nativeUpdateLabel = label;
-    if (process.platform === "darwin") installApplicationMenu();
+    if (process.platform === "darwin" && applicationMenuInstalled) installApplicationMenu();
   });
   requestNativeUpdateInstall = () => runUpdateFromNativeUi(BrowserWindow.getFocusedWindow());
   if (nativeUpdateInstallPending) {
@@ -11354,6 +11491,7 @@ app.whenReady().then(async () => {
     onCloseRequested: handleMainWindowCloseRequested,
     hidden: quitInstallLaunch,
   });
+  installApplicationMenuOnce();
   // Node loads its `fetch` code on the first call: about 10 ms of main thread.
   // The first call came from the window's own launch reads (ADE Cloud access,
   // analytics), inside its wait for its session. Make that first call now, a

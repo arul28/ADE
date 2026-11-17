@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import YAML from "yaml";
+import { YAML } from "../shared/lazyPackages";
 import { safeStorage } from "electron";
-import { isSecureStorageAvailable } from "../shared/secureStorage";
+import { isSecureStorageAvailable, isSecureStorageCheckPending } from "../shared/secureStorage";
 import type { Logger } from "../logging/logger";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { createLinearAccountSync, type LinearAccountCredential } from "./linearAccountSync";
@@ -155,6 +155,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const readEncryptedToken = (): StoredLinearToken | null => {
     try {
       if (!isSecureStorageAvailable(safeStorage)) {
+        // The keychain's prompt is up: an expected wait, read again later.
+        if (isSecureStorageCheckPending()) return null;
         args.logger?.warn("linear_sync.token_store_unavailable", {
           message: "OS secure storage unavailable; cannot decrypt Linear token."
         });
@@ -189,6 +191,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const readStoredOAuthClientCredentials = (): LinearOAuthClientCredentials | null => {
     try {
       if (!isSecureStorageAvailable(safeStorage)) {
+        // The keychain's prompt is up: an expected wait, read again later.
+        if (isSecureStorageCheckPending()) return null;
         args.logger?.warn("linear_sync.oauth_client_store_unavailable", {
           message: "OS secure storage unavailable; cannot decrypt Linear OAuth client config."
         });

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import YAML from "yaml";
+import { YAML } from "../shared/lazyPackages";
 import type { AdeDb } from "../state/kvDb";
 import type {
   AdeCleanupResult,
@@ -52,7 +52,10 @@ const SECRET_PATTERNS: Array<{ code: string; regex: RegExp; message: string }> =
   { code: "bearer-token", regex: /Bearer\s+[A-Za-z0-9._-]{20,}/, message: "Possible bearer token found in a tracked file." },
 ];
 
-const DEFAULT_CTO_IDENTITY = YAML.stringify(
+// Built on first use: a module-level `YAML.stringify` would load yaml with the
+// main bundle, before the first window.
+let defaultCtoIdentity: string | null = null;
+const defaultCtoIdentityYaml = (): string => (defaultCtoIdentity ??= YAML.stringify(
   {
     name: "CTO",
     version: 1,
@@ -68,7 +71,7 @@ const DEFAULT_CTO_IDENTITY = YAML.stringify(
     updatedAt: "1970-01-01T00:00:00.000Z",
   },
   { indent: 2 },
-);
+));
 
 const TRACKED_PLACEHOLDER_PATHS = ADE_TRACKED_PLACEHOLDER_PATHS.map((relativePath) => path.join(...relativePath.split("/")));
 
@@ -385,7 +388,7 @@ function repairAdeProject(projectRoot: string, options: RepairOptions): {
     // No `ade.yaml`. The committed shared config is retired: projectConfigService
     // no longer reads it, carries any legacy file over into local config once,
     // and deletes it. Recreating it here would resurrect a deleted file.
-    ensureFileIfMissing(path.join(paths.ctoDir, "identity.yaml"), DEFAULT_CTO_IDENTITY, "cto/identity.yaml", actions);
+    ensureFileIfMissing(path.join(paths.ctoDir, "identity.yaml"), defaultCtoIdentityYaml(), "cto/identity.yaml", actions);
     for (const relativePath of TRACKED_PLACEHOLDER_PATHS) {
       ensureFileIfMissing(path.join(paths.adeDir, relativePath), "", relativePath, actions);
     }

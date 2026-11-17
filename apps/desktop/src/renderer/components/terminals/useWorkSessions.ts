@@ -737,6 +737,30 @@ const LOCAL_RUNNING_SESSION_REFRESH_INTERVAL_MS = 30_000;
 const REMOTE_RUNNING_SESSION_REFRESH_INTERVAL_MS = 60_000;
 
 /**
+ * Whether a row keeps the safety-net reload above running.
+ *
+ * A chat's row stays `running` until the chat ends, also while it rests, so
+ * "any row running" kept the reload going every 30 s in every project with a
+ * chat. A resting chat changes only through pushes this list already takes:
+ * a turn start or end, an answer, a rename or a PR watch (agent-chat events),
+ * and a settle verdict, a wake or a status note (`sessions.onChanged`). So a
+ * chat counts only while its turn runs or waits on the person, or while its
+ * background work runs: that work drains with no push this list takes, and
+ * the reload is what shows the drain.
+ *
+ * A chat row the host could not match to its chat (no
+ * `activeBackgroundTaskCount`, see `fallbackUnprojectedChatSession`) still
+ * counts: its state is a guess until a reload brings the real one. Terminal
+ * rows (shells and CLI agents) count while they run, as before.
+ */
+function sessionKeepsBackstopRefresh(session: TerminalSessionSummary): boolean {
+  if (session.status !== "running") return false;
+  if (!isChatToolType(session.toolType)) return true;
+  if (typeof session.activeBackgroundTaskCount !== "number") return true;
+  return session.runtimeState !== "idle" || session.activeBackgroundTaskCount > 0;
+}
+
+/**
  * Whether an installation uses the Work Focus view and its Focus grid. Emitted
  * at the two setters every entry point goes through, only when a mode turns
  * on. Coarse and closed: the mode and nothing else, never a lane, chat, count
@@ -1983,7 +2007,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // If we already have cached sessions, treat this as a "loaded" state so the
     // upcoming refresh runs silently in the background (no spinner).
     hasLoadedOnceRef.current = cachedSessions != null;
-    hasRunningSessionsRef.current = (cachedSessions ?? []).some((s) => s.status === "running");
+    hasRunningSessionsRef.current = (cachedSessions ?? []).some(sessionKeepsBackstopRefresh);
     laneRecoveryRefreshKeyRef.current = null;
     appliedQuerySessionIdRef.current = null;
     appliedUrlFilterKeyRef.current = null;
@@ -2083,7 +2107,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // Refresh scheduling is active-binding-only; foreign slices have their own
     // cross-machine sync cadence and must not drive this project's IPC polling.
     sessionsRef.current = hostSessions;
-    hasRunningSessionsRef.current = hostSessions.some((s) => s.status === "running");
+    hasRunningSessionsRef.current = hostSessions.some(sessionKeepsBackstopRefresh);
   }, [hostSessions]);
 
   useEffect(() => {

@@ -5,8 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import YAML from "yaml";
-import cron from "node-cron";
+import { YAML } from "../shared/lazyPackages";
+import { loadNodeCron } from "../shared/lazyPackages";
 import { z } from "zod";
 import type {
   AiConfig,
@@ -2977,7 +2977,7 @@ function validateEffectiveConfig(
         const expr = (trigger.cron ?? "").trim();
         if (!expr) {
           issues.push({ path: `${tp}.cron`, message: "Schedule trigger requires cron" });
-        } else if (!cron.validate(expr)) {
+        } else if (!loadNodeCron().validate(expr)) {
           issues.push({ path: `${tp}.cron`, message: `Invalid cron expression '${expr}'` });
         }
       }

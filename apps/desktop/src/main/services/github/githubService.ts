@@ -71,6 +71,7 @@ import {
 } from "./githubAppUserAuthFailure";
 import { GITHUB_REST_API_VERSION } from "./githubApiVersion";
 import { readCredentialWithState } from "./credentialReadState";
+import { isSecureStorageCheckPending } from "../shared/secureStorage";
 import {
   readGithubRepoStarState,
   requestGithubRawWithCredentialFallback,
@@ -747,9 +748,10 @@ export function createGithubService({
     if (unreadable !== credentialStoreUnreadable) {
       credentialStoreUnreadable = unreadable;
       if (unreadable) {
-        logger.warn("github.credential_store_unreadable", {
-          reason: credentialStore?.getLastReadFailureReason?.() ?? null,
-        });
+        const fields = { reason: credentialStore?.getLastReadFailureReason?.() ?? null };
+        // The keychain's prompt is up: an expected wait, not a failure.
+        if (isSecureStorageCheckPending()) logger.info("github.credential_store_waiting_for_keychain", fields);
+        else logger.warn("github.credential_store_unreadable", fields);
       }
     }
     return unreadable;
@@ -812,6 +814,8 @@ export function createGithubService({
     try {
       const bytes = fs.readFileSync(candidatePath);
       if (!isSecureStorageAvailable(safeStorage)) {
+        // The keychain's prompt is up: not a decrypt failure, read again later.
+        if (isSecureStorageCheckPending()) return null;
         tokenDecryptionFailed = true;
         logger.warn("github.token_decryption_failed", {
           reason: "os_secure_storage_unavailable",

@@ -62,6 +62,7 @@ import {
   usageProviderAccountUrl,
 } from "../../../shared/types";
 import { finiteNumberOrNull, isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
+import { launchQuietRemainingMs, runAfterLaunchQuiet } from "../shared/launchQuiet";
 import {
   decodeOpenCodeRegistryId,
   getModelById,
@@ -6056,6 +6057,20 @@ export function createUsageTrackingService({
     startedOnce = true;
     if (firstStart && diskCachedSnapshot) {
       scheduleNextPoll(FIRST_AUTOMATIC_POLL_DELAY_MS);
+      return;
+    }
+    if (firstStart && launchQuietRemainingMs() > 0) {
+      // Nothing on disk to show, and the launch is still on: the poll starts
+      // Codex's app-server and Claude's CLI, which read 75 MB each from a cold
+      // disk while the person opens their first thread. It runs once the
+      // launch is over (`launchQuiet.ts`); asking for usage sooner
+      // (`noteQuotaDemand`, a Refresh) still polls at once.
+      void runAfterLaunchQuiet(async () => {
+        if (!pollingEnabled || pollTimer) return;
+        await poll({ reason: "automatic" }).catch(() => {});
+      }).finally(() => {
+        if (pollingEnabled && !pollTimer) scheduleNextPoll();
+      });
       return;
     }
     scheduleNextPoll();
