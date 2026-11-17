@@ -16,7 +16,7 @@ Use these words, and only these, in help text, skills, errors and UI.
 
 | Word | Means | Not |
 |---|---|---|
-| **machine** | One of the person's computers on their ADE account: this one, a Mac, a Linux box, an ADE Cloud computer. | "computer" in commands, "host", "brain", "runtime" |
+| **machine** | One of the person's computers on their ADE account (this one, a Mac, a Linux box), or ADE Cloud. ADE Cloud is one machine for the account; each cloud lane runs on its own cloud computer behind it, and people never see those by name. | "computer" in commands, "host", "brain", "runtime" |
 | **device** | Something an agent drives and watches: an **iPhone** (simulator, later cloud phone), an **Android** phone (emulator), a **screen** (Mac, Windows or Linux Desktop), an **app** (App Control). | "device" for a machine |
 | **source** | Where a device comes from: **here** (this machine), **another machine** by name, or **cloud** (ADE Cloud iPhone, later). | |
 | **lane** | Where code lives on a machine: a branch with its own folder. | "worktree" in agent text |
@@ -122,9 +122,9 @@ ade chat handoff <session> --to "Mac mini"     # this chat continues there
 ade chat move --to "Mac Studio" <session>      # move chats there
 ```
 
-`--machine` is still accepted on these two as an alias. `--machine cloud` (a new
-lane on its own ADE Cloud computer) stays as it is: it names a place that does
-not exist yet.
+`--machine` is still accepted on these two as an alias. A move onto ADE Cloud
+is not built. `--machine cloud` on other commands starts a new lane on ADE
+Cloud.
 
 ## Over MCP
 

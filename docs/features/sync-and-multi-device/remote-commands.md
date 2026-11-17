@@ -85,9 +85,9 @@ type SyncRemoteCommandPolicy = {
 The scope label matters because the brain serves **multiple projects**
 and one hidden personal-chat scope at once. `runtime`-scoped commands
 (machine-wide diagnostics, personal chats, project catalog reads, settings,
-and local connection metadata) run without a project binding. The retired iOS
-**Pair a browser** sheet no longer calls `sync.getWebPairingInfo`; new hosted
-web connections start from account sign-in and the account machine directory.
+and local connection metadata) run without a project binding. No client calls
+`sync.getWebPairingInfo`; hosted web connections start from account sign-in
+and the account machine directory.
 `project`-scoped
 commands (everything that mutates lane / chat / PR state inside a
 project) require the brain to have an active project AND the caller to
@@ -1000,8 +1000,6 @@ A handful have more logic:
   draft PRs, and PRs whose lane is not archived). Snapshots are capped at
   6 MiB per reply, open PRs first; the ones left out are listed in
   `omittedSnapshotPrIds` and load one PR at a time (`{ prId }`) when opened.
-  An argument-less refresh used to return every stored snapshot — 17 MB on a
-  real project — which the host refused to send and closed the phone over.
 - **Reply size guard.** `execute` measures every command's serialized result;
   over 12 MiB (`SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES`) the command fails with
   `{ ok: false, error: { code: "result_too_large", message, bytes, limitBytes } }`.
@@ -1245,14 +1243,18 @@ the fallback. Surfaces render that as "unavailable on the connected ADE host".
 Two rules follow:
 
 - A web-reachable write needs a `register(...)` entry here, not just an adapter
-  method. `apps/desktop/src/renderer/webclient/adapter/__tests__/hostCommandContract.test.ts`
-  fails CI when the adapter calls an action the brain does not serve, and its
-  `KNOWN_UNSUPPORTED` map is where a deliberate omission is recorded with its
-  reason.
+  method.
 - Some actions are deliberately absent. `ai.storeApiKey` is the canonical
   example: the web adapter redacts the key before sending, so a handler here
-  would persist the placeholder rather than the credential. Adding a provider
-  key stays a desktop-only operation.
+  would persist the placeholder rather than the credential. On the web, an
+  ADE Cloud provider key goes to the account vault through the account server
+  (`PUT /cloud/sign-ins/:id`), never through a brain.
+
+ADE Cloud pins (the ADE Cloud binding and `cloud-saved:` copies of resting
+cloud computers) never reach `CommandCaller`. The account adapter answers their
+reads from the account server and GitHub, and refuses other calls with one
+sentence. A call that does something goes to the lane's own computer after
+it wakes. See the [web client](../web-client/README.md#ade-cloud-reads).
 
 Note that lane presence (`lanes.presence.announce` / `.release`) is served
 through synthetic descriptors declared in `syncHostService`, outside this
@@ -1313,14 +1315,10 @@ registry — a reader auditing coverage has to count those too.
   It writes atomically to the lane worktree and that is all.
   Services that care about post-write side effects (lint,
   formatters) watch the filesystem independently.
-- **Mobile file mutations are no longer read-only-gated.** Files are
-  freely editable from the phone: the old `mobileReadOnly` /
-  edit-protection write gate was removed on both sides (the iOS
-  `ensureMobileFileMutationsAllowed` check and the brain's
-  `assertWriteAllowed` / `MOBILE_MUTATING_FILE_ACTIONS` enforcement),
-  matching the desktop edit-protection removal. The `mobileReadOnly`
-  field still rides the workspace payload but no longer blocks writes.
-  Path-safety and the external-workspace block below are unchanged.
+- **The phone can edit files.** There is no mobile read-only gate. The
+  `mobileReadOnly` field still rides the workspace payload, but nothing reads
+  it to block a write. Path safety and the external-workspace block below
+  still apply.
 - **External desktop file opens are not mobile-visible.** Desktop
   `files.openExternalPath` workspaces use `kind: "external"` and
   `external-local:*` ids. The sync host filters them from mobile

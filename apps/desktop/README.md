@@ -9,8 +9,9 @@ Electron client for ADE. The renderer is also runnable in a regular browser for 
 | **Desktop dev** | `npm run dev` (repo root) | Electron preload → main IPC → ADE runtime endpoint | Full |
 | **Browser preview (mock)** | `npm run dev:vite` | `browserMock.ts` only | Synthetic demo data |
 | **Browser preview (live)** | `npm run dev:vite:live` | Mock + runtime bridge patches | Partial live (see below) |
+| **ADE Web (hosted web client)** | `npm run dev:webclient` (`localhost:5174`); `npm run build:webclient` | `renderer/webclient/adapter` | The account's computers over Relay, and ADE Cloud through the account server |
 
-`apps/web` is the public marketing site. This document covers the **desktop renderer in a browser** (`localhost:5173`), not the marketing app.
+`apps/web` is the public marketing site. This document covers the **desktop renderer in a browser** (`localhost:5173`), not the marketing app. ADE Web, the signed-in web app at `app.ade-app.dev`, has its own doc: [web client](../../docs/features/web-client/README.md). Its dev section explains the account proxies and the dev test sign-in (`ADE_DEV_TEST_SESSION_FILE`).
 
 ## How the browser preview works
 
