@@ -70,6 +70,8 @@ export type RemoteArtifactRangeChunk = {
   offset: number;
   /** Base64 of the bytes read. Empty at or past the end of the file. */
   data: string;
+  /** "display" when the bytes are the picture's smaller display copy. Absent: the original. */
+  variant?: "display";
 };
 
 /**
@@ -82,19 +84,21 @@ export type RemoteArtifactRangeReader = (args: {
   relativePath: string;
   offset: number;
   length: number;
+  /** Asks for a picture's display copy. A machine without one sends the original. */
+  variant?: "display";
 }) => Promise<unknown>;
 
 /** What the proxy asks for per round trip. Small enough that a poster costs about one. */
 export const REMOTE_ARTIFACT_CHUNK_BYTES = 1024 * 1024;
 
 /** Reads one chunk answer. Throws on anything that is not one. */
-export function decodeRemoteArtifactChunk(chunk: unknown): { totalSize: number; bytes: Buffer } {
+export function decodeRemoteArtifactChunk(chunk: unknown): { totalSize: number; bytes: Buffer; display: boolean } {
   const record = chunk && typeof chunk === "object" ? chunk as Partial<RemoteArtifactRangeChunk> : null;
   const totalSize = Number(record?.totalSize);
   if (!record || !Number.isSafeInteger(totalSize) || totalSize < 0 || typeof record.data !== "string") {
     throw new Error("The other computer sent an unreadable answer.");
   }
-  return { totalSize, bytes: Buffer.from(record.data, "base64") };
+  return { totalSize, bytes: Buffer.from(record.data, "base64"), display: record.variant === "display" };
 }
 
 /**

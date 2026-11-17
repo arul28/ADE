@@ -14788,6 +14788,7 @@ export function registerIpc({
     resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
     resolveTargetNameForMachineKey: runtimeBridge.resolveTargetNameForMachineKey,
     readRemoteArtifactRange: runtimeBridge.readRemoteArtifactRange,
+    remoteLinkRoundTripMs: runtimeBridge.remoteLinkRoundTripMs,
     async openAttentionProject(args: {
       machineKey: string;
       projectId: string;

@@ -1451,6 +1451,40 @@ describe("RemoteConnectionPool", () => {
     expect(secondClient.call).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { name: "a send with an id, to a brain that drops repeats", dedupes: true, clientSendId: "send-1", resent: true },
+    { name: "a send with an id, to an older brain", dedupes: false, clientSendId: "send-1", resent: false },
+    { name: "a send with no id", dedupes: true, clientSendId: undefined, resent: false },
+  ])("sends a chat message again after a drop only when a repeat is safe: $name", async ({ dedupes, clientSendId, resent }) => {
+    const withDedupe = (version: string): RemoteRuntimeConnectResult => {
+      const result = connectResult(version);
+      if (dedupes) result.capabilities!.clientSendDedupe = true;
+      return result;
+    };
+    const firstClient = createClient();
+    firstClient.call.mockRejectedValueOnce(new Error("Remote runtime connection failed: channel closed"));
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({ client: firstClient, ssh: createSsh(), result: withDedupe("1.0.0") });
+    const secondClient = createClient();
+    secondClient.call.mockResolvedValue({ ok: true, result: { accepted: true } });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({ client: secondClient, ssh: createSsh(), result: withDedupe("1.0.1") });
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+    const args = { sessionId: "chat-1", text: "hello", ...(clientSendId ? { clientSendId } : {}) };
+
+    const sent = pool.callActionForTarget(target, "project-1", { domain: "chat", action: "sendMessage", args });
+
+    if (resent) {
+      await expect(sent).resolves.toMatchObject({ domain: "chat", action: "sendMessage" });
+      // The same send, with the same id, on the new connection.
+      expect(secondClient.call).toHaveBeenCalledTimes(1);
+      const [method, params] = secondClient.call.mock.calls[0]!;
+      expect(method).toBe("ade/actions/call");
+      expect(params).toMatchObject({ arguments: { domain: "chat", action: "sendMessage", args } });
+    } else {
+      await expect(sent).rejects.toBeInstanceOf(RemoteActionOutcomeUnknownError);
+      expect(secondClient.call).not.toHaveBeenCalled();
+    }
+  });
+
   it("does not reconnect or replay a timed-out mutation", async () => {
     const client = createClient();
     const ssh = createSsh();

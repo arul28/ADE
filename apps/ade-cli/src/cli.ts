@@ -408,6 +408,7 @@ import { browseProjectDirectories } from "../../desktop/src/main/services/projec
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projectService";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
+import { withLinkSummary } from "./connectionLinkSummary";
 import { createBrainLogger } from "./services/runtime/brainLogger";
 import type {
   CloneProjectInput,
@@ -32267,7 +32268,7 @@ async function runServe(
     }, handler);
   };
   const createHandler = (context?: { peerDeviceId: string | null; peerDeviceName?: string | null }) =>
-    withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
+    withLinkSummary(withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
       holdCloudWork,
       remoteProviderSignIn,
       pushCloudWork: holdCloudWork
@@ -32391,7 +32392,7 @@ async function runServe(
       },
       disposeScopesOnDispose: false,
       onShutdown: () => finish({ requested: true }),
-    }));
+    })), { logger: headlessProjectLogger, peerDeviceId: context?.peerDeviceId ?? null });
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
   // An embedded runtime belongs to the process that spawned it. On POSIX an
   // orphaned child is reparented to init and keeps running, so a host that dies

@@ -1,3 +1,4 @@
+import type { SlowLinkPreference } from "../shared/slowLinkMode";
 import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../shared/ctoAccountCopy";
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { MessagesIntegrationSettings, MessagesIntegrationStatus } from "../shared/types/messagesIntegration";
@@ -5991,6 +5992,11 @@ const adeBridge = {
       enabled: boolean,
     ): Promise<RemoteRuntimeTarget> =>
       ipcRenderer.invoke(IPC.remoteRuntimeSetAutoConnect, { id, enabled }),
+    setSlowLinkMode: async (
+      id: string,
+      mode: SlowLinkPreference,
+    ): Promise<RemoteRuntimeTarget> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeSetSlowLinkMode, { id, mode }),
     removeTarget: async (id: string): Promise<{ removed: boolean }> =>
       ipcRenderer.invoke(IPC.remoteRuntimeRemoveTarget, { id }),
     getSshHostKeyTrust: async (
@@ -10521,6 +10527,9 @@ const adeBridge = {
         });
       return computerUseMediaBaseUrl;
     },
+    /** Bytes a media server URL would send (one small read on a paired machine), or null. */
+    mediaSize: (url: string): Promise<number | null> =>
+      (ipcRenderer.invoke(IPC.computerUseMediaSize, { url }) as Promise<number | null>).catch(() => null),
     /** Saves a proof video from the media server; main shows the save dialog. */
     saveMediaAs: (args: { url: string; fileName?: string }): Promise<{ saved: boolean; path?: string }> =>
       ipcRenderer.invoke(IPC.computerUseSaveMediaAs, args),

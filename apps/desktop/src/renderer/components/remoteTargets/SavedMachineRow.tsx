@@ -1,3 +1,5 @@
+import { normalizeSlowLinkPreference, type SlowLinkPreference } from "../../../shared/slowLinkMode";
+import { SettingsSegmented, type SegmentedOption } from "../settings/primitives/SettingsControls";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useEffect, useState, type ReactNode } from "react";
 import {
@@ -77,6 +79,12 @@ function useStaleConnecting(connecting: boolean): boolean {
   return stale;
 }
 
+const SLOW_LINK_MODE_OPTIONS: readonly SegmentedOption<SlowLinkPreference>[] = [
+  { value: "auto", label: "Automatic" },
+  { value: "on", label: "Always on" },
+  { value: "off", label: "Off" },
+];
+
 type SavedMachineRowProps = {
   row: SavedMachineRowModel;
   section: MachineSection;
@@ -122,6 +130,8 @@ type SavedMachineRowProps = {
   onCancelConnect: (targetId: string) => void;
   onSaveAndConnect: (input: RemoteRuntimeTargetInput) => void | Promise<void>;
   onAutoConnectChange: (targetId: string, enabled: boolean) => void;
+  /** This computer's slow-connection setting for the machine. Absent: no control. */
+  onSlowLinkModeChange?: (targetId: string, mode: SlowLinkPreference) => void;
   onTrustAndConnect: () => void;
   onCancelHostKeyTrust: () => void;
   /** Re-runs account adoption for this machine. Offered only when the host
@@ -182,6 +192,7 @@ export function SavedMachineRow({
   onCancelConnect,
   onSaveAndConnect,
   onAutoConnectChange,
+  onSlowLinkModeChange,
   onTrustAndConnect,
   onCancelHostKeyTrust,
   onPairAgain = null,
@@ -286,7 +297,7 @@ export function SavedMachineRow({
           : section === "unavailable" && row.unavailableReason
           ? row.unavailableReason
           : row.connected
-            ? [routeLabel ?? "Online", latency].filter(Boolean).join(" · ")
+            ? [routeLabel ?? "Online", latency, status?.slowLink?.active ? "Slow connection" : null].filter(Boolean).join(" · ")
             : targetConnecting && !connectingStale
               ? "Connecting…"
               : onlineLine
@@ -594,6 +605,31 @@ export function SavedMachineRow({
               </span>
             </span>
           </label>
+          {onSlowLinkModeChange ? (
+            <div
+              style={{
+                display: "grid",
+                gap: 6,
+                color: COLORS.textPrimary,
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+              }}
+            >
+              <span>Slow connection mode</span>
+              <div style={{ justifySelf: "start" }}>
+                <SettingsSegmented<SlowLinkPreference>
+                  value={normalizeSlowLinkPreference(target.slowLinkMode)}
+                  options={SLOW_LINK_MODE_OPTIONS}
+                  disabled={busy}
+                  ariaLabel="Slow connection mode"
+                  onChange={(mode) => onSlowLinkModeChange(target.id, mode)}
+                />
+              </div>
+              <span style={helperTextStyle}>
+                On a slow or unsteady link to this machine, pictures load when you click them and terminals show what you type before the machine echoes it. Automatic turns it on from the measured link.
+              </span>
+            </div>
+          ) : null}
           <RemoteTargetForm
             busy={saving || locked}
             prefill={formPrefill}

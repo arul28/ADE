@@ -1,3 +1,14 @@
+import {
+  emptySlowLinkMeasure,
+  normalizeSlowLinkPreference,
+  noteSlowLinkDrop,
+  noteSlowLinkRtt,
+  percentileMs,
+  slowLinkStatus,
+  type ClientLinkReport,
+  type SlowLinkMeasure,
+  type SlowLinkPreference,
+} from "../../../shared/slowLinkMode";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { syncDeviceTelemetryRef } from "../analytics/machineTelemetryId";
 import fs from "node:fs";
@@ -72,6 +83,7 @@ import {
   withTempAttachmentFile,
 } from "./attachmentUploadClient";
 import {
+  isDedupedChatSend,
   isRemoteRuntimeConnectionError,
   type RemoteConnectionPool,
 } from "./remoteConnectionPool";
@@ -124,6 +136,19 @@ import { isMachineScopeOlderBrainError, MACHINE_SCOPE_PROJECT_ID, machineScopeDo
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
+
+/** One link summary line per machine this often (`remote.link_summary`). */
+const LINK_SUMMARY_INTERVAL_MS = 5 * 60_000;
+const LINK_SUMMARY_MAX_SAMPLES = 60;
+
+type LinkSummaryPeriod = {
+  startedAt: number;
+  rttMs: number[];
+  drops: number;
+  switches: number;
+  /** The connection's byte counters at the start of the period. */
+  traffic: { bytesIn: number; bytesOut: number } | null;
+};
 
 type RemoteConnectionServiceOptions = {
   /** Receives one line per outage saying which routes were tried and how each ended. */
@@ -386,14 +411,14 @@ function sameStatusValue(a: unknown, b: unknown): boolean {
  * it already took, so a message caught by a sleep is delivered, and never twice.
  */
 function isRetriableAfterSleep(request: RemoteRuntimeActionRequest, brainDedupesSends: boolean): boolean {
-  if (isReplaySafeAdeAction(request.domain, request.action)) return true;
-  if (!brainDedupesSends || request.domain !== "chat" || request.action !== "sendMessage") return false;
-  const args = request.args as { clientSendId?: unknown } | undefined;
-  return typeof args?.clientSendId === "string" && args.clientSendId.length > 0;
+  return isReplaySafeAdeAction(request.domain, request.action) || isDedupedChatSend(request, brainDedupesSends);
 }
 
 export class RemoteConnectionService {
   private readonly statusById = new Map<string, StatusPatch>();
+  /** Measured round trips and drops per machine, for slow-connection mode. */
+  private readonly slowLinkMeasures = new Map<string, SlowLinkMeasure>();
+  private readonly linkSummaries = new Map<string, LinkSummaryPeriod>();
   private readonly manuallyDisconnectedTargetIds = new Set<string>();
   /** With `explicitConnectOnly`: machines the person connected in this app. */
   private readonly explicitlyConnectedTargetIds = new Set<string>();
@@ -458,6 +483,7 @@ export class RemoteConnectionService {
       onOutcome: this.options.onDialOutcome,
     });
     this.pool.onDialFailed((targetId, error) => this.dialTelemetry.noteFailed(targetId, error));
+    this.pool.setLinkRoundTripReader?.((targetId) => this.linkRoundTripMs(targetId));
     // A call that finds the machine gone reconnects on its own, without
     // `connect()`. The machine may have restarted on a new version (an update
     // it was just sent), so what it reports now replaces what it reported at
@@ -487,6 +513,11 @@ export class RemoteConnectionService {
         hostStorageWait: result.hostStorageWait ?? null,
         connectedAt: result.target.lastConnectedAt ?? Date.now(),
       });
+      // The dial's round trip is the first sample: a far machine is known slow at once.
+      const dialLatencyMs = result.route?.latencyMs;
+      if (typeof dialLatencyMs === "number" && Number.isFinite(dialLatencyMs)) {
+        this.noteSlowLink(targetId, (measure) => noteSlowLinkRtt(measure, dialLatencyMs, Date.now()), { rttMs: dialLatencyMs });
+      }
     });
     // A project folder there stopped (or started again) answering while the
     // connection stayed up: the machine row says so at once.
@@ -502,6 +533,10 @@ export class RemoteConnectionService {
       // The host answered and refused one reply as too large. The next call
       // opens a new channel, so the machine is still reachable.
       if (isPairedRuntimeRpcOverBudgetError(error)) return;
+      // A link that broke under the app, not a handover to another app.
+      if (!isPairedRuntimeSupersededError(error)) {
+        this.noteSlowLink(targetId, (measure) => noteSlowLinkDrop(measure, Date.now()), { drop: true });
+      }
       if (isPairedRuntimeSupersededError(error)) {
         this.explicitlyConnectedTargetIds.delete(targetId);
         // Another client with this computer's pairing took the connection.
@@ -622,6 +657,8 @@ export class RemoteConnectionService {
       this.bumpDisconnectGeneration(targetId);
       this.pool.disconnect(targetId);
       this.statusById.delete(targetId);
+      this.slowLinkMeasures.delete(targetId);
+      this.linkSummaries.delete(targetId);
       this.manuallyDisconnectedTargetIds.delete(targetId);
       this.explicitlyConnectedTargetIds.delete(targetId);
       this.clearAutomaticReconnectState(targetId);
@@ -674,6 +711,102 @@ export class RemoteConnectionService {
     const currentOwnerUserId = await this.options.getAuthorizedAccountOwnerId()
       .catch(() => null);
     return this.reconcileAccountOwnership(currentOwnerUserId);
+  }
+
+  /** The last measured round trip to a connected machine, or null. */
+  linkRoundTripMs(targetId: string): number | null {
+    const status = this.statusById.get(targetId);
+    if (status?.state !== "connected") return null;
+    return status.slowLink?.rttMs ?? status.route?.latencyMs ?? null;
+  }
+
+  /** The person's slow-connection setting for one machine: "auto", "on" or "off". */
+  setSlowLinkMode(targetId: string, mode: SlowLinkPreference): RemoteRuntimeTarget {
+    const target = this.requireTarget(targetId);
+    const updated = this.registry.update(target.id, { slowLinkMode: mode === "auto" ? undefined : mode });
+    this.noteSlowLink(target.id, (measure) => measure);
+    this.emit();
+    return updated;
+  }
+
+  /** Feeds one measurement to the machine's slow-connection rule and shows the result. */
+  private noteSlowLink(
+    targetId: string,
+    update: (measure: SlowLinkMeasure) => SlowLinkMeasure,
+    sample: { rttMs?: number; drop?: boolean } = {},
+  ): void {
+    const target = this.registry.get(targetId);
+    if (!target) return;
+    const measure = update(this.slowLinkMeasures.get(targetId) ?? emptySlowLinkMeasure());
+    this.slowLinkMeasures.set(targetId, measure);
+    const summary = this.linkSummaryFor(targetId);
+    if (typeof sample.rttMs === "number") {
+      summary.rttMs.push(Math.round(sample.rttMs));
+      if (summary.rttMs.length > LINK_SUMMARY_MAX_SAMPLES) summary.rttMs.shift();
+    }
+    if (sample.drop) summary.drops += 1;
+    const next = slowLinkStatus(measure, normalizeSlowLinkPreference(target.slowLinkMode));
+    const current = this.statusById.get(targetId)?.slowLink;
+    if (current && current.active === next.active && current.reason === next.reason && current.rttMs === next.rttMs) return;
+    if ((current?.active ?? false) !== next.active) {
+      // Rare by design (hysteresis): one line per switch.
+      summary.switches += 1;
+      this.options.logger?.info("remote.slow_link_switch", {
+        targetId,
+        active: next.active,
+        reason: next.reason,
+        rttMs: next.rttMs,
+        recentDrops: measure.dropAt.length,
+      });
+    }
+    this.mergeStatus(targetId, { slowLink: next });
+  }
+
+  private linkSummaryFor(targetId: string): LinkSummaryPeriod {
+    let summary = this.linkSummaries.get(targetId);
+    if (!summary) {
+      summary = { startedAt: Date.now(), rttMs: [], drops: 0, switches: 0, traffic: null };
+      this.linkSummaries.set(targetId, summary);
+    }
+    return summary;
+  }
+
+  /** What this desktop tells the machine about the link on the maintenance ping. */
+  private clientLinkReport(targetId: string): ClientLinkReport {
+    const summary = this.linkSummaryFor(targetId);
+    return {
+      rttP50Ms: percentileMs(summary.rttMs, 50),
+      rttP95Ms: percentileMs(summary.rttMs, 95),
+      drops: summary.drops,
+      slow: this.statusById.get(targetId)?.slowLink?.active === true,
+    };
+  }
+
+  /** One line per machine connection every `LINK_SUMMARY_INTERVAL_MS`; no per-request lines. */
+  private maybeLogLinkSummary(targetId: string): void {
+    const summary = this.linkSummaryFor(targetId);
+    const now = Date.now();
+    if (now - summary.startedAt < LINK_SUMMARY_INTERVAL_MS) return;
+    const traffic = this.pool.connectionTraffic(targetId);
+    const previous = summary.traffic;
+    // A new connection starts its counters at zero.
+    const fresh = !previous || !traffic || traffic.bytesIn < previous.bytesIn || traffic.bytesOut < previous.bytesOut;
+    this.options.logger?.info("remote.link_summary", {
+      targetId,
+      route: this.statusById.get(targetId)?.route?.kind ?? null,
+      periodMs: now - summary.startedAt,
+      rttSamples: summary.rttMs.length,
+      rttP50Ms: percentileMs(summary.rttMs, 50),
+      rttP95Ms: percentileMs(summary.rttMs, 95),
+      rttMaxMs: summary.rttMs.length ? Math.max(...summary.rttMs) : null,
+      drops: summary.drops,
+      slow: this.statusById.get(targetId)?.slowLink?.active === true,
+      slowReason: this.statusById.get(targetId)?.slowLink?.reason ?? null,
+      switches: summary.switches,
+      bytesIn: traffic ? traffic.bytesIn - (fresh ? 0 : previous!.bytesIn) : null,
+      bytesOut: traffic ? traffic.bytesOut - (fresh ? 0 : previous!.bytesOut) : null,
+    });
+    this.linkSummaries.set(targetId, { startedAt: now, rttMs: [], drops: 0, switches: 0, traffic });
   }
 
   setAutoConnect(targetId: string, enabled: boolean): RemoteRuntimeTarget {
@@ -926,6 +1059,8 @@ export class RemoteConnectionService {
     this.pool.clearConnectFailure(targetId);
     this.pairedFallbackSshTrustByTargetId.delete(targetId);
     this.statusById.delete(targetId);
+    this.slowLinkMeasures.delete(targetId);
+    this.linkSummaries.delete(targetId);
     const removed = this.registry.remove(targetId);
     if (removed && pairedCredentials) {
       this.pairedStore.remove(pairedCredentials.hostIdentity.deviceId);
@@ -1010,6 +1145,8 @@ export class RemoteConnectionService {
           reconnectBlocked: this.isManuallyDisconnected(target) ? "disconnected" : null,
           ...(status.disconnectedAt != null ? { disconnectedAt: status.disconnectedAt } : {}),
           ...(status.recovery && status.state === "error" ? { recovery: status.recovery } : {}),
+          // Live state of this connection, like the route.
+          ...(status.slowLink && status.state === "connected" ? { slowLink: status.slowLink } : {}),
         };
       });
     this.lastSnapshotAt = Math.max(Date.now(), this.lastSnapshotAt + 1);
@@ -2077,20 +2214,24 @@ export class RemoteConnectionService {
           await this.pool.callMachineForTarget(
             target,
             "ping",
-            {},
+            // An older machine ignores the report; a newer one logs it.
+            { link: this.clientLinkReport(target.id) },
             {
               timeoutMs: options.pingTimeoutMs,
             },
           );
+          const latencyMs = Math.max(0, Date.now() - startedAt);
           const currentRoute = this.statusById.get(target.id)?.route;
           if (currentRoute) {
             this.mergeStatus(target.id, {
               route: {
                 ...currentRoute,
-                latencyMs: Math.max(0, Date.now() - startedAt),
+                latencyMs,
               },
             });
           }
+          this.noteSlowLink(target.id, (measure) => noteSlowLinkRtt(measure, latencyMs, Date.now()), { rttMs: latencyMs });
+          this.maybeLogLinkSummary(target.id);
           continue;
         } catch (error) {
           if (await this.asleepAfterFailure(target.id, error)) continue;

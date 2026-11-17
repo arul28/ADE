@@ -1,4 +1,5 @@
 import { SpinnerGap, WarningCircle } from "@phosphor-icons/react";
+import { SlowLinkHeldPicture } from "./SlowLinkHeldPicture";
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ComputerUseArtifactView } from "../../../shared/types";
 import type { ProofCompareBlock } from "../../../shared/proofCitation";
@@ -176,9 +177,10 @@ function CitedProofMedia({
 }) {
   const { allowLocalArtifactProtocol } = useContext(ProofCitationContext);
   const scope = useChatRuntimeScope();
-  const { containerRef, preview, loading, failed, explanation, onMediaError, retry, retryLabel } = useArtifactPreview<HTMLSpanElement>(
+  const { containerRef, preview, fullPreview, loading, failed, explanation, onMediaError, retry, retryLabel, held, showHeld } = useArtifactPreview<HTMLSpanElement>(
     artifact,
     allowLocalArtifactProtocol,
+    { holdOnSlowLink: true },
   );
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -208,7 +210,9 @@ function CitedProofMedia({
       className="block min-w-0"
       {...mediaAttributes}
     >
-      {loading ? (
+      {held ? (
+        <SlowLinkHeldPicture title={text} bytes={held.bytes} onShow={showHeld} className="min-h-40" />
+      ) : loading ? (
         <span className="flex min-h-40 items-center justify-center rounded-xl border border-fg/[0.06] bg-black/20 text-muted-fg/35">
           <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof" />
         </span>
@@ -262,7 +266,7 @@ function CitedProofMedia({
       {lightboxOpen && preview ? (
         <ArtifactLightbox
           artifact={artifact}
-          preview={preview}
+          preview={fullPreview ?? preview}
           failed={failed}
           failureText={failureText}
           onMediaError={onMediaError}
@@ -383,7 +387,7 @@ export function ProofActionThumbnail({ artifactId, height }: { artifactId: strin
 
 function ProofActionThumbnailMedia({ artifact, height }: { artifact: ComputerUseArtifactView; height: number }) {
   const { allowLocalArtifactProtocol } = useContext(ProofCitationContext);
-  const { containerRef, preview, failed, explanation, onMediaError } = useArtifactPreview<HTMLSpanElement>(
+  const { containerRef, preview, fullPreview, failed, explanation, onMediaError } = useArtifactPreview<HTMLSpanElement>(
     artifact,
     allowLocalArtifactProtocol,
   );
@@ -411,7 +415,7 @@ function ProofActionThumbnailMedia({ artifact, height }: { artifact: ComputerUse
       {lightboxOpen && preview ? (
         <ArtifactLightbox
           artifact={artifact}
-          preview={preview}
+          preview={fullPreview ?? preview}
           failed={failed}
           failureText={externalArtifactUrl(artifact.uri) ? "This proof lives at its source." : explanation}
           onMediaError={onMediaError}

@@ -47,6 +47,7 @@ import type {
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
 import type { UpdateTrack } from "../shared/updateTrack";
+import type { SlowLinkPreference } from "../shared/slowLinkMode";
 import type { MuseBinaryStatus } from "../shared/museBinary";
 import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../shared/types/jev";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
@@ -1672,6 +1673,11 @@ declare global {
         setAutoConnect: (
           id: string,
           enabled: boolean,
+        ) => Promise<RemoteRuntimeTarget>;
+        /** This computer's slow-connection setting for one saved machine. */
+        setSlowLinkMode?: (
+          id: string,
+          mode: SlowLinkPreference,
         ) => Promise<RemoteRuntimeTarget>;
         removeTarget: (id: string) => Promise<{ removed: boolean }>;
         getSshHostKeyTrust: (
@@ -3317,6 +3323,8 @@ declare global {
         ) => Promise<string | null>;
         /** `http://127.0.0.1:<port>/<token>` for proof videos, or null when main has none. */
         mediaBaseUrl: () => Promise<string | null>;
+        /** Desktop only: the bytes a media server URL would send, or null. */
+        mediaSize?: (url: string) => Promise<number | null>;
         /** Desktop only; absent in the web client. */
         saveMediaAs?: (args: { url: string; fileName?: string }) => Promise<{ saved: boolean; path?: string }>;
         onEvent: (

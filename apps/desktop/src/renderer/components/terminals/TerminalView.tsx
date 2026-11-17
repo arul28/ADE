@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMachineSlotHold } from "../../lib/machineSlotHolds";
 import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
+import { createTerminalTypeAhead, type TerminalTypeAhead } from "./terminalTypeAhead";
 import type { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -15,6 +16,7 @@ import {
   type TerminalPreferences,
   type ThemeId,
 } from "../../state/appStore";
+import { useTypeAheadRoundTripMs } from "../../state/projectMachines";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
 import { TERMINAL_BRACKETED_PASTE_END, TERMINAL_BRACKETED_PASTE_START } from "./terminalBracketedPaste";
@@ -203,6 +205,8 @@ type CachedRuntime = {
   ptyDataUnsub: (() => void) | null;
   ptyExitUnsub: (() => void) | null;
   termDataSub: { dispose: () => void } | null;
+  /** Dimmed guesses of typed characters on a slow link (`terminalTypeAhead.ts`). */
+  typeAhead: TerminalTypeAhead | null;
   linkProviderSub: { dispose: () => void } | null;
   pathLinkProviderSub: { dispose: () => void } | null;
   pathLinks: TerminalPathLinkContext;
@@ -1278,6 +1282,7 @@ function pauseRuntimePtyStream(runtime: CachedRuntime): void {
 
 function resumeRuntimePtyStream(runtime: CachedRuntime): void {
   if (!runtime.liveStreamPaused || !shouldRuntimeReceivePtyData(runtime)) return;
+  runtime.typeAhead?.reset();
   runtime.liveStreamPaused = false;
   runtime.hydrationGeneration += 1;
   runtime.staleContentBeforeHydration = runtime.hasAppliedTerminalContent;
@@ -1341,6 +1346,7 @@ function flushPendingPtyInput(runtime: CachedRuntime): void {
 
 function writePtyInput(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
+  runtime.typeAhead?.noteInput(data);
   if (runtime.pasteWriteInFlight) {
     runtime.deferredInputDuringPasteWrite.push({ kind: "input", data });
     return;
@@ -1435,6 +1441,7 @@ function schedulePtyInputFlush(runtime: CachedRuntime): void {
 
 function enqueuePtyInput(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
+  runtime.typeAhead?.noteInput(data);
   if (runtime.pasteWriteInFlight) {
     runtime.deferredInputDuringPasteWrite.push({ kind: "input", data });
     return;
@@ -1671,6 +1678,8 @@ function teardownRuntime(runtime: CachedRuntime) {
   }
   try {
     runtime.termDataSub?.dispose();
+    runtime.typeAhead?.dispose();
+    runtime.typeAhead = null;
   } catch {
     // ignore
   }
@@ -2189,11 +2198,13 @@ function handleRuntimePtyData(runtime: CachedRuntime, ev: PtyDataEvent) {
   }
 
   if (ev.replace === true) {
+    runtime.typeAhead?.reset();
     replaceRuntimeTerminalData(runtime, ev.data, { screen: ev.screen === true });
     return;
   }
 
   updateTerminalInputModes(runtime, ev.data);
+  runtime.typeAhead?.noteOutput(ev.data);
 
   if (!runtime.hydrationCompleted) {
     runtime.pendingHydrationChunks.push(ev.data);
@@ -3226,6 +3237,7 @@ function createRuntime(args: {
     ptyDataUnsub: null,
     ptyExitUnsub: null,
     termDataSub: null,
+    typeAhead: null,
     linkProviderSub,
     pathLinkProviderSub,
     pathLinks,
@@ -3387,6 +3399,7 @@ function createRuntime(args: {
   // Debounce rapid terminal input into fewer PTY writes. Remote runtimes pay a
   // full RPC round trip per write, so per-character bursts make typing feel
   // much slower than a local shell.
+  runtime.typeAhead = createTerminalTypeAhead({ term });
   runtime.termDataSub = term.onData((data) => {
     enqueuePtyInput(runtime, data);
   });
@@ -3543,6 +3556,11 @@ export function TerminalView({
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   // A terminal on screen keeps its computer's ADE Web connection slot.
   useMachineSlotHold(runtimePin, isVisible);
+  // On a slow link to the terminal's machine, typed characters show before the
+  // echo. Plain shells only: an agent CLI (any provider) draws its own input
+  // box, so it keeps the fast key path and gets no guesses.
+  const linkRttMs = useTypeAheadRoundTripMs(runtimePin?.kind === "remote" ? runtimePin.targetId : null);
+  const typeAheadRttMs = toolType == null || toolType === "shell" ? linkRttMs : null;
   // Keyboard-scroll hint: web only, and only for a session whose provider we
   // have documented keys for. See `terminalScrollHint.ts` for why the wheel is
   // slow over sync and why this is provider-specific.
@@ -3605,6 +3623,11 @@ export function TerminalView({
     lineHeight: terminalPreferences?.lineHeight ?? DEFAULT_TERMINAL_PREFERENCES.lineHeight,
     scrollback: terminalPreferences?.scrollback ?? DEFAULT_TERMINAL_PREFERENCES.scrollback,
   }), [terminalPreferences]);
+  const typeAheadRttMsRef = useRef(typeAheadRttMs);
+  typeAheadRttMsRef.current = typeAheadRttMs;
+  useEffect(() => {
+    runtimeRef.current?.typeAhead?.setWanted(typeAheadRttMs != null, typeAheadRttMs);
+  }, [typeAheadRttMs]);
   const currentMountConfig = { isActive, isVisible, theme: termTheme, preferences: resolvedPreferences };
   const mountConfigRef = useRef(currentMountConfig);
   mountConfigRef.current = currentMountConfig;
@@ -3631,6 +3654,7 @@ export function TerminalView({
       imagePasteMode,
     });
     runtimeRef.current = runtime;
+    runtime.typeAhead?.setWanted(typeAheadRttMsRef.current != null, typeAheadRttMsRef.current);
     if (pathLinkHandleRef.current) {
       runtime.pathLinks.openWorkspacePath = pathLinkHandleRef.current.openWorkspacePath;
       runtime.pathLinks.ensureLaneId = pathLinkHandleRef.current.ensureLaneId;

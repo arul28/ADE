@@ -10,6 +10,7 @@ import { markExpected } from "../../desktop/src/shared/expectedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { conditionalActionResult } from "./conditionalActionResult";
 import { CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM, CONDITIONAL_ACTION_PARAM } from "../../desktop/src/shared/conditionalActionResult";
+import { BACKGROUND_JOB_PARAM, backgroundJobFingerprint, createBackgroundActionJobs } from "./backgroundActionJobs";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -1796,6 +1797,12 @@ function readLimit(value: unknown): number {
     : 100;
 }
 
+/**
+ * Long actions callers follow by job id. One map for the whole brain: the
+ * call sent again after a dropped link arrives on a new connection.
+ */
+const backgroundActionJobs = createBackgroundActionJobs();
+
 export function createMultiProjectRpcRequestHandler(
   options: MultiProjectRpcHandlerOptions,
 ): JsonRpcHandler & {
@@ -3078,6 +3085,12 @@ export function createMultiProjectRpcRequestHandler(
           // `chat.sendMessage` drops a repeat of a `clientSendId` it has seen.
           // A client retries a send of unknown outcome only against this.
           clientSendDedupe: true,
+          // `ade/actions/call` takes `backgroundJob: { id, waitMs }`: a long
+          // action runs once per id, and a call sent again joins it.
+          backgroundActionJobs: true,
+          // `chat.saveTempAttachmentPart` takes a paste in parts, each safe to
+          // send again. A client without it sends one `saveTempAttachment`.
+          chatAttachmentParts: true,
           // `chat.createSessionAndSend` makes a new chat and sends its first
           // message in one call. A client without it makes two calls.
           chatCreateAndSend: true,
@@ -4946,6 +4959,27 @@ export function createMultiProjectRpcRequestHandler(
         actionEnvelope,
         queryArgs: actionArgs,
       });
+    }
+
+    const jobParam = actionEnvelope && actionDomain && actionName ? params[BACKGROUND_JOB_PARAM] : null;
+    const jobId = jobParam && typeof jobParam === "object" && !Array.isArray(jobParam)
+      && typeof (jobParam as { id?: unknown }).id === "string"
+      ? (jobParam as { id: string }).id.trim()
+      : "";
+    if (jobId && jobId.length <= 128 && actionDomain && actionName && !childWakeTokenFromCaller) {
+      // Followed by job id: started once for this id, joined by a call sent again.
+      const { [BACKGROUND_JOB_PARAM]: _job, ...jobless } = forwardedParams as Record<string, unknown>;
+      const jobEntry = await handlerFor(projectId);
+      const outcome = await backgroundActionJobs.run({
+        key: `${projectId}\u0000${jobId}`,
+        fingerprint: backgroundJobFingerprint(actionDomain, actionName, actionArgs),
+        waitMs: Number((jobParam as { waitMs?: unknown }).waitMs) || 0,
+        start: () => jobEntry.handler({ ...request, params: jobless as typeof forwardedParams }),
+      });
+      if (outcome.state === "running") {
+        return { ok: true, domain: actionDomain, action: actionName, result: null, backgroundJob: { id: jobId, state: "running" } };
+      }
+      return outcome.value;
     }
 
     const entry = await handlerFor(projectId);

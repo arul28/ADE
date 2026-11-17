@@ -239,6 +239,7 @@ export const IPC = {
     "ade.remoteRuntime.connectionSnapshotChanged",
   remoteRuntimeSaveTarget: "ade.remoteRuntime.saveTarget",
   remoteRuntimeSetAutoConnect: "ade.remoteRuntime.setAutoConnect",
+  remoteRuntimeSetSlowLinkMode: "ade.remoteRuntime.setSlowLinkMode",
   remoteRuntimeRemoveTarget: "ade.remoteRuntime.removeTarget",
   remoteRuntimeGetSshHostKeyTrust:
     "ade.remoteRuntime.getSshHostKeyTrust",
@@ -564,6 +565,7 @@ export const IPC = {
   computerUseUpdateArtifactReview: "ade.computerUse.updateArtifactReview",
   computerUseReadArtifactPreview: "ade.computerUse.readArtifactPreview",
   computerUseMediaBaseUrl: "ade.computerUse.mediaBaseUrl",
+  computerUseMediaSize: "ade.computerUse.mediaSize",
   computerUseSaveMediaAs: "ade.computerUse.saveMediaAs",
   computerUseEvent: "ade.computerUse.event",
   iosSimulatorGetStatus: "ade.iosSimulator.getStatus",

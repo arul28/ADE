@@ -1,3 +1,4 @@
+import { normalizeSlowLinkPreference } from "../../../shared/slowLinkMode";
 import { app, BrowserWindow, powerMonitor, type WebContents } from "electron";
 import { createTrustedIpcHandle } from "./trustedRendererSender";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
@@ -546,6 +547,8 @@ export type RuntimeBridgeRegistration = {
   removeTargetsForMachine(machine: { machineKey: string | null; hostname: string | null }): string[];
   /** One chunk of a proof file on a paired computer, for the media server. */
   readRemoteArtifactRange: RemoteArtifactRangeReader;
+  /** The last measured round trip to a connected machine, or null. */
+  remoteLinkRoundTripMs: (targetId: string) => number | null;
   /**
    * Machine-scoped RPC to an already-paired target, for main-process callers
    * that have no project binding — account-wide usage, which asks each machine
@@ -863,6 +866,7 @@ export function registerRuntimeBridge({
       return ids;
     },
     readRemoteArtifactRange,
+    remoteLinkRoundTripMs: (targetId: string) => remoteConnectionService.linkRoundTripMs(targetId),
     callMachineMethod: <T,>(
       targetId: string,
       method: string,
@@ -1434,6 +1438,18 @@ export function registerRuntimeBridge({
         arg,
       );
       return remoteConnectionService.saveTarget(arg, discovered);
+    },
+  );
+
+  handle(
+    IPC.remoteRuntimeSetSlowLinkMode,
+    async (
+      _event,
+      arg: { id?: string; mode?: unknown },
+    ): Promise<RemoteRuntimeTarget> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      if (!id) throw new Error("Remote target id is required.");
+      return remoteConnectionService.setSlowLinkMode(id, normalizeSlowLinkPreference(arg?.mode));
     },
   );
 

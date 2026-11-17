@@ -1,6 +1,8 @@
 import type { ProjectIcon } from "./core";
 import type { SyncPairingHostIdentity } from "./sync";
 
+import type { SlowLinkPreference, SlowLinkStatus } from "../slowLinkMode";
+
 export type RemoteRuntimeTransportKind = "ssh" | "paired";
 
 export type RemoteRuntimePairedMachineReference = {
@@ -40,6 +42,8 @@ export type RemoteRuntimeTarget = {
   lastConnectedAt: number | null;
   /** Whether ADE should reconnect this machine automatically on launch. */
   autoConnect?: boolean;
+  /** Slow-connection mode for this machine: "auto" (absent) follows the measured link. */
+  slowLinkMode?: SlowLinkPreference;
   /** @deprecated Retained while migrating pre-autoConnect records. */
   manuallyDisconnectedAt?: number | null;
 };
@@ -362,6 +366,8 @@ export type RemoteRuntimeConnectionStatus = {
   connectedAt: number | null;
   /** See `RemoteRuntimeConnectResult.hostStall`. Cleared by a clean reconnect. */
   hostStall?: RemoteRuntimeHostStall | null;
+  /** Slow-connection mode for this connection (`shared/slowLinkMode.ts`). Absent until measured. */
+  slowLink?: SlowLinkStatus;
   /** Live: set and cleared by the machine's status pushes while connected. */
   hostStorageWait?: RemoteRuntimeHostStorageWait | null;
   /**
@@ -499,6 +505,10 @@ export type RemoteRuntimeCapabilities = {
   machineProjects: Partial<Record<RemoteRuntimeMachineProjectCapability, boolean>>;
   /** `chat.sendMessage` recognizes a repeat of a `clientSendId`. Absent on an older brain. */
   clientSendDedupe?: boolean;
+  /** The brain runs `chat.saveTempAttachmentPart` (a paste in parts). Absent on an older brain. */
+  chatAttachmentParts?: boolean;
+  /** `ade/actions/call` takes `backgroundJob` (a long action followed by id). Absent on an older brain. */
+  backgroundActionJobs?: boolean;
   /** The brain runs `chat.createSessionAndSend` (a new chat and its first message in one call). Absent on an older brain. */
   chatCreateAndSend?: boolean;
   /** The chat launch kinds the brain runs (`CHAT_LAUNCH_KINDS`). Absent on an older brain. */

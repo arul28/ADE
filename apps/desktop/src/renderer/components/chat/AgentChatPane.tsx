@@ -246,6 +246,7 @@ import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
 import { beginChatSendTiming, noteChatSendBubbleShown, noteChatSendTimingEvent, type ChatSendTimingHandle } from "./chatSendTiming";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ChatMachineWakeBanner, ChatMachineWakeProvider } from "./useChatMachineWake";
+import { ChatSlowLinkChip } from "./ChatSlowLinkChip";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
@@ -5646,6 +5647,13 @@ export function AgentChatPane({
   const paneMountedRef = useRef(true);
   /** Pending checks for sends whose call timed out (see the submit path); cleared on unmount. */
   const sendRecoveryTimersRef = useRef<Set<number>>(new Set());
+  /**
+   * The last send whose arrival is not confirmed: its chat, its words and
+   * files, and the client id it went out with. Sending the same words and
+   * files to the same chat again reuses the id, so a message that did reach
+   * the chat's machine before the link dropped is not written twice there.
+   */
+  const unconfirmedSendRef = useRef<{ sessionId: string; key: string; clientSendId: string } | null>(null);
   /**
    * A send's list update (the chat's recency and running state), held until
    * the frame with the bubble and the cleared composer is drawn. Anything that
@@ -16385,6 +16393,8 @@ export function AgentChatPane({
     // Set once the message is handed to the chat, so a transport timeout can
     // tell "may still arrive" from "never left".
     let handedOff: { sessionId: string; submittedAt: string; texts: string[]; alreadyThere: number } | null = null;
+    // The send's chat, words and client id, once a send (not a steer) went out.
+    let sendIdentity: { sessionId: string; key: string; clientSendId: string } | null = null;
     try {
       let justCreatedSession = false;
       let finalText = composedWithVisualContext.text;
@@ -16596,9 +16606,19 @@ export function AgentChatPane({
             sessionProvider === "claude" ? interactionMode : null;
           sendTiming.attach(sessionId);
           sendTiming.mark("sendCalled");
+          const sendKey = JSON.stringify([finalText, selectedAttachments.map((attachment) => attachment.path)]);
+          const unconfirmed = unconfirmedSendRef.current;
+          sendIdentity = {
+            sessionId,
+            key: sendKey,
+            clientSendId: unconfirmed?.sessionId === sessionId && unconfirmed.key === sendKey
+              ? unconfirmed.clientSendId
+              : globalThis.crypto?.randomUUID?.() ?? `send-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+          };
           await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.send({
             sessionId,
             clientSubmittedAtMs: sendTiming.enterAtMs,
+            clientSendId: sendIdentity?.clientSendId,
             text: finalText,
             ...(compactFirst.sendRef.current?.sessionId === sessionId ? { compactFirst: compactFirst.sendRef.current.value } : {}),
             displayText: hasPastedPrompt
@@ -16613,6 +16633,7 @@ export function AgentChatPane({
             ...(sessionProvider === "cursor" ? { runtime: cursorRuntime } : {}),
           }, chatPin));
           sendTiming.mark("sendResolved");
+          unconfirmedSendRef.current = null;
         } catch (sendError) {
           // Race condition: the turn may have started between our state check
           // and the backend call. If so, automatically fall back to steer
@@ -16677,7 +16698,11 @@ export function AgentChatPane({
       // One plain sentence: a pinned call's failure arrives inside Electron's
       // "Error invoking remote method '…': <Class>Error:" wrapper.
       const message = stripElectronErrorWrapper(submitError instanceof Error ? submitError.message : String(submitError));
-      if (handedOff && isRuntimeTransportTimeoutError(submitError)) {
+      // Not confirmed: the same words sent again to this chat reuse the id.
+      if (sendIdentity) unconfirmedSendRef.current = sendIdentity;
+      // A timeout, or a link that dropped after the message left: the chat's
+      // machine may still have it. Wait for it rather than handing it back now.
+      if (handedOff && (isRuntimeTransportTimeoutError(submitError) || isRemoteOutcomeUnknownError(submitError))) {
         // The call gave up, not the send: the chat's machine usually still
         // delivers it. Put the text back only if it never shows up.
         const pending = handedOff;
@@ -20842,6 +20867,7 @@ export function AgentChatPane({
       <StatusStrip className="min-w-0 flex-1">
         {lifecyclePill}
         {usageLimitChip}
+        <ChatSlowLinkChip />
         <LaneBranchComposerChip laneId={composerDriftLaneId} />
         {compactFirstChip}
         {mcpRefreshChip}

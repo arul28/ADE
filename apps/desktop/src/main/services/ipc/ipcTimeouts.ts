@@ -155,6 +155,7 @@ const CLOUD_LANE_WORK_CHECK_IPC_TIMEOUT_MS = 6 * 60_000;
 /** A cloud lane's free: a wake, the push, the check again (3 minutes each at most), then the delete. */
 const CLOUD_LANE_FREE_IPC_TIMEOUT_MS = 12 * 60_000;
 const REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS = 75_000;
+const REMOTE_ATTACHMENT_MAX_TIMEOUT_MS = 10 * 60_000;
 
 function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
   const request = readRuntimeActionRequest(args);
@@ -171,7 +172,21 @@ function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
 function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null {
   const request = readRuntimeActionRequest(args);
   if (!request?.action) return null;
-  return isReplaySafeAdeAction(request.domain, request.action)
+  if (isReplaySafeAdeAction(request.domain, request.action)) return REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS;
+  const payload = isRecord(args[0]) && isRecord(args[0].request) ? args[0].request : null;
+  // A paste goes in parts on a slow link (`sendAttachmentInParts`), and each
+  // part may go again after a drop. Its room grows with its size: 16 KB/s,
+  // about 128 kbit/s, is a slow satellite uplink.
+  if (request.domain === "chat" && request.action === "saveTempAttachment" && isRecord(payload?.args)) {
+    const encoded = typeof payload.args.data === "string" ? payload.args.data.length : 0;
+    return Math.min(REMOTE_ATTACHMENT_MAX_TIMEOUT_MS, REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS + Math.ceil(encoded / 16));
+  }
+  // A chat send with a client id goes out again after a reconnect
+  // (`isDedupedChatSend`), so it gets the same room as a replay-safe read.
+  const sendArgs = request.domain === "chat" && request.action === "sendMessage" && isRecord(payload?.args)
+    ? payload.args
+    : null;
+  return typeof sendArgs?.clientSendId === "string" && sendArgs.clientSendId.trim()
     ? REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS
     : null;
 }

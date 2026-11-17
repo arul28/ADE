@@ -4460,6 +4460,13 @@ function AgentChatComposerImpl({
         setAttachError("Clipboard image was not attached because the selected project or machine changed. Paste it again.");
         return;
       }
+      // The picture shows at once. On a slow link to the chat's machine the
+      // upload below can take a while, and an empty tile reads as "nothing
+      // happened".
+      const localPreview = `data:${image.mimeType};base64,${image.data}`;
+      setPendingImageAttachments((current) => current.map((entry) => (
+        entry.id === pendingImage.id ? { ...entry, previewUrl: localPreview } : entry
+      )));
       const { path: tempPath } = await withChatPin(attachmentApiPin, (chatPin) => attachmentApi.saveTempAttachment({
         data: image.data,
         filename: image.filename || "clipboard.png",
@@ -4473,7 +4480,7 @@ function AgentChatComposerImpl({
         cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
         return;
       }
-      rememberPreviewUrl(tempPath, `data:${image.mimeType};base64,${image.data}`);
+      rememberPreviewUrl(tempPath, localPreview);
       onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, image.mimeType) });
       queueAttachmentChip(tempPath, chipPlacement);
       dropPendingImageAttachment(pendingImage.id);

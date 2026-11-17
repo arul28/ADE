@@ -189,6 +189,7 @@ function coerceTarget(value: unknown): RemoteRuntimeTarget | null {
       : typeof record.lastConnectedAt === "number" && Number.isFinite(record.lastConnectedAt)
         && !(typeof record.manuallyDisconnectedAt === "number" && Number.isFinite(record.manuallyDisconnectedAt)),
     manuallyDisconnectedAt: typeof record.manuallyDisconnectedAt === "number" && Number.isFinite(record.manuallyDisconnectedAt) ? record.manuallyDisconnectedAt : null,
+    ...(record.slowLinkMode === "on" || record.slowLinkMode === "off" ? { slowLinkMode: record.slowLinkMode } : {}),
   };
 }
 

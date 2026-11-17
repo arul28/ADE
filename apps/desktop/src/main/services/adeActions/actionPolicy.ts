@@ -1032,6 +1032,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "reloadClaudePlugins",
     "rewindFiles",
     "saveTempAttachment",
+    "saveTempAttachmentPart",
     "copyTempAttachment",
     // The paired desktop's ticket mint for the streamed HTTP upload route.
     // `remoteConnectionService.uploadChatAttachment` calls it by string over

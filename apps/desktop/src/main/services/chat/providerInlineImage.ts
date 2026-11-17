@@ -185,6 +185,41 @@ async function fitImage(bytes: Buffer, declaredMediaType: string): Promise<Provi
   }
 }
 
+/**
+ * A smaller copy of a PNG or JPEG for showing on another computer: at most
+ * `maxEdgePx` on its long edge, JPEG at `quality`. Null when no smaller copy
+ * helps or is safe: not a PNG or JPEG ADE decodes, too many pixels, an
+ * interlaced PNG, a picture with transparency (JPEG has none), or a copy that
+ * saves less than a fifth of the bytes. The caller then shows the original.
+ */
+export async function encodeDisplayImage(
+  bytes: Buffer,
+  maxEdgePx: number,
+  quality: number,
+): Promise<{ data: Buffer; mediaType: "image/jpeg"; width: number; height: number } | null> {
+  const mediaType = sniffImageMimeType(bytes);
+  const isPng = mediaType === "image/png";
+  if (!isPng && mediaType !== "image/jpeg") return null;
+  const dims = imageDimensions(bytes);
+  if (!dims || dims.width * dims.height > MAX_DECODE_PIXELS) return null;
+  // Already within the edge: the original is shown as it is, never re-encoded.
+  if (Math.max(dims.width, dims.height) <= maxEdgePx) return null;
+  if (isPng && bytes[28] === 1) return null;
+  try {
+    await yieldToEventLoop();
+    const decoded = isPng ? decodePng(bytes) : decodeJpegRgba(bytes);
+    if (decoded.hasAlpha) return null;
+    await yieldToEventLoop();
+    const scaled = await resizeToLongEdge(decoded, Math.min(maxEdgePx, Math.max(decoded.width, decoded.height)));
+    await yieldToEventLoop();
+    const data = encodeJpegRgba(scaled, quality);
+    if (data.byteLength > bytes.byteLength * 0.8) return null;
+    return { data, mediaType: "image/jpeg", width: scaled.width, height: scaled.height };
+  } catch {
+    return null;
+  }
+}
+
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
