@@ -934,6 +934,9 @@ ade cloud push-work --check --json                # the same check; without --ch
 ade cloud resize --request --size large --reason "…"  # ask the person to change this computer's size: a card in the chat, nothing changes; an agent with nobody there cannot resize
 ade cloud resize --free 8 --reason "…"            # grow the disk of the ADE Cloud computer this runs on to fit 8 GB more free (or --disk <GB>): inside the plan with no card; paid extra disk asks a watched chat, or follows the agent limits; restarts the computer, and the chat continues after it
 ade cloud limits --extra-disk 10                  # the paid extra disk agents nobody watches may use a month ($10; none; limit = up to your extra-disk limit)
+ade cloud prepare-stop --json                     # ADE Cloud, run by the server before a stop: interrupts running turns and CLIs, saves the chats, then copies and Git summaries; prints interruptedChats, interruptedClis, stillRunning, chatsUploaded, chatsNotUploaded, sessionsSaved, gitSaved, timedOut
+ade cloud save-for-rest --capsules --json         # ADE Cloud, run by the server's idle cleanup: saves shell and CLI copies, Git summaries, subagent copies and event wakes; --capsules adds the fork capsules a continue needs; prints ok, capsules, sessions, git, skipped, and error when the time ran out
+ade cloud messages drain --json                   # ADE Cloud, run by the server after a wake: sends the messages queued for this computer's chats and CLIs, in order, each once
 ade usage snapshot --text                          # live quota headroom per window, the account it belongs to, and the provider limits link
 ade usage stats --range 7d --text                  # tokens, cost, and activity for a range
 ade usage stats --scope account --text             # merged across every machine on the account

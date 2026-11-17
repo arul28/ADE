@@ -1,28 +1,18 @@
-# Settle teardown — design
+# Settle: the settling window and the settle writer
 
-**Status: superseded (2026-10-30). Settle no longer stops anything.** The
-product decision changed: settle is a classification, not a stop. A settled
-chat keeps its background shells, subagents, cloud runs, scheduled wakes and
-crons running; a working chat cannot be settled; and any turn start (including
-a scheduled wake) takes a chat out of settled. See §7 for what changed. The
-settling window, lifecycle revision and chokepoint (§3a–§3c) still carry every
-settle; the teardown steps (§6b), residue (§6c) and the per-source interrupt
-policy (§3c-iv) were removed.
+**Current behavior.** Settle is a classification, not a stop. A settled chat
+keeps its background shells, subagents, cloud runs, scheduled wakes and crons
+running. A working chat cannot be settled, and any turn start (a scheduled wake
+too) takes a chat out of settled. Section 7 lists the rules.
 
-The rest of this document records the stop-on-settle design as it shipped in
-#1069, #1073 and #1075, and why it was hard. It is kept because the races it
-catalogues still apply to anything awaited inside the settling window.
+These parts carry every settle: the one settle writer (§3a), the settling
+window (§3b), the rule for a turn that arrives during it (§3c) and host
+authority for the settle columns (§3c-i, §6d). The teardown steps (§6b), the
+residue (§6c) and the interrupt policy (§3c-iv) describe the stop-on-settle
+design that ADE removed; read them only for the races they name, which still
+apply to anything awaited inside the settling window.
 
-This document exists because the obvious implementation — "await teardown, then
-write `settled_at`" — was built, reviewed six times, and cut in PR #1059. It
-produced a real P1 every round. The failure was never a missing null check; it
-was that an **async teardown cannot be bolted onto a lifecycle column that seven
-call paths write and clear synchronously**. What follows is the inventory that
-makes that concrete, the races it implies, and a design that removes the class
-rather than patching instances.
-
-Companion reading: `README.md` (canonical phase, settle semantics),
-`../../playbooks/ship-lane.md` (how the six rounds were surfaced).
+Companion reading: `README.md` (canonical phase, settle semantics).
 
 ---
 
@@ -759,7 +749,7 @@ asserted separately, against the same shape the apply layer now produces.
 
 ---
 
-## 7. Settle stops nothing (2026-10-30)
+## 7. Settle stops nothing
 
 The owner's rule: *settling a chat only files it out of the way. If it has
 background jobs, scheduled jobs or anything else, all of it keeps working. If

@@ -142,9 +142,9 @@ extension and releases its handles immediately, including on Windows.
 | `apps/desktop/src/renderer/components/app/toast/useAutoDiagnosticsToast.ts` | The renderer half of the delivery contract: subscribes, asks for the outstanding notices (`IPC.diagnosticsFlushAutoSent`), raises the *"A diagnostic report was sent to ADE"* toast with **View**, and only then acknowledges it (`IPC.diagnosticsAckAutoSent`). Mounted from `AppShell.tsx`. |
 | `apps/desktop/src/renderer/components/app/errorSurfaceKit.tsx` | Shared parts for the full-screen error surfaces, built on the surface kit (`.kit-card`, `.kit-tag`, `.kit-btn`) — `ErrorSurfaceCard`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON` — so the recovery screen, the renderer/page boundaries and the CTO wake failure keep the raw text behind a fold and the plain-language account on top, and read on light themes and over a picture. |
 | `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | The continuity notice as the chat draws it: a quiet "Reconnecting…" line while ADE recovers by itself, a quiet "Reconnected" line after, and only when that failed an inline `Banner` with one recommended action ("Try again") and "Start a new chat". `AgentChatMessageList` renders it in place of a plain notice chip when a `system_notice` event's `detail.kind` is `"continuity_recovery"`; `foldSelfHealedFailures` in `selfHealedFailureLines.ts` keeps only the newest notice per lost thread, hides the hand-off message, and drops the failed turns once the thread is back (a "not found" error is dropped only when the next continuity notice after it is a thread that came back). |
-| `apps/desktop/src/renderer/components/settings/StorageSection.tsx` | Project → Storage & cleanup → Space: storage dashboard, plain-language lane cleanup rules, last/next safety-scan status, and a review table for archived lanes, orphaned worktrees, DerivedData, and build output with ownership, age, blocked reasons, and reclaim estimates. Archive & Reclaim has a typed confirmation and explains exactly what stays and what restore recreates. The page also keeps the category totals, Health & diagnostics strip, project-database breakdown, cleanup preview, recent-cleanups journal, and manual history compression; storage accounting includes ADE temporary files. |
-| `apps/desktop/src/renderer/components/settings/storage/StorageDiagnostics.tsx` | The "Health & diagnostics" strip: four tiles — database size (with a journal-fed sparkline + trend arrow), background-service resident memory, slow responses in 24 h (from `getRuntimeHealth`), and last cleanup — plus the overall health chip. Deep-linked as `#diagnostics` from the top-bar load pill. |
-| `apps/desktop/src/renderer/components/settings/storage/StorageMaintenanceJournal.tsx` | Collapsible "Recent cleanups" panel rendering the last runs from the maintenance journal, one humanized line per action. |
+| `apps/desktop/src/renderer/components/settings/health/HealthSpace.tsx` | The storage part of Settings: category totals, the project-database breakdown, the cleanup preview, Archive & Reclaim with its typed confirmation, and manual history compression. One storage result shows at a time; a new one replaces the last. Storage accounting includes ADE temporary files. |
+| `apps/desktop/src/renderer/components/settings/health/HealthService.tsx` | Computer → ADE service: how the background service on this computer is doing (its calls over the last day, slow and failed apart, with the p95 of the slow ones; its memory against the computer's; the computer's load; Repair). It reads only this computer over IPC, so another machine's page says so. |
+| `apps/desktop/src/renderer/components/settings/health/HealthCleanups.tsx` | The recent cleanups from the maintenance journal, the lane check (one sentence per lane the lane rules looked at), and what the build output rule removed. |
 | `apps/desktop/src/renderer/components/settings/storage/storageUiConstants.ts` | Shared presentational constants (`STORAGE_BRAND`, `PANEL_STYLE`) for the section shell and the split-out diagnostics/journal components, so they share styling without a circular import. |
 | `apps/desktop/src/renderer/components/settings/storage/StorageCleanupDialog.tsx` | Preview-confirmed cleanup dialog: lists selected removable items with sizes, surfaces blocked paths and reasons, and only enables Remove once a fresh preview is in hand. Its failure state is phase-aware — failing to *look* and failing to *remove* leave the disk in different states and call for different next steps — and it carries a Try again that re-runs the preview. Overlapping previews are retired by request id, so a stale answer cannot paint over a fresh one or drag a settled dialog back to "error". Also hosts the itemized "Clean up safely" plan and its `runMaintenance` path. |
 | `apps/desktop/src/renderer/components/settings/storage/storageView.ts` | Pure, DOM-free presentation + policy helpers. Category metadata/order/hues, safety labels, and `buildCleanupTarget` / `cleanableEntries` / `groupLaneItems` map a snapshot item to a typed `StorageCleanupTarget`. The overhaul adds the diagnostics/maintenance view-model: `dbBreakdownRows`, `buildSafeCleanupPlan`, journal/db-size-sparkline/trend helpers, `daemonMemoryBytes`, `healthChip`, `formatSlowActions`, and `categoryPolicyChip` — each degrading to a sensible "not available" value so the UI renders against an older daemon that never sends `extras`. |
@@ -341,6 +341,26 @@ Size: the record holds at most 50 roots, the pid and the time; each list at
 most 200 entries of session id and flags; the intent about 100 bytes. No
 prompt or transcript text is stored.
 
+### What an ADE Cloud computer keeps off the computer
+
+An ADE Cloud computer can be deleted, so its brain keeps the account server's
+copy current (see [On an ADE Cloud computer](../remote-runtime/README.md#on-an-ade-cloud-computer)).
+These small files record what the server already has, so a restart does not
+send everything again and a crash does not send a message twice:
+
+| File | What it records |
+|---|---|
+| `<project>/.ade/cloud/saved-chats.json` | Each chat's last uploaded part, the deletes the server has not confirmed, and each parent chat's subagent copies (a parent delete removes them too). |
+| `<ADE home>/cloud/rest-save.json` | The marks of the shell and CLI copies, Git summaries, capsules, subagent copies and event-wake topics already saved. |
+| `<ADE home>/cloud/chat-messages.json` | The queue drain's journal: each claimed message, and whether it was sent. |
+| `<ADE home>/cloud/git-identity.json` | The commit identity the brain set. |
+| `<ADE home>/account-lanes.json` | The account lane index set last sent. |
+
+Each file is written to a temporary file and renamed, with mode 0600. A file
+that is missing or unreadable makes the brain start over: the server answers a
+part it already has without a second write, and a message the journal does not
+know is claimed and sent once.
+
 ### Typed project-open recovery
 
 Database/runtime failures use `AdeRecoveryErrorCode` rather than renderer
@@ -535,9 +555,9 @@ banner in the `app` band: the cause, then **Fix it** →
 `app.restartBackgroundService` → `restartBrain()` — the forced service
 reinstall, the wait for the endpoint and the ping — and its outcome is real: it
 resolves only once the new service answers (a success toast, and the refused
-project opens again), and a rejection moves the ladder on. It used to call
-`account.repairSession`, which is the sign-in repair; that stays on the
-account and sync surfaces where the stored session is the problem. With
+project opens again), and a rejection moves the ladder on. The sign-in repair
+(`account.repairSession`) stays on the account and sync surfaces, where the
+stored session is the problem. With
 "Allow in the Background" off it offers Open System Settings, re-reads the
 service every 3 s, and runs Fix it once the switch is on. The banner clears when
 the pool connects to the primary service again.
@@ -657,9 +677,9 @@ one another brain on the same home wrote, and not one a kill already started
 from), so the next start reports no wedge. The breadcrumb names its writer's
 `pid`: a brain starting on the same home while that writer is alive and the
 file is under 2 minutes old leaves it alone, so a live wait is never counted
-as a crash (or against a project's open strikes). On 2026-11-13 a Mac Studio
-with 12.6 of 13.3 GB of swap in use froze the brain for 35 s while it paged,
-and the old rule killed it and every Claude Code session and subagent under it.
+as a crash (or against a project's open strikes). A brain that pages under
+heavy swap can freeze for tens of seconds; a kill then would also end every
+Claude Code session and subagent under it.
 
 The Node report is written by the main thread, which is the stuck one, so it
 only lands if the loop frees up inside the grace. On macOS the worker therefore
@@ -855,9 +875,8 @@ process as an unhandled rejection. Services whose async work can outlive the
 drain (the sync status snapshot, the PR poller and PR watch) check their
 disposed flag after each await, because the database they read next is closed.
 
-`runtime.dispose` is the same `drain()`. It used to be a hand-maintained list of
-`swallow(...)` calls parallel to the acquisitions, and a list like that drifts
-the first time somebody adds a service and updates only one of the two places.
+`runtime.dispose` is the same `drain()`, so a new service cannot be acquired
+without its release.
 
 ### Disk pressure and enforcement
 
@@ -1134,9 +1153,8 @@ explicit `review_first` action; it is not part of automatic safe cleanup.
 
 ### Chat transcripts: one copy
 
-Builds before this wrote every chat event twice: to the session row's
-`transcripts/<id>.chat.jsonl` (capped at 8 MB) and to the dedicated
-`transcripts/chat/<id>.jsonl`. Now only the dedicated file is written. The row
+ADE writes each chat event once, to `transcripts/chat/<id>.jsonl`. Older builds
+also wrote the session row's `transcripts/<id>.chat.jsonl` (capped at 8 MB). The row
 still names the legacy path, because `terminal_sessions.transcript_path` syncs
 to peers and older builds. Readers that start from the row
 (`sessionService.readTranscriptTail`, `ctoStateService`, `archiveService`)
@@ -1228,8 +1246,8 @@ tracks them, and which folder holds them. *Review in Storage* opens this page.
 Every answer snoozes it for two weeks for that project. Nothing is deleted
 without the confirm dialog.
 
-**Chats from deleted lanes.** Deleting a lane deletes its chats' session rows
-but used to leave their transcripts. Settings › Storage › Details lists them
+**Chats from deleted lanes.** Older builds deleted a lane's chat rows but left
+their transcripts. Settings › Storage › Details lists them
 as one review-first row with a count and size. Remove… previews and confirms
 like every other cleanup. It then deletes exactly the previewed files, one by
 one: the dedicated transcript, the legacy copy, the `cache/chat-sessions`

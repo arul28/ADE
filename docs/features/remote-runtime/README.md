@@ -22,6 +22,21 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 
 - `apps/desktop/src/main/services/adeCloud/` — ADE Cloud
   (the provider seam, New ADE Cloud machine, half-made box cleanup); see [ADE Cloud](../ade-cloud/README.md).
+- `apps/ade-cli/src/services/cloudChats/` — the brain's side of ADE Cloud with
+  no computer awake (see [On an ADE Cloud computer](#on-an-ade-cloud-computer)):
+  `cloudChatUploader.ts` (saved chat parts and subagent copies),
+  `cloudRestSave.ts` (copies, Git summaries, capsules and event wakes before a
+  rest), `cloudChatMessageQueue.ts` and `chatIdleWait.ts` (the queue drain),
+  `cloudChatRestore.ts` (fork-continue of a chat or a CLI).
+- `apps/ade-cli/src/services/account/cloudBootLaunch.ts` — a server launch on a
+  new cloud computer, with its sign-in wait (`cloudLaunchSignInWait.ts`) and the
+  continue of a saved chat; `accountLaneIndexPublisher.ts` — the account lane
+  index.
+- `apps/ade-cli/src/services/power/cloudPrepareStop.ts` — `ade cloud
+  prepare-stop`; `cloudKeepAwake.ts` — the idle step, the rest save before a
+  sleep, and the drain on a wake.
+- `apps/ade-cli/src/services/github/cloudGitIdentity.ts` — the commit identity
+  of a cloud computer.
 
 - `apps/desktop/src/main/services/remoteRuntime/remoteBrainStart.ts` — who asked
   for a connect (`user` or `background`), the `ade brain start` command for a
@@ -283,8 +298,8 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction).
   The pool's own opportunistic service repair is now both throttled and
   suppressible. `serviceRepairBackoffMs` spaces attempts at 0 / 5 s / 15 s /
-  30 s / 60 s, capped at one a minute, because a mismatched runtime previously
-  spawned one installer per connect attempt — that is per failing action poll.
+  30 s / 60 s, capped at one a minute, so a mismatched runtime does not start
+  one installer per connect attempt.
   `beginUpdateWindow` / `endUpdateWindow` suppress repair entirely for at most
   `LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS` (2 minutes) while an update is applying,
   and connects refused during it get
@@ -303,9 +318,8 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `runServiceManagerCommand` child-process boundary (spawn, output
   accumulation, single-settle latch, timeout kill, output parse) and differ only
   in the policy applied to the result. Install is bounded at
-  `RUNTIME_SERVICE_START_WAIT_MS` (90 s) and uninstall at 20 s: a wedged
-  installer used to pin `serviceInstallPromise` forever, which blocked every
-  later install and left Repair spinning, but the budget errs long because it
+  `RUNTIME_SERVICE_START_WAIT_MS` (90 s) and uninstall at 20 s, so a wedged
+  installer never holds `serviceInstallPromise` for good. The budget errs long because it
   has to cover the installer's own handover wait — a child killed at this
   deadline reads as a failed install even when the supervisor's replacement is
   coming up. The parsed result carries `starting` and `restarted` through to
@@ -420,18 +434,12 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   reports the same window as `brain_starting` (no Repair offered; the recovery
   screen re-diagnoses every 2 s and reopens the project itself once healthy),
   and `repair()` streams each step to the window via `IPC.recoveryRepairStep`
-  so a long restart wait reads as progress, not a hang. Before this, a 10 s
-  handover budget expired against healthy-but-slow brains on cold or slower
-  machines, the update transaction reported "couldn't be set up", and the
-  recovery screen's Repair killed the brain that was seconds from ready.
+  so a long restart wait reads as progress, not a hang. Repair never kills a
+  healthy-but-slow brain that is still starting.
 - **Linux parity.** `ade` on Linux (headless brains, `install.sh` installs,
-  remote runtimes reached over SSH) goes through `installSystemdService`, which
-  before this used to write the unit, `enable --now`, `restart`, and report
-  success the moment systemd accepted the restart — no proof the replacement
-  ever answered and no way to say "installed, still starting". A remote
-  bootstrap then dialled a socket that was not up yet and read a
-  healthy-but-slow brain as a broken one. It now runs the same handover as
-  macOS: no-op when an unchanged unit already answers, wait rather than restart
+  remote runtimes reached over SSH) goes through `installSystemdService`. It
+  waits for proof that the new brain answers, and can say "installed, still
+  starting". It runs the same handover as macOS: no-op when an unchanged unit already answers, wait rather than restart
   a child younger than `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (vetoed by a crash-loop
   streak), and `starting`/`restarted`/`failureStep` on the way out.
 - **Windows: "still starting" needs proof of a supervisor.** The readiness
@@ -628,21 +636,20 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   process's `machines.connect`: this computer's own key, a saved connection, or
   a pairing through the account. One flight per machine key; a connect a person
   asked for waits for a background flight and then runs its own.
-  A machine that drops is **dimmed, not deleted**: its lanes and chats stay on
-  screen, collapsed and inert, with the offline form of the machine marker naming
-  it. Believing a drop takes a completed, failed reconnect attempt (`connecting`
-  observed, then a non-connected state) plus a 45 s floor, with a 120 s ceiling
-  for a dial that never finishes: every redial publishes `connecting` and a
-  single failed liveness ping flips a target to `error`, so a shorter rule dims
-  the sidebar on every wifi blip. Two states skip the wait for an attempt that is
-  never coming and dim on the floor alone — an `idle` target, which will not
-  redial at all, and a machine that is connected but cannot re-prove this
-  repository, which answers but is never read for it. The second is dimmed and
-  not removed: absence of proof is not proof of absence, and a project list that
-  has not caught up after a reconnect must not read as "the repo is gone". Coming
-  back is applied instantly, and the verdict survives a Work-tab remount — a
-  dimmed machine brightens only by becoming eligible again, never because the
-  runtime that held its drop record was torn down.
+  A machine that drops is **hidden, not deleted**: its lanes and chats leave
+  the list and come back with their rows when it reconnects. An ADE Cloud
+  computer that is only asleep is not offline, so its rows stay listed.
+  A drop counts only after a completed, failed reconnect attempt (`connecting`
+  seen, then a non-connected state) plus a 45 s floor, with a 120 s ceiling for
+  a dial that never finishes. Every redial publishes `connecting`, and one
+  failed liveness ping sets a target to `error`, so a shorter rule would hide
+  the machine on every wifi blip. Two states skip the wait and count on the
+  floor alone:
+  - an `idle` target, which does not redial;
+  - a machine that is connected but cannot prove this repository again.
+  The second keeps its rows in the store: no proof is not proof that the repo
+  is gone. A return shows the rows at once. The verdict survives a Work-tab
+  remount.
   Rows leave for three reasons: the machine is gone from the connection snapshot
   (unpaired or removed), it positively reports the repository missing *and* there
   is a resolvable origin to prove that by, or it has been unreachable for 24
@@ -887,16 +894,13 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     oldest evicted first. A request carrying no usable id cannot be arbitrated
     and is let through, so an older daemon's unlabelled request stays answerable.
 
-    **The browser where the user sits.** The rule since 2026-10-13: an agent's
+    **The browser where the user sits.** An agent's
     `ade browser` commands run in the browser of the desktop that sent its chat
     the last message (see "Which desktop shows it" below), when that desktop is
     not on the agent's machine. A chat on a Windows PC, driven from a Mac
     Studio, works in the Mac Studio's browser: the user watches it in their own
     pane, the page uses their sign-ins, and the agent can take a tab they
-    attach. Before this only "show the user" opens crossed over; `observe`,
-    `click` and the rest ran in a browser on the agent's machine that the user
-    could not see and that held none of their tabs, and the agent could only
-    answer "I cannot see what you see".
+    attach.
 
     `BUILT_IN_BROWSER_METHOD_ROUTES` (`desktopBridgeMethods.ts`) gives every
     bridge method one route, and the compiler refuses a method without one:
@@ -997,8 +1001,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 
     On the desktop, three things say where a remote chat's browser is, and no
     more: the Browser card in the tools picker ends with `chat on <machine>`;
-    the floating preview pictures only a tab that chat owns (it used to fall
-    back to the person's own active tab); and "Attach to chat" works, with a
+    the floating preview pictures only a tab that chat owns; and "Attach to chat" works, with a
     sentence in the attached block telling the agent the tab is on the user's
     computer.
 
@@ -1273,14 +1276,10 @@ remote host's stable pairing identity, or losing its stored pairing grant,
 invalidates the saved paired credential and requires re-pairing; ADE does not
 silently attach old credentials to a different host identity.
 
-The next packaged release intentionally starts this trust model from a clean
-slate once per channel. It removes previously saved desktop remote targets and
-paired-device grants, restarts that channel's background runtime, and then lets
-users pair or adopt machines again. It does not sign the user out, change the
-machine identity/PIN, remove projects, or touch SSH configuration. Source/dev
-launches do not perform the reset.
-
-Opening a project on another machine no longer interrupts. The old confirmation dialog existed to warn that a *separate remote tab* was being created; under one-tab-per-repository there is no second tab, so the warning had nothing left to warn about. Divergence between two checkouts is surfaced where it can actually cost you something instead: at push time, when another machine holds the same branch with unpushed commits (`apps/desktop/src/shared/laneDivergence.ts`).
+Opening a project on another machine asks nothing: a repository is one tab.
+ADE warns about two checkouts that differ only at push time, when another
+machine holds the same branch with unpushed commits
+(`apps/desktop/src/shared/laneDivergence.ts`).
 
 ## One repository, many machines
 
@@ -1300,7 +1299,7 @@ page, and Run all follow it. Two things are deliberately wider than that:
   offline, two or more foreign machines are on screen, or the same branch exists
   elsewhere). Foreign lanes appear only when they have sessions — the union is
   about work in flight, not an inventory. A machine that goes offline keeps its rows,
-  dimmed, folded shut, and inert, and sinks below the reachable machines.
+  hidden until it reconnects (see the drop rule above).
   One session renders as exactly one row. The union is built against the ids the
   active binding's own roster already holds and carries a single claim set across
   machine slices, so neither a locally seeded optimistic launch nor two slices
@@ -1543,9 +1542,8 @@ field and reports `remote.brain_connection_lost`
 
 ### When the connect fails, the user reads one sentence
 
-A failed connect used to hand the user a list of routes. Four lines of
-`lan 192.168.1.24:8787: timeout` say nothing about what to do, and three of them
-are usually irrelevant noise around the one route that actually reached the
+A list of routes (`lan 192.168.1.24:8787: timeout`) says nothing about what
+to do, and most of its lines are noise around the one route that reached the
 machine and was rejected.
 
 The main process now classifies the attempts and picks the dominant cause,
@@ -1659,7 +1657,7 @@ responding (overloaded, asleep or off the network).
 
 ## Compatibility warnings
 
-Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays the capability warnings inline in the machine row. Warnings cover:
+Version skew and capability skew do not fail the connect. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays the capability warnings inline in the machine row. Warnings cover:
 
 - Runtime version mismatch, shown as the machine row's version chip (`X → Y`) rather than a sentence; the older machine is the one to update.
 - Remote package channel mismatch (e.g. desktop is `alpha`, remote runtime advertises `stable`).
@@ -1692,8 +1690,8 @@ artifact download fails in milliseconds rather than after a ~20 minute build),
 `validate-runtime-resources.mjs` before packaging (same diff plus the executable
 bit and archive-content checks), and the electron-builder `afterPack` hook.
 
-The consequence for SSH bootstrap is that a desktop no longer has a local copy
-of every runtime it might need to upload — see "Sidecar fetch fallback" below.
+For SSH bootstrap, a desktop does not have a local copy of every runtime it
+might need to upload — see "Sidecar fetch fallback" below.
 `win32-x64` is still not an SSH-bootstrap *target*; a Windows desktop bundles it
 for its own local brain.
 
@@ -1881,7 +1879,7 @@ tunnel.
 
 Local project bindings use the local ADE runtime for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, native GitHub stacks, PR issue-resolution launch flows, PR AI conflict-resolution sessions, issue inventory, tests, project config, and most git operations. Electron main still owns desktop-only services that physically require an Electron host.
 
-Removing or disconnecting a machine never closes a project that exists elsewhere. A project tab is the repo (see `docs/plans/unified-machines.md`), so its remote binding is only a default: when the machine goes away, the tab falls back to another checkout of the same repo — the local checkout first, then another connected machine — and only a repo that lives nowhere else closes. A disconnect keeps the tab and its view state, with the disconnected machine's lanes, chats, and terminals simply gone from the project; a remove does the same but also forgets the machine's saved details and remembered route. The Connections confirmation names which open tabs stay and which close.
+Removing or disconnecting a machine never closes a project that exists elsewhere. A project tab is the repo, so its remote binding is only a default: when the machine goes away, the tab falls back to another checkout of the same repo — the local checkout first, then another connected machine — and only a repo that lives nowhere else closes. A disconnect keeps the tab and its view state, with the disconnected machine's lanes, chats, and terminals simply gone from the project; a remove does the same but also forgets the machine's saved details and remembered route. The Connections confirmation names which open tabs stay and which close.
 
 ## A slow or dropping link
 
@@ -2235,8 +2233,7 @@ on its own replacement.
 Which updater runs depends on whether the host's desktop app is open. A brain
 served by an open app belongs to that app: the app re-registers its own runtime
 whenever it sees the brain go missing, so a standalone runtime installed under
-it is replaced again within milliseconds (on 2026-10-05 a Mac Studio's open app
-put 1.2.90 back 10 ms after a remote update installed 1.2.91). So the host asks
+it is replaced again within milliseconds. So the host asks
 first: the brain calls `app_update.install` on this machine's desktop bridge
 when an app answers there
 (`apps/ade-cli/src/services/runtime/desktopAppUpdateBridge.ts`). The app
@@ -2337,6 +2334,102 @@ while the user signs in again. Only a deliberate `signed_out` drops the tunnel.
 The relay control socket authenticates with machine credentials rather than the
 account token, so this costs nothing in reachability terms. Direct LAN and
 tailnet routes to a paired device never consulted account state at all.
+
+## On an ADE Cloud computer
+
+An ADE Cloud computer runs the same brain. On it the brain also keeps the
+account server up to date, so a person reads the lane with no computer awake.
+The server routes and caps are in
+[ADE Cloud with no computer of your own](../ade-cloud/README.md#ade-cloud-with-no-computer-of-your-own).
+Each part below runs only when `isAdeCloudComputer()` is true, except the
+account lane index, which every brain sends.
+
+### What the brain saves before it rests
+
+The rest save (`apps/ade-cli/src/services/cloudChats/cloudRestSave.ts`) runs
+these steps in order, four uploads at a time, inside one time budget:
+
+1. The chats' newest parts (`cloudChatUploader.ts`).
+2. Shell and CLI copies: the 50 newest terminals across the open projects. A
+   shell keeps its last 5,000 lines (2 MiB at most). A CLI keeps its stored
+   terminal screen when it fits, else its last lines. The text is redacted
+   first. A terminal with no new output since the last save is not sent again.
+3. A Git summary for each lane, when it changed.
+4. Fork capsules, only with `--capsules` (the delete path): Claude, Codex and
+   OpenCode chats, and Claude Code and Codex CLIs. A capsule over 20 MiB is
+   skipped, and the continue replays the saved transcript.
+5. Native subagent transcripts of Claude, Muse and OpenCode chats, as saved
+   chats under their parent (`parentChatId`, `spawnKind: "native_subagent"`).
+   The newest 20 subagents of each chat go, one part of at most 4 MiB each.
+   The idle step skips OpenCode, because its subagents are read through its
+   server.
+6. The event-wake topics (Linear workspaces and webhooks that a rule on this
+   computer acts on), only when the list changed.
+
+The save runs at three points:
+
+| When | Budget | Capsules |
+|---|---|---|
+| The idle step, before the computer sleeps (`cloudKeepAwake.ts`) | 60 s | no |
+| `ade cloud prepare-stop`, in the time left after the chats | what is left | no |
+| `ade cloud save-for-rest [--capsules]`, which the server's idle cleanup runs between push-work and the check | 225 s | with the flag |
+
+What the save already sent is kept in `<ADE home>/cloud/rest-save.json`. A
+disk copy under a new machine key saves everything again.
+
+### Messages that waited while it slept
+
+The queue drain (`cloudChatMessageQueue.ts`) runs 15 s after the brain starts,
+when the brain signs in, when the computer wakes, and when the server runs
+`ade cloud messages drain`. For each message it claims the
+message, sends it, and reports `delivered` or `failed`. A journal in
+`<ADE home>/cloud/chat-messages.json` makes sure a crash between the send and
+the report never sends a message twice. The messages of one chat go in order:
+a message that waits stops the rest of its chat.
+
+- **A chat.** The drain waits up to 30 minutes for the chat to be idle. If the
+  chat's provider is not signed in, the launch's sign-in card shows first. The
+  send carries `clientSendId` = the message id, so the written `user_message`
+  carries the same id.
+- **A CLI.** The drain types the text through the composer's CLI send path
+  (`typeIntoAgentCliWhenFree`, held until the CLI is free). That path waits
+  for the CLI's ready signal ([the turn signal table](../terminals-and-sessions/pty-and-sessions.md#exact-turn-status-for-agent-clis)):
+  Claude Code hooks, Codex 0.167+ OSC 7501, and output guesses (about 12 s of
+  quiet) for every other CLI. A busy CLI tries again at the next drain.
+  Attached files go into the text as a list of paths.
+- **A CLI that is gone** (the computer restarted) gets `failed` with "This CLI
+  isn't running on its computer any more (the computer restarted), so ADE
+  couldn't type the message. Open the CLI and send the message again."
+
+### A chat or CLI whose computer was deleted
+
+The server starts a continue launch on a new computer. The new brain makes the
+lane, then restores the chat or CLI with the same id
+(`cloudChatRestore.ts`). The restore reuses the cross-machine move
+destination; see
+[Continue on a new ADE Cloud computer](../sync-and-multi-device/cross-machine-session-handoff.md#continue-on-a-new-ade-cloud-computer).
+The brain holds the chat's uploads while it restores, then goes on from the
+server's last part.
+
+### Other account work
+
+- **The account lane index.** `accountLaneIndexPublisher.ts` sends each
+  project's lanes (name, branch, machine, PR number) to `/account/lanes`. A
+  lane or PR change makes one write 30 s later, so a burst makes one write. The
+  same set makes no write. The
+  last sent set is in `<ADE home>/account-lanes.json`. Every brain publishes,
+  not only cloud computers.
+- **Git identity.** `cloudGitIdentity.ts` sets `user.name` and `user.email` on
+  a cloud computer to the account's GitHub noreply identity, else
+  `ADE Cloud <cloud@users.noreply.ade-app.dev>`. It never writes over a value
+  a person set. Its record is `<ADE home>/cloud/git-identity.json`.
+- **Being deleted.** Once the server says the computer is being deleted, the
+  brain refuses new work with "This ADE Cloud computer is being deleted, so it
+  can't take new work. Its lane is saved; continue it on another computer."
+- **Provider logins.** The cloud computer gets the account's sign-ins, and
+  access-only copies of the logins in the subscription proxy
+  (`<ADE home>/proxy/auth`, without refresh tokens, `providerLoginCarry.ts`).
+  The proxy on the person's own computer stays their one owner.
 
 ## Related docs
 

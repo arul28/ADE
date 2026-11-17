@@ -388,12 +388,9 @@ own sessions as sessions from another folder.
 stat call finds it. All discoverers except OpenCode set it. The desktop
 preview header shows it ("40 MB").
 
-Why this exists: on 2026-09-23 a lane whose folder kept an old name looked
-like a broken path in the dialog. The dialog also defaulted the target to the
-Work view's lane, so a Claude "Continue" silently became a 40 MB transcript
-copy into the wrong lane. Now rows name the lane, never the
-`…/worktrees/<folder>` path. The target lane defaults to the session's home
-lane. The policy locks the lane when an action cannot leave it.
+Rows name the lane, never the `…/worktrees/<folder>` path. The target lane
+defaults to the session's home lane. The policy locks the lane when an action
+cannot leave it.
 
 ### Import marking
 
@@ -529,7 +526,8 @@ Chat continue for Cursor, Qwen, Kimi, and Grok is `none` on purpose. A chat
 continue opens the CLI-created session from ADE's own chat runtime. For those
 ACP providers, ADE has not yet proven on a live run that `session/resume` or
 `session/load` can open a session that the CLI itself created. Copilot is
-proven (see [Live verification](#live-verification-2026-09-23)). Cursor chats
+proven: a continue through the Copilot SDK keeps the session id and answers
+from its earlier turn. Cursor chats
 use the Cursor SDK, which has no proven path to a `cursor-agent` CLI chat
 either. Until then, chat mode offers only the replay copy for them.
 
@@ -905,8 +903,7 @@ Action bar (`ImportActionBar.tsx`) renders the plan and nothing else:
 Target lane: the session's home lane when this computer has that lane, else
 the lane the dialog came from. The dialog captures its lane once when it
 opens. A change of the Work view's lane while the dialog is open never changes
-the target and never starts a rescan. This fixes the 2026-09-23 wrong-lane copy
-(see [Lane attribution](#lane-attribution)).
+the target and never starts a rescan (see [Lane attribution](#lane-attribution)).
 
 Default copy model (`defaultForkModel`): the session's recorded model when the
 shared model registry resolves it, else the same provider's default model (so
@@ -1328,42 +1325,6 @@ iOS client cannot import sessions if the paired brain does not expose
 `work.getExternalSessionDetail` (an older brain) import still works, and the
 preview falls back to the list's sampled messages.
 
-## Live verification (2026-09-23)
-
-Six real imports ran in a `--no-sync` dev app, on throwaway sessions made with
-Claude Haiku and Codex GPT-6 Luna (low thinking), each checked in the software:
-
-| Path | Check |
-|---|---|
-| Claude → ADE chat → Continue | Same Claude session id; the source file grew; the chat answered a question about its earlier turn; model stayed Haiku. |
-| Codex → ADE chat → Continue (twice) | Same thread id; the rollout grew; the chat answered from memory; Luna with low thinking kept. |
-| Claude → CLI → Continue | Tracked terminal runs `claude --model … --resume <id>` in the lane root. |
-| Claude → ADE chat → Copy into another lane | New Claude session id, chat in the target lane, `importedFrom.mode: fork`, context carried. |
-| Codex → CLI → Copy | `codex fork`; the new thread id was captured into the terminal's resume metadata. |
-
-Bugs this found and fixed: a continue switched the session to the default model
-and thinking level; the import notice sorted below the history; a deleted chat
-left a Claude pointer that hid its session for good; a copy absorbed its
-original through shared history (lineage folding), so the original vanished;
-terminals inherited a parent Claude session's markers
-(`CLAUDE_CODE_CHILD_SESSION`) and stopped saving transcripts
-(`shared/parentAgentEnv.ts`).
-
-Copilot 1.0.88 (2026-09-24), on hand-run sessions in the lane root:
-
-| Path | Check |
-|---|---|
-| Copilot → CLI → Continue | Tracked terminal runs `copilot --resume=<id>`; the resumed CLI answered a question about its earlier turn. |
-| Copilot → ADE chat → Copy | Replay into a new Copilot chat; the chat answered from the copied history. |
-| Copilot → ADE chat → Continue | Recorded on the retired ACP build: `acpSessionId` seeded; the same `events.jsonl` grew with the new turn; no replayed history in the chat. The SDK build seeds `copilotSdkSessionId` instead. |
-| Copilot SDK resume (runtime 1.0.98, 2026-10-18) | A session created with another `clientName` and resumed with ADE's options (`clientName: "ade"`, the lane as `workingDirectory`, ADE's appended system message) kept its id and answered from its earlier turn; its `client_name` stayed the original, and it still listed for import. The converter turned it into the notice, both prompts and both replies. |
-
-Bugs this found and fixed: every tracked Copilot launch passed
-`--no-alt-screen`, which Copilot 1.0.88 rejects (exit 1); a session on "auto"
-recorded the router's model, which `copilot --model` rejects; a resumed or
-imported CLI of an output-titled provider lost its title to one made from
-startup output (a banner or the folder-trust prompt).
-
 ## Known follow-ups / open items
 
 - No feature flag gates external-session import. If the service is constructed
@@ -1399,9 +1360,8 @@ startup output (a banner or the folder-trust prompt).
   0.1 ms per provider.
 - Qwen tool-call conversion is verified only for text turns. The tool shapes
   follow the Gemini CLI chat-recording format.
-- The iOS preview and policy port build and pass `ADETests` (2,167 tests,
-  2026-09-23). The preview has not run against a live sync host, because the
-  test brain runs with `--no-sync`.
+- The iOS preview has not run against a live sync host, because the test
+  brain runs with `--no-sync`.
 - Keep `agentChatService.ts`'s Claude transplant dependency static. Dynamic
   imports can pass desktop dev runs and still fail in the packaged/headless
   brain bundle.

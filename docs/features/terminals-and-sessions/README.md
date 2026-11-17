@@ -439,10 +439,9 @@ Shared types and IPC:
   Work grouping, and the loud-vs-quiet attention split.
   **Live background work promotes a resting session back to `running`.** A
   session whose foreground turn ended while its background shells, monitors, or
-  subagent fleet kept going used to project to `ready`/`idle`, so the Work-tab
-  dot, the TopBar rollup, the dock badge and the Lanes agent list all showed
-  nothing while agents were mid-run — the "Background work" copy existed but
-  never reached the phase those surfaces derive from. The promotion also
+  subagent fleet keep going projects to `running`, so the Work-tab dot, the
+  TopBar rollup, the dock badge and the Lanes agent list show the work in
+  progress. The promotion also
   returns `liveness` (`"turn" | "background" | "monitoring"`), which is what the
   label reads; it is not a phase, because filing, buckets, the roster status and
   iOS's `AgentRunPhase` all want the three treated identically.
@@ -459,12 +458,9 @@ Shared types and IPC:
   between turns, so `runtimeState` (the host's live projection of an active
   turn) decides whether the row is Working, and a `last_turn_failed_at` marker
   — which describes the turn that ENDED — can never paint a working chat red.
-  That marker used to outrank everything, so a chat that resumed after one
-  failure (restart recovery, an auto-resume, a peer message, a runtime that
-  kept going) wore "Failed" for as long as it worked, and the account roster
-  pushed "N chats failed" about chats that were demonstrably running. The same
-  rule covers the opposite complaint: a persisted `detached` status no longer
-  reads "Ended" while the runtime reports a live turn. `last_turn_failed_at` is
+  So a chat that resumed after a failure reads Working, not Failed. In the same
+  way, a persisted `detached` status does not read "Ended" while the runtime
+  reports a live turn. `last_turn_failed_at` is
   also cleared at every turn start now, not only on a user send or a completed
   turn, and any non-failed `done` (interrupted included) supersedes an older
   failure. The summary also carries
@@ -1343,10 +1339,11 @@ Renderer surfaces:
   fallback for the one case that has nothing to pin to: the owning binding is not
   open in this window. Row/lane context actions pass the same binding so
   mutations cannot fall through to the active machine. A machine that goes
-  offline keeps its rows, dimmed and folded shut: every card is inert and reads
-  "<machine> is offline", the lane context menu's machine-bound actions are
-  disabled from live store state rather than a flag captured at right-click time,
-  and the group sorts below the reachable machines. Its branches still count
+  offline is not listed (`rowShowsConnected`, `state/cloudRestingRows.ts`): its
+  rows leave the list and come back when it reconnects. An ADE Cloud computer
+  that is only asleep stays listed and readable. The lane context menu reads
+  the machine's state live from the store, so a drop while the menu is open
+  disables its machine-bound actions. An offline machine's branches still count
   toward "same branch elsewhere", because commits stranded on a machine you
   cannot reach are the ones most worth naming — the same reason the
   push-divergence guard reads the retained slice. A lane with shared delete
@@ -1413,8 +1410,8 @@ Renderer surfaces:
   renders) from `isThisMachine` (whether it is marked): a remote-bound tab still
   marks all lanes that are elsewhere, even when it has no foreign union rows.
   It also owns presence: `applyReachability` decides, from the connection
-  snapshot alone, which machines are live, which are dimmed, and which are
-  forgotten. A drop is believed only once a reconnect attempt has completed and
+  snapshot alone, which machines are live, which have dropped (the store keeps
+  their slice, and the Work list hides them), and which are forgotten. A drop is believed only once a reconnect attempt has completed and
   failed — `connecting` seen while dropped, then a non-connected state — with a
   45 s floor and a 120 s ceiling for a dial that never finishes; floor and
   ceiling are one deadline, not two rules. Two states have no attempt left to
@@ -2060,8 +2057,7 @@ Renderer surfaces:
   `laneId`, `profile`, optional overrides, and the `disposition` field),
   and `WorkPtyLaunchResult` (alias of `PtyCreateResult`). These types
   unify the inline prop shapes that `WorkStartSurface`, `WorkViewArea`,
-  `useWorkSessions`, and `AgentChatPane` all
-  previously duplicated.
+  `useWorkSessions`, and `AgentChatPane` share.
 - `apps/desktop/src/shared/shell.ts` — shared shell-quoting and
   command-line parsing utilities (`quoteShellArg`, `commandArrayToLine`,
   `parseCommandLine`) used by both the renderer and the main-process
@@ -2120,7 +2116,7 @@ Renderer surfaces:
   `ade.agentChat.delete`. Fixed-position menus measure and clamp to the
   renderer viewport.
 - `apps/desktop/src/renderer/components/terminals/LanePrBadge.tsx`,
-  `apps/desktop/src/renderer/components/lanes/LanePrHoverCard.tsx`,
+  `apps/desktop/src/renderer/components/ui/HoverCard.tsx` (the PR preview card),
   `apps/desktop/src/renderer/lib/lanePrBadge.ts`,
   `LaneActionsSubmenu.tsx`, `apps/desktop/src/renderer/components/ui/OpenInSubmenu.tsx`,
   and
@@ -2323,8 +2319,6 @@ threads are cwd-portable, so Codex resume can target any lane directly.
 Every summary carries `home` (`lane`, `removed-lane`, or `outside`), so every
 surface names the lane, never the worktree folder, and the target lane
 defaults to the session's home lane. It never follows the Work view's lane.
-On 2026-09-23 the old default (the Work view's lane) silently turned a Claude
-"Continue" into a 40 MB transcript copy into the wrong lane.
 
 Continue means "take the baton": ADE starts a tracked continuation of the same
 provider session/thread. If the original terminal is still active, both tools
@@ -2467,10 +2461,7 @@ The host's `deriveWorkBoardColumn` maps a phase through
 `canonicalBoardColumnForPhase`; the renderer's `buildWorkBoardModel` reaches the
 same answer one level up, from the list's filing buckets plus a `needs_you`
 split. The two must agree, or a drag's host-authored "you moved this chat from
-<column>" message names a column the user never saw. They previously both filed
-the whole `awaiting-input` partition under "Needs you", so a board could claim
-five sessions were blocked on the user while every one of those cards showed an
-emerald "Done" dot and none had a raised hand.
+<column>" message names a column the user never saw.
 
 Waiting is not droppable because a row sits there for a reason a drag cannot
 assert — it is snoozed, or its PR is waiting on someone else. `canAcceptDrop`
@@ -2756,8 +2747,7 @@ not affect canonical session state; iOS stores them for sync compatibility.
      `snoozeSessions`, `wakeSession`, `wakeSessions`, `clearWokeMarker`.
      CTO-only (i.e. reachable from the desktop renderer's remote-runtime client, which authenticates at cto role, but refused for a
      session-bound agent): `settleSession`, `unsettleSession`, `settleSessions`,
-     `unsettleSessions`, `setSettleOverride`. The caller-scoped
-     `settleSelfSession` / `unsettleSelfSession` pair no longer exists.
+     `unsettleSessions`, `setSettleOverride`.
    - Sync (`session.*` remote commands) — the only path for mobile and the
      hosted web client, which have no local DB. Advertised in
      `hello_ok.features.commandRouting.actions`, and listed in
@@ -2793,8 +2783,8 @@ not affect canonical session state; iOS stores them for sync compatibility.
    Freshly started or recently-outputting rows get a short grace window before
    they can be detached, so a new runtime cannot immediately close a CLI
    session created by the process it just replaced. The service
-   still accepts an `excludeToolTypes` option, but `main.ts` no longer
-   passes chat tool types: chat runtimes always warm up afresh on app
+   still accepts an `excludeToolTypes` option, but `main.ts` does not
+   pass chat tool types: chat runtimes always warm up afresh on app
    start, so leaving stale `running` chat rows behind only causes UI
    confusion. Ended chat sessions stay in the table and are resumable
    through the SDK (or removable via `ade.agentChat.delete`).
@@ -3224,8 +3214,8 @@ screen. See [Remote runtime](../remote-runtime/README.md#a-slow-or-dropping-link
 - **Mobile/web replacing hydrates cannot replay a transcript tail for an
   alt-screen TUI.** Desktop keeps a headless xterm and hydrates from
   SerializeAddon current-screen CSI. A days-long Claude Code session's last
-  512 KB is CUP/EL at the desktop width with the DECSET long gone, so iOS
-  used to paint black. `terminal_snapshot.screen` carries that serialize
+  512 KB is CUP/EL at the desktop width with the DECSET long gone, so a
+  replay of that tail alone paints black. `terminal_snapshot.screen` carries that serialize
   (`scrollback: 0`, omit if over 256k chars — never slice CSI). Deltas stay
   transcript-only. Clients that do not know the field keep the old tail
   replay. While a phone/web peer is subscribed, desktop fit-resizes remember
@@ -3233,7 +3223,7 @@ screen. See [Remote runtime](../remote-runtime/README.md#a-slow-or-dropping-link
   unsubscribe. Catch-up overflow must not `ws.close(4001)` — that blanked
   every other iOS surface on the same socket.
 - `reconcileStaleRunningSessions` accepts `excludeToolTypes` but desktop and
-  brain startup no longer exclude chat tool types — stale
+  brain startup do not exclude chat tool types — stale
   `running` chat rows are swept to `detached` like any other orphaned
   row after the startup activity grace expires. If you need a row to
   survive reconciliation, the caller has to pass `excludeToolTypes`

@@ -788,6 +788,16 @@ claims a text before typing it, so the other does not send it too.
 Typing into a CLI clears its prompt line first (the same as scheduled work), so
 a half-typed line in the terminal itself is replaced by the box's text.
 
+A CLI on an ADE Cloud computer that is asleep or deleted takes a message
+through the account server's queue instead, from the web, the iPhone or the
+desktop. When the computer wakes, its brain types each message through the
+same `typeIntoAgentCliWhenFree` path, held until the CLI is free, so the CLI's
+ready signal decides when ([the turn signal table](pty-and-sessions.md#exact-turn-status-for-agent-clis)).
+A CLI that ended with the computer's restart gets the message back as failed,
+with a sentence that says to open the CLI and send it again. A deleted
+computer's CLI continues on a new computer first; see
+[On an ADE Cloud computer](../remote-runtime/README.md#on-an-ade-cloud-computer).
+
 Claude CLI surfaces whose recent preview/transcript reports `Please run
 /login` or a 401 invalid-credentials error show the same dismissible
 `Login to Claude` CTA (`ClaudeLoginPromptButton`). It creates a tracked
