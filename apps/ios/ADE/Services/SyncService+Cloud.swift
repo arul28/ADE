@@ -879,7 +879,11 @@ extension SyncService {
     }
     // An account switch while it read: the answer is the old account's.
     guard !Task.isCancelled, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
-    if let instances { cloudServerInstances = instances.filter { !$0.isGone } }
+    if let instances {
+      cloudServerInstances = instances.filter { !$0.isGone }
+      // Name these computers by their lane in every machine row ("Cloud · <lane>").
+      CloudLaneComputerLabels.noteServerInstances(cloudServerInstances)
+    }
     if let chats { cloudSavedChats = chats }
     guard instances != nil || chats != nil else { return }
     // Every computer that saves chats is an ADE Cloud computer: its work

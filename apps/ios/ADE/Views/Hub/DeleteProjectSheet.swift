@@ -26,7 +26,7 @@ extension SyncService {
       let running = roster
         .filter { $0.accountProjectId == project.id || checkoutIds.contains($0.projectId) }
         .reduce(0) { $0 + $1.runningCount }
-      if running > 0 { rows.append(DeleteProjectWorkingChats(computer: machine.displayName, count: running)) }
+      if running > 0 { rows.append(DeleteProjectWorkingChats(computer: machine.presentedName, count: running)) }
     }
     return rows
   }

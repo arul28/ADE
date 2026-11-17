@@ -8,6 +8,7 @@ import type {
 } from "../../../shared/types";
 import type { CrossMachineMachineLanes } from "../../state/appStore";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import {
   AUTO_CREATE_LANE_OPTION_ID,
   autoCreateLaneOptionId,
@@ -19,6 +20,7 @@ import {
 import {
   canCreateLaneOnMachine,
   deriveLaneMachineOptions,
+  isAdeCloudLaneComputer,
   type LaneMachineOption,
   type LaneMachineProjectRef,
 } from "../lanes/laneMachines";
@@ -213,6 +215,8 @@ export function useDraftMachineRouting({
     };
   }, [enabled]);
 
+  // ADE Cloud computers are named by their lane, so the rows follow the index as it is read.
+  const cloudIndex = useAdeCloudLaneComputers();
   /** Every connected machine, with or without this repository. */
   const derivedMachineOptions = useMemo<LaneMachineOption[]>(() => {
     if (!enabled) return [];
@@ -247,12 +251,14 @@ export function useDraftMachineRouting({
       repoDisplayName: boundProject?.displayName ?? null,
       localProjectRoots: openProjectTabRoots,
       localProjects: knownLocalProjects,
+      cloudIndex,
     });
     return [
       ...options.filter((option) => option.isBound),
       ...options.filter((option) => !option.isBound),
     ];
   }, [
+    cloudIndex,
     connectionSnapshot,
     enabled,
     knownLocalProjects,
@@ -539,13 +545,35 @@ export function useDraftMachineRouting({
    * which is strictly worse than the unavailable message it was replacing.
    */
   const laneCatalogLoading = laneCatalogUnresolved && !laneCatalogHoldExpired;
+  /**
+   * The picked machine is a lane's own ADE Cloud computer (ADE Web bound to
+   * one, or the desktop sending there). Its main checkout is only the clone
+   * the lane came from, so the list leaves it out, as the lane lists do
+   * (`crossMachineLanes.ts`).
+   */
+  const machineIsCloudLaneComputer = useMemo(() => {
+    const option = derivedMachineOptions.find((candidate) => candidate.id === machineId);
+    return option ? isAdeCloudLaneComputer(option, cloudIndex.computers) : false;
+  }, [cloudIndex.computers, derivedMachineOptions, machineId]);
   const selectorLanes = useMemo<RoutedDraftLane[]>(() => {
     if (!enabled) return (availableLanes ?? lanes) as RoutedDraftLane[];
     // Strictly the picked machine's lanes. A lane id from another machine is
     // not a row here — each machine has exactly one Primary, so preserving a
     // foreign one duplicated it in the list.
-    return [AUTO_CREATE_DRAFT_LANE_OPTION, ...executionLanes];
-  }, [availableLanes, enabled, executionLanes, lanes]);
+    const shown = machineIsCloudLaneComputer
+      ? executionLanes.filter((lane) => !isPrimaryDraftLane(lane))
+      : executionLanes;
+    return [AUTO_CREATE_DRAFT_LANE_OPTION, ...shown];
+  }, [availableLanes, enabled, executionLanes, lanes, machineIsCloudLaneComputer]);
+  // On a lane's ADE Cloud computer the main checkout is not a choice: a draft
+  // aimed at it moves to the computer's lane.
+  useEffect(() => {
+    if (!enabled || !machineIsCloudLaneComputer || !laneId) return;
+    const current = executionLanes.find((lane) => lane.id === laneId);
+    if (!current || !isPrimaryDraftLane(current)) return;
+    const lane = executionLanes.find((candidate) => !isPrimaryDraftLane(candidate));
+    if (lane) onLaneChange?.(lane.id);
+  }, [enabled, executionLanes, laneId, machineIsCloudLaneComputer, onLaneChange]);
 
   /**
    * The lane catalog of a machine the union has not read yet is fetched on its

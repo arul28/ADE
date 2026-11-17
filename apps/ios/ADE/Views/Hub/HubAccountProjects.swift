@@ -858,7 +858,7 @@ struct AccountProjectHomeScreen: View {
       }
 
       if project.host == "github.com", let repo = GitHubDirectRepoRef(owner: project.owner, name: project.name) {
-        pullRequestsLink(repo, computerName: held.first?.machine?.displayName)
+        pullRequestsLink(repo, computerName: held.first?.machine?.presentedName)
       }
 
       Button(role: .destructive) {

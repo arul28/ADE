@@ -45,6 +45,7 @@ import { CloudSizes } from "./CloudSizes";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
 import { useHasOwnComputer } from "../../../state/ownComputers";
+import { useWebMachines } from "../../../webclient/workspace/WebWorkspaceContext";
 import {
   STATE_LABEL,
   dashLanes,
@@ -104,6 +105,9 @@ const errorText = (error: unknown) => ipcErrorMessage(error) || `${ADE_CLOUD_NAM
  */
 export function CloudDashboard({ account, machines }: { account: CloudAccountState; machines: CloudMachinesState }) {
   const ownComputer = useHasOwnComputer();
+  // ADE Web with no computer of its own still reads and sets the agent limits
+  // through a connected ADE Cloud computer, when one is connected.
+  const connectedMachine = useWebMachines().some((machine) => machine.status === "live");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [insideKey, setInsideKey] = useState<string | null>(null);
   const { hash } = useLocation();
@@ -349,8 +353,9 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 
       {/* Sign-ins on the left; the shorter agent limits and the invite card
           stack on the right, so the two columns end near one height (B14-2). */}
-      {/* With no computer of the person's own (ADE Web), both read a computer:
-          the sign-ins show as "Providers on ADE Cloud" below this page instead. */}
+      {/* With no computer of the person's own (ADE Web), the sign-ins show as
+          "Providers on ADE Cloud" below this page instead; the agent limits
+          need a connected computer to read them (an ADE Cloud one will do). */}
       {ownComputer ? (
         <div className="adecd-pair">
           <CloudSignIns />
@@ -360,7 +365,10 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
           </div>
         </div>
       ) : (
-        <CloudInviteCard account={account} onChanged={refresh} />
+        <div className="adecd-stack">
+          {connectedMachine ? <CloudAgentLimitsCard /> : null}
+          <CloudInviteCard account={account} onChanged={refresh} />
+        </div>
       )}
 
       {freeing ? (

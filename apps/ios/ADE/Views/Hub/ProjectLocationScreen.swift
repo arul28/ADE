@@ -310,7 +310,7 @@ struct ProjectLocationScreen: View {
       return job == .done ? "Copied" : nil
     }()
     return HubCopyRow(
-      name: machine.displayName,
+      name: machine.presentedName,
       reach: rowReach,
       detail: detail,
       symbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform)
@@ -326,7 +326,7 @@ struct ProjectLocationScreen: View {
         }
         .buttonStyle(ADEKitButtonStyle(prominent: job == nil))
         .disabled(copyJobs.values.contains(.copying))
-        .accessibilityLabel("Put a copy on \(machine.displayName)")
+        .accessibilityLabel("Put a copy on \(machine.presentedName)")
       }
     }
   }

@@ -550,6 +550,25 @@ enum CloudLaneComputerLabels {
     CloudLaneComputerLabelsRevision.shared.value += 1
   }
 
+  /// Adds the lane computers of the account server's computer list
+  /// (`GET /cloud/instances`, read with no computer of the person's own):
+  /// each computer made for a lane carries its lane name and, once joined,
+  /// its machine key. Adds only: the full list above stays the one that
+  /// drops a computer.
+  @MainActor
+  static func noteServerInstances(_ instances: [CloudServerInstance], defaults: UserDefaults = .standard) {
+    var lanes = defaults.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
+    let before = lanes
+    for instance in instances {
+      guard let laneName = instance.metadata["ade_lane_name"]?.trimmingCharacters(in: .whitespacesAndNewlines), !laneName.isEmpty else { continue }
+      lanes[instance.id.lowercased()] = laneName
+      if let key = instance.metadata["ade_machine_key"]?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty { lanes[key.lowercased()] = laneName }
+    }
+    if lanes == before { return }
+    defaults.set(lanes, forKey: defaultsKey)
+    CloudLaneComputerLabelsRevision.shared.value += 1
+  }
+
   /// "Cloud · fix-login" for a lane computer known by its machine key or host name; nil for any other machine.
   static func label(machineKey: String?, hostName: String? = nil, defaults: UserDefaults = .standard) -> String? {
     let lanes = defaults.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]

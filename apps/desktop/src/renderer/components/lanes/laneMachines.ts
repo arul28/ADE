@@ -33,7 +33,7 @@ import type { MachinePlacementPreference, MachineStats } from "../../../shared/t
 // with two different id values is what made the divergence guard able to warn
 // that This computer diverged from itself. Re-exported here for existing callers.
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import { adeCloudLaneComputerForMachine, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
+import { adeCloudLaneComputerForMachine, adeCloudMachineLabel, type AdeCloudIndexState, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 export { THIS_MACHINE_ID, THIS_MACHINE_NAME };
 
 /**
@@ -159,6 +159,12 @@ export type LaneMachineDerivationInput = {
    * as zero.
    */
   machineActiveLaneCounts?: Readonly<Record<string, number | null>> | null;
+  /**
+   * The account's ADE Cloud computers, as a React caller subscribes to them
+   * (`useAdeCloudLaneComputers`); defaults to the last read. An ADE Cloud
+   * computer is named by its lane ("Cloud · <lane>"), never its instance id.
+   */
+  cloudIndex?: Pick<AdeCloudIndexState, "computers" | "cloudComputers">;
 };
 
 /**
@@ -503,9 +509,11 @@ export function deriveLaneMachineOptions(
       input.repoAccountProjectId?.trim() || null,
     );
     const project = isBound ? (input.boundProject ?? matched) : matched;
+    const hostname = connection.target.hostname ?? null;
+    const machineKey = connection.target.pairedMachine?.machineKey?.trim() || connection.target.id;
     options.push({
       id: connection.target.id,
-      name: connection.target.name,
+      name: adeCloudMachineLabel({ hostname, machineKey }, input.cloudIndex) ?? connection.target.name,
       targetId: connection.target.id,
       hostname: connection.target.hostname ?? null,
       transport: connection.target.transport ?? "ssh",
