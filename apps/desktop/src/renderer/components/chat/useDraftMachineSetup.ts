@@ -110,8 +110,7 @@ export function useDraftMachineSetup({
     }
   }, [cloneRepository, onMachineReady, onNotice, selectableMachineIds]);
 
-  // A prepared machine: selected once the picker lists it, cloned first when it
-  // connected without the repository.
+  // A prepared machine: selected once the picker lists it.
   useEffect(() => {
     if (!pendingTargetId) return;
     if (selectableMachineIds.includes(pendingTargetId)) {
@@ -123,18 +122,6 @@ export function useDraftMachineSetup({
     }
     // A clone takes as long as it takes (a big repository, half a minute).
     if (busy?.phase === "cloning") return;
-    const needsClone = cloneCandidates.find((option) => option.targetId === pendingTargetId);
-    if (needsClone && busy?.phase !== "selecting") {
-      const attempt = attemptRef.current;
-      const name = needsClone.name;
-      void cloneRepository(pendingTargetId, name, () => attemptRef.current === attempt).catch((error: unknown) => {
-        if (attemptRef.current !== attempt) return;
-        setPendingTargetId(null);
-        setBusy(null);
-        onNotice({ message: ipcErrorMessage(error) || `ADE couldn't clone the project on ${name}.`, kind: "status" });
-      });
-      return;
-    }
     const timer = window.setTimeout(() => {
       sendAfterRef.current = null;
       setPendingTargetId(null);
@@ -142,7 +129,7 @@ export function useDraftMachineSetup({
       onNotice({ message: "ADE set the machine up but couldn't offer it here. Open the picker again.", kind: "status" });
     }, SELECT_WAIT_MS);
     return () => window.clearTimeout(timer);
-  }, [busy?.phase, cloneCandidates, cloneRepository, onMachineReady, onNotice, pendingTargetId, selectableMachineIds]);
+  }, [busy?.phase, onMachineReady, onNotice, pendingTargetId, selectableMachineIds]);
 
   /** The person picked another machine, or the draft launched: stop following this one. */
   const abandon = useCallback(() => {
@@ -189,7 +176,7 @@ export function useDraftMachineSetup({
     const name = rows.find((row) => row.id === rowId)?.name ?? targetId;
     // A connected machine with no copy: the person picks the folder first.
     if (clone) {
-      // A machine still waking for the last pick stops here.
+      // A step still running for the last pick stops here.
       attemptRef.current += 1;
       setPendingTargetId(null);
       setBusy(null);
