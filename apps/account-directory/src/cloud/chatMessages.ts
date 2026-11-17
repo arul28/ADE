@@ -235,10 +235,13 @@ async function resolveTarget(env: CloudEnv, userId: string, machineKey: string, 
     order by updated_at desc limit 1
   `).bind(userId, machineKey, chatId, chatId).first<CopyRow>();
   if (moved) return chatTarget(moved);
+  // A CLI a new computer continued moved to that computer's key (`POST
+  // /cloud/sessions/:m/:s/move`): a send to the old address finds it by its id.
   const cli = await env.DB.prepare(`
     select machine_key, session_id, instance_id, project_key, lane_id from cloud_session_copies
-    where user_id = ? and machine_key = ? and session_id = ? and kind = 'cli'
-  `).bind(userId, machineKey, chatId)
+    where user_id = ? and session_id = ? and kind = 'cli'
+    order by case when machine_key = ? then 0 else 1 end, updated_at desc limit 1
+  `).bind(userId, chatId, machineKey)
     .first<{ machine_key: string; session_id: string; instance_id: string | null; project_key: string | null; lane_id: string | null }>();
   if (!cli) return null;
   return {

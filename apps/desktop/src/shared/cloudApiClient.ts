@@ -41,6 +41,7 @@ import {
   type CloudProjectOverview,
   type CloudSessionCopy,
   type CloudSessionRow,
+  type CloudSessionMoveResult,
   type CloudSessionUpload,
   type CloudAccountSignIns,
   type CloudAccountState,
@@ -316,6 +317,9 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       orNullOn404(() => request<CloudSessionCopy>("GET", cloudSessionPath(machineKey, sessionId))),
     deleteSavedSession: (machineKey: string, sessionId: string) =>
       request<{ deleted: boolean }>("DELETE", cloudSessionPath(machineKey, sessionId)),
+    /** A continued CLI's copy and queued messages go to the new computer's key. */
+    moveSavedSession: (fromMachineKey: string, sessionId: string, move: CloudChatMoveRequest) =>
+      request<CloudSessionMoveResult>("POST", `${cloudSessionPath(fromMachineKey, sessionId)}/move`, { body: move }),
     /** The project's Git summaries saved at rest; null from an older server. */
     gitSummaries: (projectKey: string) =>
       orNullOn404(() => request<{ summaries: CloudGitSummary[] }>("GET", `${CLOUD_PATHS.git}?project=${encodeURIComponent(projectKey)}`)),

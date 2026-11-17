@@ -9,6 +9,7 @@ import {
   type CloudSessionCopyFormat,
   type CloudSessionRow,
   type CloudSessionRowInput,
+  type CloudSessionMoveResult,
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
 import { openBytes, openJson, sealBytes, sealJson, userKeys, type UserKeys } from "./seal";
@@ -308,6 +309,68 @@ export function deleteAccountSessionCopiesStatement(env: Pick<CloudEnv, "DB">, u
 }
 
 /** `/cloud/sessions[/:machine/:session]`. The caller passed the access gate. */
+/**
+ * `POST /cloud/sessions/:m/:s/move`, from the new computer that continued a
+ * deleted computer's CLI: the copy goes to the new computer's machine key,
+ * sealed again under it, and the CLI's queued messages follow it. Later sends
+ * then reach the new computer, and a send to the old address finds it by its
+ * session id (`resolveTarget`). The same move again answers `moved: false`.
+ */
+async function handleMove(request: Request, env: CloudEnv, bucket: R2Bucket, userId: string, machineKey: string, sessionId: string, now: number): Promise<Response> {
+  const body = await readCappedJson(request, BODY_OVERHEAD_BYTES);
+  if (!body.ok) return unreadable();
+  const toMachineKey = typeof body.value.toMachineKey === "string" ? body.value.toMachineKey.trim() : "";
+  const instanceId = typeof body.value.instanceId === "string" ? body.value.instanceId.trim() : "";
+  if (!ROW_ID.test(toMachineKey) || !/^[a-z0-9]{4,40}$/.test(instanceId)) return unreadable();
+  const computer = await ownedComputer(env, userId, instanceId);
+  // Only the caller's own computer, and only to its own machine key.
+  if (!computer || computer.deleted_at != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  if (computer.machine_key && computer.machine_key.toLowerCase() !== toMachineKey.toLowerCase()) {
+    return fail("wrong_machine", "A session moves only to the machine key of the computer that asks.", 409);
+  }
+  const rowAt = (key: string) => env.DB.prepare("select * from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and kind = 'cli'")
+    .bind(userId, key, sessionId).first<SessionRow>();
+  const moveMessages = env.DB.prepare(`
+    update cloud_chat_messages set machine_key = ?, instance_id = case when via_launch = 0 and state = 'queued' then ? else instance_id end
+    where user_id = ? and machine_key = ? and chat_id = ?
+  `).bind(toMachineKey, computer.instance_id, userId, machineKey, sessionId);
+  if (machineKey === toMachineKey) return json({ moved: false } satisfies CloudSessionMoveResult);
+  const source = await rowAt(machineKey);
+  const target = await rowAt(toMachineKey);
+  if (!source) return target ? json({ moved: false } satisfies CloudSessionMoveResult) : notFound();
+  if (target) {
+    // The new computer saved its own copy already: the old one only goes.
+    await env.DB.batch([moveMessages, env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?").bind(userId, machineKey, sessionId)]);
+    await bucket.delete(source.r2_key);
+    logCloud("cloud.session_moved", { userId, instanceId: computer.instance_id });
+    return json({ moved: true } satisfies CloudSessionMoveResult);
+  }
+  const keys = await userKeys(env, userId, now);
+  if (!keys) return unavailable();
+  const object = await bucket.get(source.r2_key);
+  const opened = object ? await openBytes(keys.aes, copyAad(userId, machineKey, sessionId), new Uint8Array(await object.arrayBuffer())) : null;
+  const summary = await openJson(keys, summaryAad(userId, machineKey, sessionId), source.summary_sealed);
+  if (!opened) {
+    logCloud("cloud.session_copy_unreadable", { userId, machineKey, sessionId });
+    return fail("copy_unreadable", "This session copy can't be read right now.", 503);
+  }
+  const key = objectKey(userId, toMachineKey, sessionId);
+  await bucket.put(key, await sealBytes(keys.aes, copyAad(userId, toMachineKey, sessionId), opened));
+  const resealed = summary == null ? null : await sealJson(keys, summaryAad(userId, toMachineKey, sessionId), summary);
+  await env.DB.batch([
+    env.DB.prepare(`
+      insert into cloud_session_copies (user_id, machine_key, session_id, instance_id, project_key, lane_id, kind, parent_chat_id, summary_sealed, r2_key, bytes, line_count, last_activity_at, updated_at)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(userId, toMachineKey, sessionId, computer.instance_id, source.project_key, source.lane_id, source.kind, source.parent_chat_id, resealed, key,
+      source.bytes, source.line_count, source.last_activity_at, now),
+    moveMessages,
+    env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?").bind(userId, machineKey, sessionId),
+  ]);
+  await bucket.delete(source.r2_key);
+  logCloud("cloud.session_moved", { userId, instanceId: computer.instance_id });
+  return json({ moved: true } satisfies CloudSessionMoveResult);
+}
+
 export async function routeSessionCopies(request: Request, url: URL, path: string, env: CloudEnv, userId: string, now: number): Promise<Response> {
   const bucket = env.CLOUD_CHATS;
   if (!bucket) {
@@ -328,8 +391,10 @@ export async function routeSessionCopies(request: Request, url: URL, path: strin
       limit: clampedInt(url.searchParams.get("limit"), DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT),
     }));
   }
-  const [machineKey, sessionId] = segments;
-  if (segments.length !== 2 || !machineKey || !sessionId || !ROW_ID.test(machineKey) || !ROW_ID.test(sessionId)) return notFound();
+  const [machineKey, sessionId, action] = segments;
+  if (!machineKey || !sessionId || !ROW_ID.test(machineKey) || !ROW_ID.test(sessionId)) return notFound();
+  if (segments.length === 3 && action === "move") return request.method === "POST" ? handleMove(request, env, bucket, userId, machineKey, sessionId, now) : notFound();
+  if (segments.length !== 2) return notFound();
   if (request.method === "GET") return handleGet(env, bucket, userId, machineKey, sessionId, now);
   if (request.method === "PUT") return handlePut(request, env, bucket, userId, machineKey, sessionId, now);
   if (request.method === "DELETE") return json({ deleted: await deleteSessionCopy(env, userId, machineKey, sessionId) });

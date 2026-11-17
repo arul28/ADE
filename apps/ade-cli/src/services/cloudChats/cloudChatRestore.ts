@@ -198,6 +198,16 @@ async function restoreCloudCli(deps: CloudChatRestoreDeps, args: CloudChatRestor
     const capsule = await readCapsule(api, key, args.chatId, logger, "cli");
     const toolType = (copy?.session.kind === "cli" ? copy.session.toolType : null) ?? capsule?.cli?.toolType ?? null;
     if (!toolType) continue;
+    // The copy moves to this computer's key first, as a chat's does: later sends
+    // then reach this computer, not a new one for the old key. A failed move stops the continue.
+    if (key !== machineKey) {
+      try {
+        await api.moveSavedSession(key, args.chatId, { toMachineKey: machineKey, instanceId: deps.instanceId });
+      } catch (error) {
+        logger.warn("cloud.restore_move_failed", { chatId: args.chatId, kind: "cli", error: errorText(error) });
+        throw new Error("ADE couldn't move this CLI's saved copy to this computer, so it can't continue it here. Try again.");
+      }
+    }
     const restored = await deps.restoreCli({
       sessionId: args.chatId,
       laneId: args.laneId,
@@ -208,7 +218,7 @@ async function restoreCloudCli(deps: CloudChatRestoreDeps, args: CloudChatRestor
       clientMessageId: args.clientMessageId,
     });
     logger.info("cloud.chat_restored", { chatId: args.chatId, kind: "cli", restoredWith: restored.restoredWith });
-    return { sessionId: restored.sessionId, restoredWith: restored.restoredWith, promptSent: true, moved: false, olderPartLeftOut: false };
+    return { sessionId: restored.sessionId, restoredWith: restored.restoredWith, promptSent: true, moved: key !== machineKey, olderPartLeftOut: false };
   }
   return null;
 }

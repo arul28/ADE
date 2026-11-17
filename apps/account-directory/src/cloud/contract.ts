@@ -1101,6 +1101,7 @@ export type CloudChatTranscriptPage = {
  *   GET    /cloud/sessions/:m/:s                     CloudSessionCopy
  *   PUT    /cloud/sessions/:m/:s                     { ok: true, updatedAt }   (from the computer: CloudSessionUpload)
  *   DELETE /cloud/sessions/:m/:s                     { deleted }
+ *   POST   /cloud/sessions/:m/:s/move                CloudSessionMoveResult   (from the new computer: CloudChatMoveRequest)
  *   GET    /cloud/git?project=                       { summaries: CloudGitSummary[] }
  *   GET    /cloud/git/:m/:lane                       CloudGitSummary
  *   PUT    /cloud/git/:m/:lane                       { ok: true, kept: boolean }   (from the computer: CloudGitSummaryUpload)
@@ -1351,6 +1352,13 @@ export type CloudChatMoveRequest = { toMachineKey: string; instanceId: string };
  * already moved (the same call again).
  */
 export type CloudChatMoveResult = { chat: CloudChatRow; moved: boolean };
+/**
+ * `POST /cloud/sessions/:oldMachine/:session/move` (a `CloudChatMoveRequest`),
+ * from the new computer that continued a deleted computer's CLI: the copy and
+ * its queued messages go to the new machine key. `moved: false` when it was
+ * already moved.
+ */
+export type CloudSessionMoveResult = { moved: boolean };
 
 /* ---- CLI-session and shell copies ---- */
 
