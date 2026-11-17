@@ -3,27 +3,33 @@ import { useWindowFocused } from "../../lib/windowFocus";
 import { cn } from "./cn";
 
 /**
- * The glyph's shape loop: a sparkle that melts into a circle and back over 4 s.
- * Each segment steps 20 times a second (`steps(n, jump-none)`, n = 20 x the
- * segment's seconds), so the loop shows 80 shapes, one every 50 ms: the work
- * beat (lib/workBeat.ts).
+ * The glyph's shape loop: a sparkle that melts into a circle and back over 4 s
+ * while it turns once and shrinks a little at the circle. Each segment steps
+ * 20 times a second (`steps(n, jump-none)`, n = 20 x the segment's seconds),
+ * so the loop shows 80 shapes, one every 50 ms: the work beat
+ * (lib/workBeat.ts).
  */
 const GLYPH_KEYFRAMES = [
-  { at: 0, steps: 24, d: "M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z" },
-  { at: 0.3, steps: 16, d: "M 12 4.2 C 16.8 3.4 20.6 7.2 19.8 12 C 20.6 16.4 16.4 20.6 12 19.8 C 7.8 20.6 3.4 16.8 4.2 12 C 3.4 7.6 7.2 3.4 12 4.2 Z" },
-  { at: 0.5, steps: 16, d: "M 12 5 C 15.87 5 19 8.13 19 12 C 19 15.87 15.87 19 12 19 C 8.13 19 5 15.87 5 12 C 5 8.13 8.13 5 12 5 Z" },
-  { at: 0.7, steps: 24, d: "M 12 3.6 C 16.4 4.6 18.6 8 19.2 12 C 18.6 16.2 16.2 19.4 12 20.4 C 8 19.4 5.2 16.4 4.8 12 C 5.4 7.8 7.6 4.4 12 3.6 Z" },
-  { at: 1, steps: 0, d: "M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z" },
+  { at: 0, steps: 24, turn: 0, scale: 1, d: "M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z" },
+  { at: 0.3, steps: 16, turn: 108, scale: 0.9, d: "M 12 4.2 C 16.8 3.4 20.6 7.2 19.8 12 C 20.6 16.4 16.4 20.6 12 19.8 C 7.8 20.6 3.4 16.8 4.2 12 C 3.4 7.6 7.2 3.4 12 4.2 Z" },
+  { at: 0.5, steps: 16, turn: 180, scale: 0.78, d: "M 12 5 C 15.87 5 19 8.13 19 12 C 19 15.87 15.87 19 12 19 C 8.13 19 5 15.87 5 12 C 5 8.13 8.13 5 12 5 Z" },
+  { at: 0.7, steps: 24, turn: 252, scale: 0.9, d: "M 12 3.6 C 16.4 4.6 18.6 8 19.2 12 C 18.6 16.2 16.2 19.4 12 20.4 C 8 19.4 5.2 16.4 4.8 12 C 5.4 7.8 7.6 4.4 12 3.6 Z" },
+  { at: 1, steps: 0, turn: 360, scale: 1, d: "M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z" },
 ];
 const GLYPH_LOOP_SECONDS = 4;
 const GLYPH_FRAMES = GLYPH_LOOP_SECONDS * 20;
 
 /**
  * The 80 shapes the loop shows, in order: what CSS would draw for a `d:`
- * animation over `GLYPH_KEYFRAMES` at each 50 ms. Every step edge of every
- * segment falls on one of those instants, so sampling there misses none.
+ * animation over `GLYPH_KEYFRAMES` at each 50 ms, with the turn and scale of
+ * the same instant. Every step edge of every segment falls on one of those
+ * instants, so sampling there misses none.
+ *
+ * The turn is part of each shape, not a CSS rotation of the glyph: on macOS a
+ * rotating box around the moving strip made Chromium redraw the whole window
+ * on every frame while a chat was thinking.
  */
-function glyphFrames(): string[] {
+function glyphFrames(): Array<{ d: string; transform: string }> {
   const numbers = GLYPH_KEYFRAMES.map((keyframe) => keyframe.d.split(" ").map((token) => Number(token)));
   const tokens = GLYPH_KEYFRAMES[0]!.d.split(" ");
   return Array.from({ length: GLYPH_FRAMES }, (_, frame) => {
@@ -33,14 +39,21 @@ function glyphFrames(): string[] {
     const progress = (at - from.at) / (GLYPH_KEYFRAMES[segment + 1]!.at - from.at);
     // jump-none: n held values, from the segment's start to its end inclusive.
     const eased = Math.min(1, Math.floor(progress * from.steps + 1e-9) / (from.steps - 1));
-    return tokens
+    const to = GLYPH_KEYFRAMES[segment + 1]!;
+    const round = (value: number) => Math.round(value * 1000) / 1000;
+    const d = tokens
       .map((token, index) => {
         const a = numbers[segment]![index]!;
         if (Number.isNaN(a)) return token;
         const value = a + (numbers[segment + 1]![index]! - a) * eased;
-        return String(Math.round(value * 1000) / 1000);
+        return String(round(value));
       })
       .join(" ");
+    const turn = round(from.turn + (to.turn - from.turn) * eased);
+    const scale = round(from.scale + (to.scale - from.scale) * eased);
+    // Turn and scale about the shape's centre, then move it to its cell.
+    const transform = `translate(${24 * frame} 0) rotate(${turn} 12 12) translate(12 12) scale(${scale}) translate(-12 -12)`;
+    return { d, transform };
   });
 }
 
@@ -52,7 +65,8 @@ const GLYPH_STRIP = glyphFrames();
  * the 21st.dev "thinking-indicator".
  *
  * The glyph and twinkle are CSS loops that move only transform or opacity
- * (`CssGlyph`). The sheen is a bright copy of the label seen through a soft
+ * (`CssGlyph`). The glyph's turn is drawn into its 80 shapes, so nothing
+ * rotates around the moving strip. The sheen is a bright copy of the label seen through a soft
  * window that slides across while the copy slides back, so the text holds
  * still. The compositor runs all of them (index.css, `.ade-thinking-*`). The
  * steps and timing are those of the path morph and `background-position`
@@ -126,23 +140,21 @@ function CssGlyph() {
   const gradientId = `ade-thinking-${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   return (
     <span className="relative inline-block h-[1.3em] w-[1.3em] shrink-0" aria-hidden>
-      <span className="ade-thinking-glyph absolute inset-0">
-        <span className="absolute inset-0 overflow-hidden">
-          {/* An HTML box moves the strip: Chrome cannot composite a transform on an `<svg>` element. */}
-          <span className="ade-thinking-glyph-strip absolute inset-y-0 left-0">
-            <svg viewBox={`0 0 ${24 * GLYPH_FRAMES} 24`} className="h-full w-full" fill="none">
-              <defs>
-                <linearGradient id={gradientId} gradientUnits="userSpaceOnUse" x1="5" x2="20" y1="4" y2="20">
-                  <stop offset="0" stopColor="currentColor" stopOpacity="1" />
-                  <stop offset="1" stopColor="currentColor" stopOpacity="0.4" />
-                </linearGradient>
-              </defs>
-              {GLYPH_STRIP.map((d, frame) => (
-                // The gradient is in each shape's own space, so every frame keeps the same light.
-                <path key={frame} transform={`translate(${24 * frame} 0)`} d={d} fill={`url(#${gradientId})`} />
-              ))}
-            </svg>
-          </span>
+      <span className="absolute inset-0 overflow-hidden">
+        {/* An HTML box moves the strip: Chrome cannot composite a transform on an `<svg>` element. */}
+        <span className="ade-thinking-glyph-strip absolute inset-y-0 left-0">
+          <svg viewBox={`0 0 ${24 * GLYPH_FRAMES} 24`} className="h-full w-full" fill="none">
+            <defs>
+              <linearGradient id={gradientId} gradientUnits="userSpaceOnUse" x1="5" x2="20" y1="4" y2="20">
+                <stop offset="0" stopColor="currentColor" stopOpacity="1" />
+                <stop offset="1" stopColor="currentColor" stopOpacity="0.4" />
+              </linearGradient>
+            </defs>
+            {GLYPH_STRIP.map(({ d, transform }, frame) => (
+              // The gradient is in each shape's own space, so the light turns with the shape.
+              <path key={frame} transform={transform} d={d} fill={`url(#${gradientId})`} />
+            ))}
+          </svg>
         </span>
       </span>
       <span className="ade-thinking-twinkle absolute inset-0">

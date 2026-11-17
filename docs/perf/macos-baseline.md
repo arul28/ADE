@@ -746,6 +746,12 @@ you add a poll, a timer, a spawn, a read or a background job.
   unprefixed one), and that property paints the same blur. Read
   `getComputedStyle(el).webkitBackdropFilter` too, or count the declarations in
   the source.
+- **No rotating box around a moving layer.** On macOS a compositor animation
+  inside a rotating ancestor made every frame a full-window redraw: the
+  thinking glyph's strip moved inside a box that turned. Put the turn into the
+  frames themselves (`ThinkingIndicator.tsx` computes each shape's rotation
+  and scale), or keep rotating and moving layers apart, and check the dirty
+  rects again.
 - **A prewarm starts on intent, not on focus.** Start a provider prewarm on the
   first keystroke. A prewarm on focus holds 150-420 MB for a chat that the user
   never writes in.

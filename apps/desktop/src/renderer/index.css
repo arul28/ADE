@@ -5331,13 +5331,6 @@ button, [role="button"] {
   from { transform: translateX(0); }
   to { transform: translateX(calc(-80 * 1.3em)); }
 }
-@keyframes ade-thinking-glyph-turn {
-  0% { transform: rotate(0deg) scale(1); animation-timing-function: steps(24, jump-none); }
-  30% { transform: rotate(108deg) scale(0.9); animation-timing-function: steps(16, jump-none); }
-  50% { transform: rotate(180deg) scale(0.78); animation-timing-function: steps(16, jump-none); }
-  70% { transform: rotate(252deg) scale(0.9); animation-timing-function: steps(24, jump-none); }
-  100% { transform: rotate(360deg) scale(1); }
-}
 @keyframes ade-thinking-twinkle {
   0%, 30% { opacity: 0; transform: rotate(0deg) scale(0.2); animation-timing-function: steps(16, jump-none); }
   50% { opacity: 1; transform: rotate(90deg) scale(1); animation-timing-function: steps(16, jump-none); }
@@ -5356,9 +5349,6 @@ button, [role="button"] {
 @keyframes ade-thinking-label-in {
   from { opacity: 0; transform: translateY(70%); }
   to { opacity: 1; transform: translateY(0); }
-}
-.ade-thinking-glyph {
-  animation: ade-thinking-glyph-turn 4s infinite;
 }
 .ade-thinking-glyph-strip {
   width: calc(80 * 1.3em);
@@ -5402,7 +5392,6 @@ button, [role="button"] {
 /* ADE is not the focused app: no loops at all. Every part rests where its loop
    starts (the sheen at its 0% position, as the old sweep did). The label keeps
    its slide-in. */
-.ade-thinking-indicator[data-resting] .ade-thinking-glyph,
 .ade-thinking-indicator[data-resting] .ade-thinking-glyph-strip,
 .ade-thinking-indicator[data-resting] .ade-thinking-twinkle,
 .ade-thinking-indicator[data-resting] .ade-thinking-sheen-window,
@@ -5411,7 +5400,6 @@ button, [role="button"] {
 }
 .ade-thinking-indicator[data-resting] .ade-thinking-twinkle { opacity: 0; }
 @media (prefers-reduced-motion: reduce) {
-  .ade-thinking-glyph,
   .ade-thinking-glyph-strip,
   .ade-thinking-twinkle,
   .ade-thinking-label,
