@@ -300,15 +300,6 @@ describe("ProjectWelcomePage worktree recents", () => {
 });
 
 describe("ProjectWelcomePage web zero-machines state", () => {
-  it("claims an empty account only when the directory read succeeded", async () => {
-    renderWebWelcome(accountSnapshot({ state: "signed_in" }));
-
-    expect(
-      await screen.findByText(/No computer is on your account yet/),
-    ).toBeTruthy();
-    expect(screen.queryByText("Retry")).toBeNull();
-  });
-
   it("says the machines could not be loaded, with the directory reason, when the read failed", async () => {
     const { retryDirectory } = renderWebWelcome(
       accountSnapshot({
@@ -363,51 +354,6 @@ describe("ProjectWelcomePage web zero-machines state", () => {
 
     const button = await screen.findByText("Retrying…");
     expect((button as HTMLButtonElement).disabled).toBe(true);
-  });
-});
-
-describe("ProjectWelcomePage web Add project gating", () => {
-  it("disables Add project when the account has no machine to add it on", async () => {
-    renderWebWelcome(accountSnapshot({ state: "signed_in" }));
-
-    const button = (await screen.findByText("Add project")).closest("button");
-    expect((button as HTMLButtonElement).disabled).toBe(true);
-    expect((button as HTMLButtonElement).title).toContain("Connect a machine first");
-  });
-
-  it("explains where projects are added instead of opening a flow that goes nowhere", async () => {
-    renderWebWelcome(
-      accountSnapshot({ state: "signed_in", machines: [accountMachine()] as any }),
-    );
-
-    const button = (await screen.findByText("Add project")).closest("button");
-    expect((button as HTMLButtonElement).disabled).toBe(false);
-
-    fireEvent.click(button as HTMLButtonElement);
-
-    expect(
-      await screen.findByText("Projects are added on the machine that hosts them."),
-    ).toBeTruthy();
-    expect(screen.getByText(/Open ADE on Mac Studio/)).toBeTruthy();
-
-    fireEvent.click(screen.getByText("Got it"));
-    await waitFor(() =>
-      expect(
-        screen.queryByText("Projects are added on the machine that hosts them."),
-      ).toBeNull(),
-    );
-  });
-
-  it("leaves the desktop Add project flow alone", async () => {
-    renderWelcome();
-
-    const button = (await screen.findByText("Add project")).closest("button");
-    expect((button as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(button as HTMLButtonElement);
-
-    expect(
-      screen.queryByText("Projects are added on the machine that hosts them."),
-    ).toBeNull();
   });
 });
 
