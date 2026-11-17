@@ -965,7 +965,11 @@ func syncLinkIsWeak(handshakeSeconds: TimeInterval?) -> Bool {
   guard let handshakeSeconds else { return false }
   return handshakeSeconds >= 0.7
 }
-private let syncTerminalBufferMaxCharacters = 240_000
+/// The terminal buffer kept per session, in UTF-8 bytes. Over the cap it is
+/// cut back to `syncTerminalBufferTrimmedBytes`, so steady output trims once
+/// per 40 KB rather than on every chunk.
+private let syncTerminalBufferMaxBytes = 240_000
+private let syncTerminalBufferTrimmedBytes = 200_000
 
 enum SyncBonjourTiming {
   static let searchRetryNanoseconds: UInt64 = 2_000_000_000
@@ -4430,7 +4434,19 @@ final class SyncService: ObservableObject {
   /// `host_health`; nil when every folder answers.
   @Published private(set) var hostStorageWaitNotice: SyncHostStorageWaitNotice?
   @Published private(set) var prefersReducedSyncLoad = false
-  @Published private(set) var terminalBufferRevision = 0
+  /// Bumps when a terminal buffer changes (at most every 120 ms while output
+  /// streams). Not `@Published`: a publish here woke every view that watches
+  /// the sync service, about 8 times a second while any CLI printed, and
+  /// slowed typing on the terminal screen. Views that show terminal text
+  /// subscribe to `terminalBufferRevisionPublisher`.
+  private(set) var terminalBufferRevision: Int {
+    get { terminalBufferRevisionSubject.value }
+    set { terminalBufferRevisionSubject.send(newValue) }
+  }
+  private let terminalBufferRevisionSubject = CurrentValueSubject<Int, Never>(0)
+  var terminalBufferRevisionPublisher: AnyPublisher<Int, Never> {
+    terminalBufferRevisionSubject.eraseToAnyPublisher()
+  }
   @Published private(set) var subscribedTerminalSessionIds: Set<String> = []
   @Published private(set) var subscribedChatSessionIds: Set<String> = []
   /// Live-view consumers for pushed `macDesktop.streamRecord` /
@@ -14429,7 +14445,7 @@ final class SyncService: ObservableObject {
       terminalBufferUpdatedAt[sessionId] = Date()
       return
     }
-    terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + deliverableChunk)
+    appendTerminalBuffer(sessionId: sessionId, deliverableChunk)
     terminalBufferUpdatedAt[sessionId] = Date()
     markTerminalBufferChanged(sessionId: sessionId)
     terminalStream.handlers[sessionId]?(.chunk(text: deliverableChunk, endOffset: endOffset))
@@ -14442,7 +14458,7 @@ final class SyncService: ObservableObject {
       // Delta resume: payload covers exactly [sinceOffset, end). Append —
       // replacing would drop everything the screen already rendered.
       if !snapshot.transcript.isEmpty {
-        terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + snapshot.transcript)
+        appendTerminalBuffer(sessionId: sessionId, snapshot.transcript)
         markTerminalBufferChanged(sessionId: sessionId, immediate: true)
       }
       terminalBufferUpdatedAt[sessionId] = Date()
@@ -15263,12 +15279,12 @@ final class SyncService: ObservableObject {
   /// A message for a running agent CLI. The host types it only at a free
   /// prompt: a busy CLI keeps it there until its turn ends (`held`). Offline,
   /// the command is queued here and goes out when the machine reconnects.
-  func typeIntoCli(sessionId: String, text: String) async throws -> WorkCliTypeOutcome {
+  func typeIntoCli(sessionId: String, text: String, clientMessageId: String) async throws -> WorkCliTypeOutcome {
     try requireInvokableRemoteAction("chat.typeIntoCli")
     let scope = chatCommandScope(for: sessionId)
     let response = try await sendCommand(
       action: "chat.typeIntoCli",
-      args: ["sessionId": sessionId, "text": text, "holdUntilFree": true],
+      args: workCliTypeArgs(sessionId: sessionId, text: text, clientMessageId: clientMessageId),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
@@ -23962,7 +23978,7 @@ final class SyncService: ObservableObject {
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String {
         guard terminalStream.subscribed.contains(sessionId) else { break }
         let exitCode = dict["exitCode"] as? Int
-        terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + "\n\n[process exited\(exitCode.map { " with \($0)" } ?? "")]")
+        appendTerminalBuffer(sessionId: sessionId, "\n\n[process exited\(exitCode.map { " with \($0)" } ?? "")]")
         terminalBufferUpdatedAt[sessionId] = Date()
         markTerminalBufferChanged(sessionId: sessionId, immediate: true)
         terminalStream.handlers[sessionId]?(.exit(code: exitCode))
@@ -25750,9 +25766,24 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// Appends in place: a live chunk costs its own length, not a copy and a
+  /// character count of the whole buffer (that ran on the main thread for
+  /// every chunk and slowed typing while a CLI streamed).
+  private func appendTerminalBuffer(sessionId: String, _ text: String) {
+    terminalBuffers[sessionId, default: ""].append(text)
+    guard let buffer = terminalBuffers[sessionId], buffer.utf8.count > syncTerminalBufferMaxBytes else { return }
+    terminalBuffers[sessionId] = trimmedTerminalBuffer(buffer)
+  }
+
   private func trimmedTerminalBuffer(_ buffer: String) -> String {
-    guard buffer.count > syncTerminalBufferMaxCharacters else { return buffer }
-    return String(buffer.suffix(syncTerminalBufferMaxCharacters))
+    let utf8 = buffer.utf8
+    guard utf8.count > syncTerminalBufferMaxBytes else { return buffer }
+    var start = utf8.index(utf8.endIndex, offsetBy: -syncTerminalBufferTrimmedBytes)
+    // Start on a whole character, never inside a UTF-8 sequence.
+    while start < utf8.endIndex, utf8[start] & 0xC0 == 0x80 {
+      start = utf8.index(after: start)
+    }
+    return String(buffer[start...])
   }
 
   private func updateTerminalBuffer(sessionId: String, transcript: String, immediate: Bool = false) {

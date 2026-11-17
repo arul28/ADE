@@ -176,7 +176,7 @@ extension MachineConnection: TerminalStreamTransport {
 
   /// A message for a running agent CLI on this machine (`chat.typeIntoCli`).
   /// Never queued: a command for another machine must not replay later.
-  func typeIntoCli(sessionId: String, text: String) async throws -> WorkCliTypeOutcome {
+  func typeIntoCli(sessionId: String, text: String, clientMessageId: String) async throws -> WorkCliTypeOutcome {
     guard supportsAction("chat.typeIntoCli") else {
       throw NSError(domain: "ADE", code: 15, userInfo: [
         NSLocalizedDescriptionKey: "Update ADE on that computer to send messages to its CLI sessions.",
@@ -185,7 +185,7 @@ extension MachineConnection: TerminalStreamTransport {
     let scope = try terminalScopeOrThrow(sessionId)
     let raw = try await sendCommand(
       action: "chat.typeIntoCli",
-      args: ["sessionId": sessionId, "text": text, "holdUntilFree": true],
+      args: workCliTypeArgs(sessionId: sessionId, text: text, clientMessageId: clientMessageId),
       projectId: scope.projectId,
       projectRootPath: scope.rootPath.isEmpty ? nil : scope.rootPath
     )

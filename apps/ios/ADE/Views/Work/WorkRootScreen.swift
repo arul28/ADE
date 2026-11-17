@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import AVKit
@@ -51,7 +52,7 @@ final class WorkRootBookkeeping {
 /// when output is being searched; outside that the handler returns without a
 /// state write, so streaming output never wakes the list.
 private struct WorkSearchOutputRevisionModifier: ViewModifier {
-  let publisher: Published<Int>.Publisher
+  let publisher: AnyPublisher<Int, Never>
   let isSearching: Bool
   @Binding var revision: Int
 
@@ -2048,7 +2049,7 @@ struct WorkRootListScreen: View, Equatable {
         LiveStage.shared.end()
       }
       .modifier(WorkSearchOutputRevisionModifier(
-        publisher: syncService.$terminalBufferRevision,
+        publisher: syncService.terminalBufferRevisionPublisher,
         isSearching: isWorkRootActive && workSearchIsActive,
         revision: $searchOutputRevision
       ))

@@ -9231,6 +9231,13 @@ enum WorkCliTypeOutcome: Equatable {
   case ended
 }
 
+/// The `chat.typeIntoCli` arguments. `clientMessageId` names one message: a
+/// send repeated after a lost answer carries the same id, and the computer
+/// types the message once (it keeps typed and queued answers by this id).
+func workCliTypeArgs(sessionId: String, text: String, clientMessageId: String) -> [String: Any] {
+  ["sessionId": sessionId, "text": text, "holdUntilFree": true, "clientMessageId": clientMessageId]
+}
+
 /// Reads the host's `{ outcome }` answer, or the offline queue's `{ queued }`.
 func workCliTypeOutcome(from response: Any) throws -> WorkCliTypeOutcome {
   guard let payload = response as? [String: Any] else {
