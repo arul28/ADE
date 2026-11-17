@@ -626,6 +626,14 @@ export type DeleteLaneArgs = {
   requireRemoteBranchDelete?: boolean;
   remoteName?: string;
   force?: boolean;
+  /**
+   * Answer once the delete's checks passed (`accepted`), not when it is done;
+   * the delete then finishes on its machine even if the caller is gone. A lane
+   * already deleted answers `alreadyDeleted`, and a lane being deleted answers
+   * `accepted`. A caller over a slow link sends this and follows
+   * `listDeleteProgress`. An older ADE ignores it and answers when done.
+   */
+  background?: boolean;
 };
 
 /**
@@ -643,6 +651,10 @@ export type DeleteLaneResult = {
   leftoverWorktree: LaneDeleteLeftoverWorktree | null;
   /** Work the delete would have lost, kept for restore; null when nothing was at risk. */
   savedWork?: DeletedLaneSnapshot | null;
+  /** A `background` delete that is still running; its progress says when it is done. */
+  accepted?: boolean;
+  /** A `background` delete of a lane that was already gone. */
+  alreadyDeleted?: boolean;
 };
 
 /**
@@ -747,6 +759,8 @@ export type LaneDeleteProgress = {
   leftoverWorktree?: LaneDeleteLeftoverWorktree | null;
   /** Work the delete kept (uncommitted files, unpushed commits); see DeletedLaneSnapshot. */
   savedWork?: DeletedLaneSnapshot | null;
+  /** Why a failed or stopped delete ended; set with that terminal status. */
+  errorMessage?: string;
 };
 
 export type LaneDeleteEvent = {

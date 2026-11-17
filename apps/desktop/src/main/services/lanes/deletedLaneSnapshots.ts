@@ -175,6 +175,11 @@ export async function saveDeletedLaneSnapshot(args: {
   otherBranchesGoing?: string[];
   /** The remote the branch is about to be deleted from, if any. */
   remoteGoes?: string | null;
+  /**
+   * The remote branch tip the caller already captured (the delete saves it for
+   * the retry lease too). The ref is read here only when this is null.
+   */
+  remoteTip?: string | null;
   /** "freed": the lane stays (archived, folder gone); only its files were at stake. */
   kind?: DeletedLaneSnapshot["kind"];
   now?: Date;
@@ -187,10 +192,12 @@ export async function saveDeletedLaneSnapshot(args: {
       : null;
   const remoteGoes = args.remoteGoes?.trim() || null;
   // Deleting the remote branch drops commits only it holds (pushed from
-  // another machine, say), so its last-fetched tip is kept too.
-  const remoteTip = remoteGoes && branchName
+  // another machine, say), so its last-fetched tip is kept too. The caller
+  // reads the same tip for the retry lease; use it so the snapshot and the
+  // lease cannot name different commits.
+  const remoteTip = args.remoteTip ?? (remoteGoes && branchName
     ? await revParse(args.projectRoot, `refs/remotes/${remoteGoes}/${branchName}`)
-    : null;
+    : null);
   const branchTip = branchName ? await revParse(args.projectRoot, `refs/heads/${branchName}`) : null;
   const uncommitted = args.worktreePath ? await hasUncommittedFiles(args.worktreePath) : false;
   const otherRepoWork = args.worktreePath ? await describeWorkInOtherRepos(args.worktreePath) : null;
