@@ -186,18 +186,18 @@ are in
 
 ### What a person reads with no computer awake
 
-| What | Server module | Route |
-|---|---|---|
-| Saved chats | `chats.ts` | `GET /cloud/chats[/:m/:c]` |
-| CLI and shell copies (a shell keeps its last 5,000 lines) | `sessionCopies.ts` | `GET /cloud/sessions[/:m/:s]` |
-| Git summaries saved at rest | `gitSummaries.ts` | `GET /cloud/git/:m/:lane` |
-| One project's overview | `projectOverview.ts` | `GET /cloud/projects/overview` |
-| The account lane index (name, branch, machine, PR; only for mentions) | `accountLanes/routes.ts` | `GET /account/lanes` |
-| The CTO account copy | `ctoCopy.ts` | `GET /cloud/cto` |
-| Automations whose home is ADE Cloud | `automations.ts` | `GET /cloud/automations` |
-| Linear and Jira, with the account's sign-in | `integrations.ts` | `POST /cloud/integrations/…` |
-| Agent limits, secret names, plan, hours, usage | `limits.ts`, `accountSecrets.ts` | `GET /cloud/limits`, `/cloud/account-secrets`, `/cloud/account` |
-| Files and history | none: the client reads GitHub | none |
+| What | Server module |
+|---|---|
+| Saved chats | `chats.ts` |
+| CLI and shell copies (a shell keeps its last 5,000 lines) | `sessionCopies.ts` |
+| Git summaries saved at rest | `gitSummaries.ts` |
+| One project's overview | `projectOverview.ts` |
+| The account lane index (name, branch, machine, PR; only for mentions) | `accountLanes/routes.ts` |
+| The CTO account copy | `ctoCopy.ts` |
+| Automations whose home is ADE Cloud | `automations.ts` |
+| Linear and Jira, with the account's sign-in | `integrations.ts` |
+| Agent limits, secret names, plan, hours, usage | `limits.ts`, `accountSecrets.ts` |
+| Files and history | none: the client reads GitHub |
 
 - The server seals each copy with the account's own key (`seal.ts`). Only a
   computer the account owns writes one, and every read checks the owner.

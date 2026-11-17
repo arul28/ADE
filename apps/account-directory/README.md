@@ -414,8 +414,20 @@ The server holds the provider key and owns every ADE Cloud computer
 account bearer. The plan rules, hours, disk and cleanups are in
 [ADE Cloud](../../docs/features/ade-cloud/README.md).
 
-- `GET /cloud/access` answers `{ enabled }`; a blocked account gets
-  `{ enabled: false, readOnly: true, reason }`.
+| Route | What it does |
+| --- | --- |
+| `GET /cloud/access` | `{ enabled }`; a blocked account gets `{ enabled: false, readOnly: true, reason }` |
+| `GET /cloud/account` | Plan, hours, disk, billing notice, `blocked` |
+| `GET/POST /cloud/instances` | The account's computers (`idleSaving` while an idle save runs; a 5-second Cache API copy of the provider's list, skipped after a change of the account's rows), or a create |
+| `POST /cloud/instances/:id/<action>` | `sleep`, `idle` (the brain asks to sleep), `start` (`{reason:"push_work"}` is the free wake), `stop`, `update`, `booted`, `keep`, `resize`, `fork`, `exec`, `disk-usage`, `cpu-report`, `backups`, `signed-url`, `public-ports`, `sign-ins`, and `use` (a person's use during the idle save, `last_active_at`; 409 `computer_deleting` once the delete runs). `PUT` `auto-sleep`, `name`, `metadata` |
+| `GET /cloud/instances/:id/update-check` | Whether the computer is behind its channel's image |
+| `PUT /cloud/instances/:id/event-wakes`, `PUT/DELETE /cloud/wake` | [Timed wakes and event wakes](#ade-cloud-timed-wakes-and-event-wakes) |
+| `/cloud/instances/:id/messages…`, `/cloud/chats…`, `/cloud/sessions…`, `/cloud/git…`, `/cloud/capsules…`, `/cloud/projects/overview` | [Saved copies](#saved-chats-and-other-saved-copies) and [the queue](#the-message-queue-of-an-existing-chat-or-cli) |
+| `/cloud/launches…`, `/cloud/sign-ins…`, `/cloud/models` | [Launches](#launches-from-the-web-and-the-phone) |
+| `POST /cloud/billing/{checkout,portal,extra-hours,extra-disk,plan-cleanup,free-unlock}` | [Payments](#payments) |
+| `GET /cloud/referrals`, `POST /cloud/referrals/redeem` | Referral summary and invite redeem |
+| `GET /cloud/lanes/without-computer`, `POST /cloud/projects/computers/delete`, `/cloud/automations…` | Kept lanes, a project's computers (with `dryRun`), automations whose home is ADE Cloud |
+
 - `cloud_computers` records each computer's owner. A call for another
   account's or an unknown instance id is 404.
 - Every wake, start, send and create refusal is `{ code, message }` from
@@ -426,11 +438,6 @@ account bearer. The plan rules, hours, disk and cleanups are in
   computers; about 25 may be awake at once (`AWAKE_COMPUTER_CAP`).
 - Every delete writes `cloud_delete_log` (after it reads the provider's
   history); every power change writes `cloud_power_log`.
-- `POST /cloud/instances/:id/idle` asks to sleep the computer.
-  `POST /cloud/instances/:id/use` records a person's use during the idle save
-  (`last_active_at`), or answers 409 `computer_deleting`. `GET /cloud/instances`
-  marks a saving computer with `idleSaving`, through a 5-second Cache API copy
-  of the provider's list that a change of the account's rows skips.
 
 **The minute cron:**
 
@@ -468,11 +475,11 @@ email log line has the subject or a lane name.
   `STRIPE_DISK_PRICE_ID` ($2 per 10 GB a month) and `STRIPE_METER_EVENT`.
 - Each plan and add-on is its own product, so Checkout names each line. The
   customer gets the account's email from Clerk.
-- `POST /cloud/billing/checkout` and `/portal` answer a URL; Stripe returns to
-  `/billing/return`. With `returnTo: "web"` (also `/free-unlock`), it returns
-  to this server's own `WEB_CLIENT_ORIGIN` at `/?cloudReturn=<outcome>`, never
-  an address from the request. Any other `returnTo` is 400.
-  `POST /cloud/billing/extra-hours` takes `{ enabled }`, paid plans only.
+- Checkout, the portal and free-unlock answer a URL; Stripe returns to
+  `/billing/return`. With `returnTo: "web"`, it returns to this server's own
+  `WEB_CLIENT_ORIGIN` at `/?cloudReturn=<outcome>`, never an address from the
+  request. Any other `returnTo` is 400. `extra-hours` takes `{ enabled }`,
+  paid plans only.
 - `POST /webhooks/stripe` checks the signature, not a bearer. Production
   (`SENTRY_ENVIRONMENT=production`) drops `livemode: false` events with a 200.
   `cloud_stripe_events` runs each event once, and a handler re-reads the
@@ -578,52 +585,18 @@ headers `authorization, content-type`.
 | `DELETE /cloud/sign-ins/:id` | web | Removes it (for `claude`, every pass). |
 | `GET /cloud/models` | web, phone | Models per provider with a default, for a picker before any computer exists. |
 
-The first message (`chat.prompt`, id `chat.messageId` or the launch id) is
-stored with the launch, so the person may close the tab: the new computer
-reads the launch and starts the chat with it, as before. Messages sent while
-the computer is still being made or signed in are rows 2 and on. Once the
-chat exists the computer claims each, sends it to the chat and reports it. A
-claim is one conditional write and only its claim id may finish it; the
-computer writes its claim before it asks, and a message it may have sent but
-can't confirm is reported failed, never sent twice. A launch keeps at most 20
-messages before its chat starts. Message text is plain in D1, like the first
-message in `request_json`, and goes with the launch record.
+The launch flow (files, start, Git check, join, run, sign-in, queued
+messages, continue) is in
+[ADE Cloud › the server launcher](../../docs/features/ade-cloud/README.md#a-new-lane-with-no-computer-of-your-own-the-server-launcher).
+The server's own rules:
 
-A launch with `continueChat { machineKey, chatId, kind?: "chat" | "cli" }`
-continues an existing chat on a new computer (see "The message queue of an
-existing chat or CLI"). Each lane and chat has one active continue launch
-(partial unique index `cloud_launches_continue`); a second start answers the
-running one. For a CLI, the agent comes from the session's tool type and
-`modelId` is "". A continue launch that fails, times out, is cancelled or is
-gone fails its queued messages with the launch's sentence, but a message the
-computer reported `delivered` stays delivered (`chatMessagesDeliveredStatement`
-in `launchMessages.ts`). A Retry of a failed continue launch answers 409
-`computer_busy` while a newer launch continues the same chat.
-
-A launch whose chat provider isn't signed in on the computer pauses at
-`waiting_for_sign_in` with `signIn` (`CloudLaunchSignIn`): a device code and
-link, a link and a pasted code (`url_paste`, sent to
-`POST /cloud/instances/:id/sign-ins/:job/code`), a key to save
-(`api_key`, `PUT /cloud/sign-ins/:id`), or "sign in from ADE desktop"
-(`desktop`). Claude is `url_paste`: `claude setup-token` runs on the computer
-and its pass is saved to the account vault for every later computer. Cursor,
-OpenCode and Pi read keys the account keeps; Antigravity and Qwen sign in
-only in ADE desktop (`CLOUD_REMOTE_SIGN_IN`). The computer goes on by itself
-once the provider can run. The computer gives up after 30 minutes; the minute
-cron ends a launch still waiting after 45 minutes and deletes its computer.
-
-Before a computer is made, the start checks that it can clone the
-repository: a git credential in the account vault, or the account's ADE
-GitHub App sign-in (one `GET /repos/{owner}/{repo}` with the App's token).
-The App connected but not installed where it can see a private repository
-is 403 `github_app_not_installed` with "Give ADE access to <owner>" and
-`installUrl`. A public repository goes on either way.
-
-The sign-ins route is the web's path to the account vault on the push relay
-(which has no browser CORS). It calls the relay through the `ACTIVITY_RELAY`
-binding with the caller's own bearer, so it only ever reaches the caller's
-vault, and the items are the desktop's (`integration/cloud-key-<id>`,
-`provider_login/claude-pass/<hex>`). A value passes through memory only.
+| Topic | Rule |
+| --- | --- |
+| Queued launch messages | The first message (`chat.prompt`, id `chat.messageId` or the launch id) is row 1, stored with the launch. Later sends are rows 2 and on, at most 20 before the chat starts. The text is plain in D1, like `request_json`. A claim is one conditional write, written before the send; only its claim id finishes it. A send the computer can't confirm is reported failed, never sent twice. |
+| Continue launches | `continueChat { machineKey, chatId, kind?: "chat" \| "cli" }`. One active launch per lane and chat (`cloud_launches_continue`); a second start answers the running one. For a CLI the agent comes from the tool type and `modelId` is "". The end of a launch fails its queued messages, but `delivered` stays (`chatMessagesDeliveredStatement`). A Retry answers 409 `computer_busy` while a newer launch continues the chat. |
+| Sign-in on the computer | `waiting_for_sign_in` with `signIn` (`CloudLaunchSignIn`): a device code, `url_paste` (to `POST /cloud/instances/:id/sign-ins/:job/code`), `api_key` (`PUT /cloud/sign-ins/:id`) or `desktop`. Claude is `url_paste` (`claude setup-token`; the pass goes to the vault). Cursor, OpenCode and Pi read account keys; Antigravity and Qwen sign in only on the desktop (`CLOUD_REMOTE_SIGN_IN`). The computer waits 30 minutes; the cron ends the launch at 45 and deletes its computer. |
+| Clone check | Before a create: a vault Git credential or the GitHub App sign-in (one `GET /repos/{owner}/{repo}`). App connected but not installed for a private repository: 403 `github_app_not_installed` with `installUrl`. A public repository goes on. |
+| The sign-ins route | The web's path to the vault on the push relay, through the `ACTIVITY_RELAY` binding with the caller's own bearer, so it reaches only the caller's vault (`integration/cloud-key-<id>`, `provider_login/claude-pass/<hex>`). A value passes through memory only. |
 
 ## Saved chats and other saved copies
 
