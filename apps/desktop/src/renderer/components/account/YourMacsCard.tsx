@@ -67,6 +67,7 @@ import { RoutePills } from "./MachineRoutes";
 import { routesAvailable, useMachineRoutesControl } from "./useMachineRoutes";
 import type { AccountThisComputer } from "./AccountHero";
 import { machineRouteItems } from "./machineRouteModel";
+import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import "./accountPage.css";
 
 /** The quiet heading over one column of a machine's expanded inventory. */
@@ -623,14 +624,21 @@ export function YourMacsCard({
     };
   }, []);
 
+  // ADE Cloud computers are not the person's own: ADE Cloud has its own settings.
+  const cloudIndex = useAdeCloudLaneComputers();
   const machines = useMemo(() => {
-    const list = [...(result?.machines ?? [])];
+    const list = (result?.machines ?? []).filter((machine) =>
+      !isAdeCloudComputer({ machineKey: machine.machineKey, hostname: machine.name }, cloudIndex));
     // Pin this computer first; keep directory order otherwise.
     return list.sort((a, b) => (isThisMac(b) ? 1 : 0) - (isThisMac(a) ? 1 : 0));
-  }, [result?.machines, isThisMac]);
+  }, [result?.machines, isThisMac, cloudIndex]);
 
   const rows = useMemo<ComputerDisplayRow[]>(() => {
-    if (usingWorkspaceRoster) return webMachines.map(displayRowFromWebMachine);
+    if (usingWorkspaceRoster) {
+      return webMachines
+        .filter((machine) => !isAdeCloudComputer({ machineKey: machine.accountMachine?.machineKey ?? null, hostname: machine.accountMachine?.name ?? null }, cloudIndex))
+        .map(displayRowFromWebMachine);
+    }
     return machines.map((machine) =>
       displayRowFromAccountMachine(
         machine,
@@ -638,7 +646,7 @@ export function YourMacsCard({
         isMachineConnected(machine, connectedIds),
       ),
     );
-  }, [connectedIds, isThisMac, machines, usingWorkspaceRoster, webMachines]);
+  }, [cloudIndex, connectedIds, isThisMac, machines, usingWorkspaceRoster, webMachines]);
 
   const reloadMachines = useCallback(() => {
     invalidateAccountMachines();

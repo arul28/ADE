@@ -70,7 +70,10 @@ export function CloudQueuedMessages({
         id: "chat-cloud-queued-messages",
         tone: "info",
         busy: waking,
-        title: waking ? `Waking your ADE Cloud computer… ${count} for it.` : `${count} for your ADE Cloud computer.`,
+        // A row with a launch goes to a new computer (its old one was deleted), not a waking one.
+        title: messages.some((message) => message.launchId)
+          ? `Starting a new ADE Cloud computer… ${count} for it.`
+          : waking ? `Waking your ADE Cloud computer… ${count} for it.` : `${count} for your ADE Cloud computer.`,
         detail: error ?? "The agent gets them in order when the computer is up.",
         report: false,
         extra: (
