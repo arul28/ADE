@@ -34,7 +34,8 @@ const EMPTY_GRID_SETS: WorkGridSet[] = [];
 import { scheduleTerminalViewPreload, TerminalView } from "./LazyTerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
-import { isSavedTerminalSession, SavedTerminalCopyView } from "./SavedTerminalCopy";
+import { SavedTerminalCopyView } from "./SavedTerminalCopy";
+import { isSavedTerminalSession } from "../../state/cloudSavedTerminals";
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
 import {
   composerTriggerSpansWholeDraft,
