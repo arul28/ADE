@@ -5011,11 +5011,14 @@ export function registerIpc({
         || ctx.projectScaffoldService.getDefaultParentDir(listLocalRecentProjectSummaries());
       let result: CloneProjectResult;
       try {
+        // A folder that already holds a complete checkout of this repository is
+        // the answer, as for a clone on another machine; any other folder there
+        // is still refused.
         result = await ctx.projectScaffoldService.cloneRepository({
           url,
           parentDir,
           ...(name ? { name } : {}),
-        });
+        }, { reuseExistingCheckout: true });
       } catch (error) {
         return surfaceCodedError(error);
       }

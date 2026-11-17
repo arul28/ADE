@@ -507,7 +507,7 @@ function buildAdeCloudLaneGroup(
   // matched on this repo, so a lane computer it carries is this project's.
   const computers = input.computers.filter((computer) => !origin || !computer.projectOrigin || computer.projectOrigin === origin);
   const machineIds = machines
-    .filter((machine) => adeCloudLaneComputerForMachine({ hostname: machine.hostname }, computers) != null)
+    .filter((machine) => adeCloudLaneComputerForMachine({ hostname: machine.hostname, targetId: machine.machineId }, computers) != null)
     .map((machine) => machine.machineId);
   const cloudIds = new Set(machineIds);
   return {

@@ -745,6 +745,10 @@ function routeLoginProvider(target: Pick<HarnessLaunchTarget, "harness" | "sourc
       return null;
     case "subscription":
       return target.source.provider;
+    case "opencode":
+      // OpenCode's own login or key serves the route; another harness's login
+      // (Claude Code's, Codex's) plays no part in it.
+      return target.harness === "opencode" ? "opencode" : null;
     default:
       return target.harness;
   }
@@ -7606,11 +7610,16 @@ export function AgentChatPane({
     subagentViewSnapshot?.reasoningEffort,
   ]);
 
+  // A custom provider whose source brings its own login (a key, an account,
+  // OpenCode) needs the harness installed, not signed in.
+  const routeBringsOwnLogin = activeLaunchTarget != null
+    && routeLoginProvider(activeLaunchTarget) !== activeProviderConnection?.provider;
   const cliRuntimeBlocked = Boolean(
     selectedSessionId
     // A turn that is running proves the runtime is there, whatever a status
     // read from before it started says.
     && !turnActive
+    && !(routeBringsOwnLogin && activeProviderConnection?.runtimeDetected)
     && activeProviderConnection
     && !activeProviderConnection.runtimeAvailable
     // ADE's copy is downloading, or downloads at this chat's first turn: an
@@ -18766,7 +18775,10 @@ export function AgentChatPane({
   const providerSignInNeed = useMemo<(ProviderSignInNeed & { key: string }) | null>(() => {
     if (!signInProvider || turnActive || subagentView || chatScope || draftSkipsLocalSignIn) return null;
     const machineKey = activeComposerRuntimeBinding?.key ?? "tab";
-    if (chatSignInFailure && chatSignInFailure.provider === signInProvider) {
+    // A failed sign-in asks for a login only when this chat runs on that login:
+    // a custom provider or a key brings its own, so the harness's sign-out is
+    // not the reason its turn failed.
+    if (chatSignInFailure && chatSignInFailure.provider === signInProvider && signInLoginProvider === signInProvider) {
       return {
         provider: signInProvider,
         reason: "failed-turn",

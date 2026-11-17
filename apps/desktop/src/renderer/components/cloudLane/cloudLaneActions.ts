@@ -167,7 +167,7 @@ export function cloudLaneComputerOfLane(
   computers: readonly AdeCloudLaneComputer[],
 ): { instanceId: string; laneName: string } | null {
   if (!pin || pin.kind !== "remote") return null;
-  const computer = adeCloudLaneComputerForMachine({ hostname: pin.hostname ?? null }, computers);
+  const computer = adeCloudLaneComputerForMachine({ hostname: pin.hostname ?? null, targetId: pin.targetId }, computers);
   if (!computer || computer.laneId !== laneId) return null;
   return { instanceId: computer.instanceId, laneName: computer.laneName };
 }
