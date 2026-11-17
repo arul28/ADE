@@ -2968,6 +2968,20 @@ describe("ADE Cloud without a computer", () => {
     expect([second.status, ((await second.json()) as { wake: unknown }).wake]).toEqual([201, { state: "launching", launchId: wake.launchId }]);
     expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
     expect(harness.rows("select message_id from cloud_launch_messages where launch_id = ? order by seq", wake.launchId)).toEqual([{ message_id: "m1" }, { message_id: "m2" }]);
+
+    // The launch fails: both messages read failed with its sentence at once, and the minute cron writes it down.
+    harness.exec("update cloud_launches set state = 'failed', error = 'The clone failed.' where launch_id = ?", wake.launchId);
+    const listed = async () => ((await (await harness.send(OWNER, "GET", "/cloud/chats/key-gone/c1/messages")).json()) as { messages: Array<{ messageId: string; state: string; error: string | null }> }).messages
+      .map((message) => [message.messageId, message.state, message.error]);
+    expect(await listed()).toEqual([["m1", "failed", "The clone failed."], ["m2", "failed", "The clone failed."]]);
+    await harness.tick();
+    expect(harness.rows("select message_id, state, error from cloud_chat_messages order by seq")).toEqual([
+      { message_id: "m1", state: "failed", error: "The clone failed." },
+      { message_id: "m2", state: "failed", error: "The clone failed." },
+    ]);
+    // A send after it starts a new launch: the failed one no longer holds the chat.
+    const third = await send("m3");
+    expect([third.status, ((await third.json()) as { wake: { launchId: string } }).wake.launchId]).toEqual([201, expect.not.stringMatching(wake.launchId)]);
   });
 
   it("a saved CLI takes messages like a chat: its computer reads it as a CLI, a gone one continues it with no model, a shell takes none", async () => {

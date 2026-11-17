@@ -18,7 +18,7 @@ import {
 } from "./contract";
 import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
 import { addLaunchMessage, cancelLaunchMessageStatement, LAUNCH_MESSAGE_ID, launchMessageOf } from "./launchMessages";
-import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, type LaunchRow, type ParsedLaunchRequest } from "./launches";
+import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
 import { logCloud, type CloudEnv, type ComputerRow } from "./store";
 import { copyRow, openSummary, type CopyRow } from "./chats";
@@ -100,6 +100,10 @@ function signInOf(row: ChatMessageRow): CloudLaunchSignIn | null {
 }
 
 /** A launch message's state as a queued chat message's. */
+/** The sentences of a message a continue launch never sent; the launch's own sentence comes first when it has one. */
+const LAUNCH_CANCELLED_SENTENCE = "The new computer for this chat was cancelled, so this message wasn't sent. Send it again.";
+const LAUNCH_FAILED_SENTENCE = "The new computer for this chat didn't start, so this message wasn't sent. Send it again.";
+
 function stateFromLaunch(message: CloudLaunchMessage): CloudChatMessageState {
   if (message.state === "failed" && message.error === "Cancelled.") return "cancelled";
   return message.state;
@@ -117,10 +121,18 @@ async function messageOf(env: CloudEnv, keys: UserKeys, row: ChatMessageRow): Pr
       state = stateFromLaunch(carried);
       error = carried.error;
     }
-    if (state === "queued" || state === "sending") {
-      const launch = await env.DB.prepare("select state, sign_in_json from cloud_launches where launch_id = ?").bind(row.launch_id)
-        .first<{ state: string; sign_in_json: string | null }>();
-      if (launch?.state === "waiting_for_sign_in" && launch.sign_in_json) {
+    if (state === "queued" || state === "sending" || state === "waiting_for_sign_in") {
+      const launch = await env.DB.prepare("select * from cloud_launches where launch_id = ?").bind(row.launch_id).first<LaunchRow>();
+      const record = launch ? recordOf(launch, Date.now()) : null;
+      if (!launch || !record) {
+        // The launch record is gone (it expired): the message was never sent.
+        state = "failed";
+        error = error ?? LAUNCH_FAILED_SENTENCE;
+      } else if (record.state === "failed" || record.state === "cancelled") {
+        // The launch failed, timed out or was cancelled: say so in the chat, never a message that waits forever.
+        state = "failed";
+        error = record.state === "cancelled" ? LAUNCH_CANCELLED_SENTENCE : record.error ?? LAUNCH_FAILED_SENTENCE;
+      } else if (launch.state === "waiting_for_sign_in" && launch.sign_in_json) {
         state = "waiting_for_sign_in";
         signIn = signInOf({ ...row, sign_in_json: launch.sign_in_json });
       }
@@ -628,7 +640,36 @@ const CRON_BATCH = 200;
  * final row is pruned after 7 days. A message a computer claimed and never
  * finished fails after the same 24 hours, never sent twice.
  */
-export async function expireChatMessages(env: Pick<CloudEnv, "DB">, now = Date.now()): Promise<{ expired: number; pruned: number }> {
+export async function expireChatMessages(env: Pick<CloudEnv, "DB">, now = Date.now()): Promise<{ expired: number; pruned: number; launchSettled: number }> {
+  // Messages a continue launch carries take their final state from it: first the ones its computer finished,
+  // then the ones it never will (the launch failed, timed out, was cancelled or is gone), with its sentence.
+  const finished = await env.DB.prepare(`
+    update cloud_chat_messages set
+      state = (select case when lm.state = 'failed' and lm.error = 'Cancelled.' then 'cancelled' else lm.state end
+        from cloud_launch_messages lm where lm.launch_id = cloud_chat_messages.launch_id and lm.message_id = cloud_chat_messages.message_id),
+      error = (select lm.error from cloud_launch_messages lm where lm.launch_id = cloud_chat_messages.launch_id and lm.message_id = cloud_chat_messages.message_id),
+      updated_at = ?
+    where rowid in (
+      select m.rowid from cloud_chat_messages m
+        join cloud_launch_messages lm on lm.launch_id = m.launch_id and lm.message_id = m.message_id
+      where m.state in ${OPEN_STATES} and m.via_launch = 1 and lm.state in ('delivered', 'failed') limit ?
+    )
+  `).bind(now, CRON_BATCH).run();
+  const neverSent = await env.DB.prepare(`
+    update cloud_chat_messages set state = 'failed',
+      error = coalesce(
+        (select case when l.state = 'cancelled' then ? when l.state = 'failed' then l.error end from cloud_launches l where l.launch_id = cloud_chat_messages.launch_id),
+        ?),
+      updated_at = ?
+    where rowid in (
+      select m.rowid from cloud_chat_messages m left join cloud_launches l on l.launch_id = m.launch_id
+      where m.state in ${OPEN_STATES} and m.via_launch = 1
+        and (l.launch_id is null or l.state in ('failed', 'cancelled')
+          or (l.state in ('joining', 'needs_approval') and l.join_expires_at is not null and l.join_expires_at <= ?))
+      limit ?
+    )
+  `).bind(LAUNCH_CANCELLED_SENTENCE, LAUNCH_FAILED_SENTENCE, now, now, CRON_BATCH).run();
+  const launchSettled = (finished.meta?.changes ?? 0) + (neverSent.meta?.changes ?? 0);
   const expired = await env.DB.prepare(`
     update cloud_chat_messages set state = 'failed', error = ?, updated_at = ?
     where rowid in (
@@ -640,7 +681,7 @@ export async function expireChatMessages(env: Pick<CloudEnv, "DB">, now = Date.n
       select rowid from cloud_chat_messages where state in ('delivered', 'failed', 'cancelled') and updated_at < ? limit ?
     )
   `).bind(now - CLOUD_CHAT_MESSAGE_PRUNE_MS, CRON_BATCH).run();
-  const counts = { expired: expired.meta?.changes ?? 0, pruned: pruned.meta?.changes ?? 0 };
-  if (counts.expired || counts.pruned) logCloud("cloud.chat_messages_swept", counts);
+  const counts = { expired: expired.meta?.changes ?? 0, pruned: pruned.meta?.changes ?? 0, launchSettled };
+  if (counts.expired || counts.pruned || counts.launchSettled) logCloud("cloud.chat_messages_swept", counts);
   return counts;
 }
