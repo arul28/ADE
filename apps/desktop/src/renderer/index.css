@@ -5132,9 +5132,12 @@ button, [role="button"] {
 /* On a touch surface the block's buttons are always shown, and their plate is
    nearly transparent: give them the block's own solid colour instead of a blur,
    which would otherwise stay on the page for every code block in the chat (and
-   on macOS, make Chromium redraw the whole window for every streamed word). */
+   on macOS, make Chromium redraw the whole window for every streamed word).
+   A tap leaves `:hover` on in a touch browser, and its more specific rule would
+   put the near-transparent plate back. */
 @media (hover: none) {
-  .ade-chat-copy-button {
+  .ade-chat-copy-button,
+  .ade-chat-copy-button:hover {
     background: var(--chat-code-bg, var(--color-surface-recessed)) !important;
   }
 }

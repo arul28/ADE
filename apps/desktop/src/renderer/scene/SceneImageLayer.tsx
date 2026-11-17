@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { toLayoutPx } from "../lib/webZoom";
 import type { ActiveScene } from "./useScene";
 
 type ImageScene = Extract<ActiveScene, { kind: "image" }>;
@@ -146,7 +147,16 @@ export function SceneImageLayer({ scene, variant = "page" }: { scene: ImageScene
     if (!host) return;
     let raf = 0;
     const measureNow = () => {
-      const rect = frost ? restingOffset(host) : host.getBoundingClientRect();
+      // Both variants measure in layout pixels, the unit a `left`/`top` style is
+      // written in. The hosted web client's body zoom makes a rect bigger than
+      // that, so a rect is converted first; otherwise the page's picture and a
+      // frost's slice of it would sit at different offsets.
+      const rect = frost
+        ? restingOffset(host)
+        : (() => {
+            const box = host.getBoundingClientRect();
+            return { left: toLayoutPx(box.left), top: toLayoutPx(box.top) };
+          })();
       const next = { left: rect.left, top: rect.top, width: window.innerWidth, height: window.innerHeight };
       if (frost) {
         // Called from the resize observer, after layout and before paint:
