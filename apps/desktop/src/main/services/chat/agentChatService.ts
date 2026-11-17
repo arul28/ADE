@@ -2039,6 +2039,8 @@ function resolveClaudeAgentSdkVersion(): string {
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
+/** The project kv key (plus the session id) that holds the send id a restored ADE Cloud CLI already has. */
+const CLOUD_RESTORE_CLI_SENT_KEY_PREFIX = "cloud_restore.cli_sent:";
 const CLAUDE_UNATTENDED_APPROVAL_MESSAGE = "This automation run has nobody to approve tools, so this call was refused. Keep going with what you are allowed to do, and say in your final message what you could not do.";
 const CLAUDE_UNATTENDED_PLAN_MESSAGE = "This automation run has nobody to approve a plan, so the plan was not approved. Finish without implementing it and report the plan in your final message.";
 const UNATTENDED_QUESTION_MESSAGE = "This automation run has nobody to answer questions. Do not wait for an answer: use your best judgment, and say what you assumed in your final message.";
@@ -56865,9 +56867,26 @@ export function createAgentChatService(args: {
       });
       if (typed.outcome === "ended") throw new Error("The restored CLI stopped before ADE could type the message. Open it and send the message again.");
     };
+    // The send id this CLI already has, kept in the project database so a
+    // retry after a brain restart (the in-memory type ledger is gone) still
+    // finds it. A fresh CLI gets the message as its first prompt, which the
+    // type ledger never sees.
+    const sentKey = `${CLOUD_RESTORE_CLI_SENT_KEY_PREFIX}${sessionId}`;
+    const alreadySent = (): boolean =>
+      db?.getJson<{ clientMessageId?: unknown }>(sentKey)?.clientMessageId === restoreArgs.clientMessageId;
+    const markSent = (): void => {
+      try {
+        db?.setJson(sentKey, { clientMessageId: restoreArgs.clientMessageId, at: new Date().toISOString() });
+      } catch (error) {
+        logger.warn("agent_chat.cloud_restore_cli_mark_failed", { sessionId, error: getErrorMessage(error) });
+      }
+    };
     if (sessionService.get(sessionId)) {
-      // A retry after the CLI started: type the message (once, by its send id).
-      await typeMessage();
+      // A retry after the CLI started: type the message only if this send id never reached it.
+      if (!alreadySent()) {
+        await typeMessage();
+        markSent();
+      }
       return { sessionId, restoredWith: "earlier" };
     }
     const lane = await laneService.getSummary(restoreArgs.laneId);
@@ -56928,6 +56947,7 @@ export function createAgentChatService(args: {
       parent: null,
     });
     if (launched.mode === "resume") await typeMessage();
+    markSent();
     logger.info("agent_chat.cloud_restored_cli", { sessionId, provider, restoredWith: launched.mode === "resume" ? "capsule" : "fresh" });
     return { sessionId, restoredWith: launched.mode === "resume" ? "capsule" : "fresh" };
   };
