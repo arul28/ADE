@@ -218,7 +218,7 @@ function PathButton({ on, onPick, title, hint }: { on: boolean; onPick: () => vo
 }
 
 function ComputerFacts({ computer }: { computer: CloudPlanCleanupComputer }) {
-  const name = computer.laneName ?? computer.name ?? computer.instanceId;
+  const name = computer.laneName ?? computer.name ?? "Computer without a lane";
   return (
     <>
       <span className="adecd-limits-name">

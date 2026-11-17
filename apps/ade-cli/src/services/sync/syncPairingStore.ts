@@ -40,26 +40,65 @@ export type SyncPairingRecord = {
    */
   localTrustOrigin?: boolean;
   /**
-   * A PIN re-pair that the device has not proven it received. See
-   * `writeNewPairingRecord`: the fields above stay live and authoritative until
-   * a legacy hello promotes the staged secret or a commit-capable client
-   * acknowledges hello_ok.
+   * A PIN re-pair, or an account adoption's new secret (`secretOnly`), that
+   * the device has not proven it received. See `writeNewPairingRecord`: the
+   * committed secret stays live until a legacy hello promotes the staged one
+   * or a commit-capable client acknowledges hello_ok.
    */
   pendingRotation?: PendingPairingRotation | null;
+  /**
+   * Hashes of account-adoption secrets that a later staging (another
+   * adoption, or a PIN re-pair) displaced from `pendingRotation` before any
+   * hello proved them. The device may have saved one, so each still
+   * authenticates (the pinned DPoP key still applies) and promotes like the
+   * staged secret. Newest first, at most MAX_DISPLACED_ACCOUNT_SECRETS.
+   * Proving the staged secret clears it; proving a displaced one keeps the
+   * staged rotation and the newer entries. Hosts that predate the field
+   * ignore it.
+   */
+  displacedAccountSecretHashes?: string[];
 };
 
 /** A pairing record as committed on disk, with no rotation staged behind it. */
-export type CommittedPairingRecord = Omit<SyncPairingRecord, "pendingRotation">;
+export type CommittedPairingRecord = Omit<SyncPairingRecord, "pendingRotation" | "displacedAccountSecretHashes">;
 
 export type PendingPairingRotation = {
   /** Wall-clock ms after which the staged record is abandoned. */
   expiresAtMs: number;
   /** The complete record that replaces the committed one when promoted. */
   record: CommittedPairingRecord;
+  /**
+   * Only the secret is staged: the committed record already carries every
+   * other field of `record`. Promotion then swaps in the new secret hash and
+   * keeps whatever the committed record became meanwhile (an account sign-out
+   * that demoted it), instead of restoring the fields of the staging moment.
+   * Hosts that predate the flag promote `record` whole, which is the same
+   * record at the moment it was staged.
+   */
+  secretOnly?: boolean;
 };
 
 /** How long a staged re-pair waits for the device to prove it received it. */
 export const PAIRING_ROTATION_WINDOW_MS = 10 * 60_000;
+
+/**
+ * An account adoption's staged secret does not expire. The device gets the new
+ * secret inside hello_ok and has no follow-up to arm a window with, so a
+ * device that saved the secret and then stayed away would find it dropped.
+ * The old secret stays valid meanwhile, which it was before the adoption, and
+ * a paired hello still needs the record's pinned DPoP key.
+ */
+const ACCOUNT_ROTATION_EXPIRES_AT_MS = Number.MAX_SAFE_INTEGER;
+
+/**
+ * How many displaced account secrets a record keeps accepting. The host keeps
+ * only hashes, so it cannot hand an unproven secret out again: each adoption
+ * hello from a device that presents none mints a new one, and a device that
+ * lost every one of those replies still holds the oldest. Each is 24 random
+ * bytes and still needs the pinned DPoP key, so a generous bound costs a few
+ * hash comparisons, never security.
+ */
+const MAX_DISPLACED_ACCOUNT_SECRETS = 16;
 
 type PairingSecretsFile = Record<string, SyncPairingRecord>;
 type RuntimeHostGrantFile = Record<string, { expiresAt: number }>;
@@ -91,6 +130,20 @@ type NewPairingResult = {
   deviceId: string;
   secret: string;
   pendingRotationExpiresAtMs: number | null;
+  /**
+   * True when the device proved the secret it already holds and the host kept
+   * it. The caller must not hand the secret back: the device has it.
+   */
+  keptExistingSecret?: boolean;
+};
+
+type AccountPairingOptions = NewPairingRecordOptions & {
+  /**
+   * The paired secret the device says it holds for this host. When it matches
+   * the committed or the staged secret, adoption keeps it instead of minting a
+   * new one, so no reply can be lost.
+   */
+  presentedSecret?: string | null;
 };
 
 type PairingTrust =
@@ -223,13 +276,72 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
   };
 
   const committedView = (record: SyncPairingRecord): SyncPairingRecord => {
-    const { pendingRotation: _pending, ...committed } = record;
+    const { pendingRotation: _pending, displacedAccountSecretHashes: _displaced, ...committed } = record;
     return committed;
+  };
+
+  /**
+   * The displaced account secrets to keep once `record`'s staged rotation is
+   * replaced. Only an account adoption's secret is kept: the device got it in
+   * hello_ok and may have saved it. A PIN re-pair's secret expires anyway.
+   */
+  const displacedAfterRestaging = (record: SyncPairingRecord): string[] | undefined => {
+    const pending = record.pendingRotation;
+    const kept = [
+      ...(pending?.secretOnly ? [pending.record.secretHash] : []),
+      ...(record.displacedAccountSecretHashes ?? []),
+    ].slice(0, MAX_DISPLACED_ACCOUNT_SECRETS);
+    return kept.length > 0 ? kept : undefined;
+  };
+
+  /**
+   * Which staged secret `presentedHash` proves, if any: the staged rotation,
+   * or a displaced account secret. Every comparison is constant-time.
+   */
+  const matchStagedSecret = (
+    record: SyncPairingRecord,
+    presentedHash: string,
+  ): { kind: "pending"; pending: PendingPairingRotation } | { kind: "displaced"; secretHash: string } | null => {
+    const pending = record.pendingRotation;
+    if (pending && safeHashEquals(pending.record.secretHash, presentedHash)) return { kind: "pending", pending };
+    const displaced = (record.displacedAccountSecretHashes ?? []).find((hash) => safeHashEquals(hash, presentedHash));
+    return displaced ? { kind: "displaced", secretHash: displaced } : null;
+  };
+
+  /**
+   * What stays staged once a displaced secret is proven: everything issued
+   * after it. A PIN re-pair waiting for its `pairing_commit` keeps its window,
+   * and a newer adoption secret the device may also hold keeps working.
+   */
+  const stagedAfterDisplacedProof = (
+    record: SyncPairingRecord,
+    provenHash: string,
+  ): Pick<SyncPairingRecord, "pendingRotation" | "displacedAccountSecretHashes"> => {
+    const displaced = record.displacedAccountSecretHashes ?? [];
+    const newer = displaced.slice(0, Math.max(0, displaced.indexOf(provenHash)));
+    return {
+      pendingRotation: record.pendingRotation ?? null,
+      ...(newer.length > 0 ? { displacedAccountSecretHashes: newer } : {}),
+    };
+  };
+
+  /**
+   * The record a staged rotation becomes once its secret is proven. A
+   * secret-only rotation keeps the committed fields as they are now.
+   */
+  const promotedRecord = (
+    entry: SyncPairingRecord,
+    staged: NonNullable<ReturnType<typeof matchStagedSecret>>,
+  ): CommittedPairingRecord => {
+    if (staged.kind === "displaced") return { ...committedView(entry), secretHash: staged.secretHash };
+    return staged.pending.secretOnly
+      ? { ...committedView(entry), secretHash: staged.pending.record.secretHash }
+      : { ...staged.pending.record };
   };
 
   const writeNewPairingRecord = (
     peer: SyncPeerMetadata,
-    options?: NewPairingRecordOptions,
+    options?: AccountPairingOptions,
     trust: PairingTrust = { kind: "pin" },
     stageRotation = false,
   ): NewPairingResult => {
@@ -363,9 +475,81 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
           ? false
           : existing.syncHostRecoveryGranted,
         pendingRotation: { expiresAtMs, record: replacement },
+        // A phone may hold an adoption's secret it never proved. A PIN reply
+        // lost now must not take that one away too.
+        displacedAccountSecretHashes: displacedAfterRestaging(existing),
       };
       writeRecords(records);
       return { deviceId: peer.deviceId, secret, pendingRotationExpiresAtMs: expiresAtMs };
+    }
+    // Account adoption of a record that already exists. It used to write the
+    // new secret straight through before hello_ok left this machine, so a drop
+    // before the device saved the reply left the two ends on different
+    // secrets, with "pair it again" as the only way out. Now the device keeps
+    // whichever secret it holds:
+    // - It proved the secret it holds: keep that secret, mint nothing.
+    // - It did not (an older client, or one that lost its secret): stage the
+    //   new secret behind the committed one. The account's authority applies
+    //   now, because the attestation is the proof; only the secret waits for
+    //   the first hello that authenticates with it.
+    if (trust.kind === "account" && existing) {
+      const current = pruneExpiredRotation(existing, Date.now()).record!;
+      const presented = options?.presentedSecret?.trim() || null;
+      const presentedHash = presented ? hashSecret(presented) : null;
+      const provedCommitted = presentedHash != null && safeHashEquals(current.secretHash, presentedHash);
+      const provedStaged = !provedCommitted && presentedHash != null
+        ? matchStagedSecret(current, presentedHash)
+        : null;
+      if (presented && (provedCommitted || provedStaged)) {
+        records[peer.deviceId] = provedCommitted
+          ? {
+            ...replacement,
+            secretHash: current.secretHash,
+            lastUsedAt: nowIso(),
+            // A staged secret is not this device's to discard: it may hold it
+            // in a store another process writes.
+            pendingRotation: current.pendingRotation ?? null,
+            displacedAccountSecretHashes: current.displacedAccountSecretHashes,
+          }
+          : provedStaged!.kind === "pending"
+            ? {
+              // Proving the staged secret promotes it and retires the rest.
+              ...replacement,
+              secretHash: provedStaged!.pending.record.secretHash,
+              lastUsedAt: nowIso(),
+              pendingRotation: null,
+            }
+            : {
+              ...replacement,
+              secretHash: provedStaged!.secretHash,
+              lastUsedAt: nowIso(),
+              ...stagedAfterDisplacedProof(current, provedStaged!.secretHash),
+            };
+        writeRecords(records);
+        return {
+          deviceId: peer.deviceId,
+          secret: presented,
+          pendingRotationExpiresAtMs: null,
+          keptExistingSecret: true,
+        };
+      }
+      records[peer.deviceId] = {
+        ...replacement,
+        secretHash: current.secretHash,
+        lastUsedAt: current.lastUsedAt,
+        pendingRotation: {
+          expiresAtMs: ACCOUNT_ROTATION_EXPIRES_AT_MS,
+          record: replacement,
+          secretOnly: true,
+        },
+        // The secret staged before this one left in an earlier hello_ok. A
+        // device that saved it and then lost this reply must keep working.
+        displacedAccountSecretHashes: displacedAfterRestaging(current),
+      };
+      writeRecords(records);
+      // No window for the caller to arm: the staged secret never expires and
+      // the first hello that presents it promotes it.
+      return { deviceId: peer.deviceId, secret, pendingRotationExpiresAtMs: null };
     }
     records[peer.deviceId] = replacement;
     writeRecords(records);
@@ -392,13 +576,12 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     },
 
     /**
-     * PIN pairing over the wire. This is the only entry point that stages its
-     * rotation: it is the one whose credential crosses two more round trips
-     * (pairing_result, then hello) before the device can persist it, and the
-     * only one whose recovery costs the user a walk back to the Mac. Account
-     * adoption returns its secret inside `hello_ok` with no acknowledged
-     * follow-up, so staging it would strand devices that never send another
-     * hello; local OS/SSH trust hands the secret back in-process.
+     * PIN pairing over the wire. Its credential crosses two more round trips
+     * (pairing_result, then hello) before the device can persist it, so a
+     * re-pair stages behind the committed secret for PAIRING_ROTATION_WINDOW_MS.
+     * Account adoption stages too, without a window (see
+     * `writeNewPairingRecord`); local OS/SSH trust hands the secret back
+     * in-process and writes straight through.
      */
     pairPeer(
       peer: SyncPeerMetadata,
@@ -422,7 +605,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     pairPeerViaAccount(
       peer: SyncPeerMetadata,
       attestation: VerifiedAccountAttestation,
-      options?: NewPairingRecordOptions,
+      options?: AccountPairingOptions,
     ): NewPairingResult {
       if (!isVerifiedAccountAttestation(attestation)) {
         throw pairingError("account_not_verified", "Account attestation was not verified.");
@@ -491,9 +674,10 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         writeRecords(records);
         return true;
       }
-      const pending = entry.pendingRotation;
-      if (pending && safeHashEquals(pending.record.secretHash, presented)) {
-        if (options.deferPendingCommit) {
+      const staged = matchStagedSecret(entry, presented);
+      if (staged) {
+        const pending = staged.kind === "pending" ? staged.pending : null;
+        if (options.deferPendingCommit && pending) {
           // Backfills the committed record only. The staged replacement keeps
           // whatever the re-pair decided, so rotation staging is untouched.
           records[normalized] = withBackfilledSyncHostRecoveryGrant({
@@ -505,8 +689,9 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
           });
         } else {
           records[normalized] = withBackfilledSyncHostRecoveryGrant({
-            ...pending.record,
+            ...promotedRecord(entry, staged),
             lastUsedAt: nowIso(),
+            ...(staged.kind === "displaced" ? stagedAfterDisplacedProof(entry, staged.secretHash) : {}),
           });
         }
         writeRecords(records);
@@ -532,10 +717,8 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (!entry) return null;
       const presented = hashSecret(secret);
       if (safeHashEquals(entry.secretHash, presented)) return committedView(entry);
-      const pending = entry.pendingRotation;
-      return pending && safeHashEquals(pending.record.secretHash, presented)
-        ? { ...pending.record }
-        : null;
+      const staged = matchStagedSecret(entry, presented);
+      return staged ? promotedRecord(entry, staged) : null;
     },
 
     /**
@@ -557,7 +740,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         }
         return null;
       }
-      records[normalized] = { ...pending.record, lastUsedAt: nowIso() };
+      records[normalized] = { ...promotedRecord(pruned.record!, { kind: "pending", pending }), lastUsedAt: nowIso() };
       writeRecords(records);
       return committedView(records[normalized]!);
     },
@@ -574,9 +757,19 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (!entry) return null;
       const presented = hashSecret(secret);
       if (safeHashEquals(entry.secretHash, presented)) return "committed";
-      const pending = entry.pendingRotation;
-      if (pending && safeHashEquals(pending.record.secretHash, presented)) return "pending";
-      return null;
+      return matchStagedSecret(entry, presented) ? "pending" : null;
+    },
+
+    /**
+     * Whether an unproven PIN re-pair is still waiting on this device. An
+     * account adoption's staged secret does not count: it never expires, so
+     * treating it like a PIN re-pair would defer every later adoption.
+     */
+    hasPendingPinRotation(deviceId: string): boolean {
+      const normalized = deviceId.trim();
+      if (!normalized) return false;
+      const pending = pruneExpiredRotation(readRecords()[normalized], Date.now()).record?.pendingRotation;
+      return Boolean(pending && !pending.secretOnly);
     },
 
     /** Whether an unproven re-pair is still waiting on this device. */

@@ -250,6 +250,7 @@ enum WorkSettingsCatalog {
     "passwords.logins": Setting(path: "App › Passwords & Secrets › Saved logins", locked: true),
     "passwords.secrets": Setting(path: "App › Passwords & Secrets › Saved secrets", locked: true),
     "passwords.activity": Setting(path: "App › Passwords & Secrets › Password activity", locked: false),
+    "passwords.web": Setting(path: "App › Passwords & Secrets", locked: false),
     "stats.usage": Setting(path: "You › Usage › Usage & spend", locked: true),
     "ade-mcp.server": Setting(path: "App › ADE MCP › ADE MCP: let AI apps use ADE", locked: true),
     "ade-mcp.connect": Setting(path: "App › ADE MCP › Connect an AI app to ADE", locked: true),

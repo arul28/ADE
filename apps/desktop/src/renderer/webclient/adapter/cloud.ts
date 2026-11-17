@@ -13,10 +13,13 @@ import type { CloudSignInStatus } from "../../../shared/cloudSignIns";
 import { createWebCloudBilling, type CloudBillingAccountClient } from "./cloudBilling";
 import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { AdapterInfra } from "./types";
+import { runAdeCloudAccountCall } from "../../../shared/adeCloud/accountCalls";
+import type { CloudAgentLimitsState } from "../../../../../account-directory/src/cloud/contract";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { UnsupportedRemoteCommandError } from "./infra/commandCaller";
 import type { AccountCloudLaunchesBridge } from "../../../shared/accountCloudLaunches";
 import type { BrowserAccountClient } from "../account/client";
+import type { CloudAccessIpcAnswer } from "../../../shared/adeCloudMachine";
 
 /**
  * `window.ade.cloud` for the web app: enough for Settings › ADE Cloud (the
@@ -86,19 +89,31 @@ function machinesResultOf(value: unknown): CloudMachinesResult | null {
 async function readCloudAccess(
   infra: Pick<AdapterInfra, "client" | "commands">,
   billing: ReturnType<typeof createWebCloudBilling>,
-): Promise<{ enabled: boolean }> {
-  const direct = await billing.accessEnabledCached().catch(() => null);
-  if (infra.client.getStatus().readiness !== "ready") return { enabled: direct === true };
+  accountUserId: () => string | null,
+): Promise<CloudAccessIpcAnswer> {
+  const serverAnswer = await billing.accessAnswerCached().catch(() => null);
+  const direct = serverAnswer?.enabled ?? null;
+  // A failed server read is "unknown", never "blocked": the store keeps ADE Cloud shown.
+  const fromServer = (): CloudAccessIpcAnswer => ({
+    enabled: direct === true,
+    state: direct === true ? "on" : direct === false ? "blocked" : "unknown",
+    reason: direct === false ? serverAnswer?.reason ?? null : null,
+    account: accountUserId(),
+  });
+  if (infra.client.getStatus().readiness !== "ready") return fromServer();
   // The computer's answer also carries its sign-in end warning; the server decides `enabled`.
   // A computer that drops mid-read leaves the server's answer standing.
   try {
-    const answer = await infra.commands.call<{ enabled: boolean }>("cloud.read", { action: "access" }, { fallback: { enabled: false }, retainLastRead: false });
-    return { ...answer, enabled: direct ?? answer?.enabled === true };
-  } catch (error) {
-    // Nothing learned from either side: let the page say it couldn't check.
-    if (direct == null) throw error;
-    forwardSignalToSentry("web.cloud_access_read_failed", {}, "cloud_access_read_failed", "info");
-    return { enabled: direct };
+    const answer = await infra.commands.call<CloudAccessIpcAnswer>("cloud.read", { action: "access" }, { fallback: { enabled: false }, retainLastRead: false });
+    if (direct == null) {
+      return { ...answer, enabled: answer?.enabled === true, state: answer?.enabled === true ? "on" : "unknown", reason: null, account: accountUserId() };
+    }
+    return { ...fromServer(), ...(answer?.signInEnd !== undefined ? { signInEnd: answer.signInEnd } : {}) };
+  } catch {
+    if (direct == null) {
+      forwardSignalToSentry("web.cloud_access_read_failed", {}, "cloud_access_read_failed", "info");
+    }
+    return fromServer();
   }
 }
 
@@ -109,7 +124,7 @@ export function createWebCloudAccessNamespace(
 ): NonNullable<Window["ade"]["cloudAccess"]> {
   const billing = createWebCloudBilling(accountClient);
   return {
-    read: () => readCloudAccess(infra, billing),
+    read: () => readCloudAccess(infra, billing, () => accountClient.getSnapshot().userId ?? null),
     // Read again when this tab's connection changes: a computer that comes online adds its sign-in warning.
     onChanged: (cb) => {
       let readiness = infra.client.getStatus().readiness;
@@ -159,7 +174,7 @@ export function createWebCloudNamespace(
   /** A computer of the account answers on this connection. */
   const computerOnline = () => client.getStatus().readiness === "ready";
 
-  const access = async (): Promise<boolean> => (await readCloudAccess(infra, billing)).enabled;
+  const access = async (): Promise<boolean> => (await readCloudAccess(infra, billing, () => accountClient.getSnapshot().userId ?? null)).enabled;
 
   /**
    * No computer online: the plan, hours and the account's ADE Cloud computers
@@ -284,6 +299,31 @@ export function createWebCloudNamespace(
       if (!api) throw new Error("Account sign-in isn't configured for this web client.");
       return await api.sendSignInCode(instanceId, jobId, code);
     },
+    // The account's lanes kept without a computer, straight from the account
+    // server (no computer needed). The rest of a lane's life (delete, free,
+    // size) runs in the desktop app.
+    laneLife: (async ({ method, args }: { method: string; args?: unknown }) => {
+      const api = accountClient.cloudApi();
+      if (!api) throw new Error("Sign in to ADE to see your ADE Cloud lanes.");
+      switch (method) {
+        case "lanesWithoutComputer":
+          return await api.lanesWithoutComputer();
+        case "forgetLaneWithoutComputer": {
+          const laneId = args && typeof args === "object" ? (args as { laneId?: unknown }).laneId : null;
+          if (typeof laneId !== "string" || !laneId.trim()) throw new Error("ADE doesn't know that lane.");
+          return { forgotten: (await api.forgetLaneWithoutComputer(laneId.trim())).forgotten === true };
+        }
+        case "listJobs":
+          return [];
+        default:
+          // The same sentence as `CLOUD_LANE_LIFE_UNAVAILABLE` (cloudLaneActions.ts).
+          throw new Error("Do this in the ADE desktop app. This window can't change ADE Cloud lanes.");
+      }
+    }) as NonNullable<Window["ade"]["cloud"]>["laneLife"],
+    carriedSignIns: async () => {
+      const answer = await accountClient.cloudApi()?.accountSignIns().catch(() => null);
+      return answer?.carried ?? null;
+    },
     savedChats: {
       // No computer to ask (ADE Web with none connected): the account server
       // answers the list itself.
@@ -306,8 +346,26 @@ export function createWebCloudNamespace(
         cb();
       });
     },
-    getAgentLimits: async () => await commands.call<CloudAgentLimits | null>("cloud.read", { action: "limits" }, { fallback: null, retainLastRead: false }),
-    setAgentLimits: async (limits) => await commands.call<CloudAgentLimits | null>("cloud.write", { action: "set_limits", args: limits }, { idempotent: false }),
+    // A connected computer answers for the account. With none, the account
+    // server does (`GET/PUT /cloud/limits`). The Settings card sends
+    // `ifRevision` itself (`CloudAgentLimitsCard`); this path is last-writer-wins.
+    getAgentLimits: async () => {
+      if (commands.hasAction("cloud.read")) {
+        return await commands.call<CloudAgentLimits | null>("cloud.read", { action: "limits" }, { fallback: null, retainLastRead: false });
+      }
+      const answer = await runAdeCloudAccountCall(accountClient.cloudApi(), { call: "limits" });
+      if (!answer.ok) throw new Error(answer.message);
+      return (answer.result as CloudAgentLimitsState | null)?.limits ?? null;
+    },
+    setAgentLimits: async (limits) => {
+      if (commands.hasAction("cloud.write")) {
+        return await commands.call<CloudAgentLimits | null>("cloud.write", { action: "set_limits", args: limits }, { idempotent: false });
+      }
+      const { fallback: _fallback, ...value } = limits;
+      const answer = await runAdeCloudAccountCall(accountClient.cloudApi(), { call: "saveLimits", update: { limits: value } });
+      if (!answer.ok) throw new Error(answer.message);
+      return (answer.result as CloudAgentLimitsState | null)?.limits ?? null;
+    },
     // The saved ADE Cloud keys and Claude passes, as names and states only (no key). An older brain has no
     // such read: then the sign-ins card shows the account's sign-ins without them.
     cloudSignInStatus: async () => {

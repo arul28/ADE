@@ -1,50 +1,44 @@
 # Web Client
 
-The web client is an owner-only browser controller for an ADE machine runtime.
-It is a hosted static SPA. New connections are account-only: the browser signs
-in to ADE, loads the account machine directory, and adopts the chosen machine over
-ADE Relay. Localhost pages retain direct `ws://` for development.
+The web client is ADE in a browser. It is a static SPA on Cloudflare Pages at
+`https://app.ade-app.dev`. It reuses the desktop renderer, and a `window.ade`
+adapter takes the place of the Electron bridge.
 
-Sign-in is mandatory, not optional. Relay routing requires the account, so a
-signed-out hosted client has nothing it can show: the boot path renders
-`WebSignInScreen` with no skip until the account is signed in. Desktop keeps its
-**Continue to your work** path only when a prior desktop account session is
-recoverable; a fresh desktop launch has no account-less pass-through either.
+The person must sign in. There is no skip and no guest view. After sign-in,
+the client shows two kinds of machine:
 
-Hosted Relay connections require the browser and machine to be signed in to the
-same ADE account. The browser sends a fresh short-lived account proof with each
-paired Relay hello, and never persists that proof. Signing out immediately
-stops the Relay connection. Environments created from the account machine
-directory are removed on sign-out or account switch. Browser environments
-paired before this release remain locally owned in IndexedDB and can keep using
-their saved direct routes, but the hosted client no longer creates non-account
-pairings. Its retired `/pair` route discards the payload and opens the normal
-account sign-in flow, and its retired `/hub` route redirects to the welcome
-surface.
+- Each computer of the account that is connected. The browser reaches it over
+  ADE Relay.
+- ADE Cloud, always. ADE Cloud is one machine that every signed-in account
+  has. The person never sees the separate cloud computers behind it (one for
+  each cloud lane).
 
-The browser uses the same abstract route order as native controllers:
-LAN → Tailscale → Relay. Eligibility is surface-specific, however: production
-HTTPS blocks insecure `ws://` LAN and tailnet addresses, so they are filtered
-before dialing and Relay is normally the only eligible route. Local HTTP
-development can exercise the direct candidates. Each connection cycle uses one
-correlation id, bounded endpoint metadata, and coarse failure classes so browser,
-directory, and relay logs can be joined without exposing credentials or URLs.
+A person with no computer of their own gets the full ADE on ADE Cloud: every
+tab, the normal composer, and the same flows as on the desktop. An own
+computer that is offline does not show in Work, Lanes or the welcome page. An
+asleep cloud computer is not offline: its lanes and chats stay listed and
+readable.
 
-The hosted client uses web-specific keyboard defaults for shortcuts reserved by
-browsers: `Mod+J` toggles tools, `Mod+Shift+O` opens a new chat, ``Ctrl+` `` moves
-to the next project tab, and `Ctrl+Shift+~` moves to the previous tab. User
-overrides still take precedence. Browser sessions cannot save provider API keys
-or project secrets; those changes must be made in the ADE desktop app on the
-machine. File and folder drops into the editor, and **Open externally**, are
-desktop-only because the browser cannot resolve local files to paths on the
-connected machine or open its native applications.
+Two paths answer the calls of a project tab:
 
-Production hosting is Cloudflare Pages. The Pages URL is
-`https://ade-web-client.pages.dev`; the canonical product URL in source is
-`https://app.ade-app.dev` (`WEB_CLIENT_BASE_URL`). The canonical domain is live
-and attached to the `ade-web-client` Pages project; the Pages URL remains a
-direct deployment-check fallback. The app is built from `apps/desktop` with
-`npm run build:webclient`.
+- **A connected computer.** The adapter sends remote commands, file
+  requests, and chat and terminal streams to that computer's brain, normally
+  over Relay (see *Transport matrix*).
+- **ADE Cloud.** The account server (the account-directory Worker) and GitHub
+  answer every read. A read never wakes a cloud computer. An action (send a
+  message, run a terminal, open a changed file, a Git action) wakes the
+  lane's computer, and the UI does not wait for it.
+
+Relay connections need the browser and the machine on the same ADE account
+(see *Account connection and auth flow*). The web uses browser-safe
+shortcuts: `Mod+J` toggles tools, `Mod+Shift+O` opens a new chat, ``Ctrl+` ``
+and `Ctrl+Shift+~` move between project tabs. User overrides win. What the
+web cannot do is in *Known limitations*.
+
+Production hosting is the `ade-web-client` Cloudflare Pages project.
+`https://app.ade-app.dev` (`WEB_CLIENT_BASE_URL`) is the product URL, and
+`https://ade-web-client.pages.dev` is the direct deploy-check URL. Build it
+from `apps/desktop` with `npm run build:webclient`.
 
 ## Source file map
 
@@ -54,680 +48,520 @@ direct deployment-check fallback. The app is built from `apps/desktop` with
 - `apps/desktop/src/renderer/webclient/adapter/infra/proxy.ts` and `apps/desktop/src/renderer/lib/adeAvailability.ts` — the stand-in for every `window.ade` member the adapter lacks (see Gotchas) and the `isAdeAvailable` check renderer code uses instead of a truthiness or `typeof` test.
 - `apps/desktop/src/renderer/scene/scenePreferences.ts` — platform defaults and explicit scene choices.
 
-ADE with no computer (a person whose account has no computer of their own):
+ADE Cloud, and ADE with no computer of your own:
 
-- `apps/desktop/src/renderer/state/ownComputers.ts` - `useHasOwnComputer`:
-  true on the desktop; on the web only when the account has a machine that is
-  not an ADE Cloud computer. Chat without a project hides without one. No
-  screen says a computer is needed.
+- `apps/desktop/src/shared/adeCloud/binding.ts` - the ADE Cloud binding.
+  `adeCloudBinding(project)` builds a remote binding with the target id
+  `__ade_cloud__` (`ADE_CLOUD_MACHINE_ID`) and the key
+  `remote:__ade_cloud__:<accountProjectId>`. `isAccountAnsweredPin` is true for
+  this binding and for a `cloud-saved:<machineKey>` target (a saved copy of an
+  asleep or deleted cloud computer). The account answers the reads of such a
+  pin; nothing dials a computer for them.
+- `apps/desktop/src/shared/adeCloud/accountReader.ts` -
+  `createAdeCloudAccountReader`, the reads that the account and GitHub answer:
+  - `lane.list`, `session.list` and `chat.listSessions` give `[]`. Cloud lanes
+    and chats come from the saved slices (below), so nothing shows twice.
+  - `file.listWorkspaces` gives one read-only workspace for each lane with a
+    branch (`ade-cloud-lane:<laneId>`).
+  - `file.listTree`, `file.listTreeChildren` and `file.readFile` read GitHub at
+    the lane's branch. The changed files come from the Git summary that the
+    computer saved at rest.
+  - `git.listRecentCommits` reads GitHub. `git.getSyncStatus` and
+    `diff.getChanges` read the saved Git summary.
+  - Linear and Jira reads go to the account server through
+    `integrationReads.ts` and `accountCalls.ts`.
+  - Any other call refuses with `ADE_CLOUD_NEEDS_LANE_SENTENCE`. It never
+    answers empty.
+  - Reads are coalesced and kept for 15 s. A failed read is not kept.
+- `apps/desktop/src/shared/adeCloud/chatQueue.ts` - the queue types and
+  `queuedMessageOpen`.
+- `apps/desktop/src/renderer/webclient/adapter/adeCloudSyncClient.ts` - a
+  stand-in sync client for the ADE Cloud binding. It answers through the
+  account reader. It never dials, polls or wakes.
+- `apps/desktop/src/renderer/webclient/adapter/federated.ts` - the hosted
+  router for `window.ade`.
+  - It stores the welcome, Chats or project surface (`activeSurface: "hub"`
+    means the welcome page), the open bindings and the selected machine per
+    account, and restores them at boot.
+  - It sends each project call to the adapter of its exact machine + project
+    binding. An account-answered binding (ADE Cloud, `cloud-saved:`) gets the
+    account adapter and never connects to a computer.
+  - A binding passed as an argument pins later callbacks and subscriptions to
+    its project. A change of active adapter remounts the renderer.
+  - Account-wide members (`usage.getAdeStats`, `usage.getGithubContributions`,
+    `usage.onUpdate`, `cloud`, `cloudAccess`) go to a connected computer when
+    the shown adapter is disconnected. With no computer connected, the
+    account server answers `cloud` and `cloudAccess`, and the top bar's
+    Settings opens on its own.
+- `apps/desktop/src/renderer/webclient/adapter/cloud.ts` - `window.ade.cloud`
+  on the web. It reads the plan, hours, disk and the cloud computers from the
+  account server (`GET /cloud/access`, `GET /cloud/account`,
+  `GET /cloud/instances`). A failed computer list sets `computersUnread`, and
+  then no computer counts as deleted. It also has:
+  - sleep, wake, resize, backup and update through `/cloud/instances/:id/...`;
+  - new chats on ADE Cloud (`POST /cloud/launches`, `accountCloudLaunches.ts`);
+  - `sendChatMessage`, `serverLaunchStatus` and `carriedSignIns`;
+  - `laneLife`, which only reads: `lanesWithoutComputer` and
+    `forgetLaneWithoutComputer`. Delete, free and size stay in the desktop app,
+    with a sentence that says so.
+- `apps/desktop/src/renderer/state/appStore.ts` - `openAdeCloudProject` opens
+  a project tab on ADE Cloud. `takeLegacyNoMachineTabs` moves the tabs that an
+  older build saved for its no-computer page to ADE Cloud tabs, once.
+- `apps/desktop/src/renderer/state/adeCloudTabs.ts` - `adeCloudProjectOf`,
+  `adeCloudProjectForTabId` and `useAdeCloudTabFollowsCopy`.
+- `apps/desktop/src/renderer/components/app/useWebTabsFollowComputers.ts` - the
+  tab of a computer that stops moves to a copy on another connected computer,
+  or else to ADE Cloud. When the computer comes back, the tab moves back
+  (`webResumeOwnedTabs.ts`).
+- `apps/desktop/src/renderer/state/ownComputers.ts` - `useOwnWebComputers` and
+  `useHasOwnComputer`: the machines of the account that are not ADE Cloud
+  computers. Always true on the desktop.
+- `apps/desktop/src/renderer/state/cloudSavedChats.ts` and
+  `cloudSavedChatsSync.ts` - the saved copies of cloud chats in Work. The sync
+  reads the saved chats page by page (500 a page, at most 10 pages) and the
+  project overview (`/cloud/projects/overview`). It adds:
+  - a slice for each cloud computer that is not live here and not gone;
+  - child chats under their parent chat (`parentChatId`);
+  - lane computers with no chat yet, once;
+  - saved CLI and shell copies as read-only rows
+    (`cloudSavedTerminals.ts`, prefix `cloud-saved-terminal:`).
+  Each slice binding carries the project's repository as `gitOriginUrl`, so an
+  account read of a saved lane finds its repository.
+- `apps/desktop/src/renderer/state/adeCloudChatQueue.ts` - the account's
+  message queue for a cloud chat whose computer is asleep or deleted.
+  `useAdeCloudChatQueue({pin, sessionId})` gives the open messages
+  (queued, sending, waiting for a sign-in), the failed messages with the
+  server's sentence, `cancel` and `dismiss`. A failed message stays until the
+  person puts its text back or dismisses it; this browser keeps that choice
+  in `localStorage`. Reads run when the chat opens, on window focus and after a
+  send. Nothing polls.
+- `apps/desktop/src/renderer/state/adeCloudLaneWake.ts` -
+  `useAdeCloudLaneWake(pin)` wakes a lane's computer and returns at once.
+  `adeCloudMoveSource` tells the move menu that a source computer is resting
+  ("Wake and move") or gone.
+- `apps/desktop/src/renderer/lib/cloudMachineWake.ts` -
+  `wakeRestingCloudMachine` runs an `onConnected` action after the wake. A
+  failed wake shows the server's sentence.
 - `apps/desktop/src/renderer/components/projects/GetStartedCard.tsx` - the
-  "Get started with ADE" steps on Home (Connect GitHub, Add a project with
-  recent repo chips, Send your first chat), the install chip, and the
-  desktop's first sign-in tab (`useDesktopFirstAccountTab`: opens the newest
-  account project once; it never clones). `SetupSteps.tsx` and
-  `getStarted.css` draw the steps and the one-time check animation.
-- `apps/desktop/src/renderer/components/projects/ProjectWelcomeNoMachine.tsx`
-  with `AccountProjectSections.tsx` - the account project page: a steps strip
-  (GitHub access, first chat, lanes), the ADE Cloud composer, the setup cards,
-  Computers (copies, "No copy yet" rows with Clone here, and Copy here on the
-  desktop), Lanes, and Pull requests / Issues / Branches / Files read from
-  GitHub with the account's sign-in (`listBranches` and `listContents` in
-  `shared/github/directClient.ts`).
-- `apps/desktop/src/renderer/state/accountCloudLaunches.ts` and
-  `adapter/cloud.ts` (`createWebCloudLaunchesNamespace`) - chats on ADE Cloud
-  started from the account server (`POST /cloud/launches`), with the message
-  stored there, so the tab may close. One backoff poll (3 s to 10 s) runs only
-  while a launch is in progress and a page shows it. `CloudSetupCard.tsx`
-  shows the four steps: computer, clone, provider sign-in (code, pasted code,
-  API key, or "Sign in from ADE desktop"), send.
+  "Get started with ADE" steps on Home (Connect GitHub, Add a project, Send
+  your first chat) and the install chip.
 - `apps/desktop/src/renderer/state/cloudModelCatalog.ts` - `GET /cloud/models`
-  once per page, and the last model used (`ade.cloudChat.lastModel.v1`).
+  once for each page, and the last model used.
 - `apps/desktop/src/renderer/components/settings/providers/cloud/AccountCloudProvidersPanel.tsx` -
-  Settings › Providers with no computer: each provider's ADE Cloud sign-in and
-  the account's saved keys (`GET`/`PUT`/`DELETE /cloud/sign-ins`).
-- `apps/desktop/src/renderer/components/projects/CloneToMachineDialog.tsx` -
-  clones a project on a machine with no copy (the composer's "No copy yet"
-  rows and the project page's Clone here). The clone goes over that machine's
-  own session (`remoteRuntime.cloneProject`, the sync `project_clone_request`
-  envelope); a failure keeps the message unsent and offers Retry and Change
-  folder. Windows paths keep their drive and backslashes.
-- `adapter/cloud.ts` lists the account's cloud computers from the server
-  (`GET /cloud/instances`) when no computer is connected.
+  Settings › Providers for ADE Cloud: each provider's sign-in and the
+  account's saved keys (`/cloud/sign-ins`).
+- `apps/desktop/src/renderer/webclient/adapter/search.ts` - web search asks
+  each online copy of the repository. It asks a computer only when that
+  computer has `search.query` or `search.indexStatus`; else it answers null,
+  and the palette skips it. `rebuildIndex` answers `{ started: false }`.
+  - With no online copy, the palette makes no search call. It matches only
+    the Work rows that the page already loaded (saved chats, saved terminals,
+    cloud lanes).
+  - A result with no lane name gets one from the account lane index
+    (`withIndexedLaneName` in `commandPaletteSearch.tsx`, one index read each
+    time the palette opens).
+  - Nothing extra is saved for search.
 
 Build and static host:
 
 - `apps/desktop/package.json` - `dev:webclient` and `build:webclient`. The
-  production build runs `check-webclient-entry.mjs` after Vite succeeds.
-- `apps/desktop/vite.webclient.config.ts` - Vite build for the hosted SPA.
-  Renames `webclient.html` to `index.html`, writes to
-  `apps/desktop/dist/web-client`, and copies Cloudflare Pages files into the
-  output root. It relies on Rollup's normal graph splitting instead of forcing
-  the desktop renderer's heavy vendor groups into eager module preloads; the
-  shared renderer's dynamic imports remain the feature-loading boundaries.
-- `apps/desktop/src/renderer/public/scene-frame.html` - the page a chat scene loads in on the hosted client. `_headers` gives it the scene policy in place of the app's (and lifts `X-Frame-Options`), because a `blob:` scene document inherits the app's policy and its scripts never run. `SceneFrame` posts the scene document to it on request.
-- `apps/desktop/scripts/check-webclient-entry.mjs` - post-build regression
-  guard for the first-load graph. It collects local entry scripts and
-  `modulepreload` links from the generated `index.html`, rejects eagerly linked
-  Monaco/graph/terminal/Markdown-style chunks, rejects external entry scripts,
-  and caps raw entry HTML plus referenced JavaScript at 1000 KB.
-- `apps/desktop/src/renderer/webclient.html` - browser entry HTML. It paints a
-  dependency-free loading shell before React evaluates and preconnects to the
-  production Clerk and account-directory origins.
-- `apps/desktop/src/renderer/webclient/public/_headers` - Pages headers,
-  including CSP. `connect-src` allows `wss:` and `https:`, not arbitrary
-  hosted-page `ws:` connections. Fingerprinted `/assets/*` responses are cached
-  for one year as immutable; `/` and `/index.html` remain `no-cache` so a new
-  deployment's entry graph is discovered immediately. `img-src` allowlists the Clerk image CDNs and
-  Clerk's Google Storage profile-image path used by the account client.
-  `script-src` and `frame-src` allow `https://challenges.cloudflare.com`:
-  Clerk's sign-up bot check (Cloudflare Turnstile) runs inside ADE's own
-  sign-in card.
-- `apps/desktop/src/renderer/webclient/public/_redirects` - SPA fallback:
-  `/* /index.html 200`. A static file wins over this rewrite.
+  build runs `check-webclient-entry.mjs` after Vite.
+- `apps/desktop/vite.webclient.config.ts` - the Vite build. It renames
+  `webclient.html` to `index.html`, writes `apps/desktop/dist/web-client`, and
+  copies the Pages files to the output root. Rollup's normal graph splitting
+  decides the chunks; the renderer's dynamic imports are the feature
+  boundaries. The dev server's proxies and test sign-in are in *Deploy and ops*.
+- `apps/desktop/src/renderer/public/scene-frame.html` - the page a chat scene
+  loads in. `_headers` gives it the scene policy (and no `X-Frame-Options`),
+  because a `blob:` scene document inherits the app's policy and its scripts
+  would not run. `SceneFrame` posts the scene document to it.
+- `apps/desktop/scripts/check-webclient-entry.mjs` - the first-load guard. It
+  rejects eagerly linked Monaco, graph, terminal and Markdown-style chunks and
+  external entry scripts, and caps the entry HTML plus its JavaScript at
+  1000 KB.
+- `apps/desktop/src/renderer/webclient.html` - the entry HTML. It paints a
+  loading shell before React runs and preconnects to the production Clerk and
+  account-directory origins.
+- `apps/desktop/src/renderer/webclient/public/_headers` - Pages headers and
+  CSP. `connect-src` allows `wss:` and `https:`, not hosted-page `ws:`.
+  `/assets/*` is cached for one year as immutable; `/` and `/index.html` are
+  `no-cache`. `img-src` allows the Clerk image CDNs and Clerk's Google Storage
+  profile path. `script-src` and `frame-src` allow
+  `https://challenges.cloudflare.com` (Turnstile in the sign-in card).
+- `apps/desktop/src/renderer/webclient/public/_redirects` - SPA fallback
+  `/* /index.html 200`. A static file wins.
 - `apps/desktop/src/renderer/webclient/public/_worker.js` and `_routes.json` -
-  a Pages worker for `/assets/*` only. A deploy removes the old build's chunks,
-  and the SPA fallback would answer a removed chunk with `index.html`, as 200
-  and with the one-year immutable cache. The worker answers it with a 404 and
-  `Cache-Control: no-store` instead. An open tab from the old build then gets a
-  plain load failure, and `lib/staleChunkReload.ts` reloads it once. The worker
-  sets the `/assets/*` cache headers itself. If its own code throws, it
-  returns the static answer unchanged. `_headers` and `_redirects` still apply to every other path.
-  `npx wrangler@4 pages dev apps/desktop/dist/web-client` runs it on this
-  machine.
+  a Pages worker for `/assets/*` only. A chunk that a deploy removed gets a
+  404 with `no-store`, not `index.html` with the immutable cache. An old tab
+  then gets a load failure, and `lib/staleChunkReload.ts` reloads it once. If
+  the worker throws, it returns the static answer. Run it locally with
+  `npx wrangler@4 pages dev apps/desktop/dist/web-client`.
 
 Browser sync client:
 
-- `apps/desktop/src/renderer/webclient/account/client.ts` - Clerk
-  OAuth authorization-code + PKCE session for the static client. The refresh
-  credential, the last access token with its expiry, and the exact OAuth
-  issuer/client identity persist in IndexedDB. A reload within the stored
-  access token's life reads the directory with it and skips the refresh and
-  the profile read; when the directory turns that token down, boot refreshes
-  once and reads again. Without a usable token, boot refreshes before
-  directory access. Profile identity is enriched through a bounded, best-effort
-  OAuth userinfo request. The callback is scrubbed from the address bar before
-  directory loading, and account requests use exact trusted origins with omitted
-  browser credentials and referrers.
+- `apps/desktop/src/renderer/webclient/account/client.ts` - Clerk OAuth
+  (authorization code + PKCE). IndexedDB keeps the refresh credential, the
+  last access token with its expiry, and the issuer/client identity. A reload
+  inside the token's life reads the directory with it and skips the refresh;
+  if the directory refuses it, boot refreshes once. The profile comes from a
+  bounded, best-effort userinfo read. The callback leaves the address bar
+  before the directory loads. Account requests go only to exact trusted
+  origins, with no browser credentials and no referrer. In a dev build only,
+  it can sign in with the dev test session (*Deploy and ops*).
 - `apps/desktop/src/renderer/webclient/account/clerkFrontendApi.ts` - a small
-  client for Clerk's Frontend API: environment, client, sign-in and sign-up
-  with an email code, OAuth start, session list. It follows clerk-js's wire
-  rules (form bodies, `credentials: "include"`, only GET/POST with `_method`,
-  a pinned `__clerk_api_version`) instead of shipping the ~570 KB SDK. A
-  development instance has no cross-site cookies, so it carries a dev-browser
-  id in `__clerk_db_jwt`, also on the authorize navigation
-  (`decorateNavigationUrl`).
+  Clerk Frontend API client (environment, client, email-code sign-in and
+  sign-up, OAuth start, sessions) that follows clerk-js's wire rules (form
+  bodies, `credentials: "include"`, GET/POST with `_method`, a pinned
+  `__clerk_api_version`) instead of the ~570 KB SDK. A development instance
+  carries a dev-browser id in `__clerk_db_jwt`, also on the authorize
+  navigation (`decorateNavigationUrl`).
 - `apps/desktop/src/renderer/webclient/account/clerkCaptcha.ts` - Clerk's
-  sign-up bot check, Cloudflare Turnstile run the way clerk-js runs it. A
-  "smart" widget renders into the card's captcha slot and shows only when
-  Cloudflare wants a click.
+  sign-up bot check (Cloudflare Turnstile), shown only when Cloudflare wants a
+  click.
 - `apps/desktop/src/renderer/webclient/account/useClerkSignIn.ts` - the card's
-  sign-in steps (loading, "Continue as", form, code, finishing) and the OAuth
-  return (`/sign-in/return`), which mirrors clerk-js `_handleRedirectCallback`:
-  a complete sign-in, an existing account that came through sign-up, and a new
-  account from Google / GitHub / Apple. `fresh` (the person signed out) ends
-  the browser's Clerk session first and asks Google and GitHub for their
-  account picker.
-- `apps/desktop/src/renderer/webclient/account/sessionStore.ts` - versioned
-  IndexedDB session record: the refresh token, and the last access token with
-  its expiry (absent in a record saved by an older build).
-  `usablePersistedAccessToken` returns the stored token only while it has more
-  than the given skew to live. Explicit sign-out and confirmed auth expiry
-  clear the record.
+  steps (loading, "Continue as", form, code, finishing) and the OAuth return
+  `/sign-in/return`, as clerk-js `_handleRedirectCallback` handles it. `fresh`
+  (after a sign-out) ends the browser's Clerk session first and asks Google
+  and GitHub for their account picker.
+- `apps/desktop/src/renderer/webclient/account/sessionStore.ts` - the
+  versioned IndexedDB session record (refresh token, last access token and
+  expiry). `usablePersistedAccessToken` returns the token only while it has
+  more than the skew to live. Sign-out and confirmed expiry clear it.
+- `apps/desktop/src/renderer/webclient/account/devTestSession.ts` - dev only:
+  reads `/__ade_dev/session-token`. A production build has none of it.
 - `apps/desktop/src/renderer/webclient/linkStatus/main.ts` and
-  `link-status.html` - the hidden `/link-status` page that the link page
-  (`apps/web` `OpenPage.tsx`) frames. It reads the account's online computers
-  with the stored access token only and never refreshes the session, because
-  the refresh token rotates on every use. It posts one `ade-link-status`
-  message (signed in, and the names of the online computers or null) only to
-  the ade-app.dev origins, and `_headers` allows only those origins to frame
-  it.
-- `apps/desktop/src/renderer/webclient/account/leaseMonitor.ts` - live account
-  lifetime enforcement for account-owned environments and active Relay
-  sockets. A 30-second check refreshes the in-memory token; confirmed expiry,
-  sign-out, or owner change disconnects and prunes account-owned trust, while a
-  transient token/directory failure preserves it for retry. A direct-owned
-  environment using Relay is disconnected but not deleted.
-- `apps/desktop/src/renderer/webclient/sync/client.ts` - high-level browser
-  sync client. Adopts a machine through the verified account relay, reconnects
-  saved environments, stores only the resulting paired credentials, sends
-  remote commands, requests files, subscribes to chat and terminal streams,
-  switches projects, and treats compact `invalidation_batch` envelopes as
-  refresh input. Its
-  terminal subscriptions keep logical UTF-8 byte watermarks, drop duplicates,
-  trim overlaps, and perform one guarded `sinceOffset` resubscribe when a gap
-  appears. Delta snapshots append only the missing suffix; full snapshots are
-  authoritative replacements even when their end offset equals the watermark.
-  Terminal input waits for each frame's acknowledgement. Keys typed meanwhile
-  for the same session join the next unsent frame (at most 16 KB). A frame
-  that was sent once never changes, so a retry resends its id with the same
-  bytes. `isRetryingDial` tells a dial round that failed and retries apart
-  from a refusal. The project in front belongs to this browser, not to the
-  brain. A brain that restarts on its own default project, or that another
-  client moves to another project, does not move the browser: the client keeps
-  its project and its chat and terminal streams, and sends a
-  `project_switch_request` for its own project again
-  (`ensureHostOnOwnProject`). It sends at most one such request per 15 seconds,
-  so two clients that show different projects of one computer do not keep
-  moving it. A request inside that gap runs when the gap ends.
-- `apps/desktop/src/renderer/webclient/sync/connection.ts` - WebSocket
-  lifecycle, account adoption, paired hello, DPoP proof on reconnect,
-  heartbeat, reconnect/backoff, project catalog chunks, and auth-failure
-  attribution, with one correlation id spanning directory lookup and route
-  attempts. DPoP/token preparation begins in parallel with the socket dial;
-  transport open and authenticated hello have separate 8-second and 12-second
-  deadlines. A direct route that comes before the last good route in the dial
-  order gets 3 seconds to open (ADE Relay always gets the full 8), and a
-  project switch dials the route that was live first
-  (`AdeSyncClient.connect`'s `firstEndpoint`). Relay authorization is renewed in place ahead of expiry even
-  while the tab is hidden, so background timer throttling does not turn a
-  healthy socket into a reconnect loop. Relay sockets negotiate ready-v2
-  first: no ADE hello is sent
-  before `accepted` then `ready`; an old Worker that does not send `accepted`
-  within the short negotiation window is retried on a fresh legacy socket,
-  never downgraded in place. While the page is visible, a 15-second watchdog closes a socket
-  after 75 seconds without inbound traffic; returning to a visible stale tab
-  bypasses accumulated backoff. Relay application close codes are translated
-  into stable offline/capacity/retry messages instead of exposing raw reasons.
-  A rejected hello is classified from the host's structured `hello_error.code`,
-  and only a genuine pairing rejection is allowed to reach the `auth_failed`
-  status that `WebMachineSessionManager` reads as "invalidate this
-  environment". `account_session_changed` is transient — surface it and keep
-  reconnecting. `host_update_required` is not — stop dialing
-  (`shouldReconnect = false`) but keep the pairing and show the host's own
-  message, so the displayed fix is "update ADE on that machine" rather than
-  "pair again". See
-  [the `hello_error` code table](../sync-and-multi-device/README.md#hello_error-codes-are-the-contract-the-message-is-not).
-- `apps/desktop/src/renderer/webclient/sync/relayPolicy.ts` - typed hosted Relay
-  authorization policy. It keeps local pairing provenance separate from
-  account ownership, filters Relay routes while signed out, and surfaces the
-  sign-in-required state before a socket is opened.
-- `apps/desktop/src/renderer/webclient/sync/endpoints.ts` - derives the
-  ordered browser-safe endpoint list (LAN, Tailscale, Relay). Relay and explicit
-  `wss://` are dialable from the hosted page; plain `ws://` is dialable only
-  from local/http pages.
-- `apps/desktop/src/renderer/webclient/sync/envStore.ts` - IndexedDB storage
-  for paired machine environments, per-device secret, host/candidate metadata,
-  the WebCrypto `CryptoKeyPair`, the separate account-session object store, and
-  the schema-version-3 `catalogs` store. That store holds each machine's last
-  seen project catalog keyed by `machineCatalogKey`, plus the last-active
-  machine key in `meta`, so recents can paint before any connection exists. It
-  is a paint cache and is bounded like one: at most 8 machines and 24 projects
-  per machine, oldest machines evicted in the same write transaction, and icon
-  data URLs over 24,000 characters dropped rather than stored. Each record
-  carries its `ownerUserId`, and `pruneMachineCatalogs` deletes another
-  account's records on the same boot step that prunes its environments.
-  A versioned one-time trust migration
-  clears legacy environments and selection while preserving unrelated browser
-  and account state; environments paired after the marker persist normally.
-  Every operation runs through an explicit transaction; trust reset and
-  account-owner pruning update environments, selection, and metadata
-  atomically. Generic IndexedDB opens fail after 4 seconds; a blocked upgrade
-  gets a 5-second grace period for another tab to close and reports a distinct
-  typed failure. Rejected cached promises are cleared so Retry can reopen, and
-  `versionchange` closes/resets the database and the trust-reset state.
-- `apps/desktop/src/renderer/webclient/sync/dpop.ts` - WebCrypto P-256 ECDSA
-  DPoP key generation and proof signing. The private key is non-extractable by
-  default.
-- `apps/desktop/src/renderer/webclient/sync/wireProtocol.ts` - browser codec
-  for the shared sync envelope format, gzip, and project catalog chunk
-  assembly.
+  `link-status.html` - the hidden `/link-status` page that `apps/web`
+  `OpenPage.tsx` frames. It reads the online computers with the stored access
+  token only (it never refreshes, because the refresh token rotates) and posts
+  one `ade-link-status` message to the ade-app.dev origins only. `_headers`
+  lets only those origins frame it.
+- `apps/desktop/src/renderer/webclient/account/leaseMonitor.ts` - a 30 s check
+  for account-owned environments and Relay sockets. Confirmed expiry,
+  sign-out or an owner change disconnects and prunes account-owned trust; a
+  transient failure keeps it. A direct-owned environment on Relay is
+  disconnected, not deleted.
+- `apps/desktop/src/renderer/webclient/sync/client.ts` - the browser sync
+  client: account adoption over Relay, saved-environment reconnect, remote
+  commands, files, chat and terminal streams, project switch, and
+  `invalidation_batch` as refresh input.
+  - Terminal streams keep UTF-8 byte watermarks, drop duplicates, trim
+    overlaps, and resubscribe once with `sinceOffset` on a gap. A delta
+    snapshot appends the missing suffix; a full snapshot replaces.
+  - Terminal input waits for each frame's ack. Keys typed meanwhile join the
+    next unsent frame (at most 16 KB). A sent frame never changes, so a retry
+    resends the same id and bytes.
+  - `isRetryingDial` tells a failed dial round apart from a refusal.
+  - The project in front belongs to the browser. If the brain restarts on
+    another project or another client moves it, the client keeps its project
+    and streams and asks for its project again (`ensureHostOnOwnProject`), at
+    most once per 15 s.
+- `apps/desktop/src/renderer/webclient/sync/connection.ts` - the WebSocket
+  lifecycle: account adoption, paired hello, DPoP, heartbeat, backoff,
+  project catalog chunks, and one correlation id from the directory read to
+  the last route.
+  - Token and DPoP preparation runs with the dial. Transport open has 8 s and
+    the authenticated hello 12 s. A direct route ahead of the last good route
+    gets 3 s (Relay always gets 8). A project switch dials the route that was
+    live first (`firstEndpoint`).
+  - Relay authorization renews in place before expiry, also in a hidden tab.
+  - Relay negotiates ready-v2 first: no hello before `accepted` then `ready`.
+    A Worker that does not send `accepted` in time is retried on a fresh
+    legacy socket, never downgraded in place.
+  - While visible, a 15 s watchdog closes a socket after 75 s with no inbound
+    traffic. A tab that becomes visible skips the backoff.
+  - Relay close codes map to stable offline, capacity and retry messages.
+  - A rejected hello is read from `hello_error.code`. Only a real pairing
+    rejection becomes `auth_failed` (which invalidates the environment).
+    `account_session_changed` is transient. `host_update_required` stops the
+    dial but keeps the pairing and shows the host's message. See
+    [the `hello_error` code table](../sync-and-multi-device/README.md#hello_error-codes-are-the-contract-the-message-is-not).
+- `apps/desktop/src/renderer/webclient/sync/relayPolicy.ts` - the Relay
+  authorization policy: local pairing provenance stays apart from account
+  ownership, Relay routes are filtered while signed out, and sign-in-required
+  shows before a socket opens.
+- `apps/desktop/src/renderer/webclient/sync/endpoints.ts` - the ordered
+  browser-safe endpoints (LAN, Tailscale, Relay). The hosted page dials only
+  Relay and `wss://`; `ws://` only from local `http:` pages.
+- `apps/desktop/src/renderer/webclient/sync/envStore.ts` - IndexedDB for paired
+  environments, the per-device secret, host metadata, the WebCrypto key pair,
+  the account-session store and the version-3 `catalogs` store.
+  - `catalogs` keeps each machine's last project catalog by
+    `machineCatalogKey` and the last-active machine key, so recents paint
+    before a connection. Limits: 8 machines, 24 projects each, oldest machine
+    evicted in the same transaction, icons over 24,000 characters dropped.
+    Records carry `ownerUserId`; `pruneMachineCatalogs` deletes another
+    account's records at boot.
+  - A versioned one-time trust migration clears legacy environments and the
+    selection, and keeps other state.
+  - Every operation is one explicit transaction. Opens fail after 4 s; a
+    blocked upgrade waits 5 s and reports its own typed failure. A rejected
+    open is not cached, so Retry reopens. `versionchange` closes and resets.
+- `apps/desktop/src/renderer/webclient/sync/dpop.ts` - P-256 ECDSA DPoP keys
+  (non-extractable) and proofs.
+- `apps/desktop/src/renderer/webclient/sync/wireProtocol.ts` - the envelope
+  codec, gzip, and catalog chunk assembly.
 - `apps/desktop/src/renderer/webclient/sync/projectHostRecoveryStore.ts` - the
-  browser's project-host readiness state, fed by `hello_ok.projectHost` and by
-  every `host_unavailable` command failure `CommandCaller` forwards. It holds
-  one phase (`ready` / `retrying` / `takeover` / `recovering`), runs the shared
-  2 s / 4 s / 8 s silent-retry ladder over `sync.diagnoseHost` before taking
-  the screen, and calls `sync.recoverHost` for **Fix connection**. It is bound
-  to exactly one client at a time: `bindProjectHostRecoveryClient` in
-  `sync/client.ts` follows the active machine session, because the repair it
-  offers terminates a process on the host and must only ever reach the machine
-  on screen. A socket drop clears what is displayed but keeps the binding — a
-  repair that restarts the brain drops the socket on purpose, so the
-  `recovering` phase survives it and the next hello decides the outcome.
-  Disposing a background session never disarms the active one.
+  project-host readiness state, fed by `hello_ok.projectHost` and every
+  `host_unavailable` failure from `CommandCaller`. Phases: `ready`,
+  `retrying`, `takeover`, `recovering`. It retries silently (2 s, 4 s, 8 s over
+  `sync.diagnoseHost`) before it takes the screen, and calls
+  `sync.recoverHost` for **Fix connection**. It binds to the active machine's
+  client only (`bindProjectHostRecoveryClient`), because the repair stops a
+  process on that host. A socket drop keeps the binding, so `recovering`
+  survives the restart it causes.
 - `apps/desktop/src/renderer/components/app/ProjectHostRecoveryScreen.tsx` -
-  the full-surface recovery card and the `ProjectHostStartingBanner` that
-  precedes it, both mounted by `App.tsx` only in web mode. The card names the
-  owner, the project, and what stopping it interrupts, keeps raw PIDs and
-  socket paths in the technical fold, and renders the host's repair steps in
-  past/present tense as they complete. **Retry stays enabled during a repair**
-  on purpose: a restart that never reports back would otherwise leave the card
-  an inert spinner, so an explicit tap ends the "a repair is running"
-  assumption and re-diagnoses. Switch Mac is available at every moment,
-  including mid-repair. The banner keeps the cached lists on screen and is the
-  one place that marks them as possibly out of date.
+  the recovery card and the `ProjectHostStartingBanner` before it (web mode
+  only). The card names the owner, the project and what a stop interrupts,
+  keeps PIDs and socket paths in the technical fold, and lists the repair
+  steps as they finish. **Retry stays enabled during a repair**, so a restart
+  that never reports back does not leave a dead spinner. Switch Mac works at
+  any time. The banner keeps the cached lists and marks them as possibly out
+  of date.
 
 Browser `window.ade` adapter:
 
-- `apps/desktop/src/renderer/webclient/adapter/index.ts` - installs a
-  sync-backed `window.ade` surface, including the browser account client, and
-  hides native-only capabilities. A project rebind creates an explicit project
-  boundary: it drops old terminal subscriptions, clears command-read caches,
-  binds the newly selected id, and fans a full-domain invalidation out before
-  the reused renderer can hydrate stale project data.
+- `apps/desktop/src/renderer/webclient/adapter/index.ts` - installs the
+  sync-backed `window.ade` with the browser account client, and hides
+  native-only members. A project rebind drops old terminal subscriptions,
+  clears read caches, binds the new id, and invalidates every domain before
+  the renderer can show stale data.
 - `apps/desktop/src/renderer/webclient/adapter/misc.ts` - the small
-  namespaces, including the two Work-tools ones. `workTools` is a read-only
-  mirror: `getLaneState` and `readObservationPreview` are real remote
-  commands, and `setActiveTool` is a deliberate no-op, because publishing
-  which tool is open is the privilege of the surface that actually has one
-  and a web tab echoing its own picker would overwrite the desktop's truth on
-  every phone. `builtInBrowser` is an unavailable stub with two exceptions
-  whose *shape* is load-bearing: `getStatus` returns a real, empty
-  `BuiltInBrowserStatus` (the Work tools pane and the corner card call it here
-  too and read `status.tabs`; a bare `{ supported: false }` handed them
-  `undefined` and crashed the Work tab on render), and `getDevServers`
-  returns an empty list because dev-server discovery reads this machine's PTY
-  output and a web tab has none. Everything else in the namespace is
-  deliberately absent so a caller feature-detects instead of getting a fake.
-- `apps/desktop/src/renderer/webclient/adapter/providerAccounts.ts` - the host's
-  Claude and Codex logins, backing the web-only **AI accounts** card
-  (`agents.accounts`, the `providerInstances` namespace). Each member forwards to
-  the host's `providerAccounts.*` command (which runs the `provider_instances`
-  action) and unwraps its `{ instance }` / `{ login }` envelope into what the
-  desktop bridge returns. Reads may be answered from the last good reply while
-  the host is away; a change, or a running sign-in's status, goes to the host
-  every time. `loginCommand` and `setAccent` stay absent — a browser cannot run
-  the host's shell command, and no account screen offers a colour any more. A
-  host older than these commands rejects, and the panel shows its error rather
-  than an empty list that looks like "no accounts".
+  namespaces. `workTools` is read-only: `getLaneState` and
+  `readObservationPreview` are remote commands, and `setActiveTool` does
+  nothing (only a surface with a tool open may publish it). `builtInBrowser`
+  is unavailable except `getStatus` (an empty `BuiltInBrowserStatus`, because
+  callers read `status.tabs`) and `getDevServers` (an empty list). Other
+  members are absent, so callers feature-detect.
+- `apps/desktop/src/renderer/webclient/adapter/providerAccounts.ts` - the
+  host's Claude and Codex logins for the web **AI accounts** card. Each member
+  calls the host's `providerAccounts.*` command and unwraps `{ instance }` or
+  `{ login }`. Reads may use the last good reply while the host is away;
+  changes and sign-in status always go to the host. `loginCommand` and
+  `setAccent` are absent. An older host rejects, and the panel shows the
+  error, not an empty list.
 - `apps/desktop/src/renderer/webclient/adapter/macDesktop.ts` - the lane's
-  macOS screen as this surface can use it. `getStatus`/`start`/`stop` are the
-  same `macDesktop.*` commands the desktop panel calls, and
-  `streamSubscribe`/`streamUnsubscribe` own at most one live subscription per
-  view, keyed by a per-mount `subscriptionId`. The pushed
-  `macDesktop.streamRecord`/`macDesktop.streamEnded` envelopes are surfaced
-  through `onStreamRecord`/`onStreamEnded`; `onConnectionChange` lets the view
-  drop its subscription on a socket close and re-subscribe after the reconnect
-  handshake. `supportsLiveStream()` requires both the
-  `hello.features.macDesktopStream` bit and the advertised subscribe command,
-  because either half missing would mount a view whose first RPC the host
-  rejects. The same shape governs takeover: `supportsMacDesktopControl()`
-  requires `hello.features.macDesktopControl` **and** the advertised
-  `macDesktop.takeControl`, and only then do `takeControl`/`returnControl`/
-  `renewLease`/`input` exist on this namespace. The web call sends a per-tab
-  token, never a lease identity — the host derives `web:<connectionId>:<token>`
-  — and a host without the bit keeps the watch-only pane and its
-  `WORK_TOOLS_CONTROL_HINT` line. The `macDesktop` Work tool renders live in
-  `WorkToolReadOnlyView` by feeding `H264StreamView` a pushed-record source
-  (the same decoder the Electron panel drives from a loopback URL), keeps the
-  display's aspect ratio with `object-fit: contain`, shows the last still frame
-  until the first keyframe arrives, and falls back to that still with a
-  one-line notice on a browser without WebCodecs. When control is advertised
-  the pane adds the Take control affordance, forwards pointer/keyboard through
-  the shared `useMacDesktopRealInput` with a sync sender, draws the same
-  takeover cursor over the letterboxed picture with the shared geometry, and
-  heartbeats the lease until it hands control back.
-- `apps/desktop/src/renderer/webclient/adapter/account.ts` - maps the browser
-  OAuth session and account directory onto the reused `window.ade.account`
-  contract for status, sign-in/out, machine listing, and machine removal.
-- `apps/desktop/src/renderer/webclient/adapter/attention.ts` - account-first
-  Attention adapter. Signed-in reads/ACKs/presence/preferences go directly to
-  the Clerk-authenticated push relay and are fenced to the owner that loaded
-  the snapshot, so the selected project or paired machine cannot block the
-  account view. Signed-out legacy environments may read/acknowledge only their
-  explicitly paired host through `attention.getMachineSnapshot` and
-  `attention.acknowledgeMachine`; unsupported older hosts surface update
-  guidance rather than an invented empty snapshot. Its relay polls back off on
-  failure with jitter, so several surfaces polling the same dead relay do not
-  resynchronize into one thundering retry. Network-level failures (a rejected
-  CORS preflight, DNS, the socket) are caught alongside status codes, because
-  they carry no response to inspect; 5xx and 429 back off as transient and
-  other 4xx back off faster, since neither is going to be served until
-  something changes. The backoff silences the fixed-interval pollers only — a
-  user who just clicked something still gets their attempt, and a success
-  resumes polling immediately.
-- `apps/desktop/src/renderer/webclient/adapter/analytics.ts` - browser-local
-  analytics preference (collection is on unless the browser opted out),
-  runtime-scoped status/capture calls, and per-connection preference
-  reassertion. A failed opt-out acknowledgement closes the sync connection so
-  the host cannot keep recording exportable web mutations for that peer.
+  macOS screen on the web. `getStatus`, `start` and `stop` are the desktop's
+  `macDesktop.*` commands. `streamSubscribe` and `streamUnsubscribe` keep at
+  most one live subscription for each view (`subscriptionId`). Pushed
+  `macDesktop.streamRecord` and `macDesktop.streamEnded` envelopes come out
+  through `onStreamRecord` and `onStreamEnded`; the view subscribes again after
+  a reconnect.
+  - `supportsLiveStream()` needs the `hello.features.macDesktopStream` bit and
+    the advertised subscribe command.
+  - `supportsMacDesktopControl()` needs `hello.features.macDesktopControl` and
+    `macDesktop.takeControl`. Only then do `takeControl`, `returnControl`,
+    `renewLease` and `input` exist. The web sends a per-tab token; the host
+    makes the lease id `web:<connectionId>:<token>`.
+  - `WorkToolReadOnlyView` feeds `H264StreamView` from the pushed records. It
+    shows the last still frame until the first keyframe, and only the still
+    with a notice on a browser without WebCodecs. With control, it forwards
+    input through `useMacDesktopRealInput` and renews the lease until it
+    returns control.
+- `apps/desktop/src/renderer/webclient/adapter/account.ts` - `window.ade.account`
+  on the browser session and the account directory (status, sign-in/out,
+  machines, removal), and `accountSettings` through the push relay.
+- `apps/desktop/src/renderer/webclient/adapter/attention.ts` - Activity from
+  the account. Signed in, reads, acks, presence and preferences go to the push
+  relay, fenced to the owner that loaded the snapshot. A signed-out legacy
+  environment reads and acks only its paired host
+  (`attention.getMachineSnapshot`, `attention.acknowledgeMachine`); an older
+  host shows update guidance. Relay polls back off with jitter on failure,
+  network errors included (5xx and 429 as transient, other 4xx faster). The
+  backoff stops only the timed polls; a click always tries, and a success
+  resumes polling.
+  - An item with a lane id and no lane name gets the name from the account
+    lane index (`accountLanes()`, `GET /account/lanes`). One index read is
+    used again for 60 s (`LANE_INDEX_REUSE_MS`). The index is for lane names
+    and mentions only.
+- `apps/desktop/src/renderer/webclient/adapter/analytics.ts` - the browser's
+  analytics preference (on unless opted out), runtime-scoped capture, and the
+  preference sent again on each connection. A failed opt-out ack closes the
+  connection.
 - `apps/desktop/src/renderer/webclient/adapter/infra/commandCaller.ts` -
-  remote-command dispatch through `SyncRemoteCommandDescriptor` scope/policy,
-  with fallback for unsupported hosts. Every idempotent read joins an identical
-  in-flight relay request (authoritative reads keep their own key). Only the
-  host's answer is shared: a failure reaches every caller and each applies its
-  own fallback. Reads that pass `cacheTtlMs` also keep the resolved value for
-  that window. A write (`idempotent: false`) clears its namespace's in-flight
-  and retained reads and last-good fallbacks when it settles, and a read that
-  was in flight across a write does not store its answer as a fallback.
-  `invalidateCache` clears the whole cache or a set of action prefixes so a
-  sync-driven refresh drops stale reads.
+  remote-command dispatch by `SyncRemoteCommandDescriptor` scope and policy.
+  - Identical idempotent reads join one in-flight request; a failure reaches
+    every caller, and each applies its own fallback. `cacheTtlMs` keeps a
+    value for that window.
+  - A write (`idempotent: false`) clears its namespace's reads and last-good
+    fallbacks when it settles; a read in flight across a write stores no
+    fallback. A write with no descriptor throws
+    `UnsupportedRemoteCommandError`.
+  - `invalidateCache` clears all or some action prefixes.
 - `apps/desktop/src/renderer/webclient/adapter/infra/bootPriority.ts` - on a
   page that opens on a chat, heavy startup reads (usage, model catalog,
   provider status and similar) wait until the chat history paints, until the
   session list shows no chat, or for at most 12 s. Writes never wait.
 - `apps/desktop/src/renderer/webclient/adapter/infra/coalescingReadCache.ts`
-  and `infra/cacheKey.ts` - the shared coalescing/TTL cache primitive and a
-  deterministic argument-serializer used to key it. The cache keeps concurrent
-  callers joined even when the transport outlasts the TTL (the freshness window
-  starts at resolution) and never caches rejections.
-- `apps/desktop/src/renderer/webclient/adapter/infra/projectState.ts` - holds
-  the bound project and, critically, the `projectId` the shell passed at bind
-  time. `getProjectId()` prefers that bound id (then a catalog match by root
-  path) over the sync client's persisted `activeProjectId`, which can briefly
-  name the prior project during reconnect and would otherwise stamp file
-  requests and project commands with a stale id.
-- `apps/desktop/src/renderer/webclient/adapter/infra/invalidation.ts` -
-  maps changed table names from `invalidation_batch` envelopes to coarse
-  renderer invalidation domains. Its coalescing timer starts with the first
-  pending change rather than resetting on every one, so sustained chat or
-  terminal activity cannot postpone a lane/session/PR refresh indefinitely.
-  Routing is an exhaustive `TABLE_DOMAINS` map plus a `SILENT_TABLES` set and a
-  few prefix rules, not substring matching: the old `includes("file")` rule
-  matched `lane_worktree_locks`, so a lock heartbeat wiped the Files read cache
-  every few seconds. An unrecognized table still falls back to the
-  `UNCLASSIFIED_TABLE_DOMAINS` set rather than going silently stale.
-  `runtime_processes` is mapped to `sessions`, but it is local-only: it is in
-  `LOCAL_ONLY_CRR_EXCLUDED_TABLES` (`state/kvDb.ts`), has no change-tracking
-  clock or triggers, and writes nothing to `crsql_changes`. The 5-second
-  process heartbeat therefore never produces an `invalidation_batch`, and
-  `sessions` refetches come only from real session-table writes.
-- `apps/desktop/src/renderer/webclient/adapter/appControl.ts` - the App Control
-  namespace on web, watch only. `getStatus` and `onEvent` read the lane's session
-  from `appControl.status`; `holdFrames` and `streamSubscribe` deliver the
-  lane's JPEG screencast frames. Every call that would drive the app (click,
-  type, observe, launch, connect, stop, and the rest) rejects with "App Control
-  runs on the desktop. From here you can only watch it." Status is polled while
-  a listener exists: every 3 s, backing off to 15 s while the session is
-  unchanged, paused while hidden, read at once when visible.
-- `apps/desktop/src/renderer/lib/pageVisibility.ts` - the
-  `document.visibilityState` helper the relay pollers use. Without a `document`
-  (Node tests) the page counts as visible.
-- `apps/desktop/src/renderer/webclient/adapter/runtimePinGuard.ts` - the
-  adapter-wide boundary guard for the desktop's per-session runtime pins. A web
-  adapter instance speaks to exactly one machine and one bound project, and
-  `CommandCaller` stamps that project onto every project-scoped command, so a
-  pin naming anything else cannot be routed and serving it anyway would be a
-  wrong-machine or wrong-project read or write.
-  `assertWebRuntimePinRoutable(operation, pin, scope)` is applied at **every**
-  pinned leaf of the federated adapter - `agentChat.ts`, `files.ts`, `git.ts`,
-  `lanes.ts`, `prs.ts`, and `sessionsPty.ts` - rather than a couple of shims,
-  and `RuntimePinArg = OpenProjectBinding | null | undefined` is the shared type
-  every pinned adapter member takes, so the trailing parameter cannot drift from
-  the Electron contract. A pin naming this adapter's own machine **and** project
-  is not a routing problem - it restates where the call was already going - and
-  proceeds unpinned. That is the common case behind the Chats surface, which
-  keeps the window's project binding while showing a projectless page, so its
-  pinned `pty.create` names the machine already on the other end of the socket.
-  Requiring the project to match too is the conservative half: dropping a pin
-  means "use whatever project this adapter is bound to", which is the same
-  request only when the pin agrees, and a same-machine pin naming a different
-  project would otherwise be silently answered for the wrong one. A
-  `kind: "local"` pin gets its own message - "This chat runs on a machine ADE
-  Web can't reach directly." - because the browser has no path to a
-  desktop-local runtime at all, and a local binding carries no `targetId`, so
-  the remote comparison could only report it as an unroutable binding. Machine
-  matching compares `pin.targetId` against `client.getStatus().selectedEnvId`: a
-  target id *is* an environment id on the hosted client, because
-  `connectMachineEntry` resolves a machine to `environment.envId` and hands that
-  back as the target the federated adapter binds. The binding key
-  (`remote:<targetId>:<projectId>`) is used only to *name* the binding in the
-  error; the routing decision reads the fields directly rather than splitting
-  the key, which would break on any id containing a colon. Genuinely foreign
-  pins fail loudly - a cross-machine web union must extend the adapter before
-  relying on one.
-- `apps/desktop/src/renderer/webclient/adapter/files.ts` - browser file API
-  over sync `file_request`; no local file watcher. List reads
-  (`listWorkspaces` / `listTree` / `listTreeChildren`) are coalesced through a
-  3 s read cache and now **surface transport errors** instead of silently
-  returning an empty result — the earlier fallback-to-empty behavior masked a
-  failed request as a legitimately empty tree, which (combined with the stale
-  project-id above) produced the Files tab's spurious "no files" state.
-  `readFile` and the write helpers reject like the desktop host rather than
-  swallowing failures: a dropped relay call returning a zeroed `FileContent`
-  was indistinguishable from a genuinely empty file, and a swallowed write let
-  the workbench mark a tab saved for bytes that never left the browser. Cache
-  keys are structured (project, action, workspace, scope path, stable args)
-  instead of substring-matched, so a write evicts by scope rather than clearing
-  everything: other workspaces survive, `listWorkspaces` always survives
-  because a file write cannot change the workspace roster, and
-  `listTreeChildren` loses only the ancestor listings of the changed path plus
-  its descendants (for a directory rename or delete). `filesInvalidated` events
-  still clear the whole cache and fan a path-less change event out to every
-  workspace id seen for the project rather than a single `"*"` marker — the
-  workbench absorbs that with its own full-refresh throttle. Its synthesized
-  events carry `origin: "self"`, which is how the workbench knows not to
-  re-read the bytes it just wrote.
-- `apps/desktop/src/renderer/webclient/adapter/remoteRuntime.ts` - a
-  single-machine adapter fallback for native-only remote-runtime operations.
-  The federated adapter overrides its target, connection, project, connect,
-  park, and forget methods with browser-session-manager state. SSH discovery,
-  desktop-local pairing hosts, and native target editing remain unavailable.
-- `apps/desktop/src/renderer/webclient/adapter/prs.ts` - PR namespace over
-  remote commands. List/detail reads go through the 3 s read cache, and a
-  `prsInvalidated` event no longer emits an empty PR list marker: it invalidates
-  the `prs.` cache, then hydrates one coalesced aggregate snapshot
-  (`prs.getMobileSnapshot`, falling back to `prs.list`) and emits `prs-updated`
-  only when the host actually returned a snapshot. `listAll`, `getForLane`, and
-  the non-conflict `listWithConflicts` are all derived from that one batched
-  snapshot instead of separate per-call round-trips. The PR writing helpers
-  call the machine too: `updateDescription` (`prs.updateDescription`, or
-  `prs.updateBody` on a machine without it), `searchMentionables` and
-  `getRepoReferences` behind the reviewer picker and the @ / # menus. A machine
-  without the two reads says "Update ADE on that computer…" rather than
-  answering an empty list.
+  and `infra/cacheKey.ts` - the coalescing TTL cache and its key builder. The
+  TTL starts when a read resolves, so slow reads still join; rejections are
+  never kept.
+- `apps/desktop/src/renderer/webclient/adapter/infra/projectState.ts` - the
+  bound project. `getProjectId()` prefers the id bound by the shell (then a
+  catalog match by root path) over the client's `activeProjectId`, which can
+  name the prior project during a reconnect.
+- `apps/desktop/src/renderer/webclient/adapter/infra/invalidation.ts` - maps
+  `invalidation_batch` table names to renderer domains with an exhaustive
+  `TABLE_DOMAINS` map, `SILENT_TABLES` and a few prefix rules (no substring
+  rules). An unknown table falls back to `UNCLASSIFIED_TABLE_DOMAINS`. The
+  debounce starts at the first pending change, so steady activity cannot
+  postpone a refresh. `runtime_processes` is local-only
+  (`LOCAL_ONLY_CRR_EXCLUDED_TABLES`), so the process heartbeat never makes a
+  batch.
+- `apps/desktop/src/renderer/webclient/adapter/appControl.ts` - App Control,
+  watch only. `getStatus`, `onEvent`, `holdFrames` and `streamSubscribe` work;
+  every driving call rejects with "App Control runs on the desktop. From here
+  you can only watch it." Status polls while a listener exists: 3 s, backing
+  off to 15 s while unchanged, paused while hidden.
+- `apps/desktop/src/renderer/lib/pageVisibility.ts` - the visibility helper
+  for the relay pollers (visible when there is no `document`).
+- `apps/desktop/src/renderer/webclient/adapter/runtimePinGuard.ts` -
+  `assertWebRuntimePinRoutable(operation, pin, scope)` runs at every pinned
+  member (`agentChat.ts`, `files.ts`, `git.ts`, `lanes.ts`, `prs.ts`,
+  `sessionsPty.ts`; each takes `RuntimePinArg`).
+  - A pin for this adapter's machine and project runs unpinned (the Chats
+    page's pinned `pty.create`).
+  - A pin for the same machine but another project throws.
+  - A `kind: "local"` pin throws "This chat runs on a machine ADE Web can't
+    reach directly."
+  - The machine match compares `pin.targetId` with
+    `client.getStatus().selectedEnvId` (a web target id is an environment
+    id), never a split of the binding key.
+  - ADE Cloud and `cloud-saved:` pins never reach the guard.
+- `apps/desktop/src/renderer/webclient/adapter/files.ts` - files over
+  `file_request`; no file watcher.
+  - `listWorkspaces`, `listTree` and `listTreeChildren` share a 3 s read cache
+    and show transport errors (an empty answer would read as an empty tree).
+  - `readFile` and the writes reject like the desktop host, so a failed read
+    never looks like an empty file and a failed write never marks a tab saved.
+  - Cache keys are structured. A write evicts by scope: other workspaces and
+    `listWorkspaces` stay; `listTreeChildren` loses the changed path's
+    ancestors and descendants.
+  - `filesInvalidated` clears the cache and sends a path-less change for each
+    workspace seen, with `origin: "self"` so the workbench does not re-read
+    its own write.
+- `apps/desktop/src/renderer/webclient/adapter/remoteRuntime.ts` - a fallback
+  for native remote-runtime calls. The federated adapter overrides target,
+  connection, project, connect, park and forget. SSH discovery, local pairing
+  hosts and target editing are unavailable.
+- `apps/desktop/src/renderer/webclient/adapter/prs.ts` - PRs over remote
+  commands with the 3 s read cache. `prsInvalidated` clears `prs.` and reads
+  one aggregate `prs.getMobileSnapshot` (else `prs.list`); `listAll`,
+  `getForLane` and `listWithConflicts` come from it. `updateDescription`
+  (`prs.updateBody` on an older machine), `searchMentionables` and
+  `getRepoReferences` go to the machine; an older machine says "Update ADE on
+  that computer…".
 - `apps/desktop/src/renderer/webclient/adapter/sessionsPty.ts` - terminal and
-  PTY APIs over `work.*`, `terminal_*`, and `terminal_history`. Live subscribe
-  requests up to the same 2 MB used by `TerminalView` hydration. Recovery
-  snapshots re-enter the renderer as `PtyDataEvent`: deltas append, while a
-  full snapshot carries `replace: true` so xterm resets atomically. It also
-  owns the session-lifecycle surface: a bounded `sessionMirror` keeps the last
-  authoritative rows per `work.listSessions` argument shape (all sessions,
-  per-lane, limited) - the only thing an optimistic patch can be painted onto
-  without a full round-trip. The mirror is LRU-bounded so a long-lived tab
-  cannot accumulate one entry per lane visited, and is cleared on project
-  change because both the rows and any pending patches belong to the project
-  being left. In-flight reads are coalesced per key. A `lifecycleCall` helper
-  wraps every mutation - paint locally, send the non-idempotent sync command,
-  reconcile - and **refuses honestly** instead of no-op'ing when the action is
-  unadvertised or the socket is down, so the shared Work-tab helpers surface a
-  real failure and the optimistic patch rolls back. Several lifecycle commands
-  are legitimate no-ops for a row that is not in the expected state (waking a
-  row that was never snoozed), and reporting a no-op as applied would strand a
-  stale overlay, so the helper checks whether the host actually changed that
-  row. Every pty/terminal shim and `sessions.list` / `get` /
-  `readTranscriptTail` passes its trailing runtime pin through
-  `assertWebRuntimePinRoutable` (see `adapter/runtimePinGuard.ts`).
-  `project.ts` deliberately omits
-  `gitOriginUrl` from `listRecent` for the same reason: cross-machine lane
-  discovery keys off it, and supplying it would start pinned reads this adapter
-  cannot serve.
+  PTY APIs over `work.*`, `terminal_*` and `terminal_history`. A live subscribe
+  asks for up to 2 MB, as `TerminalView` hydration does. A delta snapshot
+  appends; a full snapshot carries `replace: true`, so xterm resets at once.
+  - A bounded `sessionMirror` keeps the last host rows for each
+    `work.listSessions` argument shape (LRU, cleared on a project change). The
+    optimistic lifecycle patches paint on it.
+  - `lifecycleCall` paints, sends the command, and reconciles. It refuses when
+    the action is not advertised or the socket is down, so the patch rolls
+    back. A host no-op (wake a row that was never snoozed) is not reported as
+    applied.
+  - Every PTY and terminal shim, and `sessions.list`, `get` and
+    `readTranscriptTail`, passes its pin through `assertWebRuntimePinRoutable`.
+    `project.ts` leaves `gitOriginUrl` out of `listRecent`, so it starts no
+    pinned reads that this adapter cannot serve.
 - `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleOverlay.ts` -
-  optimistic overlay for lifecycle writes. Desktop and iOS both own a local
-  database, so a settle or snooze lands in local state instantly and the UI
-  repaints from that row; ADE Web has no local database, so every lifecycle
-  mutation is a sync round-trip and the row only changes when a later
-  `work.listSessions` read returns. Each mutation therefore records a
-  `SessionLifecyclePatch` carrying only the lifecycle columns (`settledAt`,
-  `settleOverride`, `snoozedUntil`, `snoozedAt`, `wokeAt`, `wokeReason` - never
-  a derived phase), the UI is nudged to re-read at once with the read decorated
-  by the patch, and the entry retires in exactly one of three ways:
-  **reconciled** (an authoritative row arrives that already satisfies the
-  intent, so the overlay is redundant and is dropped), **rejected** (the host
-  refused or the transport failed - dropped immediately, the row visibly snaps
-  back, and the caller surfaces the failure), or **expired** (a hard TTL, so a
-  lost acknowledgement can never wedge a row into a state the machine does not
-  agree with). Because the instant columns are host-owned and the browser's
-  clock will never equal the machine's, reconciliation compares **presence**
-  (set vs cleared) rather than exact timestamps - presence is the only part of
-  a timestamp the write actually intended.
+  the optimistic overlay for settle, snooze and wake. A
+  `SessionLifecyclePatch` holds only `settledAt`, `settleOverride`,
+  `snoozedUntil`, `snoozedAt`, `wokeAt` and `wokeReason`. It retires when
+  **reconciled** (a host row shows the intent; the match compares set or
+  cleared, because the host owns timestamps), **rejected** (the row snaps
+  back with the error) or **expired** (a hard TTL).
 - `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleSupport.ts` -
-  feature detection for that surface. ADE Web talks to whatever ADE version the
-  user happens to run on their Mac, so support is detected exactly the way the
-  phone does it: from the `hello_ok.features.commandRouting.actions` list the
-  host advertises, surfaced through `AdeSyncClient.getCommandDescriptors()`. An
-  older host simply never registers the `session.*` namespace, and a command
-  sent to an unknown action resolves to the caller's fallback - a silent
-  no-op - so gating on the advertised list is what turns that into an honest,
-  explainable refusal. `SESSION_LIFECYCLE_ACTIONS` lists all ten commands; the
-  required subset is `session.settleSession` / `session.snoozeSession` /
-  `session.wakeSession`, because a host that can do those can drive every row
-  affordance while the bulk and marker commands degrade individually. Two copy
-  constants carry the refusals: `SESSION_LIFECYCLE_DISCONNECTED_MESSAGE`
-  ("Can't reach this Mac right now, so nothing was changed.") and
-  `SESSION_LIFECYCLE_UNSUPPORTED_MESSAGE` ("This Mac is running an older ADE
-  that can't settle or snooze sessions.").
+  feature detection from the host's advertised actions
+  (`hello_ok.features.commandRouting.actions`).
+  `SESSION_LIFECYCLE_ACTIONS` lists the ten commands; `session.settleSession`,
+  `session.snoozeSession` and `session.wakeSession` are required. The refusals
+  are `SESSION_LIFECYCLE_DISCONNECTED_MESSAGE` and
+  `SESSION_LIFECYCLE_UNSUPPORTED_MESSAGE`.
 - `apps/desktop/src/renderer/webclient/adapter/agentChat.ts`,
-  `personalChats.ts`, `lanes.ts`, `git.ts`, `prs.ts`, `project.ts`, `app.ts`, and `misc.ts` -
-  web implementations of desktop renderer namespaces, mixing remote commands,
-  sync sub-protocols, and local browser-only state. The chat adapter subscribes
-  only the selected or explicitly requested chat and bounds initial transcript
-  hydration to 128 KiB; older events page in on demand instead of every chat
-  transcript competing with the active pane. It retains at most eight
-  most-recently used chat streams and evicts the oldest before opening another,
-  keeping aggregate snapshots below the Relay bridge budget. Host-side
-  pagination ranks durable and legacy transcript candidates through one fixed
-  identity window, so the initial tail and every older page keep addressing the
-  same file even when their response byte budgets differ. The adapter prefers
-  the canonical `chat.getChatEventHistoryPage` descriptor but accepts the
-  legacy `agentChat.getEventHistoryPage` alias from older hosts, so the shared
-  transcript's Retry path does not become a no-op during a rolling upgrade. It routes
-  smart-link metadata through viewer-allowed `chat.resolveSmartLinkPreview`
-  and falls back to the shared deterministic provider label when an older host
-  does not advertise the action. Sources favicons go through
-  `chat.resolveSourceFavicons`; an older host without it leaves every row on
-  its domain initial. The adapter also implements the shared
-  `agentChat.drafts` object through
-  `chat.listDrafts` / `chat.createDraft` /
-  `chat.deleteDraft` (and `updateDraft` / `claimDraft`). The cross-machine handoff trio is genuinely
-  implemented rather than left to the fallback proxy:
-  `prepareCrossMachineHandoff`, `validateCrossMachineSource`, and
-  `markCrossMachineHandoff` call the registered sync remote commands
-  `chat.prepareCrossMachineHandoff` / `chat.validateCrossMachineSource` /
-  `chat.markCrossMachineHandoff`. A proxy answering `undefined` there made the
-  handoff modal look like it had succeeded; a host that registers none of those
-  commands still fails loudly through `callRequired`. List responses are normalized to an array and
-  mutations fail honestly when the host lacks the required descriptor; the
-  shared composer can therefore index its stash list without receiving the
-  `null` value that previously crashed the hosted page. It also routes
-  durable scheduled-work create/list/cancel/pause through the host command
-  descriptors, so the reused Work and Settings surfaces do not depend on
-  Electron-only preload methods. `misc.ts` routes
-  `window.ade.usage.getAdeStats` through the viewer-allowed
-  `usage.getAdeStats` command so the reused empty-Work activity module shows
-  the runtime's cached cross-client aggregate instead of an empty native stub.
-  `usage.getGithubContributions` reads the brain's `gh` contribution calendar
-  for the Home Contributions widget. The host has no usage push channel, so
-  `usage.onUpdate` is synthesized: while a stats read reports
-  `freshness.state: "refreshing"` it notifies listeners on a capped backoff
-  (5 s, 15 s, 45 s, 120 s), and a tab returning after ten minutes notifies
-  once. `computerUse.getOwnerSnapshot` builds a chat's proof drawer from
-  `computerUse.listArtifacts` with the shared `snapshotFromArtifacts`
-  (`shared/computerUseSnapshot.ts`), reporting no capture backend.
-  Where the host registers no descriptor for a settings write, `misc.ts` fails
-  loudly rather than echoing a snapshot back: a fallback there would render
-  "Saved" over a write that never happened. Provider sign-in status is the one
-  push channel the web sync protocol cannot carry, so `misc.ts` synthesizes it:
-  both OpenCode OAuth (`opencodeOAuthStatus`) and Pi sign-in (`piAuthStatus`)
-  land in the shared runtime event buffer, which the adapter drains
-  non-destructively through `personalChats.streamEvents` and re-emits onto the
-  adapter bus. The drain is scoped to active flows only — entries are keyed
-  `${kind}:${providerId}` so both flows can run at once, and each kind declares
-  its own terminal states (`connected`/`failed`/`cancelled`/`timeout` for
-  OpenCode, `success`/`error` for Pi) — so there is no perpetual background
-  poll. The drain reads every 1 s, and every 5 s once a minute passes without a
-  status. It pauses while the tab is hidden and drains at once when the tab is
-  visible again, from the same cursor. A cancel removes that flow; when it was
-  the last active flow, the drain runs once more so its final status still
-  arrives. A flow that never reports or is never cancelled stops at its
-  21-minute deadline. Pi sign-in has no honest offline fallback shape, so it
-  reports unavailable rather than fabricating a result. The fleet poll
-  (`ai.cursorCloudFleet`, every 2 s while a listener exists) backs off to 15 s
-  after three identical snapshots, pauses while hidden, and resets to 2 s on a
-  change, on a visible tab, and after any fleet-changing action. The same
-  adapter also routes
-  Cursor Cloud fleet reads, chat mirroring, follow-ups, and lane actions through
-  the host's advertised `ai.cursorCloud*` commands. Those commands expose the
-  account-wide, paged fleet and use the host-owned Cursor API key; the web
-  client keeps the same connected-only entry-point gate and fails mutations
-  honestly when the host is offline or the action is not advertised. Its
-  `cto.*` namespace is wired
-  method by method on purpose — the host registers every `cto.*` action as
-  viewer-allowed, including `setLinearToken`/`clearLinearToken`, so completing
-  the namespace mechanically would hand any connected browser write access to
-  the host's Linear credential store. The namespace wires `getState`,
-  `ensureSession`, `getAttention`, `getMemory`, `updateNotes`, `updateOpenWork`,
-  `updateIdentity`, `refreshContext`, `previewSystemPrompt`, the onboarding
-  reads and the Linear reads; credential writes stay with the fallback proxy.
-  Every CTO method carries the CTO home machine's pin, and a pin naming another
-  machine refuses instead of reading or creating a session on this one.
-  `misc.ts` applies the display zoom preference
-  through `applyHostedWebZoom`: CSS zoom still lives on `<body>` (the root
-  element is reserved for browser pinch-zoom), but the body's specified
-  width/height are divided by the factor first so the zoomed used box is
-  exactly one viewport. At identity zoom (displayed 90%) the inverse px box
-  is skipped and body stays `height: 100%` so `h-full` still has a containing
-  block — Vite's `index.html` does not set one, unlike `webclient.html`. A
-  bare `body { zoom }` multiplied `height: 100%` past
-  the html overflow clip — session cards, the chat column, and the launch
-  shelf cropped, and `position: fixed` menus that mixed `window.innerHeight`
-  into `bottom` jumped to the top of the window. Applied at install as well
-  as on `AppShell` mount, so a reload paints at the user's zoom instead of
-  flashing 100% first, and a failure there can never take the adapter down.
-  `personalChats.ts` invokes
-  runtime-scoped `personalChats.*` actions with `requireProject: false`, adds
-  explicit `chatScope: "personal"` transcript subscriptions, dedupes their
-  events, and provides the cursor stream consumed by the shared Chats page.
-  `lanes.ts` carries `getBranchDrift` / `resolveBranchDrift` passthroughs onto
-  the matching `lanes.*` remote commands.
-- `apps/desktop/src/renderer/webclient/adapter/githubStub.ts` - the whole
-  `window.ade.github` namespace for the web client, split out of `misc.ts` so a
-  renderer can import the stub's own declaration rather than pattern-match its
-  shape. Reads a paired machine can serve are routed to it; everything needing a
-  machine of its own answers with a stub that says so. The GitHub App account
-  credential is the important one: a hosted-web build has no machine to hold it,
-  so `getAppUserAuthStatus` answers `GITHUB_APP_USER_AUTH_UNSUPPORTED`, which
-  carries `appUserAuthSupported: false` **and** an honest `credentialState`.
-  Renderers gate on that flag through `isGithubAppUserAuthSupported` rather than
-  inferring a stub from missing fields. Treating the stub as a real answer
-  flashed a false "not authorized" banner on every hosted-web project and
-  offered a Disconnect button that silently did nothing.
-- `apps/desktop/src/renderer/webclient/adapter/federated.ts` - the hosted
-  workspace router for `window.ade`. It persists the welcome/Chats/project
-  surface (`activeSurface: "hub"` is the historical name of the machine-less
-  state in its stored workspace record),
-  open remote project bindings, and the selected machine per account; restores
-  those bindings at boot; and dispatches project-scoped calls to an adapter
-  keyed by the exact machine + project binding. Remote bindings passed as
-  control arguments pin delayed callbacks and subscriptions to their
-  originating project even after the visible tab changes. Switching the active
-  adapter notifies `WebClientRoot`, which remounts the shared renderer so
-  unpinned long-lived subscriptions cannot remain attached to the prior
-  machine. Account-wide members (`usage.getAdeStats`,
-  `usage.getGithubContributions`, `usage.onUpdate`, and every `cloud` and
-  `cloudAccess` member) go to a connected computer when the displayed adapter
-  is a disconnected fallback, and their subscriptions move with the adapter
-  that serves those reads. So the Connections panel keeps the cloud status and
-  Wake while the computer that dropped is still the displayed one. With no
-  computer connected at all, `cloudAccess` and the ADE Cloud plan and hours
-  are read from the account server instead (`adapter/cloud.ts`), and the top
-  bar's Settings opens Settings on its own, so ADE Cloud needs no machine.
-- `apps/desktop/src/renderer/webclient/adapter/reconnectHold.ts` - keeps a
-  machine that was connected reading as connected for up to 30 s of time in
-  front while its connection comes back, so Work keeps the open chat after a
-  suspended tab returns. A first connect, a refusal and a parked machine are
-  not held. Time in the background does not count. A spent hold is gone until
-  the machine connects again.
+  `personalChats.ts`, `lanes.ts`, `git.ts`, `prs.ts`, `project.ts`, `app.ts`,
+  and `misc.ts` - web versions of the desktop renderer namespaces. They use
+  remote commands, sync sub-protocols and browser-only state.
+  - Chat streams: the adapter subscribes only the selected or requested chat
+    and loads a 128 KiB tail first; older events page in on demand. It keeps
+    at most eight chat streams (least recently used goes first), below the
+    Relay bridge budget. It prefers `chat.getChatEventHistoryPage` and accepts
+    the older `agentChat.getEventHistoryPage` alias.
+  - Smart links use `chat.resolveSmartLinkPreview`, and Sources favicons use
+    `chat.resolveSourceFavicons`. An older host gets the plain fallback.
+  - `agentChat.drafts` uses `chat.listDrafts`, `createDraft`, `deleteDraft`,
+    `updateDraft` and `claimDraft`.
+  - The cross-machine handoff calls `chat.prepareCrossMachineHandoff`,
+    `chat.validateCrossMachineSource` and `chat.markCrossMachineHandoff`. A
+    host without them fails through `callRequired`.
+  - List answers are normalized to an array. A mutation fails when the host
+    lacks its descriptor. A settings write with no descriptor fails; it never
+    echoes a "Saved" snapshot.
+  - Scheduled work (create, list, cancel, pause) goes through host commands.
+  - `usage.getAdeStats` and `usage.getGithubContributions` read the brain.
+    `usage.onUpdate` is made here: while a stats read says `refreshing`, it
+    notifies on a capped backoff (5 s, 15 s, 45 s, 120 s), and a tab that
+    returns after ten minutes notifies once.
+  - `computerUse.getOwnerSnapshot` builds the proof drawer from
+    `computerUse.listArtifacts` (`shared/computerUseSnapshot.ts`).
+  - Provider sign-in status (OpenCode OAuth, Pi) has no push channel on the
+    web. `misc.ts` drains the runtime event buffer through
+    `personalChats.streamEvents`, only while a sign-in runs: every 1 s, then
+    every 5 s after a quiet minute, paused while hidden, and stopped at the
+    21-minute deadline or the flow's last state.
+  - The Cursor Cloud fleet (`ai.cursorCloudFleet`) polls every 2 s while a
+    listener exists, backs off to 15 s after three unchanged reads, and pauses
+    while hidden. Fleet actions use the host's Cursor API key.
+  - `cto.*` is added method by method, so a browser never gets the host's
+    Linear credential writes. Each CTO call carries the CTO home's pin; a pin
+    for another machine refuses.
+  - `applyHostedWebZoom` (`lib/webZoom.ts`) runs at install and on
+    `AppShell` mount, so a reload paints at the user's zoom. At zoom 1 the
+    body stays `height: 100%`.
+  - `personalChats.ts` calls runtime-scoped `personalChats.*` actions
+    (`requireProject: false`) and subscribes transcripts with
+    `chatScope: "personal"`.
+  - `lanes.ts` passes `getBranchDrift` and `resolveBranchDrift` to the
+    `lanes.*` commands.
+- `apps/desktop/src/renderer/webclient/adapter/githubStub.ts` -
+  `window.ade.github` on the web. Reads a paired machine can serve go to it;
+  the rest answer with a stub that says so. `getAppUserAuthStatus` answers
+  `GITHUB_APP_USER_AUTH_UNSUPPORTED` (`appUserAuthSupported: false` and a true
+  `credentialState`); renderers check `isGithubAppUserAuthSupported`.
+- `apps/desktop/src/renderer/webclient/adapter/reconnectHold.ts` - a machine
+  that was connected reads as connected for up to 30 s of time in front while
+  it reconnects, so Work keeps the open chat. A first connect, a refusal and a
+  parked machine are not held.
 
 Browser shell and routes:
 
-- `apps/desktop/src/renderer/webclient/main.tsx` - installs the pending
-  `window.ade` placeholder before shared renderer modules import, then mounts
-  `WebClientRoot`.
-- `apps/desktop/src/renderer/webclient/shell/WebClientRoot.tsx` - boot
-  sequence, retired-route scrubbing, account privacy pruning, account-first
-  30-second active-account lease monitor, IndexedDB environment restoration,
-  catalog hydration, federated-adapter installation, pending `/open` target
-  stash, and initial project/Chats restoration. Both retired routes, `/pair`
-  and `/hub`, are replaced in history before anything else runs; ordinary
-  visits land on `/work`, where the shared App renders the project welcome
-  surface because no project is open. Account bootstrap, catalog pruning, and
-  environment privacy pruning finish before saved environments are published,
-  so stale async loads cannot expose another account's records or project
-  names. When nothing is restored, the last-active machine is dialed *after*
-  first paint, never as a gate on it. Storage failure leaves account sign-in
-  and the account directory usable and is surfaced as a non-fatal notice.
-  Session-lifecycle chrome follows the client currently assigned to the active
-  machine rather than the bootstrap client.
+- `apps/desktop/src/renderer/webclient/main.tsx` - installs a pending
+  `window.ade` before shared modules import, then mounts `WebClientRoot`.
+- `apps/desktop/src/renderer/webclient/shell/WebClientRoot.tsx` - the boot.
+  - It replaces the retired routes `/pair` and `/hub` first; visits land on
+    `/work`, where the App shows the welcome page.
+  - Account bootstrap, catalog pruning and privacy pruning finish before saved
+    environments show, so no other account's records leak. Then it starts the
+    30 s lease monitor, restores environments and catalogs, installs the
+    federated adapter, keeps a pending `/open` target, and restores the
+    project or Chats.
+  - With nothing restored, it dials the last-active machine *after* first
+    paint. A storage failure is a non-fatal notice; sign-in still works.
+  - Signed out, it loads no workspace code: only `window.ade.account` and the
+    lazy `WebSignInScreen` (`components/onboarding/WebSignInGate.tsx`). The
+    gate reads theme values through `state/appearanceStore.ts` until
+    `appStore` loads. With a stored session (`hasPersistedSession()`),
+    `preloadWorkspaceModules()` starts those imports during bootstrap.
+    Numbers: `docs/perf/macos-baseline.md` (`npm run bench:webclient`).
+  - The entry stylesheet is `webclient/gate.css`: Tailwind limited to
+    `apps/desktop/tailwind.gate.config.cjs`, `styles/foundation.css`, the
+    surface kit, the scene rules, `styles/toolPickerBackdrop.css` and
+    `styles/smartTooltip.css`. `index.css` imports the same partials.
+    `loadAppStylesheet()` loads the full stylesheet first in `loadAppRoot()`
+    and `preloadWorkspaceModules()`, because it must come before every chunk
+    stylesheet. A component that renders before the workspace loads must be
+    in the gate config's `content`, and its rules in a shared partial.
 
   Signed-out boot loads no workspace code. After account bootstrap and privacy
   pruning, a visitor with no account session gets only `window.ade.account`
@@ -738,11 +572,8 @@ Browser shell and routes:
   and registers itself there. When
   `hasPersistedSession()` reports a stored session, `preloadWorkspaceModules()`
   starts those imports alongside bootstrap, so a signed-in reload does not wait
-  for them afterwards. Cold signed-out load measured 123 → 47 requests and
-  9,703 → 1,552 KB transferred (`npm run bench:webclient`, interleaved, 5 runs
-  per side). The
-  `@phosphor-icons/react` namespace import that kept 4.9 MB of icons on that
-  path is gone too (`components/history/eventIcons.ts`).
+  for them afterwards. The signed-out numbers are in
+  `docs/perf/macos-baseline.md` (`npm run bench:webclient`).
 
   The entry stylesheet is `webclient/gate.css`, not `index.css`. It holds what
   the boot screens and the sign-in card draw: Tailwind limited to the files in
@@ -755,461 +586,314 @@ Browser shell and routes:
   (`loadAppStylesheet()` in `WebClientRoot.tsx`): `loadAppRoot()` waits for it,
   and `preloadWorkspaceModules()` starts it with the other imports. It is
   first in both lists, because stylesheets apply in the order their links are
-  added and the app's stylesheet was ahead of every chunk stylesheet when the
-  entry carried it. With the store split above, the entry stylesheet fell from
-  657 KB to 57 KB, the signed-out JavaScript from 739 KB to 518 KB, and the cold
-  signed-out transfer from 1,556 KB to 736 KB (Mac Studio numbers in
-  `docs/perf/macos-baseline.md`). A component that renders before the workspace
+  added, and the app's stylesheet must come before every chunk stylesheet. A
+  component that renders before the workspace
   loads must be in the gate config's `content` list, and a component rule it
   needs must be in a partial that both stylesheets import; otherwise it is
   unstyled on the sign-in screen only.
 - `apps/desktop/src/renderer/webclient/workspace/WebMachineSessionManager.ts` -
-  browser machine-session owner. It merges saved environments with live
-  clients, serializes admission, deduplicates same-target connects, retains
-  project catalogs for parked machines, and exposes Live, Reconnecting, Parked,
-  and Offline states. The pool owns at most four `AdeSyncClient` instances. A
-  fifth connection parks the least-recently-used non-active session, disconnects
-  it, and returns that client object to the pool; selecting the parked machine
-  reconnects it on demand and parks the next eligible LRU session. It also owns
-  the catalog cache: `hydrateCatalogs` loads the persisted records at boot, every
-  live catalog frame is written through to IndexedDB, a successful connect
-  records the last-active machine key, and forgetting a machine drops its cached
-  catalog. The optional store is injected, so a manager without browser storage
-  simply runs without the cache. A `background` connect (a repository tab
-  joins every computer with a copy) never parks another machine for room and
-  skips a machine the person disconnected (`disconnectByUser`). That choice is
-  kept in `localStorage` across reloads, and the person's own connect clears it.
-  A person's connect that finds a background connect in flight waits for it and
-  then runs its own.
-- `apps/desktop/src/renderer/webclient/workspace/machineIdentity.ts` - the
-  `machineCatalogKey` identity (`device:<hostDeviceId>`, falling back to the
-  environment id) shared by the catalog store, the session pool, and the
-  pre-project UI. It is a dependency-free leaf module on purpose: the shared
-  desktop components that render these surfaces import the model, and that
-  import must never drag the sync client into the desktop bundle.
-- `apps/desktop/src/renderer/webclient/workspace/webWorkspaceModel.ts` - the one
-  model behind both pre-project surfaces. `mergeWebMachines` folds the account
-  directory, browser-saved environments, live sessions, and persisted catalogs
-  into one row per physical machine; status comes from
-  `accountMachineConnectionState`, not from whether this tab holds a socket, so a
-  machine with a verified relay route reads **Available** rather than Offline.
-  `webConnectStage` maps the connection lifecycle to the honest stage the UI
-  shows (Dialing relay / Authenticating / Loading projects), and
-  `webRecentProjects` projects every known catalog into the shared
-  `RecentProjectSummary` shape the desktop welcome page already renders.
+  the machine sessions: Live, Reconnecting, Parked and Offline.
+  - It merges saved environments with live clients, serializes admission and
+    joins same-target connects.
+  - The pool holds at most four `AdeSyncClient`s. A fifth parks the
+    least-recently-used inactive session; selecting a parked machine
+    reconnects it.
+  - It owns the catalog cache (`hydrateCatalogs` at boot, live catalogs
+    written to IndexedDB, the last-active key on connect, a forgotten
+    machine's catalog dropped). Without a store it runs without the cache.
+  - A `background` connect (a repository tab joins every computer with a
+    copy) never parks another machine and skips a machine the person
+    disconnected (`disconnectByUser`, kept in `localStorage`). The person's
+    own connect clears that, and waits for a background connect in flight.
+- `apps/desktop/src/renderer/webclient/workspace/machineIdentity.ts` -
+  `machineCatalogKey` (`device:<hostDeviceId>`, else the environment id). It
+  is a leaf module, so shared desktop components can import it without the
+  sync client.
+- `apps/desktop/src/renderer/webclient/workspace/webWorkspaceModel.ts` -
+  `mergeWebMachines` folds the directory, saved environments, live sessions
+  and catalogs into one row per machine. Status comes from
+  `accountMachineConnectionState`, so a machine with a relay route reads
+  **Available**, not Offline. `webConnectStage` gives the stage (Dialing
+  relay, Authenticating, Loading projects). `webRecentProjects` builds the
+  `RecentProjectSummary` rows of the welcome page.
 - `apps/desktop/src/renderer/webclient/workspace/WebWorkspaceContext.tsx` -
-  shared account, directory, session-pool, federated-adapter, notice, machine
-  management, and deferred-deeplink actions used by the hosted workspace.
-  `connectMachineEntry` connects whichever route a merged row has - saved
-  browser pairing first, account adoption otherwise - and resolves its live
-  target id; `forgetMachineCatalog` drops a machine's cached projects.
-  `useOptionalWebWorkspace` is how shared desktop components ask whether they
-  are running inside ADE Web instead of assuming.
+  the account, directory, session pool, federated adapter, notices, machine
+  actions and deferred deeplinks. `connectMachineEntry` uses a saved pairing
+  first, else account adoption. `forgetMachineCatalog` drops cached projects.
+  Shared components call `useOptionalWebWorkspace` to know they run in ADE
+  Web.
 - `apps/desktop/src/renderer/components/app/ConnectionsPanel.tsx` (hosted
-  mode) - ADE Web uses the desktop Connections chip and panel: the account
-  header and the machine list, without the This computer card, the pairing
-  code, or the Phone and Web tabs. **Connect** on an account machine connects
-  it through the tab's `WebMachineSessionManager`, and reuses a pairing this
-  browser saved when it has one. When the tab already holds
-  `WEB_MACHINE_SESSION_LIMIT` machines, the panel says so. The panel loads that
-  limit on demand, so the desktop bundle never pulls in the hosted workspace.
-  Pages outside the top bar open the panel with the
-  `ade-web:open-connections` window event.
+  mode) - the account header and machine list, without This computer, the
+  pairing code, or the Phone and Web tabs. **Connect** goes through the
+  tab's `WebMachineSessionManager` and reuses a saved pairing. At
+  `WEB_MACHINE_SESSION_LIMIT` the panel says so (it loads the limit on
+  demand). The `ade-web:open-connections` event opens it.
 - `apps/desktop/src/renderer/webclient/shell/ScreenShell.tsx` and
-  `shellTokens.ts` - the minimal startup/error frame and standalone shell design
-  tokens. Machine and project selection live inside the reused app shell's
-  welcome surface, connections chip, and tab strip rather than a separate
-  pre-app picker.
+  `shellTokens.ts` - the startup and error frame. Machine and project choice
+  live in the app shell (welcome page, connections chip, tab strip).
 - `apps/desktop/src/renderer/webclient/shell/sessionLifecycleChrome.ts` -
-  web-only presentation for the session-lifecycle controls, installed from
-  `WebClientRoot` for the active machine client. The Work list
-  is the desktop component mounted verbatim, and it reveals a row's snooze
-  control on pointer hover; a phone or tablet never produces hover, so on the
-  web that control would be unreachable. Both that and the unsupported-host case
-  are web-shell concerns rather than component concerns, so they are handled with
-  one injected stylesheet keyed off a single attribute on `<html>`:
-  `data-ade-session-lifecycle="ready" | "unsupported"`. Under
-  `@media (pointer: coarse)` the snooze button becomes a 2rem touch target with
-  `opacity: 1`, the row's `pointer-events-none` action wrapper is re-enabled, and
-  the snooze duration menu rows get a 44px minimum height (the row count varies
-  with the time of day — see `resolveSnoozePresets`).
-- `apps/desktop/src/renderer/webclient/shell/webRoutes.ts` - thin web route
-  layer over `apps/desktop/src/shared/deeplinks.ts`. A `lane-share` link maps
-  to `/shared?grant=<id>`, the shared lanes page, which needs no machine of the
-  browser's own.
-- `apps/desktop/src/renderer/webclient/sync/relayReady.ts` - ADE Relay's
-  `ready=2` socket handshake (`accepted`, then `ready`) for every browser-side
-  socket to `wss://<relay>/connect/<machineKey>`: the paired sync connection
-  and the lane share guest connection.
-- Lane sharing in the web client: the guest's side works (the `/shared` page,
-  the shared lane view and the guest connection, with
-  `laneShareGuest` account calls through `account/client.ts`), and the owner's
-  side does not (the adapter's `laneShare.*` answers `lane_share_desktop_only`,
-  and Settings › Sharing is hidden). See [lane sharing](../lanes/lane-sharing.md).
+  one injected stylesheet keyed on `<html data-ade-session-lifecycle="ready" |
+  "unsupported">`. Under `@media (pointer: coarse)` the hover-only snooze
+  control becomes a visible 2rem touch target and the snooze menu rows get a
+  44px minimum height.
+- `apps/desktop/src/renderer/webclient/shell/webRoutes.ts` - web routes over
+  `apps/desktop/src/shared/deeplinks.ts`. A `lane-share` link maps to
+  `/shared?grant=<id>`, which needs no machine.
+- `apps/desktop/src/renderer/webclient/sync/relayReady.ts` - the Relay
+  `ready=2` handshake for every browser socket to
+  `wss://<relay>/connect/<machineKey>`.
+- Lane sharing: the guest side works (`/shared`, the shared lane view,
+  `laneShareGuest` calls); the owner side is desktop-only (`laneShare.*`
+  answers `lane_share_desktop_only`; Settings › Sharing is hidden). See
+  [lane sharing](../lanes/lane-sharing.md).
 
 Reused desktop renderer (web-mode adaptation):
 
 - `apps/desktop/src/renderer/lib/webClientMode.ts` - `isWebClientMode()` reads
-  the `window.__adeWebClient` flag the bootstrap stamps before the App module
-  loads, and `WEB_CLIENT_TAB_PATHS` lists the only surfaced tabs
-  (`/work`, `/lanes`, `/files`, `/prs`, `/chats`). There is no hosted-only
-  landing route: the pre-project surface is the shared welcome page on `/work`.
-  `isCssZoomedBrowserSurface()` is true for the hosted client and the Vite
-  `browserMock` preview so `AppShell` fills the inverse-sized body with
-  `h-full` instead of `100vh`. Desktop-only chrome
-  (`AppShell.tsx`, `TopBar.tsx`, `projectSidebar/`, `OnboardingBootstrap.tsx`)
-  reads the web-client flag to hide native window
-  controls, the updater, the onboarding tour, and tabs with no sync-protocol
-  backing instead of rendering broken affordances.
-- `apps/desktop/src/renderer/lib/webZoom.ts` - hosted-web stand-in for
-  Electron `webFrame` zoom. Inverse-sizes `<body>` then applies CSS `zoom` so
-  the used box is one viewport.
-- `apps/desktop/src/renderer/lib/fixedMenuPlacement.ts` - `position: fixed`
-  menus that open above an anchor use `top` plus `translateY(-100%)` so
-  vertical math never mixes `window.innerHeight` with a CSS-zoomed rect.
+  the `window.__adeWebClient` flag. `WEB_CLIENT_TAB_PATHS` lists the web tabs
+  (`/work`, `/lanes`, `/files`, `/prs`, `/chats`); the welcome page on `/work`
+  is the pre-project page. `isCssZoomedBrowserSurface()` (hosted client and
+  the `browserMock` preview) makes `AppShell` use `h-full`, not `100vh`.
+  `AppShell.tsx`, `TopBar.tsx`, `projectSidebar/` and
+  `OnboardingBootstrap.tsx` read the flag to hide window controls, the
+  updater, the tour and tabs with no sync backing.
+- `apps/desktop/src/renderer/lib/webZoom.ts` - the web stand-in for Electron
+  zoom: inverse-sized `<body>` plus CSS `zoom`.
+- `apps/desktop/src/renderer/lib/fixedMenuPlacement.ts` - a fixed menu above
+  its anchor uses `top` plus `translateY(-100%)`, so zoomed rects never mix
+  with `window.innerHeight`.
 - `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx`
-  and `ActivityPane.tsx` - the project-independent header popover and the
-  expanded pane its "Open all" raises: one `ActivityPanel` in two sizes, grouped
-  by the Work board's four columns exactly as on desktop. Activity is a global utility surface, not
-  another selected-machine tab, so it is intentionally separate from
-  `WEB_CLIENT_TAB_PATHS`. Its `/activity` pathname (and the `/attention` name it
-  replaced) is a deep link that opens the pane over the current tab; both are in
-  `APP_ROUTE_ROOTS` so a hard reload keeps it.
+  and `ActivityPane.tsx` - the Activity popover and pane (one
+  `ActivityPanel`, grouped like the Work board). It is not a tab.
+  `/activity` (and the old name `/attention`) opens the pane over the current
+  tab; both are in `APP_ROUTE_ROOTS`.
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` and
-  `ConnectionsPanel.tsx` - the single desktop Connections control and its
-  Machines, Phone, and Web tabs. The Web tab reports connected browser peers
-  and directs signed-out users to account sign-in. In hosted mode, `TopBar`
-  renders the same chip and panel with the hosted sections only (see
-  `ConnectionsPanel.tsx` above), and logical repository tabs in the tab strip. Checkouts with the same repository origin
-  collapse into one tab; when that repository exists on multiple machines, the
-  machine becomes a compact selector inside the tab. Parked and offline bindings
-  remain visible and reconnect when chosen. A computer that leaves this tab
-  never closes a tab (`moveWebTabsOffGoneTargets`): it was forgotten or removed
-  (it leaves the connection list), or it stopped (still listed, not connected
-  3 s after the reconnect hold reports it; a project open passes through
-  "idle" for a moment). Each of its tabs moves to a copy on another connected
-  computer and keeps its place in front; a tab with no other copy stays open on
-  its no-machine page (`ProjectWelcomeNoMachine.tsx`), which offers **Open**
-  only on a computer that can answer. When a stopped computer connects again,
-  its waiting tabs open their copy again by themselves.
-- `apps/desktop/src/renderer/components/onboarding/LaunchGate.tsx` - the launch
-  gate, split into a web variant and a desktop variant so neither constrains the
-  other. The web variant gates on account state alone and offers no way past it:
-  signed in renders the app, signed out renders `WebSignInGate` (the
-  `GlassSignInCard`) with no skip button. The hosted shell's own boot path
-  renders the same card through `WebSignInScreen` before `LaunchGate` exists
-  (see `WebClientRoot.tsx` above). With a Clerk configuration the card runs
-  the whole Clerk sign-in itself (`ClerkSignInPanel`, below) and then a
-  full-page OAuth redirect that Clerk completes at once, so there is no
-  polling phase to survive. The desktop app's gate keeps its one button; that
-  button now opens ADE Web's `/sign-in` page instead of Clerk's.
+  `ConnectionsPanel.tsx` - the Connections chip and panel (Machines, Phone,
+  Web; hosted mode shows the hosted sections only) and the tab strip.
+  - Checkouts of one repository share one tab; with copies on several
+    machines, the machine is a selector inside the tab. Parked and offline
+    bindings stay and reconnect when chosen.
+  - A computer that leaves never closes a tab (`moveWebTabsOffGoneTargets`).
+    It left when it is forgotten or removed, or when it stays not connected
+    3 s after the reconnect hold ends. Each tab moves to a copy on another
+    connected computer; a tab with no other copy moves to ADE Cloud
+    (`useWebTabsFollowComputers.ts`). When the computer comes back, its tabs
+    move back.
+- `apps/desktop/src/renderer/components/onboarding/LaunchGate.tsx` - the web
+  variant gates on the account only: signed in shows the app, signed out
+  shows `WebSignInGate` (`GlassSignInCard`) with no skip. The boot shows the
+  same card through `WebSignInScreen` earlier. The desktop gate keeps one
+  button that opens ADE Web's `/sign-in`.
 - `apps/desktop/src/renderer/components/onboarding/ClerkSignInPanel.tsx` -
-  ADE's own Clerk sign-in inside the glass card: "Continue with" Google,
-  GitHub and Apple, an email code, sign-up for a new email, and "Continue as"
-  when the browser already holds a Clerk session. When Clerk cannot be reached,
-  or the sign-in needs a step the card does not show (a second factor), it
-  hands back to the card's one button, which opens Clerk's hosted page. A
-  fallback that is not a second factor is a Sentry warning
+  ADE's own Clerk sign-in in the card: Google, GitHub and Apple, an email
+  code, sign-up, and "Continue as". If Clerk cannot be reached or needs a step
+  the card does not show (a second factor), the card's button opens Clerk's
+  hosted page. A fallback that is not a second factor is a Sentry warning
   (`clerk_sign_in_unavailable`).
-- `apps/desktop/src/renderer/components/onboarding/GateBackdrop.tsx` - the
-  backdrop behind the card. On ADE Web a visitor who never picked a scene sees
-  the shipped "Mountain vista" picture (`useActiveScene({ untouched })`); a
-  picked scene always wins. The desktop gate keeps its shuffle.
+- `apps/desktop/src/renderer/components/onboarding/GateBackdrop.tsx` - on ADE
+  Web a visitor with no picked scene sees "Mountain vista"
+  (`useActiveScene({ untouched })`). The desktop shuffles.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomePage.tsx` - the
-  shared welcome surface, adapted for web rather than replaced by a parallel UI.
-  It renders the same home dashboard the desktop does (`ProjectWelcomeHome.tsx`:
-  the hero and the widget grid — projects with working now, pull requests with
-  contributions, the clock and weather) with the
-  recents side panel. In hosted mode its recents come from `webRecentProjects`
-  instead of `project.listRecent`, and the existing `groupRecentProjects` still
-  collapses one card per repository, with its machines behind one quiet
-  **N machines** chip whose menu lists each machine, its state, and opens the
-  project there. Each card carries its reachability as a tooltip, lane count, relative activity, and `(connects on
-  open)` for a machine that is not live; cards fed by a cached catalog shimmer
-  until live data replaces them. Clicking a card connects that machine first -
-  saved pairing or account adoption - then opens the project, so an account-only
-  machine is never a dead end. Pin, forget, and merge row actions are
-  desktop-only: the hosted list is the machines' own catalogs, which the browser
-  does not own. **Chat without a project** is labelled with the active machine,
-  and a signed-in owner with no Macs gets a pointer to sign in to ADE on one.
+  shared welcome surface (Home) on desktop and web. It renders the home
+  dashboard (`ProjectWelcomeHome.tsx`: the hero and the widget grid) and the
+  projects list. The account's projects decide the rows on every client
+  (`useHomeAccountProjects.ts`); on the web, the machines' catalogs
+  (`webRecentProjects`) add their copies. One card shows each repository, with
+  its machines behind an **N machines** chip. An own computer that is offline
+  does not show. Clicking a card connects that machine first, then opens the
+  project. A project with no own computer online opens on ADE Cloud. With no
+  own computer, Home shows the "Get started with ADE" steps
+  (`GetStartedCard.tsx`). **Chat without a project** shows on the web only
+  while an own computer is live, and it names that computer.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomeHome.tsx` - the
-  home dashboard's hero and cards, shared by desktop and web. Each card answers
-  one question at a glance (what is running, this machine's activity, its live
-  limits and the machines, and the open project's pull requests), links to the
-  full surface, and reads state the renderer already holds; the PR card reads the
-  same GitHub snapshot the PRs tab reads through `prReadCache`.
+  home hero and cards (running work, activity, limits and machines, the open
+  project's PRs). Each card reads state the renderer holds; the PR card reads
+  `prReadCache`.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomeWebRows.tsx` -
-  the recents-row chrome: project artwork, the **N machines** chip and its
-  menu (each machine's state, and open there), worktree/lane badges, and
-  relative activity.
-  Every export is driven entirely by its props, which is what keeps the welcome
-  page's own body readable as page logic rather than row markup.
+  the row parts (artwork, the **N machines** chip and menu, badges, relative
+  time), driven by props only.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomeWebNotices.tsx` -
-  what the hosted welcome surface says when it can list no machines.
-  `webZeroMachinesNotice` is a pure function of the account snapshot, because
-  zero rows can mean the account really has no Macs but just as easily means
-  the directory read failed or the session lapsed - and telling the second user
-  their account is empty is a lie they cannot act on. Its `kind`
-  (`loading` / `no_machines` / `signed_out` / `unconfigured` / `unavailable`)
-  is the stable hook for tests. The two failure kinds also carry a
-  `reassurance` line — that the machines and their projects are untouched and
-  only the list failed to load — set only where it is both true and not
-  obvious: a failure that costs nothing should say so, and one that costs
-  something must not be dressed up as harmless.
-- `apps/desktop/src/renderer/components/settings/WebScopePill.tsx` - the
-  per-section scope line in Settings. On the desktop "where does this setting
-  go" has one answer; in the browser it has three - the connected machine, the
-  ADE account, or this browser's local storage alone - and which one is not
-  guessable from the control, so every web-visible section opens by saying
-  which. Scope comes from `sectionWebScope` in `settingsManifest.ts`, and
-  sections scoped `hidden` are not rendered in web at all. Desktop renders
-  sections exactly as before: no banner, no wrapper.
+  `webZeroMachinesNotice`, a pure function of the account snapshot, for a
+  machine list that did not load. Kinds: `loading`, `signed_out`,
+  `unconfigured`, `unavailable`. An account with no computer is not an error:
+  it has ADE Cloud. Failure kinds add a `reassurance` line.
+- `apps/desktop/src/renderer/components/settings/WebScopePill.tsx` - on the
+  web, each Settings section says where it saves: the connected machine, the
+  account, or this browser. Scope comes from `sectionWebScope`
+  (`settingsManifest.ts`); `hidden` sections do not render. The desktop shows
+  no pill.
 - `apps/desktop/src/renderer/webclient/workspace/useWebChatsMachines.ts` - the
-  Chats page's machines in the browser. The rail lists the chats of every live
-  machine (`liveMachines`, by target id), and the federated adapter's
-  `personalChats` override sends a call that names its machine to that
-  machine's chats adapter. The picker beside the composer chooses where a new
-  chat runs: options are keyed by `machineCatalogKey` rather than target id,
-  because a machine this browser has never dialled has no target id yet -
-  selecting it connects first and hands the resolved target to `activateChats`.
-  It returns null on the desktop.
+  Chats page on the web. The rail lists every live machine's chats; a call
+  that names a machine goes to its chats adapter. The composer's picker keys
+  options by `machineCatalogKey`, because a machine never dialed has no
+  target id; picking one connects it first. Null on the desktop.
 - `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx`
-  - reused route/project lifecycle capture plus the hosted-web startup event.
-  It sends only normalized inputs through `window.ade.analytics`; the browser
-  client never talks to PostHog directly. There is no in-app consent prompt and
-  no Settings control; a browser opt-out stored earlier is still honored.
+  - route and project capture plus the web startup event, through
+  `window.ade.analytics` only. No consent prompt; an earlier browser opt-out
+  still applies.
 
 Machine runtime and sync host:
 
-- `apps/ade-cli/src/services/sync/syncHostService.ts` - sync WebSocket host,
-  pairing/hello auth, DPoP enforcement, changeset fan-out, project catalog,
-  project switch, file/chat/terminal sub-protocols, and command routing
-  advertisement.
-- `apps/ade-cli/src/services/sync/syncHostRecovery.ts` - typed project-host
-  readiness and **Fix connection**. Hosted web reads `hello_ok.projectHost`
-  and `host_unavailable` snapshots, retries a generic starting failure, then
-  overlays the same recovery card as iOS (`ProjectHostRecoveryScreen`).
-  Cached lists stay on screen; the overlay is not `ProjectRecoveryScreen`
-  (that screen is local disk/brain repair). The repair itself is serialized and
-  deadline-bounded on the machine, so a second browser tab joins the running
-  one rather than opening a second stop/restart sequence. Parsing, the retry
-  ladder, and the "why is there no Fix button" classification are the shared
+- `apps/ade-cli/src/services/sync/syncHostService.ts` - the sync host:
+  pairing and hello auth, DPoP, changesets, project catalog and switch, file,
+  chat and terminal streams, and command descriptors.
+- `apps/ade-cli/src/services/sync/syncHostRecovery.ts` - project-host
+  readiness and **Fix connection**. The web shows the same card as iOS
+  (`ProjectHostRecoveryScreen`, not the local `ProjectRecoveryScreen`) and
+  keeps cached lists. The machine serializes the repair with a deadline, so a
+  second tab joins it. Shared parsing and the retry ladder:
   `apps/desktop/src/shared/syncHostRecoveryUi.ts` and
-  `apps/desktop/src/shared/types/syncHostRecovery.ts`, which iOS mirrors.
-- `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` - remote
-  command registry. It carries the web-parity `register("...")` entries for
-  Work, chat, terminal, files/git, PRs, project config, AI status, GitHub
-  status, history, rebase, and safe smart-link preview surfaces.
-  The legacy runtime-scoped
-  `sync.getWebPairingInfo` descriptor remains in the protocol, but no current
-  iOS or hosted-web UI uses it to create browser pairings.
+  `apps/desktop/src/shared/types/syncHostRecovery.ts` (iOS mirrors them).
+- `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` - the command
+  registry with the web `register("...")` entries. `sync.getWebPairingInfo`
+  stays in the protocol; no client uses it.
 - `apps/ade-cli/src/services/sync/productAnalyticsRemoteCommand.ts` and
-  `syncHostService.ts` - bind untrusted browser capture requests to the host's
-  `web` surface/project and keep `analytics.setClientEnabled` peer-scoped. A
-  browser choice never changes the machine-wide desktop/runtime preference.
-- `apps/ade-cli/src/services/sync/syncPairingStore.ts` - pairing result store:
-  per-device secret, optional DPoP public key, and explicit local/account
-  provenance (`accountOwnerUserId` plus the sticky `localTrustOrigin` flag) used
-  for owner-scoped revocation. A same-account hello backed by a DPoP proof
-  against the record's pinned key adopts a still-local pairing into the account;
-  owner-scoped revocation demotes such records back to local trust instead of
-  deleting them.
+  `syncHostService.ts` - bind browser capture to the host's `web` surface and
+  keep `analytics.setClientEnabled` per peer; a browser never changes the
+  machine's own preference.
+- `apps/ade-cli/src/services/sync/syncPairingStore.ts` - pairings: the device
+  secret, an optional DPoP key, and local or account provenance
+  (`accountOwnerUserId`, `localTrustOrigin`). A same-account hello with a
+  valid DPoP proof adopts a local pairing into the account; owner revocation
+  demotes such a record to local trust, not deletes it.
 - `apps/ade-cli/src/services/sync/syncDpop.ts` - host-side P-256 proof
   validation and replay guard.
-- `apps/ade-cli/src/services/sync/syncCloudRelayStore.ts` - stable cloud-tunnel
-  `machineKey`/HMAC identity and browser/phone-facing
-  `wss://<relay>/connect/<machineKey>` URL. Deprecated enablement fields are
-  removed when the file is read; account sign-in is the only availability gate.
+- `apps/ade-cli/src/services/sync/syncCloudRelayStore.ts` - the relay
+  `machineKey` and HMAC identity and the `wss://<relay>/connect/<machineKey>`
+  URL. Account sign-in is the only gate.
 - `apps/ade-cli/src/services/sync/syncTunnelClientService.ts` and
   `apps/tunnel-relay/` - brain-side Cloudflare tunnel client and the relay
   Worker/Durable Object.
-- `apps/ade-cli/src/services/sync/brainProjectActionsSyncHandler.ts` -
-  machine-level fallback handler for pairing/project actions before a project
-  host owns the sync listener. The headless machine catalog marks the
-  `ProjectScopeRegistry`'s actual current sync host as `isOpen` on every read,
-  including after a host handoff, so reconnect restoration cannot guess from
-  stale MRU order and bind streams to the wrong project.
+- `apps/ade-cli/src/services/sync/brainProjectActionsSyncHandler.ts` - the
+  machine-level handler before a project host owns the listener. The machine
+  catalog marks the `ProjectScopeRegistry`'s current host as `isOpen` on each
+  read, so a reconnect binds streams to the right project.
 - `apps/ade-cli/src/services/sync/deviceRegistryService.ts` - device records;
   `SyncPeerDeviceType` includes `browser`.
 
 Account connection and entry points:
 
-- `apps/account-directory/src/directory.ts` - Clerk-scoped machine
-  register/list/delete routes. The list query reads the 500 most recently seen
-  rows, computes online-first order, and exposes auth/D1 durations through the
-  CORS-visible `Server-Timing` header. It accepts, reflects, and CORS-exposes
-  `X-ADE-Correlation-ID`, then records it with route, method, status, and
-  duration for credential-free connection tracing.
-- `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` -
-  the focused **Connections > Phone** and **Connections > Web** tab bodies plus
-  the shared **This Mac** card. The Web variant is account-sign-in only; the
-  This Mac card owns the PIN manager and internal phone QR.
-- `apps/desktop/src/shared/pairingQr.ts` - smart pairing URL
-  `https://ade-app.dev/pair#<base64url(JSON)>`; the fragment carries host
-  identity, port, address candidates, an optional relay URL, and an additive
-  optional `pinConfigured` hint (the `PairingQrPayload` type) — never the PIN.
-  This remains internal wire encoding for the phone's system-camera/App Clip
-  flow, not a user-facing browser pairing link.
-- `apps/desktop/src/shared/webClientUrl.ts` - canonical
-  `https://app.ade-app.dev` URL builder. `/open` remains user-facing; `/pair`
-  is retired in the hosted shell.
+- `apps/account-directory/src/directory.ts` - machine register, list and
+  delete. The list reads the 500 most recently seen rows, orders online
+  first, adds the cloud truth for cloud computers (`withCloudTruth`), and
+  exposes `Server-Timing`. It echoes `X-ADE-Correlation-ID` and logs it with
+  route, status and duration.
+- `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` - the
+  **Connections › Phone** and **› Web** bodies and the **This Mac** card (PIN
+  and phone QR). Web is account sign-in only.
+- `apps/desktop/src/shared/pairingQr.ts` - the phone's pairing URL
+  `https://ade-app.dev/pair#<base64url(JSON)>` (`PairingQrPayload`: host,
+  port, addresses, optional relay URL and `pinConfigured`; never the PIN).
+  It is not a browser pairing link.
+- `apps/desktop/src/shared/webClientUrl.ts` - the `https://app.ade-app.dev`
+  URL builder (`/open`; `/pair` is retired).
 - `apps/desktop/src/shared/deeplinks.ts` - shared deeplink grammar layered
   under the web client's `/open` route.
 - `apps/ade-cli/src/commands/deeplinks.ts` - `ade link --web`.
 - `apps/desktop/src/renderer/components/lanes/LaneContextMenu.tsx` and
   `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` /
   `SessionContextMenu.tsx` - desktop "Open in web" entry points.
-- `apps/web/src/app/pages/PairPage.tsx` - marketing-site landing for the smart-QR
-  URL. It no longer hash-forwards to the hosted client; the only visitors who
-  reach this HTML opened the QR URL on a device **without** the ADE app, so the
-  page reads nothing from `window.location` (there is no fragment to copy or
-  forward) and simply points them at the iPhone app, with a secondary "open the
-  web client instead" link. Separately, the hosted client's own `/pair` route is
-  scrubbed by `WebClientRoot` and drops into sign-in.
-- `apps/web/scripts/check-entities.mjs` - dependency-free TypeScript-AST guard
-  run by the marketing-site build. It rejects unsupported named HTML entities
-  in JSX text, expressions, and attributes before they can ship as literal UI
-  text.
+- `apps/web/src/app/pages/PairPage.tsx` - the marketing page for the pairing
+  URL on a device without the app. It reads nothing from the URL and points
+  to the iPhone app, with a link to the web client.
+- `apps/web/scripts/check-entities.mjs` - a build guard that rejects
+  unsupported named HTML entities in JSX.
 
 Tests:
 
-- `apps/desktop/src/renderer/webclient/account/client.test.ts` - OAuth callback,
-  refresh-session persistence/rotation/expiry, JWT lifetime, userinfo profile,
-  and browser storage/URL privacy contracts.
-- `apps/desktop/src/renderer/webclient/sync/envStore.test.ts` - browser trust
-  migration plus bounded and cooperative IndexedDB schema upgrades.
-- `apps/desktop/src/renderer/components/app/TopBar.test.tsx`.
-- `apps/desktop/src/renderer/components/settings/SyncDevicesSection.test.tsx`.
+- `apps/desktop/src/renderer/webclient/account/client.test.ts` - OAuth, the
+  session record, token lifetime, and storage and URL privacy.
+- `apps/desktop/src/renderer/webclient/sync/envStore.test.ts` - the trust
+  migration and IndexedDB upgrades.
 - `apps/desktop/src/renderer/webclient/sync/__tests__/sync.test.ts`.
-- `apps/desktop/src/renderer/webclient/sync/envStore.test.ts`.
-- `apps/desktop/src/renderer/webclient/adapter/__tests__/adapter.test.ts` -
-  sync-backed namespaces, including the non-null prompt-stash contract.
-- `apps/desktop/src/renderer/webclient/adapter/__tests__/runtimePinGuard.test.ts` -
-  the pin boundary: same-machine/same-project pins proceeding unpinned,
-  same-machine/other-project and foreign-machine pins throwing, and the
-  `kind: "local"` message.
-- `apps/desktop/src/renderer/webclient/adapter/__tests__/federated.test.ts` -
-  persisted welcome/Chats/project restoration, cross-machine and same-machine
-  binding pinning, active-adapter transitions, and host-driven project changes.
+- `apps/desktop/src/renderer/webclient/adapter/__tests__/adapter.test.ts`,
+  `runtimePinGuard.test.ts` (the pin boundary), `federated.test.ts`
+  (restoration, binding pins, adapter changes),
+  `sessionLifecycleOverlay.test.ts` and `appleDevice.test.ts`.
 - `apps/desktop/src/renderer/webclient/workspace/__tests__/WebMachineSessionManager.test.ts` -
-  four-client admission, concurrent-connect bounds, LRU parking, parked resume,
-  auth-failure cleanup, and project switching.
+  the four-client pool, parking and auth-failure cleanup.
 - `apps/desktop/src/renderer/webclient/shell/__tests__/webClientShell.test.tsx` -
-  startup shell, retired pairing route, account privacy, welcome-surface boot,
-  and StrictMode lifecycle coverage.
-- `apps/ade-cli/src/commands/deeplinks.test.ts`.
-- `apps/ade-cli/src/services/sync/syncRemoteCommandService.test.ts`.
+  boot, the retired route, account privacy.
+- `apps/desktop/src/renderer/components/app/TopBar.test.tsx`,
+  `apps/desktop/src/renderer/components/settings/SyncDevicesSection.test.tsx`,
+  `apps/ade-cli/src/commands/deeplinks.test.ts`,
+  `apps/ade-cli/src/services/sync/syncRemoteCommandService.test.ts`.
 
 ## Gotchas
 
-- **ADE's sign-in card depends on two Clerk settings.** The Clerk OAuth app's
-  consent screen must stay off: with it on, the authorize step after the card
-  goes to Clerk's hosted consent page (and a development session is lost
-  there). And Clerk's Frontend API shapes are read defensively by
-  `clerkFrontendApi.ts`; a renamed field reads as missing, and the card falls
-  back to its one button (Clerk's hosted page). After a Clerk API version
-  change, run a real sign-in on the development instance (`npm run
-  dev:webclient`, a `+clerk_test@example.com` address, code `424242`).
-
-- **A `window.ade` member the web adapter lacks is a stand-in, not `undefined`.**
-  `withFallbackProxy` (`adapter/infra/proxy.ts`) answers it with a callable so
-  a direct call never throws synchronously inside an effect. Calling it rejects
-  with `AdeUnavailableError` ("… is not available in the ADE web app"), and an
-  `on*` member returns a no-op unsubscribe. It is still truthy and a function,
-  so a feature check must use `isAdeAvailable(window.ade?.ns?.method)`
-  (`lib/adeAvailability.ts`), never truthiness or `typeof`. An unhandled
-  `AdeUnavailableError` from a fire-and-forget call is swallowed
-  (`webclient/main.tsx`) and never reported to Sentry. It used to resolve
-  `null`, which callers read as real data: the Work tab crashed on
-  `snapshot.owner`, and every desktop-only control looked available.
-- **The hosted page cannot dial raw LAN or Tailscale-IP `ws://` endpoints.**
-  Browsers block mixed content from `https://app.ade-app.dev`. New connections
-  use the account-authorized cloud relay. A saved pre-release environment may
-  still use an already-verified direct `wss://` route.
-  `ws://127.0.0.1:<port>` is for local web-client development only.
-- **The browser has no ADE database.** It does not load cr-sqlite, does not
-  apply changesets, and does not advertise the `changesetAck` capability. It
-  advertises `invalidationOnlyV1`: the host starts it at the current database
-  watermark, the browser performs one full-domain refresh after hello, and
-  later `invalidation_batch` envelopes identify only the domains that changed.
-  The additive `compactInvalidationV1` capability distinguishes this format
-  from older invalidation-only browsers that understood only changeset hints.
-  The host never includes CRR row values in these hints and caps their serialized
-  size at 16 KB, falling back to a full-domain refresh hint for invalid or
-  oversized table sets.
-  The host must confirm both contracts through
-  `hello_ok.features.invalidationOnlyV1` and `compactInvalidationV1`; an older
-  host is closed immediately with concrete desktop-update guidance instead of
-  being allowed to replay its historical CRR backlog through Relay.
-- **Protocol version 1 extensions are additive.** The browser decodes the
-  common envelope and ignores valid types it does not implement, including the
-  desktop-only `rpc_*` and `fwd_*` channels. Unknown `hello_ok.features` keys
-  are harmless, and missing additive keys mean the related capability is not
-  available rather than failing the handshake.
-- **IndexedDB is the connection, refresh-session, and catalog store.** Clearing
-  site data removes the account refresh credential, paired secrets,
-  non-extractable DPoP private keys, and the cached project catalogs - which
-  costs only the instant recents paint, since catalogs are rebuilt from the
-  first live connection. The browser must sign in and
-  adopt the account machine again; a legacy direct environment cannot be
-  recreated through the hosted UI. The private key cannot be exported for
-  backup or migration. A blocked upgrade or unavailable storage is recoverable:
-  the machine directory continues loading, saved environments remain hidden,
-  and Retry performs a fresh open attempt. Multi-store privacy cleanup must
-  remain transactional so selection metadata cannot outlive a removed
-  account-owned environment.
-- **Connection liveness is application-observed.** An open browser WebSocket is
-  not proof that the relay path is usable. The visible-page watchdog requires
-  inbound ADE traffic within 75 seconds and reconnects stale tabs; do not remove
-  it in favor of the browser's socket state alone. Transport-open and
-  authenticated-hello deadlines are intentionally separate so slow token/DPoP
-  preparation and a dead network route produce different failures.
-- **Analytics collection is on by default and honors a browser-local opt-out.**
-  No consent prompt is shown and no Settings control writes the preference; a
-  `"false"` in local storage from an earlier build still disables collection. The host
-  keeps an in-memory consent bit for that paired socket and starts it
-  disabled, so every adapter connection must reassert the local preference
-  before capture. An opt-out is still fail-closed: a failed disable
-  acknowledgement closes the connection rather than falling back to
-  machine-wide consent. Accepted events still consume the host's shared
-  200-event daily budget. See [logging and product analytics](../../logging.md).
-- **The smart-QR payload must stay a fragment.** The
-  `https://ade-app.dev/pair#...` form survives only as internal wire encoding
-  for phone system-camera/App Clip pairing. It omits the PIN, and fragments are
-  not sent to servers. Do not turn it back into a user-facing hosted pairing
-  route or move it into a query parameter.
-- **The relay is transport, not cloud state.** The Cloudflare tunnel relay is a
-  trusted intermediary for sync frames while the Mac is signed in; it does not
-  store ADE project state, but it can read the frames it pipes. There is no
-  separate relay toggle. End-to-end payload encryption is not implemented;
-  adding it is planned security work.
-- **Remote-command descriptors are the host authority.** The adapter may have a
-  method name, but it only executes when the host advertises the action in
-  `hello_ok.features.commandRouting.actions`; otherwise it falls back or
-  reports unsupported behavior.
-- **Optimistic lifecycle state must always be able to expire.** A
-  `SessionLifecyclePatch` is a temporary decoration over a host-owned row, not a
-  local source of truth. It carries only lifecycle columns, never a derived
-  phase, and it must retire through reconcile, reject, or TTL - an overlay with
-  no expiry path would leave the browser showing a state the machine never
-  agreed to. For the same reason, a lifecycle command that the host treats as a
-  legitimate no-op (waking a row that was never snoozed) must not be reported as
-  applied.
-- **A runtime pin the adapter cannot route must throw, not be dropped.** One
-  adapter instance is one machine and one project, so silently ignoring a
-  foreign pin turns a precise request into a read or write against the wrong
-  runtime. Only a pin restating this adapter's own machine *and* project may
-  proceed unpinned. Any new pinned adapter member takes `RuntimePinArg` and
-  calls `assertWebRuntimePinRoutable` first.
-- **Native-only surfaces must stay unavailable in the web adapter.** OS
-  notifications, external editor open, reveal in Finder, local directory
-  picking, native shells, computer use, built-in browser, iOS Simulator,
-  updater, and transcription are not browser capabilities. App Control is the
-  exception that is watch-only: its status and frames are served, and driving
-  calls reject (see `adapter/appControl.ts`).
-- **Build output shape matters.** Cloudflare Pages serves from the output root;
-  `_headers`, `_redirects`, `_routes.json`, `_worker.js`, and `index.html`
-  must sit directly inside `apps/desktop/dist/web-client`.
+- **The sign-in card depends on two Clerk facts.** The Clerk OAuth app's
+  consent screen must stay off; with it on, the authorize step goes to
+  Clerk's consent page and a development session is lost.
+  `clerkFrontendApi.ts` reads Clerk's shapes defensively, so a renamed field
+  sends the card to its one button (Clerk's hosted page). After a Clerk API
+  version change, sign in for real on the development instance
+  (`npm run dev:webclient`, a `+clerk_test@example.com` address, code
+  `424242`).
+- **A `window.ade` member the adapter lacks is a stand-in, not `undefined`.**
+  `withFallbackProxy` (`adapter/infra/proxy.ts`) returns a callable that
+  rejects with `AdeUnavailableError`; an `on*` member returns a no-op
+  unsubscribe. It is truthy, so feature checks must use
+  `isAdeAvailable(window.ade?.ns?.method)` (`lib/adeAvailability.ts`). An
+  unhandled `AdeUnavailableError` is swallowed (`webclient/main.tsx`) and not
+  sent to Sentry.
+- **The hosted page cannot dial LAN or Tailscale `ws://`.** Browsers block
+  mixed content. New connections use the account relay; a saved environment
+  may keep a verified `wss://` route. `ws://127.0.0.1:<port>` is for local
+  development only.
+- **The browser has no ADE database.** It advertises `invalidationOnlyV1` and
+  `compactInvalidationV1`, refreshes every domain after hello, and then
+  refreshes only the domains each `invalidation_batch` names. The host sends
+  no row values and caps a hint at 16 KB (else a full refresh hint). A host
+  that does not confirm both features in `hello_ok.features` is closed with
+  update guidance, so it cannot replay its CRR backlog over Relay.
+- **Protocol version 1 extensions are additive.** The browser ignores types it
+  does not implement (`rpc_*`, `fwd_*`) and unknown feature keys. A missing
+  key means the capability is not there.
+- **IndexedDB holds the refresh credential, pairings, DPoP keys and
+  catalogs.** Cleared site data means a new sign-in and a new adoption; a
+  legacy direct environment cannot come back through the hosted UI, and the
+  private key cannot be exported. Unavailable storage is recoverable: the
+  directory still loads, saved environments hide, and Retry opens again.
+  Keep multi-store privacy cleanup in one transaction.
+- **Connection liveness is what the app sees.** An open WebSocket does not
+  prove the relay path works. Keep the 75 s inbound watchdog. Keep the
+  transport-open and hello deadlines apart, so slow token work and a dead
+  route fail differently.
+- **Analytics is on by default and honors a browser opt-out.** The host keeps
+  a per-socket consent bit that starts off, so each connection must send the
+  preference again before capture. A failed opt-out ack closes the
+  connection. Accepted events use the host's 200-event daily budget. See
+  [logging and product analytics](../../logging.md).
+- **The phone pairing payload must stay a URL fragment.** It omits the PIN,
+  and fragments do not reach servers. Do not make it a hosted pairing route
+  or a query parameter.
+- **The relay is transport, not cloud state.** It stores no project state but
+  can read the frames it carries. There is no end-to-end payload encryption.
+- **Remote-command descriptors are the host's authority.** An adapter method
+  runs only when the host lists the action in
+  `hello_ok.features.commandRouting.actions`.
+- **Optimistic lifecycle state must expire.** A `SessionLifecyclePatch` carries
+  only lifecycle columns and retires by reconcile, reject or TTL. A host
+  no-op (waking a row that was never snoozed) must not show as applied.
+- **A runtime pin the adapter cannot route must throw.** One adapter is one
+  machine and one project. Only a pin for this adapter's own machine *and*
+  project may run unpinned. A new pinned member takes `RuntimePinArg` and
+  calls `assertWebRuntimePinRoutable` first. ADE Cloud and `cloud-saved:` pins
+  go to the account adapter, never to a sync adapter.
+- **Native-only surfaces stay unavailable.** OS notifications, external
+  editors, Finder, directory pickers, native shells, computer use, the
+  built-in browser, the iOS Simulator, an update of the tab's own app and
+  transcription. App Control is watch-only (`adapter/appControl.ts`).
+- **Updating another machine works.** A tab installs nothing itself. It calls
+  `remoteRuntime.updateAndRestart` / `getUpdateImpact`, which the federated
+  adapter sends as that machine's `machine.updateAndRestart` /
+  `machine.updateImpact` sync commands (`adapter/federated.ts`,
+  `machineUpdateRemoteCommands.ts`). A machine whose brain predates them
+  reports `capabilities.remoteUpdate: false`, so its row shows "Update it on
+  that machine" and no Update button.
+- **The build output shape matters.** `_headers`, `_redirects`,
+  `_routes.json`, `_worker.js` and `index.html` must sit directly in
+  `apps/desktop/dist/web-client`.
 
 ## Architecture
 
@@ -1237,9 +921,16 @@ Federated window.ade adapter
   - one adapter per machine + project binding
   - persisted welcome/project/Chats surface
   - repo tabs with machine selection inside the tab
-  |
+  |                                   |
+  | own computer                      | ADE Cloud binding or cloud-saved: pin
+  |                                   v
+  |                                 Account adapter (adeCloudSyncClient)
+  |                                   - account reader: account server + GitHub
+  |                                   - saved chats, terminal copies, Git summaries
+  |                                   - message queue; wakes run in the background
+  |                                   - never dials a computer
   v
-AdeSyncClient pool
+AdeSyncClient pool (own computers)
 apps/desktop/src/renderer/webclient/sync/
   - IndexedDB environment store
   - WebCrypto DPoP key
@@ -1268,139 +959,98 @@ Project services and state
   - worktrees and runtime processes on the machine
 ```
 
-The hosted SPA is only the controller UI. The machine runtime remains the
-authority for project state, file access, process execution, terminal IO, and
-agent/chat mutations.
+The hosted SPA is only the controller UI. A machine runtime is the authority
+for its project state, file access, processes, terminal IO, and chat
+mutations. For ADE Cloud, the account server holds what a person can read
+while the cloud computers sleep: saved chats, CLI and shell copies, Git
+summaries, the lane index, the CTO copy and account settings.
 
 ## Account connection and auth flow
 
-1. The operator opens `https://app.ade-app.dev`. The boot path renders the
-   sign-in card (`WebSignInScreen`) and nothing else - there is no skip,
-   because every byte this
-   client can show arrives over account-authorized Relay. The card signs the
-   browser in to Clerk on this page (email code, or Google / GitHub / Apple
-   with a return to `/sign-in/return`), then starts ADE Web's OAuth PKCE
-   sign-in, which Clerk completes at once because the session exists. The
-   consent screen is off on ADE's Clerk OAuth app, so no Clerk page shows. Desktop's
-   **Connections > Web** surface points to this account flow; it exposes no QR,
-   link, PIN, or manual endpoint entry.
-2. The browser loads the Clerk-scoped account machine directory and lands on the
-   welcome surface, which lists recent projects across every known Mac. On a
-   returning browser those recents paint immediately from the persisted
-   catalogs, before any socket exists, and the last-active machine is dialed in
-   the background to refresh them.
-3. Selecting a Mac - or opening any project on it - captures the exact browser
-   account-session generation,
-   obtains a fresh access token, and dials only the directory-verified
-   `wss://<relay>/connect/<machineKey>` endpoint.
-4. `client.ts` generates a non-extractable WebCrypto P-256 ECDSA key pair and
-   performs account adoption. The runtime requires the same-account proof,
-   stores the browser's DPoP public key, and returns a per-device paired secret.
-5. Before committing anything, the browser rechecks that the account-session
-   generation is unchanged. It then saves the environment, paired secret, and
-   non-extractable key pair in IndexedDB.
-6. Every reconnect sends a paired `hello` with the secret plus a signed DPoP
-   proof. Relay reconnects additionally fetch a fresh in-memory account proof;
-   direct routes saved after adoption use the paired credential without sending
-   the Clerk bearer over plaintext `ws://`.
-7. Sign-out or account switch closes the Relay socket, removes account-owned
-   environments, drops the other account's cached project catalogs, and returns
-   the browser to the sign-in gate. Machine-side revocation closes connected
-   browser sockets and makes future paired hellos fail. Sign-out also saves a
-   "signed out by the user" marker in localStorage. The next sign-in ends the
-   browser's Clerk session first, so it asks for an account instead of
-   signing the same person straight back in; a completed sign-in clears it.
+1. The boot shows only the sign-in card (`WebSignInScreen`), with no skip.
+   The card signs the browser in to Clerk on the page (email code, or Google,
+   GitHub or Apple through `/sign-in/return`). Then ADE Web's OAuth PKCE
+   sign-in runs, and Clerk completes it at once. Desktop **Connections › Web**
+   points to this flow; there is no QR, link, PIN or manual endpoint.
+2. The browser loads the account directory and shows the welcome page. A
+   returning browser paints recents from the saved catalogs first and dials
+   the last-active machine in the background.
+3. Selecting a computer (or one of its projects) captures the account-session
+   generation, gets a fresh access token, and dials only the
+   directory-verified `wss://<relay>/connect/<machineKey>`.
+4. `client.ts` makes a non-extractable P-256 key pair and adopts the machine.
+   The runtime checks the same-account proof, stores the DPoP public key and
+   returns a per-device secret.
+5. If the session generation is unchanged, the browser saves the environment,
+   the secret and the key pair in IndexedDB.
+6. Each reconnect sends a paired `hello` with the secret and a DPoP proof.
+   Relay reconnects also send a fresh account proof. A direct route never
+   carries the Clerk bearer over `ws://`.
+7. Sign-out or an account switch closes Relay sockets, removes account-owned
+   environments and the other account's catalogs, and shows the sign-in gate.
+   It also stores a "signed out by the user" marker, so the next sign-in ends
+   the browser's Clerk session first and asks for an account.
 
 **Sign-in for a computer (`/sign-in`).** The desktop app and `ade login`
-open `https://app.ade-app.dev/sign-in?continue=<authorize URL>` for ADE's
-production Clerk app (`buildWebClientSignInUrl`; other configurations open
-Clerk's page as before). The page runs the same card and then goes on to that
-authorize URL, which returns to the computer's loopback listener. It accepts
-only this client's issuer, `/oauth/authorize`, its own client id, and an
-`http://127.0.0.1` redirect (the computer's listener binds only that); anything else loads ADE Web as
-usual, so the page never forwards a browser elsewhere. The computer adds
-`prompt=login` after its own sign-out; the page takes it off and treats it as
-`fresh`. When the card falls back, its one button opens that same authorize
-URL, `prompt` included, on Clerk's own page, so the sign-in still returns to
-the computer. This browser's own ADE Web session plays no part. Release order: ADE
-Web must deploy before a desktop build that opens `/sign-in`, or the old web
-build shows its normal gate there.
+open `https://app.ade-app.dev/sign-in?continue=<authorize URL>`
+(`buildWebClientSignInUrl`, production Clerk only). The page runs the card,
+then goes to that authorize URL, which returns to the computer's loopback
+listener.
+
+- It accepts only this client's issuer, `/oauth/authorize`, its client id and
+  an `http://127.0.0.1` redirect. Anything else loads ADE Web as usual.
+- `prompt=login` (after the computer's sign-out) becomes `fresh`.
+- A fallback opens the same authorize URL on Clerk's own page.
+- Deploy ADE Web before a desktop build that opens `/sign-in`.
 
 **The `ade_signed_in` marker.** On sign-in ADE Web sets `ade_signed_in=1` on
-`.ade-app.dev` (Path `/`, Secure, SameSite Lax, 30 days). It carries no token
-and grants nothing. The landing site (`apps/web`) reads it on `/` to send a
-signed-in visitor straight to ADE Web; `?home` skips that, and the account
-panel's "ADE website" link uses it. Sign-out, an expired session, and a boot
-that finds no session delete it, so nobody loops. Only pages served from
-ade-app.dev write it (not localhost or the Pages preview URL). Its name and
-rules are a contract with `apps/web/index.html`.
+`.ade-app.dev` (Path `/`, Secure, SameSite Lax, 30 days). It carries no
+token. `apps/web` reads it on `/` to send a signed-in visitor to ADE Web
+(`?home` skips that). Sign-out, an expired session and a boot with no session
+delete it. Only ade-app.dev pages write it. Its name and rules are a contract
+with `apps/web/index.html`.
 
-The hosted `/pair` route and `PairFlow`/`PinInput` UI are removed. Older browser
-environments already paired locally remain listed under **Saved on this
-browser** and can keep reconnecting over their saved direct routes. This is a
-compatibility exception only; new non-account web pairings are not possible.
-
-This release does not bump the existing versioned trust-reset marker or clear
-saved environments. The historical version-1 migration still runs once on a
-browser profile that has never completed it; after that marker is present,
-account-owned and legacy-local environments persist according to the ownership
-rules above.
+Browser pairings made before account-only pairing stay under **Saved on this
+browser** and reconnect over their saved routes. New non-account pairings are
+not possible.
 
 ## Transport matrix
 
-| Transport | Endpoint shape | Hosted page | Use |
+| Transport | Endpoint | Hosted page | Use |
 |---|---|---:|---|
-| Cloud tunnel relay | `wss://<relay>/connect/<machineKey>` | Yes | Account-authorized route for every new hosted connection. The runtime keeps the outbound host socket open through `syncTunnelClientService.ts` whenever the Mac is signed in; there is no separate Settings/CLI toggle. |
-| Saved direct endpoint | `wss://...` | Yes | Compatibility only for an environment paired before hosted non-account pairing was removed; there is no manual endpoint field for new connections. |
-| Local dev loopback | `ws://127.0.0.1:<port>` or `ws://localhost:<port>` | No | Allowed only from `http:` / localhost pages. Use with `npm --prefix apps/desktop run dev:webclient` or local browser testing. |
-| Raw LAN / Tailscale IP | `ws://192.168.x.x:<port>` or `ws://100.x.x.x:<port>` | No | Works only from local/http contexts. Blocked from the hosted HTTPS page as mixed content. |
+| Relay | `wss://<relay>/connect/<machineKey>` | Yes | Every new hosted connection. The runtime keeps its outbound socket (`syncTunnelClientService.ts`) while signed in. |
+| Saved direct | `wss://...` | Yes | Only an environment paired before account-only pairing. |
+| Local dev | `ws://127.0.0.1:<port>`, `ws://localhost:<port>` | No | `http:` and localhost pages (`npm --prefix apps/desktop run dev:webclient`). |
+| LAN or Tailscale IP | `ws://192.168.x.x:<port>`, `ws://100.x.x.x:<port>` | No | Local pages only; mixed content on the hosted page. |
 
-For Relay, the browser first dials the endpoint with `ready=2`. A current Worker
-sends `accepted/v2` immediately and `ready/v2` only after the machine pipe and
-validated local listener are both open; the browser sends no ADE hello before
-that final readiness frame. If the Worker never advertises v2 during the short
-negotiation window, the browser abandons the socket and retries the exact route
-on a fresh legacy URL. It never reuses the ready-v2 socket for fallback, and it
-does not downgrade after `accepted`.
+Relay uses `ready=2`: the Worker sends `accepted/v2`, then `ready/v2` when the
+machine pipe and listener are open. The browser sends no hello before `ready`.
+A Worker that does not answer v2 in time gets a fresh legacy socket.
 
-The web client never talks to an ADE application server for project data. A
-Cloudflare Pages request serves static assets; after that all application state
-flows through one of the bounded live sync transports to an ADE machine
-runtime. Only the active project surface mounts in hosted mode, so background
-subscriptions from an inactive project cannot dispatch through another
-machine's adapter.
+Own computers send project state over one live sync transport. ADE Cloud
+reads come from the account server and GitHub (*ADE Cloud reads*). Only the
+active project mounts, so an inactive project's subscriptions cannot use
+another machine's adapter.
 
 ## Account machine directory
 
-ADE account sign-in is the only way to create a new hosted-web connection. The
-shell loads the user's machines from the Clerk-verified account-directory Worker
-and merges them with compatible browser-saved environments and persisted
-catalogs in `mergeWebMachines`. The directory's
-`online` value is a 90-second
-publisher-presence lease, not proof that a validated route disappeared. A row
-with an allowlisted, directory-verified secure Relay endpoint remains
-selectable after the presence lease expires; the ready-v2 bridge and
-authenticated hello decide current reachability. A row with no dialable secure
-endpoint remains listed with its last-seen state but cannot be selected. Saved
-pre-release direct environments remain a local compatibility path; they are not
-a pairing fallback. The merged row reports Live, Reconnecting, Parked, or
-Offline, and selecting a saved row reconnects it without forcing the user
-through machine selection again for every project.
-The Worker reads at most the owner's 500 most recently seen rows from D1 before
-computing online-first display order. Machine-list responses expose
-`Server-Timing` entries for Clerk authentication and the D1 query; CORS exposes
-that header to the hosted browser. These timings are diagnostics only and do
-not change the directory response contract.
+The shell loads the account's machines from the account-directory Worker and
+merges them with saved environments and catalogs (`mergeWebMachines`).
 
-Machine-list requests retry exactly once after HTTP 401 by forcing an access
-token refresh. Only a repeated 401/403 becomes `auth_expired` and asks the user
-to sign in again; timeouts, server failures, and transient refresh/directory
-outages remain retryable and do not prune saved trust.
+- The account's cloud computers are not own computers
+  (`useOwnWebComputers`, `state/ownComputers.ts`). They show only as ADE
+  Cloud. A cloud computer that is not in the lane index yet makes one new
+  read of the cloud computers.
+- `online` is a 90 s presence lease, not proof that a route is gone. A row
+  with a verified Relay endpoint stays selectable after the lease ends; the
+  ready-v2 bridge and hello decide. A row with no secure endpoint is listed
+  but cannot be selected.
+- A row is Live, Reconnecting, Parked or Offline.
+- A 401 forces one token refresh and one retry. Only a second 401 or 403 is
+  `auth_expired`. Timeouts and outages stay retryable and keep saved trust.
 
-Hosted builds use ADE's production Clerk application and production directory
-by default. Vite development uses the isolated development Clerk application
-and directory. Self-hosted builds can override that selection with these
-build-time variables:
+Hosted builds use the production Clerk app and directory; Vite development
+uses the development ones. Self-hosted builds can set:
 
 ```text
 VITE_ADE_CLERK_ISSUER=https://<clerk-instance-or-approved-proxy>
@@ -1409,303 +1059,203 @@ VITE_ADE_ACCOUNT_DIRECTORY_URL=https://<account-directory-worker>
 VITE_ADE_ACCOUNT_RELAY_URLS=https://<approved-relay-base>[,https://<another-base>]
 ```
 
-`VITE_ADE_ACCOUNT_RELAY_URLS` is optional when using ADE's default production
-tunnel relay; set it for additional approved relay deployments.
+`VITE_ADE_ACCOUNT_RELAY_URLS` is optional with the default relay. The Clerk
+OAuth app must allow `https://app.ade-app.dev/account/callback`, and the
+Worker's `WEB_CLIENT_ORIGIN` must be the exact hosted origin. No wildcard
+origin is accepted with an account bearer.
 
-The Clerk OAuth application must allow the exact hosted callback
-`https://app.ade-app.dev/account/callback` (plus an explicit loopback callback
-for local development when needed). The Worker must set `WEB_CLIENT_ORIGIN` to
-the exact hosted origin. No wildcard origin is accepted for a request carrying
-an account bearer.
+**Where the bearer goes.** Only to the Clerk token endpoint, the trusted
+directory origin, and a directory-advertised `wss://` endpoint on an
+allowed relay base with the exact `/connect/<machineKey>` path. It never goes
+in a query, fragment, log, analytics payload or browser storage. LAN,
+tailnet and `ws://` routes become eligible only after adoption. A same-owner
+hello with the pinned DPoP key may rotate the secret, so a lost reply is
+retryable. With no verified relay, the connection fails closed.
 
-The account bearer is sent only to the configured Clerk token endpoint, the
-exact trusted account-directory origin, and a clean directory-advertised
-`wss://` endpoint matching an allowlisted relay base plus the exact
-`/connect/<machineKey>` path. It is never placed in a query,
-fragment, log, analytics payload, IndexedDB, local storage, or session storage.
-After a new account adoption, the browser persists the returned paired secret
-and pinned DPoP key and reconnects through the ordinary paired flow; LAN,
-tailnet, and direct `ws://` routes are eligible only at that point. A verified
-same-owner account hello with the already-pinned DPoP key may rotate and return
-a fresh paired secret, making a lost credential-delivery response retryable
-without allowing a different account or key to take over the record. If no
-verified WSS relay exists, account connection fails closed.
+**Ownership.** Each adopted environment records its Clerk user id. Sign-out
+removes that user's environments, secrets and keys. Legacy local pairings have
+no owner and stay. A direct-paired machine that is also in the directory
+keeps its direct provenance.
 
-Every account-adopted IndexedDB environment records the Clerk user id that
-created it. Sign-out removes that user's environments, paired secrets, and
-non-extractable DPoP keys and disconnects an active owned environment. Legacy
-local pairings have no account owner and remain available for their saved
-direct routes. If an already direct-paired machine also appears in the account
-directory, selecting it keeps the existing direct provenance instead of making
-it disappear on sign-out.
+**Machine actions.**
 
-Machine management has two explicit scopes. **Remove from account** deletes the
-owner-scoped directory registration, so the machine disappears for that ADE
-account across clients. Its confirm names the install ("MacBook Pro · ADE
-Alpha") and, for a machine seen in the last five minutes, warns that removing
-it disconnects it until someone confirms it on that computer. **Forget on this browser** deletes only the local
-IndexedDB environment and its paired secret/key material; it does not remove
-the account machine. Renaming is account-scoped and updates the directory's
-custom display name.
+- **Remove from account** deletes the directory row for every client. The
+  confirm names the install ("MacBook Pro · ADE Alpha"); for a machine seen in
+  the last five minutes it warns that the machine disconnects until someone
+  confirms it there.
+- **Forget on this browser** deletes only the local environment and its keys.
+- Rename sets the account display name.
 
-Account pairing captures the exact browser session generation before network
-work and checks it again before persistence, so a late response after sign-out
-or account switch cannot recreate trust. While an account-owned environment or
-a direct-owned environment's verified Relay route is active, the browser
-refreshes that account lease every 30 seconds. Confirmed expiry/revocation or an
-owner change closes the connection immediately; transient refresh and directory
-outages do not delete saved trust. Direct-owned environments remain available
-for their non-Relay routes.
+Account pairing checks the session generation before and after the network
+work, so a late reply after sign-out cannot recreate trust.
 
 ## Data strategy: no local DB
 
-The browser intentionally does not maintain a local replica of `.ade/ade.db`.
-`SyncConnection.sendHello` sends `dbVersion: 0` and advertises
-`invalidationOnlyV1` and `compactInvalidationV1` (along with Relay
-reauthorization support), so the host
-does not replay historical CRR rows to a client that cannot apply them. The
-host places the browser at its current watermark; the accepted hello triggers
-a full-domain refresh, and subsequent compact invalidation batches remain live
-refresh hints rather than replicated state.
+The browser keeps no copy of `.ade/ade.db`. `SyncConnection.sendHello` sends
+`dbVersion: 0` with `invalidationOnlyV1` and `compactInvalidationV1`, so the
+host starts it at the current watermark and replays no CRR rows (see
+*Gotchas*). Project reads are live round-trips to the binding's machine.
+Account Activity is the exception: a signed-in browser reads the push relay
+directly.
 
-Because there is no local replica, project/runtime reads are live transport
-round-trips to the active project binding's machine — where the desktop renderer would hit its
-in-process cr-sqlite. Account Activity is the deliberate exception: a
-signed-in browser reads the consolidated push-relay stream directly, so changing
-the active machine/project cannot narrow or block the account inbox. Two
-adapter-side measures keep ordinary machine reads from turning routine UI into
-a burst of redundant relay traffic. First, read commands and file-list requests
-pass through a short (3 s) **coalescing read cache**: concurrent identical reads
-join one in-flight request and reuse its result for the TTL window, while any
-mutation or sync-driven invalidation drops the affected entries.
-Second, the PRs surface **batches** its reads: instead of separate `prs.list` /
-`prs.getForLane` / `listWithConflicts` round-trips it hydrates a single
-coalesced `prs.getMobileSnapshot` and derives the list views from it, and a
-`prsInvalidated` event triggers exactly one aggregate refresh rather than an
-empty-list marker. These caches are freshness hints over the authoritative
-relay reads, not a persisted store.
+- **Read cost.** Reads and file lists go through the 3 s coalescing cache
+  (`infra/commandCaller.ts`, `adapter/files.ts`). PRs read one
+  `prs.getMobileSnapshot` (`adapter/prs.ts`). These caches are hints, not a
+  store.
+- **Sessions.** At most four live sync clients. Parked sessions keep bounded
+  metadata and free their slot. Open tabs persist per account as bindings; a
+  call that carries a binding stays on that machine and project.
+- **Activity.** `adapter/attention.ts` keeps its own account cursor and
+  validates every item, destination, action, machine, project, tombstone and
+  preference before `window.ade` shows it. A 401 may force one token refresh.
+  Machine fallback acks with the snapshot owner and item revision; an account
+  switch rejects stale opens and acks until a new snapshot loads.
+- **Lifecycle writes** (settle, snooze, wake) use `sessionLifecycleOverlay.ts`
+  and `sessionLifecycleSupport.ts`.
+- **GitHub status.** A connection change does not call `github.getStatus`,
+  because headless GitHub discovery can touch git, the GitHub CLI and the
+  Keychain. On a GitHub route the shell forces one status read 750 ms after
+  each change to `connected`; after that the 12 s and 30 s policy applies.
+  The headless read is asynchronous, time-boxed and coalesced.
+- **Chat history.** A chat opens on a 128 KiB tail with a byte cursor. Older
+  pages are at most 256 KiB, read with asynchronous fs and zlib. One global
+  inflater runs at a time; during fast switching only the active inflate and
+  the newest queued request stay. Archives under 4 MiB may enter a 16 MiB
+  memory cache. Larger archives inflate at most once to an unlinked private
+  temp file (256 MiB ceiling, LRU, a free-space guard). A cancelled request
+  aborts its work. `chat.getTranscript` uses the same byte cursor
+  (`cursorKind: "byte"`). The adapter accepts the page action and the older
+  `agentChat.getEventHistoryPage`.
+- **Chat viewport.** A top sentinel and an underfill check keep loading until
+  the view scrolls or the head is reached. A failure keeps the cursor and
+  shows Retry. Live appends follow only at the bottom, and ADE's prepend
+  anchor turns off CSS scroll anchoring.
+- **Subscribe barrier.** The host holds live events for a session while it
+  captures a `chat_subscribe` snapshot, then resumes from the offset taken
+  before it. An event during a slow snapshot arrives after the ack, never
+  before and never lost; delivery keys remove overlap.
+- **Invalidation.** `connection.ts` checks the batch's table limits.
+  `createInvalidationScheduler` maps tables to domains (lanes, sessions,
+  chats, PRs, files, GitHub, rebase); the first hint starts the debounce. A
+  project switch clears streams and caches, rebinds, and invalidates every
+  domain.
+- **Terminals.** Recovery is by byte offset (`sync/client.ts`). A full
+  snapshot replaces the xterm buffer and voids older hydration promises.
+  Streams with no offset stay append-only.
 
-The browser may retain several machine catalogs and open project bindings, but
-it owns at most four live sync clients. Parked sessions retain only bounded
-workspace metadata and release their transport/client slot. Reopening a parked
-project reconnects its machine and restores the exact project-scoped adapter.
-Open tabs are persisted per account as remote bindings; project calls carrying
-one of those bindings stay pinned to that machine/project even if another tab
-became active before the call executes.
+Sub-protocols:
 
-The Attention adapter maintains a separate incremental account cursor and
-validates every item, destination, action, machine, project, tombstone, and
-preference object before exposing it through `window.ade`. A 401 may trigger one
-forced access-token refresh; malformed or still-unauthorized responses stay
-visible as account-service failures. Machine fallback uses the loaded
-machine-snapshot owner and per-item source revision on acknowledgment, and an
-account switch rejects stale opens/ACKs until a fresh snapshot establishes the
-new scope.
-
-The same absence shapes session lifecycle. Settle, unsettle, keep-active,
-snooze, and wake are all available in ADE Web, but where desktop and iOS write
-to a local database and repaint from the resulting row, the browser has nothing
-to write to: every lifecycle mutation is a `session.*` round-trip and the row
-only changes when a later `work.listSessions` read comes back. The adapter
-closes that gap with an **optimistic overlay**. `sessionsPty.ts` keeps a
-bounded, project-scoped mirror of the last authoritative rows per
-`work.listSessions` argument shape; a mutation records a lifecycle-column-only
-patch in `sessionLifecycleOverlay.ts`, nudges an immediate re-read decorated by
-that patch, and retires the entry when an authoritative row already satisfies
-the intent (reconciled), when the host refuses or the transport fails
-(rejected - the row snaps back and the failure is surfaced), or when a hard TTL
-elapses (expired). Reconciliation compares presence rather than exact instants,
-because the host owns those timestamps and the browser's clock will never match
-them. The overlay never records a derived phase: `canonicalSessionState()` still
-computes the phase from the columns, and snooze remains a visibility overlay on
-top of it rather than a phase of its own.
-
-Because the browser cannot know which ADE version the paired Mac runs, the
-lifecycle controls are feature-detected from
-`hello_ok.features.commandRouting.actions` before they are offered, and a
-mutation issued against an unadvertised action or a dead socket fails with
-explicit copy instead of resolving silently. `sessionLifecycleChrome.ts`
-reflects that decision onto `<html>` as
-`data-ade-session-lifecycle="ready" | "unsupported"`, which also restores the
-hover-only snooze affordance for coarse pointers.
-
-A transport transition is not a blanket domain refresh. In particular, the
-adapter emits sync status without directly calling `github.getStatus`, because
-headless GitHub discovery can touch git, the GitHub CLI, credential files, and
-macOS Keychain. On a GitHub-relevant route, the shell consumes each transition
-to `connected` once and schedules a forced status read after 750 ms; later route
-changes keep the normal 12/30-second policy. The headless implementation uses
-asynchronous child processes and credential/file I/O with hard timeouts and
-coalesces concurrent status reads, so even an explicit refresh cannot block the
-brain's WebSocket event loop.
-
-Chat opens hydrate a 128 KiB recent tail and keep a byte cursor for older
-history. Older pages are capped to 256 KiB per request and read with
-asynchronous filesystem/zlib APIs on the runtime. Large gzip archives stream
-through one globally admitted inflater; during rapid chat switching, only the
-active inflate and newest queued destination survive. Archives below 4 MiB may enter a
-16 MiB memory cache; larger archives materialize at most once into an unlinked,
-process-private temporary file with a 256 MiB logical-size ceiling and bounded
-LRU plus a temporary-volume free-space guard, so every older page becomes a
-random-access disk read instead of another full inflate. Disconnecting or
-replacing a request aborts the queued/read/inflate work. Legacy
-`chat.getTranscript` pagination now returns the same append-stable logical byte
-cursor (`cursorKind: "byte"`) instead of deriving an index from a bounded tail.
-The transcript viewport uses a top sentinel plus an underfill
-check, so a short tail keeps loading until the viewport is scrollable (or the
-transcript head is reached) without requiring a synthetic scroll event.
-Failures preserve the cursor and expose a stable Retry control instead of
-treating a missing descriptor or transient disconnect as the end of history.
-The adapter resolves both the canonical page action and the older
-`agentChat.getEventHistoryPage` alias; only a host advertising neither is
-treated as unsupported.
-The scrollbar stays visible, live appends follow only while the reader is
-already at the bottom, and ADE's explicit prepend anchor disables native CSS
-scroll anchoring to prevent double compensation.
-
-The host also places a per-session hydration barrier before it captures a
-`chat_subscribe` snapshot. The live broadcast and transcript pump remain behind
-that barrier until the acknowledgement is sent, then resume from the byte
-offset captured before the snapshot began. An event appended during a slow
-snapshot is therefore delivered after the acknowledgement—never before it and
-never lost; overlap is removed by the normal delivery-key dedupe.
-
-Incoming `invalidation_batch` envelopes already contain only table names and
-database-version bounds; `connection.ts` validates their table-count and name
-limits before emitting them. `createInvalidationScheduler` maps those names to
-domains such as lanes, sessions, chats, PRs, files, GitHub, and rebase. The
-first pending hint starts the debounce window; later hints coalesce into that
-same drain instead of extending it forever. A project switch is a stronger
-boundary than an ordinary hint: it clears old terminal streams and read caches,
-rebinds the adapter to the selected project id, then invalidates every domain
-before shared surfaces rehydrate.
-
-adapter then refreshes through the appropriate remote command or sub-protocol:
-
-- Remote commands: `command` / `command_ack` / `command_result`, routed by
-  `syncRemoteCommandService.ts`. This includes best-effort smart-link metadata;
-  the browser never fetches arbitrary pasted URLs directly.
-- Files: `file_request` / `file_response`.
+- Remote commands: `command`, `command_ack`, `command_result`
+  (`syncRemoteCommandService.ts`). Smart-link metadata comes from the host;
+  the browser never fetches pasted URLs.
+- Files: `file_request`, `file_response`.
 - Chat: `chat_subscribe`, `chat_event`, `chat_unsubscribe`.
 - Terminal: `terminal_subscribe`, `terminal_data`, `terminal_history`,
-  `terminal_input`, and `terminal_resize`.
+  `terminal_input`, `terminal_resize`.
 - Projects: `project_catalog`, `project_catalog_request`,
-  `project_switch_request`, and `project_switch_result`.
-- Personal chats: runtime-scoped `personalChats.*` commands plus
-  `chat_subscribe` / `chat_event` carrying `chatScope: "personal"`. These are
-  not inferred from, or stored in, the selected project's changeset stream.
+  `project_switch_request`, `project_switch_result`.
+- Personal chats: runtime-scoped `personalChats.*` and `chat_subscribe` with
+  `chatScope: "personal"`.
 
-Terminal recovery is offset-based rather than best-effort append. The browser
-tracks the UTF-8 end byte from snapshots and `terminal_data`, drops complete
-replays, trims a partial overlap only at a code-point boundary, and withholds a
-chunk that starts after the watermark while one recovery subscribe is in
-flight. A delta snapshot fills the missing suffix; a full snapshot replaces
-the xterm buffer and invalidates older preview/transcript hydration promises so
-stale async work cannot repaint over recovery. Offsetless legacy/untracked
-streams keep append-only behavior without inventing a watermark.
+Browser storage holds only UI state, pairings and the catalog paint cache
+(`envStore.ts`), plus browser-only preferences such as layout, zoom and
+keybindings (`adapter/infra/localState.ts`). Catalogs hold names, paths, lane
+counts and icons, never project contents, and go away at sign-out or an
+account switch.
 
-Browser-local persistence is limited to UI state, pairing state, and one paint
-cache: `envStore.ts` stores paired environments in IndexedDB alongside the
-bounded per-machine project catalogs that let recents paint before a connection
-exists, and `adapter/infra/localState.ts` stores browser-only preferences such
-as layout, zoom, and keybinding overrides. The catalog cache holds project
-names, paths, lane counts, and icons - never project contents - and is dropped
-when its account signs out or another account signs in.
+## ADE Cloud reads
+
+A project tab binds to ADE Cloud when no own computer with a copy is online
+(`openAdeCloudProject`). A cloud lane whose computer sleeps is read through a
+`cloud-saved:<machineKey>` pin. Both are account-answered pins:
+
+| Surface | Source while the computer sleeps |
+|---|---|
+| Work: chats, subagents | Saved chats (`/cloud/chats`), nested by parent |
+| Work: CLI sessions, shells | Saved copies (`/cloud/sessions`; shells keep the last 5,000 lines) |
+| Lanes | The project overview (`/cloud/projects/overview`) |
+| Files | GitHub at the lane's branch, read-only; changed files from the Git summary. See [Files with no computer awake](../files-and-editor/README.md#with-no-computer-awake) |
+| PRs | GitHub with the account's sign-in (`direct` reader, `DirectPrsList`), read-only, with lane chips from the lane index. See [PRs with no computer awake](../pull-requests/README.md#with-no-computer-awake) |
+| Git panel, History | The Git summary (`/cloud/git`) and GitHub commits |
+| Linear, Jira | The account server (`/cloud/integrations/...`) |
+| Search | Each online computer that has `search.query`, plus the Work rows the page already loaded; with no online copy, only those rows |
+
+A send to an asleep or deleted cloud chat goes to the account's queue
+(`POST /cloud/chats/:machineKey/:chatId/messages`, with a `clientSendId`). The
+server keeps the message, wakes the computer, and the computer sends it once.
+The composer is free at once. The chat shows the waiting messages, Cancel for
+a queued one, and a failed one with the server's sentence until the person
+acts. A chat whose computer was deleted continues on a new computer in the
+same chat row.
+
+An older server answers a new route with 404. Then the client keeps the
+earlier behavior: the separate lists, or a wake and a direct send.
 
 ## Appearance and background reads
 
-`components/app/AppearanceRoot.tsx` owns the shared theme, document colour
-scheme, motion, and scene preferences for both `App` and the lazily loaded
-`WebSignInScreen`. Signed-out boot loads the sign-in chunk without the workspace
-router; a failed chunk load reaches the shell's error phase with Retry.
+`components/app/AppearanceRoot.tsx` owns theme, color scheme, motion and
+scene for `App` and the lazy `WebSignInScreen`. A failed sign-in chunk load
+shows the shell's error with Retry.
 
-The web default scene is `plain`: the theme background without a picture or
-motion. Desktop defaults to Shuffle over the pictures that fit the screen. An
-untouched earlier default also reads as the client's default; a saved choice or
-tuned texture, dim, theme matching, or image visibility stays as chosen.
-`showImage` remains true in the default so choosing Image shows its picture.
-Reset is an explicit choice, so it is kept on reload.
-The command palette uses `Z_LAYERS.commandPalette` above the shared overlays.
-
-`lib/backoffPoller.ts` owns subscriber-scoped App Control and Cursor
-fleet cadence: three unchanged reads at the base interval, then doubling to
-15 seconds; a changed snapshot or explicit action resets the cadence. Hidden
-tabs make no reads and visibility resumes with an immediate read. App Control's
-explicit status read moves a pending long timer back to the base delay. Stopping
-removes timers and visibility listeners. OAuth status draining in `adapter/misc.ts`
-also pauses while hidden and slows after a quiet interval; cancellation during
-an in-flight read sets a drain-again flag so the terminal cancelled status is
-still delivered before the drain stops.
+- The web default scene is `plain` (no picture, no motion); the desktop
+  default is Shuffle. An untouched earlier default reads as the current
+  default; a saved choice stays. `showImage` stays true in the default.
+  Reset is kept on reload.
+- The command palette uses `Z_LAYERS.commandPalette`.
+- `lib/backoffPoller.ts` runs the App Control and Cursor fleet polls per
+  subscriber: three unchanged reads at the base interval, then doubling to
+  15 s. A change or an action resets it. Hidden tabs make no reads; a tab
+  that becomes visible reads at once. Stop removes timers and listeners.
+- OAuth status draining (`adapter/misc.ts`) pauses while hidden and slows
+  when quiet. A cancel during a read still delivers the final cancelled
+  status.
 
 ## Deeplinks
 
-The web client uses the shared deeplink grammar rather than defining its own
-URL contract.
+The web client uses the shared deeplink grammar.
 
-- `buildWebClientUrl` in `apps/desktop/src/shared/webClientUrl.ts` calls
-  `buildDeeplink` and rewrites the origin to `https://app.ade-app.dev`.
-- `/open?...` in the hosted client is normalized by `parseOpenTarget` in
-  `webRoutes.ts`, then mapped to the same in-app routes the desktop renderer
-  uses (`/lanes`, `/work`, `/prs`).
-- The arriving target is kept in localStorage for 10 minutes
-  (`shell/pendingTarget.ts`, on the shared `shell/linkStash.ts`), like the
-  sign-in stash, so it survives a sign-in round trip that loses session
-  storage. The stash also reads the field an older build wrote, so a link
-  saved just before a deploy still restores.
-- **Owned links** (chat, lane or PR links carrying `accountMachineKey` +
-  `projectId`) are resolved by `shell/ownedLinkResolution.ts` after sign-in,
-  instead of restoring the last project: find the account machine by key,
-  connect it ("Connecting to <machine>…"), match the project (catalog id, then
-  a legacy `projectRoot`, then the envelope repo when unambiguous), open it
-  unless already open, confirm the chat or lane exists there, then navigate.
-  The loading screen is titled "Opening your link" and lists each step, ticked
-  when it ends, so a slow step is plain to see. The existence check waits 6 s
-  (`OWNED_LINK_CHECK_MS`); with no answer the link opens anyway.
-  Failures show one app banner (`WebOwnedLinkBanner.tsx`) with Try again and,
-  where it helps, Your computers: computer not in this account, computers list
-  unavailable, computer offline, could not connect, project not on that
-  computer, older ADE there, project failed to open, and chat or lane gone. For
-  failures before the project opens the last project is restored behind the
-  banner and the link keeps waiting; closing the banner drops it.
-- A link without ownership keeps the old behaviour: it is applied after the
-  user opens a project from the welcome surface. A waiting owned link is used
-  only when the project opened is its own. Merely selecting or reconnecting a
-  machine does not consume the target.
-- Links reach the web client from the website's `/open` page ("Open in your
-  browser", or a remembered browser choice), which forwards the query
-  unchanged; see [Deeplinks](../deeplinks/README.md).
-- **ADE Cloud plan links** (`shell/cloudPlanLink.ts`, `WebCloudPlanLink.tsx`,
-  kept with `shell/linkStash.ts`).
-  `https://app.ade-app.dev/?cloudPlan=<free|plus|pro|max>` comes from the
-  website's plan buttons; `/?cloudReturn=<done|cancelled|portal|card|card_cancelled>`
-  is where Stripe sends the person back (the account server builds it from
-  its `WEB_CLIENT_ORIGIN`). The value must be exactly one of those, once;
-  anything else is ignored. On load the request is kept in localStorage for
-  10 minutes (so it survives the sign-in, and the sign-in card says a link
-  is waiting) and both parameters leave the address bar at once. Once
-  signed in, the app opens Settings › ADE Cloud at Plans (on its own, as the
-  top bar's Settings opens it, when no project came back) instead of the
-  restored route; this works with no computer online. A paid plan then starts Stripe's checkout in this tab, but
-  only when `GET /cloud/access` says ADE Cloud lets the account in and `GET
-  /cloud/account` shows no paid plan (a paid account would otherwise change
-  plans with no question; it sees the page and a toast instead). Both reads
-  go to the account server with the browser's own token, so a person with no
-  computer online can still buy. Free only shows the page. A return shows a
-  toast saying how Stripe ended. An owned link in the same boot wins and the
-  plan link is dropped. The link never starts a sign-in itself.
+- `buildWebClientUrl` (`shared/webClientUrl.ts`) calls `buildDeeplink` with
+  the `https://app.ade-app.dev` origin. `parseOpenTarget` (`webRoutes.ts`)
+  maps `/open?...` to the desktop routes (`/lanes`, `/work`, `/prs`).
+- The target waits in localStorage for 10 minutes (`shell/pendingTarget.ts`
+  on `shell/linkStash.ts`), so it survives a sign-in. The stash also reads
+  the field an older build wrote.
+- **Owned links** (chat, lane or PR links with `accountMachineKey` and
+  `projectId`) resolve after sign-in in `shell/ownedLinkResolution.ts`:
+  find the machine, connect it, match the project (catalog id, then
+  `projectRoot`, then a single repo match), open it, check that the chat or
+  lane exists (6 s, `OWNED_LINK_CHECK_MS`; no answer opens anyway), then
+  navigate. The "Opening your link" screen ticks each step.
+- A failure shows one banner (`WebOwnedLinkBanner.tsx`) with Try again and,
+  where it helps, Your computers. Failures: not in this account, list
+  unavailable, computer offline, could not connect, project not there, older
+  ADE, project failed to open, chat or lane gone. Before the project opens,
+  the last project comes back behind the banner and the link waits; closing
+  the banner drops it.
+- A link with no owner applies when the person opens a project. A waiting
+  owned link applies only to its own project. Selecting or reconnecting a
+  machine does not use the target.
+- The website's `/open` page forwards the query unchanged; see
+  [Deeplinks](../deeplinks/README.md).
+- **ADE Cloud plan links** (`shell/cloudPlanLink.ts`,
+  `WebCloudPlanLink.tsx`). `/?cloudPlan=<free|plus|pro|max>` comes from the
+  website; `/?cloudReturn=<done|cancelled|portal|card|card_cancelled>` is
+  Stripe's return (built from the server's `WEB_CLIENT_ORIGIN`). Only an
+  exact value counts, once.
+  - The request waits 10 minutes in localStorage (the sign-in card says a
+    link waits), and both parameters leave the address bar at once.
+  - Signed in, the app opens Settings › ADE Cloud at Plans, also with no
+    computer online.
+  - A paid plan starts Stripe checkout in the tab only when
+    `GET /cloud/access` lets the account in and `GET /cloud/account` shows no
+    paid plan; else the page shows a toast. Free only shows the page.
+  - A return shows how Stripe ended. An owned link in the same boot wins.
+    The link never starts a sign-in.
 
-Entry points:
-
-- CLI: `ade link ... --web` in `apps/ade-cli/src/commands/deeplinks.ts`.
-- Desktop lanes: "Open in web" in `LaneContextMenu.tsx`.
-- Desktop sessions: "Open in web" in `TerminalsPage.tsx` /
-  `SessionContextMenu.tsx`.
-- Smart-QR URL landing: `apps/web/src/app/pages/PairPage.tsx` is an app-first
-  fallback. It does not forward the fragment anywhere — it points a browser
-  visitor at the iPhone app (secondary "open the web client instead" link) — and
-  the hosted client separately retires its own `/pair` route by scrubbing the
-  payload and entering the normal sign-in flow. The `https://ade-app.dev/pair#...`
-  form is internal phone QR/App Clip encoding, not a browser pairing link.
+Entry points: `ade link ... --web` (`apps/ade-cli/src/commands/deeplinks.ts`),
+"Open in web" in `LaneContextMenu.tsx`, `TerminalsPage.tsx` and
+`SessionContextMenu.tsx`, and `apps/web/src/app/pages/PairPage.tsx` for the
+phone pairing URL.
 
 ## Deploy and ops
 
@@ -1741,62 +1291,66 @@ The dev server uses Vite on port `5174`. From a local `http://localhost:5174`
 page, `deriveBrowserSyncEndpoints` can use loopback `ws://127.0.0.1:<port>`.
 That does not apply to the hosted Pages deployment.
 
+The dev server proxies the account routes (`/account/machines`,
+`/account/projects`, `/account/lanes`, `/cloud/...`, `/github/...`) and the push
+relay (`/attention...`) and removes `Origin`. Set
+`VITE_ADE_ACCOUNT_DIRECTORY_URL=http://localhost:5174` (and
+`VITE_ADE_PUSH_RELAY_URL` for the relay) to use them.
+`ADE_DEV_DIRECTORY_PROXY_TARGET` and `ADE_DEV_PUSH_RELAY_PROXY_TARGET` point
+the proxies at another Worker, for example a local `wrangler dev`. The recipe
+is in `vite.webclient.config.ts`.
+
+**Dev test sign-in.** An agent that checks the web client on screen can sign
+in without a browser sign-in:
+
+1. Make a Clerk client session file for a **test** account
+   (`{ "clientAuth": ..., "sessionId": ... }`). Do not use the owner's real
+   account.
+2. Start the dev server with `ADE_DEV_TEST_SESSION_FILE=<path>`.
+3. Open the page. `GET /__ade_dev/session-token` mints a fresh session token
+   in Node, and the page signs in with it (`account/devTestSession.ts`).
+
+The route answers loopback callers and GET only, with `no-store`, and never
+logs the token. The browser stores nothing. `vite build` has neither the
+route nor the client code (`import.meta.env.DEV` removes it).
+
 Ops checks after deploy:
 
-- `https://ade-web-client.pages.dev/` serves the SPA.
-- A signed-out visit shows the sign-in card and no way past it: no skip button,
-  no welcome surface, no machine list.
-- Account sign-in returns to `/account/callback`, removes the callback query,
-  and shows the welcome surface with the signed-in owner's machines and recent
-  projects, without writing tokens to browser storage.
-- A reload of a browser that has connected before paints recent projects before
-  any socket opens, and the rows stop shimmering as the last-active machine
-  reconnects behind them.
-- `https://ade-web-client.pages.dev/open?type=lane&id=<uuid>` falls back to
-  `index.html` and the shell parses the target.
-- `https://ade-web-client.pages.dev/pair#<payload>` scrubs the obsolete route
-  and fragment, then shows account sign-in; no pairing UI is rendered.
-- `https://ade-web-client.pages.dev/hub` redirects to the welcome surface; the
-  retired route renders no Hub and leaves no Hub tab in the top bar.
-- Response headers include the CSP from `_headers`.
-- Fingerprinted assets return immutable one-year caching while `/` and
-  `/index.html` return `no-cache`.
-- The build reports the raw first-load entry graph and fails if it exceeds
-  1000 KB or eagerly references a guarded heavy feature chunk.
+- `https://ade-web-client.pages.dev/` serves the SPA, with the CSP from
+  `_headers`, immutable `/assets/*` and `no-cache` on `/`.
+- A signed-out visit shows the sign-in card and nothing else.
+- Sign-in returns to `/account/callback`, removes the query, and shows the
+  welcome page with the owner's machines and projects. No token is in
+  browser storage.
+- A reload of a known browser paints recents before any socket opens.
+- `/open?type=lane&id=<uuid>` falls back to `index.html` and parses.
+- `/pair#<payload>` scrubs the route and shows sign-in. `/hub` goes to the
+  welcome page.
+- The build fails over 1000 KB of first-load entry or on an eager heavy
+  chunk.
 
 ## Known limitations
 
-- No OS notifications.
-- No external editor open.
-- No file or folder drop into the editor; the browser cannot map local dropped
-  files to paths on the connected machine.
-- No reveal in Finder / Explorer.
-- No native directory picker.
-- No local shell process. Terminal creation and IO go through the paired
-  machine runtime.
-- Settings › ADE Cloud with none of the account's computers online shows
-  the plan, hours, disk, Plans, Manage billing, extra hours and extra disk
-  (read and paid straight through the account server,
-  `adapter/cloudBilling.ts`), but not the list of cloud lanes and computers:
-  that list comes from a computer's brain, so the page says it shows once
-  one is online (`computersUnread`). What agents may do and the sign-ins
-  card need a computer too. A lane's size, its delete, freeing its computer,
-  Clear caches, Keep it on an idle notice and the invite code box stay in
-  the desktop app.
-- No ADE Browser, computer use, or iOS Simulator surface. App Control is
-  watch-only: the Work tool shows the lane's live frames and session state, and
-  no driving action runs from the web. Projectless Chats therefore shows its
-  runtime-backed Terminal control but not the desktop-only Browser button/profile.
-- No local file watcher. File-change events are synthesized from
-  sync-driven invalidation and are coarser than desktop chokidar events.
-- Some progress/live updates are invalidation-triggered snapshots rather than
-  the exact desktop event stream.
-- Hosted HTTPS cannot dial LAN or Tailscale-IP `ws://` candidates. Use relay
-  or `wss://`.
-- Account-adopted browser trust is per browser profile. Clearing site data or
-  using another profile requires signing in and adopting the Mac again. A
-  legacy direct environment lost this way cannot be recreated through the
-  hosted client.
+- No OS notifications, external editors, Finder reveal, native directory
+  picker or local shell. Terminals run on the machine.
+- No file or folder drop into the editor (no local path on the machine).
+- Settings › ADE Cloud reads the plan, hours, disk and cloud lanes from the
+  account server and pays through it (`adapter/cloudBilling.ts`). A lane's
+  size, its delete, freeing its computer and Clear caches stay in the
+  desktop app.
+- Passwords: "Open ADE desktop or the iPhone to see and change Passwords.
+  Agents on every computer, ADE Cloud too, still use them."
+- No web push.
+- Moving a lane or chat onto ADE Cloud is not built. Moving a chat between
+  computers works; a resting source offers "Wake and move". Owner lane
+  sharing is desktop-only.
+- No ADE Browser, computer use or iOS Simulator. App Control is watch-only.
+  Projectless Chats shows Terminal but not the Browser button.
+- No file watcher: file changes come from invalidation and are coarser than
+  desktop chokidar events. Some live updates are snapshots.
+- Hosted HTTPS cannot dial `ws://` LAN or Tailscale. Use Relay or `wss://`.
+- Browser trust is per browser profile. Cleared site data means a new
+  sign-in and adoption.
 
 ## Cross-links
 

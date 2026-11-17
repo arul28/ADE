@@ -333,7 +333,7 @@ async function sendStepEmail(
   email: { subject: string; text: string },
   now: number,
 ): Promise<"sent" | "skipped" | "failed"> {
-  const result = await sendCloudEmail(env, { userId: computer.user_id, ...email }).catch((error: unknown) => {
+  const result = await sendCloudEmail(env, { userId: computer.user_id, ...email, kind: `idle_${kind}` }).catch((error: unknown) => {
     logCloud("cloud.idle_cleanup_email_threw", { instanceId: computer.instance_id, message: error instanceof Error ? error.message : "unknown" });
     return "failed" as const;
   });
@@ -606,14 +606,16 @@ type CameBack = "used" | "kept" | "hours_back" | "scheduled" | "deleted";
  */
 async function cameBack(env: CloudEnv, fresh: Fresh): Promise<CameBack | null> {
   const [row, account, scheduled] = await Promise.all([
-    env.DB.prepare("select last_awake_at, idle_kept_at, deleted_at from cloud_computers where instance_id = ?").bind(fresh.computer.instance_id)
-      .first<Pick<ComputerRow, "last_awake_at" | "idle_kept_at" | "deleted_at">>(),
+    env.DB.prepare("select last_awake_at, last_active_at, idle_claimed_at, idle_kept_at, deleted_at from cloud_computers where instance_id = ?").bind(fresh.computer.instance_id)
+      .first<Pick<ComputerRow, "last_awake_at" | "last_active_at" | "idle_claimed_at" | "idle_kept_at" | "deleted_at">>(),
     env.DB.prepare("select hours_restored_at, deleted_at from cloud_accounts where user_id = ?").bind(fresh.account.user_id)
       .first<Pick<AccountRow, "hours_restored_at" | "deleted_at">>(),
     hasTimedWake(env, fresh.computer),
   ]);
   if (!row || row.deleted_at != null || !account || account.deleted_at != null) return "deleted";
   if ((row.last_awake_at ?? null) !== (fresh.computer.last_awake_at ?? null)) return "used";
+  // The computer's own report of work (`POST .../use`, its idle step) after the save started is use too.
+  if (row.last_active_at != null && row.idle_claimed_at != null && row.last_active_at > row.idle_claimed_at) return "used";
   if ((row.idle_kept_at ?? null) !== (fresh.computer.idle_kept_at ?? null)) return "kept";
   if ((account.hours_restored_at ?? null) !== (fresh.account.hours_restored_at ?? null)) return "hours_back";
   if (scheduled) return "scheduled";
@@ -632,6 +634,7 @@ async function claimDelete(env: CloudEnv, fresh: Fresh, now: number): Promise<bo
     update cloud_computers set idle_deleting_at = ?
     where instance_id = ? and deleted_at is null and idle_claimed_at = ? and ${NOT_DELETING_SQL}
       and last_awake_at is ? and idle_kept_at is ?
+      and (last_active_at is null or last_active_at <= idle_claimed_at)
       and not exists (select 1 from cloud_wakes w where w.user_id = cloud_computers.user_id and w.instance_id = cloud_computers.instance_id)
       and exists (select 1 from cloud_accounts a where a.user_id = cloud_computers.user_id and a.deleted_at is null and a.hours_restored_at is ?)
   `).bind(now, computer.instance_id, now, now - CLAIM_STALE_MS, computer.last_awake_at ?? null, computer.idle_kept_at ?? null, account.hours_restored_at ?? null).run();

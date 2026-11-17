@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { useNavigate } from "react-router-dom";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ArrowsOutSimple, CaretDown, ChatCircleDots, Check, NotePencil, SpinnerGap, X } from "@phosphor-icons/react";
@@ -453,10 +454,13 @@ const DOCK_MACHINE_DESCRIPTION =
  */
 function DockMachineChoice() {
   const { snapshot } = useRemoteConnectionSnapshot(true);
+  // ADE Cloud computers are part of ADE Cloud, never a machine by name.
+  const cloudIndex = useAdeCloudLaneComputers();
   const machines = useMemo<DraftMachineOption[]>(() => [
     { id: THIS_MACHINE_ID, name: THIS_MACHINE_NAME },
     ...(snapshot?.connections ?? [])
-      .filter((connection) => connection.state === "connected")
+      .filter((connection) => connection.state === "connected"
+        && !isAdeCloudComputer({ hostname: connection.target.hostname, machineKey: connection.target.pairedMachine?.machineKey ?? null }, cloudIndex))
       .map((connection) => {
         const name = connection.target.name || connection.target.hostname;
         return {
@@ -465,7 +469,7 @@ function DockMachineChoice() {
           unavailableReason: `An agent on ${name} can't see this computer's browser. Start a chat there from Chats.`,
         };
       }),
-  ], [snapshot]);
+  ], [cloudIndex, snapshot]);
   return (
     <div className="flex w-full items-center px-3 pt-1.5">
       <DraftMachinePicker

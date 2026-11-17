@@ -6,6 +6,7 @@
 
 import { findMachineProject, remoteProjectBindingKey } from "../../shared/projectIdentity";
 import type { CloudSavedChatRow } from "../../shared/cloudSavedChats";
+import type { CloudProjectOverview } from "../../../../account-directory/src/cloud/contract";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import type { LaneSummary } from "../../shared/types/lanes";
 import type { RemoteRuntimeConnectionStatus } from "../../shared/types/remoteRuntime";
@@ -37,6 +38,9 @@ import {
   type SavedChatLocation,
   type SavedChatReach,
 } from "./cloudSavedChats";
+import { sendThroughAdeCloudQueue } from "./adeCloudChatQueue";
+import { startAdeCloudRestingReads } from "./adeCloudRestingReads";
+import { isSavedTerminalSession, savedTerminalSession } from "./cloudSavedTerminals";
 
 /** Computers a reach found off the account (contract C2 `not_in_account`): gone, whatever the lists say. */
 const goneMachineKeys = new Set<string>();
@@ -120,6 +124,8 @@ const savedBinding = (machineId: string, row: CloudSavedChatRow, runtimeName: st
   projectId: row.projectId ?? row.projectKey ?? row.machineKey,
   rootPath: row.projectRoot ?? "",
   displayName: savedProjectName(row.projectRoot, row.projectKey),
+  // The repository address: an account read of this pin (files, History) needs it.
+  ...(row.projectKey ? { gitOriginUrl: row.projectKey } : {}),
 });
 
 const realBinding = (
@@ -175,18 +181,55 @@ function routeSavedChatsToLaneComputers(rows: readonly CloudSavedChatRow[]): Rou
   return [...kept.values()];
 }
 
+/** Chats the server answers per page (its most), and how many pages one read takes. */
+const SAVED_CHATS_PAGE = 500;
+const SAVED_CHATS_MAX_PAGES = 10;
+
+/**
+ * Every saved chat of the project, page by page (newest activity first), so a
+ * project with more than one page of chats lists them all. A page that fails
+ * after the first keeps what the earlier pages read; a failed first page is
+ * "couldn't read" (null), never an empty list.
+ */
+async function listAllSavedChats(
+  bridge: NonNullable<NonNullable<Window["ade"]["cloud"]>["savedChats"]>,
+  context: SavedChatsContext,
+): Promise<{ chats: CloudSavedChatRow[]; nextCursor: string | null } | null> {
+  const first = await bridge.list({ projectKey: context.projectKey, limit: SAVED_CHATS_PAGE });
+  if (!first) return null;
+  const chats = [...first.chats];
+  let cursor = first.nextCursor;
+  for (let page = 1; cursor && page < SAVED_CHATS_MAX_PAGES && context.isActive(); page += 1) {
+    const next = await bridge.list({ projectKey: context.projectKey, limit: SAVED_CHATS_PAGE, cursor }).catch((error: unknown) => {
+      console.warn("[cloud] a later saved chats page failed; the list keeps the pages read", error instanceof Error ? error.message : String(error));
+      return null;
+    });
+    if (!next) break;
+    chats.push(...next.chats);
+    cursor = next.nextCursor;
+  }
+  return { chats, nextCursor: cursor };
+}
+
 export async function refreshCloudSavedChats(context: SavedChatsContext): Promise<void> {
   const bridge = window.ade?.cloud?.savedChats;
   if (inFlight) {
     queuedContext = context;
     return;
   }
+  startAdeCloudRestingReads();
   if (!bridge || !context.isActive() || !context.projectKey) return;
   inFlight = true;
   lastReadAtMs = Date.now();
   lastReadProjectKey = context.projectKey;
   try {
-    const list = await bridge.list({ projectKey: context.projectKey, limit: 500 });
+    // The project's ADE Cloud lanes from the account, read with the chats:
+    // a lane with no chat, or with no computer, lists from it (null from an
+    // older server or ADE: those lanes then show as before).
+    const [list, overview] = await Promise.all([
+      listAllSavedChats(bridge, context),
+      readProjectOverview(context.projectKey),
+    ]);
     if (!list || !context.isActive()) return;
     const store = rootAppStoreApi.getState();
     // Live here: connected, and its rows not dimmed. A connection can stay up
@@ -213,7 +256,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     // A computer missing from it was deleted, even while this desktop still
     // holds a saved connection to it (a move made on another desktop).
     const cloud = watchedCloudMachines();
-    const cloudBoxes = cloud?.state === "ok" ? cloud.machines : null;
+    // A list whose computers the server did not give (`computersUnread`) says nothing about them.
+    const cloudBoxes = cloud?.state === "ok" && !cloud.computersUnread ? cloud.machines : null;
     const machineFacts = new Map<string, { connection: RemoteRuntimeConnectionStatus | null; gone: boolean; name: string | null }>();
     for (const [machineKey, rows] of byMachine) {
       const connection = connectionFor(context.connections, machineKey, rows[0]!.instanceId);
@@ -375,6 +419,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         projectId: computer.projectOrigin,
         rootPath: "",
         displayName: savedProjectName(null, computer.projectOrigin),
+        gitOriginUrl: computer.projectOrigin,
       };
       store.mergeCrossMachineLanes({
         machineId,
@@ -388,6 +433,102 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         // computer, or there were none): saved copies an earlier read left on
         // its slice are stale and would show as duplicates.
         sessions: (previous?.sessions ?? []).filter((session) => !session.cloudSavedCopy),
+        error: null,
+      });
+    }
+    // The project's lane computers the account knows that no slice lists yet
+    // (no chat, and the lane index has not named them): each lists once, on
+    // its computer's slice. A lane kept without a computer lists in its own
+    // block (`CloudLanesWithoutComputerList`), never here.
+    for (const lane of overview?.lanes ?? []) {
+      const machineKey = lane.machineKey;
+      if (!machineKey || !lane.computer || goneMachineKeys.has(machineKey.toLowerCase())) continue;
+      const connection = connectionFor(context.connections, machineKey, lane.computer.instanceId);
+      if (liveHere(connection)) continue;
+      const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
+      const previous = rootAppStoreApi.getState().crossMachineLanesByMachineId[machineId] ?? null;
+      if (previous?.lanes.some((entry) => entry.id === lane.laneId)) {
+        if (savedSliceIds.has(machineId) || laneSliceIds.has(machineId)) continue;
+      }
+      // A connection's slice from its live reads keeps its own lanes.
+      if (previous && previous.lanes.length > 0 && connection && !isSavedChatsMachineId(machineId) && !savedSliceIds.has(machineId)) continue;
+      if (!connection) keptSyntheticIds.add(machineId);
+      laneSliceIds.add(machineId);
+      const machineName = connection?.target.name ?? previous?.machineName ?? "ADE Cloud";
+      const binding: OpenProjectBinding = previous?.binding ?? {
+        kind: "remote",
+        key: `${machineId}:${context.projectKey}`,
+        targetId: machineId,
+        runtimeName: machineName,
+        transport: "paired",
+        hostname: lane.computer.instanceId,
+        projectId: context.projectKey!,
+        rootPath: "",
+        displayName: savedProjectName(null, context.projectKey!),
+        gitOriginUrl: context.projectKey,
+      };
+      const others = (previous?.lanes ?? []).filter((entry) => entry.id !== lane.laneId);
+      const row = laneComputerLane({ laneId: lane.laneId, laneName: lane.laneName ?? lane.laneId }, previous?.lanes.find((entry) => entry.id === lane.laneId));
+      store.mergeCrossMachineLanes({
+        machineId,
+        machineName,
+        targetId: connection?.target.id ?? null,
+        projectId: binding.kind === "remote" ? binding.projectId : null,
+        binding,
+        online: false,
+        lanes: [...others, { ...row, branchRef: lane.branch ? `refs/heads/${lane.branch}` : row.branchRef }],
+        sessions: savedSliceIds.has(machineId) ? previous?.sessions ?? [] : (previous?.sessions ?? []).filter((session) => !session.cloudSavedCopy),
+        error: null,
+      });
+    }
+    // Saved CLI and shell copies (the overview's `sessions`; none from an
+    // older server): read-only rows on their computer's slice, next to its
+    // saved chats. A computer that is live here shows its live terminals.
+    const terminalsByMachine = new Map<string, NonNullable<CloudProjectOverview["sessions"]>>();
+    for (const row of overview?.sessions ?? []) {
+      if (!row.machineKey) continue;
+      const rows = terminalsByMachine.get(row.machineKey);
+      if (rows) rows.push(row);
+      else terminalsByMachine.set(row.machineKey, [row]);
+    }
+    for (const [machineKey, rows] of terminalsByMachine) {
+      if (goneMachineKeys.has(machineKey.toLowerCase()) || machineFacts.get(machineKey)?.gone) continue;
+      const connection = connectionFor(context.connections, machineKey, rows[0]!.instanceId);
+      if (liveHere(connection)) continue;
+      const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
+      const previous = rootAppStoreApi.getState().crossMachineLanesByMachineId[machineId] ?? null;
+      if (!connection) keptSyntheticIds.add(machineId);
+      savedSliceIds.add(machineId);
+      const machineName = connection?.target.name ?? previous?.machineName ?? "ADE Cloud";
+      const binding: OpenProjectBinding = previous?.binding ?? {
+        kind: "remote",
+        key: `${machineId}:${context.projectKey}`,
+        targetId: machineId,
+        runtimeName: machineName,
+        transport: "paired",
+        ...(rows[0]!.instanceId ? { hostname: rows[0]!.instanceId } : {}),
+        projectId: context.projectKey!,
+        rootPath: "",
+        displayName: savedProjectName(null, context.projectKey!),
+        gitOriginUrl: context.projectKey,
+      };
+      const lanes = [...(previous?.lanes ?? [])];
+      const known = new Set(lanes.map((lane) => lane.id));
+      for (const row of rows) {
+        if (!row.laneId || known.has(row.laneId)) continue;
+        known.add(row.laneId);
+        lanes.push(laneComputerLane({ laneId: row.laneId, laneName: row.laneName ?? row.laneId }, undefined));
+      }
+      store.mergeCrossMachineLanes({
+        machineId,
+        machineName,
+        targetId: connection?.target.id ?? null,
+        projectId: binding.kind === "remote" ? binding.projectId : null,
+        binding,
+        online: false,
+        ...(previous?.computerGone ? { computerGone: true } : {}),
+        lanes,
+        sessions: [...(previous?.sessions ?? []).filter((session) => !isSavedTerminalSession(session)), ...rows.map(savedTerminalSession)],
         error: null,
       });
     }
@@ -430,6 +571,18 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     const next = queuedContext;
     queuedContext = null;
     if (next) void refreshCloudSavedChats(next);
+  }
+}
+
+/** The project's ADE Cloud overview from the account, or null (an older server or ADE, or a failed read). */
+async function readProjectOverview(projectKey: string | null): Promise<CloudProjectOverview | null> {
+  const read = window.ade?.adeCloud?.projectOverview;
+  if (!read || !projectKey) return null;
+  try {
+    return await read({ origin: projectKey });
+  } catch (error) {
+    console.warn("[cloud] the project overview read failed", error instanceof Error ? error.message : String(error));
+    return null;
   }
 }
 
@@ -623,6 +776,7 @@ export function savedChatAwareAgentChatApi(api: AgentChatApi): AgentChatApi {
             .then(({ followSessionToMachine }) => followSessionToMachine(location.chatId, location.machineKey))
             .catch((error: unknown) => console.warn("[cloud] following a saved chat to its computer failed", error));
         },
+        queueSend: sendThroughAdeCloudQueue,
         wakeForSend: async (pin, sessionId) => {
           const machineKey = cloudConnectionMachineKey(pin.targetId);
           if (!machineKey) return null;

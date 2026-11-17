@@ -798,6 +798,11 @@ extension WorkRootListScreen {
   func openSession(_ session: TerminalSessionSummary) {
     // A pending-sync row has no synced session to open yet.
     guard !workIsPendingChatCreationSession(session) else { return }
+    // The saved copy of an ADE Cloud CLI or shell: read-only, never a terminal.
+    if let copy = CloudAtRestStore.shared.session(rowId: session.id) {
+      cloudSessionCopyRow = copy
+      return
+    }
     guard !navigationMutationPending else { return }
     // Wide display: the chat opens in the column beside the list instead of
     // over it. Selecting twice is harmless — the route id only changes when it
@@ -1465,6 +1470,13 @@ extension WorkRootListScreen {
     case .auto:
       autoHandoffSubject = handoffSubject(for: session)
     case .remote:
+      // A chat whose ADE Cloud computer sleeps or was deleted: its computer
+      // wakes first, or the next message continues it on a new one.
+      if !syncService.crossMachineHandoffAvailable(sessionId: session.id),
+         let resting = workCloudRestingMoveTarget(session: session, title: session.title, sync: syncService) {
+        cloudRestingMoveTarget = resting
+        return
+      }
       let subject = handoffSubject(for: session)
       let summary = chatSummaries[session.id]
       let canonicalState = workCanonicalSessionState(session: session, summary: summary)

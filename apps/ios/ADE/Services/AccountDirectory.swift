@@ -408,7 +408,7 @@ func accountMachinePresentationName(
         !fallback.isEmpty else {
     return nil
   }
-  // A cloud lane computer's host name is its instance id: "Cloud · <lane>" instead.
+  // A cloud lane computer's host name is its instance id: it shows as "ADE Cloud" instead.
   return CloudLaneComputerLabels.present(fallback, machineKey: identity, hostName: fallback)
 }
 

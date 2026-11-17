@@ -60,7 +60,8 @@ struct CtoHomeChooser: View {
   private var accent: Color { look.ctoAccent }
   private var changing: Bool { currentName != nil }
   private var options: [WorkNewChatMachineOption] {
-    workNewChatMachineOptions(syncService: sync, fleet: machineFleet)
+    // ADE Cloud keeps its own one row below (`cloudRow`).
+    workNewChatMachineOptions(syncService: sync, fleet: machineFleet).filter { !$0.isCloud }
   }
   private var selected: WorkNewChatMachineOption? { options.first { $0.id == selectedId } }
   /// ADE Cloud is an option only where the account has it on.

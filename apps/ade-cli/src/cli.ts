@@ -21806,11 +21806,42 @@ function buildCloudPrepareStopPlan(args: string[]): CliPlan {
   };
 }
 
+/**
+ * `ade cloud save-for-rest [--capsules] --json`: shell and CLI copies and
+ * Git summaries, and with `--capsules` the fork capsules (the idle cleanup
+ * runs it between push-work and the check). Prints `CloudSaveForRestReport`.
+ * It fits inside the server's 4-minute exec.
+ */
+function buildCloudSaveForRestPlan(args: string[]): CliPlan {
+  return {
+    kind: "execute",
+    label: "cloud save-for-rest",
+    steps: [{ key: "result", method: "cloud.saveForRest", params: { capsules: args.includes("--capsules") } }],
+    machineOnly: true,
+    minTimeoutMs: 225_000,
+  };
+}
+
+/** `ade cloud messages drain --json`: sends the messages queued for this computer's chats (the server runs it after a wake). */
+function buildCloudMessagesPlan(args: string[]): CliPlan {
+  const action = args.filter((arg) => !arg.startsWith("-"))[1];
+  if (action !== "drain") throw new CliUsageError("ade cloud messages drain --json");
+  return {
+    kind: "execute",
+    label: "cloud messages drain",
+    steps: [{ key: "result", method: "cloud.drainMessages", params: {} }],
+    machineOnly: true,
+    minTimeoutMs: 60_000,
+  };
+}
+
 /** What the server runs on a computer, whatever the access answer. */
 const CLOUD_ON_COMPUTER_PLANS = new Map<string, (args: string[]) => CliPlan>([
   ["prepare-stop", buildCloudPrepareStopPlan],
   ["push-work", buildCloudPushWorkPlan],
   ["work-state", buildCloudWorkStatePlan],
+  ["save-for-rest", buildCloudSaveForRestPlan],
+  ["messages", buildCloudMessagesPlan],
 ]);
 
 function buildCloudPlan(args: string[]): CliPlan {
@@ -26686,6 +26717,8 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "cloud.prepareStop" ||
     method === "cloud.pushWork" ||
     method === "cloud.workState" ||
+    method === "cloud.saveForRest" ||
+    method === "cloud.drainMessages" ||
     method.startsWith("providers.remoteSignIn") ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
@@ -30016,6 +30049,7 @@ async function runServe(
       readMachineRuntimeActivitySummary,
       readMachineBusyFacts,
       readMachineNextScheduledWakeAt,
+      readMachineUpdateImpact,
     },
     { createSharedSyncListener },
     { createLaneShareGuestRouter },
@@ -30026,8 +30060,10 @@ async function runServe(
     { setSyncRuntimeRpcHandlerFactory },
     { buildProjectlessSyncSnapshot },
     { resolveBrainMachineSyncStores, createProjectlessSyncControls },
-    { createMachineUpdateControls },
+    { createMachineUpdateControls, runMachineUpdateAndRestart },
     { resolveContinueAfterRestart },
+    { joinOrStartMachineUpdate },
+    { setMachineUpdateRemoteCommands },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -30044,6 +30080,8 @@ async function runServe(
     import("./services/sync/brainMachineSyncStores"),
     import("./services/runtime/machineUpdateAndRestart"),
     import("./services/runtime/continueAfterRestartStore"),
+    import("./services/runtime/machineUpdateInFlight"),
+    import("./services/sync/machineUpdateRemoteCommands"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -30550,6 +30588,36 @@ async function runServe(
     }, 60_000);
     cleanup.unref?.();
   }
+  // ADE Cloud: the computer's git identity (cloudGitIdentity.ts). Set once the
+  // account is known: off the start path, again at each account sign-in, and
+  // before the cleanup's commits (push-work).
+  const cloudGitIdentity = isAdeCloudComputer()
+    ? (await import("./services/github/cloudGitIdentity")).createBrainCloudGitIdentity({
+        adeHome: layout.adeDir,
+        directoryBaseUrl: () => {
+          try {
+            return getSharedAccountDirectoryBaseUrl() || null;
+          } catch {
+            return null;
+          }
+        },
+        accountAccessToken: async () => (brainAccountAuthService.getStatus().signedIn ? await brainAccountAuthService.getAccessToken() : null),
+        readGithubToken: async () => {
+          const quiet: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+          return await createHeadlessGitHubService(process.cwd(), quiet).getGitTransportTokenOrThrowAsync().catch(() => null);
+        },
+        logger: headlessProjectLogger,
+      })
+    : null;
+  if (cloudGitIdentity) {
+    const ensureIdentity = () => {
+      if (!brainAccountAuthService.getStatus().signedIn) return;
+      void cloudGitIdentity.ensure();
+    };
+    const identityTimer = setTimeout(ensureIdentity, 20_000);
+    identityTimer.unref?.();
+    brainAccountAuthService.onSignedIn(ensureIdentity);
+  }
   // Hours near full CPU with no chat turn or agent working: reported for the owner's daily report.
   const cloudCpuWatch = cloudComputerReports
     ? (await import("./services/power/cloudSustainedCpu")).createSustainedCpuWatch({
@@ -30725,6 +30793,44 @@ async function runServe(
         ...(cloudSetupUpsizer ? cloudSetupUpsizer.setupMemory(laneSetupOnlyRuns) : {}),
       }
     : null;
+  // This machine's account machine key; null before it has one.
+  const thisMachineKey = (): string | null => {
+    try {
+      return machineCloudRelayStore.getMachineIdentity().machineKey || null;
+    } catch {
+      return null;
+    }
+  };
+  // The account server's typed client, as this brain's signed-in account. Null signed out.
+  const accountCloudApi = async (): Promise<import("../../desktop/src/shared/cloudApiClient").CloudApiClient | null> => {
+    if (!brainAccountAuthService.getStatus().signedIn) return null;
+    let base: string | null = null;
+    try {
+      base = getSharedAccountDirectoryBaseUrl() || null;
+    } catch {
+      base = null;
+    }
+    if (!base) return null;
+    const { createCloudApiClient } = await import("../../desktop/src/shared/cloudApiClient");
+    return createCloudApiClient({
+      baseUrl: base,
+      accessToken: async () => (brainAccountAuthService.getStatus().signedIn
+        ? await brainAccountAuthService.getAccessToken().catch(() => null)
+        : null),
+    });
+  };
+  // ADE Cloud: the rest save, the queue of messages for its chats, and the
+  // person's use during the idle cleanup (cloudComputerRest.ts). The save and
+  // the queue are attached below, once the registries and sign-in runners exist.
+  const cloudRest = cloudInstanceId && isAdeCloudComputer()
+    ? (await import("./services/cloudChats/cloudComputerRest")).createCloudComputerRest({
+        instanceId: cloudInstanceId,
+        api: accountCloudApi,
+        logger: headlessProjectLogger,
+        // Declared below; read when a save runs.
+        holdFor: () => holdCloudWork ?? null,
+      })
+    : null;
   const cloudKeepAwake = cloudKeepAwakeModule && readCloudBusy
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
@@ -30737,6 +30843,12 @@ async function runServe(
         growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
         diskGrowDueNow: () => cloudDiskGrower?.growDueNow() ?? false,
         reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
+        // Copies and Git summaries before the sleep: the lane reads the same with no computer awake.
+        saveForRest: async (stillIdle) => {
+          await cloudRest?.saveAtIdle(stillIdle);
+        },
+        // Messages queued for its chats while it slept go now.
+        onWoke: () => cloudRest?.drain("woke"),
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
         reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
@@ -31722,6 +31834,61 @@ async function runServe(
     return routing;
   };
 
+  // An embedded runtime is a guest inside an external process. Updating and
+  // restarting the MACHINE's ADE from inside it would reach far outside the
+  // embedder's lifecycle — it is the same "never claim machine authority"
+  // invariant that forces sync off, so it belongs to the profile rather
+  // than to whatever the caller's role default happens to be.
+  const machineUpdateControls = embedded
+    ? null
+    : createMachineUpdateControls({
+      version: VERSION,
+      logger: headlessProjectLogger,
+      requestRestart: requestBrainServiceRestartFromServe,
+      requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
+      // Kept for the next start, which names who asked (`brainRestartCause.ts`).
+      noteAcceptedUpdate: (request) => writeBrainUpdateRequest(path.dirname(lastFailurePathForMachine()), request),
+      updateInstallMode: () => readDesktopUpdateInstallMode(),
+      // The app this brain reports as `desktopAppVersion`, on every platform.
+      installedApp: async () => {
+        const { readInstalledDesktopApp } = await import(
+          "../../desktop/src/main/services/native/nativeHelperPaths"
+        );
+        return readInstalledDesktopApp();
+      },
+    });
+  // The phone's "Update & restart" (sync commands), installed before any
+  // project boots so every project host registers it. Same run as the
+  // desktop's `machine.updateAndRestart` RPC below.
+  const clearMachineUpdateRemoteCommands = machineUpdateControls
+    ? setMachineUpdateRemoteCommands({
+        updateImpact: async () => await readMachineUpdateImpact({
+          projectRegistry,
+          scopeRegistry,
+          personalChatScope,
+          readContinueAfterRestart: () => resolveContinueAfterRestart(),
+        }),
+        updateAndRestart: async (targetVersion, requestedBy) => {
+          const result = await joinOrStartMachineUpdate(
+            () => runMachineUpdateAndRestart(machineUpdateControls, targetVersion, requestedBy),
+          );
+          // Whether people update a machine from a phone or browser, and how
+          // often the machine refuses. `completed` means it accepted and began
+          // (a restart that never comes back is logged, not counted here). The
+          // detail stays in the update log.
+          const outcome = result.ok ? "completed" : "failed";
+          brainProductAnalytics?.capture({
+            event: "ade_feature_used",
+            surface: requestedBy?.clientKind === "ios" ? "mobile" : requestedBy?.clientKind === "web" ? "web" : "api",
+            properties: { feature: "updates", action: "remote_machine_update", outcome },
+            dedupeKey: `remote_machine_update:${outcome}`,
+            minimumIntervalMs: 60 * 60_000,
+          });
+          return result;
+        },
+      })
+    : () => {};
+
   // Ask once, off the boot path: agents and `ade cloud` read this answer, and a
   // chat that launches later keeps it current (`watchCloudAccessForSkills`).
   if (!embedded && servesMachineEndpoint) {
@@ -32174,6 +32341,79 @@ async function runServe(
   // in with its join code and runs the launch here. The code leaves this
   // process's env now, so nothing the brain starts inherits it.
   const bootLaunchEnv = !embedded && cloudInstanceId ? takeCloudLaunchEnv(process.env) : null;
+  // A chat whose provider isn't signed in here waits for the person's sign-in
+  // (a launch, and a message queued for an existing chat).
+  const cloudProviderReady = createProviderReady(async (options) => (await import("../../desktop/src/main/services/ai/authDetector")).detectAllAuth(undefined, options));
+  const cloudRemoteSignIn = remoteProviderSignIn
+    ? { start: (provider: string) => remoteProviderSignIn.start(provider), status: (jobId: string) => remoteProviderSignIn.status(jobId) }
+    : undefined;
+  // Pulls the vault, then runs one sign-in pass on it, so a pass or key saved
+  // on another screen is applied here now (the Claude pass reconcile hears the pass).
+  const cloudRefreshVault = async () => {
+    const runtime = await getMachineAccountRuntime();
+    await runtime.accountVaultStore?.sync();
+    const { providerLoginSync } = await import("../../desktop/src/main/services/providerLogins/providerLoginSync");
+    await providerLoginSync()?.pass(null);
+  };
+  // Sends one message to a chat; the same `clientSendId` makes a retry safe.
+  const sendCloudChatMessage = async (
+    projectId: string,
+    sessionId: string,
+    message: { text: string; clientSendId: string; attachments?: Array<{ path: string; type: "image" | "file" }> },
+  ) => {
+    const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+    if (!chat) throw new Error("This ADE runtime has no chats.");
+    await chat.sendMessage({
+      sessionId,
+      text: message.text,
+      clientSendId: message.clientSendId,
+      ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+    });
+  };
+  // A queued message waits until the chat's running turn is over (an event wait, at most 30 minutes).
+  // A tracked agent CLI takes a queued message at its prompt, held for a running turn.
+  const typeIntoCloudCli = async (projectId: string, sessionId: string, message: { text: string; clientMessageId: string }) => {
+    const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+    if (!chat) throw new Error("This ADE runtime has no chats.");
+    const typed = await chat.typeIntoAgentCliWhenFree({
+      sessionId,
+      text: message.text,
+      holdUntilFree: true,
+      clientMessageId: message.clientMessageId.slice(0, 128),
+    });
+    return typed.outcome;
+  };
+  const waitCloudChatIdle = async (projectId: string, sessionId: string) => {
+    const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+    if (!chat) return false;
+    const { waitForChatIdleByEvents } = await import("./services/cloudChats/chatIdleWait");
+    return await waitForChatIdleByEvents(chat, sessionId);
+  };
+  // The settings picked with a queued message or a fork-continue, applied
+  // before the message goes. Only what differs from the chat now: the queue
+  // sends the chat's own model with every message.
+  const applyCloudChatSettings = async (
+    projectId: string,
+    sessionId: string,
+    settings: import("../../account-directory/src/cloud/contract").CloudChatMessageSettings & { modelId?: string | null },
+  ): Promise<void> => {
+    const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+    if (!chat) return;
+    const summary = await chat.getSessionSummary(sessionId).catch(() => null);
+    const update: Parameters<typeof chat.updateSession>[0] = { sessionId };
+    if (settings.presetId !== undefined) update.presetId = settings.presetId;
+    const modelId = settings.modelId?.trim();
+    if (modelId && modelId !== (summary?.modelId ?? summary?.model)) update.modelId = modelId;
+    if (settings.reasoningEffort !== undefined && settings.reasoningEffort !== (summary?.reasoningEffort ?? null)) {
+      update.reasoningEffort = settings.reasoningEffort;
+    }
+    if (settings.fastMode !== undefined) {
+      update.fastMode = settings.fastMode;
+      if (settings.fastTier !== undefined) update.fastTier = settings.fastTier;
+    }
+    if (Object.keys(update).length === 1) return;
+    await chat.updateSession(update);
+  };
   if (bootLaunchEnv) {
     startCloudBootLaunch(bootLaunchEnv, {
       cloudInstanceId,
@@ -32187,42 +32427,39 @@ async function runServe(
       chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
       cloudClient: async () => await (await getCloudBrainAccess()).client(),
       holdCloudWork: holdCloudWork ?? null,
-      // A chat whose provider isn't signed in here waits for the person's sign-in.
-      providerReady: createProviderReady(async (options) => (await import("../../desktop/src/main/services/ai/authDetector")).detectAllAuth(undefined, options)),
-      remoteSignIn: remoteProviderSignIn
-        ? { start: (provider) => remoteProviderSignIn.start(provider), status: (jobId) => remoteProviderSignIn.status(jobId) }
-        : undefined,
-      // Pulls the vault, then runs one sign-in pass on it, so a pass or key saved
-      // on another screen is applied here now (the Claude pass reconcile hears the pass).
-      refreshVault: async () => {
-        const runtime = await getMachineAccountRuntime();
-        await runtime.accountVaultStore?.sync();
-        const { providerLoginSync } = await import("../../desktop/src/main/services/providerLogins/providerLoginSync");
-        await providerLoginSync()?.pass(null);
-      },
+      providerReady: cloudProviderReady,
+      remoteSignIn: cloudRemoteSignIn,
+      refreshVault: cloudRefreshVault,
       // The person's messages sent before the chat existed (the server keeps them).
-      // `waitForChatIdle` runs first (cloudLaunchMessages), so this is one send;
-      // the same `clientSendId` makes a retry safe.
-      sendChatMessage: async (projectId, sessionId, message) => {
+      // `waitForChatIdle` runs first (cloudLaunchMessages), so this is one send.
+      sendChatMessage: sendCloudChatMessage,
+      applyChatSettings: applyCloudChatSettings,
+      // Claude takes a send during a turn and then fails that turn ("Turn already
+      // active"), so a queued message waits for the running turn's end.
+      waitForChatIdle: waitCloudChatIdle,
+      // A continued CLI's queued messages are typed at its prompt; a CLI row takes no chat send.
+      typeIntoCli: typeIntoCloudCli,
+      // Fork-continue: the chat's old computer is gone; restore it here with the same id.
+      continueChat: async (projectId, args) => {
         const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
         if (!chat) throw new Error("This ADE runtime has no chats.");
-        await chat.sendMessage({ sessionId, text: message.text, clientSendId: message.clientSendId });
-      },
-      // A queued message waits until the chat's running turn is over (the opening
-      // message's, or the one before it): Claude takes a send during a turn and
-      // then fails that turn ("Turn already active"). Read every 5 seconds, at most
-      // 30 minutes; false when the turn still runs then.
-      waitForChatIdle: async (projectId, sessionId) => {
-        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
-        if (!chat) return false;
-        const waitUntil = Date.now() + 30 * 60_000;
-        // A turn just accepted (the opening message's) shows as active a moment later.
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-        for (;;) {
-          if ((await chat.getSessionSummary(sessionId))?.status !== "active") return true;
-          if (Date.now() >= waitUntil) return false;
-          await new Promise((resolve) => setTimeout(resolve, 5_000));
-        }
+        const api = await accountCloudApi();
+        if (!api) throw new Error("This computer isn't signed in to the account, so it can't read the saved chat.");
+        const [{ restoreCloudChat }, { adoptRestoredCloudChat, holdRestoringCloudChat, releaseRestoringCloudChat }] = await Promise.all([
+          import("./services/cloudChats/cloudChatRestore"),
+          import("./services/cloudChats/cloudChatUploader"),
+        ]);
+        return await restoreCloudChat({
+          api,
+          instanceId: cloudInstanceId,
+          machineKey: machineCloudRelayStore.getMachineIdentity().machineKey,
+          logger: headlessProjectLogger,
+          restore: (restoreArgs) => chat.restoreSavedCloudChat(restoreArgs),
+          restoreCli: (restoreArgs) => chat.restoreSavedCloudCli(restoreArgs),
+          adopt: adoptRestoredCloudChat,
+          hold: holdRestoringCloudChat,
+          release: releaseRestoringCloudChat,
+        }, args);
       },
       // An automation's run (C9): its chat's turn ending is the run's end. Nobody
       // watches that chat, so one that stops to ask for input ends the run as
@@ -32274,6 +32511,97 @@ async function runServe(
     });
   }
 
+  // ADE Cloud computer: the rest save and the queue of messages for its chats.
+  if (!embedded && cloudInstanceId && cloudRest && cloudKeepAwake) {
+    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }] = await Promise.all([
+      import("./services/cloudChats/cloudRestSave"),
+      import("./services/cloudChats/cloudChatMessageQueue"),
+      import("./services/cloudChats/cloudChatUploader"),
+    ]);
+    const restSave = createCloudRestSave({
+      adeHome: layout.adeDir,
+      instanceId: cloudInstanceId,
+      logger: headlessProjectLogger,
+      api: accountCloudApi,
+      machineKey: thisMachineKey,
+      // Only open projects: one nobody opened since boot has nothing new to save.
+      openRuntimes: async () => {
+        const booted = await Promise.all(projectRegistry.list().map(async (record) => {
+          const runtime = (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null;
+          return runtime ? { projectId: record.projectId, runtime } : null;
+        }));
+        return booted.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+      },
+      flushChats: (timeoutMs) => uploadPendingCloudChats(timeoutMs),
+      accountUserId: () => brainAccountAuthService.getStatus().userId ?? null,
+      uploadSubagentCopy: uploadSubagentCloudCopy,
+    });
+    const chatQueue = createCloudChatMessageQueue({
+      instanceId: cloudInstanceId,
+      adeHome: layout.adeDir,
+      logger: headlessProjectLogger,
+      api: accountCloudApi,
+      // The message's own project first, then any project here that has the chat.
+      locateChat: async (message) => {
+        const records = projectRegistry.list();
+        const named = message.projectId ? records.find((record) => record.projectId === message.projectId) : undefined;
+        for (const record of named ? [named, ...records.filter((entry) => entry !== named)] : records) {
+          const scope = await scopeRegistry.get(record.projectId).catch(() => null);
+          if (scope?.runtime.sessionService.get(message.chatId)) return { projectId: record.projectId, rootPath: record.rootPath };
+        }
+        return null;
+      },
+      chatProvider: async (projectId, sessionId) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        return (await chat?.getSessionSummary(sessionId).catch(() => null))?.provider ?? null;
+      },
+      waitForChatIdle: waitCloudChatIdle,
+      sendChatMessage: sendCloudChatMessage,
+      applyChatSettings: applyCloudChatSettings,
+      // A tracked agent CLI takes the message at its prompt; a sleep keeps its process, a cold restart does not.
+      sessionKind: async (projectId, sessionId) => {
+        const { runtime } = await scopeRegistry.get(projectId);
+        const row = runtime.sessionService.get(sessionId);
+        const { isTrackedAgentCliToolType } = await import("../../desktop/src/shared/types/sessions");
+        if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType)) return "chat";
+        return runtime.ptyService.hasLivePty(sessionId) ? "cli" : "cli_ended";
+      },
+      typeIntoCli: typeIntoCloudCli,
+      signIn: {
+        logger: headlessProjectLogger,
+        providerReady: cloudProviderReady,
+        remoteSignIn: cloudRemoteSignIn,
+        refreshVault: cloudRefreshVault,
+      },
+      ...(holdCloudWork ? { holdFor: holdCloudWork } : {}),
+    });
+    cloudRest.attach({ save: restSave, queue: chatQueue });
+    // Messages queued while the brain was down go once the account is signed in.
+    const drainAtStart = () => {
+      if (!brainAccountAuthService.getStatus().signedIn) return;
+      cloudRest.drain("start");
+    };
+    const drainTimer = setTimeout(drainAtStart, 15_000);
+    drainTimer.unref?.();
+    brainAccountAuthService.onSignedIn(drainAtStart);
+  }
+
+  // Every brain: the account lane index (accountLaneIndexPublisher.ts). Each
+  // project runtime notes its lane and PR changes; one write 30 s later.
+  if (!embedded && servesMachineEndpoint) {
+    const { createAccountLaneIndexPublisher, installAccountLaneIndexPublisher } = await import("./services/account/accountLaneIndexPublisher");
+    installAccountLaneIndexPublisher(createAccountLaneIndexPublisher({
+      adeHome: layout.adeDir,
+      machineKey: thisMachineKey,
+      putLanes: async () => {
+        const api = await accountCloudApi();
+        return api ? (index) => api.putAccountLanes(index) : null;
+      },
+      listProjects: () => projectRegistry.list().map((record) => ({ projectId: record.projectId, accountProjectId: record.accountProjectId ?? null })),
+      logger: headlessProjectLogger,
+    }));
+  }
+
   // Work another machine does here (a command, a chat or CLI send, a file
   // copied in) keeps a cloud machine awake (cloudKeepAwake). Reads, lists
   // and status polls do not: an idle window polling one must not bill it all month.
@@ -32292,7 +32620,13 @@ async function runServe(
     if (!peerDeviceId || !cloudKeepAwake) return handler;
     const keepAwake = cloudKeepAwake;
     return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
-      if (request.method === "ade/actions/call" && isRemoteWork(request.params)) void keepAwake.noteUse();
+      if (request.method === "ade/actions/call" && isRemoteWork(request.params)) {
+        void keepAwake.noteUse();
+        // The server's idle cleanup may be saving this computer for its delete
+        // (`/use`, cloudComputerRest.ts): once the delete started, the work is refused.
+        const refusal = await cloudRest?.noteRemoteWork();
+        if (refusal) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, refusal);
+      }
       return await handler(request);
     }, handler);
   };
@@ -32303,13 +32637,22 @@ async function runServe(
       pushCloudWork: holdCloudWork
         ? async ({ check, message }: { check: boolean; message?: string | null }) => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
+            // The idle cleanup starts with this push: a person's send in the next minutes is use (`/use`).
+            if (!check) cloudRest?.noteCleanupStarted();
             return await holdCloudWork("push_work", 10 * 60_000, () => pushCloudComputerWork({
               check,
               message,
+              ...(cloudGitIdentity ? { ensureIdentity: cloudGitIdentity.ensure } : {}),
               projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
               logger: headlessProjectLogger,
             }));
           }
+        : null,
+      saveCloudForRest: holdCloudWork && cloudRest
+        ? async ({ capsules }: { capsules: boolean }) => await cloudRest.saveForCleanup(capsules)
+        : null,
+      drainCloudMessages: cloudKeepAwake && cloudRest
+        ? async () => await cloudRest.drainAnswer()
         : null,
       prepareCloudStop: cloudKeepAwake
         ? async ({ timeoutMs, diskGrowToGb, growId }) => {
@@ -32321,7 +32664,14 @@ async function runServe(
               (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null));
             const personal = await personalChatScope.bootedRuntime().catch(() => null);
             const runtimes = [...booted, personal].filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
-            return await prepareCloudComputerToStop({ runtimes, timeoutMs, logger: headlessProjectLogger, keepTurns });
+            const saveForRest = cloudRest?.saveBeforeStop ?? null;
+            return await prepareCloudComputerToStop({
+              runtimes,
+              timeoutMs,
+              logger: headlessProjectLogger,
+              keepTurns,
+              ...(saveForRest ? { saveForRest } : {}),
+            });
           }
         : null,
       serverVersion: VERSION,
@@ -32377,33 +32727,14 @@ async function runServe(
         accountRetainsMachineOwnership: () =>
           accountSessionRetainsMachineOwnership(brainAccountAuthService.getStatus()),
       }),
-      // An embedded runtime is a guest inside an external process. Updating and
-      // restarting the MACHINE's ADE from inside it would reach far outside the
-      // embedder's lifecycle — it is the same "never claim machine authority"
-      // invariant that forces sync off, so it belongs to the profile rather
-      // than to whatever the caller's role default happens to be.
-      ...(embedded
-        ? {}
-        : {
+      // Embedded runtimes get none of these (see `machineUpdateControls`).
+      ...(machineUpdateControls
+        ? {
           readContinueAfterRestart: () => resolveContinueAfterRestart(),
-          machineUpdateControls: createMachineUpdateControls({
-            version: VERSION,
-            logger: headlessProjectLogger,
-            requestRestart: requestBrainServiceRestartFromServe,
-            requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
-            // Kept for the next start, which names who asked (`brainRestartCause.ts`).
-            noteAcceptedUpdate: (request) => writeBrainUpdateRequest(path.dirname(lastFailurePathForMachine()), request),
-            updateInstallMode: () => readDesktopUpdateInstallMode(),
-            // The app this brain reports as `desktopAppVersion`, on every platform.
-            installedApp: async () => {
-              const { readInstalledDesktopApp } = await import(
-                "../../desktop/src/main/services/native/nativeHelperPaths"
-              );
-              return readInstalledDesktopApp();
-            },
-          }),
+          machineUpdateControls,
           reportMachinePowerTransition: reportDesktopMachinePowerTransition,
-        }),
+        }
+        : {}),
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -32713,6 +33044,7 @@ async function runServe(
     }
     clearSyncRuntimeRpcHandlerFactory?.();
     clearSyncRuntimeRpcHandlerFactory = null;
+    clearMachineUpdateRemoteCommands();
   };
 
   const listen = async (

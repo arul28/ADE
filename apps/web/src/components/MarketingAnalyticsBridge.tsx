@@ -12,7 +12,6 @@ import {
   installMarketingAnalyticsPreferenceApi,
   onMarketingAnalyticsPreferenceChange,
 } from "../lib/marketingAnalyticsBrowser";
-import { isDownloadClick, loadFreebuffPixel, reportFreebuffDownload } from "../lib/freebuffPixel";
 import { markMarketingReplayRoute, syncMarketingReplay } from "../lib/marketingReplay";
 
 /** Session replay starts once the page is idle, so the SDK never competes with first paint. */
@@ -31,10 +30,8 @@ export function MarketingAnalyticsBridge() {
   useEffect(() => {
     installMarketingAnalyticsPreferenceApi();
     captureMarketingAppOpened();
-    loadFreebuffPixel();
     const cancelReplayStart = whenIdle(syncMarketingReplay);
-    const offPreference = onMarketingAnalyticsPreferenceChange((enabled) => {
-      if (enabled) loadFreebuffPixel();
+    const offPreference = onMarketingAnalyticsPreferenceChange(() => {
       syncMarketingReplay();
     });
 
@@ -44,7 +41,6 @@ export function MarketingAnalyticsBridge() {
         captureCta: captureMarketingCta,
         captureFeature: captureMarketingFeature,
       });
-      if (isDownloadClick(event.target)) reportFreebuffDownload();
     };
     const onError = () => captureWindowError();
     const onUnhandledRejection = () => captureUnhandledRejection();

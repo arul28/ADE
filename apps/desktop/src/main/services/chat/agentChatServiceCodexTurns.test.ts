@@ -1882,6 +1882,9 @@ describe("createAgentChatService", () => {
         const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.6-sol" });
         const userMessages = (text: string) => events.filter((envelope) =>
           envelope.event.type === "user_message" && envelope.event.text === text).length;
+        // The written message carries its send's id, so a client finds it by id.
+        const sendIdOf = (text: string) => events.flatMap((envelope) =>
+          envelope.event.type === "user_message" && envelope.event.text === text ? [envelope.event.clientSendId] : []);
         const turnStarts = (text: string) => mockState.codexRequestPayloads.filter((payload) =>
           payload.method === "turn/start" && codexTurnStartText(payload).includes(text)).length;
 
@@ -1897,6 +1900,7 @@ describe("createAgentChatService", () => {
         await vi.advanceTimersByTimeAsync(30_000);
         expect(await firstOutcome).toBeInstanceOf(Error);
         expect(userMessages("Build the page.")).toBe(1);
+        expect(sendIdOf("Build the page.")).toEqual(["send-1"]);
 
         // Its retry carries the same id: nothing is sent or written again.
         await service.sendMessage(
@@ -1920,6 +1924,7 @@ describe("createAgentChatService", () => {
         );
         expect(turnStarts("Then the footer.")).toBe(1);
         expect(userMessages("Then the footer.")).toBe(1);
+        expect(sendIdOf("Then the footer.")).toEqual(["send-2"]);
       } finally {
         vi.useRealTimers();
       }

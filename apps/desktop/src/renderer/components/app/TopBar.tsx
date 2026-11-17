@@ -54,7 +54,8 @@ import {
   projectRecordScope,
 } from "../../../shared/projectRecord";
 
-import { useAppStore } from "../../state/appStore";
+import { takeLegacyNoMachineTabs, useAppStore } from "../../state/appStore";
+import { adeCloudProjectForTabId, useAdeCloudTabFollowsCopy } from "../../state/adeCloudTabs";
 import { useActiveRepositoryReader, useTabCopyPin } from "../../state/repositoryScope";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
@@ -101,7 +102,7 @@ import {
   useRepositoryIdentity,
   useRepositoryTabStrip,
 } from "./useRepositoryTabs";
-import { NoMachineRepositoryTabs } from "./NoMachineRepositoryTabs";
+import { isAdeCloudTargetId, type AdeCloudBindingProject } from "../../../shared/adeCloud/binding";
 import { useAccountProjectListClient } from "../../state/accountProjectListClient";
 import { useConnectRepositoryCopies } from "../../state/connectRepositoryCopies";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -877,9 +878,6 @@ export function TopBar({
   const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const projectOpenWaking = useProjectOpenWaking();
-  const activeNoMachineTabId = useAppStore((s) => s.activeNoMachineTabId);
-  const noMachineTabs = useAppStore((s) => s.noMachineTabs);
-  const noMachineTabCount = useAppStore((s) => s.noMachineTabs.length);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   // Which open tabs have a loaded project: only those switch at once.
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot);
@@ -1203,8 +1201,11 @@ export function TopBar({
 
   const remoteConnectionState = useCallback(
     (targetId: string): RemoteRuntimeConnectionState =>
-      remoteSnapshot?.connections.find((entry) => entry.target.id === targetId)
-        ?.state ?? "idle",
+      // ADE Cloud answers from the account: never a disconnected tab.
+      isAdeCloudTargetId(targetId)
+        ? "connected"
+        : remoteSnapshot?.connections.find((entry) => entry.target.id === targetId)
+          ?.state ?? "idle",
     [remoteSnapshot],
   );
 
@@ -1299,7 +1300,7 @@ export function TopBar({
       return next ?? current;
     });
   }, []);
-  const projectTabPageInFront = !isNewTabOpen && activeNoMachineTabId == null;
+  const projectTabPageInFront = !isNewTabOpen;
   const tabMoves = useMemo(() => {
     const openKeys = new Set([...openProjectTabRoots, ...openRemoteProjectTabs.map((entry) => entry.key)]);
     const last = lastTabsRef.current;
@@ -1450,8 +1451,6 @@ export function TopBar({
     setTabOrder,
     preferredBindingKeyByGroup,
     tabOrder,
-    noMachineTabs,
-    activeNoMachineTabId,
     noTabInFront: showWelcome === true || isNewTabOpen === true,
     recordNameFor,
     ownTabKeys: ownTabKeysNow,
@@ -1483,9 +1482,13 @@ export function TopBar({
         for (const key of strip?.ownTabKeys ?? launchStrip?.ownTabKeys ?? []) inheritedOwnTabsRef.current.add(key);
         if (launchStrip) {
           setTabOrder((current) => (current.length > 0 ? current : launchStrip.tabOrder));
-          for (const tab of launchStrip.noMachineTabs) {
-            useAppStore.getState().showNoMachineTab(tab, { activate: false });
+          for (const tab of launchStrip.adeCloudTabs) {
+            void useAppStore.getState().openAdeCloudProject(tab, { activate: false });
           }
+        }
+        // Tabs an older version kept with no computer: bound to ADE Cloud now.
+        for (const tab of takeLegacyNoMachineTabs()) {
+          void useAppStore.getState().openAdeCloudProject(adeCloudProjectForTabId(tab.id, tab.displayName), { activate: false });
         }
         const sessionBindings = [
           ...(session.openProjectBindings ?? []),
@@ -1538,7 +1541,7 @@ export function TopBar({
         if (active && !session.binding && !session.project) {
           const store = useAppStore.getState();
           if (!active.copy) {
-            store.showNoMachineTab({ id: active.id, displayName: active.displayName, iconDataUrl: null });
+            void store.openAdeCloudProject(adeCloudProjectForTabId(active.id, active.displayName)).catch(reportStripRestoreFailure);
           } else if (active.copy.kind === "local") {
             // The folder's Work view shows at once from saved state while the
             // brain opens it, so the composer takes input before the open ends.
@@ -1812,9 +1815,11 @@ export function TopBar({
     ],
   );
 
-  // The no-machine tab a repository tab turns into when its computer is gone
-  // (S4). Null for a folder with no repository: it has no other copy to wait for.
-  const noMachineTabFor = useCallback((tab: RemoteOpenProjectBinding) => {
+  // The ADE Cloud tab a repository tab turns into when its computer is gone:
+  // ADE Cloud is the repository's machine while no own computer is online.
+  // Null for a folder with no repository: it has no other copy and no cloud.
+  const adeCloudTabFor = useCallback((tab: RemoteOpenProjectBinding): AdeCloudBindingProject | null => {
+    if (isAdeCloudTargetId(tab.targetId)) return null;
     const group = tabGroupsRef.current.find((entry) =>
       entry.machines.some((machine) => machine.bindingKey === tab.key));
     if (!group?.origin) return null;
@@ -1827,11 +1832,10 @@ export function TopBar({
         ))?.id ?? `repo:${group.origin}`
       : group.id;
     return {
-      id: group.id,
+      accountProjectId: repositoryId,
       displayName: recordNameForRef.current(group) ?? tab.displayName,
+      gitOriginUrl: tab.gitOriginUrl ?? null,
       iconDataUrl: tab.iconDataUrl ?? null,
-      lastCopyKey: tab.key,
-      repositoryId: keyedByFolder ? repositoryId : null,
     };
   }, []);
 
@@ -1846,15 +1850,15 @@ export function TopBar({
       carryRouteToCopy(remoteBinding?.key ?? project?.rootPath ?? null, binding.key, tabGroupsRef.current);
       return switchRemoteProject(binding.targetId, binding.projectId).then(() => {}).catch(() => {
         // The tab's computer did not answer: the tab still comes to the
-        // front, as its no-machine page (the copies, Wake or Connect), and
-        // opens its copy when the computer is back. A connected computer that
-        // refused the open keeps the error banner instead.
+        // front, bound to ADE Cloud, and opens its copy when the computer is
+        // back. A connected computer that refused the open keeps the error
+        // banner instead.
         const connected = (remoteSnapshotRef.current?.connections ?? []).some((connection) => (
           connection.target.id === binding.targetId && connection.state === "connected"
         ));
         if (connected) return;
-        const noMachine = noMachineTabFor(binding);
-        if (!noMachine) return;
+        const adeCloud = adeCloudTabFor(binding);
+        if (!adeCloud) return;
         const store = useAppStore.getState();
         // Another switch started since this one: it owns the front.
         if (store.projectTransition) return;
@@ -1864,15 +1868,15 @@ export function TopBar({
         // Keep the tab's view (its chat and draft) for when the computer is back.
         store.evictProjectDataCaches(binding.key);
         useAppStore.setState({ projectTransitionError: null });
-        store.showNoMachineTab(noMachine);
+        void store.openAdeCloudProject(adeCloud).catch(reportStripRestoreFailure);
       });
     },
     [
+      adeCloudTabFor,
       cancelNewTab,
       hubRouteActive,
       isProjectBusy,
       leaveMachineRoute,
-      noMachineTabFor,
       project?.rootPath,
       remoteBinding?.key,
       setOpenRemoteProjectTabs,
@@ -1933,8 +1937,6 @@ export function TopBar({
     musicTabOpen,
     isSettingsTabOpen,
     isNewTabOpen,
-    noMachineTabCount,
-    activeNoMachineTabId ?? "",
   ].join("|");
   useProjectTabStripOverflow(tabStripRef, tabStripLayoutKey);
 
@@ -1972,13 +1974,13 @@ export function TopBar({
         }),
       }));
       const stayingTabs = plans.filter((plan) => plan.fallback);
-      // A repository tab with no other copy stays open with no machine (S4):
+      // A repository tab with no other copy stays open, bound to ADE Cloud:
       // a machine going away never closes a repository. A folder with no
       // repository (no origin) has no other copy to wait for, and closes.
       const waitingTabs = plans.flatMap((plan) => {
         if (plan.fallback) return [];
-        const noMachine = noMachineTabFor(plan.tab);
-        return noMachine ? [{ ...plan, noMachine }] : [];
+        const adeCloud = adeCloudTabFor(plan.tab);
+        return adeCloud ? [{ ...plan, adeCloud }] : [];
       });
       const closingTabs = plans.filter((plan) => !plan.fallback && !waitingTabs.some((entry) => entry.tab.key === plan.tab.key));
       const reconnectCopy = action === "remove"
@@ -2009,7 +2011,7 @@ export function TopBar({
             `${waitingTabs.length} open project tab${plural} ${waitingTabs.length === 1 ? "is" : "are"} on no other computer that is online:`,
             waitingTabs.map((plan) => `- ${plan.tab.displayName}`).join("\n"),
             "",
-            `${waitingTabs.length === 1 ? "It stays" : "They stay"} open, with no computer, until a computer with the project is online.`,
+            `${waitingTabs.length === 1 ? "It stays" : "They stay"} open on ADE Cloud until a computer with the project is online.`,
           );
         }
         if (closingTabs.length > 0) {
@@ -2103,7 +2105,7 @@ export function TopBar({
           evictForAction(binding.key);
         }
         for (const plan of waitingTabs) {
-          useAppStore.getState().showNoMachineTab(plan.noMachine, { activate: false });
+          void useAppStore.getState().openAdeCloudProject(plan.adeCloud, { activate: false });
         }
       };
 
@@ -2126,7 +2128,11 @@ export function TopBar({
       const activeWaiting =
         waitingTabs.find((plan) => plan.tab.key === latestRemoteBinding.key) ?? null;
       try {
-        if (activePlan?.fallback?.kind === "local") {
+        if (activeWaiting) {
+          // The repository in front lost its last online copy: it stays in
+          // front, bound to ADE Cloud.
+          await latestState.openAdeCloudProject(activeWaiting.adeCloud);
+        } else if (activePlan?.fallback?.kind === "local") {
           await latestState.switchProjectToPath(activePlan.fallback.rootPath, { carryWorkView: true });
         } else if (activePlan?.fallback?.kind === "remote") {
           await latestState.switchRemoteProject(
@@ -2161,9 +2167,6 @@ export function TopBar({
                   removeStoredProjectRoute(binding.key);
                 }
               }
-              for (const plan of waitingTabs) {
-                useAppStore.getState().showNoMachineTab(plan.noMachine, { activate: plan === activeWaiting });
-              }
               return true;
             }
           }
@@ -2172,12 +2175,10 @@ export function TopBar({
         return false;
       }
       finishAffectedTabClose();
-      // The repository in front lost its last online copy: it stays in front.
-      if (activeWaiting) useAppStore.getState().showNoMachineTab(activeWaiting.noMachine);
       return true;
     },
     [
-      noMachineTabFor,
+      adeCloudTabFor,
       noteTabMove,
       setOpenProjectTabRoots,
       setOpenRemoteProjectTabs,
@@ -2185,6 +2186,8 @@ export function TopBar({
     ],
   );
 
+  // A tab bound to ADE Cloud moves to an own computer's copy once one is online.
+  useAdeCloudTabFollowsCopy();
   // ADE Web: a computer that leaves this tab (forgotten, removed or stopped) never closes a tab.
   useWebTabsFollowComputers({
     webMode,
@@ -2317,8 +2320,7 @@ export function TopBar({
     async (groupId: string, recordScope: string | null, repoKey: string | null, result: RemoveProjectResult) => {
       if (result.accountRemoved) {
         // The account no longer lists it: its tab closes on every copy,
-        // including a tab with no computer online.
-        useAppStore.getState().closeNoMachineTab(groupId);
+        // including its ADE Cloud copy (one of the group's copies).
         // The account list drops the project as soon as the route answers, so
         // the group can have a new id (`repo:` instead of `ap_`) by now: find
         // it by its removed copies too.
@@ -2412,11 +2414,11 @@ export function TopBar({
       }
       if (!fallback) {
         // Other copies of the repository exist, on no computer that is online:
-        // the tab stays, with no computer, until one is (S4). Only a project
-        // with no copy left closes.
+        // the tab stays, bound to ADE Cloud, until one is (S4). Only a
+        // project with no copy left closes.
         const removedRemote = openRemote.find((entry) => removedOpen.some((machine) => machine.bindingKey === entry.key)) ?? null;
-        const noMachine = remaining.length > 0 && removedRemote ? noMachineTabFor(removedRemote) : null;
-        if (!noMachine) {
+        const adeCloud = remaining.length > 0 && removedRemote ? adeCloudTabFor(removedRemote) : null;
+        if (!adeCloud) {
           await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
           return;
         }
@@ -2430,7 +2432,7 @@ export function TopBar({
           store.evictProjectState(key);
           removeStoredProjectRoute(key);
         }
-        store.showNoMachineTab(noMachine, { activate: wasInFront });
+        await store.openAdeCloudProject(adeCloud, { activate: wasInFront }).catch(reportStripRestoreFailure);
         return;
       }
       // The fallback copy takes the removed copy's place, in its own tab.
@@ -2467,7 +2469,7 @@ export function TopBar({
         removeStoredProjectRoute(key);
       }
     },
-    [closeTabGroups, noMachineTabFor, noteTabMove, setOpenProjectTabRoots, setOpenRemoteProjectTabs],
+    [adeCloudTabFor, closeTabGroups, noteTabMove, setOpenProjectTabRoots, setOpenRemoteProjectTabs],
   );
 
   // A copy removed outside this window (on its computer, or from another
@@ -2844,7 +2846,6 @@ export function TopBar({
           )}
         >
           {tabGroups.length > 0 ||
-          noMachineTabCount > 0 ||
           isNewTabOpen ||
           isSettingsTabOpen ||
           personalChatsTabOpen ||
@@ -2861,7 +2862,7 @@ export function TopBar({
                     )
                     ?? (machine.binding?.kind === "remote" ? machine.binding : null);
                   if (!remoteTab) return null;
-                  const isCurrentRemote = remoteBinding?.key === remoteTab.key && !activeNoMachineTabId;
+                  const isCurrentRemote = remoteBinding?.key === remoteTab.key;
                   const remoteTabState = remoteConnectionState(remoteTab.targetId);
                   const remoteTabConnecting = remoteTabState === "connecting";
                   const remoteTabDisconnected =
@@ -2962,7 +2963,7 @@ export function TopBar({
                 const rp = idx === -1 ? null : projectTabs[idx];
                 if (!rp) return null;
                 const isCurrent =
-                  !remoteBinding && project?.rootPath === rp.rootPath && !activeNoMachineTabId;
+                  !remoteBinding && project?.rootPath === rp.rootPath;
                 const isMissing = !rp.exists;
                 const isRelocating = relocatingPath === rp.rootPath;
                 const isSwitchTarget =
@@ -3128,10 +3129,6 @@ export function TopBar({
                   </div>
                 );
               })}
-              <NoMachineRepositoryTabs
-                activeSurfaceHidden={machineRouteActive || accountRouteActive || hubRouteActive || isNewTabOpen}
-                onSelect={leaveMachineRoute}
-              />
               {personalChatsTabOpen ? (
                 <ShellNavTab
                   active={personalChatsRouteActive}

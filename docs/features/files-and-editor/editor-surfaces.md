@@ -87,11 +87,10 @@ serialization queue that keeps a watcher refresh from shrinking a window a
 load-more just grew, and the `decorationsTruncated` flag behind the "Some git
 decorations hidden" strip.
 
-The file watcher deliberately did **not** move with it: that effect refreshes
-the tree *and* reloads open editor tabs, so it is coordination between two
-layers rather than part of either. Callback identities in the hook are
-preserved exactly as they were inline, because the watcher subscription is
-keyed on them — a widened dependency there costs a real watcher tear-down and
+The file watcher stays in the workbench: that effect refreshes the tree *and*
+reloads open editor tabs, so it coordinates two layers. Keep the hook's
+callback identities stable, because the watcher subscription is keyed on
+them — a widened dependency there costs a real watcher tear-down and
 re-subscribe, not just a re-render.
 
 Module-level caches in `v2/filesTreeCache.ts` keep workspaces and root
@@ -148,8 +147,11 @@ picker chrome and preselects the active lane worktree. Switching workspaces:
 4. Leaves file service and preload contracts unchanged.
 
 The main-process file service remains the source of truth for path
-safety and workspace roots. There is no read-only / view-only workspace
-policy: every resolved workspace is editable, and whether a tab shows
+safety and workspace roots. On a computer every resolved workspace is
+editable. The one read-only case is an account-answered lane (an ADE Cloud
+lane at rest, read from GitHub): New file and New folder do nothing and say
+why (`FilesExplorer` `readOnlyReason`); see
+[README.md](./README.md#with-no-computer-awake). Otherwise whether a tab shows
 editable Monaco is decided purely by viewer capability plus payload
 (`viewerRegistry.tabIsTextEditable`): code, markdown Source, and CSV
 Source tabs edit whenever the full text payload loaded; image/pdf/
@@ -351,7 +353,7 @@ debounce) are independent requests; the panel also owns the persisted
 "Include ignored files" toggle. See
 [README.md](./README.md#the-search-ui) for the full behaviour.
 
-`v2/overlays.tsx` now holds only `CreatePromptModal` (new file / new directory
+`v2/overlays.tsx` holds only `CreatePromptModal` (new file / new directory
 prompts) and re-exports the shared `Backdrop` / panel surface from
 `FilesSearchPanel`.
 

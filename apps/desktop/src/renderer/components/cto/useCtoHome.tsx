@@ -1,4 +1,5 @@
 import { adeCloudInstanceIdForMachine } from "../../state/adeCloudLaneIndex";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
@@ -207,7 +208,9 @@ export function useCtoHome(active: boolean): CtoHomeState {
       }
       return { ...base, status: "choose", pin: null, home: null, homeName: null, offlineReason: null };
     }
-    const homeName = home && !home.isThisMachine ? home.machineName : (home?.machineName ?? record.name);
+    // An ADE Cloud home reads "ADE Cloud", never its computer's own name.
+    const recordName = base.cloudInstanceId ? ADE_CLOUD_NAME : record.name;
+    const homeName = home && !home.isThisMachine ? home.machineName : (home?.machineName ?? recordName);
     if (!home) {
       if (!settled) return { ...base, status: "loading", pin: null, home: null, homeName, offlineReason: null };
       return {
@@ -215,8 +218,8 @@ export function useCtoHome(active: boolean): CtoHomeState {
         status: "offline",
         pin: null,
         home: null,
-        homeName: record.name,
-        offlineReason: `${record.name} isn't connected to this computer.`,
+        homeName: recordName,
+        offlineReason: `${recordName} isn't connected to this computer.`,
       };
     }
     if (!home.online) {

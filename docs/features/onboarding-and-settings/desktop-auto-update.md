@@ -280,6 +280,11 @@ service and the `ade` CLI. The plan is `docs/plans/beta-track.md`.
 - **Remote "Update & restart".** It never moves a machine across tracks. A
   request that names a build of the other track updates the machine on its own
   track. See `apps/ade-cli/src/services/runtime/machineUpdateAndRestart.ts`.
+  A phone or ADE Web asks for the same run (`machine.updateImpact` /
+  `machine.updateAndRestart`), and learns each track's newest build from the
+  account directory's `GET /releases/latest`, which runs the desktop's own
+  reader over the same two release manifests; a track only ever takes a build of
+  that track.
 - **`ade brain update`.** The version `latest` follows the machine track. On Beta
   it is the build that `beta.json` names. It never falls back to the other
   track. See `apps/ade-cli/src/commands/brainUpdate.ts`.

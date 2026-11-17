@@ -352,8 +352,8 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   passwords: {
     // Sign-in needs the running brain's browser bridge and chats.
     live: ["signin", "signup", "requestLogin"],
-    read: ["status", "activity", "code", "list", "loginsForPage"],
-    write: ["saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "exportSecrets", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
+    read: ["status", "activity", "code", "list", "loginsForPage", "previewLaneEnv"],
+    write: ["saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "importLaneEnv", "exportSecrets", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
   },
   // Messages on the Mac the person sits at: reading follows its Read Texts
   // switch; each text an agent sends is approved on a card first.

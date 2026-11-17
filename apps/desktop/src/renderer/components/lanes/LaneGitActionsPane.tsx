@@ -1,4 +1,6 @@
 import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isAccountAnsweredPin } from "../../../shared/adeCloud/binding";
+import { CloudGitAsOf } from "../adeCloud/CloudGitAsOf";
 import type { LaneDiffMode } from "../../../shared/types";
 import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, CheckCircle, DotsThree, Folder, GitBranch, GitCommit, GitMerge, Minus, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
@@ -257,6 +259,17 @@ export function LaneGitActionsPane(
       >
         <span style={{ color: COLORS.textSecondary }}>No computer with this lane is online.</span>
         <span className="text-xs">Its git actions come back when that computer connects.</span>
+      </div>
+    );
+  }
+  // A lane whose ADE Cloud computer is at rest: the account answers from the summary it saved.
+  if (isAccountAnsweredPin(props.runtimePin)) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <CloudGitAsOf pin={props.runtimePin} laneId={props.laneId} />
+        <div className="min-h-0 flex-1">
+          <LaneGitActionsPaneOnMachine {...props} runtimePin={props.runtimePin} />
+        </div>
       </div>
     );
   }

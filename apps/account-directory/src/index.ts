@@ -40,7 +40,9 @@ import { cleanupJevBonusDays, handleJevBonusRequest, isJevBonusRequest, type Jev
 import { handleSignupAnalyticsRequest, isSignupAnalyticsRequest, type SignupAnalyticsEnv } from "./signupAnalytics";
 import { cleanupLaneShares, handleLaneShareRequest, isLaneShareRequest, type LaneShareEnv } from "./laneShares/routes";
 import { handleAccountProjectRequest, isAccountProjectRequest, type AccountProjectEnv } from "./accountProjects/routes";
+import { handleAccountLanesRequest, isAccountLanesRequest } from "./accountLanes/routes";
 import { handleGithubAppRequest, isGithubAppRequest, type GithubAppEnv } from "./githubApp/routes";
+import { handleLatestReleasesRequest, isLatestReleasesRequest, type LatestReleasesEnv } from "./latestReleases";
 import { runGithubAppCron } from "./githubApp/grants";
 import {
   cleanupUsageResearch,
@@ -50,7 +52,8 @@ import {
 } from "./usageResearch";
 
 type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv
-  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv & LaneShareEnv & AccountProjectEnv & GithubAppEnv;
+  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv & LaneShareEnv & AccountProjectEnv & GithubAppEnv
+  & LatestReleasesEnv;
 
 const WORKER_NAME = "ade-account-directory";
 
@@ -87,6 +90,10 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // The Jev bonus: account bearer, POST only, no CORS — the ADE brain is the
   // only caller. It forwards to TypeSafe with ADE's key under a daily cap.
   if (isJevBonusRequest(url)) return handleJevBonusRequest(request, env);
+  // The newest ADE build on each track, for the phone's and the web's
+  // "Update & restart" on other machines: account bearer, GET only, the
+  // directory's exact-origin CORS for the web client.
+  if (isLatestReleasesRequest(url)) return handleLatestReleasesRequest(request, env);
   // ADE Cloud (src/cloud): account bearer, the directory's exact-origin CORS for
   // the web client (routes.ts). Timed wakes ride the same gate. Everything
   // under /cloud refuses an account the owner blocked (403), except a launch's
@@ -110,6 +117,9 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // route (machines only). Matched before the directory, which owns only
   // `/account/machines`.
   if (isAccountProjectRequest(url)) return handleAccountProjectRequest(request, env);
+  // The account lane index (src/accountLanes): account bearer, exact-origin
+  // CORS for the read only; brains publish. Matched before the directory.
+  if (isAccountLanesRequest(url)) return handleAccountLanesRequest(request, env);
   // The account's GitHub App sign-in (src/githubApp): account bearer and the
   // same exact-origin CORS, except the callback and Setup URL pages that a
   // browser opens. 503 for every bearer route until its two secrets are set.

@@ -43,7 +43,12 @@ struct CloudDashboardScreen: View {
           if let referral = store.account?.referral {
             CloudInviteCard(referral: referral, syncService: store.syncService, onChanged: { Task { await store.reload() } })
           }
-          CloudSignInsCard(store: store)
+          if store.isDirect {
+            // No computer answers for the account: its ADE Cloud sign-ins, read directly.
+            SettingsCloudAccountProviders(syncService: store.syncService)
+          } else {
+            CloudSignInsCard(store: store)
+          }
           CloudAgentsCard(store: store)
         }
       }
@@ -899,7 +904,7 @@ struct CloudAgentsCard: View {
       } label: {
         ADESettingsRow(
           title: store.limits.map(cloudLimitsPresetName) ?? "…",
-          hint: store.limits.map(cloudLimitsSummary) ?? "Reading…"
+          hint: store.limits.map(cloudLimitsSummary) ?? store.limitsError ?? "Reading…"
         ) {
           ADESettingsChevron()
         }

@@ -385,14 +385,18 @@ export function ImportEnvDialog({
   existing,
   onClose,
   onImported,
+  importNames,
 }: {
-  file: { fileName: string; entries: Array<{ name: string; value: string }> };
+  /** Entries with a value (a file picked here), or with a length only (a file on another machine). */
+  file: { fileName: string; entries: Array<{ name: string; value?: string; length?: number }> };
   projects: readonly PasswordsProject[];
   defaultScope: string | null;
   /** Names already saved, by scope (null: every project), to say what is replaced. */
   existing: ReadonlyMap<string | null, ReadonlySet<string>>;
   onClose: () => void;
   onImported: (result: { imported: string[]; replaced: string[] }, scope: string | null) => void;
+  /** Imports the picked names where the file is (`passwords.importLaneEnv`); else this computer saves the values. */
+  importNames?: (names: string[], scope: string | null) => Promise<{ imported: string[]; replaced: string[] }>;
 }) {
   const [scope, setScope] = useScopeChoice(defaultScope);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(file.entries.map((entry) => entry.name)));
@@ -406,8 +410,13 @@ export function ImportEnvDialog({
     setBusy(true);
     setError(null);
     try {
-      const entries = file.entries.filter((entry) => selected.has(entry.name));
-      const result = await window.ade.passwords.importSecrets({ projectScope: scope, entries });
+      const picked = file.entries.filter((entry) => selected.has(entry.name));
+      const result = importNames
+        ? await importNames(picked.map((entry) => entry.name), scope)
+        : await window.ade.passwords.importSecrets({
+            projectScope: scope,
+            entries: picked.flatMap((entry) => (typeof entry.value === "string" ? [{ name: entry.name, value: entry.value }] : [])),
+          });
       onImported(result, scope);
     } catch (err) {
       setError(errorText(err, "ADE couldn't import those secrets."));
@@ -464,7 +473,7 @@ export function ImportEnvDialog({
               />
               <span className="ade-pw-import-name">{entry.name}</span>
               {taken.has(entry.name) ? <span className="kit-tag" data-tone="warn">Replaces</span> : null}
-              <span className="ade-pw-import-len">{entry.value.length} characters</span>
+              <span className="ade-pw-import-len">{entry.length ?? entry.value?.length ?? 0} characters</span>
             </label>
           ))}
         </div>

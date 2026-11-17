@@ -40,6 +40,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type {
+  CloudChatMessageSettings,
   CloudLaunchRecord,
   CloudLaunchStage,
   CloudLaunchStagesUpdate,
@@ -47,12 +48,14 @@ import type {
   CloudServerLaunchRequest,
 } from "../../../../account-directory/src/cloud/contract";
 import {
+  cloudChatMessageSettingsOf,
   CLOUD_AUTOMATION_RUN_STAGE,
   CLOUD_LAUNCH_ENV,
   CLOUD_LAUNCH_MAX_STAGES,
 } from "../../../../account-directory/src/cloud/contract";
 import type { CloudProvider } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { parseChatLaunchArgs } from "../../../../desktop/src/main/services/chat/chatLaunchArgs";
+import { saveCloudFiles, withAttachmentPaths } from "../cloudChats/cloudAttachmentFiles";
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { CloudApiError, type CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
 import type {
@@ -123,7 +126,34 @@ export type CloudBootLaunchDeps = {
   /** Pulls the account vault now, so a key or a pass saved on another screen is read. */
   refreshVault?: () => Promise<void>;
   /** Sends one message to the launch's chat; `clientSendId` makes a retry a no-op. */
-  sendChatMessage?: (projectId: string, sessionId: string, message: { text: string; clientSendId: string }) => Promise<void>;
+  sendChatMessage?: (
+    projectId: string,
+    sessionId: string,
+    message: { text: string; clientSendId: string; attachments?: Array<{ path: string; type: "image" | "file" }> },
+  ) => Promise<void>;
+  /**
+   * Types a queued message at a restored CLI's prompt (`typeIntoAgentCliWhenFree`
+   * with `holdUntilFree`): a CLI row takes no chat send.
+   */
+  typeIntoCli?: (projectId: string, sessionId: string, message: { text: string; clientMessageId: string }) => Promise<"delivered" | "held" | "deferred" | "ended">;
+  /** Fork-continue: the person's picked settings, applied to the restored chat before its message (the queue's own apply). */
+  applyChatSettings?: (projectId: string, sessionId: string, settings: CloudChatMessageSettings & { modelId?: string | null }) => Promise<void>;
+  /**
+   * Fork-continue (`continueChat`): restores the saved chat in its lane here,
+   * with the same chat id (`cloudChatRestore.ts`). Left out, a continue
+   * launch starts a new chat, as an older computer does.
+   */
+  continueChat?: (projectId: string, args: {
+    fromMachineKey: string;
+    chatId: string;
+    laneId: string;
+    modelId: string | null;
+    /** The person's message; a restored CLI types it itself (`promptSent`). */
+    prompt: string;
+    clientMessageId: string;
+    /** `cli`: the saved row is a CLI session copy. Left out (an older server): a chat, then a CLI. */
+    kind?: "chat" | "cli";
+  }) => Promise<{ sessionId: string; promptSent?: boolean }>;
   /**
    * Waits until the chat's running turn is over; false when it still runs at the
    * wait's limit. Claude takes a send during a turn and then fails that turn, so
@@ -147,15 +177,40 @@ type BootState = {
    */
   reported?: string | null;
   /** The chat whose queued messages aren't all sent yet: a later boot sends them. */
-  messagesOwed?: { sessionId: string } | null;
+  messagesOwed?: { sessionId: string; kind?: "cli" } | null;
+  /** Fork-continue: the restored chat, named in the launch's report once the lane is done. */
+  continuedSessionId?: string | null;
+  /** `cli`: the restored row is a CLI, so its queued messages are typed at its prompt. */
+  continuedKind?: "cli" | null;
+  /**
+   * Fork-continue still to do: `follow` restores the chat once the lane's
+   * launch completes, then sends the person's message. Kept until the restore
+   * is done, so a restart does it then.
+   */
+  continueChat?: PendingContinue | null;
+};
+
+/** A fork-continue `follow` runs when the lane is ready (`BootState.continueChat`). */
+type PendingContinue = {
+  fromMachineKey: string;
+  chatId: string;
+  /** The launch's lane id; the launch's own `laneId` wins when it has one. */
+  laneId: string;
+  modelId: string | null;
+  kind: "chat" | "cli" | null;
+  /** The person's message as typed. */
+  text: string;
+  /** The same id as the person's send, so a retry is the same message. */
+  clientMessageId: string;
+  attachments: Array<{ path: string; type: "image" | "file" }>;
+  /** The person's picked settings (a chat only, never a CLI); applied once the chat is restored. */
+  settings?: CloudChatMessageSettings;
 };
 
 /** A just-booted computer's device sign-in is tried this many times (each one retries the network itself). */
 const JOIN_ATTEMPTS = 3;
 /** A device sign-in a person still has to approve: asked again this often, each a fresh 10-minute code, never past the join window. */
 const APPROVAL_ROUNDS = 6;
-/** The file ids the server accepts (`launches.ts`): a file's name on disk starts with it. */
-const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** The join's refusals a fresh device sign-in can get past (the code was given back, or the server was busy). */
 const JOIN_RETRY_CODES: ReadonlySet<string> = new Set(["expired", "not_found", "already_used", "unavailable", "network", "timeout"]);
 /** The server is still making this computer (its create answer was lost): asked again with a backoff, this long at most. */
@@ -252,8 +307,6 @@ function laneConfigOf(request: CloudServerLaunchRequest): ChatLaunchLaneConfig {
   };
 }
 
-const safeFileName = (name: string): string => name.replace(/[/\\\u0000-\u001f]/g, "_").replace(/^\.+/, "_").slice(0, 120) || "file";
-
 /**
  * The launch as `chat.startLaunch`'s raw payload, before `parseChatLaunchArgs`
  * checks it as it checks every other entry's. A launch from an ADE app
@@ -336,7 +389,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
   const state = readState(deps.stateFile, logger);
   const known = state?.launchId === launchId ? state : null;
   // Messages a chat was still owed when the last boot stopped go first.
-  if (known?.messagesOwed && known.projectId) await deliverOwedMessages(deps, known.projectId, known.messagesOwed.sessionId, sleep);
+  if (known?.messagesOwed && known.projectId) await deliverOwedMessages(deps, known.projectId, known.messagesOwed, sleep);
   if (known?.phase === "ended") {
     // A setup failure whose report never landed: the caller (and an automation's run) still waits for it.
     if (known.unsent) {
@@ -406,23 +459,21 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
     const cloneStage = doneStage("clone", repository);
 
     // Past the clone, anything that stops the hand-off is the launch's failure, reported as one.
+    let pendingContinue: PendingContinue | null = null;
     try {
-      const attachments: Array<{ path: string; type: "image" | "file" }> = [];
-      for (const file of request.chat?.attachments ?? []) {
-        if (!FILE_ID.test(file.fileId)) throw new Error(`The launch names a file this computer can't keep ("${file.name}").`);
-        const folder = path.join(project.rootPath, ".ade", "attachments", `launch-${launchId}`);
-        fs.mkdirSync(folder, { recursive: true });
-        const target = path.join(folder, `${file.fileId}-${safeFileName(file.name)}`);
-        fs.writeFileSync(target, Buffer.from(await api.readLaunchFile(launchId, file.fileId)));
-        attachments.push({ path: target, type: file.contentType.startsWith("image/") ? "image" : "file" });
-      }
+      const attachments = await saveCloudFiles(
+        path.join(project.rootPath, ".ade", "attachments", `launch-${launchId}`),
+        request.chat?.attachments ?? [],
+        (file) => api.readLaunchFile(launchId, file.fileId),
+        "launch",
+      );
       // A chat whose provider isn't signed in here waits for the person's sign-in first.
       const startStages = [computerStage, joinStage, cloneStage];
       if (request.chat && deps.providerReady) {
         const provider = request.chat.provider;
         // The wait can outlast `hold`'s limit: its own hold keeps the computer awake through it.
-        const holdFor = deps.holdFor ?? (<T>(_reason: string, _ttlMs: number, run: () => Promise<T>) => run());
-        const waited = await holdFor("provider_sign_in", SIGN_IN_WAIT_MS + 10 * 60_000, () => waitForProviderSignIn(deps, provider, report, startStages, sleep));
+        const signIn = () => waitForProviderSignIn(deps, provider, report, startStages, sleep);
+        const waited = await (deps.holdFor?.("provider_sign_in", SIGN_IN_WAIT_MS + 10 * 60_000, signIn) ?? signIn());
         if (waited.kind === "cancelled") {
           writeState(deps.stateFile, { launchId, phase: "ended", projectId: project.projectId });
           return;
@@ -441,9 +492,26 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
         }
         if (waited.waited) startStages.push(doneStage(SIGN_IN_STAGE, request.chat.provider));
       }
-      const args = parseChatLaunchArgs(launchPayloadOf(launchId, record, request, attachments, startStages));
+      // Fork-continue: the launch makes the lane only; the chat is the restored one, not a new one.
+      // `follow` restores it once the lane is ready, so the setup's stages are reported meanwhile.
+      const continuing = request.continueChat && request.chat && deps.continueChat ? request.continueChat : null;
+      const payloadRequest: CloudServerLaunchRequest = continuing ? { ...request, kind: "lane", chat: undefined } : request;
+      const args = parseChatLaunchArgs(launchPayloadOf(launchId, record, payloadRequest, attachments, startStages));
       const launches = await deps.launches(project.projectId);
       await launches.start(args);
+      if (continuing && request.chat) {
+        pendingContinue = {
+          fromMachineKey: continuing.machineKey,
+          chatId: continuing.chatId,
+          laneId: request.lane.id,
+          modelId: request.chat.modelId || null,
+          kind: continuing.kind === "cli" ? "cli" : null,
+          text: request.chat.prompt,
+          clientMessageId: request.chat.messageId ?? launchId,
+          attachments,
+          ...(continuing.settings ? { settings: continuing.settings } : {}),
+        };
+      }
     } catch (error) {
       const raw = errorText(error);
       logger.warn("cloud_boot_launch.start_failed", { launchId, error: raw });
@@ -455,7 +523,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
       writeState(deps.stateFile, { launchId, phase: "ended", projectId: project.projectId, ...(landed ? {} : { unsent: update }) });
       return;
     }
-    writeState(deps.stateFile, { launchId, phase: "handed_off", projectId: project.projectId });
+    writeState(deps.stateFile, { launchId, phase: "handed_off", projectId: project.projectId, ...(pendingContinue ? { continueChat: pendingContinue } : {}) });
     logger.info("cloud_boot_launch.handed_off", { launchId, projectId: project.projectId });
   });
 
@@ -654,8 +722,8 @@ async function reportFinal(report: ReportStages, update: CloudLaunchStagesUpdate
  * Sends a chat's queued messages, tried again with a backoff; once all are
  * sent, the state file stops naming them. True when nothing is left.
  */
-async function deliverOwedMessages(deps: CloudBootLaunchDeps, projectId: string, sessionId: string, sleep: (ms: number) => Promise<void>): Promise<boolean> {
-  const done = await deliverQueuedMessagesWithRetry(deps, projectId, sessionId, sleep).catch((error: unknown) => {
+async function deliverOwedMessages(deps: CloudBootLaunchDeps, projectId: string, owed: { sessionId: string; kind?: "cli" }, sleep: (ms: number) => Promise<void>): Promise<boolean> {
+  const done = await deliverQueuedMessagesWithRetry(deps, projectId, owed, sleep).catch((error: unknown) => {
     deps.logger.warn("cloud_boot_launch.messages_failed", { launchId: deps.launchId, error: errorText(error) });
     return false;
   });
@@ -692,20 +760,79 @@ async function follow(
   let savedFailure = reported !== "";
   // The person's queued messages go once the server knows the chat (it then takes no more of them).
   // Until all are sent the state file names the chat, so a restart sends the rest.
-  let owed = readState(deps.stateFile, logger)?.messagesOwed ?? null;
-  const save = (state: BootState) => writeState(deps.stateFile, owed ? { ...state, messagesOwed: owed } : state);
+  const followed = readState(deps.stateFile, logger);
+  let owed = followed?.messagesOwed ?? null;
+  // Fork-continue: the chat is the restored one, not one the launch made.
+  const ours = followed?.launchId === launchId ? followed : null;
+  let continued = ours?.continuedSessionId ?? null;
+  let continuedKind = ours?.continuedKind ?? null;
+  let pendingContinue = continued ? null : ours?.continueChat ?? null;
+  const chatOf = (snapshot: ChatLaunchSnapshot): string | null =>
+    snapshot.sessionCreated && snapshot.sessionId ? snapshot.sessionId : snapshot.phase === "completed" ? continued : null;
+  const save = (state: BootState) => writeState(deps.stateFile, {
+    ...state,
+    ...(owed ? { messagesOwed: owed } : {}),
+    ...(continued ? { continuedSessionId: continued } : {}),
+    ...(continued && continuedKind ? { continuedKind } : {}),
+    ...(pendingContinue ? { continueChat: pendingContinue } : {}),
+  });
+  /**
+   * The lane is ready: restore the saved chat here with its own id, then send
+   * the person's message. A restore that ran before (a restart after it) is
+   * found again by the restore and the message's id, so nothing doubles.
+   * Null when done; else the sentence the launch fails with.
+   */
+  const continueNow = async (snapshot: ChatLaunchSnapshot, pending: PendingContinue): Promise<string | null> => {
+    if (!deps.continueChat) return "This computer's ADE can't continue a saved chat.";
+    try {
+      const restored = await deps.continueChat(projectId, {
+        fromMachineKey: pending.fromMachineKey,
+        chatId: pending.chatId,
+        laneId: snapshot.laneId || pending.laneId,
+        modelId: pending.modelId,
+        prompt: withAttachmentPaths(pending.text, pending.attachments),
+        clientMessageId: pending.clientMessageId,
+        ...(pending.kind === "cli" ? { kind: "cli" as const } : {}),
+      });
+      if (!restored.promptSent) {
+        // Older servers send no settings; the same checks as the server's. A refused setting never loses the message.
+        const settings = pending.kind === "cli" ? null : cloudChatMessageSettingsOf(pending.settings);
+        if (settings && deps.applyChatSettings) {
+          await deps.applyChatSettings(projectId, restored.sessionId, { ...settings, modelId: pending.modelId }).catch((error: unknown) => {
+            logger.warn("cloud_boot_launch.continue_settings_failed", { launchId, error: errorText(error) });
+          });
+        }
+        await deps.sendChatMessage?.(projectId, restored.sessionId, {
+          text: pending.text,
+          clientSendId: pending.clientMessageId,
+          ...(pending.attachments.length ? { attachments: pending.attachments } : {}),
+        });
+      }
+      continued = restored.sessionId;
+      continuedKind = pending.kind === "cli" ? "cli" : null;
+      pendingContinue = null;
+      save({ launchId, phase: "handed_off", projectId });
+      logger.info("cloud_boot_launch.chat_continued", { launchId });
+      return null;
+    } catch (error) {
+      const raw = errorText(error);
+      logger.warn("cloud_boot_launch.continue_failed", { launchId, error: raw });
+      return `ADE couldn't continue the chat on the new computer: ${raw}`.slice(0, 400);
+    }
+  };
   let delivery: Promise<void> | null = null;
   let messagesSent = false;
   let deliveryRounds = 0;
   const sendQueued = (snapshot: ChatLaunchSnapshot): void => {
     // Only once the launch is done: the chat exists and has its opening message, so a queued one
     // can't go first (or meet the opening turn still starting).
-    if (messagesSent || delivery || !snapshot.sessionId || !snapshot.sessionCreated || snapshot.phase !== "completed") return;
-    const sessionId = snapshot.sessionId;
-    owed = { sessionId };
+    const sessionId = chatOf(snapshot);
+    if (messagesSent || delivery || !sessionId || snapshot.phase !== "completed") return;
+    // A restored CLI keeps its kind: its messages are typed, never sent as a chat's.
+    owed = sessionId === continued && continuedKind === "cli" ? { sessionId, kind: "cli" } : { sessionId };
     const current = readState(deps.stateFile, logger);
     if (current?.launchId === launchId) save(current);
-    delivery = deliverOwedMessages(deps, projectId, sessionId, sleep).then((done) => {
+    delivery = deliverOwedMessages(deps, projectId, owed, sleep).then((done) => {
       delivery = null;
       if (done) {
         owed = null;
@@ -722,9 +849,22 @@ async function follow(
   };
   const send = async (snapshot: ChatLaunchSnapshot): Promise<boolean> => {
     const stages = stagesOf(snapshot);
+    if (snapshot.phase === "completed" && pendingContinue) {
+      const failure = await continueNow(snapshot, pendingContinue);
+      if (failure) {
+        // The lane is there, but the chat isn't: the launch failed, and the person sends again.
+        pendingContinue = null;
+        const update: CloudLaunchStagesUpdate = { state: "failed", stages, error: failure };
+        const landed = await reportFinal(report, update, sleep);
+        if (!landed) logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: "continue_failed" });
+        save({ launchId, phase: "ended", projectId, ...(landed ? {} : { unsent: update }) });
+        return true;
+      }
+    }
     const terminal = TERMINAL.has(snapshot.phase);
     // The chat's creation is part of the shape, so the report that names the chat goes even with no stage change.
-    const shape = `${reportShapeOf(snapshot.phase, stages)}${snapshot.sessionCreated ? "|chat" : ""}`;
+    const chatId = chatOf(snapshot);
+    const shape = `${reportShapeOf(snapshot.phase, stages)}${chatId ? "|chat" : ""}`;
     if (shape === last) return terminal;
     last = shape;
     const error = snapshot.phase === "cancelled" ? STOPPED_ON_COMPUTER : snapshot.phase === "failed" ? snapshot.error : null;
@@ -732,7 +872,7 @@ async function follow(
       state: REPORTED_STATE[snapshot.phase] ?? "running",
       stages,
       // Named only once the chat exists: the server then marks the first message sent and takes no more.
-      ...(snapshot.sessionCreated && snapshot.sessionId ? { sessionId: snapshot.sessionId } : {}),
+      ...(chatId ? { sessionId: chatId } : {}),
       ...(error ? { error } : {}),
     };
     if (!terminal) {
@@ -835,7 +975,11 @@ export type CloudBootLaunchHost = {
   refreshVault?: CloudBootLaunchDeps["refreshVault"];
   /** The person's queued messages reach the chat through it. */
   sendChatMessage?: CloudBootLaunchDeps["sendChatMessage"];
+  applyChatSettings?: CloudBootLaunchDeps["applyChatSettings"];
   waitForChatIdle?: CloudBootLaunchDeps["waitForChatIdle"];
+  typeIntoCli?: CloudBootLaunchDeps["typeIntoCli"];
+  /** Fork-continue: restores the saved chat here (`cloudChatRestore.ts`). */
+  continueChat?: CloudBootLaunchDeps["continueChat"];
 };
 
 /**
@@ -921,7 +1065,10 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
       remoteSignIn: host.remoteSignIn,
       refreshVault: host.refreshVault,
       sendChatMessage: host.sendChatMessage,
+      applyChatSettings: host.applyChatSettings,
       waitForChatIdle: host.waitForChatIdle,
+      typeIntoCli: host.typeIntoCli,
+      continueChat: host.continueChat,
       launches: async (projectId) => {
         const service = await host.chatLaunchService(projectId);
         if (!service) throw new Error("This ADE runtime can't run a lane launch.");

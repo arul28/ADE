@@ -48,6 +48,7 @@ import type {
 } from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
 import { isHighVolumeRuntimeEvent, runtimeEventFrameLaneId } from "./runtimeEventVolume";
+import { joinOrStartMachineUpdate } from "./services/runtime/machineUpdateInFlight";
 import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
 import type { MachineUpdateAndRestartDeps } from "./services/runtime/machineUpdateAndRestart";
 import {
@@ -419,6 +420,10 @@ export type MultiProjectRpcHandlerOptions = {
   prepareCloudStop?: ((args: { timeoutMs: number; diskGrowToGb?: number | null; growId?: string | null }) => Promise<unknown>) | null;
   /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
   pushCloudWork?: ((args: { check: boolean; message?: string | null }) => Promise<unknown>) | null;
+  /** On a cloud computer: saves what clients read at rest, capsules too on the delete path (`ade cloud save-for-rest`). */
+  saveCloudForRest?: ((args: { capsules: boolean }) => Promise<unknown>) | null;
+  /** On a cloud computer: sends the messages queued for its existing chats (`ade cloud messages drain`). */
+  drainCloudMessages?: (() => Promise<unknown>) | null;
   /** On a cloud computer: keeps it awake while `run` works (a first clone), and counts the end as use. */
   holdCloudWork?: (<T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>) | null;
   /** `ade providers sign-in --remote` and its code and status companions (remoteProviderSignIn.ts). */
@@ -672,6 +677,8 @@ const RUNTIME_METHODS = new Set([
   "cloud.prepareStop",
   "cloud.pushWork",
   "cloud.workState",
+  "cloud.saveForRest",
+  "cloud.drainMessages",
   "providers.remoteSignInStart",
   "providers.remoteSignInStatus",
   "providers.remoteSignInCode",
@@ -1053,17 +1060,6 @@ const LIST_ICON_RESOLVE_BUDGET_MS = 750;
  * into an empty reply.
  */
 const ICON_WRITE_RESOLVE_BUDGET_MS = 8_000;
-
-/**
- * The one "Update & restart" run this process will do at a time.
- *
- * Module-scoped on purpose: overlapping callers are not one impatient client
- * but several — a desktop, a phone, and a reconnect that retried — each on its
- * own connection and its own handler. Two runs would download and swap the same
- * runtime concurrently and then both ask the service to restart, mid-swap.
- * Whoever asks while a run is in flight joins that run and gets its result.
- */
-let machineUpdateAndRestartInFlight: Promise<unknown> | null = null;
 
 /**
  * What the shared project record asks of one icon resolve (see
@@ -3552,19 +3548,14 @@ export function createMultiProjectRpcRequestHandler(
         authenticatedName: options.peerDeviceId ? options.peerDeviceName ?? null : null,
         clientName: callerClientName(),
       });
-      if (machineUpdateAndRestartInFlight) return await machineUpdateAndRestartInFlight;
-      const run = (async () => {
+      // One run per process, joined synchronously: a phone's sync command
+      // joins this run too (`machineUpdateInFlight.ts`).
+      return await joinOrStartMachineUpdate(async () => {
         const { runMachineUpdateAndRestart } = await import(
           "./services/runtime/machineUpdateAndRestart"
         );
         return await runMachineUpdateAndRestart(controls, targetVersion, requestedBy);
-      })();
-      machineUpdateAndRestartInFlight = run;
-      try {
-        return await run;
-      } finally {
-        if (machineUpdateAndRestartInFlight === run) machineUpdateAndRestartInFlight = null;
-      }
+      });
     }
 
     // The desktop's pre-suspend beat, forwarded to the brain that publishes
@@ -3640,7 +3631,10 @@ export function createMultiProjectRpcRequestHandler(
 
     // The server runs this over exec before stopping a computer at 0 hours. Not
     // a `cloud.call`: this machine may not have the account access `cloud` needs.
-    if (method === "cloud.prepareStop" || method === "cloud.pushWork" || method === "cloud.workState") {
+    if (
+      method === "cloud.prepareStop" || method === "cloud.pushWork" || method === "cloud.workState"
+      || method === "cloud.saveForRest" || method === "cloud.drainMessages"
+    ) {
       if (callerIdentityIsAgent(callerIdentity())) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "An agent can't run this on the computer.");
       }
@@ -3680,6 +3674,16 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "cloud.workState") {
       if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't read this computer's work.");
       return await options.pushCloudWork({ check: true });
+    }
+    // The idle cleanup's save between push-work and the check (CONTRACTS 4).
+    if (method === "cloud.saveForRest") {
+      if (!options.saveCloudForRest) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't save this computer for rest.");
+      return await options.saveCloudForRest({ capsules: params.capsules === true });
+    }
+    // The server runs this after it woke the computer for a queued message.
+    if (method === "cloud.drainMessages") {
+      if (!options.drainCloudMessages) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't send queued chat messages.");
+      return await options.drainCloudMessages();
     }
 
     if (method === "keepAwake.call") {

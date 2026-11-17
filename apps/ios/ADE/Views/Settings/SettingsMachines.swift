@@ -125,6 +125,13 @@ struct SettingsMachine: Identifiable, Equatable {
   }
 }
 
+/// Whether an account machine is an ADE Cloud lane computer.
+@MainActor
+func settingsMachineIsCloud(_ machine: AccountMachine, syncService: SyncService) -> Bool {
+  if syncService.cloudAccountMachineKeys?.contains(machine.machineKey) == true { return true }
+  return CloudLaneComputerLabels.label(machineKey: machine.machineKey, hostName: machine.name) != nil
+}
+
 /// Builds the machine list from the account directory, the saved pairings and
 /// the fleet. Deduplicated by device identity; hidden machines stay out.
 @MainActor
@@ -181,6 +188,9 @@ func settingsMachines(
   }
 
   for machine in account.machines {
+    // ADE Cloud is one machine: its lane computers show as one row
+    // (`SettingsCloudMachineRow`), never one row each.
+    if settingsMachineIsCloud(machine, syncService: syncService) { continue }
     let identity = nonEmptyTrimmed(machine.deviceId)
     let dedupeKey = (identity ?? machine.machineKey).lowercased()
     guard seen.insert(dedupeKey).inserted else { continue }
@@ -586,7 +596,12 @@ struct SettingsMachineSections: View {
         hint: "\(controller.liveCount(machines)) of \(MachineFleet.liveMachineLimit) live",
         symbol: "desktopcomputer",
         tint: .green,
-        trailing: { addMenu }
+        trailing: {
+          HStack(spacing: 8) {
+            SettingsMachineUpdateAllButton(machines: sections.connected, origin: Self.updateOrigin)
+            addMenu
+          }
+        }
       ) {
         ADESettingsRows {
           if sections.connected.isEmpty {
@@ -606,12 +621,17 @@ struct SettingsMachineSections: View {
           }
         }
       }
+      SettingsCloudMachineRow()
     }
     .task { await account.loadMachines() }
+    .task { await MachineUpdateStore.shared.refreshLatestBuilds() }
+    .machineUpdateConfirmation(origin: Self.updateOrigin)
     .onChange(of: machines.filter(\.isLive).map(\.id)) { _, liveIds in
       controller.retireErrors(liveMachineIds: liveIds)
     }
   }
+
+  static let updateOrigin = "settings.machines"
 
   private func row(_ machine: SettingsMachine) -> some View {
     NavigationLink {
@@ -621,6 +641,7 @@ struct SettingsMachineSections: View {
         machine: machine,
         busy: controller.busyMachineIds.contains(machine.id),
         error: controller.errors[machine.id],
+        updateOrigin: Self.updateOrigin,
         onConnect: { controller.connect(machine) },
         onRetry: { controller.retry(machine) }
       )
@@ -650,8 +671,11 @@ struct SettingsMachineRow: View {
   let machine: SettingsMachine
   var busy = false
   var error: SettingsMachineError?
+  /// Where an Update on this row asks from; nil leaves Update off the row.
+  var updateOrigin: String?
   var onConnect: () -> Void = {}
   var onRetry: () -> Void = {}
+  @ObservedObject private var updates = MachineUpdateStore.shared
 
   var body: some View {
     HStack(spacing: 12) {
@@ -689,6 +713,9 @@ struct SettingsMachineRow: View {
   private var trailing: some View {
     if busy {
       ProgressView().controlSize(.small)
+    } else if let updateOrigin, updates.isBusy(machine) || updates.target(for: machine) != nil {
+      // A live machine that is behind offers its update where "Live" stood.
+      SettingsMachineUpdateControl(machine: machine, origin: updateOrigin)
     } else {
       switch machine.link {
       case .primary(let live, let connecting):
@@ -795,6 +822,8 @@ struct SettingsMachinePage: View {
   @State private var confirmForget = false
   @State private var confirmRemove = false
 
+  private var updateOrigin: String { "settings.machine:\(machineId)" }
+
   var body: some View {
     let machine = settingsMachines(syncService: syncService, account: account, fleet: fleet, hidden: hidden)
       .first { $0.id == machineId }
@@ -804,6 +833,7 @@ struct SettingsMachinePage: View {
           machine: machine,
           busy: controller.busyMachineIds.contains(machine.id),
           error: controller.errors[machine.id],
+          updateOrigin: updateOrigin,
           actions: SettingsMachinePageActions(
             connect: { controller.connect(machine) },
             disconnect: { controller.disconnect(machine) },
@@ -848,6 +878,8 @@ struct SettingsMachinePage: View {
     .navigationBarTitleDisplayMode(.inline)
     .settingsPageClose()
     .adeToast($controller.toast)
+    .task { await MachineUpdateStore.shared.refreshLatestBuilds() }
+    .machineUpdateConfirmation(origin: updateOrigin)
     .sheet(item: $controller.renaming) { machine in
       SettingsMachineRenameSheet(machine: machine)
         .presentationDetents([.medium, .large])
@@ -887,6 +919,8 @@ struct SettingsMachinePageContent: View {
   let machine: SettingsMachine
   var busy = false
   var error: SettingsMachineError?
+  /// Where "Update & restart" asks from; nil leaves the ADE card off.
+  var updateOrigin: String?
   var actions = SettingsMachinePageActions()
   @State private var showsAllProjects = false
 
@@ -914,6 +948,10 @@ struct SettingsMachinePageContent: View {
               ADESettingsValueRow(title: fact.label, value: fact.value)
             }
           }
+        }
+
+        if let updateOrigin, machine.isPaired {
+          SettingsMachineUpdateSection(machine: machine, origin: updateOrigin)
         }
 
         ADESettingsSection("Projects", hint: machine.projects.isEmpty ? nil : "\(machine.projects.count) open", symbol: "folder", tint: .blue) {
@@ -1117,5 +1155,41 @@ func settingsPlatformName(_ raw: String) -> String {
   case "win32", "windows": return "Windows"
   case "linux": return "Linux"
   default: return raw.capitalized
+  }
+}
+
+/// ADE Cloud as one machine in Settings › Machines: how many lane computers
+/// it has and how many are awake. Each lane's computer wakes when work is
+/// sent to it, so the row has no Connect.
+struct SettingsCloudMachineRow: View {
+  /// False: the row alone, inside another section's rows (Account's "Your computers").
+  var inSection = true
+  @ObservedObject private var account = AccountService.shared
+  /// The sync service's changes (the computer list) redraw the row.
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
+
+  var body: some View {
+    let computers = syncService.cloudServerInstances
+    let lanes = account.machines.filter { settingsMachineIsCloud($0, syncService: syncService) }.count
+    let count = max(computers.count, lanes)
+    // Every account has ADE Cloud, also before its first lane.
+    if account.isSignedIn {
+      let row = ADESettingsRow(ADECloudMachine.name, hint: hint(count: count, awake: computers.filter(\.isAwake).count), symbol: ADECloudMachine.symbol)
+      if inSection {
+        ADESettingsSection(ADECloudMachine.name, symbol: ADECloudMachine.symbol, tint: .slate) {
+          ADESettingsRows { row }
+        }
+        .adeInspectable("Settings.Machines.ADECloud")
+      } else {
+        row.adeInspectable("Settings.Account.ADECloud")
+      }
+    }
+  }
+
+  private func hint(count: Int, awake: Int) -> String {
+    guard count > 0 else { return "No cloud lanes yet. A chat you start on ADE Cloud makes one." }
+    let lanes = count == 1 ? "1 lane computer" : "\(count) lane computers"
+    return "\(lanes), \(awake) awake. A computer wakes when you send it work."
   }
 }

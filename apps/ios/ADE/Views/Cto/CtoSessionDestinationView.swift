@@ -26,6 +26,8 @@ struct CtoSessionDestinationView: View {
   var duoSettings: (() -> AnyView)? = nil
 
   @State private var state: LoadState = .loading
+  /// The CTO's account copy, read once while its home can't answer.
+  @StateObject private var accountCopy = CtoAccountCopyModel()
   @State private var ensureTask: Task<Void, Never>?
   @State private var ensured = false
 
@@ -118,6 +120,9 @@ struct CtoSessionDestinationView: View {
           }
         }
       )
+      .safeAreaInset(edge: .bottom, spacing: 0) {
+        CtoAccountCopyEntry(name: title, model: accountCopy)
+      }
       .ctoSessionNavigationChrome(mode: navigationChrome, title: navigationTitle)
     } else {
       CtoStateCard(

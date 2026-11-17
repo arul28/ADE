@@ -8,6 +8,9 @@ import { nextScheduledWakeDeadlineMs, scheduledWakeState } from "../../../shared
 import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { workFilterMachineId } from "../../state/workFilterMachine";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import {
   PROVIDER_TOOL_TYPE,
   type ExternalSessionImportResult,
@@ -2401,9 +2404,13 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
    * With no chips set this returns `filtered` BY REFERENCE, so every downstream
    * memo stays referentially stable and the feature costs nothing when unused.
    */
+  const adeCloudIndex = useAdeCloudLaneComputers();
   const chipFiltered = useMemo(() => {
     if (isWorkSessionFilterEmpty(workSessionFilters)) return filtered;
-    const activeMachineId = machineIdForBinding(projectBinding);
+    // Every ADE Cloud computer is one "ADE Cloud" machine choice, as in the pane's filter options.
+    const filterMachineIdOf = (binding: OpenProjectBinding | null | undefined): string =>
+      workFilterMachineId(machineIdForBinding(binding ?? null), binding, adeCloudIndex);
+    const activeMachineId = filterMachineIdOf(projectBinding);
     // A pending-launch stand-in for a chat whose lane lives on another machine
     // is listed in this active-binding roster (that machine's slice does not
     // have its chat yet), so the machine filter must judge it by its OWN
@@ -2414,7 +2421,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const source of chatLaunchRowSources) {
       const sessionId = source.snapshot.sessionId;
       if (!sessionId || !source.binding || source.bindingKey === activeChatLaunchBindingKey) continue;
-      launchMachineIdBySessionId.set(sessionId, machineIdForBinding(source.binding));
+      launchMachineIdBySessionId.set(sessionId, filterMachineIdOf(source.binding));
     }
     const ctx = {
       nowMs: Date.now(),
@@ -2433,6 +2440,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }));
   }, [
     activeChatLaunchBindingKey,
+    adeCloudIndex,
     chatLaunchRowSources,
     effectiveFilingBuckets,
     filtered,

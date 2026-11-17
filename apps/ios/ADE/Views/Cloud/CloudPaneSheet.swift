@@ -1,6 +1,9 @@
 import Combine
+import OSLog
 import SwiftUI
 import UIKit
+
+private let cloudPaneLog = Logger(subsystem: "com.ade.ios", category: "cloud-pane")
 
 /// The phone's ADE Cloud page: the mirror of the desktop's Settings › ADE
 /// Cloud dashboard (`settings/cloudDashboard/CloudDashboard.tsx`), in the
@@ -150,7 +153,12 @@ final class CloudPaneStore: ObservableObject {
   @Published private(set) var phase: Phase = .loading
   @Published private(set) var machines: [CloudPhoneMachine] = []
   @Published private(set) var account: CloudPhoneAccount?
-  @Published private(set) var limits: CloudPhoneLimits?
+  @Published private(set) var limits: CloudPhoneLimits? {
+    didSet { if limits != nil { limitsError = nil } }
+  }
+  /// Why the account's limits could not be read; the card shows it in
+  /// place of "Reading…". Nil once limits are read.
+  @Published private(set) var limitsError: String?
   /// The account's sign-ins (`providerLogins.status`); nil before the read,
   /// on an older machine, or when it can't be read.
   @Published private(set) var signIns: ProviderLoginsPhoneStatus?
@@ -210,8 +218,29 @@ final class CloudPaneStore: ObservableObject {
   /// The phone may change things on this machine (a controlling device).
   var canWrite: Bool { syncService.canInvokeRemoteAction("cloud.write") }
 
+  /// No connected computer runs this page: the phone reads the account
+  /// server itself (`/cloud/account`, `/cloud/instances`, `/cloud/limits`,
+  /// `/cloud/sign-ins`). Actions on one computer then need ADE on a computer.
+  @Published private(set) var isDirect = false
+  /// The revision of the limits a direct write names (`ifRevision`).
+  private var limitsRevision: String?
+
+  /// The person may change what agents may do: through a connected
+  /// computer, or straight on the account with their own sign-in.
+  var canWriteLimits: Bool { isDirect || canWrite }
+
+  /// Whether this page reads the account server itself.
+  static func readsDirect(_ sync: SyncService) -> Bool {
+    !sync.cloudSupported || sync.connectionState != .connected
+  }
+
   func reload() async {
     if isFixture { return }
+    if Self.readsDirect(syncService) {
+      await reloadDirect()
+      return
+    }
+    isDirect = false
     do {
       // The full list: each computer's lane, size, disk parts and last run,
       // and the whole account. An older brain ignores `detail` and sends its
@@ -224,11 +253,74 @@ final class CloudPaneStore: ObservableObject {
       if selectedId == nil || machine(selectedId!) == nil { selectedId = machines.first?.instanceId }
       phase = .loaded
     } catch {
-      let message = error.localizedDescription
-      if machines.isEmpty { phase = .failed(message) }
+      // The computer can't answer for the account: read it directly.
+      if machines.isEmpty {
+        await reloadDirect()
+        return
+      }
     }
-    limits = try? await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
+    await readLimitsThroughComputer()
     await reloadSignIns()
+  }
+
+  /// The page from the account server, with this phone's own sign-in.
+  private func reloadDirect() async {
+    isDirect = true
+    guard let client = await syncService.cloudServerClient() else {
+      phase = .failed("Sign in to ADE to see ADE Cloud.")
+      return
+    }
+    async let accountRead = Self.readDirect("account") { try await client.account() }
+    async let instancesRead = Self.readDirect("instances") { try await client.instances() }
+    limitsError = nil
+    async let limitsRead = client.agentLimits()
+    let (account, instances) = await (accountRead, instancesRead)
+    now = Date()
+    if let account { self.account = account }
+    if let instances {
+      let list = instances.filter { !$0.isGone }.compactMap(cloudPhoneMachine(from:))
+      machines = Self.ordered(list, now: now)
+      if selectedId == nil || machine(selectedId!) == nil { selectedId = machines.first?.instanceId }
+    }
+    if account == nil, instances == nil {
+      if machines.isEmpty { phase = .failed("ADE Cloud didn't answer. Check the connection, then try again.") }
+    } else {
+      phase = .loaded
+    }
+    do {
+      let state = try await limitsRead
+      limits = state.phoneLimits
+      limitsRevision = state.revision
+    } catch CloudServerClient.Failure.noAccess {
+      // An older server has no limits route.
+      limitsError = "This ADE Cloud server can't show agent limits yet."
+    } catch {
+      limitsError = cloudServerFailureMessage(error)
+      cloudPaneLog.notice("cloud_pane read=limits failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+    }
+    signIns = nil
+  }
+
+  /// The limits through the connected computer. A failed read gives the
+  /// card its reason in place of "Reading…".
+  private func readLimitsThroughComputer() async {
+    limitsError = nil
+    do {
+      limits = try await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
+    } catch {
+      limitsError = cloudPhoneWords(error.localizedDescription) ?? "ADE couldn't read the agent limits."
+      cloudPaneLog.notice("cloud_pane read=limits failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+    }
+  }
+
+  /// One direct read of the page; a failure is logged and reads as nil.
+  private static func readDirect<T>(_ name: String, _ read: () async throws -> T) async -> T? {
+    do {
+      return try await read()
+    } catch {
+      cloudPaneLog.notice("cloud_pane read=\(name, privacy: .public) failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return nil
+    }
   }
 
   /// Lanes first (awake, then the most recent), then computers with no lane.
@@ -298,12 +390,68 @@ final class CloudPaneStore: ObservableObject {
 
   func setLimits(_ args: [String: Any]) async {
     actionError = nil
+    if isDirect {
+      await setLimitsDirect(args)
+      return
+    }
     do {
       limits = nil
       _ = try await syncService.cloudWrite("set_limits", args: args, as: CloudPhoneAck.self)
     } catch {
       actionError = cloudPhoneWords(error.localizedDescription) ?? "ADE Cloud couldn't do that."
     }
-    limits = try? await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
+    await readLimitsThroughComputer()
   }
+
+  /// One limits write on the account. A preset sends its whole set of
+  /// limits. Another device's newer write wins: the page reads it again and
+  /// says so.
+  private func setLimitsDirect(_ args: [String: Any]) async {
+    var changes = args
+    if let preset = changes.removeValue(forKey: "preset") as? String, let values = CloudAgentLimitsState.presets[preset] {
+      changes["unattendedSpend"] = values.unattendedSpend
+      changes["machinesPerDay"] = values.machinesPerDay
+      changes["maxShape"] = values.maxShape
+      changes["extraDiskMonthCents"] = values.extraDiskMonthCents ?? NSNull()
+    }
+    guard let client = await syncService.cloudServerClient() else {
+      actionError = "Sign in to ADE again, then try again."
+      return
+    }
+    do {
+      let state = try await client.setAgentLimits(changes, ifRevision: limitsRevision)
+      limits = state.phoneLimits
+      limitsRevision = state.revision
+      ADEHaptics.success()
+    } catch CloudServerClient.Failure.refused(let code, _) where code == "limits_changed" {
+      actionError = "These limits changed on another device. Check them, then try again."
+      if let state = try? await client.agentLimits() {
+        limits = state.phoneLimits
+        limitsRevision = state.revision
+      }
+    } catch {
+      actionError = cloudServerFailureMessage(error)
+      ADEHaptics.error()
+    }
+  }
+}
+
+/// A computer as the dashboard draws it, from the account server's row.
+/// Nil for a row with no id.
+func cloudPhoneMachine(from instance: CloudServerInstance) -> CloudPhoneMachine? {
+  var object: [String: Any] = [
+    "instanceId": instance.id,
+    // A computer saving its work for the idle cleanup is on its way down.
+    "state": instance.idleSaving ? "stopping" : instance.status,
+  ]
+  if let name = instance.name { object["name"] = name }
+  if let machineKey = instance.machineKey { object["machineKey"] = machineKey }
+  if let laneId = instance.laneId {
+    var lane: [String: Any] = ["laneId": laneId, "laneName": instance.laneName ?? "Cloud lane"]
+    if let origin = instance.projectOrigin { lane["projectOrigin"] = origin }
+    object["lane"] = lane
+  }
+  object["pastDue"] = instance.pastDue
+  guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+  return try? JSONDecoder().decode(CloudPhoneMachine.self, from: data)
 }

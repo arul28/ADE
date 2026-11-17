@@ -5,7 +5,8 @@ import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties }
 import { cloudTierFacts, cloudTierHoursAt, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import type { OpenProjectBinding } from "../../../shared/types/core";
-import { adeCloudLaneLabel, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
+import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { CloudTierChangeDialog } from "../cloudLane/CloudTierChangeDialog";
 import { cloudLaneLifeAvailable } from "../cloudLane/cloudLaneActions";
 import { cloudLaneWithoutComputerForBinding, useCloudLanesWithoutComputer } from "../cloudLane/cloudLaneStores";
@@ -315,7 +316,7 @@ export function AdeCloudMachineChip({
     <>
       <CloudMark size={11} brand />
       {lane.noComputer ? (
-        <span className="min-w-0 max-w-40 truncate">{adeCloudLaneLabel(lane.laneName)}</span>
+        <span className="min-w-0 max-w-40 truncate">{ADE_CLOUD_NAME}</span>
       ) : (
         <span className="min-w-0 max-w-24 truncate">{machineName}</span>
       )}
@@ -327,7 +328,7 @@ export function AdeCloudMachineChip({
         forceEnabled
         wrapperClassName={wrapperClassName}
         content={{
-          label: adeCloudLaneLabel(lane.laneName),
+          label: ADE_CLOUD_NAME,
           description: lane.noComputer
             ? "This lane has no computer now. ADE makes a new one when you send."
             : canResize
@@ -339,7 +340,7 @@ export function AdeCloudMachineChip({
           <button
             type="button"
             data-chat-composer-machine-chip="ade-cloud"
-            aria-label={`Running on ${adeCloudLaneLabel(lane.laneName)}. Change its size`}
+            aria-label={`Running on ${ADE_CLOUD_NAME}. Change its size`}
             className={chipClass}
             style={{ whiteSpace: "nowrap" }}
             onClick={() => setSizing(true)}
@@ -350,8 +351,8 @@ export function AdeCloudMachineChip({
           <span
             data-chat-composer-machine-chip="ade-cloud"
             aria-label={lane.noComputer
-              ? `${adeCloudLaneLabel(lane.laneName)}. It has no computer now`
-              : `Running on ${adeCloudLaneLabel(lane.laneName)}`}
+              ? `${ADE_CLOUD_NAME}. It has no computer now`
+              : `Running on ${ADE_CLOUD_NAME}`}
             className={chipClass}
             style={{ whiteSpace: "nowrap" }}
           >

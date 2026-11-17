@@ -27,7 +27,7 @@ import { Banner } from "../../ui/notice";
 
 /** The lane or computer, as a person knows it. */
 export function idleEntryName(entry: CloudIdleCleanupEntry): string {
-  return entry.laneName ?? entry.name ?? `Computer ${entry.instanceId.slice(0, 6)}`;
+  return entry.laneName ?? entry.name ?? "A computer without a lane";
 }
 
 /** "pricing-page's computer": the idle cleanup deletes the computer; the lane stays. */

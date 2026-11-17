@@ -3,7 +3,8 @@ import { Cloud } from "@phosphor-icons/react";
 import type { CloudTierId } from "../../../shared/cloudTiers";
 import "./cloudBrand.css";
 
-export const ADE_CLOUD_NAME = "ADE Cloud";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
+export { ADE_CLOUD_NAME };
 
 /**
  * The logo's cloud outline (viewBox `1 3 30 20`), shared with the dashboard's sky.

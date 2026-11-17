@@ -126,7 +126,8 @@ export function CloudToolGate({
   }, [down, instanceId, openedByPerson, outOfHours, overPlanDisk, wake]);
 
   if (!needsComputer || !box || (!down && !waking && box.state !== "starting")) return <>{children}</>;
-  const name = box.name ?? "This computer";
+  // ADE Cloud is one machine: the lane's computer is "This lane's computer", never its own name.
+  const name = "This lane's computer";
   // A computer the account can't wake: why, and its work pushed without a full wake.
   const restingGate = (model: Pick<BannerModel, "id" | "title" | "detail" | "actions">) => (
     <div className="flex h-full min-h-0 flex-col justify-center gap-3 px-4">
@@ -138,7 +139,7 @@ export function CloudToolGate({
     return restingGate({ id: "cloud-tool-out-of-hours", title: "Out of hours", detail: `${name} needs ADE Cloud hours to wake. They come back when your hours reset.` });
   }
   if (overPlanDisk && down) {
-    return restingGate({ id: "cloud-tool-over-plan-disk", title: `${name} can't wake`, detail: overPlanDisk, actions: [{ label: "Plans and hours", onClick: openCloudPlanSettings }] });
+    return restingGate({ id: "cloud-tool-over-plan-disk", title: "This lane's computer can't wake", detail: overPlanDisk, actions: [{ label: "Plans and hours", onClick: openCloudPlanSettings }] });
   }
   const comingUp = waking || box.state === "starting";
   return (
@@ -150,7 +151,7 @@ export function CloudToolGate({
           tone: "info",
           icon: <Moon size={15} />,
           busy: comingUp,
-          title: comingUp ? `Waking ${name}…` : `${name} is asleep`,
+          title: comingUp ? "Waking this lane's computer…" : "This lane's computer is asleep",
           actions: comingUp ? undefined : [{ label: "Wake", variant: "solid", onClick: wake }],
         }}
       />

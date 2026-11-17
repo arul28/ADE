@@ -1258,6 +1258,18 @@ export class DesktopPairedMachineStore {
           deviceId: localDeviceId,
           accountToken,
           dpop: accountDpop,
+          // The secret this desktop already holds for the host. A host that
+          // recognizes it keeps it instead of minting a new one, so a reply
+          // lost below cannot leave the two ends on different secrets. Only
+          // the host that issued it sees it: the record must name that host,
+          // and only the sealed channel carries it, because there the host
+          // already proved its device id by signing the challenge. Without a
+          // directory key (an older host) the host stages a new secret instead.
+          ...(adoptSessionKey
+            && existing?.secret
+            && existing.hostIdentity.deviceId === expectedHostDeviceId
+            ? { pairedSecret: existing.secret }
+            : {}),
         };
         let sealedAccountAuth: string | null = null;
         if (adoptSessionKey) {

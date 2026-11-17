@@ -794,6 +794,11 @@ export class SyncConnection {
             deviceId: args.peer.deviceId,
             accountToken: args.accountToken,
             dpop,
+            // The secret this browser already holds: the host keeps it rather
+            // than staging a new one on every connect.
+            ...(args.existingPairing?.deviceId === args.peer.deviceId && args.existingPairing.secret
+              ? { pairedSecret: args.existingPairing.secret }
+              : {}),
           },
         };
         socket.send(encodeEnvelopeText({ type: "hello", requestId: "account-hello", payload }));

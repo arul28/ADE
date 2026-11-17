@@ -26,11 +26,14 @@
   // Repeat the secret for `env.production` (`wrangler secret put --env production`).
   //
   // OPTIONAL SECRET — CLERK_SECRET_KEY
-  // The Clerk Backend API key of the Clerk instance this worker uses. Only
+  // The Clerk Backend API key of the Clerk instance this worker uses.
   // `/device/approve` reads it, to mint the one-time sign-in ticket for a user
   // who approved a sign-in from a signed-in ADE app. Unset, that route answers
-  // 503 and the app opens the browser page instead. It can sign in as any user
-  // of that instance, so it is set out of band like the secret above.
+  // 503 and the app opens the browser page instead. ADE Cloud also reads it to
+  // find a person's email address: unset, the hours warnings, the idle warnings
+  // and the after-delete emails are skipped (log `cloud.email_skipped`, reason
+  // `no_clerk_key`). It can sign in as any user of that instance, so it is set
+  // out of band like the secret above.
   //
   // REQUIRED SECRET — AGENT37_API_KEY (ADE Cloud)
   // The workspace key ADE Cloud runs computers on, set out of band like the
@@ -39,7 +42,13 @@
   //
   // OPTIONAL SECRET — RESEND_API_KEY (ADE Cloud)
   // Sends hours warnings, deletion warnings and owner alerts. Unset, those log
-  // a line and carry on. Recipients come from CLERK_SECRET_KEY above.
+  // `cloud.email_skipped` (reason `no_resend_key`) and carry on. Recipients
+  // come from CLERK_SECRET_KEY above; owner alerts go to CLOUD_ALERT_EMAIL.
+  //
+  // OPTIONAL SECRET — CLOUD_EVENT_WAKE_SECRET (ADE Cloud)
+  // Proves that a call to `/cloud/internal/event-wake` comes from the webhook
+  // relay. Set the SAME value on ade-webhook-relay. Unset, that route answers
+  // 503, and no Linear or webhook delivery wakes a resting computer.
   //
   // SECRETS — STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET (ADE Cloud)
   // The Stripe key that sells the plan, and the `whsec_...` signing secret of the

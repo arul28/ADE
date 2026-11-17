@@ -517,6 +517,12 @@ export type RemoteRuntimeCapabilities = {
   machineScope?: boolean;
   /** The domains it answers there (`MACHINE_SCOPE_DOMAINS`). Absent on a brain of the route's first version. */
   machineScopeDomains?: string[];
+  /**
+   * The machine takes "Update & restart" from this client. Absent: it does (a
+   * desktop's runtime RPC). False only from ADE Web, for a brain that does not
+   * offer `machine.updateAndRestart`.
+   */
+  remoteUpdate?: boolean;
 };
 
 export type RemoteRuntimeHandoffStoragePreflightArgs = {

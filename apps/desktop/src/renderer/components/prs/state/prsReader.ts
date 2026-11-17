@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { MachineAddress, RepositoryTab } from "../../../../shared/repositoryTab";
 import { useActiveRepositoryReader, useActiveRepositoryTab } from "../../../state/repositoryScope";
+import { isAdeCloudBinding } from "../../../../shared/adeCloud/binding";
 
 /** `owner/name` of a GitHub repository. */
 export type PrsRepoRef = { owner: string; name: string };
@@ -38,7 +39,11 @@ export function repoRefForTab(tab: RepositoryTab | null): PrsRepoRef | null {
 
 /** The reader of the open repository; held by `pin.key` and the repository, so effects keyed on it do not restart. */
 export function usePrsReader(active = true): PrsReader {
-  const pin = useActiveRepositoryReader(active);
+  const readerPin = useActiveRepositoryReader(active);
+  // A tab bound to ADE Cloud has no machine that holds PR rows: GitHub
+  // answers through the account (the `direct` reader), and no call is pinned
+  // to ADE Cloud itself.
+  const pin = isAdeCloudBinding(readerPin) ? null : readerPin;
   const tab = useActiveRepositoryTab();
   const repo = repoRefForTab(tab);
   const repoKey = repo ? `${repo.owner}/${repo.name}` : "";

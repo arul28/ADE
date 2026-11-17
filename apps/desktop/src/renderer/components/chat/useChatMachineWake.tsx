@@ -6,6 +6,7 @@ import { cloudComputerResting, useCloudComputer } from "../remoteTargets/useClou
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { clearCloudMachineWakeFailure, useCloudMachineWakeFailure, useCloudMachineWakeInFlight } from "../../lib/cloudMachineWake";
 import { Banner } from "../ui/notice";
+import { ipcErrorMessage } from "../../lib/format";
 
 export type ChatMachineWake = {
   /** The chat's machine is an ADE Cloud computer that is asleep, stopped, or coming up. */
@@ -120,7 +121,6 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
   // in "starting" must still show the failure and its Try again.
   const waking = (targetId != null && wakingTargetId === targetId)
     || (resting && error == null && (listWaking || box?.state === "starting"));
-  const machineName = scope.machineName;
   // `scope.online` follows the connection snapshot: main pushes
   // `onConnectionSnapshotChanged` once the connect succeeds, and
   // `crossMachineLanes.ts` (`applySnapshot` → `applyReachability`) sets the
@@ -171,7 +171,8 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
         }
       } catch (connectFailure) {
         console.warn("[cloud] waking the chat's machine failed", connectFailure);
-        fail(`ADE couldn't wake ${machineName}. Try again.`);
+        // A refusal carries the server's sentence (hours, a block, too many awake).
+        fail(cloudWakeFailureSentence(connectFailure));
         refresh();
         return false;
       }
@@ -182,7 +183,7 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
       // One timer for this click, not a poll: the snapshot settles it sooner.
       return await new Promise<boolean>((resolve) => {
         const timer = window.setTimeout(() => {
-          fail(`${machineName} didn't come back online in time. Try again.`);
+          fail("Your ADE Cloud computer didn't come back online in time. Try again.");
           settle(false);
         }, WOKEN_MACHINE_CONNECT_WAIT_MS);
         pendingRef.current = { resolve, timer };
@@ -191,7 +192,7 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
       if (inFlightTargetRef.current === targetId) inFlightTargetRef.current = null;
       setWakingTargetId((current) => (current === targetId ? null : current));
     }
-  }, [machineKey, machineName, refresh, settle, targetId]);
+  }, [machineKey, refresh, settle, targetId]);
 
   const wakeThen = useCallback(async (run: () => void): Promise<boolean> => {
     const online = await wake();
@@ -206,6 +207,15 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
   return <ChatMachineWakeContext.Provider value={value}>{children}</ChatMachineWakeContext.Provider>;
 }
 
+/**
+ * "Can't wake: <the server's sentence>" for a wake that failed, else a plain
+ * try-again line. Never the computer's own name.
+ */
+export function cloudWakeFailureSentence(error: unknown): string {
+  const reason = ipcErrorMessage(error).trim();
+  return reason ? `Can't wake: ${reason}` : "ADE couldn't wake your ADE Cloud computer. Try again.";
+}
+
 /** The chat's machine as `ChatMachineWakeProvider` found it; outside a chat, never resting. */
 export function useChatMachineWake(): ChatMachineWake {
   return useContext(ChatMachineWakeContext) ?? NOT_RESTING;
@@ -218,14 +228,13 @@ export function useChatMachineWake(): ChatMachineWake {
  */
 export function ChatMachineWakeBanner({ style }: { style?: CSSProperties }) {
   const machine = useChatMachineWake();
-  const scope = useChatRuntimeScope();
   if (machine.gone || !machine.resting) return null;
   if (machine.waking) {
     return (
       <Banner
         layout="inline"
         style={style}
-        model={{ id: "chat-machine-waking", tone: "info", busy: true, title: `Waking ${scope.machineName}…` }}
+        model={{ id: "chat-machine-waking", tone: "info", busy: true, title: "Waking your ADE Cloud computer…", detail: "You can leave this chat. Your work goes on when it is up." }}
       />
     );
   }
@@ -238,7 +247,7 @@ export function ChatMachineWakeBanner({ style }: { style?: CSSProperties }) {
         model={{
           id: "chat-machine-asleep",
           tone: "info",
-          title: `${scope.machineName} is asleep`,
+          title: "This lane's ADE Cloud computer is asleep",
           detail: "Wake it to keep working. Sending a message wakes it too.",
           actions: [{ label: "Wake", onClick: () => void machine.wake() }],
         }}

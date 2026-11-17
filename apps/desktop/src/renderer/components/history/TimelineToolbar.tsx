@@ -26,6 +26,8 @@ import {
   useAllMachineLanes,
 } from "../../state/laneMachineRouting";
 import { HistoryLanePicker, type HistoryLanePickerGroup } from "./HistoryLanePicker";
+import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
+import { ADE_CLOUD_NAME, isAccountAnsweredPin } from "../../../shared/adeCloud/binding";
 import type { HistorySurface } from "./timelineTypes";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
@@ -248,6 +250,7 @@ export function TimelineToolbar({
   // bare id on the tab's machine, `machineId:laneId` elsewhere.
   const allMachineLanes = useAllMachineLanes(surface === "commits");
   const multiMachine = shouldShowMachineChips(allMachineLanes.machines.length);
+  const machineLabelFor = useMachineLabelForMachine();
   const laneGroups = useMemo<HistoryLanePickerGroup[]>(() => {
     if (!multiMachine) {
       return [{
@@ -257,17 +260,28 @@ export function TimelineToolbar({
         options: lanes.map((lane) => ({ value: lane.id, lane })),
       }];
     }
-    return allMachineLanes.machines
-      .map((machine) => ({
+    const groups: HistoryLanePickerGroup[] = [];
+    for (const machine of allMachineLanes.machines) {
+      const options = allMachineLanes.lanes
+        .filter((row) => row.machineId === machine.machineId)
+        .map((row) => ({ value: row.key, lane: row.lane }));
+      if (options.length === 0) continue;
+      const group: HistoryLanePickerGroup = {
         key: machine.machineId,
-        machineName: machine.machineName,
-        disabledReason: machine.isActiveBinding ? null : machineBlockedReason(machine),
-        options: allMachineLanes.lanes
-          .filter((row) => row.machineId === machine.machineId)
-          .map((row) => ({ value: row.key, lane: row.lane })),
-      }))
-      .filter((group) => group.options.length > 0);
-  }, [allMachineLanes, lanes, multiMachine]);
+        machineName: machineLabelFor({ machineId: machine.machineId, binding: machine.binding, name: machine.machineName }),
+        // A resting ADE Cloud lane reads from the account, so it is never blocked.
+        disabledReason: machine.isActiveBinding || isAccountAnsweredPin(machine.pin) ? null : machineBlockedReason(machine),
+        options,
+      };
+      // ADE Cloud is one machine: its readable lane computers share one group.
+      const cloudGroup = group.machineName === ADE_CLOUD_NAME && group.disabledReason == null
+        ? groups.find((other) => other.machineName === ADE_CLOUD_NAME && other.disabledReason == null)
+        : undefined;
+      if (cloudGroup) cloudGroup.options = [...cloudGroup.options, ...options];
+      else groups.push(group);
+    }
+    return groups;
+  }, [allMachineLanes, lanes, machineLabelFor, multiMachine]);
   const laneSelectValue = focusLaneId
     ? focusLaneMachineId ? foreignLaneKey(focusLaneMachineId, focusLaneId) : focusLaneId
     : "";

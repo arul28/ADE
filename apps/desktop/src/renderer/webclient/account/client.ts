@@ -1,5 +1,8 @@
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
+import { fetchDevTestSessionToken } from "./devTestSession";
 import { CLOUD_PATHS } from "../../../../../account-directory/src/cloud/contract";
+import { LATEST_RELEASES_PATH, type LatestReleasesResponse } from "../../../../../account-directory/src/latestReleasesContract";
+import { validVersionOn } from "../../../shared/latestByTrack";
 import { captureError } from "../../../shared/sentry/capture";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 // Loaded on the first read, so the signed-out page does not pay for it.
@@ -357,6 +360,36 @@ function machinesSignature(machines: readonly AdeAccountMachine[]): string {
     .join("\u0001");
 }
 
+/**
+ * Dev only: the sessions of the dev server's test account (`devTestSession.ts`).
+ * Null in a production build, so the bundler removes it and the code below.
+ */
+const devTestSessions: WeakSet<BrowserAccountSession> | null = import.meta.env.DEV ? new WeakSet() : null;
+
+type DevTestSession = { session: BrowserAccountSession; claims: ReturnType<typeof decodeClaims>; expiresAtMs: number };
+
+/** Dev only: a session from a test account token. It stores nothing, so a real sign-in in this browser stays. */
+function devTestSessionOf(token: string, nowMs: number): DevTestSession {
+  const claims = decodeClaims(token);
+  const expiresAtMs = accessTokenExpiresAtMs(token) ?? nowMs + 30_000;
+  return { session: { ...claims, accessToken: token, refreshToken: null, expiresAtMs }, claims, expiresAtMs };
+}
+
+/** Dev only: the signed-in snapshot of a test account session. */
+function devTestSnapshotOf(dev: DevTestSession, previous: BrowserAccountSnapshot, first: boolean): BrowserAccountSnapshot {
+  return {
+    state: "signed_in",
+    ...dev.claims,
+    expiresAt: new Date(dev.expiresAtMs).toISOString(),
+    machines: first ? [] : previous.machines,
+    relayBaseUrls: previous.relayBaseUrls,
+    message: null,
+  };
+}
+
+/** How long one `/releases/latest` answer is reused. */
+const LATEST_RELEASES_REUSE_MS = 10 * 60_000;
+
 export class BrowserAccountClient {
   private session: BrowserAccountSession | null = null;
   private sessionGeneration = 0;
@@ -513,6 +546,17 @@ export class BrowserAccountClient {
   async bootstrap(): Promise<BrowserAccountSnapshot> {
     const config = this.config;
     if (!config) return this.getSnapshot();
+    if (import.meta.env.DEV) {
+      const devToken = await fetchDevTestSessionToken();
+      if (devToken) {
+        const dev = devTestSessionOf(devToken, this.options.now?.() ?? Date.now());
+        devTestSessions?.add(dev.session);
+        this.session = dev.session;
+        this.sessionGeneration += 1;
+        this.snapshot = devTestSnapshotOf(dev, this.snapshot, true);
+        return await this.loadMachines();
+      }
+    }
     const params = new URLSearchParams(this.location.search);
     if (this.location.pathname !== "/account/callback") {
       return await this.restorePersistedSession(config);
@@ -701,6 +745,15 @@ export class BrowserAccountClient {
       && session.expiresAtMs - (this.options.now?.() ?? Date.now()) > REFRESH_SKEW_MS
     ) {
       return session.accessToken;
+    }
+    if (import.meta.env.DEV && devTestSessions?.has(session)) {
+      const devToken = await fetchDevTestSessionToken();
+      if (!devToken) throw new Error("The dev test sign-in gave no token.");
+      const dev = devTestSessionOf(devToken, this.options.now?.() ?? Date.now());
+      devTestSessions.add(dev.session);
+      this.session = dev.session;
+      this.snapshot = devTestSnapshotOf(dev, this.snapshot, false);
+      return devToken;
     }
     if (!session.refreshToken) {
       if (session.expiresAtMs > (this.options.now?.() ?? Date.now())) {
@@ -1199,6 +1252,68 @@ export class BrowserAccountClient {
     }
     return { status: response.status, body };
   }
+
+  /**
+   * The newest ADE build on each track (`GET /releases/latest`), for "Update &
+   * restart" on another machine. A browser cannot read GitHub's release
+   * downloads, so the account directory reads them. One read per ten minutes;
+   * null for a track never read. Never rejects.
+   */
+  /** The last `readLatestReleases` answer, without a read. */
+  peekLatestReleases(): LatestReleasesResponse {
+    return this.latestReleases?.value ?? { stable: null, beta: null };
+  }
+
+  async readLatestReleases(): Promise<LatestReleasesResponse> {
+    const empty: LatestReleasesResponse = { stable: null, beta: null };
+    const config = this.config;
+    if (!config || !browserAccountIsSignedIn(this.snapshot.state)) return this.latestReleases?.value ?? empty;
+    if (this.latestReleases && Date.now() - this.latestReleases.atMs < LATEST_RELEASES_REUSE_MS) return this.latestReleases.value;
+    this.latestReleasesRead ??= (async () => {
+      try {
+        const token = await this.getAccessToken();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), DIRECTORY_MUTATION_TIMEOUT_MS);
+        try {
+          const response = await (this.options.fetchImpl ?? fetch)(`${config.directoryBaseUrl}${LATEST_RELEASES_PATH}`, {
+            method: "GET",
+            headers: { accept: "application/json", authorization: `Bearer ${token}` },
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            cache: "no-store",
+            redirect: "error",
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            forwardSignalToSentry("web.latest_releases_read_failed", { status: response.status }, "latest_releases_read_failed", "info");
+            return this.latestReleases?.value ?? empty;
+          }
+          const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+          if (!body || typeof body !== "object") {
+            forwardSignalToSentry("web.latest_releases_read_failed", { status: response.status, reason: "unreadable" }, "latest_releases_read_failed", "info");
+          }
+          const read = (raw: unknown) => (typeof raw === "string" ? raw : null);
+          const value: LatestReleasesResponse = {
+            stable: validVersionOn("stable", read(body?.stable)) ?? this.latestReleases?.value.stable ?? null,
+            beta: validVersionOn("beta", read(body?.beta)) ?? this.latestReleases?.value.beta ?? null,
+          };
+          this.latestReleases = { value, atMs: Date.now() };
+          return value;
+        } finally {
+          clearTimeout(timer);
+        }
+      } catch (error) {
+        forwardSignalToSentry("web.latest_releases_read_failed", { message: error instanceof Error ? error.message : String(error) }, "latest_releases_read_failed", "info");
+        return this.latestReleases?.value ?? empty;
+      } finally {
+        this.latestReleasesRead = null;
+      }
+    })();
+    return await this.latestReleasesRead;
+  }
+
+  private latestReleases: { value: LatestReleasesResponse; atMs: number } | null = null;
+  private latestReleasesRead: Promise<LatestReleasesResponse> | null = null;
 
   /**
    * The account's project list, read from the account directory (S14). The

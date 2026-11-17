@@ -434,10 +434,18 @@ import { sanitizeResumeTargetId } from "../../../../desktop/src/main/utils/termi
 import type { SyncPinStore } from "./syncPinStore";
 import { compactChatEventForMobileWire } from "../../../../desktop/src/shared/chatMobileSlim";
 import type { ProxyService } from "../proxy/proxyService";
+import type { SearchService } from "../../../../desktop/src/main/services/search/searchService";
+import type { SearchQueryArgs } from "../../../../desktop/src/shared/types/search";
 import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/chat/sessionInputOrigins";
 import { createWebhookRemoteCommandHandlers, type WebhookRemoteSource } from "./webhookRemoteCommands";
 import { createAutomationRuleRemoteCommandHandlers, type AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 import { readAgentSkill } from "../skills/agentSkillCatalogService";
+import {
+  isMachineUpdateRemoteCommandAction,
+  machineUpdateRemoteCommandDescriptors,
+  runMachineUpdateRemoteCommand,
+  type MachineUpdatePairing,
+} from "./machineUpdateRemoteCommands";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -624,6 +632,8 @@ type SyncRemoteCommandServiceArgs = {
   db?: AdeDb;
   usageTrackingService?: UsageTrackingHost | null;
   getProxyService?: () => Pick<ProxyService, "status"> | null;
+  /** This project's search index; null until bootstrap has built it. */
+  getSearchService?: () => Pick<SearchService, "query" | "indexStatus"> | null;
   accountSettingsStore?: AccountSettingsStore | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   projectRoot?: string;
@@ -826,6 +836,12 @@ export type SyncRemoteCommandExecutionContext = {
    * before it acts (`expectedTurnId`). Absent: no check.
    */
   expectedTurnId?: string | null;
+  /**
+   * Set only by the host, for `machine.*` commands: the invoking peer's
+   * pairing record, so "who asked for this update" names the paired device
+   * rather than what the client says it is. Null: not a paired peer.
+   */
+  requester?: MachineUpdatePairing | null;
 };
 
 /** The turn a host-set `expectedTurnId` names, added to a guest's args. */
@@ -4251,6 +4267,22 @@ function registerProxyRemoteCommands({ args, register }: RemoteCommandRegistrati
   }, "runtime");
 }
 
+/**
+ * The project's search index, read only, for the web palette (the same calls
+ * as the `search` action domain). A remote caller never sets `callerScope`,
+ * as at the RPC edge. The query text is not logged: it can hold chat text.
+ */
+function registerSearchRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  register("search.query", { viewerAllowed: true }, async (payload) => {
+    const searchService = args.getSearchService?.();
+    if (!searchService) throw new Error("Search is not available in this runtime.");
+    const { callerScope: _callerScope, ...query } = (payload ?? {}) as SearchQueryArgs;
+    if (typeof query.query !== "string") throw new Error("search.query requires query.");
+    return searchService.query(query);
+  });
+  register("search.indexStatus", { viewerAllowed: true }, async () => args.getSearchService?.()?.indexStatus() ?? null);
+}
+
 function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   /**
    * Run a new lane's setup without holding the reply: the default lane
@@ -5935,6 +5967,23 @@ function registerPersonalChatRemoteCommands({ args, register }: RemoteCommandReg
     async (payload) => await scope.streamEvents(payload),
     "runtime",
   );
+}
+
+/**
+ * "Update & restart" for this machine, from a phone or browser on the project
+ * host's socket. Registered only on a brain that can update itself.
+ */
+function registerMachineUpdateRemoteCommands({ register }: RemoteCommandRegistrationDeps): void {
+  // The descriptors the hello advertises; none when this brain cannot update itself.
+  for (const { action, policy, scope } of machineUpdateRemoteCommandDescriptors()) {
+    if (!isMachineUpdateRemoteCommandAction(action)) continue;
+    register(
+      action,
+      policy,
+      async (payload, context) => await runMachineUpdateRemoteCommand(action, payload, context.requester ?? null),
+      scope,
+    );
+  }
 }
 
 function registerPushRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
@@ -8823,10 +8872,12 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   }, "runtime");
 
   registerProxyRemoteCommands({ args, register });
+  registerSearchRemoteCommands({ args, register });
   registerLaneRemoteCommands({ args, register });
   registerWorkRemoteCommands({ args, register });
   registerChatRemoteCommands({ args, register });
   registerPersonalChatRemoteCommands({ args, register });
+  registerMachineUpdateRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
   registerWorkToolsRemoteCommands({ args, register });
   registerComputerUseRemoteCommands({ args, register });

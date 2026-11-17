@@ -268,6 +268,10 @@ extension WorkSessionDestinationView {
         localEchoMessages.removeAll { $0.id == echoId }
         errorMessage = "Message not sent — the queue is full. Wait for the current turn to finish, then resend."
         return false
+      case .heldByServer:
+        // ADE Cloud holds it until the chat's computer is up. Its queued row
+        // above the composer is the one copy, with Cancel; no echo as well.
+        localEchoMessages.removeAll { $0.id == echoId }
       }
       openingDeliveryWarning = nil
       errorMessage = nil

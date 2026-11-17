@@ -263,6 +263,8 @@ struct CloudComputerWakeFailedBanner: View {
   enum Action {
     case retry(() -> Void)
     case dismiss(() -> Void)
+    /// A state the person can't close (the account can't start work now).
+    case none
   }
 
   let message: String
@@ -289,6 +291,8 @@ struct CloudComputerWakeFailedBanner: View {
           .buttonStyle(.borderless)
           .foregroundStyle(ADEColor.accent)
           .adeInspectable("CloudComputer.WakeFailed.Retry")
+      case .none:
+        EmptyView()
       case .dismiss(let dismiss):
         Button(action: dismiss) {
           Image(systemName: "xmark")
@@ -330,56 +334,45 @@ struct CloudComputerWakeStatusLine: View {
 }
 
 extension View {
-  /// Opens work that lives on an ADE Cloud computer: when that computer is
-  /// asleep, the phone wakes it and connects to it (next to the others, or
-  /// as the focused computer), and the screen shows the wake until the
-  /// computer answers. `onAwake` runs once it does. A failed wake shows why,
-  /// with Try again. Any other machine, or one that is already live, changes
-  /// nothing.
-  func wakesCloudComputer(
-    machineKey: String?,
-    wakingName: String?,
-    wakeFailure: String? = nil,
+  /// Shows work that lives on an ADE Cloud computer without waking it:
+  /// the computer's state (asleep, waking, deleted, refused) and the idle
+  /// cleanup's "deleting soon" notice sit at the top. Reading never wakes a
+  /// computer; only doing (a send, a terminal, a Git action) does. A
+  /// computer the server lists awake is connected with no wake, and
+  /// `onAwake` runs once it answers. Any other machine changes nothing.
+  func showsCloudLaneState(
+    fleetKey: String?,
     onAwake: (() async -> Void)? = nil
   ) -> some View {
-    modifier(CloudComputerWakeModifier(
-      machineKey: machineKey,
-      wakingName: wakingName,
-      wakeFailure: wakeFailure,
-      onAwake: onAwake
-    ))
+    modifier(CloudLaneStateModifier(fleetKey: fleetKey, onAwake: onAwake))
   }
 }
 
-private struct CloudComputerWakeModifier: ViewModifier {
-  let machineKey: String?
-  let wakingName: String?
-  let wakeFailure: String?
+private struct CloudLaneStateModifier: ViewModifier {
+  let fleetKey: String?
   let onAwake: (() async -> Void)?
-  /// Moves on Try again, so the wake task runs once more.
-  @State private var attempt = 0
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+
+  /// The server's word on the computer: the connect below runs again when it changes.
+  private var serverStatus: String {
+    syncPublishes.service.cloudServerInstance(fleetKey: fleetKey)?.status ?? ""
+  }
 
   func body(content: Content) -> some View {
     content
       .safeAreaInset(edge: .top, spacing: 0) {
-        if let wakingName {
-          CloudComputerWakeBanner(machineName: wakingName)
-        } else if let wakeFailure {
-          CloudComputerWakeFailedBanner(message: wakeFailure, action: .retry { attempt += 1 })
+        if syncPublishes.service.isCloudFleetKey(fleetKey) {
+          CloudLaneStateLines(fleetKey: fleetKey)
         }
       }
-      .task(id: "\(machineKey ?? "")#\(attempt)") {
-        guard let machineKey, let sync = SyncService.shared,
-              sync.cloudMachineFleetKeys.contains(machineKey)
+      .task(id: "\(fleetKey ?? "")#\(serverStatus)") {
+        guard let fleetKey, let sync = SyncService.shared, sync.isCloudFleetKey(fleetKey),
+              fleetKey != sync.focusedMachineKey,
+              let fleet = sync.machineFleet, !fleet.isLive(fleetKey),
+              // Awake by the server's word: connect, never wake.
+              sync.cloudServerInstance(fleetKey: fleetKey)?.isAwake == true
         else { return }
-        if machineKey == sync.focusedMachineKey {
-          if await sync.wakeFocusedCloudMachineIfAsleep(), !Task.isCancelled {
-            await onAwake?()
-          }
-          return
-        }
-        guard let fleet = sync.machineFleet, !fleet.isLive(machineKey) else { return }
-        if await fleet.connect(machineKey: machineKey, timeout: .seconds(10)), !Task.isCancelled {
+        if await fleet.connect(machineKey: fleetKey, timeout: .seconds(10), wake: false), !Task.isCancelled {
           await onAwake?()
         }
       }

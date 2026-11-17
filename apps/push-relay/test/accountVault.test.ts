@@ -3,7 +3,8 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
-import { handleAccountVaultRoute, MAX_ITEMS_PER_READ } from "../src/accountVault";
+import { handleAccountVaultRoute, handleDirectoryLinearLeasePublish, MAX_ITEMS_PER_READ } from "../src/accountVault";
+import { assertDirectoryProvenance } from "../src/attention";
 import type { AttentionRelayEnv } from "../src/attentionShared";
 
 // Vitest 0.34 resolves bare specifiers through Vite, which cannot see
@@ -443,6 +444,92 @@ describe("account vault", () => {
       `/attention/account/vault?since=${encodeURIComponent(legacy)}`,
     );
     expect(read.body.items).toHaveLength(0);
+  });
+
+  // The keys list exists so status views never open a credential: no value
+  // may ride on it, and it shows only the caller's live rows of one scope.
+  it("lists keys without values, and reads one named item", async () => {
+    await put([
+      sealed(),
+      sealed({ kind: "provider_login", key: "antigravity/default", value: "login-blob" }),
+      sealed({ key: "openai", value: "sk-gone" }),
+      sealed({ scope: "repo:github.com/o/r", key: "repo-only", value: "sk-repo" }),
+    ]);
+    await put([sealed({ key: "other-account", value: "sk-other" })], OTHER_USER);
+    await call("DELETE", "/attention/account/vault/all/provider_key/openai?deviceId=device-1");
+
+    const keys = await call("GET", "/attention/account/vault/keys?scope=all");
+    expect(keys.body.items).toEqual([
+      { scope: "all", kind: "provider_key", key: "anthropic", updatedAt: expect.any(String) },
+      { scope: "all", kind: "provider_login", key: "antigravity/default", updatedAt: expect.any(String) },
+    ]);
+    expect(JSON.stringify(keys.body)).not.toMatch(/sk-|login-blob/);
+    const logins = await call("GET", "/attention/account/vault/keys?scope=all&kind=provider_login");
+    expect(logins.body.items).toEqual([expect.objectContaining({ key: "antigravity/default" })]);
+
+    const one = await call("GET", "/attention/account/vault/item?scope=all&kind=provider_key&key=anthropic");
+    expect(one.body.item).toMatchObject({ key: "anthropic", value: "sk-live-abc123" });
+    const missing = await call("GET", "/attention/account/vault/item?scope=all&kind=provider_key&key=other-account");
+    expect(missing).toEqual({ status: 200, body: { ok: true, item: null } });
+  });
+
+  // The account directory's cron publishes a Linear grant it renewed, with the
+  // directory secret and no account token. It may only replace the item that
+  // still holds the refresh token the directory spent (linearRenewal.ts).
+  it("replaces a Linear item over the directory lease route only while it holds the spent refresh token", async () => {
+    const scope = "repo:github.com/o/r";
+    const linear = (refreshToken: string) => JSON.stringify({ v: 1, authMode: "oauth", token: `a-${refreshToken}`, refreshToken, expiresAt: null, clientId: "c" });
+    const lease = async (body: Record<string, unknown>, headers: Record<string, string> = { "x-ade-directory-auth": "directory-secret" }, userId = USER) => {
+      const url = new URL(`https://relay.test/directory/accounts/${userId}/vault/linear-lease`);
+      const response = await handleDirectoryLinearLeasePublish(
+        new Request(url, { method: "PUT", headers, body: JSON.stringify({ scope, refreshOwner: "ade-cloud-directory", ...body }) }),
+        { ...env, DIRECTORY_AUTH_SECRET: "directory-secret" } as never,
+        url,
+        assertDirectoryProvenance as never,
+        async (_env, clerkUserId) => [clerkUserId],
+      );
+      return { status: response!.status, body: await response!.json() as Record<string, unknown> };
+    };
+    const value = async (userId = USER) =>
+      ((await call("GET", `/attention/account/vault/item?scope=${scope}&kind=integration&key=linear`, undefined, userId)).body.item as { value: string; refreshOwner: string | null } | null);
+
+    await put([sealed({ scope, kind: "integration", key: "linear", value: linear("r0") })]);
+    await put([sealed({ scope, kind: "integration", key: "linear", value: linear("r0") })], OTHER_USER);
+
+    expect((await lease({ spentRefreshToken: "r0", value: linear("r1") }, {})).status).toBe(403);
+    expect((await lease({ spentRefreshToken: "r0", value: linear("r1") }, { "x-ade-directory-auth": "directory-secret", origin: "https://app.ade-app.dev" })).status).toBe(403);
+    expect((await lease({ spentRefreshToken: "r0", value: linear("r1"), scope: "all" })).status).toBe(400);
+    // Not the spent token: a new sign-in is never overwritten.
+    expect((await lease({ spentRefreshToken: "r-other", value: linear("r1") })).body).toEqual({ ok: true, written: 0 });
+    expect(JSON.parse((await value())!.value).refreshToken).toBe("r0");
+
+    expect((await lease({ spentRefreshToken: "r0", value: linear("r1") })).body).toEqual({ ok: true, written: 1 });
+    expect(await value()).toMatchObject({ refreshOwner: "ade-cloud-directory" });
+    expect(JSON.parse((await value())!.value).refreshToken).toBe("r1");
+    expect(JSON.parse((await value(OTHER_USER))!.value).refreshToken).toBe("r0");
+    // Once replaced, the same publish finds nothing to replace.
+    expect((await lease({ spentRefreshToken: "r0", value: linear("r2") })).body).toEqual({ ok: true, written: 0 });
+    await call("DELETE", `/attention/account/vault/${encodeURIComponent(scope)}/integration/linear?deviceId=device-1`);
+    expect((await lease({ spentRefreshToken: "r1", value: linear("r3") })).body).toEqual({ ok: true, written: 0 });
+  });
+
+  it("refuses the item and keys reads from a browser", async () => {
+    await put([sealed()]);
+    for (const pathname of [
+      "/attention/account/vault/item?scope=all&kind=provider_key&key=anthropic",
+      "/attention/account/vault/keys?scope=all",
+    ]) {
+      const url = new URL(`https://relay.test${pathname}`);
+      const response = await handleAccountVaultRoute(
+        new Request(url, { headers: { origin: "https://app.ade-app.dev" } }),
+        env,
+        url,
+        USER,
+        url.pathname.split("/").filter(Boolean).slice(2),
+      );
+      expect(response?.status).toBe(403);
+      expect(await response?.text()).not.toContain("sk-live");
+    }
   });
 
   it("does not answer routes that are not its own", async () => {

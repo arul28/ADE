@@ -317,7 +317,7 @@ export function buildAllMachineLanes(input: {
   };
 }): AllMachineLanes {
   const activeBinding = input.activeBinding ?? null;
-  // What a person sees: a cloud lane computer reads "Cloud · <lane>" (from the
+  // What a person sees: an ADE Cloud computer reads "ADE Cloud" (known from the
   // lane computers passed, else, for a caller outside React, the ones last
   // read); every other machine keeps its own name.
   const laneComputers = input.adeCloud?.computers ?? adeCloudLaneComputersNow();

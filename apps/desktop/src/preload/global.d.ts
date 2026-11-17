@@ -14,6 +14,9 @@ import type {
 } from "../shared/projectRemoval";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
+import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
+import type { CloudCarriedSignIns, CloudLaunchRecord as AccountCloudLaunchRecord } from "../../../account-directory/src/cloud/contract";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
@@ -39,6 +42,8 @@ import type {
   PasswordLoginSaveInput,
   PasswordSecretSaveInput,
   PasswordEnvFile,
+  PasswordLaneEnvImportInput,
+  PasswordLaneEnvPreview,
   PasswordSecretsExportResult,
   PasswordSecretsImportInput,
   PasswordSecretsImportResult,
@@ -1761,9 +1766,15 @@ declare global {
           id: string,
           input?: ListMyGitHubReposInput,
         ) => Promise<ListMyGitHubReposResult>;
+        /**
+         * `adeCloud`: the binding of a tab bound to ADE Cloud
+         * (`shared/adeCloud/binding.ts`), for `id` = `ADE_CLOUD_MACHINE_ID`.
+         * Such a tab opens with no computer and no network.
+         */
         openProject: (
           id: string,
           projectId: string,
+          adeCloud?: OpenProjectBinding | null,
         ) => Promise<OpenProjectBinding>;
         callAction: (
           id: string,
@@ -4444,6 +4455,10 @@ declare global {
         importSecrets: (args: PasswordSecretsImportInput) => Promise<PasswordSecretsImportResult>;
         exportSecrets: (args: { projectScope: string | null }) => Promise<PasswordSecretsExportResult>;
         chooseEnvFile: () => Promise<PasswordEnvFile | null>;
+        /** A `.env` file in the main checkout on the pin's machine: names and lengths only. */
+        previewLaneEnv: (args: { path: string }, pin: OpenProjectBinding) => Promise<PasswordLaneEnvPreview>;
+        /** Saves the picked names of that file as secrets on that machine. */
+        importLaneEnv: (args: PasswordLaneEnvImportInput, pin: OpenProjectBinding) => Promise<PasswordSecretsImportResult>;
         projects: () => Promise<PasswordsProject[]>;
       };
       providerInstances: {
@@ -4853,6 +4868,13 @@ declare global {
         onEvent: (cb: (ev: ConflictEventPayload) => void, pin: OpenProjectBinding) => () => void;
       };
       /**
+       * ADE with no computer: the account reads behind a tab bound to ADE
+       * Cloud, and the open messages of a cloud chat's queue
+       * (`shared/adeCloud/chatQueue.ts`). Account-scoped: no pin. Optional:
+       * an older ADE does not have it.
+       */
+      adeCloud?: AdeCloudBridge;
+      /**
        * Direct GitHub reads with the ADE account's GitHub App sign-in
        * (`shared/github/directClient.ts`). Account-scoped: no machine, so no
        * pin. Optional: an older ADE does not have it.
@@ -5047,7 +5069,7 @@ declare global {
        */
       cloudAccess?: {
         /** `signInEnd`: the sign-in the end warning names (a Claude pass or a key), only while ADE Cloud is on (desktop only). */
-        read: () => Promise<{ enabled: boolean; signInEnd?: CloudSignInEnd | null }>;
+        read: () => Promise<CloudAccessIpcAnswer>;
         onChanged: (cb: () => void) => () => void;
       };
       /**
@@ -5097,6 +5119,17 @@ declare global {
          * window's machine. `state: "failed"` with `reason` when refused.
          */
         sendLaunchSignInCode?: (args: { instanceId: string; jobId: string; code: string }) => Promise<CloudRemoteSignInStatus>;
+        /**
+         * A message for an existing ADE Cloud chat whose computer is asleep
+         * or gone, through the account's queue. Account-level, by the chat's
+         * machine key, so no pin. `refused` carries the server's sentence;
+         * `unsupported` means wake, then send.
+         */
+        sendChatMessage?: (args: CloudChatSendRequest) => Promise<CloudChatSendAnswer>;
+        /** A launch the queue started (`wake.state: "launching"`), by its id. Account-level, no pin. Null when unknown. */
+        serverLaunchStatus?: (launchId: string) => Promise<AccountCloudLaunchRecord | null>;
+        /** Provider sign-ins the account carries to ADE Cloud (key names only). Account-level, no pin. Null when the server didn't say. */
+        carriedSignIns?: () => Promise<CloudCarriedSignIns | null>;
         /**
          * Sign-ins for cloud machines: the provider sign-ins every new cloud
          * machine starts with. Kept in the account vault and run on this

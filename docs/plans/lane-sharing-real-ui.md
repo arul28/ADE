@@ -1,24 +1,28 @@
-# Lane sharing: guests use ADE's real screens
+# Lane sharing: guests use ADE's real screens (open work)
 
-Status: built 2026-11-13 on branch `ade/lane-sharing-real-ui`, except the
-items under "Not built yet".
+Lane sharing works today (see
+[docs/features/lanes/lane-sharing.md](../features/lanes/lane-sharing.md)). A
+guest still uses the "Shared with me" shelf and the `/shared` page. This plan
+holds only the open work: guests get the real Work tab, chat and terminal.
 
-## Owner decisions
+## Not built yet
+- The guest pin (`transport: "lane_share_guest"`) and guest rows inside
+  `useWorkSessions`: the shared lane stays in the "Shared with me" shelf, and
+  the chat uses the guest chat scope instead of a pin.
+- A project tab served by the owner's computer: `/shared` is the guest's
+  page, with Back and Clone this project.
+- Thread comments in the real pane for a guest (the bound scope hides them).
+- Attachments on send (needs a new right).
+
+## Owner decisions for the open work
 - No separate guest UI. A shared lane uses the real Work tab, chat, prompt box,
   transcript (tool steps, diffs, images) and terminal view.
 - Guest has the project (same repository): the shared lane shows in their own
   project tab's Work tab, like a lane on another computer.
 - Guest does not have it: ADE opens a project tab for it, served by the
   owner's computer, with "Clone this project".
-- Guests see the full chat like the owner.
-- Controls a guest cannot use show disabled, with a reason ("Arul allows Plan
-  mode only"). Parts they cannot use (Files, PRs, other lanes) are hidden.
-- One Accept, as a strip on the opened lane. The invite link opens the lane.
-  The owner's own link opens their own lane with a small note.
-- Owner chat: a share icon in the chat header (done), not a bar above the
-  prompt box. "Move this chat" sits in its panel, for an accepted guest only.
-- Share window: one column (done).
-- Everything ships in one PR.
+- Controls a guest cannot use show disabled, with a reason. Parts they cannot
+  use (Files, PRs, other lanes) are hidden.
 
 ## Architecture
 - One enforcement point: the existing guest gates on the owner's computer
@@ -55,14 +59,6 @@ items under "Not built yet".
 - A session-list refresh on `lane_share_guest_changed`.
 - Later, with a new right: attachments on send.
 
-## Build order
-1. Pin helper and fail-closed refusals.
-2. Connection allow-list, guest chat API, chat pane scope with reasons.
-3. Guest slices in Work, guest terminal view. Remove the shelf.
-4. Shared-project tab, Clone this project. One-step invite, own-link note.
-5. Host additions with policy tests.
-6. Remove the `/shared` view, transcript and chat files. Update the feature doc.
-
 ## Risks
 - Guest pins misrouted by `kind === "remote"` branches that do more than RPC
   (machine names, attachment images, PTY pumps): audit by grep.
@@ -70,12 +66,3 @@ items under "Not built yet".
   `prs.*`, `lanes.*`): they fail closed against the unknown target; hide them.
 - Trimmed summary fields the pane may assume.
 - 3 devices per grant and 200 envelopes per 10 s: the real pane reads more.
-
-## Not built yet
-- The guest pin (`transport: "lane_share_guest"`) and guest rows inside
-  `useWorkSessions`: the shared lane stays in the "Shared with me" shelf, and
-  the chat uses the guest chat scope instead of a pin.
-- A project tab served by the owner's computer: `/shared` is the guest's
-  page, with Back and Clone this project.
-- Thread comments in the real pane for a guest (the bound scope hides them).
-- Attachments on send (needs a new right).

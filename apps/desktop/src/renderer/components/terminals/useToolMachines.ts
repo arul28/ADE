@@ -8,6 +8,8 @@ import { sameMachineKey } from "../../../shared/machineAddress";
 import { fetchAccountMachines } from "../../lib/account";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import { useAppStore } from "../../state/appStore";
+import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 
 /**
  * One machine on the person's ADE account, as the tools pane's "runs on" rails
@@ -24,6 +26,8 @@ export type ToolMachine = {
   online: boolean;
   isChat: boolean;
   isViewer: boolean;
+  /** The chat's machine is one of the account's ADE Cloud computers (named "ADE Cloud"). */
+  adeCloud?: boolean;
 };
 
 export type ToolMachines = {
@@ -76,6 +80,7 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
   const [directory, setDirectory] = useState<AdeAccountMachine[] | null>(null);
   const [read, setRead] = useState<ToolMachines["read"]>("pending");
   const [localKey, setLocalKey] = useState<string | null>(localKeyCache);
+  const cloudIndex = useAdeCloudLaneComputers();
 
   useEffect(() => {
     if (!active) return undefined;
@@ -113,8 +118,18 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
     const isConnected = (key: string) => connectedKeys.some((entry) => sameMachineKey(entry, key));
     const out: ToolMachine[] = [];
     const seen = (key: string) => out.some((machine) => sameMachineKey(machine.key, key));
+    // ADE Cloud computers are never a machine to pick by name. The chat's own
+    // one stays, as "ADE Cloud", so the panes can say what runs there.
+    const cloudOf = (key: string, hostname: string | null) => isAdeCloudComputer({ machineKey: key, hostname }, cloudIndex);
+    const chatTarget = targetId ? connections.find((entry) => entry.target.id === targetId)?.target ?? null : null;
+    const chatOnCloud = chatTarget != null && cloudOf(chatKey, chatTarget.hostname);
     for (const machine of directory ?? []) {
       if (seen(machine.machineKey)) continue;
+      if (cloudOf(machine.machineKey, null)) {
+        if (!sameMachineKey(machine.machineKey, chatKey)) continue;
+        out.push({ key: machine.machineKey, name: ADE_CLOUD_NAME, platform: "linux", online: true, isChat: true, isViewer: false, adeCloud: true });
+        continue;
+      }
       const isViewer = Boolean(localKey && sameMachineKey(machine.machineKey, localKey));
       const connected = isConnected(machine.machineKey);
       const presence = accountMachinePresence(machine, { connected });
@@ -131,6 +146,11 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
     for (const entry of connections) {
       const key = entry.target.pairedMachine?.machineKey;
       if (!key || seen(key)) continue;
+      if (cloudOf(key, entry.target.hostname)) {
+        if (!sameMachineKey(key, chatKey)) continue;
+        out.push({ key, name: ADE_CLOUD_NAME, platform: "linux", online: entry.state === "connected", isChat: true, isViewer: false, adeCloud: true });
+        continue;
+      }
       out.push({
         key,
         name: entry.target.name,
@@ -145,11 +165,12 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
       const isViewer = !targetId;
       out.unshift({
         key: chatKey,
-        name: isViewer ? "This computer" : bindingName ?? "This chat's machine",
+        name: isViewer ? "This computer" : chatOnCloud ? ADE_CLOUD_NAME : bindingName ?? "This chat's machine",
         platform: hostPlatform ?? (isViewer ? viewerPlatformGuess() : null),
         online: true,
         isChat: true,
         isViewer,
+        ...(chatOnCloud ? { adeCloud: true } : {}),
       });
     }
     // The chat's machine, then this computer, then the online, then the rest.
@@ -160,5 +181,5 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
     return { machines: out, read };
     // `bindingKey` stands for the binding's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bindingKey, bindingName, directory, hostPlatform, localKey, read, snapshot, targetId]);
+  }, [bindingKey, bindingName, cloudIndex, directory, hostPlatform, localKey, read, snapshot, targetId]);
 }

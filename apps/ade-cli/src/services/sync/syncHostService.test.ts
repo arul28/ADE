@@ -98,6 +98,7 @@ import { LAUNCH_PROFILES } from "../../../../desktop/src/shared/cliLaunch";
 import { createLaneShareRightsStore, ensureLaneShareRightsSchema } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import { LANE_SHARE_CLI_TYPING_UNAVAILABLE, LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS, laneSharePresetRights, type LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
 import { PAIR_FAILURE_THRESHOLD } from "./syncPairFailureTracker";
+import { setMachineUpdateRemoteCommands } from "./machineUpdateRemoteCommands";
 import { buildSyncDpopChallenge, sha256Hex, syncDpopKeyThumbprint } from "./syncDpop";
 import {
   buildRelayReauthorizationChallenge,
@@ -2693,6 +2694,54 @@ describe("sync host account authentication", () => {
         ([message]) => message === "sync_host.legacy_adoption_aead_unbound",
       )).toHaveLength(1);
 
+      // A paired device that presents, inside the sealed payload, the secret
+      // it holds keeps it: nothing is minted, so no lost reply can strand it.
+      const keptSecret = openedHelloOk.accountPairing.secret;
+      const keptClient = await openAccountClient(port);
+      clients.push(keptClient);
+      const keptChallenge = await issueChallenge(keptClient, "sealed-kept");
+      keptClient.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "sealed-kept-hello",
+        payload: {
+          peer,
+          auth: {
+            kind: "account_sealed",
+            v: 1,
+            deviceId: peer.deviceId,
+            sealed: seal(
+              keptChallenge.sessionKey,
+              buildAdoptHelloAad(keptChallenge.payload.hostDeviceId, peer.deviceId),
+              Buffer.from(JSON.stringify({
+                ...accountAuth,
+                dpop: signAccountDpop({
+                  privateKey: dpopKey.privateKey,
+                  publicKeyX963: dpopKey.publicKeyX963,
+                  deviceId: peer.deviceId,
+                  accountToken,
+                }),
+                pairedSecret: keptSecret,
+              })),
+            ),
+          },
+        },
+      }));
+      const keptHelloOk = await waitForValue(
+        () => keptClient.envelopes.find((entry) =>
+          entry.type === "hello_ok" && entry.requestId === "sealed-kept-hello"
+        ),
+        "sealed kept-secret hello_ok",
+      );
+      const keptOpened = JSON.parse(unseal(
+        keptChallenge.sessionKey,
+        buildAdoptHelloOkAad(keptChallenge.payload.hostDeviceId, peer.deviceId),
+        (keptHelloOk.payload as { sealed: string }).sealed,
+      ).toString("utf8")) as { brain: { deviceId: string }; accountPairing?: unknown };
+      expect(keptOpened.brain.deviceId).toBe("host-device-1");
+      expect(keptOpened).not.toHaveProperty("accountPairing");
+      expect(pairingStore.verifySecret(peer.deviceId, keptSecret)).toBe("committed");
+      expect(pairingStore.hasPendingRotation(peer.deviceId)).toBe(false);
+
       const plainClient = await openAccountClient(port);
       clients.push(plainClient);
       const plainPeer = {
@@ -3705,8 +3754,11 @@ describe("sync host account authentication", () => {
         secret: expect.stringMatching(/^[0-9a-f]{48}$/),
       });
       expect(replacement?.secret).not.toBe(pairing.secret);
-      expect(pairingStore.authenticate(peer.deviceId, pairing.secret)).toBe(false);
+      // Until the device proves it saved the replacement, the secret it held
+      // still works: a hello_ok lost on the way must not strand it.
+      expect(pairingStore.verifySecret(peer.deviceId, pairing.secret)).toBe("committed");
       expect(pairingStore.authenticate(peer.deviceId, replacement!.secret)).toBe(true);
+      expect(pairingStore.authenticate(peer.deviceId, pairing.secret)).toBe(false);
       const activeSecret = replacement!.secret;
 
       const directPairedClient = await openAccountClient(port);
@@ -4084,12 +4136,14 @@ describe("sync host account authentication", () => {
         // `getPairingRecord` returns a committed view that strips
         // `pendingRotation` unconditionally, so asserting its absence there
         // proves nothing. `hasPendingRotation` reads the raw record.
-        expect(harness.pairingStore.hasPendingRotation(legacyPeer.deviceId)).toBe(false);
+        // Only the new secret waits for the device to prove it; the account's
+        // ownership above already applies.
+        expect(harness.pairingStore.hasPendingRotation(legacyPeer.deviceId)).toBe(true);
         // Adoption must not hand the account power to delete a hand-made
         // pairing when this Mac signs out.
         expect(upgraded?.localTrustOrigin).toBe(true);
-        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, adopted!.secret)).toBe("committed");
-        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, legacyPairing.secret)).toBeNull();
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, adopted!.secret)).toBe("pending");
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, legacyPairing.secret)).toBe("committed");
         expect(harness.baseArgs.logger.info).toHaveBeenCalledWith(
           "sync_host.account_legacy_pairing_upgraded",
           { deviceId: legacyPeer.deviceId },
@@ -4114,6 +4168,9 @@ describe("sync host account authentication", () => {
           () => pairedClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
           "adopted paired hello_ok",
         );
+        // That hello proved the new secret, which retires the manual one.
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, adopted!.secret)).toBe("committed");
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, legacyPairing.secret)).toBeNull();
       } finally {
         await harness.cleanup();
       }
@@ -8871,58 +8928,71 @@ describe("CTO-gated Linear sync commands", () => {
   it("advertises them as optional capabilities and forbids the credential writers at the gate", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const base = createHostArgs(projectRoot, []);
-    const host = createSyncHostService({
-      ...base,
-      projectId: "project-1",
-      discoveryEnabled: false,
-      deviceRegistryService: {
-        ...base.deviceRegistryService,
-        upsertPeerMetadata: vi.fn(),
-      },
-      // `workTools.*` is registered only when the aggregator exists. Production
-      // always builds it (`bootstrap.ts`), so a fixture without it would make
-      // the loop below assert an action the host legitimately never advertised.
-      workToolsStateService: {
-        getLaneState: vi.fn(async () => ({ laneId: "lane-1" })),
-        readObservationPreview: vi.fn(async () => ({ ok: true })),
-        setActiveTool: vi.fn(() => ({ ok: true })),
-      },
-      // Same rule for `macDesktop.*`: a Mac runtime builds the service and its
-      // stream fan-out (`bootstrap.ts` / `main.ts`), so the fixture carries
-      // both. The handlers are never reached with valid args here; the loop
-      // only checks that each optional action clears the authorization gate.
-      macDesktopService: {
-        getStatus: vi.fn(async () => ({ supported: false })),
-        start: vi.fn(async () => ({ supported: true })),
-        stop: vi.fn(async () => ({ stopped: false, releasedWindows: 0 })),
-        getDisplay: vi.fn(async () => null),
-        takeControl: vi.fn(async () => ({ holder: "user" })),
-        returnControl: vi.fn(async () => null),
-        renewLease: vi.fn(async () => null),
-        click: vi.fn(async () => ({ ok: true })),
-        move: vi.fn(async () => ({ ok: true })),
-        startStreamForSubscription: vi.fn(async () => {
-          throw new Error("no display in this fixture");
-        }),
-        releaseStreamSubscription: vi.fn(async () => {}),
-        subscribe: vi.fn(() => () => {}),
-      },
-      // A runtime with an App Control service injects its live-view stream,
-      // which is what registers the optional `appControl.*` actions.
-      appControlSyncStream: {
-        getStatus: vi.fn(async () => ({ laneId: null, activeSession: null, sessions: [] })),
-        subscribe: vi.fn(async () => ({ ok: true })),
-        unsubscribe: vi.fn(() => ({ ok: true })),
-        releaseConnection: vi.fn(),
-        dispose: vi.fn(),
-      },
-      // A runtime with automations wires its webhook source, which is what
-      // registers the optional `automations.webhook*` actions.
-      getWebhookAutomations: () => null,
-      // Same for its rule source, which registers the optional
-      // `automations.list` / `saveDraft` / `deleteRule` actions.
-      getAutomationRules: () => null,
-    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    // An `ade serve` brain that can update its machine registers `machine.*`.
+    // An update stops every chat there: a viewer must never reach it.
+    const machineUpdate = {
+      updateImpact: vi.fn(async () => { throw new Error("viewer reached updateImpact"); }),
+      updateAndRestart: vi.fn(async () => { throw new Error("viewer reached updateAndRestart"); }),
+    };
+    const uninstallMachineUpdate = setMachineUpdateRemoteCommands(machineUpdate);
+    let host: ReturnType<typeof createSyncHostService>;
+    try {
+      host = createSyncHostService({
+        ...base,
+        projectId: "project-1",
+        discoveryEnabled: false,
+        deviceRegistryService: {
+          ...base.deviceRegistryService,
+          upsertPeerMetadata: vi.fn(),
+        },
+        // `workTools.*` is registered only when the aggregator exists. Production
+        // always builds it (`bootstrap.ts`), so a fixture without it would make
+        // the loop below assert an action the host legitimately never advertised.
+        workToolsStateService: {
+          getLaneState: vi.fn(async () => ({ laneId: "lane-1" })),
+          readObservationPreview: vi.fn(async () => ({ ok: true })),
+          setActiveTool: vi.fn(() => ({ ok: true })),
+        },
+        // Same rule for `macDesktop.*`: a Mac runtime builds the service and its
+        // stream fan-out (`bootstrap.ts` / `main.ts`), so the fixture carries
+        // both. The handlers are never reached with valid args here; the loop
+        // only checks that each optional action clears the authorization gate.
+        macDesktopService: {
+          getStatus: vi.fn(async () => ({ supported: false })),
+          start: vi.fn(async () => ({ supported: true })),
+          stop: vi.fn(async () => ({ stopped: false, releasedWindows: 0 })),
+          getDisplay: vi.fn(async () => null),
+          takeControl: vi.fn(async () => ({ holder: "user" })),
+          returnControl: vi.fn(async () => null),
+          renewLease: vi.fn(async () => null),
+          click: vi.fn(async () => ({ ok: true })),
+          move: vi.fn(async () => ({ ok: true })),
+          startStreamForSubscription: vi.fn(async () => {
+            throw new Error("no display in this fixture");
+          }),
+          releaseStreamSubscription: vi.fn(async () => {}),
+          subscribe: vi.fn(() => () => {}),
+        },
+        // A runtime with an App Control service injects its live-view stream,
+        // which is what registers the optional `appControl.*` actions.
+        appControlSyncStream: {
+          getStatus: vi.fn(async () => ({ laneId: null, activeSession: null, sessions: [] })),
+          subscribe: vi.fn(async () => ({ ok: true })),
+          unsubscribe: vi.fn(() => ({ ok: true })),
+          releaseConnection: vi.fn(),
+          dispose: vi.fn(),
+        },
+        // A runtime with automations wires its webhook source, which is what
+        // registers the optional `automations.webhook*` actions.
+        getWebhookAutomations: () => null,
+        // Same for its rule source, which registers the optional
+        // `automations.list` / `saveDraft` / `deleteRule` actions.
+        getAutomationRules: () => null,
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+    } catch (error) {
+      uninstallMachineUpdate();
+      throw error;
+    }
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
 
     try {
@@ -9001,9 +9071,14 @@ describe("CTO-gated Linear sync commands", () => {
         // Running a chat's code block runs a command on the host: a person on
         // a phone or browser controller may, a read-only viewer never.
         "work.runShellBlock",
+        // Update & restart stops every chat on the machine.
+        "machine.updateImpact",
+        "machine.updateAndRestart",
       ]);
       const controllerAllowedActions = new Set<string>([
         "work.runShellBlock",
+        "machine.updateImpact",
+        "machine.updateAndRestart",
         "ai.createCursorCloudRun",
         "ai.archiveCursorCloudAgent",
         "ai.unarchiveCursorCloudAgent",
@@ -9085,8 +9160,9 @@ describe("CTO-gated Linear sync commands", () => {
           "ai.antigravitySignInComplete",
           "ai.antigravitySignInCancel",
         ]);
-        // Provider accounts are machine-wide config homes, never a project's.
-        const scope = RUNTIME_SCOPED_OPTIONAL_ACTIONS.has(action) || action.startsWith("providerAccounts.") || action.startsWith("providerLogins.")
+        // Provider accounts are machine-wide config homes, never a project's;
+        // an update is the machine's.
+        const scope = RUNTIME_SCOPED_OPTIONAL_ACTIONS.has(action) || action.startsWith("providerAccounts.") || action.startsWith("providerLogins.") || action.startsWith("machine.")
           ? "runtime"
           : "project";
         // Policy shape varies (lifecycle mutations are additionally queueable);
@@ -9139,9 +9215,12 @@ describe("CTO-gated Linear sync commands", () => {
           expect(errorCode).not.toBe("forbidden_command");
         }
       }
+      expect(machineUpdate.updateImpact).not.toHaveBeenCalled();
+      expect(machineUpdate.updateAndRestart).not.toHaveBeenCalled();
     } finally {
       peer?.ws.close();
       await host.dispose();
+      uninstallMachineUpdate();
       cleanup();
     }
     // A ceiling, not a sleep: ~180 real round trips plus a host start take

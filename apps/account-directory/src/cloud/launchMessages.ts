@@ -68,6 +68,22 @@ export function dropFirstMessageStatement(env: CloudEnv, launchId: string, from:
     .bind(launchId);
 }
 
+/**
+ * A chat's queued messages that this launch carries (`cloud_chat_messages`,
+ * `via_launch`) read delivered once the launch's own message is delivered.
+ * The computer's report wins over any failed mark: an earlier failed or
+ * timed-out try of the same launch, or the 24 h expiry. Only a delivered
+ * launch message moves a row, so this never makes a sent message look unsent.
+ */
+export function chatMessagesDeliveredStatement(env: CloudEnv, launchId: string, now: number): D1PreparedStatement {
+  return env.DB.prepare(`
+    update cloud_chat_messages set state = 'delivered', error = null, updated_at = ?
+    where launch_id = ? and via_launch = 1 and state <> 'delivered'
+      and exists (select 1 from cloud_launch_messages lm
+        where lm.launch_id = cloud_chat_messages.launch_id and lm.message_id = cloud_chat_messages.message_id and lm.state = 'delivered')
+  `).bind(now, launchId);
+}
+
 /** The chat exists: the computer started it with the first message. */
 export function firstMessageDeliveredStatement(env: CloudEnv, launchId: string, sessionId: string, now: number): D1PreparedStatement {
   return env.DB.prepare(`
@@ -161,6 +177,17 @@ async function handleAddMessage(request: Request, env: CloudEnv, launch: LaunchR
   if (!text.trim()) return badRequest("The message is empty.");
   if (text.length > CLOUD_LAUNCH_MAX_PROMPT_CHARS) return badRequest("The message is too long.");
   if (launch.kind !== "chat") return badRequest("Only a chat launch takes messages.");
+  const added = await addLaunchMessage(env, launch, messageId, text, now);
+  return added instanceof Response ? added : json(added.message, added.created ? 201 : 200);
+}
+
+/**
+ * Adds one message to a chat launch whose chat doesn't exist yet: the
+ * route's add, and a send to a saved chat that a continuing launch carries
+ * (`chatMessages.ts`). The same id again is the same message. A refusal
+ * (`chat_ready`, `launch_closed`, `too_many_messages`) is a response.
+ */
+export async function addLaunchMessage(env: CloudEnv, launch: LaunchRow, messageId: string, text: string, now: number): Promise<{ message: CloudLaunchMessage; created: boolean } | Response> {
   const request_ = parseJsonColumn<CloudServerLaunchRequest | null>(launch.request_json, null, { launchId: launch.launch_id, column: "request_json" });
   // One statement: added only while the chat doesn't exist and the launch is open, under the cap.
   const insert = () => env.DB.prepare(`
@@ -185,7 +212,7 @@ async function handleAddMessage(request: Request, env: CloudEnv, launch: LaunchR
   }
   const stored = await readMessage(env, launch.launch_id, messageId);
   // The same id again is the same message.
-  if (stored) return json(messageOf(stored), changes === 1 ? 201 : 200);
+  if (stored) return { message: messageOf(stored), created: changes === 1 };
   const latest = (await env.DB.prepare("select session_id, state from cloud_launches where launch_id = ?").bind(launch.launch_id)
     .first<Pick<LaunchRow, "session_id" | "state">>()) ?? launch;
   if (latest.session_id || latest.state === "done") {
@@ -195,6 +222,18 @@ async function handleAddMessage(request: Request, env: CloudEnv, launch: LaunchR
     return fail("launch_closed", "This launch isn't running.", 409);
   }
   return fail("too_many_messages", `A launch keeps at most ${CLOUD_LAUNCH_MAX_MESSAGES} messages before its chat starts.`, 413);
+}
+
+/** One launch message, for a saved chat's queue that a launch carries. */
+export async function launchMessageOf(env: CloudEnv, launchId: string, messageId: string): Promise<CloudLaunchMessage | null> {
+  const row = await readMessage(env, launchId, messageId);
+  return row ? messageOf(row) : null;
+}
+
+/** A queued launch message the person took back: failed with that reason, never sent. Not row 1 (the start sends it). */
+export function cancelLaunchMessageStatement(env: CloudEnv, launchId: string, messageId: string, now: number): D1PreparedStatement {
+  return env.DB.prepare("update cloud_launch_messages set state = 'failed', error = 'Cancelled.', updated_at = ? where launch_id = ? and message_id = ? and seq > 1 and state = 'queued'")
+    .bind(now, launchId, messageId);
 }
 
 async function handleClaimMessage(request: Request, env: CloudEnv, launch: LaunchRow, messageId: string, now: number): Promise<Response> {
@@ -225,6 +264,7 @@ async function handleReportMessage(request: Request, env: CloudEnv, launch: Laun
     update cloud_launch_messages set state = ?, session_id = ?, error = ?, updated_at = ?
     where launch_id = ? and message_id = ? and claim_id = ? and (state = 'sending' or state = ?)
   `).bind(state, state === "delivered" ? sessionId : null, error, now, launch.launch_id, messageId, claimId, state).run();
+  if ((written.meta?.changes ?? 0) === 1 && state === "delivered") await chatMessagesDeliveredStatement(env, launch.launch_id, now).run();
   const stored = await readMessage(env, launch.launch_id, messageId);
   if (!stored) return notFound();
   if ((written.meta?.changes ?? 0) !== 1) return fail("message_taken", "This message isn't this computer's to finish.", 409, { state: stored.state });

@@ -25,6 +25,7 @@ import {
 } from "../../lib/githubIntegrationStatus";
 import { useGitHubIssueWriteAccess, useProjectGitHubRepo } from "../issues/githubIssueStore";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { isAdeCloudTargetId } from "../../../shared/adeCloud/binding";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { showToast } from "./toast/toastStore";
 import { useActiveRepositoryReader } from "../../state/repositoryScope";
@@ -500,8 +501,10 @@ export function IntegrationBanners({
       });
     }
 
-    // 3) No AI provider configured (MIGRATED).
-    if (currentProjectRoot && aiStatusLoaded && !hasAnyAiProvider) {
+    // 3) No AI provider configured (MIGRATED). Not on an ADE Cloud tab: ADE
+    // Cloud has no AI status of its own, and its computers use the account's
+    // sign-ins and keys (Settings > ADE Cloud says what is missing).
+    if (currentProjectRoot && aiStatusLoaded && !hasAnyAiProvider && !isAdeCloudTargetId(machineId)) {
       list.push({
         id: "ai-provider",
         tone: "warning",

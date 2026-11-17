@@ -5,6 +5,7 @@ import { laneComputersOf, parseSavedLaneComputers, savedLaneComputerRows, type L
 import { machineNameForBinding } from "../../shared/machineIdentity";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import { chatLaunchStore } from "./chatLaunchStore";
+import { ADE_CLOUD_NAME } from "../../shared/adeCloudMachine";
 
 /**
  * The account's ADE Cloud lane computers as last read, kept after the read's
@@ -14,7 +15,7 @@ import { chatLaunchStore } from "./chatLaunchStore";
  * Two readers need it without a read of their own:
  * - the composer's Run on menu, which opens with the last list in hand while
  *   the account's list is read again;
- * - a chat's machine chip, which says "Cloud · <lane>" for a chat on a lane
+ * - a chat's machine chip, which says "ADE Cloud" for a chat on a cloud
  *   computer instead of the computer's own name.
  *
  * `useCloudMachines` fills it on every good read. Nothing here reads the
@@ -227,22 +228,10 @@ export function adeCloudInstanceIdForMachine(
 }
 
 /**
- * What a person sees for an ADE Cloud computer: "Cloud", never its generated
- * name (an instance id as its host name, a lane-derived computer name). The
- * generated names stay in logs, support views and tooltips.
- */
-export const ADE_CLOUD_MACHINE_LABEL = "Cloud";
-
-/** "Cloud · fix-login": a lane's cloud computer, with its lane to tell two apart. */
-export function adeCloudLaneLabel(laneName: string): string {
-  return `${ADE_CLOUD_MACHINE_LABEL} · ${laneName}`;
-}
-
-/**
- * The name a person sees for the machine a binding targets: "Cloud · <lane>"
- * for an ADE Cloud lane computer, else the machine's own (device) name or
- * "This computer" (`machineNameForBinding`). A label only: routing keeps the
- * binding itself.
+ * The name a person sees for the machine a binding targets: "ADE Cloud" for
+ * any of the account's ADE Cloud computers, else the machine's own (device)
+ * name or "This computer" (`machineNameForBinding`). A label only: routing
+ * keeps the binding itself.
  *
  * For code outside React and for event-time reads (a callback, a toast),
  * which read the index as it is then. A component that renders the label
@@ -255,8 +244,11 @@ export function machineLabelForBinding(
   binding: OpenProjectBinding | null | undefined,
   computers: readonly AdeCloudLaneComputer[] = state.computers,
 ): string {
-  const lane = adeCloudLaneForBinding(binding, computers);
-  return lane ? adeCloudLaneLabel(lane.laneName) : machineNameForBinding(binding);
+  if (adeCloudLaneForBinding(binding, computers)) return ADE_CLOUD_NAME;
+  if (binding?.kind === "remote" && isAdeCloudComputer({ hostname: binding.hostname }, { computers, cloudComputers: state.cloudComputers })) {
+    return ADE_CLOUD_NAME;
+  }
+  return machineNameForBinding(binding);
 }
 
 /** `machineLabelForBinding` for a component: it follows the index as reads arrive. */
@@ -267,38 +259,25 @@ export function useMachineLabelForBinding(binding: OpenProjectBinding | null | u
 
 /**
  * The name a person sees for a machine listed by host name or machine key
- * (account machine rows, machine pickers): "Cloud · <lane>" for an ADE Cloud
- * lane computer, else `name`.
+ * (account machine rows, machine pickers): "ADE Cloud" for any ADE Cloud
+ * computer, else `name`.
  */
 export function machineLabelForMachine(
   machine: { hostname?: string | null; machineKey?: string | null; name: string },
   computers: readonly AdeCloudLaneComputer[] = state.computers,
 ): string {
-  return adeCloudLaneLabelForMachine(machine, computers) ?? machine.name;
+  return adeCloudMachineLabel(machine, { computers, cloudComputers: state.cloudComputers }) ?? machine.name;
 }
 
 /**
- * What a machine row shows for an ADE Cloud computer: "Cloud · <lane>" for a
- * lane's computer, "Cloud" for one without a lane, else null (not ADE Cloud:
- * the row keeps the machine's own name). Never the instance id.
+ * What a machine row shows for an ADE Cloud computer: "ADE Cloud", with a
+ * lane or not; else null (not ADE Cloud: the row keeps the machine's own
+ * name). Never the instance id.
  */
 export function adeCloudMachineLabel(
   machine: { hostname?: string | null; machineKey?: string | null },
   index: Pick<IndexState, "computers" | "cloudComputers"> = state,
 ): string | null {
-  return adeCloudLaneLabelForMachine(machine, index.computers)
-    ?? (isAdeCloudComputer(machine, index) ? ADE_CLOUD_MACHINE_LABEL : null);
+  return isAdeCloudComputer(machine, index) ? ADE_CLOUD_NAME : null;
 }
 
-/**
- * "Cloud · <lane>" when the machine is an ADE Cloud lane computer, else null:
- * for a row that shows the machine's own name too (as the tooltip) only when
- * the label replaced it.
- */
-export function adeCloudLaneLabelForMachine(
-  machine: { hostname?: string | null; machineKey?: string | null },
-  computers: readonly AdeCloudLaneComputer[] = state.computers,
-): string | null {
-  const computer = adeCloudLaneComputerForMachine(machine, computers);
-  return computer ? adeCloudLaneLabel(computer.laneName) : null;
-}

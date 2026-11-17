@@ -39,10 +39,15 @@ existing thread's runtime context ends.
   so a removed command reads "Action unavailable — pick another" instead of
   becoming a dead key.
 
-Slots live in `ade.quickSlots.v1` (localStorage) through
-`renderer/quickSlots/quickSlotsStore.ts`, not in the project database. They are
-an app-wide preference like the theme. The hosted web client reads the same key
-from its own browser storage; cross-device sync is a follow-up.
+Slots are an app-wide preference like the theme, not a project setting:
+
+- This computer's copy is `ade.quickSlots.v1` (localStorage), through
+  `renderer/quickSlots/quickSlotsStore.ts`.
+- The account holds the same value as `quickSlots.v1` (scope `all`), through
+  `renderer/quickSlots/useQuickSlotsAccountSync.ts`. A change here goes to
+  the account, and a newer copy from another device comes in.
+- Reads ride the account store's change event and the window showing again.
+  There is no timer.
 
 ## The catalogue
 
@@ -145,6 +150,7 @@ A prompt slot asks for its text when it is assigned.
 | `apps/desktop/src/renderer/quickSlots/useQuickSlotComposerTarget.ts` | The hook a composer calls to publish itself; the permission cycles follow the pickers' own option lists. |
 | `apps/desktop/src/renderer/quickSlots/QuickSlotsHost.tsx` | The chord dispatcher, target resolution, and the HUD. Mounted once in `AppShell`. |
 | `apps/desktop/src/renderer/quickSlots/quickSlotsStore.ts` | The nine slots and profiles, persisted to `ade.quickSlots.v1`. |
+| `apps/desktop/src/renderer/quickSlots/useQuickSlotsAccountSync.ts` | Keeps the slots in step with the account's `quickSlots.v1`. |
 | `apps/desktop/src/renderer/quickSlots/quickSlots.css` | HUD and settings styling, including reduced-motion behavior. |
 | `apps/desktop/src/renderer/components/settings/keyboard/QuickSlotsCards.tsx` | The Settings surface: grid, action picker, profiles, leader, sticky mode. |
 | `apps/desktop/src/renderer/components/settings/keyboard/KeyboardPage.tsx` | Settings › Keyboard, the This-computer page that hosts the cards. |
@@ -165,4 +171,4 @@ A prompt slot asks for its text when it is assigned.
   the parity surface if it is added.
 
 Not in v1: global hotkeys, arbitrary macros, slot assignment on web/TUI/iOS,
-per-slot custom chords, cross-device slot sync.
+per-slot custom chords.

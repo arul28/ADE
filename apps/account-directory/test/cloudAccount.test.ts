@@ -10,6 +10,7 @@ import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
 import { createCloudProvider } from "../src/cloud/provider";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
 import { runCloudMinuteCron } from "../src/cloud/cron";
+import { runLinearRenewalCron } from "../src/cloud/linearRenewal";
 import { nextFireAt } from "../src/cloud/automationSchedule";
 import { handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
@@ -39,6 +40,8 @@ const SANDBOX = "https://sandbox.agent37.app/v1";
 const STRIPE = "https://api.stripe.com/v1";
 const RESEND = "https://api.resend.com";
 const CLERK = "https://api.clerk.com/v1";
+/** An ADE older than `ade cloud save-for-rest`: the save goes on without capsules. */
+const OLD_ADE_EXEC = { exit_code: 127, stdout: "", stderr: "unknown command" };
 
 type SqliteStatement = {
   run(...params: unknown[]): { changes: number | bigint };
@@ -322,6 +325,7 @@ describe("ADE Cloud account", () => {
     ["another account moving from a computer", OTHER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, moveFromInstanceId: INSTANCE }],
     ["another account's timed wake", OTHER, "PUT", "/cloud/wake", { instanceId: INSTANCE, url: "https://wake-abc.agent37.app", at: NOW + HOUR }],
     ["another account saving a chat against a computer", OTHER, "PUT", "/cloud/chats/key-a/chat-a/parts/1", { text: "hello", instanceId: INSTANCE, row: {} }],
+    ["another account setting a computer's event wakes", OTHER, "PUT", `${instancePath}/event-wakes`, { topics: [] }],
   ])("%s is refused as if it weren't there", async (_label, caller, method, url, body) => {
     const data = harness;
     data.env.CLOUD_CHATS = {} as R2Bucket;
@@ -1773,8 +1777,15 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     expect(providerCalls(harness, new RegExp(`PATCH .*/instances/${INSTANCE}$`)).map((call) => call.body)).toEqual([{ network: "deny-all" }]);
     expect(providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/stop$`))).toHaveLength(1);
     expect(providerCalls(harness, /DELETE .*\/subscriptions\/sub_1$/).map((call) => call.body)).toEqual([{ prorate: "false", invoice_now: "false" }]);
-    const refused = await harness.send(OWNER, "GET", "/cloud/account");
-    expect([refused.status, ((await refused.json()) as { error?: { code?: string } }).error?.code]).toEqual([403, "account_blocked"]);
+    // Blocked is read-only: the reads in `CLOUD_BLOCKED_READ_ROUTES` answer, anything that does work is refused.
+    const blockedAccount = await harness.send(OWNER, "GET", "/cloud/account");
+    expect([blockedAccount.status, ((await blockedAccount.json()) as { blocked?: boolean }).blocked]).toEqual([200, true]);
+    expect(await (await harness.send(OWNER, "GET", "/cloud/access")).json()).toEqual({ enabled: false, readOnly: true, reason: expect.any(String) });
+    expect((await harness.send(OWNER, "GET", "/cloud/lanes/without-computer")).status).toBe(200);
+    for (const [method, url] of [["POST", `/cloud/instances/${INSTANCE}/start`], ["GET", "/cloud/instances"], ["POST", "/cloud/chats/key/chat/messages"], ["DELETE", "/cloud/chats/key/chat"], ["POST", "/cloud/integrations/linear/query"], ["PUT", "/cloud/limits"]] as const) {
+      const refused = await harness.send(OWNER, method, url, method === "GET" ? undefined : {});
+      expect([url, refused.status, ((await refused.json()) as { error?: { code?: string } }).error?.code]).toEqual([url, 403, "account_blocked"]);
+    }
 
     // The blocked GitHub account on a new ADE account gets no free plan.
     seedAccount(harness, OTHER);
@@ -1845,10 +1856,10 @@ describe("ADE Cloud plan cleanup", () => {
     NEWER.forEach((id, index) => seedComputer(harness, { instance_id: id, created_at: NOW - (10 - index) * DAY, disk_gb: 2 }));
   }
 
-  /** The computer's three answers, in order: prepare-stop, push-work, work-state. */
+  /** The computer's four answers, in order: prepare-stop, push-work, save-for-rest (an older ADE that lacks it), work-state. */
   function answerExecs(prepare: string, push: string, check: string): void {
-    for (const stdout of [prepare, push, check]) {
-      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply({ exit_code: 0, stdout, stderr: "" }) });
+    for (const stdout of [prepare, push, null, check]) {
+      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply(stdout == null ? OLD_ADE_EXEC : { exit_code: 0, stdout, stderr: "" }) });
     }
   }
 
@@ -1971,10 +1982,10 @@ describe("ADE Cloud idle cleanup", () => {
     provide(harness, INSTANCE, "sleeping");
   }
 
-  /** The computer's three answers, in order: prepare-stop, push-work, work-state. */
+  /** The computer's four answers, in order: prepare-stop, push-work, save-for-rest (an older ADE that lacks it), work-state. */
   function answerExecs(push: string, check: string): void {
-    for (const stdout of [quiet, push, check]) {
-      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply({ exit_code: 0, stdout, stderr: "" }) });
+    for (const stdout of [quiet, push, null, check]) {
+      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply(stdout == null ? OLD_ADE_EXEC : { exit_code: 0, stdout, stderr: "" }) });
     }
   }
 
@@ -2521,5 +2532,528 @@ describe("ADE Cloud automations", () => {
   ])("a schedule's next fire: %s", (_label, cron, zone, after, expected) => {
     const next = nextFireAt(cron, zone, Date.parse(after));
     expect(next == null ? null : new Date(next).toISOString()).toBe(expected);
+  });
+});
+
+// --- server-edge ---
+/*
+ * Account data with no computer, and wakes from events: the privacy and trust
+ * seams only. A secrets list must never carry a value, whatever relay
+ * answers; Jira calls never leave atlassian.net; only the webhook relay's
+ * secret wakes a computer, at most once per cooldown.
+ */
+describe("ADE Cloud account data and event wakes", () => {
+  const RELAY = "https://relay.test";
+  const vaultRows = [
+    { scope: "all", kind: "provider_api_key", key: "anthropic", value: "sk-ant-secret-value", updatedAt: "2026-11-01T00:00:00.000Z" },
+    { scope: "all", kind: "secret", key: "mcp/github/env/GITHUB_TOKEN", value: "ghp_secret_value", updatedAt: "2026-11-01T00:00:00.000Z" },
+    { scope: "all", kind: "provider_login", key: "antigravity/0123456789ab.default", value: "login-secret-blob", updatedAt: "2026-11-01T00:00:00.000Z" },
+  ];
+
+  function withRelay(data: Harness, narrowRoutes: boolean): void {
+    Object.assign(data.env, {
+      PUSH_RELAY_URL: RELAY,
+      ACTIVITY_RELAY: {
+        fetch: async (input: RequestInfo | URL) => {
+          const url = new URL(String(input));
+          const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+          if (url.pathname === "/attention/account/vault/keys") {
+            if (!narrowRoutes) return reply({ ok: false, error: "not found" }, 404);
+            return reply({ ok: true, items: vaultRows.map(({ value: _value, ...row }) => row) });
+          }
+          if (url.pathname === "/attention/account/vault") return reply({ ok: true, items: vaultRows, truncated: false, cursor: null });
+          return reply({ ok: false, error: "not found" }, 404);
+        },
+      },
+    });
+  }
+
+  it.each([["a relay with the keys read", true], ["an older relay (full read)", false]])(
+    "lists saved secrets by name only, never a value, from %s",
+    async (_label, narrowRoutes) => {
+      const data = harness;
+      seedAccount(data, OWNER);
+      withRelay(data, narrowRoutes);
+      const response = await data.send(OWNER, "GET", "/cloud/account-secrets");
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(JSON.parse(text)).toEqual({
+        secrets: [
+          { scope: "all", kind: "provider_api_key", key: "anthropic", updatedAt: "2026-11-01T00:00:00.000Z" },
+          { scope: "all", kind: "secret", key: "mcp/github/env/GITHUB_TOKEN", updatedAt: "2026-11-01T00:00:00.000Z" },
+        ],
+      });
+      expect(text).not.toMatch(/secret-value|secret_value|login-secret|antigravity/);
+    },
+  );
+
+  it.each<[string, string | null]>([
+    ["acme.atlassian.net", "https://acme.atlassian.net"],
+    ["https://Acme.atlassian.net/jira/software", "https://acme.atlassian.net"],
+    ["http://acme.atlassian.net", null],
+    ["https://acme.atlassian.net:8443", null],
+    ["https://user:pw@acme.atlassian.net", null],
+    ["https://acme.atlassian.net.evil.example", null],
+    ["https://evil.example/.atlassian.net", null],
+    ["https://evil.example#.atlassian.net", null],
+    ["https://169.254.169.254", null],
+    ["https://jira.acme.example", null],
+  ])("lets Jira reach %s only as %s", async (siteUrl, expected) => {
+    const { jiraSiteOrigin } = await import("../src/cloud/integrations");
+    expect(jiraSiteOrigin(siteUrl)).toBe(expected);
+  });
+
+  const SECRET = "event-wake-secret-for-tests";
+  const wake = (secret: string | null, topic = `hooks-account:${OWNER}`) => handleCloudRequest(new Request("https://directory.test/cloud/internal/event-wake", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(secret ? { "x-ade-event-wake-secret": secret } : {}) },
+    body: JSON.stringify({ topic }),
+  }), harness.env);
+
+  it("wakes a listening computer only for the webhook relay's secret, once per cooldown", async () => {
+    const data = harness;
+    seedAccount(data, OWNER);
+    seedComputer(data, { status: "sleeping", awake_since: null });
+    provide(data, INSTANCE, "sleeping");
+    const set = await data.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/event-wakes`, { topics: [`hooks-account:${OWNER}`, "linear-org:org-1"] });
+    expect(set.status).toBe(200);
+    const starts = () => providerCalls(data, new RegExp(`POST .*/instances/${INSTANCE}/start$`)).length;
+
+    expect((await wake(null)).status).toBe(503);
+    (data.env as CloudEnv & { CLOUD_EVENT_WAKE_SECRET?: string }).CLOUD_EVENT_WAKE_SECRET = SECRET;
+    expect((await wake(null)).status).toBe(404);
+    expect((await wake("not-the-secret")).status).toBe(404);
+    expect(starts()).toBe(0);
+
+    const first = await wake(SECRET);
+    expect(await first.json()).toEqual({ subscribed: true, woken: 1 });
+    expect(starts()).toBe(1);
+    // Asleep again, a second delivery inside the cooldown wakes nothing.
+    data.exec("update cloud_computers set status = 'sleeping' where instance_id = ?", INSTANCE);
+    data.net.instances.get(INSTANCE)!.status = "sleeping";
+    clock = NOW + 60_000;
+    await wake(SECRET);
+    expect(starts()).toBe(1);
+    clock = NOW + 6 * 60_000;
+    await wake(SECRET);
+    expect(starts()).toBe(2);
+    expect(await (await wake(SECRET, "linear-org:org-unknown")).json()).toEqual({ subscribed: false, woken: 0 });
+  });
+
+  it("refuses an event topic of another account", async () => {
+    const data = harness;
+    seedAccount(data, OWNER);
+    seedComputer(data);
+    const response = await data.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/event-wakes`, { topics: [`hooks-account:${OTHER}`] });
+    expect(response.status).toBe(400);
+    expect(data.row("select count(*) as n from cloud_event_wakes").n).toBe(0);
+  });
+});
+
+/*
+ * The directory renews a Linear grant when no computer does (linearRenewal.ts):
+ * the lease and its conditional writes only. A rotated refresh token that the
+ * vault never receives signs the person out of Linear on every computer, so
+ * these pin: no exchange without a settled lease, one exchange per lease, a
+ * publish that names the lease revision, and a renewed grant that outlives a
+ * failed publish until the cron's lease route delivers it.
+ */
+describe("ADE Cloud Linear renewal", () => {
+  const ORIGIN = "https://github.com/acme/app";
+  const SCOPE = "repo:github.com/acme/app";
+  const ADE_CLIENT = "e552c738cd63ea5967f08bbc9c09b54c";
+  const MACHINE = "device-machine-a";
+  const SERVER = "ade-cloud-directory";
+  type Row = { value: string; updatedAt: string; refreshOwner: string | null; writer: string | null; deleted?: boolean };
+
+  let vault: Map<string, Row>;
+  let revisionClock: number;
+  let failVaultWrites: boolean;
+  let leaseCalls: Array<{ auth: string | null; body: Record<string, unknown> }>;
+  let tokenCalls: Array<{ refreshToken: string | null; clientId: string | null }>;
+  let tokenAnswer: () => Response;
+  let pending: Promise<unknown>[];
+  let beforeItemRead: Array<() => void>;
+  const itemKey = `${SCOPE}|integration|linear`;
+  const nextRevision = () => new Date(++revisionClock).toISOString();
+  const grant = (token: string, refresh: string, expiresAt: number, extra: Record<string, unknown> = { clientId: ADE_CLIENT }) =>
+    JSON.stringify({ v: 1, authMode: "oauth", token, refreshToken: refresh, expiresAt: new Date(expiresAt).toISOString(), ...extra });
+  const stored = () => JSON.parse(vault.get(itemKey)!.value) as Record<string, unknown>;
+
+  beforeEach(() => {
+    vault = new Map();
+    revisionClock = NOW - HOUR;
+    failVaultWrites = false;
+    leaseCalls = [];
+    tokenCalls = [];
+    pending = [];
+    beforeItemRead = [];
+    let issued = 0;
+    tokenAnswer = () => {
+      issued += 1;
+      return new Response(JSON.stringify({ access_token: `access-${issued}`, refresh_token: `refresh-${issued}`, expires_in: 86_399 }), { status: 200 });
+    };
+    Object.assign(harness.env, {
+      PUSH_RELAY_URL: "https://relay.test",
+      DIRECTORY_AUTH_SECRET: "directory-secret",
+      CLOUD_CHAT_MASTER_KEY: Buffer.alloc(32, 9).toString("base64"),
+      // The relay's vault, with its revision rule: a write names the revision it replaces, or this device wrote last.
+      ACTIVITY_RELAY: {
+        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = new URL(String(input));
+          const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+          if (url.pathname === "/attention/account/vault/item") {
+            beforeItemRead.shift()?.();
+            const row = vault.get(`${url.searchParams.get("scope")}|${url.searchParams.get("kind")}|${url.searchParams.get("key")}`);
+            return reply({ ok: true, item: row ? { scope: SCOPE, kind: "integration", key: "linear", ...row } : null });
+          }
+          if (url.pathname === "/attention/account/vault" && init?.method === "PUT") {
+            if (failVaultWrites) return reply({ ok: false }, 500);
+            const body = JSON.parse(String(init.body)) as { deviceId: string; items: Array<Record<string, string>> };
+            const item = body.items[0]!;
+            const key = `${item.scope}|${item.kind}|${item.key}`;
+            const row = vault.get(key);
+            if (row && row.updatedAt !== item.ifRevision && row.writer !== body.deviceId) return reply({ ok: true, results: [{ status: "stale" }] });
+            vault.set(key, { value: item.value!, updatedAt: nextRevision(), refreshOwner: item.refreshOwner ?? null, writer: body.deviceId });
+            return reply({ ok: true, results: [{ status: "written" }] });
+          }
+          const lease = url.pathname.match(/^\/directory\/accounts\/([^/]+)\/vault\/linear-lease$/);
+          if (lease && init?.method === "PUT") {
+            const body = JSON.parse(String(init.body)) as Record<string, string>;
+            leaseCalls.push({ auth: new Headers(init.headers).get("x-ade-directory-auth"), body });
+            const row = vault.get(`${body.scope}|integration|linear`);
+            if (!row || row.deleted || (JSON.parse(row.value) as { refreshToken?: string }).refreshToken !== body.spentRefreshToken) return reply({ ok: true, written: 0 });
+            vault.set(`${body.scope}|integration|linear`, { value: body.value!, updatedAt: nextRevision(), refreshOwner: body.refreshOwner!, writer: body.refreshOwner! });
+            return reply({ ok: true, written: 1 });
+          }
+          return reply({ ok: false }, 404);
+        },
+      },
+    });
+    const providerFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url === "https://api.linear.app/oauth/token") {
+        const form = new URLSearchParams(String(init?.body));
+        tokenCalls.push({ refreshToken: form.get("refresh_token"), clientId: form.get("client_id") });
+        return tokenAnswer();
+      }
+      if (url === "https://api.linear.app/graphql") {
+        return new Response(JSON.stringify({ data: { viewer: { id: "u1", authorization: new Headers(init?.headers).get("authorization") } } }), { status: 200 });
+      }
+      return providerFetch(input, init);
+    });
+    seedAccount(harness, OWNER);
+  });
+
+  const ask = async () => {
+    const response = await handleCloudRequest(new Request("https://directory.test/cloud/integrations/linear/query", {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json" },
+      body: JSON.stringify({ origin: ORIGIN, op: "identity" }),
+    }), harness.env, (promise) => { pending.push(promise); });
+    await Promise.all(pending.splice(0));
+    const body = await response.json() as { error?: { code: string }; data?: { viewer?: { authorization?: string } } };
+    return body.error?.code ?? body.data?.viewer?.authorization ?? `status ${response.status}`;
+  };
+
+  it("claims a quiet owner's grant, exchanges once after the claim settles, and publishes it against the lease revision", async () => {
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 20 * 60_000), updatedAt: new Date(NOW - 20 * 60_000).toISOString(), refreshOwner: MACHINE, writer: MACHINE });
+
+    expect(await ask()).toBe("linear_renewing");
+    expect(vault.get(itemKey)).toMatchObject({ refreshOwner: SERVER });
+    expect(stored().refreshToken).toBe("refresh-0");
+    clock = NOW + 10_000;
+    expect(await ask()).toBe("linear_renewing");
+    expect(tokenCalls).toEqual([]);
+
+    // Past the settle, two requests at once: one exchange.
+    clock = NOW + 31_000;
+    const both = await Promise.all([ask(), ask()]);
+    expect(both).toEqual(["linear_renewing", "linear_renewing"]);
+    expect(tokenCalls).toEqual([{ refreshToken: "refresh-0", clientId: ADE_CLIENT }]);
+    expect(stored()).toMatchObject({ token: "access-1", refreshToken: "refresh-1", clientId: ADE_CLIENT });
+    expect(vault.get(itemKey)!.refreshOwner).toBe(SERVER);
+    expect(harness.row("select count(*) as n from cloud_linear_renewals").n).toBe(0);
+    expect(await ask()).toBe("Bearer access-1");
+  });
+
+  it("lets go without exchanging when another device writes the item after the lease was read", async () => {
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 20 * 60_000), updatedAt: new Date(NOW - 20 * 60_000).toISOString(), refreshOwner: MACHINE, writer: MACHINE });
+    await ask();
+    clock = NOW + 31_000;
+    // The request reads the item; then the old owner wakes and publishes its own turn before the exchange looks again.
+    beforeItemRead.push(() => {}, () => {
+      vault.set(itemKey, { value: grant("access-m", "refresh-m", NOW + DAY), updatedAt: nextRevision(), refreshOwner: MACHINE, writer: MACHINE });
+    });
+    expect(await ask()).toBe("linear_renewing");
+    expect(tokenCalls).toEqual([]);
+    expect(stored()).toMatchObject({ refreshToken: "refresh-m" });
+    expect(vault.get(itemKey)!.refreshOwner).toBe(MACHINE);
+    expect(await ask()).toBe("Bearer access-m");
+  });
+
+  it("leaves an owner inside its grace, a grant of another client, and a dead grant alone", async () => {
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 2 * 60_000), updatedAt: new Date(NOW - 2 * 60_000).toISOString(), refreshOwner: MACHINE, writer: MACHINE });
+    const before = vault.get(itemKey);
+    expect(await ask()).toBe("linear_renewing");
+    expect(vault.get(itemKey)).toBe(before);
+
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 20 * 60_000, {}), updatedAt: new Date(NOW - 20 * 60_000).toISOString(), refreshOwner: MACHINE, writer: MACHINE });
+    expect(await ask()).toBe("linear_needs_renewal");
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 20 * 60_000, { clientId: "a-persons-own-client" }), updatedAt: new Date(NOW - 20 * 60_000).toISOString(), refreshOwner: MACHINE, writer: MACHINE });
+    expect(await ask()).toBe("linear_needs_renewal");
+    expect(tokenCalls).toEqual([]);
+
+    // Dead at Linear: the vault item is a computer's to remove, never the server's.
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 20 * 60_000), updatedAt: new Date(NOW - 20 * 60_000).toISOString(), refreshOwner: MACHINE, writer: MACHINE });
+    tokenAnswer = () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+    await ask();
+    clock = NOW + 31_000;
+    await ask();
+    expect(tokenCalls).toHaveLength(1);
+    expect(stored().refreshToken).toBe("refresh-0");
+    expect(vault.get(itemKey)!.deleted).toBeUndefined();
+    expect(harness.row("select count(*) as n from cloud_linear_renewals").n).toBe(0);
+  });
+
+  it("keeps a renewed grant sealed when its publish fails, uses it, and the cron delivers it through the lease route", async () => {
+    vault.set(itemKey, { value: grant("access-0", "refresh-0", NOW - 20 * 60_000), updatedAt: new Date(NOW - 20 * 60_000).toISOString(), refreshOwner: null, writer: MACHINE });
+    await ask();
+    clock = NOW + 31_000;
+    failVaultWrites = true;
+    expect(await ask()).toBe("linear_renewing");
+    expect(tokenCalls).toHaveLength(1);
+    expect(stored().refreshToken).toBe("refresh-0");
+    const row = harness.row("select state, sealed_grant from cloud_linear_renewals");
+    expect(row.state).toBe("publish");
+    expect(String(row.sealed_grant)).not.toMatch(/refresh-1|access-1/);
+
+    // The person keeps working on the renewed grant meanwhile; no second exchange.
+    clock = NOW + 45_000;
+    expect(await ask()).toBe("Bearer access-1");
+    expect(tokenCalls).toHaveLength(1);
+
+    clock = NOW + 2 * 60_000;
+    await runLinearRenewalCron(harness.env, clock);
+    expect(leaseCalls).toEqual([{ auth: "directory-secret", body: expect.objectContaining({ scope: SCOPE, spentRefreshToken: "refresh-0", refreshOwner: SERVER }) }]);
+    expect(stored()).toMatchObject({ token: "access-1", refreshToken: "refresh-1" });
+    expect(harness.row("select count(*) as n from cloud_linear_renewals").n).toBe(0);
+  });
+});
+
+/** R2 in memory: only what the saved-chat and capsule routes call. */
+function memoryBucket(): R2Bucket {
+  const objects = new Map<string, { bytes: Uint8Array; customMetadata?: Record<string, string> }>();
+  const objectOf = (key: string) => {
+    const stored = objects.get(key);
+    return stored ? { key, size: stored.bytes.byteLength, customMetadata: stored.customMetadata, arrayBuffer: async () => stored.bytes.slice().buffer } : null;
+  };
+  return {
+    put: async (key: string, value: ArrayBuffer | Uint8Array | string, options?: { customMetadata?: Record<string, string> }) => {
+      const bytes = typeof value === "string" ? new TextEncoder().encode(value) : new Uint8Array(value instanceof Uint8Array ? value : new Uint8Array(value));
+      objects.set(key, { bytes: bytes.slice(), customMetadata: options?.customMetadata });
+      return objectOf(key);
+    },
+    get: async (key: string) => objectOf(key),
+    head: async (key: string) => objectOf(key),
+    delete: async (keys: string | string[]) => {
+      for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key);
+    },
+    list: async ({ prefix = "" }: { prefix?: string } = {}) => ({
+      objects: [...objects.keys()].filter((key) => key.startsWith(prefix)).sort().map((key) => objectOf(key)!),
+      truncated: false,
+    }),
+  } as unknown as R2Bucket;
+}
+
+describe("ADE Cloud without a computer", () => {
+  const LANE = "5d1e8a3c-2b4f-4e6a-9c7d-1f0b3a5e8c21";
+
+  beforeEach(() => {
+    harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 9).toString("base64");
+    harness.env.CLOUD_CHATS = memoryBucket();
+  });
+
+  const savePart = (instanceId: string, machineKey: string, seq: number, text: string) => harness.send(OWNER, "PUT", `/cloud/chats/${machineKey}/c1/parts/${seq}`, {
+    instanceId, text, row: { lastSeq: seq, laneId: LANE, projectKey: "github.com/acme/widgets", provider: "claude", model: "claude-sonnet" },
+  });
+
+  it("a message to a resting chat is kept once and sent once: a refused send stores nothing, two claims race and one wins, only it finishes the message, its checked settings go sealed to the computer only", async () => {
+    seedAccount(harness, OWNER, { used_milli: 100_000 });
+    seedComputer(harness, { machine_key: "key-a", status: "sleeping", awake_since: null });
+    provide(harness, INSTANCE, "sleeping");
+    expect((await savePart(INSTANCE, "key-a", 1, "{}\n")).status).toBe(200);
+    const messages = "/cloud/chats/key-a/c1/messages";
+    const queued = () => harness.rows("select message_id, state from cloud_chat_messages");
+
+    // Out of hours: refused like a wake, and nothing is kept to arrive later.
+    const refused = await harness.send(OWNER, "POST", messages, { messageId: "m1", text: "Fix the footer." });
+    expect([refused.status, ((await refused.json()) as { error?: { code?: string } }).error?.code]).toEqual([402, "out_of_hours"]);
+    expect(queued()).toEqual([]);
+    expect(providerCalls(harness, /POST .*\/start$/)).toHaveLength(0);
+
+    harness.exec("update cloud_accounts set used_milli = 0 where user_id = ?", OWNER);
+    // An image that never listed `chat_queue` can't drain: refused before anything is kept, until its boot report lists it.
+    const old = await harness.send(OWNER, "POST", messages, { messageId: "m1", text: "Fix the footer." });
+    expect([old.status, ((await old.json()) as { error?: { code?: string } }).error?.code]).toEqual([409, "update_needed"]);
+    expect(queued()).toEqual([]);
+    expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/booted`, { adeVersion: "1.2.131", features: ["chat_queue", "later_feature"] })).status).toBe(200);
+    expect(harness.row("select ade_features from cloud_computers where instance_id = ?", INSTANCE).ade_features).toBe("chat_queue");
+    // Settings keep known keys with short plain values only.
+    const settings = { reasoningEffort: "xhigh", fastMode: true, fastTier: "turbo", presetId: "<b>p</b>", runtimeActor: "cto" };
+    const sent = await harness.send(OWNER, "POST", messages, { messageId: "m1", text: "Fix the footer.", settings });
+    expect(sent.status).toBe(201);
+    expect(((await sent.json()) as { wake: unknown }).wake).toEqual({ state: "waking" });
+    // The same id again is the same message, with no second wake.
+    expect((await harness.send(OWNER, "POST", messages, { messageId: "m1", text: "Fix the footer." })).status).toBe(200);
+    expect(providerCalls(harness, /POST .*\/start$/)).toHaveLength(1);
+    expect(providerCalls(harness, /POST .*\/exec$/).map((call) => call.body?.command)).toEqual(["ade cloud messages drain --json"]);
+    // The text is sealed at rest; another account sees no such chat or computer.
+    expect(JSON.stringify(harness.rows("select * from cloud_chat_messages"))).not.toContain("footer");
+    expect(JSON.stringify(harness.rows("select * from cloud_chat_messages"))).not.toContain("xhigh");
+    // The person's own list shows no settings; the computer's list carries them, checked.
+    expect(JSON.stringify(await (await harness.send(OWNER, "GET", messages)).json())).not.toContain("xhigh");
+    const forComputer = (await (await harness.send(OWNER, "GET", `/cloud/instances/${INSTANCE}/messages`)).json()) as { messages: Array<{ settings?: unknown }> };
+    expect(forComputer.messages.map((message) => message.settings)).toEqual([{ reasoningEffort: "xhigh", fastMode: true }]);
+    expect((await harness.send(OTHER, "GET", messages)).status).toBe(404);
+    expect((await harness.send(OTHER, "GET", `/cloud/instances/${INSTANCE}/messages`)).status).toBe(404);
+
+    const claim = (claimId: string) => harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/messages/m1/claim`, { claimId });
+    const report = (claimId: string, state: string) => harness.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/messages/m1`, { claimId, state });
+    const [CLAIM_A, CLAIM_B] = ["claim-aaaaaaaaaaaaaaaa", "claim-bbbbbbbbbbbbbbbb"];
+    const raced = await Promise.all([claim(CLAIM_A), claim(CLAIM_B)]);
+    expect(raced.map((response) => response.status).sort()).toEqual([200, 409]);
+    const [winner, loser] = raced[0]!.status === 200 ? [CLAIM_A, CLAIM_B] : [CLAIM_B, CLAIM_A];
+    expect([(await report(loser, "delivered")).status, (await report(winner, "delivered")).status, (await report(winner, "failed")).status]).toEqual([409, 200, 409]);
+    // Delivered stays delivered: no later claim or cancel touches it.
+    expect([(await claim(loser)).status, (await harness.send(OWNER, "DELETE", `${messages}/m1`)).status]).toEqual([409, 409]);
+    expect(queued()).toEqual([{ message_id: "m1", state: "delivered" }]);
+  });
+
+  it("a fork restore moves a saved chat to the new computer with its full history: it lists once, old names still read it, nothing is uploaded again", async () => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-old" });
+    expect((await savePart(INSTANCE, "key-old", 1, "first\n")).status).toBe(200);
+    expect((await savePart(INSTANCE, "key-old", 2, "second\n")).status).toBe(200);
+    harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
+    seedComputer(harness, { instance_id: SECOND, machine_key: "key-new" });
+    const move = (caller: string, toMachineKey = "key-new") => harness.send(caller, "POST", "/cloud/chats/key-old/c1/move", { toMachineKey, instanceId: SECOND });
+    const partsOf = async (machineKey: string) => ((await (await harness.send(OWNER, "GET", `/cloud/chats/${machineKey}/c1`)).json()) as { parts: Array<{ text: string }> }).parts.map((part) => part.text);
+
+    expect([(await move(OTHER)).status, (await move(OWNER, "key-else")).status]).toEqual([404, 409]);
+    const moved = await move(OWNER);
+    expect(moved.status).toBe(200);
+    expect(await moved.json()).toEqual({ chat: expect.objectContaining({ machineKey: "key-new", lastSeq: 2, forkedFrom: { machineKey: "key-old", chatId: "c1" } }), moved: true });
+    // Once, under the new key; the same move again answers the moved row.
+    const listed = (await (await harness.send(OWNER, "GET", "/cloud/chats")).json()) as { chats: Array<{ machineKey: string; chatId: string }> };
+    expect(listed.chats.map((chat) => [chat.machineKey, chat.chatId])).toEqual([["key-new", "c1"]]);
+    expect(((await (await move(OWNER)).json()) as { moved: boolean }).moved).toBe(false);
+    // The full history reads under the new key, and under the old one (an older client), with no new upload.
+    expect([await partsOf("key-new"), await partsOf("key-old")]).toEqual([["second\n", "first\n"], ["second\n", "first\n"]]);
+    // The new computer's uploader goes on from the restored seq; the old key can't write over the moved parts.
+    expect((await savePart(SECOND, "key-new", 3, "third\n")).status).toBe(200);
+    expect(await partsOf("key-new")).toEqual(["third\n", "second\n", "first\n"]);
+    seedComputer(harness, { instance_id: "thirdbox12", machine_key: "key-old" });
+    expect((await savePart("thirdbox12", "key-old", 1, "other\n")).status).toBe(409);
+  });
+
+  it("a send to a chat whose computer is gone continues it on one new computer: a second send rides the same launch", async () => {
+    harness.env.CLERK_SECRET_KEY = "sk_test";
+    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-gone", lane_id: LANE, lane_name: "Fix the login page", lane_project_origin: "https://github.com/acme/widgets", lane_branch: "ade/fix-login" });
+    expect((await savePart(INSTANCE, "key-gone", 1, "{}\n")).status).toBe(200);
+    harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
+    const send = (messageId: string) => harness.send(OWNER, "POST", "/cloud/chats/key-gone/c1/messages", { messageId, text: "Go on." });
+
+    const first = await send("m1");
+    expect(first.status).toBe(201);
+    const { wake } = (await first.json()) as { wake: { state: string; launchId: string } };
+    expect(wake).toEqual({ state: "launching", launchId: expect.any(String) });
+    const launch = harness.row("select lane_id, continue_machine_key, continue_chat_id, request_json from cloud_launches where launch_id = ?", wake.launchId);
+    expect([launch.lane_id, launch.continue_machine_key, launch.continue_chat_id]).toEqual([LANE, "key-gone", "c1"]);
+    expect(JSON.parse(String(launch.request_json)).lane).toEqual(expect.objectContaining({ id: LANE, existingBranch: "ade/fix-login" }));
+
+    // The second send finds the launch already continuing this chat: no second computer.
+    const second = await send("m2");
+    expect([second.status, ((await second.json()) as { wake: unknown }).wake]).toEqual([201, { state: "launching", launchId: wake.launchId }]);
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
+    expect(harness.rows("select message_id from cloud_launch_messages where launch_id = ? order by seq", wake.launchId)).toEqual([{ message_id: "m1" }, { message_id: "m2" }]);
+
+    // The launch fails: both messages read failed with its sentence at once, and the minute cron writes it down.
+    harness.exec("update cloud_launches set state = 'failed', error = 'The clone failed.' where launch_id = ?", wake.launchId);
+    const listed = async () => ((await (await harness.send(OWNER, "GET", "/cloud/chats/key-gone/c1/messages")).json()) as { messages: Array<{ messageId: string; state: string; error: string | null }> }).messages
+      .map((message) => [message.messageId, message.state, message.error]);
+    expect(await listed()).toEqual([["m1", "failed", "The clone failed."], ["m2", "failed", "The clone failed."]]);
+    await harness.tick();
+    expect(harness.rows("select message_id, state, error from cloud_chat_messages order by seq")).toEqual([
+      { message_id: "m1", state: "failed", error: "The clone failed." },
+      { message_id: "m2", state: "failed", error: "The clone failed." },
+    ]);
+
+    // A Retry of the failed launch sends them after all: the computer's report wins over the failed mark, and the cron keeps it.
+    harness.exec("update cloud_launches set state = 'joined', error = null where launch_id = ?", wake.launchId);
+    expect((await harness.send(OWNER, "PUT", `/cloud/launches/${wake.launchId}/stages`, { state: "running", sessionId: "c1" })).status).toBe(200);
+    expect((await harness.send(OWNER, "POST", `/cloud/launches/${wake.launchId}/messages/m2/claim`, { claimId: "claim-cccccccccccccccc" })).status).toBe(200);
+    expect((await harness.send(OWNER, "PUT", `/cloud/launches/${wake.launchId}/messages/m2`, { claimId: "claim-cccccccccccccccc", state: "delivered" })).status).toBe(200);
+    expect(harness.rows("select message_id, state, error from cloud_chat_messages where message_id in ('m1', 'm2') order by seq")).toEqual([
+      { message_id: "m1", state: "delivered", error: null },
+      { message_id: "m2", state: "delivered", error: null },
+    ]);
+    harness.exec("update cloud_launches set state = 'failed', error = 'The computer stopped.' where launch_id = ?", wake.launchId);
+    clock += 25 * HOUR;
+    await harness.tick();
+    expect((await listed()).slice(0, 2)).toEqual([["m1", "delivered", null], ["m2", "delivered", null]]);
+    // A send after it starts a new launch: the failed one no longer holds the chat.
+    const third = await send("m3");
+    expect([third.status, ((await third.json()) as { wake: { launchId: string } }).wake.launchId]).toEqual([201, expect.not.stringMatching(wake.launchId)]);
+  });
+
+  it("a saved CLI takes messages like a chat: its computer reads it as a CLI, a gone one continues it with no model, a shell takes none", async () => {
+    harness.env.CLERK_SECRET_KEY = "sk_test";
+    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-cli", ade_features: "chat_queue", lane_id: LANE, lane_name: "Fix the login page", lane_project_origin: "https://github.com/acme/widgets", lane_branch: "ade/fix-login" });
+    const saveSession = (sessionId: string, kind: "cli" | "shell", toolType: string) => harness.send(OWNER, "PUT", `/cloud/sessions/key-cli/${sessionId}`, {
+      instanceId: INSTANCE, format: "text", text: "$ ready\n", row: { kind, toolType, laneId: LANE, projectKey: "github.com/acme/widgets" },
+    });
+    expect([(await saveSession("cli-1", "cli", "cursor-cli")).status, (await saveSession("sh-1", "shell", "shell")).status]).toEqual([200, 200]);
+    const send = (sessionId: string, messageId: string) => harness.send(OWNER, "POST", `/cloud/chats/key-cli/${sessionId}/messages`, { messageId, text: "Run the tests." });
+
+    // A live computer: the message waits for it, marked as typed input for a CLI.
+    expect((await send("cli-1", "m1")).status).toBe(201);
+    const listed = (await (await harness.send(OWNER, "GET", `/cloud/instances/${INSTANCE}/messages`)).json()) as { messages: Array<{ messageId: string; targetKind?: string; laneId: string | null }> };
+    expect(listed.messages.map((message) => [message.messageId, message.targetKind, message.laneId])).toEqual([["m1", "cli", LANE]]);
+    expect((await send("sh-1", "m2")).status).toBe(404);
+
+    // Its computer gone: one launch continues the CLI, with its agent and no model.
+    harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
+    const gone = await send("cli-1", "m3");
+    expect(gone.status).toBe(201);
+    const { wake } = (await gone.json()) as { wake: { launchId: string } };
+    const request = JSON.parse(String(harness.row("select request_json from cloud_launches where launch_id = ?", wake.launchId).request_json)) as Record<string, Record<string, unknown>>;
+    expect([request.continueChat, request.chat!.provider, request.chat!.modelId]).toEqual([{ machineKey: "key-cli", chatId: "cli-1", kind: "cli" }, "cursor", ""]);
+
+    // The new computer continued it: the copy and its waiting message move to its key once,
+    // and a later send to the old address reaches it instead of starting another computer.
+    seedComputer(harness, { instance_id: SECOND, machine_key: "key-new", ade_features: "chat_queue" });
+    const moveCli = async (toMachineKey = "key-new") => harness.send(OWNER, "POST", "/cloud/sessions/key-cli/cli-1/move", { toMachineKey, instanceId: SECOND });
+    expect((await moveCli("key-else")).status).toBe(409);
+    expect([await (await moveCli()).json(), await (await moveCli()).json()]).toEqual([{ moved: true }, { moved: false }]);
+    const copyAt = async (machineKey: string) => {
+      const response = await harness.send(OWNER, "GET", `/cloud/sessions/${machineKey}/cli-1`);
+      if (response.status !== 200) return [response.status];
+      const copy = (await response.json()) as { text: string; session: { machineKey: string; toolType: string | null } };
+      return [200, copy.text, copy.session.machineKey, copy.session.toolType];
+    };
+    // Sealed again under the new key: it opens there, with its summary, and is gone from the old one.
+    expect([await copyAt("key-new"), await copyAt("key-cli")]).toEqual([[200, "$ ready\n", "key-new", "cursor-cli"], [404]]);
+    expect((await send("cli-1", "m4")).status).toBe(201);
+    const onNew = (await (await harness.send(OWNER, "GET", `/cloud/instances/${SECOND}/messages`)).json()) as { messages: Array<{ messageId: string; targetKind?: string }> };
+    expect(onNew.messages.map((message) => [message.messageId, message.targetKind])).toEqual([["m1", "cli"], ["m4", "cli"]]);
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
   });
 });

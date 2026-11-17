@@ -232,6 +232,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // and whether the fix works. completed | partial (ran, some files still not
   // theirs) | cancelled (password prompt dismissed) | failed.
   "bundle_ownership_fix",
+  // A paired phone or browser's "Update & restart" for this machine, recorded
+  // by the brain that ran it (feature "updates"). completed | failed.
+  "remote_machine_update",
   "machine_reconnect",
   // Feature "connections". `remote_connect`: an automatic or manual dial to
   // another machine failed, or came back after failing. `work_first_load`: the
@@ -782,7 +785,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "size_small", "size_medium", "size_large", "size_xlarge",
     // The provider of a sign-in saved for cloud machines (`CLOUD_SIGN_INS`).
     "signin_claude", "signin_codex", "signin_cursor", "signin_droid", "signin_grok",
-    "signin_copilot", "signin_devin", "signin_muse", "signin_openrouter",
+    "signin_copilot", "signin_devin", "signin_muse", "signin_openrouter", "signin_qwen",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
     // are. `backend_window` captures the Simulator window on this Mac;
     // `backend_host_encoded` encodes on the machine that owns the simulator and

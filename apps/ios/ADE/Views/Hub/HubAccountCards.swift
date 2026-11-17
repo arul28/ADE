@@ -5,7 +5,7 @@ import SwiftUI
 // and the saved order (account project ids, the same on every machine).
 // Pure; `HubScreen` feeds them its state on each rebuild.
 
-/// The account project whose page (home, Location) is open over the Hub.
+/// The account project whose Location page is open over the Hub.
 struct HubAccountHomeTarget: Identifiable, Equatable {
   let id: String
 }
@@ -13,20 +13,11 @@ struct HubAccountHomeTarget: Identifiable, Equatable {
 // MARK: - Pages over the Hub
 
 extension View {
-  /// The account project pages the Hub opens: a project's home (an
-  /// account-only card) and its Location page. `onNotice` shows the line a
-  /// page ends with.
-  func hubAccountProjectSheets(
-    home: Binding<HubAccountHomeTarget?>,
-    location: Binding<HubAccountHomeTarget?>,
-    onConnectComputer: @escaping () -> Void,
-    onNotice: @escaping (String) -> Void
-  ) -> some View {
-    sheet(item: home) { target in
-      AccountProjectHomeScreen(projectId: target.id, onConnectComputer: onConnectComputer, onRemoved: onNotice)
-        .hubAccountPageDetents()
-    }
-    .sheet(item: location) { target in
+  /// The account project page the Hub opens over itself: a project's
+  /// Location page. An account-only card opens the project's tabs instead
+  /// (`SyncService.openAccountProjectScope`).
+  func hubAccountProjectSheets(location: Binding<HubAccountHomeTarget?>) -> some View {
+    sheet(item: location) { target in
       ProjectLocationScreen(projectId: target.id)
     }
   }

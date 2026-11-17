@@ -117,6 +117,12 @@ Desktop ⌘K command palette:
   universal-search seam: `useUniversalSearch` (debounced `window.ade.search`
   query), the `KindIcon` / highlight helpers, and the `SearchResultRow` entity
   rows grouped by kind (`ENTITY_KIND_ORDER` / `ENTITY_KIND_LABEL`).
+  `withIndexedLaneName` names a result that came with no lane name from the
+  account lane index (see [With no computer awake](#with-no-computer-awake)).
+- `apps/desktop/src/renderer/webclient/adapter/search.ts` — the web
+  `window.ade.search`: `query` and `indexStatus` ask a computer only when it
+  has `search.query` / `search.indexStatus`, else answer null (the palette
+  skips that computer); `rebuildIndex` answers `{started:false}`.
 - `apps/desktop/src/renderer/components/app/CommandPalette.tsx`,
   `commandPaletteLanePr.ts`, and `commandPaletteThreads.tsx` — host the
   flat-index interleaving of command,
@@ -294,6 +300,20 @@ projects, which keeps the brain responsive on a machine with many projects.
 asks unloaded projects from their database on disk
 (`rosterBuilder.ts#readSessionToolTypeFromDisk`) and loads only the owning
 project.
+
+### With no computer awake
+
+Search runs on computers: the palette asks every online copy of the
+repository (`useOnlineCopyPins`, `callEachMachine`). With none online it makes
+no search call and shows no entity results. ADE Cloud computers at rest are
+not woken to search. The palette still matches the rows the Work list already
+holds, which include saved chats, saved terminal copies and cloud lanes.
+
+Each time the palette opens, it reads the account lane index once
+(`useLaneMentions`, `prs/state/accountLaneMentions.ts`). A result that came
+with no lane name gets one from it: by its own `laneId` first, else, for a PR
+result, the lane of that PR number, labelled "<lane> on <machine>" because it
+may be on another machine. A result that has a lane name keeps it.
 
 ### Dual-host known limitation
 

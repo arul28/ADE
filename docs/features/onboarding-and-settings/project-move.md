@@ -16,9 +16,6 @@ read (it took longer than ten minutes, or the project folder cannot be read at
 all), the move stays disabled and says so instead of treating the project as
 empty.
 
-Research, the full map of stored paths and the experiments behind each rule:
-[`docs/plans/project-move.md`](../../plans/project-move.md).
-
 ## Source file map
 
 | Path | Role |
@@ -110,6 +107,23 @@ untouched original.
 - **Other holders.** Preflight names processes other than ADE that have
   `ade.db` open (usually a dev build started from a lane); the move stops
   before changing anything if they don't let go.
+
+## What a move does not change
+
+These belong to other apps or tools. The move does not edit them:
+
+- Claude Code's history and permissions (`~/.claude/projects`), Codex's
+  thread list, and Cursor's workspace state. Folder trust is the one part
+  ADE copies (see **Trust**).
+- Python virtualenvs and other files with absolute paths (IDE workspace
+  files, build output): recreate them after the move.
+- `CLAUDE.md`, `AGENTS.md`, memory and docs that name the old path.
+- The pnpm store: a project on another volume gets its own store there, so
+  the first install copies instead of cloning.
+- Xcode DerivedData, simulators and Docker's disk image stay where they are.
+- Shell history, terminal profiles and scripts with hard-coded paths.
+- Lanes outside the project folder.
+- Deeplinks shared before the move.
 
 ## Gotchas
 

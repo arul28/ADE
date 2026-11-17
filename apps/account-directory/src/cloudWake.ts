@@ -1,6 +1,7 @@
 import { authenticate, type CallerTokenEnv } from "./callerToken";
 import { AWAKE_COMPUTER_CAP } from "./cloud/plans";
 import { AWAKE_CAP_COUNT_SQL, PENDING_TIMEOUT_MS, logCloud, reportCloudFailure } from "./cloud/store";
+import { readBoundedJson } from "./sinkUtils";
 
 /**
  * Timed wakes for cloud machines (README, "the provider timed wakes").
@@ -44,22 +45,18 @@ export function isCloudWakeRequest(url: URL): boolean {
 const json = (body: unknown, status: number): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
-async function readBody(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const text = await request.text();
-    if (text.length > 4096) return null;
-    const value = JSON.parse(text) as unknown;
-    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function handleCloudWakeRequest(request: Request, env: CloudWakeEnv, now = Date.now()): Promise<Response> {
+export async function handleCloudWakeRequest(
+  request: Request,
+  env: CloudWakeEnv,
+  now = Date.now(),
+  parsedBody?: Record<string, unknown> | null,
+): Promise<Response> {
   if (request.method !== "PUT" && request.method !== "DELETE") return json({ error: "method_not_allowed" }, 405);
   const caller = await authenticate(request, env);
   if (!caller.ok) return json({ error: "unauthorized" }, 401);
-  const body = await readBody(request);
+  // The route reads the body once so the ownership check and this handler
+  // share it; a cloned request would tee the stream and can wait on cancel.
+  const body = parsedBody !== undefined ? parsedBody : await readBoundedJson(request, 4096);
   const instanceId = typeof body?.instanceId === "string" ? body.instanceId.trim() : "";
   if (!INSTANCE_ID.test(instanceId)) return json({ error: "bad_request" }, 400);
 
@@ -151,8 +148,17 @@ export async function runCloudWakes(env: CloudWakeEnv, options: { now?: number; 
         reached = false;
       }
     }
-    if (reached) woken += 1;
-    else failed += 1;
+    if (reached) {
+      woken += 1;
+      // The request wakes it: the row says so at once, so the awake cap and every client read it as waking (the tick reads the provider next).
+      await env.DB.prepare(`
+        update cloud_computers set status = 'waking', status_changed_at = ?
+        where instance_id = ? and user_id = ? and deleted_at is null and status = 'sleeping'
+      `).bind(now, row.instance_id, row.user_id).run()
+        .then((result) => {
+          if ((result.meta?.changes ?? 0) > 0) logCloud("cloud.timed_wake_recorded", { userId: row.user_id, instanceId: row.instance_id });
+        }, (error: unknown) => reportCloudFailure("cloud.timed_wake_record_failed", { instanceId: row.instance_id, message: error instanceof Error ? error.message : "unknown" }));
+    } else failed += 1;
     if (reached || !WAKE_URL.test(row.wake_url) || now - row.wake_at > GIVE_UP_AFTER_MS) {
       // Only the row this tick read: a newer time the machine sent meanwhile stays.
       await env.DB.prepare("delete from cloud_wakes where user_id = ? and instance_id = ? and wake_at = ?")

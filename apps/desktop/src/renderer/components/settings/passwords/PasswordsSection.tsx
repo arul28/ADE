@@ -31,7 +31,7 @@ import {
   Trash,
   UploadSimple,
 } from "@phosphor-icons/react";
-import type { PasswordEnvFile, PasswordItemSummary, PasswordsProject, PasswordsStatus, PasswordUseRecord } from "../../../../shared/types/passwords";
+import type { PasswordEnvFile, PasswordItemSummary, PasswordLaneEnvPreview, PasswordsProject, PasswordsStatus, PasswordUseRecord } from "../../../../shared/types/passwords";
 import { useAppStore } from "../../../state/appStore";
 import { showToast } from "../../app/toast/toastStore";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
@@ -39,6 +39,8 @@ import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { relativeWhen } from "../../../lib/format";
 import { ModernPage } from "../primitives";
+import { isWebClientMode } from "../../../lib/webClientMode";
+import { WEB_PASSWORDS_SENTENCE } from "../../../../shared/adeCloud/accountCalls";
 import { useSettingsSearchAnchors } from "../settingsSearchContext";
 import {
   ChangeValueDialog,
@@ -48,6 +50,7 @@ import {
   ResetPasswordsDialog,
 } from "./PasswordDialogs";
 import { errorText, loginHint, personCheckDeclined, plural, scopeLabel } from "./passwordsFormat";
+import { subscribeLaneEnvImport, takeLaneEnvImport, type LaneEnvImportRequest } from "./laneEnvImport";
 import "./passwords.css";
 
 /** The largest CSV the page reads. The brain never needs a bigger one to import. */
@@ -66,7 +69,7 @@ const TAB_ANCHORS: Record<string, TabId> = {
 type DialogState =
   | { kind: "new-login" }
   | { kind: "new-secret" }
-  | { kind: "import-env"; file: PasswordEnvFile }
+  | { kind: "import-env"; file: PasswordEnvFile | PasswordLaneEnvPreview; laneEnv?: LaneEnvImportRequest }
   | { kind: "change-value"; item: PasswordItemSummary }
   | { kind: "reset" }
   | null;
@@ -145,7 +148,27 @@ function MenuItem({ icon, children, onClick, danger, checked, hint }: { icon?: R
   );
 }
 
+/**
+ * The web client reads no vault (its calls throw `WEB_PASSWORDS_SENTENCE`):
+ * the page says where to see and change Passwords, and nothing else.
+ */
 export function PasswordsSection() {
+  if (isWebClientMode()) {
+    return (
+      <div className="ade-pw-page">
+        <ModernPage>
+          <Banner
+            layout="inline"
+            model={{ id: "passwords-web", tone: "info", title: WEB_PASSWORDS_SENTENCE, report: false }}
+          />
+        </ModernPage>
+      </div>
+    );
+  }
+  return <PasswordsSectionBody />;
+}
+
+function PasswordsSectionBody() {
   const location = useLocation();
   const searchAnchors = useSettingsSearchAnchors();
   const openProjectRoot = useAppStore((state) => state.project?.rootPath ?? null);
@@ -187,6 +210,28 @@ export function PasswordsSection() {
       showToast({ tone: "error", title: "Couldn't list this computer's projects", message: errorText(err, "Secrets can still be saved for every project.") });
     });
   }, [load]);
+
+  // The `.env` tip: a file in a main checkout, maybe on another machine. Its
+  // names and lengths come from that machine (the pin); so does the import.
+  useEffect(() => {
+    const open = () => {
+      const request = takeLaneEnvImport();
+      if (!request) return;
+      setTab("secrets");
+      void window.ade.passwords.previewLaneEnv({ path: request.path }, request.pin).then(
+        (file) => {
+          if (file.entries.length === 0) {
+            showToast({ tone: "warning", title: `No secrets in ${file.fileName}`, message: "It has no NAME=value lines ADE can read.", report: false });
+            return;
+          }
+          setDialog({ kind: "import-env", file, laneEnv: request });
+        },
+        (err: unknown) => showToast({ tone: "error", title: "Couldn't read that file", message: errorText(err, "Try again in a moment.") }),
+      );
+    };
+    open();
+    return subscribeLaneEnvImport(open);
+  }, []);
 
   // A deeplink (`#passwords-secrets`, an old `?tab=secrets`) opens the view it
   // names; the settings search opens the view that holds its match.
@@ -535,6 +580,9 @@ export function PasswordsSection() {
           defaultScope={openProjectScope}
           existing={existingByScope}
           onClose={() => setDialog(null)}
+          importNames={dialog.laneEnv
+            ? (names, scope) => window.ade.passwords.importLaneEnv({ path: dialog.laneEnv!.path, names, projectScope: scope }, dialog.laneEnv!.pin)
+            : undefined}
           onImported={(result, scope) => {
             setDialog(null);
             setTab("secrets");

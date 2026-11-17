@@ -98,7 +98,7 @@ This path is used for "what would this rule do?" dry runs — nothing persists e
 Status mapping:
 
 - Worker-backed runs map runtime state into the shared run statuses above.
-- Legacy `needs_review` rows are normalized to `succeeded`; publish review now lives in queue status and verification metadata.
+- Legacy `needs_review` rows are normalized to `succeeded`; publish review lives in queue status and verification metadata.
 
 The key invariant: when a rule has `verifyBeforePublish`, completion keeps the run in the queue through `verification-required` rather than inventing a separate run status.
 

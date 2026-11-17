@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { encodeCodedErrorMessage } from "../../../shared/codedError";
 import { hostname } from "node:os";
 import path from "node:path";
 import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
@@ -23,10 +25,13 @@ import {
 import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
-import { createCloudApiClient } from "../../../shared/cloudApiClient";
+import { CloudApiError, createCloudApiClient } from "../../../shared/cloudApiClient";
+import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
+import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode, type CloudCarriedSignIns, type CloudLaunchRecord } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudRemoteSignInStatus } from "../../../shared/accountCloudLaunches";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
 import type { CloudSignInEnd } from "../../../shared/cloudSignIns";
+import type { CloudAccessIpcAnswer } from "../../../shared/adeCloudMachine";
 import type { AdeAccountMachinesResult } from "../../../shared/types/account";
 import { getSignedInAccountAccessToken } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import {
@@ -41,6 +46,7 @@ import {
   cloudAccessEnabled,
   cloudNoProviderSentence,
   cloudVaultFromBridge,
+  readCloudAccessView,
   getCloudProvider,
   knownCloudProvider,
   readCloudStatus,
@@ -89,8 +95,13 @@ type Logger = {
 /** Set while the app is up: re-asks ADE Cloud's access after a sign-in or sign-out. */
 let recheckCloudAccess: (() => void) | null = null;
 
-/** The ADE account on this computer changed: ask the server again, and tell every window if the answer moved. */
+/**
+ * The ADE account on this computer changed: every window drops what it read
+ * for the account before (`accountReader.clear` in the preload), and the
+ * server is asked again (every window hears again if the answer moved).
+ */
 export function cloudAccountChanged(): void {
+  sendToAllWindows(IPC.cloudStatusChanged);
   recheckCloudAccess?.();
 }
 
@@ -248,6 +259,74 @@ export function registerCloudIpc(args: {
     if (!baseUrl) throw new Error("ADE's account service isn't set up on this computer.");
     return await createCloudApiClient({ baseUrl, accessToken: () => getAccountToken() }).sendSignInCode(instanceId, jobId, code);
   });
+  // A message for an existing ADE Cloud chat whose computer is asleep or gone:
+  // the account server queues it, wakes the computer (or starts a launch that
+  // continues the chat in the same row), and the computer sends it. Account
+  // level, by the chat's machine key: no pin, and nothing goes to this
+  // window's machine.
+  const accountApi = () => {
+    const baseUrl = directoryBaseUrl();
+    if (!baseUrl) throw new AdeExpectedError("ADE's account service isn't set up on this computer.", "environment");
+    return createCloudApiClient({ baseUrl, accessToken: () => getAccountToken() });
+  };
+  ipcMain.handle(IPC.cloudChatMessageSend, async (event, arg?: Record<string, unknown>): Promise<CloudChatSendAnswer> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudChatMessageSend)) throw new Error("ADE can't do that from here.");
+    const text = (value: unknown, max: number) => (typeof value === "string" && value.trim() && value.length <= max ? value : null);
+    const machineKey = text(arg?.machineKey, 256)?.trim() ?? null;
+    const chatId = text(arg?.chatId, 256)?.trim() ?? null;
+    const messageId = typeof arg?.messageId === "string" && CLOUD_CHAT_MESSAGE_ID_PATTERN.test(arg.messageId) ? arg.messageId : null;
+    const body = text(arg?.text, CLOUD_CHAT_MESSAGE_MAX_CHARS);
+    if (!machineKey || !chatId || !messageId || !body) throw new AdeExpectedError("A message needs its chat and some text.", "user");
+    const provider = text(arg?.provider, 64);
+    const modelId = text(arg?.modelId, 256);
+    const settings = cloudChatMessageSettingsOf(arg?.settings);
+    try {
+      const result = await accountApi().sendChatMessage(machineKey, chatId, {
+        messageId,
+        text: body,
+        ...(provider ? { provider } : {}),
+        ...(modelId ? { modelId } : {}),
+        ...(settings ? { settings } : {}),
+      });
+      logger.info("cloud.chat_message_sent", { wake: result.wake.state });
+      if (result.wake.state !== "awake") sendToAllWindows(IPC.cloudStatusChanged);
+      return { state: "sent", messageId: result.message.messageId, wake: { state: result.wake.state, launchId: result.wake.launchId ?? null } };
+    } catch (error) {
+      if (error instanceof CloudApiError) {
+        // No queue on this server, or a computer that can't drain it: the caller wakes, then sends.
+        if ((error.status === 404 && error.code === "not_found") || error.code === "update_needed") return { state: "unsupported" };
+        if (isCloudRefusalCode(error.code) || error.status === 400 || error.status === 409 || error.status === 429) {
+          logger.info("cloud.chat_message_refused", { code: error.code });
+          return { state: "refused", code: error.code || null, message: error.message };
+        }
+      }
+      throw error;
+    }
+  });
+  // The record of a launch the queue started (`wake.state: "launching"`), read
+  // by the chat's setup card. Account level, by its id: no pin.
+  ipcMain.handle(IPC.cloudServerLaunchStatus, async (event, arg?: { launchId?: unknown }): Promise<CloudLaunchRecord | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudServerLaunchStatus)) return null;
+    const launchId = typeof arg?.launchId === "string" ? arg.launchId.trim() : "";
+    if (!launchId || launchId.length > 64) return null;
+    try {
+      return await accountApi().launchStatus(launchId);
+    } catch (error) {
+      if (error instanceof CloudApiError && error.status === 404) return null;
+      throw error;
+    }
+  });
+  // Which provider sign-ins the account carries to ADE Cloud (key names only),
+  // for a picker that must say truthfully whether a send works. Null when the
+  // server or the vault didn't say.
+  ipcMain.handle(IPC.cloudCarriedSignIns, async (event): Promise<CloudCarriedSignIns | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudCarriedSignIns)) return null;
+    const answer = await accountApi().accountSignIns().catch((error: unknown) => {
+      logger.warn("cloud.carried_sign_ins_failed", { error: getErrorMessage(error) });
+      return null;
+    });
+    return answer?.carried ?? null;
+  });
   for (const [channel, action, toArgs] of cloudSignInHandlers) {
     ipcMain.handle(channel, async (event, arg?: Record<string, unknown>): Promise<CloudSignInStatus | null> => {
       if (!isTrustedAdeRendererSenderOrWarn(event, logger, channel)) return null;
@@ -270,6 +349,7 @@ export function registerCloudIpc(args: {
   const agentLimits = createCloudAgentLimitsStore({
     vault: () => (credentials.signedIn() ? cloudVaultFromBridge(args.vaultBridge, CLOUD_AGENT_LIMITS_VAULT_KEY) : null),
     machineStore: getMachineStore,
+    accountApi: () => (credentials.signedIn() && directoryBaseUrl() ? accountApi() : null),
     logger,
   });
 
@@ -345,7 +425,13 @@ export function registerCloudIpc(args: {
       return null;
     });
     if (!result) return false;
-    if (result.state === "refused") throw new Error(result.message);
+    // A refusal (hours, a block, too many awake, a delete under way) is an
+    // answer, not a failure: the connect stops with the server's sentence,
+    // which the renderer shows inline and in its toast.
+    if (result.state === "refused") {
+      logger.info("cloud.wake_for_use_refused", { code: result.code ?? null });
+      throw Object.assign(new AdeExpectedError(result.message, "user"), { code: result.code ?? null });
+    }
     if (result.state === "woken") sendToAllWindows(IPC.cloudStatusChanged);
     return result.state === "woken";
   });
@@ -422,12 +508,15 @@ export function registerCloudIpc(args: {
   };
 
   // Account-level, so no pin: every computer answers the same for this account.
-  ipcMain.handle(IPC.cloudGetAccess, async (event): Promise<{ enabled: boolean; signInEnd?: CloudSignInEnd | null }> => {
+  ipcMain.handle(IPC.cloudGetAccess, async (event): Promise<CloudAccessIpcAnswer> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetAccess)) return { enabled: false };
     const enabled = await readAccess();
+    // The same cached ask: the state and the server's sentence for a blocked account.
+    const view = await readCloudAccessView(credentials).catch(() => null);
+    const state = view ? { state: view.state, reason: view.reason, account: view.account } : {};
     // Off: no pass read at all.
-    if (!enabled) return { enabled };
-    return { enabled, signInEnd: await readSignInEnd() };
+    if (!enabled) return { enabled, ...state };
+    return { enabled, ...state, signInEnd: await readSignInEnd() };
   });
 
   ipcMain.handle(IPC.cloudGetStatus, async (event): Promise<CloudStatus | null> => {
@@ -451,18 +540,41 @@ export function registerCloudIpc(args: {
     return result;
   });
 
+  // Agent limits are the account's (`GET/PUT /cloud/limits`), so every
+  // computer and ADE Cloud read the same ones with no computer awake. This
+  // computer's vault copy stays: an older server (404) or no network reads it,
+  // and every write also goes there. Account level: no pin.
+  const serverAgentLimits = async (): Promise<CloudAgentLimits | null> => {
+    if (!credentials.signedIn() || !directoryBaseUrl()) return null;
+    try {
+      const state = await accountApi().agentLimits();
+      return state ? { ...state.limits } as CloudAgentLimits : null;
+    } catch (error) {
+      logger.warn("cloud.agent_limits_server_read_failed", { error: getErrorMessage(error) });
+      return null;
+    }
+  };
+
   ipcMain.handle(IPC.cloudGetAgentLimits, async (event): Promise<CloudAgentLimits | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetAgentLimits)) return null;
-    return await agentLimits.read();
+    return (await serverAgentLimits()) ?? await agentLimits.read();
   });
 
   ipcMain.handle(IPC.cloudSetAgentLimits, async (event, arg: { limits?: Partial<CloudAgentLimits> }): Promise<CloudAgentLimits | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetAgentLimits)) return null;
-    const current = await agentLimits.read();
-    const saved = await agentLimits.write({ ...current, ...(arg?.limits ?? {}) });
-    logger.info("cloud.agent_limits_set", { unattendedSpend: saved.unattendedSpend, machinesPerDay: saved.machinesPerDay });
+    const changes = { ...(arg?.limits ?? {}) };
+    const onServer = await agentLimits.save(changes).catch((error: unknown) => {
+      // IPC keeps only the message: a refusal carries a code, so the card shows it with no Report.
+      if (error instanceof AdeExpectedError && error.adeExpected === "user") {
+        throw new AdeExpectedError(encodeCodedErrorMessage("limits_refused", error.message), "user");
+      }
+      throw error;
+    });
+    // Signed out or an older server: this computer's copy and the account vault item, as before.
+    const answer = onServer ?? await agentLimits.write({ ...(await agentLimits.read()), ...changes });
+    logger.info("cloud.agent_limits_set", { unattendedSpend: answer.unattendedSpend, machinesPerDay: answer.machinesPerDay, onServer: Boolean(onServer) });
     sendToAllWindows(IPC.cloudStatusChanged);
-    return saved;
+    return answer;
   });
 
   /** The server's one sentence, so the renderer shows it without an error class name in front. */

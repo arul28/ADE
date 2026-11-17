@@ -35,7 +35,17 @@ export type CloudBillingAccountClient = Pick<BrowserAccountClient, "cloudRequest
  * adapter has its own namespace. The server's own answer changes rarely.
  */
 const ACCESS_CACHE_MS = 60_000;
-const accessCache = new WeakMap<object, { at: number; userId: string | null; answer: Promise<boolean> }>();
+/** The server's access answer: on or off, and its sentence when off. */
+export type WebCloudAccessAnswer = { enabled: boolean; reason: string | null };
+
+const accessCache = new WeakMap<object, { at: number; userId: string | null; answer: Promise<WebCloudAccessAnswer> }>();
+
+function accessAnswerOf(body: unknown): WebCloudAccessAnswer {
+  const value = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : null;
+  const enabled = value?.enabled === true;
+  const reason = !enabled && typeof value?.reason === "string" ? value.reason.trim().slice(0, 500) : "";
+  return { enabled, reason: reason || null };
+}
 
 const UNREACHABLE = "ADE couldn't reach ADE Cloud. Try again in a moment.";
 const BAD_ANSWER = "ADE Cloud answered with something ADE could not read.";
@@ -123,10 +133,15 @@ export function createWebCloudBilling(accountClient: CloudBillingAccountClient) 
 
     /** The same answer, read at most once a minute; a failed read is not kept. */
     async accessEnabledCached(): Promise<boolean> {
+      return (await this.accessAnswerCached()).enabled;
+    },
+
+    /** The same, with the server's sentence when the account can't use ADE Cloud. */
+    async accessAnswerCached(): Promise<WebCloudAccessAnswer> {
       const userId = accountClient.getSnapshot().userId;
       const kept = accessCache.get(accountClient);
       if (kept && kept.userId === userId && Date.now() - kept.at < ACCESS_CACHE_MS) return await kept.answer;
-      const answer = (async () => record((await ask("GET", CLOUD_PATHS.access, undefined, null)).body)?.enabled === true)();
+      const answer = (async () => accessAnswerOf((await ask("GET", CLOUD_PATHS.access, undefined, null)).body))();
       const entry = { at: Date.now(), userId, answer };
       accessCache.set(accountClient, entry);
       answer.catch(() => {

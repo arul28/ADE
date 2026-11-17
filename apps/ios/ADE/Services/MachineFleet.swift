@@ -435,13 +435,15 @@ final class MachineFleet: ObservableObject {
   /// waits up to `timeout` for a live link. False when it needs the user,
   /// runs out of retries, or is not live in time. A machine that this call
   /// pushed out of a full connected set comes back when the link fails.
-  func connect(machineKey: String, timeout: Duration = .seconds(10)) async -> Bool {
+  /// `wake: false` connects a computer that is up and never wakes an asleep
+  /// one (reading never wakes).
+  func connect(machineKey: String, timeout: Duration = .seconds(10), wake: Bool = true) async -> Bool {
     if isLive(machineKey) { return true }
     // An asleep ADE Cloud computer is woken first and given the time it
     // needs to start. A Connect or Disconnect the user chose meanwhile wins:
     // this older request then changes nothing.
     let choiceBeforeWake = keepLiveChoices
-    let waking = await syncService?.beginCloudWakeIfAsleep(fleetKey: machineKey) ?? false
+    let waking = wake ? (await syncService?.beginCloudWakeIfAsleep(fleetKey: machineKey) ?? false) : false
     defer { if waking { syncService?.endCloudWake(fleetKey: machineKey) } }
     if isLive(machineKey) { return true }
     guard choiceBeforeWake == keepLiveChoices else { return false }
@@ -452,7 +454,7 @@ final class MachineFleet: ObservableObject {
     // it is up. The pairing can wait for minutes, so a Connect or Disconnect
     // the user chose meanwhile still wins.
     if connections[machineKey] == nil {
-      let paired = await syncService?.pairRestingCloudMachine(fleetKey: machineKey, name: name, waking: waking) ?? .skipped
+      let paired = await syncService?.pairRestingCloudMachine(fleetKey: machineKey, name: name, waking: waking, waitsForStart: wake) ?? .skipped
       guard choiceBeforeWake == keepLiveChoices else { return false }
       switch paired {
       case .started: break

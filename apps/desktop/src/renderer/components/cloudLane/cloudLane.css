@@ -257,24 +257,10 @@
 .adecl-deleted-chat-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .adecl-deleted-chat > .adecl-muted { flex: none; white-space: nowrap; }
 
-/* Connections: one row per lane's computer. */
-.adecl-cx-row { display: flex; flex-direction: column; }
-.adecl-cx-main {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 10px;
-  border-radius: 8px;
-}
-.adecl-cx-main:hover { background: var(--kit-hover); }
-.adecl-cx-name { display: flex; flex-direction: column; min-width: 0; }
-.adecl-cx-name b { overflow: hidden; font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.adecl-cx-name span { overflow: hidden; font-size: 11px; color: var(--kit-text-3); text-overflow: ellipsis; white-space: nowrap; }
+/* A lane computer's state dot (Manage lane). */
 .adecl-cx-state { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--kit-text-2); }
 .adecl-cx-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--adec-asleep); }
 .adecl-cx-state[data-awake="true"] i { background: var(--adec-lamp); box-shadow: 0 0 6px color-mix(in srgb, var(--adec-lamp) 60%, transparent); }
-.adecl-cx-more { padding: 0 0 6px 32px; }
 
 /* The change-size dialog uses the ADE Cloud page's size cards (B14-23). */
 .adecl-tier-cards { margin-bottom: 12px; }

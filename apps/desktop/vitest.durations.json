@@ -526,7 +526,7 @@
     "src/main/services/transcription/transcriptionService.test.ts": 78,
     "src/main/services/updates/autoUpdateService.test.ts": 1345,
     "src/main/services/updates/installOnQuit.test.ts": 5,
-    "src/main/services/updates/latestByTrack.test.ts": 5,
+    "src/shared/latestByTrack.test.ts": 5,
     "src/main/services/updates/remoteUpdateInstall.test.ts": 27,
     "src/main/services/updates/runtimeRestartVerification.test.ts": 10,
     "src/main/services/updates/updateTransaction.test.ts": 6,

@@ -3242,7 +3242,7 @@ function setBrowserMockDemoChatRunning(sessionId: string, running: boolean): voi
 /**
  * `?mockCloudLaneMachine=1` (with `?mockCloud=plus`): an ADE Cloud lane
  * computer paired like any machine, under its generated internal name, so the
- * surfaces that list machines can show "Cloud · <lane>" instead.
+ * surfaces that list machines can show "ADE Cloud" instead.
  */
 const MOCK_CLOUD_LANE_ORIGIN = "git@github.com:acme-labs/browser-preview.git";
 

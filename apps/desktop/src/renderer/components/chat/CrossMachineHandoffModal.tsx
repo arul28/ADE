@@ -38,6 +38,7 @@ import {
   applyUnifiedPermissionToNativeControls,
   summarizeNativeControls,
 } from "../../lib/nativeLaunchControls";
+import { ownMoveMachines, useOwnMoveMachines } from "./crossMachineMoveTargets";
 import type { NativeControlState } from "../../lib/draftLaunchJobs";
 import { getPermissionOptions } from "../shared/permissionOptions";
 import { toPermissionPickerOption } from "../shared/permissionModePickerOptions";
@@ -262,7 +263,9 @@ export function CrossMachineHandoffModal({
     );
   }, [destinationDescriptor, modelId, nativeControls, onNativeControlsChange]);
 
-  const machines = useMemo(() => options?.machines ?? [], [options]);
+  // Own computers only: the choose stage shows ADE Cloud once, as a disabled row.
+  const ownMachines = useOwnMoveMachines(options?.machines);
+  const machines = useMemo(() => ownMachines ?? [], [ownMachines]);
   const selectedMachine = useMemo(
     () => machines.find((machine) => machine.machineKey === selectedMachineKey) ?? null,
     [machines, selectedMachineKey],
@@ -281,13 +284,15 @@ export function CrossMachineHandoffModal({
       const next = await withChatPin(pin, (chatPin) => window.ade.agentChat.getCrossMachineHandoffOptions({ sourceSessionId }, chatPin));
       if (request !== loadRequestRef.current) return;
       setOptions(next);
+      // A single ADE Cloud computer is never a pick (D-9).
+      const pickable = ownMoveMachines(next.machines);
       setSelectedMachineKey((current) => {
         // A reload after a branch fix keeps the person's pick.
-        const kept = current ? next.machines.find((machine) => machine.machineKey === current) : undefined;
+        const kept = current ? pickable.find((machine) => machine.machineKey === current) : undefined;
         if (kept && machineAvailable(kept)) return kept.machineKey;
-        const preselected = findMachine(next.machines, preselectedMachine);
+        const preselected = findMachine(pickable, preselectedMachine);
         if (preselected && machineAvailable(preselected)) return preselected.machineKey;
-        return next.machines.find(machineAvailable)?.machineKey ?? null;
+        return pickable.find(machineAvailable)?.machineKey ?? null;
       });
     } catch (loadError) {
       if (request === loadRequestRef.current) setError(errorText(loadError));

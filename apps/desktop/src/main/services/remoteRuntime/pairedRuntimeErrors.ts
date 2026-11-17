@@ -58,6 +58,26 @@ export class PairedRuntimeHelloRejectedError extends Error {
 }
 
 /**
+ * A different machine answered at a saved address: its hello_ok, or the
+ * hello_error it sent, names a device id that is not the paired host's. Its
+ * verdict on this pairing means nothing, so a rejection from it must never
+ * read as "pair it again" or drop the saved pairing.
+ */
+export class PairedRuntimeHostMismatchError extends Error {
+  readonly code = "PAIRED_RUNTIME_HOST_MISMATCH" as const;
+
+  constructor(
+    readonly expectedHostId: string,
+    readonly actualHostId: string,
+  ) {
+    super(
+      `Sync endpoint identity mismatch (expected ${expectedHostId || "unknown"}, received ${actualHostId || "unknown"}).`,
+    );
+    this.name = "PairedRuntimeHostMismatchError";
+  }
+}
+
+/**
  * The host closed this RPC channel because one reply would pass its send
  * budget. The host is alive: it answered, and the next call opens a new
  * channel. A caller must not report the machine as unreachable for it.

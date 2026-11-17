@@ -227,6 +227,7 @@ export {
 };
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore, isValidDpopPublicKey, type SyncPairingRecord } from "./syncPairingStore";
+import { MACHINE_UPDATE_AND_RESTART_ACTION } from "./machineUpdateRemoteCommands";
 import {
   createPairFailureTracker,
   type PairFailureSubject,
@@ -872,6 +873,13 @@ const CONCURRENT_READ_COMMAND_ACTIONS: ReadonlySet<string> = new Set([
   "prs.refresh",
   "ai.cursorCloudFleet",
 ]);
+
+/**
+ * Commands that run longer than the message timeout and answer after their
+ * envelope returns: `machine.updateAndRestart` waits on a download, an install
+ * and the app's answer, for up to fifteen minutes.
+ */
+const DETACHED_COMMAND_ACTIONS: ReadonlySet<string> = new Set([MACHINE_UPDATE_AND_RESTART_ACTION]);
 
 export function isConcurrentReadEnvelope(envelope: ParsedSyncEnvelope): boolean {
   // Opening a chat reads its transcript and records the subscription on this
@@ -7386,132 +7394,151 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       message: `Executing ${payload.action}.`,
     });
 
-    try {
-      const executor = shouldRouteToProject && args.remoteCommandExecutor
-        ? args.remoteCommandExecutor
-        : remoteCommandService;
-      const surface = usageClientSurfaceFromPeer(peer.metadata?.deviceType, peer.metadata?.platform);
-      const rawCommandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
-        ? payload.args as Record<string, unknown>
-        : {};
-      const canonicalProjectId = matchesHostProject
-        ? hostProjectId
-        : requestedProjectId;
-      const preparedAnalytics = prepareProductAnalyticsRemoteCommand({
-        action: payload.action,
-        args: rawCommandArgs,
-        surface,
-        projectId: canonicalProjectId,
-        clientEnabled: peer.productAnalyticsEnabled,
-      });
-      peer.productAnalyticsEnabled = preparedAnalytics.clientEnabled;
-      const surfaceBoundPayload = preparedAnalytics.args === rawCommandArgs
-        ? payload
-        : { ...payload, args: preparedAnalytics.args };
-      const routedPayload = matchesHostProject && hostProjectId
-        ? { ...surfaceBoundPayload, projectId: hostProjectId }
-        : surfaceBoundPayload;
-      const executionStartedAtMs = Date.now();
-      const stopTrackingCommand = trackBrainLoopWatchdogCommand(payload.action);
-      // Only the Mac Desktop stream methods read the sink, and a subscription
-      // outlives the command that created it, so the sink closes over the peer
-      // rather than the command's own reply path. Every `macDesktop.*` command
-      // also gets the connection id, which the takeover handlers derive the
-      // lease's controller id from — the stream fan-out is not a requirement
-      // for control, so the id is passed independently of the sink.
-      const macDesktopConnectionId =
-        peer.authenticated && payload.action.startsWith("macDesktop.")
-          ? peer.macDesktopConnectionId
-          : undefined;
-      const macDesktopStreamSink: MacDesktopSyncStreamSink | undefined =
-        macDesktopSyncStream && macDesktopConnectionId
-          ? {
-              connectionId: macDesktopConnectionId,
-              // Hand the transport's own answer back: `send` refuses once the
-              // socket is over its 4 MiB gate, and the fan-out must then skip
-              // the picture to the next keyframe instead of pretending the
-              // record went out.
-              sendRecord: (record) => send(peer, "macDesktop.streamRecord", record),
-              sendEnded: (ended) => {
-                send(peer, "macDesktop.streamEnded", ended);
-              },
-              pendingBytes: () => peer.ws.bufferedAmount,
-            }
-          : undefined;
-      // App Control frames ride the same per-socket id. The subscribe handler
-      // pushes frames through the sink; unsubscribe reads only its connection
-      // id, so a connection can end its own streams and never another's.
-      const appControlStreamSink: AppControlSyncStreamSink | undefined =
-        args.appControlSyncStream
-        && peer.authenticated
-        && (payload.action === "appControl.streamSubscribe" || payload.action === "appControl.streamUnsubscribe")
-          ? {
-              connectionId: peer.macDesktopConnectionId,
-              sendFrame: (frame) => send(peer, "appControl.streamFrame", frame),
-              sendEnded: (ended) => {
-                send(peer, "appControl.streamEnded", ended);
-              },
-              pendingBytes: () => peer.ws.bufferedAmount,
-              isClosed: () => peer.ws.readyState !== WebSocket.OPEN,
-            }
-          : undefined;
-      let created: unknown;
+    const execute = async (): Promise<void> => {
       try {
-        created = preparedAnalytics.captureDisabled
-          ? { accepted: false, reason: "disabled" }
-          : await executor.execute(routedPayload, {
-              signal,
-              ...(macDesktopConnectionId ? { connectionId: macDesktopConnectionId } : {}),
-              ...(macDesktopStreamSink ? { macDesktopStream: macDesktopStreamSink } : {}),
-              ...(appControlStreamSink ? { appControlStream: appControlStreamSink } : {}),
-            });
-        if (payload.action === "files.writeTextAtomic") args.onRemoteFileWrite?.();
-      } finally {
-        stopTrackingCommand();
-        const durationMs = Math.max(0, Date.now() - executionStartedAtMs);
-        if (durationMs >= slowCommandThresholdMs) {
-          args.logger.warn("sync_host.command_slow", {
-            action: payload.action,
-            durationMs,
-            peerKind: surface,
-          });
-        }
-      }
-      if (
-        matchesHostProject
-        && !payload.action.startsWith("analytics.")
-      ) {
-        const commandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
+        const executor = shouldRouteToProject && args.remoteCommandExecutor
+          ? args.remoteCommandExecutor
+          : remoteCommandService;
+        const surface = usageClientSurfaceFromPeer(peer.metadata?.deviceType, peer.metadata?.platform);
+        const rawCommandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
           ? payload.args as Record<string, unknown>
           : {};
-        const separator = payload.action.indexOf(".");
-        const actionDomain = separator > 0 ? payload.action.slice(0, separator) : payload.action;
-        const actionName = separator > 0 ? payload.action.slice(separator + 1) : "";
-        const usageAction = actionName
-          ? usageActionFromRpcDomain(actionDomain, actionName)
-          : payload.action;
-        recordUsageInteraction(args.db, {
-          projectId: hostProjectId,
-          client: surface,
-          action: usageAction,
-          feature: usageAction.split(".", 1)[0] ?? "other",
-          sessionId: toOptionalString(commandArgs.sessionId),
-          analyticsEligible:
-            peer.productAnalyticsEnabled
-            && args.productAnalyticsService?.getStatus().effective === true,
+        const canonicalProjectId = matchesHostProject
+          ? hostProjectId
+          : requestedProjectId;
+        const preparedAnalytics = prepareProductAnalyticsRemoteCommand({
+          action: payload.action,
+          args: rawCommandArgs,
+          surface,
+          projectId: canonicalProjectId,
+          clientEnabled: peer.productAnalyticsEnabled,
         });
+        peer.productAnalyticsEnabled = preparedAnalytics.clientEnabled;
+        const surfaceBoundPayload = preparedAnalytics.args === rawCommandArgs
+          ? payload
+          : { ...payload, args: preparedAnalytics.args };
+        const routedPayload = matchesHostProject && hostProjectId
+          ? { ...surfaceBoundPayload, projectId: hostProjectId }
+          : surfaceBoundPayload;
+        const executionStartedAtMs = Date.now();
+        const stopTrackingCommand = trackBrainLoopWatchdogCommand(payload.action);
+        // Only the Mac Desktop stream methods read the sink, and a subscription
+        // outlives the command that created it, so the sink closes over the peer
+        // rather than the command's own reply path. Every `macDesktop.*` command
+        // also gets the connection id, which the takeover handlers derive the
+        // lease's controller id from — the stream fan-out is not a requirement
+        // for control, so the id is passed independently of the sink.
+        const macDesktopConnectionId =
+          peer.authenticated && payload.action.startsWith("macDesktop.")
+            ? peer.macDesktopConnectionId
+            : undefined;
+        const macDesktopStreamSink: MacDesktopSyncStreamSink | undefined =
+          macDesktopSyncStream && macDesktopConnectionId
+            ? {
+                connectionId: macDesktopConnectionId,
+                // Hand the transport's own answer back: `send` refuses once the
+                // socket is over its 4 MiB gate, and the fan-out must then skip
+                // the picture to the next keyframe instead of pretending the
+                // record went out.
+                sendRecord: (record) => send(peer, "macDesktop.streamRecord", record),
+                sendEnded: (ended) => {
+                  send(peer, "macDesktop.streamEnded", ended);
+                },
+                pendingBytes: () => peer.ws.bufferedAmount,
+              }
+            : undefined;
+        // App Control frames ride the same per-socket id. The subscribe handler
+        // pushes frames through the sink; unsubscribe reads only its connection
+        // id, so a connection can end its own streams and never another's.
+        const appControlStreamSink: AppControlSyncStreamSink | undefined =
+          args.appControlSyncStream
+          && peer.authenticated
+          && (payload.action === "appControl.streamSubscribe" || payload.action === "appControl.streamUnsubscribe")
+            ? {
+                connectionId: peer.macDesktopConnectionId,
+                sendFrame: (frame) => send(peer, "appControl.streamFrame", frame),
+                sendEnded: (ended) => {
+                  send(peer, "appControl.streamEnded", ended);
+                },
+                pendingBytes: () => peer.ws.bufferedAmount,
+                isClosed: () => peer.ws.readyState !== WebSocket.OPEN,
+              }
+            : undefined;
+        let created: unknown;
+        try {
+          created = preparedAnalytics.captureDisabled
+            ? { accepted: false, reason: "disabled" }
+            : await executor.execute(routedPayload, {
+                signal,
+                ...(macDesktopConnectionId ? { connectionId: macDesktopConnectionId } : {}),
+                ...(macDesktopStreamSink ? { macDesktopStream: macDesktopStreamSink } : {}),
+                ...(appControlStreamSink ? { appControlStream: appControlStreamSink } : {}),
+                // Credits an update to the paired device, never the client's claim.
+                ...(payload.action.startsWith("machine.") ? { requester: peer.pairingRecord } : {}),
+              });
+          if (payload.action === "files.writeTextAtomic") args.onRemoteFileWrite?.();
+        } finally {
+          stopTrackingCommand();
+          const durationMs = Math.max(0, Date.now() - executionStartedAtMs);
+          if (durationMs >= slowCommandThresholdMs) {
+            args.logger.warn("sync_host.command_slow", {
+              action: payload.action,
+              durationMs,
+              peerKind: surface,
+            });
+          }
+        }
+        if (
+          matchesHostProject
+          && !payload.action.startsWith("analytics.")
+        ) {
+          const commandArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
+            ? payload.args as Record<string, unknown>
+            : {};
+          const separator = payload.action.indexOf(".");
+          const actionDomain = separator > 0 ? payload.action.slice(0, separator) : payload.action;
+          const actionName = separator > 0 ? payload.action.slice(separator + 1) : "";
+          const usageAction = actionName
+            ? usageActionFromRpcDomain(actionDomain, actionName)
+            : payload.action;
+          recordUsageInteraction(args.db, {
+            projectId: hostProjectId,
+            client: surface,
+            action: usageAction,
+            feature: usageAction.split(".", 1)[0] ?? "other",
+            sessionId: toOptionalString(commandArgs.sessionId),
+            analyticsEligible:
+              peer.productAnalyticsEnabled
+              && args.productAnalyticsService?.getStatus().effective === true,
+          });
+        }
+        // Create-in-place (possibly into another project) adds a lane/chat row the
+        // hub must see; nudge the roster (coalesced, no-op without subscribers).
+        if (ROSTER_DIRTYING_COMMAND_ACTIONS.has(payload.action)) markRosterDirty();
+        sendResult(acceptedRecord, {
+          commandId,
+          ok: true,
+          result: decorateCommandResult(payload.action, created),
+        });
+      } catch (error) {
+        sendResult(acceptedRecord, commandErrorResult(commandId, error));
       }
-      // Create-in-place (possibly into another project) adds a lane/chat row the
-      // hub must see; nudge the roster (coalesced, no-op without subscribers).
-      if (ROSTER_DIRTYING_COMMAND_ACTIONS.has(payload.action)) markRosterDirty();
-      sendResult(acceptedRecord, {
-        commandId,
-        ok: true,
-        result: decorateCommandResult(payload.action, created),
+    };
+    // A command that runs for minutes (an update downloading and installing)
+    // answers off this peer's queue: its ack is out, the result reaches the
+    // command record when it lands, and the message timeout never closes the
+    // socket the answer comes back on.
+    if (DETACHED_COMMAND_ACTIONS.has(payload.action)) {
+      void execute().catch((error) => {
+        args.logger.warn("sync_host.command_detached_failed", {
+          action: payload.action,
+          commandId,
+          errorType: error instanceof Error ? error.name : typeof error,
+        });
       });
-    } catch (error) {
-      sendResult(acceptedRecord, commandErrorResult(commandId, error));
+      return;
     }
+    await execute();
   }
 
   function rejectProjectScopedEnvelope(

@@ -259,7 +259,9 @@ extension SyncService {
   func startOnCandidates(for project: AccountProject) -> [StartOnCandidate] {
     let candidates = startOnCandidateList(
       project: project,
-      machines: AccountService.shared.machines,
+      // A cloud lane's computer holds that one lane: it is no place to
+      // start another. A new cloud lane starts from Work's new chat.
+      machines: AccountService.shared.machines.filter { !settingsMachineIsCloud($0, syncService: self) },
       phoneKey: { self.startOnPhoneKey(for: $0) },
       isLive: { self.startOnIsLive($0) }
     )
