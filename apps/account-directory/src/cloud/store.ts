@@ -538,6 +538,29 @@ export function closedComputerStatements(
     // Before the close below clears the lane's facts.
     ...(args.reason === "account_deleted" ? [] : [keepLaneStatement(env, computer.instance_id, now)]),
     ...markDeletedStatements(env, computer, now),
+    ...forgetMachineStatements(env, computer, now),
+  ];
+}
+
+/**
+ * A deleted computer leaves the account's machine list, as a machine the person
+ * removes does: revoked (so its key can't register again) and off the roster.
+ * The desktop did this itself after its own deletes; a delete from the web, the
+ * phone or the server (idle cleanup, a sign-in that never finished) left it
+ * listed as an offline machine. Kept when another live computer carries the
+ * same key (a move or a copy of its files).
+ */
+function forgetMachineStatements(env: CloudDb, computer: ComputerRow, now: number): D1PreparedStatement[] {
+  if (!computer.machine_key) return [];
+  const unshared = "not exists (select 1 from cloud_computers where machine_key = ? and instance_id <> ? and deleted_at is null)";
+  return [
+    env.DB.prepare(`
+      insert into revoked_machines (user_id, machine_key, device_id, revoked_at)
+      select user_id, machine_key, device_id, ? from machines where user_id = ? and machine_key = ? and ${unshared}
+      on conflict (user_id, machine_key) do update set revoked_at = excluded.revoked_at
+    `).bind(now, computer.user_id, computer.machine_key, computer.machine_key, computer.instance_id),
+    env.DB.prepare(`delete from machines where user_id = ? and machine_key = ? and ${unshared}`)
+      .bind(computer.user_id, computer.machine_key, computer.machine_key, computer.instance_id),
   ];
 }
 
