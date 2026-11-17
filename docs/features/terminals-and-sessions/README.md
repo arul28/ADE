@@ -2813,9 +2813,13 @@ not affect canonical session state; iOS stores them for sync compatibility.
    chat service ends its chats at rest as `completed` on the way out
    (`chatHasWorkInFlightAtStop`); the host ends every other row it still owns
    as `detached`, the state a crash leaves, so restart recovery resumes it. A
-   desktop quit decides each chat right before its own disposal, and only for
-   rows this process owns: a chat whose runtime another brain holds keeps the
-   state it had.
+   desktop project close or quit goes through `disposeAll`, which records
+   `completed` only for a chat at rest whose row this process owns and
+   `detached` for everything else in its list — including a chat whose runtime
+   another brain holds, which keeps the `detached` a stop has always written
+   rather than being marked completed. The brain's shutdown (and the desktop's
+   emergency path) go through `forceDisposeAll`, which ends only rows this
+   process owns as `completed` and leaves the rest to the host step above.
 
    **Rows an earlier clean stop stranded.** `closeStrandedLocalSessions` runs
    before the reconcile at every start and rescan. The cr-sqlite clock proves
