@@ -53,6 +53,8 @@ const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 export const DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS = DEFAULT_HEARTBEAT_INTERVAL_MS * 3;
 /** How long a dead owner of `detached` session rows stays in the registry (`pruneStale`). */
 const DETACHED_OWNER_KEEP_MS = 6 * 60 * 60_000;
+/** `process.uptime` and ISO stamps can differ by a little; a run this close to our start is not called dead. */
+const PROCESS_START_SLACK_MS = 1_000;
 
 function defaultPidLivenessCheck(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
@@ -75,6 +77,8 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS;
   const pidLivenessCheck = options.pidLivenessCheck ?? defaultPidLivenessCheck;
+  /** When this OS process started (`process.uptime`): an identity with its pid from before then is another run. */
+  const processStartedMs = Date.now() - process.uptime() * 1000;
 
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let started = false;
@@ -239,10 +243,19 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
      * startup rescan closes their rows at once instead of waiting out the
      * fresh-activity grace, so a chat a crash cut off continues within
      * seconds (`reconcileStaleRunningSessions`).
+     *
+     * A run with this process's own pid that started before this OS process
+     * did is dead too: this process holds the pid now. A restarted container
+     * (an ADE Cloud computer) gives the brain the same pid every boot, so
+     * without this its chats waited the whole grace after each restart. A
+     * registry this process opened earlier (a project reopened) started after
+     * it and stays out. The table is local, never synced.
      */
     listDeadProcessIdentities(): RuntimeProcessIdentity[] {
       return this.listKnownProcessIdentities().filter((identity) => (
-        identity.pid !== pid && !pidLivenessCheck(identity.pid)
+        identity.pid === pid
+          ? identity.startedAt !== ownStartedAt && Date.parse(identity.startedAt) < processStartedMs - PROCESS_START_SLACK_MS
+          : !pidLivenessCheck(identity.pid)
       ));
     },
 
