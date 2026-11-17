@@ -3086,6 +3086,10 @@ function parseAgentChatRespondToInputArgs(value: Record<string, unknown>): Agent
   if (typeof value.responseText === "string" && value.responseText.trim().length > 0) {
     parsed.responseText = value.responseText.trim();
   }
+  // A plan handoff creates a brand-new chat, so it is spelled out rather than
+  // inferred from a decision: an older host that ignores it still implements
+  // the plan in the planning chat, which is the safe answer.
+  if (value.planAction === "new_chat") parsed.planAction = "new_chat";
   return parsed;
 }
 
@@ -5849,8 +5853,13 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     return { ok: true };
   });
   register("chat.respondToInput", { viewerAllowed: true, queueable: false }, async (payload) => {
-    await requireService(args.agentChatService, "Agent chat service not available.").respondToInput(parseAgentChatRespondToInputArgs(payload));
-    return { ok: true };
+    const result = await requireService(args.agentChatService, "Agent chat service not available.")
+      .respondToInput(parseAgentChatRespondToInputArgs(payload));
+    // The plan handoff answers with the chat it created so the phone and the web
+    // client can open it; every other answer is a plain acknowledgement.
+    return result?.implementationSessionId
+      ? { ok: true, implementationSessionId: result.implementationSessionId }
+      : { ok: true };
   });
   // Throwing a non-blocking question away. Viewer-allowed for the same reason
   // answering one is: it changes nothing on disk and nothing in the repo, and a

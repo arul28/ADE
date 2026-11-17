@@ -671,6 +671,7 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
       case "chat.approve":
       case "chat.respondToInput":
       case "chat.dismissPendingInput": {
+        if (gateArgs.planAction != null) return laneShareRefuse("Only the owner can start an implementation chat from a plan.", "lane_share_owner_only");
         // "For the whole session" saves the choice: Claude writes the
         // suggested rules to its settings, Codex keeps the grant or the MCP
         // answer. That changes this computer's setup, so only the owner does it.

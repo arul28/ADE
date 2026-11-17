@@ -43,7 +43,7 @@ function descriptorToEntry(d: ModelDescriptor, overrides?: { recommended?: boole
 }
 
 const DEFAULT_CLAUDE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-5";
-const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-6-astra";
+const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-6.2-sol";
 
 export const ALL_MODELS: ModelEntry[] = MODEL_REGISTRY
   .filter((m) => !m.deprecated)

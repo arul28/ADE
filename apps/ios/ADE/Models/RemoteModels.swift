@@ -5599,6 +5599,16 @@ struct AgentChatRespondToInputRequest: Codable, Equatable {
   var decision: AgentChatApprovalDecision?
   var answers: [String: AgentChatInputAnswerValue]?
   var responseText: String?
+  /// `"new_chat"`: implement the approved Codex plan in a chat of its own.
+  /// Omitted by every other answer, so an older host still implements in place.
+  var planAction: String?
+}
+
+/// `chat.respondToInput`'s answer. Only a plan handoff fills it in; every other
+/// answer is the bare `{ok: true}` older hosts have always sent.
+struct AgentChatRespondToInputResult: Decodable, Equatable {
+  var implementationSessionId: String?
+  var ok: Bool?
 }
 
 /// Throw a non-blocking question away without answering it. The host refuses

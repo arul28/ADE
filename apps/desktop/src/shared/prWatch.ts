@@ -163,6 +163,9 @@ export type PrWatchEvaluation = {
 
 export type PrWatchStopReason = "merged" | "closed" | "unreadable" | "exhausted" | "unwatched" | "chat_gone";
 
+/** Stops that end a watch by themselves: no later pass can deliver their news. */
+const TERMINAL_PR_WATCH_STOPS: readonly PrWatchStopReason[] = ["merged", "closed", "unreadable"];
+
 export function initialPrWatchState(startedAtIso: string, headSha: string | null): PrWatchState {
   return {
     headSha,
@@ -244,6 +247,41 @@ function mergeHeld(held: PrWatchChange[], incoming: PrWatchChange[]): PrWatchCha
   if (lastCheckKind === "checks_passed") return out.filter((change) => change.kind !== "checks_failed");
   if (lastCheckKind === "checks_failed") return out.filter((change) => change.kind !== "checks_passed");
   return out;
+}
+
+/**
+ * Park a wake the chat cannot take yet.
+ *
+ * A wake handed to a chat that is mid-turn becomes a queued message, and a
+ * queue of wakes is exactly what an agent must not come back to: each one runs
+ * its own turn to say the same PR moved. Folded into `held`, they arrive as a
+ * single update when the turn ends, and the next pass merges anything newer on
+ * top of them.
+ *
+ * Nothing is spent here: `commentOnlyWakes` is the budget for wakes the chat
+ * actually saw, so a held update cannot exhaust a watch that never spoke, and
+ * a wake that would have been the last of that budget is held too — it is
+ * delivered, and stops the watch, at the boundary like any other.
+ *
+ * A merged, closed or unreadable pull request is the exception: it is the last
+ * word on the watch, and holding it would mean no pass ever delivers it.
+ */
+export function holdPrWatchChanges(
+  evaluation: PrWatchEvaluation,
+  previous: PrWatchState,
+): PrWatchEvaluation {
+  if (evaluation.changes.length === 0) return evaluation;
+  if (evaluation.stop && TERMINAL_PR_WATCH_STOPS.includes(evaluation.stop)) return evaluation;
+  return {
+    changes: [],
+    next: {
+      ...evaluation.next,
+      commentOnlyWakes: previous.commentOnlyWakes,
+      held: mergeHeld(evaluation.next.held, evaluation.changes),
+    },
+    exhausted: false,
+    stop: null,
+  };
 }
 
 /** Remarks newer than what the watch already told, and the new high-water mark. */
