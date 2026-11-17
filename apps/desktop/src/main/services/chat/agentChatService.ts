@@ -29694,9 +29694,11 @@ export function createAgentChatService(args: {
   const assertExpectedTurn = (managed: ManagedChatSession, expected: string | null | undefined): void => {
     if (expected === undefined) return;
     // A turn shown before its runtime exists (`showTurnBeforeRuntime`) has no
-    // active runtime turn yet: a Stop that names it must still match.
+    // active runtime turn yet: a Stop that names it must still match. A record
+    // a Stop already ended is not that turn, and the chat is idle again.
+    const shownBeforeRuntime = turnsShownBeforeRuntime.get(managed.session.id);
     const current = activeTurnIdForManaged(managed)
-      ?? turnsShownBeforeRuntime.get(managed.session.id)?.turnId
+      ?? (shownBeforeRuntime && !shownBeforeRuntime.stopped ? shownBeforeRuntime.turnId : null)
       ?? null;
     const running = current != null || runtimeMidTurn(managed) || managed.session.status === "active";
     if (expected === null ? !running : current === expected) return;

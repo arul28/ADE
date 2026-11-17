@@ -27,6 +27,8 @@ let cached: { at: number; models: DroidExecHelpModelRow[] } | null = null;
 let inflight: Promise<DroidExecHelpModelRow[]> | null = null;
 let warmInFlight = false;
 let lastWarmAttemptAt = 0;
+/** Bumped by a cache clear, so a probe that started before it installs nothing. */
+let cacheGeneration = 0;
 const TTL_MS = 120_000;
 // Serve last-known-good rows well past the freshness window (revalidating in
 // the background) so passive consumers never lose models between probes.
@@ -193,6 +195,10 @@ async function listDroidModelsFromCli(droidPath: string): Promise<DroidExecHelpM
 
 async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExecHelpModelRow[]> {
   const now = Date.now();
+  // A sign-in change clears the cache while this probe is in flight; its rows
+  // describe the account that was signed in before, so neither the memory nor
+  // the disk answer may be installed.
+  const generation = cacheGeneration;
   try {
     // Stamped before the probe: the answer describes these files, and a change
     // during it must not be recorded as if they still matched.
@@ -206,8 +212,9 @@ async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExec
     if (helpResult.status === 0) {
       const rows = parseDroidExecHelpModels(helpResult.stdout ?? "");
       if (rows.length) {
-        cached = { at: now, models: rows };
-        writeDiskModels(droidPath, rows, { binary: binaryBefore, settings: settingsBefore });
+        const current = generation === cacheGeneration;
+        if (current) cached = { at: now, models: rows };
+        if (current) writeDiskModels(droidPath, rows, { binary: binaryBefore, settings: settingsBefore });
         return rows;
       }
     }
@@ -368,6 +375,7 @@ async function listDroidModelsFromSdk(droidPath: string): Promise<DroidExecHelpM
 }
 
 export function clearDroidCliModelsCache(): void {
+  cacheGeneration += 1;
   clearDiskModels();
   cached = null;
   inflight = null;

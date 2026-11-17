@@ -4458,6 +4458,8 @@ export function createUsageTrackingService({
   const githubStatsInFlight = new Map<string, Promise<GitHubActivityStats>>();
   const statsRefreshInFlight = new Map<string, Promise<void>>();
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A poll round finished, so an empty panel now means "nothing to show", not "not read yet". */
+  let hasCompletedPoll = false;
   let pollingEnabled = false;
   let inFlightPoll: Promise<UsageSnapshot> | null = null;
   let inFlightPollReason: UsageRefreshReason | null = null;
@@ -5993,6 +5995,7 @@ export function createUsageTrackingService({
         };
 
         const published = publishSnapshot(snapshot);
+        hasCompletedPoll = true;
         void writeCachedUsageSnapshot(published, logger);
 
         logger.debug("usage.poll.complete", {
@@ -6099,10 +6102,11 @@ export function createUsageTrackingService({
     demandLeaseUntilMs = nowMs + QUOTA_DEMAND_LEASE_MS;
     if (pollTimer) scheduleNextPoll();
     const snapshot = getUsageSnapshot();
-    // No windows means no completed poll (a fresh launch, or the first poll
-    // still waiting out the launch quiet period): the person is looking at an
-    // empty panel, so poll now whatever `lastPolledAt` says.
-    if (snapshot.windows.length === 0 || nowMs - Date.parse(snapshot.lastPolledAt) > ACTIVE_POLL_INTERVAL_MS) {
+    // A poll that has not finished (a fresh launch, or the first one still
+    // waiting out the launch quiet period) leaves the panel empty: the person
+    // is looking at it, so poll now. A completed poll that legitimately found
+    // no windows is not a reason to poll again on every open.
+    if (!hasCompletedPoll || nowMs - Date.parse(snapshot.lastPolledAt) > ACTIVE_POLL_INTERVAL_MS) {
       void poll({ reason: "automatic" }).catch(() => {});
     }
     // Someone is looking at limits: pull the other machines' readings too, so a

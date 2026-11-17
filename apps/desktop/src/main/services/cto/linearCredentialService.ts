@@ -548,6 +548,10 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const importLegacyTokenIfNeeded = (): void => {
     if (legacyImportDone) return;
+    // The import ends in a write that cannot run while the OS credential store
+    // has not answered. Leave the flag unset so the next read retries, instead
+    // of recording an import that never happened.
+    if (isSecureStorageCheckPending()) return;
     legacyImportDone = true;
     const legacyPath = path.join(args.adeDir, "local.secret.yaml");
     try {
