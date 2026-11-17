@@ -1480,6 +1480,8 @@ export type AccountLaneIndexRow = AccountLaneIndexEntry & {
   /** The machine's name as the directory shows it; null when the directory has no row for it. */
   machineName: string | null;
   online: boolean;
+  /** The machine is one of the account's ADE Cloud computers (a resting one is asleep, not offline). Older servers leave it out. */
+  cloud?: boolean;
   updatedAt: number;
 };
 

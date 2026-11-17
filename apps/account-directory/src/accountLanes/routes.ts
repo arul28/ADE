@@ -213,7 +213,7 @@ async function handleList(url: URL, env: AccountLaneEnv, userId: string, now: nu
     where.push("l.pr_number = ?");
     binds.push(pr);
   }
-  // The machine's name and when it was last seen from the roster; a resting cloud computer is offline.
+  // The machine's name and when it was last seen from the roster. A resting cloud computer reads `online:false` and `cloud:true`.
   const rows = (await env.DB.prepare(`
     select l.machine_key, l.lane_id, l.project_id, l.project_key, l.name, l.branch, l.pr_number, l.is_primary, l.updated_at,
       m.name as machine_name, m.last_seen_at,
@@ -237,6 +237,7 @@ async function handleList(url: URL, env: AccountLaneEnv, userId: string, now: nu
       machineName: row.machine_name,
       online: typeof row.last_seen_at === "number" && now - row.last_seen_at <= windowMs
         && (row.cloud_status == null || row.cloud_status === "running" || row.cloud_status === "restarting" || row.cloud_status === "updating"),
+      cloud: row.cloud_status != null,
       updatedAt: row.updated_at,
     })),
   });
