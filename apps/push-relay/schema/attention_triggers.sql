@@ -22,6 +22,24 @@ begin
   select raise(abort, 'attention account device limit reached');
 end;
 
+-- An expired row that renews becomes live again, so the same live-lease limit
+-- applies. An already-live row may renew freely.
+drop trigger if exists attention_devices_enforce_user_limit_update;
+
+create trigger attention_devices_enforce_user_limit_update
+before update of lease_expires_at on attention_devices
+when old.lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  and new.lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+and (
+  select count(*)
+  from attention_devices
+  where user_id = new.user_id
+    and lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+) >= 32
+begin
+  select raise(abort, 'attention account device limit reached');
+end;
+
 create trigger if not exists attention_device_ownership_reject_stale
 before insert on attention_device_ownership
 when exists (
