@@ -102,6 +102,19 @@ it("holds a busy chat's news and delivers it once when the turn ends", () => {
   // A terminal change is never held: no later pass could release it.
   const merged = step("watch", state, { pr: { state: "merged" }, nowMs: T0 + 60_000 });
   expect(holdPrWatchChanges(merged, state)).toBe(merged);
+
+  // So is a wake that would spend the last of the comment-only budget: held, it
+  // is delivered and stops the watch at the boundary, instead of landing in a
+  // queue and stopping the watch with news the chat never read.
+  const nearlySpent = { ...state, commentOnlyWakes: PR_WATCH_COMMENT_ONLY_WAKE_LIMIT - 1 };
+  const lastOne = step("watch", nearlySpent, { remarks: first, nowMs: T0 + 60_000 });
+  expect(lastOne.stop).toBe("exhausted");
+  const heldLast = holdPrWatchChanges(lastOne, nearlySpent);
+  expect(heldLast.stop).toBeNull();
+  expect(heldLast.changes).toEqual([]);
+  const finalWake = step("watch", heldLast.next, { remarks: first, nowMs: T0 + 120_000 });
+  expect(kinds(finalWake)).toEqual(["remarks"]);
+  expect(finalWake.stop).toBe("exhausted");
 });
 
 describe("evaluatePrWatch", () => {

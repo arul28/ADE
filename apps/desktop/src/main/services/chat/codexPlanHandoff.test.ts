@@ -112,9 +112,15 @@ describe("codexPlanHandoff", () => {
     // is proof of neither delivery nor loss, so it must not settle the approval.
     const unreadable = deps([]);
     unreadable.args.send.mockRejectedValueOnce(new Error("app-server went away"));
-    unreadable.args.hasPlan.mockResolvedValue("unknown");
+    // Confirmed absent before the send — otherwise the pre-send check answers
+    // and the failing send this case is about never runs — then unreadable
+    // afterwards, which is what a destination lost to a failed write looks like.
+    unreadable.args.hasPlan
+      .mockResolvedValueOnce("absent")
+      .mockResolvedValue("unknown");
     const second = createCodexPlanDecisions();
     await expect(second.handoff(unreadable.args)).rejects.toThrow("Couldn't read the implementation chat");
+    expect(unreadable.args.send).toHaveBeenCalledTimes(1);
     expect(unreadable.records[0]?.submitted).toBe(false);
     expect(unreadable.args.complete).not.toHaveBeenCalled();
   });

@@ -76173,8 +76173,13 @@ export function createAgentChatService(args: {
       // The readable path, which is the `.gz` itself once storage has compressed
       // this chat: a destination retried days later is usually compressed, and
       // the plain file a compression left behind is cleaned up.
+      // Appends that threw are dropped, never replayed, so a transcript that
+      // lost its first write can read as a chat without the plan. That is not
+      // absence: the turn may have been accepted, and deleting the destination
+      // here would throw the work away.
+      const appendTarget = path.join(chatTranscriptsDir, `${sessionId}.jsonl`);
       const transcriptPath = await resolveTranscriptPathForSessionId(sessionId);
-      if (!transcriptPath) return "absent";
+      if (!transcriptPath) return transcriptWritesSettled(appendTarget) ? "absent" : "unknown";
       const head = await readHistoryFileRange(transcriptPath, 0, PLAN_HANDOFF_HEAD_BYTES);
       for (const line of head.toString("utf8").split("\n")) {
         // The cheap test first: only a line naming this card can be the marker.
@@ -76190,7 +76195,8 @@ export function createAgentChatService(args: {
       }
       // A head that filled the whole budget may have been cut before the marker,
       // so say so rather than claiming the plan is absent.
-      return head.length < PLAN_HANDOFF_HEAD_BYTES ? "absent" : "unknown";
+      if (head.length >= PLAN_HANDOFF_HEAD_BYTES) return "unknown";
+      return transcriptWritesSettled(appendTarget) ? "absent" : "unknown";
     } catch {
       return "unknown";
     }

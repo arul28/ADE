@@ -289,7 +289,6 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
     // its own turn; held here, they arrive as one update when the turn ends.
     // The terminal watch gates on the same liveness.
     const evaluation = evaluated.changes.length > 0
-      && !evaluated.stop
       && await chatIsMidTurn(deps, record.sessionId)
       ? holdPrWatchChanges(evaluated, record.state)
       : evaluated;

@@ -163,6 +163,9 @@ export type PrWatchEvaluation = {
 
 export type PrWatchStopReason = "merged" | "closed" | "unreadable" | "exhausted" | "unwatched" | "chat_gone";
 
+/** Stops that end a watch by themselves: no later pass can deliver their news. */
+const TERMINAL_PR_WATCH_STOPS: readonly PrWatchStopReason[] = ["merged", "closed", "unreadable"];
+
 export function initialPrWatchState(startedAtIso: string, headSha: string | null): PrWatchState {
   return {
     headSha,
@@ -256,15 +259,19 @@ function mergeHeld(held: PrWatchChange[], incoming: PrWatchChange[]): PrWatchCha
  * top of them.
  *
  * Nothing is spent here: `commentOnlyWakes` is the budget for wakes the chat
- * actually saw, so a held update cannot exhaust a watch that never spoke. A
- * terminal change (merged, closed, unreadable) is never held back — there is no
- * later pass to release it from.
+ * actually saw, so a held update cannot exhaust a watch that never spoke, and
+ * a wake that would have been the last of that budget is held too — it is
+ * delivered, and stops the watch, at the boundary like any other.
+ *
+ * A merged, closed or unreadable pull request is the exception: it is the last
+ * word on the watch, and holding it would mean no pass ever delivers it.
  */
 export function holdPrWatchChanges(
   evaluation: PrWatchEvaluation,
   previous: PrWatchState,
 ): PrWatchEvaluation {
-  if (evaluation.changes.length === 0 || evaluation.stop) return evaluation;
+  if (evaluation.changes.length === 0) return evaluation;
+  if (evaluation.stop && TERMINAL_PR_WATCH_STOPS.includes(evaluation.stop)) return evaluation;
   return {
     changes: [],
     next: {
