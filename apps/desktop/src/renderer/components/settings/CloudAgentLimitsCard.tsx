@@ -14,11 +14,17 @@ import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 import { adeCloudAccountCallFn, runAccountCall } from "../../lib/adeCloudAccountRead";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { captureError } from "../../../shared/sentry/capture";
 
 /** A save that named an older revision: another device saved first. */
 const LIMITS_CHANGED_SENTENCE = "Your limits changed on another device. ADE loaded the new ones.";
 
 class LimitsRouteMissing extends Error {}
+/** The account answered with its own sentence (a refusal, a conflict): news for the person, not an ADE bug. */
+class LimitsRefused extends Error {}
+
+/** What the card shows under the limits; `refused` carries no Report. */
+type LimitsNotice = { text: string; refused: boolean };
 
 /**
  * Settings › ADE Cloud › What agents may do alone: what an agent may
@@ -30,7 +36,7 @@ export function CloudAgentLimitsCard() {
   const bridge = window.ade.cloud;
   const [limits, setLimits] = useState<CloudAgentLimits | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<LimitsNotice | null>(null);
   // The web app reads and saves the limits in the account (`/cloud/limits`),
   // with no computer on. A server without the route (404) goes back to the
   // computer path, as before. The desktop's main process does the same itself.
@@ -44,7 +50,7 @@ export function CloudAgentLimitsCard() {
     if (!answer) return null;
     if (!answer.ok) {
       if (answer.status === 404) throw new LimitsRouteMissing(answer.message);
-      throw new Error(answer.message);
+      throw new LimitsRefused(answer.message);
     }
     if (!answer.result) return null;
     revisionRef.current = answer.result.revision;
@@ -60,15 +66,18 @@ export function CloudAgentLimitsCard() {
       // No answer: no computer could read them (the web app with every computer offline, or an older ADE on it).
       setError(next
         ? null
-        : viaAccount
-          ? "ADE couldn't read what agents may do from your ADE account. Try again soon."
-          : "ADE couldn't read what agents may do on their own. Connect a computer, or update ADE on it.");
+        : {
+            refused: true,
+            text: viaAccount
+              ? "ADE couldn't read what agents may do from your ADE account. Try again soon."
+              : "ADE couldn't read what agents may do on their own. Connect a computer, or update ADE on it.",
+          });
     } catch (loadError) {
       if (loadError instanceof LimitsRouteMissing) {
         setViaAccount(false);
         return;
       }
-      setError(ipcErrorMessage(loadError) || "Couldn't read what agents may do.");
+      setError({ text: ipcErrorMessage(loadError) || "Couldn't read what agents may do.", refused: loadError instanceof LimitsRefused });
     }
   }, [bridge, readAccount, viaAccount]);
 
@@ -77,11 +86,14 @@ export function CloudAgentLimitsCard() {
     if (!answer) return null;
     if (!answer.ok) {
       if (answer.code === "limits_changed") {
-        const fresh = await readAccount().catch(() => null);
+        const fresh = await readAccount().catch((readError: unknown) => {
+          captureError(readError, { level: "warning", handled: true, fingerprint: ["ade-cloud", "limits-reread-after-conflict"] });
+          return null;
+        });
         if (fresh) setLimits(fresh);
-        throw new Error(LIMITS_CHANGED_SENTENCE);
+        throw new LimitsRefused(LIMITS_CHANGED_SENTENCE);
       }
-      throw new Error(answer.message);
+      throw new LimitsRefused(answer.message);
     }
     if (!answer.result) return null;
     revisionRef.current = answer.result.revision;
@@ -104,7 +116,7 @@ export function CloudAgentLimitsCard() {
       const saved = await write(next);
       if (saved) setLimits(saved);
     } catch (saveError) {
-      setError(ipcErrorMessage(saveError) || "Couldn't save that.");
+      setError({ text: ipcErrorMessage(saveError) || "Couldn't save that.", refused: saveError instanceof LimitsRefused });
     } finally {
       setBusy(false);
     }
@@ -200,16 +212,17 @@ export function CloudAgentLimitsCard() {
         <p className="adecd-limits-note"><Lock size={12} weight="fill" /> Always yours to decide: changing a computer's size, keeping one awake for good, raising these limits, and deleting a computer an agent didn't make.</p>
         {error ? (
           // A 409 means another device saved first and ADE loaded its limits:
-          // news, not a bug, so it has no Report.
+          // news. A refusal says the server's sentence. Neither is a bug, so
+          // neither has Report; only a throw from ADE itself does.
           <Banner
             layout="inline"
             model={{
               id: "cloud-limits-error",
-              tone: error === LIMITS_CHANGED_SENTENCE ? "info" : "error",
+              tone: error.text === LIMITS_CHANGED_SENTENCE ? "info" : error.refused ? "warning" : "error",
               title: "What agents may do",
-              detail: error,
+              detail: error.text,
               actions: [{ label: "Dismiss", onClick: () => setError(null) }],
-              ...(error === LIMITS_CHANGED_SENTENCE ? { report: false as const } : {}),
+              ...(error.refused ? { report: false as const } : {}),
             }}
           />
         ) : null}
