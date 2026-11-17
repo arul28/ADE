@@ -76,6 +76,12 @@ function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
 }
 
+/** Whether the tab in front is this remote project (no later choice replaced the open). */
+function isOpenRemoteProject(targetId: string, projectId: string): boolean {
+  const binding = useAppStore.getState().projectBinding;
+  return binding?.kind === "remote" && binding.targetId === targetId && binding.projectId === projectId;
+}
+
 export function ProjectWelcomePage() {
   const navigate = useNavigate();
   const workspace = useOptionalWebWorkspace();
@@ -315,7 +321,7 @@ export function ProjectWelcomePage() {
         void (async () => {
           try {
             await switchRemoteProject(machineKey, projectId);
-            navigate(workspace.consumePendingProjectPath() ?? "/work");
+            if (isOpenRemoteProject(machineKey, projectId)) navigate(workspace.consumePendingProjectPath() ?? "/work");
           } catch (error) {
             if (onUnreachable?.()) return;
             setRowError(error instanceof Error ? error.message : String(error));
@@ -400,7 +406,12 @@ export function ProjectWelcomePage() {
           const rowKey = recentKey(rp);
           setOpeningRowKey(rowKey);
           void switchRemoteProject(unreachableTab.targetId, unreachableTab.projectId).then(
-            () => navigate(workspace?.consumePendingProjectPath() ?? "/work"),
+            () => {
+              // A later choice can supersede this open while the computer wakes.
+              if (isOpenRemoteProject(unreachableTab.targetId, unreachableTab.projectId)) {
+                navigate(workspace?.consumePendingProjectPath() ?? "/work");
+              }
+            },
             (error: unknown) => {
               if (!openNoMachineTab(rp)) setRowError(error instanceof Error ? error.message : String(error));
             },

@@ -91,6 +91,8 @@ function useLaunchChatStates(sessionIds: readonly string[]): ReadonlyMap<string,
 
 /** How many 5 s reads "Open chat" waits for a new computer to be listed before it gives up. */
 const OPEN_CHAT_READS = 12;
+/** How long "Open chat" waits for a just-connected computer's chat to be listed. */
+const CONNECTED_CHAT_WAIT_MS = 15_000;
 
 /**
  * ADE Web's chats on new ADE Cloud computers for this project, above the Work
@@ -141,14 +143,36 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
     const record = opening;
     void workspace.connectMachineEntry(openingMachine).then(
       () => {
-        if (record.sessionId && currentOpenRef.current === record.launchId) navigate(workChatPath(record.sessionId, record.laneId));
+        if (record.sessionId && currentOpenRef.current === record.launchId) {
+          setConnectedChat({ launchId: record.launchId, sessionId: record.sessionId, laneId: record.laneId ?? null });
+        }
       },
       (error: unknown) => showToast({ tone: "error", title: `Couldn't connect to ${openingMachine.name}`, message: extractError(error) }),
     ).finally(() => {
       startedRef.current = null;
       setOpening((current) => (current?.launchId === record.launchId ? null : current));
     });
-  }, [navigate, opening, openingMachine, workspace]);
+  }, [opening, openingMachine, workspace]);
+  // The computer is connected; its chats reach the Work list a moment later.
+  // Work drops a chat it does not list from the address, so go there once
+  // the chat is listed (or after a wait, if it never is).
+  const [connectedChat, setConnectedChat] = useState<{ launchId: string; sessionId: string; laneId: string | null } | null>(null);
+  const slices = useRetainedCrossMachineSlices();
+  const connectedChatListed = connectedChat != null
+    && slices.some((slice) => slice.sessions.some((session) => session.id === connectedChat.sessionId));
+  useEffect(() => {
+    if (!connectedChat) return;
+    const go = () => {
+      setConnectedChat(null);
+      if (currentOpenRef.current === connectedChat.launchId) navigate(workChatPath(connectedChat.sessionId, connectedChat.laneId));
+    };
+    if (connectedChatListed) {
+      go();
+      return;
+    }
+    const timer = window.setTimeout(go, CONNECTED_CHAT_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [connectedChat, connectedChatListed, navigate]);
   // A computer not listed yet: read the account's computers again every few seconds, then stop.
   useEffect(() => {
     if (!opening || openingListed) return;
