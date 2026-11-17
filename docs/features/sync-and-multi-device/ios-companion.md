@@ -1313,8 +1313,9 @@ iPhone are `compact` and use the same views stacked, never an older design.
   per change.
 - **Fixtures.** `-adePreviewScreen duo-*` opens a fixture screen on any
   simulator (`DuoPreviews.swift`, `DuoSplitPreviews.swift`). The ADE Cloud
-  fixtures are in `Views/Cloud/CloudNoComputerPreviews.swift` and
-  `Views/Cloud/CloudAtRestPreviews.swift`:
+  fixtures are in `Views/Cloud/CloudNoComputerPreviews.swift`,
+  `Views/Cloud/CloudAtRestPreviews.swift` and `Views/Cloud/CloudPreviews.swift`
+  (the Settings › ADE Cloud pages):
   - chats: `duo-cloud-chat-asleep`, `duo-cloud-chat-waking`,
     `duo-cloud-chat-queued`, `duo-cloud-chat-sign-in`,
     `duo-cloud-chat-deleted`, `duo-cloud-deleting-soon`
