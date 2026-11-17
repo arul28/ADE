@@ -1981,7 +1981,8 @@ already on disk carry the old wording; `summarizeDiffStats` in
 `chatTranscriptRows.ts` matches both so an old shortened diff is still counted
 as shortened rather than parsed as real diff lines.
 
-`sessionRecovery.ts` implements version-2 reconstruction:
+`agentChatService.ts` (`PersistedChatState`) implements version-2
+reconstruction:
 
 - Recent entries (bounded) are parsed back into envelopes.
 - A continuity summary is injected into the new runtime context on
