@@ -7,8 +7,8 @@ import {
   type AccountLaneIndexPutResult,
   type AccountLaneIndexRow,
 } from "../cloud/contract";
-import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "../cloud/http";
-import { logCloud } from "../cloud/store";
+import { UNREADABLE_REQUEST_MESSAGE, fail, json, tooManyRequests } from "../cloud/http";
+import { logCloud, takeRequest } from "../cloud/store";
 import { readBoundedBody } from "../sinkUtils";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 
@@ -121,6 +121,7 @@ export async function handleAccountLanesRequest(request: Request, env: AccountLa
 }
 
 async function handlePut(request: Request, env: AccountLaneEnv, userId: string, now: number): Promise<Response> {
+  if (!await takeRequest(env, userId, "settings", now)) return tooManyRequests();
   let read: Awaited<ReturnType<typeof readBoundedBody>>;
   try {
     read = await readBoundedBody(request, MAX_BODY_BYTES);

@@ -64,7 +64,7 @@ import { ACCOUNT_BLOCKED_MESSAGE, accountBlocked, isCloudBlocked, isCloudBlocked
 import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
 import { INSTANCE_LIST_TTL_S, listInstancesCached } from "./instanceListCache";
 import { boundedDisplayText } from "../displayText";
-import { UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson } from "./http";
+import { UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson, tooManyRequests } from "./http";
 import {
   AWAKE_COMPUTER_CAP,
   DISK_ON_CREATE_GB,
@@ -113,8 +113,10 @@ import {
   settleStatements,
   statusChangeStatements,
   statusGuard,
+  takeRequest,
   type AccountRow,
   type CloudEnv,
+  type CloudRequestBucket,
   type ComputerRow,
 } from "./store";
 import {
@@ -1498,6 +1500,16 @@ function blockedMayRead(method: string, path: string): boolean {
   return CLOUD_BLOCKED_READ_ROUTES.some((route) => path === route || path.startsWith(`${route}/`));
 }
 
+const EVENT_WAKES_ROUTE = /^\/cloud\/instances\/([^/]+)\/event-wakes$/;
+
+/** The minute budget a write to these rows counts against (`takeRequest`); null for a read or another route. */
+function writeBucketOf(path: string, method: string): CloudRequestBucket | null {
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
+  if ([CLOUD_PATHS.sessions, CLOUD_PATHS.git, CLOUD_PATHS.capsules].some((route) => path.startsWith(`${route}/`))) return "uploads";
+  if (path === CLOUD_EDGE_PATHS.limits || EVENT_WAKES_ROUTE.test(path)) return "settings";
+  return null;
+}
+
 /** `/cloud/chats/:m/:c/messages[/:msg]`. */
 function chatMessagesRouteOf(path: string): { machineKey: string; chatId: string; rest: string[] } | null {
   if (!path.startsWith(`${CLOUD_PATHS.chats}/`)) return null;
@@ -1696,6 +1708,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   const billing = await routeBilling(request, url, path, env, caller.userId, ctx);
   if (billing) return billing;
   // ADE without a computer: rows and R2 only; a send wakes or launches through the provider.
+  const writeBucket = writeBucketOf(path, request.method);
+  if (writeBucket && !await takeRequest(env, caller.userId, writeBucket, now)) return tooManyRequests();
   if (path === CLOUD_PATHS.projectsOverview) {
     return request.method === "GET" ? handleProjectOverview(url, env, caller.userId, now) : notFound();
   }
@@ -1736,7 +1750,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (path === CLOUD_EDGE_PATHS.linearQuery) return routeLinearQuery(request, env, caller.userId, now, waitUntil);
   if (path === CLOUD_EDGE_PATHS.jiraSearch) return routeJiraSearch(request, env, caller.userId, now);
   if (path === CLOUD_EDGE_PATHS.jiraIssue) return routeJiraIssue(request, env, caller.userId, now);
-  const eventWakes = /^\/cloud\/instances\/([^/]+)\/event-wakes$/.exec(path);
+  const eventWakes = EVENT_WAKES_ROUTE.exec(path);
   if (eventWakes) return INSTANCE_ID.test(eventWakes[1]!) ? routeEventWakeSubscription(request, env, caller.userId, eventWakes[1]!, now) : notFound();
   if (path === CLOUD_PATHS.models) return handleCloudModels(request);
   // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.

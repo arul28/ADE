@@ -686,6 +686,14 @@ The three integration routes share 30 requests a minute per account
 (`cloud_request_windows`, 429 `rate_limited`). Tokens stay in memory, and the
 logs carry the op name and status only.
 
+Writes have two more minute budgets per account in the same table
+(`store.ts` `takeRequest`, 429 `rate_limited`):
+
+- `uploads`, 1,200: session copies, Git summaries, and fork capsule parts and
+  commits. A delete's save sends one capsule for each chat.
+- `settings`, 120: `PUT /cloud/limits`, `PUT /cloud/instances/:id/event-wakes`
+  and `PUT /account/lanes`.
+
 ## The account lane index
 
 `GET/PUT /account/lanes` (`src/accountLanes/routes.ts`, migration `0039`)

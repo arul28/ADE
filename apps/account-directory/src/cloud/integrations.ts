@@ -2,7 +2,6 @@ import { accountRepoScopeKey } from "../../../desktop/src/shared/accountSettings
 import type { CloudWaitUntil } from "./analytics";
 import { renewLinearGrant, type LinearRenewalEnv } from "./linearRenewal";
 import {
-  CLOUD_INTEGRATION_REQUESTS_PER_MINUTE,
   CLOUD_LINEAR_OPS,
   CLOUD_LINEAR_RENEWING_MESSAGE,
   type CloudJiraIssueResult,
@@ -11,8 +10,8 @@ import {
   type CloudLinearQueryResult,
 } from "./contract";
 import { readVaultItem, readVaultScope, relayFetch, type RelayEnv, type VaultRecord } from "./accountVault";
-import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
-import { logCloud } from "./store";
+import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson, tooManyRequests } from "./http";
+import { logCloud, takeRequest } from "./store";
 
 /**
  * Linear and Jira for a client with no computer
@@ -187,24 +186,6 @@ const LINEAR_DOCUMENTS: Record<CloudLinearOp, LinearDocument> = {
   },
 };
 
-/* ---- Per-account request budget ---- */
-
-/**
- * Counts one request against the account's minute for `bucket`. True when it
- * is within `limit`. One row per account and bucket; a new minute resets it.
- */
-async function takeRequest(env: RelayEnv, userId: string, bucket: string, limit: number, now: number): Promise<boolean> {
-  const windowStart = Math.floor(now / 60_000) * 60_000;
-  const row = await env.DB.prepare(`
-    insert into cloud_request_windows (user_id, bucket, window_start, count) values (?, ?, ?, 1)
-    on conflict (user_id, bucket) do update set
-      count = case when cloud_request_windows.window_start = excluded.window_start then cloud_request_windows.count + 1 else 1 end,
-      window_start = excluded.window_start
-    returning count
-  `).bind(userId, bucket, windowStart).first<{ count: number }>();
-  return (row?.count ?? 1) <= limit;
-}
-
 /* ---- Vault ---- */
 
 async function readConnection(env: RelayEnv, authorization: string, scope: string, key: "linear" | "jira"): Promise<VaultRecord | null | undefined> {
@@ -305,7 +286,6 @@ async function readUpstream(response: Response): Promise<unknown | null> {
   }
 }
 
-const tooMany = () => fail("rate_limited", "Too many Linear and Jira requests from this account in the last minute. Try again in a minute.", 429);
 const vaultUnavailable = () => fail("unavailable", "ADE can't reach your account's connections right now. Try again soon.", 503);
 
 async function prepare(request: Request, env: RelayEnv, userId: string, now: number): Promise<
@@ -319,9 +299,8 @@ async function prepare(request: Request, env: RelayEnv, userId: string, now: num
   if (!body) return { ok: false, response: fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400) };
   const scope = accountRepoScopeKey(typeof body.origin === "string" ? body.origin : null);
   if (!scope) return { ok: false, response: fail("bad_request", "That isn't a repository ADE can name.", 400) };
-  if (!await takeRequest(env, userId, "integrations", CLOUD_INTEGRATION_REQUESTS_PER_MINUTE, now)) {
-    logCloud("cloud.integration_rate_limited", {});
-    return { ok: false, response: tooMany() };
+  if (!await takeRequest(env, userId, "integrations", now)) {
+    return { ok: false, response: tooManyRequests("Too many Linear and Jira requests from this account in the last minute. Try again in a minute.") };
   }
   return { ok: true, body, authorization, scope };
 }

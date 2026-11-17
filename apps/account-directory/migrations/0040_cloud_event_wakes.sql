@@ -31,9 +31,9 @@ create table if not exists cloud_event_wake_state (
 
 create index if not exists cloud_event_wake_state_user on cloud_event_wake_state (user_id);
 
--- Requests per account per minute for routes that call another service with
--- the account's own credentials (Linear, Jira). One row per account and
--- bucket; a new minute resets the count.
+-- Requests per account per minute, per bucket (`store.ts` takeRequest):
+-- Linear and Jira, a computer's saved copies, and settings writes. One row
+-- per account and bucket; a new minute resets the count.
 create table if not exists cloud_request_windows (
   user_id text not null,
   bucket text not null,

@@ -907,7 +907,9 @@ Account directory (`apps/account-directory/src/cloud/`, Worker logs):
   `cloud.vault_keys_read_failed`, `cloud.vault_read_refused`,
   `cloud.vault_read_failed`, `cloud.vault_read_too_long`, `cloud.vault_write_*`,
   `cloud.limits_saved` (field names only), `cloud.cto_copy_unreadable`.
-- Integrations: `cloud.integration_rate_limited`, `cloud.linear_needs_renewal`,
+- Rate limits: `cloud.rate_limited` (bucket: `integrations`, `uploads` or
+  `settings`), once a minute at an account's first refused request.
+- Integrations: `cloud.linear_needs_renewal`,
   `cloud.linear_query_refused`, `cloud.linear_query_failed`, `cloud.jira_*`.
 - Linear renewal: `cloud.linear_lease_claimed`, `cloud.linear_lease_lost`
   (reason), `cloud.linear_renewed` (via), `cloud.linear_renewal_superseded`,
