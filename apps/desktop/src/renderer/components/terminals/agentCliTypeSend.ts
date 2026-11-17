@@ -1,5 +1,5 @@
 import type { OpenProjectBinding } from "../../../shared/types";
-import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
+import { isRemoteCallNotSentError, isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE } from "../../../shared/types/remoteRuntime";
 import { requireChatPin } from "../chat/chatMachinePin";
 
@@ -71,6 +71,8 @@ export async function sendAgentCliText(args: {
     if (result.outcome === "ended") return { kind: "ended" };
     return { kind: "busy" };
   } catch (error) {
+    // Refused before dialing: nothing left, so the box keeps the text as offline.
+    if (isRemoteCallNotSentError(error)) return { kind: "offline" };
     if (isRemoteOutcomeUnknownError(error)) return { kind: "unconfirmed" };
     if (/Project is switching/i.test(errorText(error))) return { kind: "switching" };
     if (isUnreachableError(error)) return { kind: "offline" };

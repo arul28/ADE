@@ -150,7 +150,7 @@ import {
   deriveDeterministicLaneTitleFromPrompt,
   legacyAutoLaneTemporaryBranch,
 } from "../../../shared/laneNameFallback";
-import { isRemoteOutcomeUnknownError, isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
+import { isRemoteCallNotSentError, isRemoteOutcomeUnknownError, isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import {
   machineIdForBinding,
   machineNameForBinding,
@@ -5316,6 +5316,8 @@ export function AgentChatPane({
     return [...new Set([...primary, ...folderKeyed, ...legacy])];
   }, [companionStateKey, composerDraftProjectRoot, legacyWorkDraftCompanionStateKey, sessionDraftRoot, surfaceProfile, workDraftStorageKind]);
   const composerDraftStorageKeyValue = composerDraftStorageKeyValues[0]!;
+  const composerDraftStorageKeyRef = useRef(composerDraftStorageKeyValue);
+  composerDraftStorageKeyRef.current = composerDraftStorageKeyValue;
   const companionHydrationKeyRef = useRef<string | null>(initialCompanionStateKey);
   const composerDraftHydratingRef = useRef(false);
   const composerDraftHydratingTextRef = useRef<string | null>(null);
@@ -5680,6 +5682,11 @@ export function AgentChatPane({
   /** Pending checks for sends whose call timed out (see the submit path); cleared on unmount. */
   const sendRecoveryTimersRef = useRef<Set<number>>(new Set());
   /**
+   * Sends whose arrival is still being checked, by client send id. A pane that
+   * closes before the last check puts each one's text in its chat's saved draft.
+   */
+  const sendsInDoubtRef = useRef<Map<string, { storageKey: string; text: string; arrived: () => boolean }>>(new Map());
+  /**
    * A send's list update (the chat's recency and running state), held until
    * the frame with the bubble and the cleared composer is drawn. Anything that
    * touches that chat's list row first runs it, so updates keep their order.
@@ -5832,6 +5839,9 @@ export function AgentChatPane({
     availableLanes,
     pinOverride: hostRuntimePin,
   });
+  // The send's failure note names the chat's machine without a callback dependency.
+  const chatMachineNameRef = useRef(chatMachineName);
+  chatMachineNameRef.current = chatMachineName;
   // Held in a ref so the ~40 call sites below can read the pin without
   // perturbing any existing effect/callback dependency array. Declared here,
   // not returned by the hook, so `react-hooks/exhaustive-deps` still sees it
@@ -12472,6 +12482,24 @@ export function AgentChatPane({
     };
   }, [composerDraftStorageKeyValue, flushPendingComposerDraftWrite]);
 
+  // A pane that closes while a send is still in doubt (its machine dropped,
+  // say) stops checking for it. A send that has not shown up goes back in its
+  // chat's saved draft, so reopening the chat finds the text, unless a newer
+  // draft is already there.
+  useEffect(() => () => {
+    const sendsInDoubt = sendsInDoubtRef.current;
+    if (!sendsInDoubt.size) return;
+    flushPendingComposerDraftWrite();
+    for (const send of sendsInDoubt.values()) {
+      if (send.arrived()) continue;
+      const saved = readComposerDraftSnapshot(send.storageKey, initialNativeControls)
+        ?? normalizeStoredComposerDraft({ text: "" }, initialNativeControls);
+      if (!saved || saved.text.trim().length) continue;
+      writeComposerDraftSnapshot(send.storageKey, { ...saved, text: send.text, updatedAt: new Date().toISOString() });
+    }
+    sendsInDoubt.clear();
+  }, [flushPendingComposerDraftWrite, initialNativeControls]);
+
   // Save/restore per-session (or per-lane draft) composer state when scope changes.
   const composerDraftTextRef = liveDraftRef;
   const prevDraftKeyRef = useRef<string | undefined>(undefined);
@@ -16901,9 +16929,12 @@ export function AgentChatPane({
       // Not confirmed: the same payload sent again to this chat reuses the id,
       // and the arrival check above keeps this from swallowing a later message.
       if (sendIdentity) rememberUnconfirmedSend(sendIdentity.identityKey, sendIdentity.record);
+      // ADE did not even dial (a connect failed a moment ago): nothing left,
+      // so the text comes back now with a plain note, not after the checks.
+      const notSent = isRemoteCallNotSentError(submitError);
       // A timeout, or a link that dropped after the message left: the chat's
       // machine may still have it. Wait for it rather than handing it back now.
-      if (handedOff && (isRuntimeTransportTimeoutError(submitError) || isRemoteOutcomeUnknownError(submitError))) {
+      if (handedOff && !notSent && (isRuntimeTransportTimeoutError(submitError) || isRemoteOutcomeUnknownError(submitError))) {
         // The call gave up, not the send: the chat's machine usually still
         // delivers it. Put the text back only if it never shows up.
         const pending = handedOff;
@@ -16911,12 +16942,18 @@ export function AgentChatPane({
         setOptimisticOutgoingMessageSynced(null);
         setError({ message: waitingMessage, kind: "status" });
         const arrived = () => countSentMessages(pending.sessionId, pending.texts, pending.submittedAt) > pending.alreadyThere;
+        sendsInDoubtRef.current.set(pending.clientSendId, {
+          storageKey: composerDraftStorageKeyRef.current,
+          text: draftSnapshot,
+          arrived,
+        });
         // One check pending at a time: 15s, 45s, then the last at 2 minutes.
         const checkDelays = [15_000, 30_000, 75_000];
         const check = (index: number) => {
           const timer = window.setTimeout(() => {
             sendRecoveryTimersRef.current.delete(timer);
             if (!paneMountedRef.current) return;
+            if (index === checkDelays.length - 1 || arrived()) sendsInDoubtRef.current.delete(pending.clientSendId);
             if (arrived()) {
               // It did arrive after all: an identical message later today is a
               // message of its own, not a repeat of this one.
@@ -16964,7 +17001,9 @@ export function AgentChatPane({
       setOptimisticOutgoingMessageSynced(null);
       inPlaceFirstSendHandoffRef.current = null;
       inPlaceSendKeepsKeyboardRef.current = false;
-      setError(message);
+      setError(notSent
+        ? `Can't reach ${chatMachineNameRef.current || "the chat's machine"}, so the message was not sent. It is back in the composer.`
+        : message);
       await refreshSessions({ force: true }).catch(() => {});
       if (
         /ade chat could not authenticate/i.test(message)

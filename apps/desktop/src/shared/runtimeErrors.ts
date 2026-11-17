@@ -46,6 +46,16 @@ export function isRemoteOutcomeUnknownError(error: unknown): boolean {
 }
 
 /**
+ * True when ADE refused the call before dialing, because a connect to that
+ * machine failed a moment ago: nothing went out, so the call did not run
+ * there. A send can hand its text back at once instead of waiting to see
+ * whether it arrived.
+ */
+export function isRemoteCallNotSentError(error: unknown): boolean {
+  return /connection failed recently/i.test(errorMessage(error));
+}
+
+/**
  * True when the other machine is away: its link dropped, it is not connected,
  * or ADE can't reach it (asleep, restarting). The call did not reach it, or
  * its answer was lost.
