@@ -32578,7 +32578,7 @@ async function runServe(
             return await holdCloudWork("push_work", 10 * 60_000, () => pushCloudComputerWork({
               check,
               message,
-              ...(cloudGitIdentity ? { ensureIdentity: cloudGitIdentity.ensure, commitIdentity: cloudGitIdentity.commitIdentity } : {}),
+              ...(cloudGitIdentity ? { ensureIdentity: cloudGitIdentity.ensure } : {}),
               projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
               logger: headlessProjectLogger,
             }));

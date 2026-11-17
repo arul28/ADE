@@ -5,7 +5,6 @@
  */
 
 import type { AdeRuntime } from "../../bootstrap";
-import type { CloudGitIdentity } from "../github/cloudGitIdentity";
 
 const COMMIT_MESSAGE = "Work saved from ADE Cloud";
 /**
@@ -42,28 +41,17 @@ export type CloudPushWorkResult = { readsRemotes: true; pushed: number; failed: 
 
 type Logger = { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
 
-/** Git's refusal when no `user.name` / `user.email` is set anywhere. */
-const MISSING_IDENTITY = /author identity unknown|unable to auto-detect email|empty ident name|please tell me who you are/i;
-
 async function pushLane(
   runtime: Pick<AdeRuntime, "gitService">,
   laneId: string,
   dirty: boolean,
   message: string,
-  commitIdentity: (() => CloudGitIdentity) | undefined,
 ): Promise<void> {
   if (dirty) {
     // `git add -A` honours .gitignore: files git ignores are never committed or pushed.
     await runtime.gitService.stageAll({ laneId, paths: [] });
-    try {
-      await runtime.gitService.commit({ laneId, message });
-    } catch (error) {
-      // A computer whose global identity could not be written still saves its
-      // work: this one commit passes ADE's identity with `-c`, and the config
-      // stays as it is.
-      if (!commitIdentity || !MISSING_IDENTITY.test(error instanceof Error ? error.message : String(error))) throw error;
-      await runtime.gitService.commit({ laneId, message }, { identity: commitIdentity() });
-    }
+    // A computer with no git identity commits with ADE's (the runtime's `commitIdentityFallback`).
+    await runtime.gitService.commit({ laneId, message });
   }
   await runtime.gitService.push({ laneId });
 }
@@ -81,8 +69,6 @@ export async function pushCloudComputerWork(args: {
   message?: string | null;
   /** Sets the computer's git identity when nobody did (`ensureCloudGitIdentity`), before any commit. */
   ensureIdentity?: () => Promise<unknown>;
-  /** The identity a commit passes with `-c` when git still has none. */
-  commitIdentity?: () => CloudGitIdentity;
   logger?: Logger;
 }): Promise<CloudPushWorkResult> {
   const message = args.message?.trim() || COMMIT_MESSAGE;
@@ -146,7 +132,7 @@ export async function pushCloudComputerWork(args: {
           continue;
         }
         try {
-          await pushLane(runtime, lane.id, dirty, message, args.commitIdentity);
+          await pushLane(runtime, lane.id, dirty, message);
           entry.state = "pushed";
           tally.pushed += 1;
         } catch (error) {

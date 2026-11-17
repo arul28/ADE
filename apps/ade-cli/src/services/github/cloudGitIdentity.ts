@@ -177,8 +177,9 @@ export async function ensureCloudGitIdentity(deps: CloudGitIdentityDeps): Promis
 
 /**
  * The identity a commit can pass with `-c` when git has none: the value ADE
- * wrote, else the neutral one. Cleanup commits use it so they never fail on
- * a missing identity, even when the global write failed.
+ * wrote, else the neutral one. A cloud computer's git service commits with
+ * it (`commitIdentityFallback`), so a commit never fails on a missing
+ * identity, even when the global write failed.
  */
 export function fallbackCommitIdentity(adeHome: string): CloudGitIdentity {
   const written = readState(adeHome);
@@ -196,7 +197,7 @@ export function createBrainCloudGitIdentity(deps: {
   accountAccessToken: () => Promise<string | null>;
   readGithubToken: () => Promise<string | null>;
   logger: NonNullable<CloudGitIdentityDeps["logger"]>;
-}): { ensure: () => Promise<CloudGitIdentityOutcome>; commitIdentity: () => CloudGitIdentity } {
+}): { ensure: () => Promise<CloudGitIdentityOutcome> } {
   let running: Promise<CloudGitIdentityOutcome> | null = null;
   const readAppUser = async (): Promise<GithubUser | null> => {
     const baseUrl = deps.directoryBaseUrl();
@@ -231,5 +232,5 @@ export function createBrainCloudGitIdentity(deps: {
     });
     return running;
   };
-  return { ensure, commitIdentity: () => fallbackCommitIdentity(deps.adeHome) };
+  return { ensure };
 }

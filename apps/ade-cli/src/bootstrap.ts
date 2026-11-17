@@ -107,6 +107,7 @@ import { createOAuthRedirectService } from "../../desktop/src/main/services/lane
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
+import { fallbackCommitIdentity } from "./services/github/cloudGitIdentity";
 import { registerRemoteWorkShellCheck } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import {
@@ -1975,7 +1976,9 @@ export async function createAdeRuntime(args: {
     const gitService = createGitOperationsService({
       laneService,
       operationService,
-      logger
+      logger,
+      // An ADE Cloud computer commits even when its global git identity could not be written.
+      ...(isAdeCloudComputer() ? { commitIdentityFallback: () => fallbackCommitIdentity(machineRuntimeLayout.adeDir) } : {})
     });
 
     const diffService = createDiffService({ laneService });
