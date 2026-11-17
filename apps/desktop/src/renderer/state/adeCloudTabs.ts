@@ -50,8 +50,9 @@ export function adeCloudProjectForTabId(tabId: string, displayName: string): Ade
  * While the tab in front is bound to ADE Cloud, an own computer with a copy
  * of its repository that comes online takes the tab. The page the person is
  * on stays (`carryWorkView`). A lane's own ADE Cloud computer never takes a
- * tab: ADE Cloud is already the tab's machine. One try per copy, so a copy
- * that refuses the open does not loop.
+ * tab: ADE Cloud is already the tab's machine. One try per copy while it
+ * stays online, so a copy that refuses the open does not loop. A copy that
+ * goes offline is forgotten, so its next return tries again.
  */
 export function useAdeCloudTabFollowsCopy(): void {
   const binding = useAppStore((state) => state.projectBinding);
@@ -60,6 +61,10 @@ export function useAdeCloudTabFollowsCopy(): void {
   const copies = useActiveRepositoryCopies(onAdeCloud);
   const tried = useRef(new Set<string>());
   useEffect(() => {
+    const online = new Set(copies.flatMap((entry) => (entry.online && entry.address ? [entry.address.key] : [])));
+    for (const key of tried.current) {
+      if (!online.has(key)) tried.current.delete(key);
+    }
     if (!onAdeCloud || busy) return;
     const copy = copies.find((entry) => (
       entry.online && entry.address && !entry.isAdeCloud && !isAdeCloudBinding(entry.address) && !tried.current.has(entry.address.key)
