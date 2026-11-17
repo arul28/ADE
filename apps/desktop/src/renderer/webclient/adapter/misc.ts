@@ -1,3 +1,5 @@
+import { markExpected } from "../../../shared/expectedError";
+import { WEB_PASSWORDS_SENTENCE } from "../../../shared/adeCloud/accountCalls";
 import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 import {
   EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
@@ -1425,16 +1427,18 @@ function createCtoNamespace(
   } as unknown as NonNullable<Window["ade"]["cto"]>, "cto", CTO_PINNED_MEMBER_ARG_INDEX, scope);
 }
 
-const PROJECT_SECRETS_DESKTOP_ONLY = "Secrets can only be changed in the ADE desktop app (Settings › Passwords & Secrets).";
-
 function createProjectSecretsNamespace(): AdeNamespace<"projectSecrets"> {
   return {
-    list: async () => ({ secrets: [], storage: { path: "Passwords & Secrets", encrypted: true, scope: "project" as const } }),
+    // Not an empty list: a caller that read "no secrets" would offer a name
+    // that is already taken. Every caller shows this sentence instead.
+    list: async () => {
+      throw markExpected(new Error(WEB_PASSWORDS_SENTENCE), "user");
+    },
     // Saving one here used to resolve as if it worked while nothing was
     // stored, so a chat asking for a secret waited forever; every caller
     // shows this message instead.
     set: async () => {
-      throw new Error(PROJECT_SECRETS_DESKTOP_ONLY);
+      throw markExpected(new Error(WEB_PASSWORDS_SENTENCE), "user");
     },
   };
 }

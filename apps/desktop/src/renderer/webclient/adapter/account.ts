@@ -11,6 +11,8 @@ import {
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { ANNOUNCEMENTS_SEEN_SETTING_KEY } from "../../../shared/announcementsSeen";
 import type { AdapterInfra } from "./types";
+import type { AccountSettingRow } from "../../../shared/types/accountSettings";
+import { relayBaseUrl } from "./attention";
 
 function loginStatus(state: BrowserAccountState): "pending" | "signed_in" | "expired" {
   if (browserAccountIsSignedIn(state)) return "signed_in";
@@ -103,63 +105,180 @@ export function createAccountNamespace(
   };
 }
 
+/** Pages one settings read follows at most (the relay serves 1,000 rows a page). */
+const SETTINGS_MAX_PAGES = 5;
+/** This browser's writer id in the account settings rows. */
+const WEB_SETTINGS_DEVICE_ID = "ade-web";
+
+type RelaySettingsPage = { ok?: boolean; settings?: unknown; truncated?: boolean; cursor?: string | null };
+
+function settingRowOf(value: unknown): AccountSettingRow | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.scope !== "string" || typeof row.key !== "string" || typeof row.updatedAt !== "string") return null;
+  if (row.deleted === true) return null;
+  return {
+    scope: row.scope,
+    key: row.key,
+    value: row.value,
+    updatedAt: row.updatedAt,
+    changedAt: typeof row.changedAt === "string" ? row.changedAt : null,
+    writerDeviceId: typeof row.writerDeviceId === "string" ? row.writerDeviceId : null,
+  };
+}
+
 /**
- * The hosted web client has no account settings store of its own, so the
- * store is reported unavailable rather than stubbed with a lie.
+ * The account settings store on the web: the push relay's
+ * `/attention/account/settings` route with this browser's account token.
+ * Account settings hold no secret (secrets live in the vault, which the
+ * relay refuses to a browser), so the relay lets the web read and write them.
  *
- * An "ok, empty" answer would read as "your account has no saved settings" and
- * would let the hydrator overwrite nothing while the write-through silently
- * dropped every change. Unavailable is the truthful shape, and it is the one
- * the offline desktop path already handles: keep the local copy.
- *
- * One key is the exception: the "What's new" seen pages
- * (`announcementSeenSync.ts`). They are read from, and added to, the connected
- * computer's brain, which serves only that key and only grows it (its write
- * is a union, never a replace). A lane-share guest's brain refuses both, and
- * the page keeps its local copy. Opening a project counts as a change, so a
- * read that failed before any computer connected runs again.
+ * - A signed-out browser, or a relay that fails, answers `unavailable`, the
+ *   answer every caller already handles by keeping its local copy.
+ * - The "What's new" seen pages (`announcementSeenSync.ts`) stay on the
+ *   connected computer's brain while one is connected: its write is a union,
+ *   never a replace. With no computer, they go to the relay like the rest.
  */
 export function createAccountSettingsNamespace(
   infra?: Pick<AdapterInfra, "commands" | "events">,
+  accountClient?: BrowserAccountClient,
 ): NonNullable<Window["ade"]["accountSettings"]> {
   const unavailable = {
     ok: false as const,
     unavailable: true as const,
-    message: "Account settings sync needs the ADE desktop app on this computer.",
+    message: "Your ADE account settings didn't load. Try again.",
   };
   const isSeenKey = (args: { scope: string; key: string }) =>
     args.scope === ACCOUNT_SCOPE_ALL && args.key === ANNOUNCEMENTS_SEEN_SETTING_KEY;
-  return {
-    list: async () => unavailable,
-    get: async (args) => {
-      if (!infra || !isSeenKey(args)) return unavailable;
-      try {
-        const result = await infra.commands.call<{ available?: boolean; value?: unknown }>(
-          "announcements.getSeen",
-          {},
-          { fallback: { available: false }, requireProject: false, authoritative: true, cacheTtlMs: 0 },
-        );
-        return result?.available ? { ok: true as const, value: result.value } : unavailable;
-      } catch {
-        return unavailable;
+  const brainServesSeen = () => Boolean(infra?.commands.hasAction("announcements.getSeen"));
+  const changed = new Set<() => void>();
+
+  /** One relay call with the account token; null when signed out or it failed. */
+  const relay = async (method: "GET" | "PUT" | "DELETE", path: string, body?: unknown): Promise<Record<string, unknown> | null> => {
+    if (!accountClient) return null;
+    const lease = accountClient.captureSessionLease();
+    if (!lease) return null;
+    const once = async (forceRefresh: boolean) => {
+      const token = await accountClient.getAccessToken({ forceRefresh });
+      if (!accountClient.isSessionLeaseCurrent(lease)) return null;
+      return await fetch(`${relayBaseUrl()}${path}`, {
+        method,
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${token}`,
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        credentials: "omit",
+        cache: "no-store",
+        referrerPolicy: "no-referrer",
+      });
+    };
+    try {
+      let response = await once(false);
+      if (response?.status === 401) response = await once(true);
+      if (!response?.ok) return null;
+      const parsed = await response.json().catch(() => null) as Record<string, unknown> | null;
+      return parsed && parsed.ok !== false ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const listRows = async (scope: string | null | undefined): Promise<AccountSettingRow[] | null> => {
+    const rows: AccountSettingRow[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < SETTINGS_MAX_PAGES; page += 1) {
+      const query = new URLSearchParams();
+      if (scope) query.set("scope", scope);
+      if (cursor) query.set("since", cursor);
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      const answer = await relay("GET", `/attention/account/settings${suffix}`) as RelaySettingsPage | null;
+      if (!answer || !Array.isArray(answer.settings)) return null;
+      for (const value of answer.settings) {
+        const row = settingRowOf(value);
+        if (row) rows.push(row);
       }
+      if (!answer.truncated || !answer.cursor || answer.cursor === cursor) break;
+      cursor = answer.cursor;
+    }
+    return rows;
+  };
+
+  const notify = () => {
+    for (const listener of changed) {
+      try {
+        listener();
+      } catch {
+        // One listener's failure is its own.
+      }
+    }
+  };
+
+  return {
+    list: async (args) => {
+      const rows = await listRows(args?.scope ?? null);
+      return rows ? { ok: true as const, value: rows } : unavailable;
+    },
+    get: async (args) => {
+      if (infra && isSeenKey(args) && brainServesSeen()) {
+        try {
+          const result = await infra.commands.call<{ available?: boolean; value?: unknown }>(
+            "announcements.getSeen",
+            {},
+            { fallback: { available: false }, requireProject: false, authoritative: true, cacheTtlMs: 0 },
+          );
+          return result?.available ? { ok: true as const, value: result.value } : unavailable;
+        } catch {
+          return unavailable;
+        }
+      }
+      const rows = await listRows(args.scope);
+      if (!rows) return unavailable;
+      return { ok: true as const, value: rows.find((row) => row.key === args.key)?.value ?? null };
     },
     set: async (args) => {
-      if (!infra || !isSeenKey(args)) return unavailable;
-      try {
-        const result = await infra.commands.call<{ ok?: boolean }>(
-          "announcements.markSeen",
-          { seen: args.value },
-          { idempotent: false, requireProject: false, authoritative: true },
-        );
-        return result?.ok ? { ok: true as const, value: null } : unavailable;
-      } catch {
-        return unavailable;
+      if (infra && isSeenKey(args) && brainServesSeen()) {
+        try {
+          const result = await infra.commands.call<{ ok?: boolean }>(
+            "announcements.markSeen",
+            { seen: args.value },
+            { idempotent: false, requireProject: false, authoritative: true },
+          );
+          return result?.ok ? { ok: true as const, value: null } : unavailable;
+        } catch {
+          return unavailable;
+        }
       }
+      const answer = await relay("PUT", "/attention/account/settings", {
+        deviceId: WEB_SETTINGS_DEVICE_ID,
+        sentAt: new Date().toISOString(),
+        settings: [{ scope: args.scope, key: args.key, value: args.value, changedAt: new Date().toISOString() }],
+      });
+      if (!answer) return unavailable;
+      notify();
+      return { ok: true as const, value: null };
     },
-    sync: async () => unavailable,
+    remove: async (args) => {
+      const answer = await relay(
+        "DELETE",
+        `/attention/account/settings/${encodeURIComponent(args.scope)}/${encodeURIComponent(args.key)}`,
+      );
+      if (!answer) return unavailable;
+      notify();
+      return { ok: true as const, value: null };
+    },
+    // The relay is the store: there is nothing to push or pull.
+    sync: async () => (accountClient?.captureSessionLease() ? { ok: true as const, value: null } : unavailable),
     // A computer can connect after the first read failed: opening a project
-    // on it is the moment to read again.
-    onChanged: (cb) => infra?.events.on("projectChanged", () => cb()) ?? (() => {}),
+    // on it is the moment to read again. A write from this page reads again too.
+    onChanged: (cb) => {
+      changed.add(cb);
+      const offProject = infra?.events.on("projectChanged", () => cb()) ?? (() => {});
+      return () => {
+        changed.delete(cb);
+        offProject();
+      };
+    },
   };
 }

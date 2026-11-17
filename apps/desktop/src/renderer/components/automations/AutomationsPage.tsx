@@ -4,6 +4,9 @@ import type { AutomationRuleDraft } from "../../../shared/types";
 import { AutomationsWorkspace } from "./AutomationsWorkspace";
 import { ProductionAutomationsComingSoon, WebAutomationsOverview } from "./AutomationsComingSoon";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { useAppStore } from "../../state/appStore";
+import { isAdeCloudBinding } from "../../../shared/adeCloud/binding";
+import { AutomationsAccountList } from "./AutomationsAccountList";
 
 type AutomationsAvailabilityState = "checking" | "disabled" | "enabled";
 
@@ -67,6 +70,9 @@ export function AutomationsPage({ active = true }: { active?: boolean } = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const [pendingDraft, setPendingDraft] = useState<AutomationRuleDraft | null>(null);
+  // No own computer online: the tab is on ADE Cloud, and the rules come from the account.
+  const binding = useAppStore((state) => state.projectBinding);
+  const accountOnly = isAdeCloudBinding(binding);
 
   useEffect(() => {
     console.info(`renderer.page ${JSON.stringify({ page: "automations" })}`);
@@ -91,6 +97,9 @@ export function AutomationsPage({ active = true }: { active?: boolean } = {}) {
     <AutomationsProductionGate>
       <div className="flex h-full w-full flex-col overflow-hidden bg-bg text-fg" data-testid="automations-page">
         <div className="flex-1 min-h-0 overflow-hidden">
+          {accountOnly ? (
+            <AutomationsAccountList origin={binding.gitOriginUrl ?? null} active={active} />
+          ) : (
           <AutomationsWorkspace
             active={active}
             pendingDraft={pendingDraft}
@@ -101,6 +110,7 @@ export function AutomationsPage({ active = true }: { active?: boolean } = {}) {
               if (templatesOpen) navigate("/automations");
             }}
           />
+          )}
         </div>
       </div>
     </AutomationsProductionGate>

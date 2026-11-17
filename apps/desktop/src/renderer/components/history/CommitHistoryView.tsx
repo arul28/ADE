@@ -46,6 +46,8 @@ import { showToast } from "../app/toast/toastStore";
 import { useAppStore } from "../../state/appStore";
 import { fgTint } from "../lanes/laneDesignTokens";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
+import { isAccountAnsweredPin } from "../../../shared/adeCloud/binding";
+import { CloudGitAsOf } from "../adeCloud/CloudGitAsOf";
 
 const PAGE_SIZE = 100;
 /** Search keeps reading older pages until it has this many matches… */
@@ -792,6 +794,8 @@ export function CommitHistoryView({
     <div ref={rootRef} className="chv relative flex min-h-0 flex-1 flex-col" data-testid="commit-history" data-onboarding-anchor="history-graph">
       <style ref={focusStyleRef} />
       <style>{`.chv .chv-tile g, .chv .chv-row { transition: opacity 120ms ease-out; } .chv .chv-tile .chv-edge { transition: stroke-width 120ms ease-out; }`}</style>
+      {/* A lane at rest on ADE Cloud: pushed commits come from GitHub; the line says when its computer last saved. */}
+      {pin && isAccountAnsweredPin(pin) ? <CloudGitAsOf pin={pin} laneId={laneId} /> : null}
       {loading && commits.length > 0 ? (
         <div role="progressbar" aria-label="Refreshing commits" className="absolute inset-x-0 top-0 z-[2] h-px overflow-hidden">
           <div className="h-full w-1/3 animate-[chv-sweep_1.1s_steps(33)_infinite] bg-[var(--color-accent)]" />

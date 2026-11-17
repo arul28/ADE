@@ -391,7 +391,7 @@ function parseAttentionPreferences(value: unknown): AttentionPreferences {
   } as AttentionPreferences;
 }
 
-function relayBaseUrl(): string {
+export function relayBaseUrl(): string {
   const configured = (
     import.meta.env.VITE_ADE_PUSH_RELAY_URL as string | undefined
   )?.trim();
