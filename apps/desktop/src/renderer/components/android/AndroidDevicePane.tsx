@@ -733,7 +733,7 @@ function AndroidDevicePaneOnMachine({
           />
         );
       case "loading":
-        return <AndroidPaneMessage title="Reading this machine's Android setup…" description={null} />;
+        return <AndroidPaneMessage title="Reading this machine's Android setup…" description={null} busy />;
       case "status-failed":
         return (
           <div data-android-status-failed="" className="flex size-full items-start justify-center px-4 py-6">

@@ -511,6 +511,15 @@ export type CloudExtraDiskState = "off" | "asked" | "on";
  */
 export type CloudDiskRefusalReason = "plan_disk" | "needs_approval" | "extra_off" | "monthly_limit" | "tier_limit" | "unavailable";
 
+/**
+ * At the account's disk limit (`plan_disk`, `needs_approval`, `extra_off`,
+ * `monthly_limit`), the refusal also names the computers that hold the disk,
+ * biggest first (`error.lanes`): the lane's name (or the computer's), and its
+ * disk. Optional: servers before it send none, and clients that don't read it
+ * still have `error.message`.
+ */
+export type CloudDiskLimitLane = { laneName: string; diskGb: number };
+
 export type CloudAccountState = {
   /** What the person pays for. A `past_due` paid account still says `paid` here. */
   plan: "free" | "paid";

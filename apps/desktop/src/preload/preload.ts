@@ -2848,7 +2848,7 @@ function cloudLaneLaunchSource(pin: OpenProjectBinding | null | undefined): Clou
     gitOriginUrl: binding.gitOriginUrl ?? null,
     ...(binding.kind === "local"
       ? { localRootPath: binding.rootPath }
-      : { remote: { targetId: binding.targetId, projectId: binding.projectId } }),
+      : { remote: { targetId: binding.targetId, projectId: binding.projectId, rootPath: binding.rootPath } }),
   };
 }
 
@@ -2884,7 +2884,8 @@ async function callChatLaunchById<T>(
 ): Promise<T> {
   const launchId = typeof args?.launchId === "string" ? args.launchId : "";
   if (!launchId || !runtimeOwnedLaunchIds.has(launchId) || cloudOwnedLaunchIds.has(launchId)) {
-    const owned = await callCloudLaneLaunch(method, args);
+    // A queued message's files are saved on the pin's machine: main fetches the ones not on this computer.
+    const owned = await callCloudLaneLaunch(method, args, method === "queueMessage" ? cloudLaneLaunchSource(pin) : undefined);
     if (owned.owned) {
       rememberCloudLaunch(owned.result as ChatLaunchSnapshot | null);
       return owned.result as T;

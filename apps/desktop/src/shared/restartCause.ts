@@ -9,6 +9,8 @@ import type { UpdateRequestedBy } from "./types/remoteRuntime";
  * - `computer_restarted`: the computer booted after the previous service's
  *   last sign of life. `planned`: the service saw the shutdown coming.
  * - `service_restarted_by_watchdog`: ADE's watchdog ended a frozen service.
+ * - `disk_grow`: ADE grew this ADE Cloud computer's disk, which restarts it
+ *   (`cloudDiskGrow.ts`); `toGb` is the disk's new size.
  * - `service_restarted`: someone restarted the service on purpose (the
  *   restart button, `ade brain restart`, a signal).
  * - `unknown`: the service ended and left no record of why.
@@ -50,6 +52,7 @@ export type RestartCause =
     memory?: RestartMemoryFacts | null;
   })
   | (RestartCauseBase & { kind: "service_restarted" })
+  | (RestartCauseBase & { kind: "disk_grow"; fromGb: number | null; toGb: number })
   | (RestartCauseBase & {
     kind: "unknown";
     /** Memory was short in the minutes before the service ended. */
@@ -58,6 +61,6 @@ export type RestartCause =
 
 /** The memory facts of a cause, for the kinds that carry them. */
 export function restartCauseMemory(cause: RestartCause | null | undefined): RestartMemoryFacts | null {
-  if (!cause || cause.kind === "update" || cause.kind === "service_restarted") return null;
+  if (!cause || cause.kind === "update" || cause.kind === "service_restarted" || cause.kind === "disk_grow") return null;
   return cause.memory ?? null;
 }

@@ -279,3 +279,7 @@ export function cloudJoinApprovalWaitText(): string {
   return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
 }
 
+/** A resize that keeps the size and grows only the disk (the Android pane's Grow the disk). */
+export function cloudLaneJobGrowsDiskOnly(job: CloudLaneJobSnapshot): job is CloudLaneJobSnapshot & { diskGb: number } {
+  return job.kind === "resize" && job.fromSizeId === job.toSizeId && typeof job.diskGb === "number" && job.diskGb > 0;
+}

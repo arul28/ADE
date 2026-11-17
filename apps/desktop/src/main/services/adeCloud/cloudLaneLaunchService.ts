@@ -33,6 +33,7 @@ import { getErrorMessage } from "../shared/utils";
 import { CloudCreateCancelled, normalizeCloudMachineName } from "./cloudMachineCreator";
 import { createCloudLaneComputerStages } from "./cloudLaneComputerStages";
 import { CLOUD_AUTO_SIZE, cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
+import { launchFileName } from "./cloudLaunchFileCopies";
 import { createCloudLaneLaunchRecordStore, type CloudLaneLaunchRecord } from "./cloudLaneLaunchRecords";
 import {
   CANCEL_PIPELINE_WAIT_MS,
@@ -75,7 +76,8 @@ export type { CloudLaneLaunchDeps, CloudLaneLaunchStartInput } from "./cloudLane
  *   signs itself in (no device approval), clones the repository and starts
  *   the same launch on its own brain from this app's args (same `launchId`
  *   and `laneId`, lane start forced to `on: "remote"`). The `computer`,
- *   `join` and `clone` rows show the server's stages.
+ *   `join` and `clone` rows show the server's stages, and the brain's own
+ *   rows too once the computer reports them there.
  * - The hand-off: once the computer is in the account, this app pairs with
  *   it, finds the brain's launch there and follows it, and hands it the
  *   messages typed meanwhile, in order. From then on that brain owns the
@@ -528,9 +530,10 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         out.push({ ...attachment, path: there });
         continue;
       }
-      const filename = attachment.path.split(/[\\/]/).pop() || "attachment";
+      const sourcePath = record.localCopies?.[attachment.path] ?? attachment.path;
+      const filename = launchFileName(attachment.path, sourcePath);
       try {
-        const uploaded = await upload(binding, { sourcePath: attachment.path, filename });
+        const uploaded = await upload(binding, { sourcePath, filename });
         carried[attachment.path] = uploaded.path;
         store.persist(record);
         out.push({ ...attachment, path: uploaded.path });
@@ -649,9 +652,13 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     logger.info("cloud_lane_launch.moved_to_server", { launchId });
   };
 
-  /** The row a failure lands on: the first cloud step not done, else the brain's first step. */
+  /**
+   * The row a failure lands on: the first step not done (the cloud steps come
+   * first; the brain's rows the server reported may be done already), else
+   * the brain's first step.
+   */
   const failingStage = (record: CloudLaneLaunchRecord): ChatLaunchStageId =>
-    record.snapshot.stages.find((stage) => isChatLaunchCloudStageId(stage.id) && !isFinished(stage))?.id
+    record.snapshot.stages.find((stage) => !isFinished(stage))?.id
     ?? record.snapshot.stages.find((stage) => !isChatLaunchCloudStageId(stage.id))?.id
     ?? "agent";
 
@@ -859,6 +866,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       cleanupDone: false,
       madeByChat: input.madeByChat?.trim() || null,
       madeByAgent: input.madeByAgent ?? null,
+      ...(input.localCopies && Object.keys(input.localCopies).length ? { localCopies: { ...input.localCopies } } : {}),
     };
     records.set(launchId, record);
     publish(record);
@@ -1007,10 +1015,18 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     return served(record);
   };
 
-  const queueMessage = async (args: ChatLaunchQueueMessageArgs): Promise<ChatLaunchSnapshot> => {
+  const queueMessage = async (
+    args: ChatLaunchQueueMessageArgs,
+    /** This computer's copies of the message's files from another machine (`CloudLaneLaunchRecord.localCopies`). */
+    localCopies?: Record<string, string>,
+  ): Promise<ChatLaunchSnapshot> => {
     const record = recordFor(args);
     // Throw rather than answer: a caller holding a message must never read "no launch" as "queued".
     if (!record) throw new Error(`Launch not found: ${String(args?.launchId)}`);
+    if (localCopies && Object.keys(localCopies).length) {
+      record.localCopies = { ...record.localCopies, ...localCopies };
+      store.persist(record);
+    }
     const text = String(args.text ?? "");
     if (!text.trim() && !args.attachments?.length) throw new Error("A queued message needs text or an attachment.");
     if (record.snapshot.phase === "cancelled") throw new Error("This launch was cancelled.");

@@ -103,6 +103,9 @@ export type AndroidEmulatorService = AndroidEmulatorServiceApi & {
   streamRemoteBitrateKbpsCap: () => number;
 };
 
+/** The least time between two forced acceleration checks for an emulator step. */
+const ACCEL_RECHECK_MS = 30_000;
+
 export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): AndroidEmulatorService {
   const logger = deps.logger ?? null;
   const env = deps.env ?? process.env;
@@ -227,13 +230,23 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     return sdk;
   };
 
+  let accelRecheckedAt = 0;
   /** The SDK with adb and the emulator, or the refusal that says what is missing. */
   const requireSdk = async (needs: { emulator: boolean }): Promise<ReadyAndroidSdk> => {
     if (unsupportedReason !== null) throw new AndroidEmulatorFailure("ANDROID_SDK_NOT_FOUND", unsupportedReason);
-    const ready = requireAndroidSdkTools(await readSdk(), platform, needs);
+    let sdk = await readSdk();
+    const onCloud = Boolean(process.env.ADE_CLOUD_INSTANCE_ID?.trim());
+    // A "no acceleration" answer stays cached for minutes; an emulator step checks
+    // again (at most every 30 s: a check can take 20 s), so a fixed /dev/kvm works
+    // now. A cloud computer never has KVM: no recheck.
+    if (needs.emulator && sdk.found && !sdk.acceleration.usable && !onCloud && Date.now() - accelRecheckedAt > ACCEL_RECHECK_MS) {
+      accelRecheckedAt = Date.now();
+      sdk = await readSdk({ forceAccelCheck: true });
+    }
+    const ready = requireAndroidSdkTools(sdk, platform, needs);
     // a cloud box never has KVM. Refuse its first emulator step (making a
     // device, or a start) with what a VM costs, not "turn on KVM".
-    if (needs.emulator && !ready.sdk.acceleration.usable && process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
+    if (needs.emulator && !ready.sdk.acceleration.usable && onCloud) {
       throw new AndroidEmulatorFailure(
         "ANDROID_NO_ACCELERATION",
         cloudAndroidNeedsVmMessage(cloudShapeForResources(os.cpus().length, os.totalmem())),

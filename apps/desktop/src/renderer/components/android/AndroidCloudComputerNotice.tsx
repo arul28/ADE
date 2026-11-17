@@ -13,6 +13,9 @@ import {
   type CloudMachine,
 } from "../../../shared/adeCloud";
 import { androidLowDiskSentence } from "../../../shared/androidDisk";
+import { cloudTierOfMachine, cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
+import { confirmDialog } from "../ui/dialog";
+import { changeCloudLaneTier, cloudLaneLifeAvailable } from "../cloudLane/cloudLaneActions";
 import type { NoticeAction } from "../ui/notice";
 import { Banner } from "../ui/notice";
 import { cloudBoxContext, cloudPendingLabel, useCloudBoxActions } from "../remoteTargets/useCloudBoxActions";
@@ -50,8 +53,11 @@ function canMove(box: CloudMachine): boolean {
  *   that uses;
  * - too little disk: "Grow the disk" to the smallest step that fits, with
  *   what it takes of the plan's disk at one time, or what extra disk costs.
- *   The computer restarts; the person starts the device again once it is
- *   back. A grow the server holds for extra disk opens the plans card.
+ *   It runs as the lane's size-change job at the same size (save work,
+ *   grow, start ADE, connect), so the lane's chats show its steps and its
+ *   result across the restart (`CloudLaneChatStatus`). The person starts the
+ *   device again once it is back. A grow into extra disk never decided goes
+ *   straight to the server, whose refusal opens the plans card.
  *
  * All account level: they take the instance id, never a pin (the pane finds
  * the computer by its pin). Not an error, so nothing to report.
@@ -84,11 +90,11 @@ export function AndroidCloudComputerNotice({
   const kind = cloudMachineKindOf(box.type);
   const boxShape = cloudShape(box.shapeId);
   const pending = actions.pendingById[box.instanceId] ?? null;
-  const serverFailure = actions.errorById[box.instanceId]?.message ?? null;
+  const failure = actions.errorById[box.instanceId]?.message ?? null;
   // The grow went past the plan's disk with extra disk never decided: the
   // server's sentence says so, and the way on is the plans card.
   const [needsApproval, setNeedsApproval] = useState(false);
-  const approvalAsked = serverFailure != null && needsApproval;
+  const approvalAsked = failure != null && needsApproval;
   const items: NoticeAction[] = [];
   let sentence: string;
   if (need.kind === "disk") {
@@ -96,14 +102,33 @@ export function AndroidCloudComputerNotice({
     sentence = `${androidLowDiskSentence(need.neededMb, need.freeMb)} ${plan.sentence}`;
     if (!approvalAsked && plan.grow && box.state === "running") {
       const toGb = plan.toGb;
+      // Inside the plan, or into extra disk the person turned on: the lane's job, whose card shows in its chats.
+      const sizeId: CloudTierId | null = cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(account)))?.id ?? null;
+      const viaJob = cloudLaneLifeAvailable() && sizeId != null && plan.within != null;
       items.push({
         label: "Grow the disk",
-        onClick: () => void actions.growDisk(ctx, toGb).then((result) => {
-          if (!result) return;
-          // Any other refusal shows the server's own sentence (`errorById`).
-          setNeedsApproval(!result.ok && result.diskRefusal?.reason === "needs_approval");
-          if (result.ok) onDismiss?.();
-        }),
+        onClick: viaJob && sizeId
+          ? () => void (async () => {
+            const ok = await confirmDialog({
+              title: `Grow the disk of ${ctx.name} to ${toGb} GB?`,
+              message: `ADE saves the chats on ${ctx.name}, grows the disk and starts ADE again: the computer restarts and is back in a few minutes. Chats and agent CLIs that were working continue after it; a command running in a terminal stops. The lane's chats show the steps. A disk can't shrink later.`,
+              confirmLabel: "Grow the disk",
+            });
+            if (!ok) return;
+            try {
+              actions.dismissError(box.instanceId);
+              await changeCloudLaneTier({ instanceId: box.instanceId, sizeId, timing: "now", diskGb: toGb });
+              onDismiss?.();
+            } catch (error) {
+              actions.reportError(box.instanceId, error instanceof Error ? error.message : String(error));
+            }
+          })()
+          : () => void actions.growDisk(ctx, toGb).then((result) => {
+            if (!result) return;
+            // Any other refusal shows the server's own sentence (`errorById`).
+            setNeedsApproval(!result.ok && result.diskRefusal?.reason === "needs_approval");
+            if (result.ok) onDismiss?.();
+          }),
       });
     }
     if (approvalAsked || (!plan.grow && plan.settings)) {
@@ -134,14 +159,14 @@ export function AndroidCloudComputerNotice({
         testId={testId}
         model={{
           id: testId,
-          tone: serverFailure || need.kind === "disk" ? "warning" : "neutral",
+          tone: failure || need.kind === "disk" ? "warning" : "neutral",
           icon: <AndroidLogo size={13} />,
           title,
-          detail: pending ? cloudPendingLabel(pending) : serverFailure ?? sentence,
+          detail: pending ? cloudPendingLabel(pending) : failure ?? sentence,
           actions: pending ? [] : items,
           busy: pending != null,
           report: false,
-          dismiss: serverFailure
+          dismiss: failure
             ? {
               onDismiss: () => {
                 setNeedsApproval(false);

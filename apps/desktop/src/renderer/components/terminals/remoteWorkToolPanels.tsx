@@ -221,7 +221,7 @@ function RemoteWorkDevice({ use, remotePin, renderDevice, renderNone, kind }: Re
     lastSeenStartRef.current = use.lastStartedAt;
     if (stateRef.current !== "device") readAgainRef.current?.();
   }, [use.lastStartedAt]);
-  if (state === "loading") return <WorkToolEmptyLine title={`Reading ${use.machineName}…`} />;
+  if (state === "loading") return <WorkToolEmptyLine title={`Reading ${use.machineName}…`} busy />;
   if (state === "none") {
     return renderNone ? <>{renderNone()}</> : <WorkToolEmptyLine title={`No ${kind.noun} on ${use.machineName} for this chat right now`} />;
   }

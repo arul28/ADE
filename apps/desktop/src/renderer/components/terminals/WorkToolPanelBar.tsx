@@ -3,6 +3,7 @@ import type { CSSProperties } from "react";
 import type { DeviceKind } from "../../../shared/types/deviceSources";
 import { sameMachineKey } from "../../../shared/machineAddress";
 import { cn } from "../ui/cn";
+import { Spinner } from "../ui/Spinner";
 import { WORK_TOOL_CHROME_CHIP, WORK_TOOL_CHROME_ROW } from "./workToolChrome";
 import { DEVICE_KINDS, machinesForKind, railMachineName } from "./workToolCatalog";
 import type { CatalogCardView } from "./useWorkToolCatalog";
@@ -40,6 +41,7 @@ export function WorkToolPanelBar({
   canChoose,
   viewOnly,
   chooseUnavailableReason,
+  pendingMachineKey,
   canTellAgent,
   told,
   onChooseMachine,
@@ -56,6 +58,8 @@ export function WorkToolPanelBar({
   viewOnly: boolean;
   /** Why no machine can be picked, or what a view-only pick means, in a sentence. */
   chooseUnavailableReason: string | null;
+  /** The machine a switch of this tool is going to now: that chip is busy and the others wait. */
+  pendingMachineKey: string | null;
   /** The chat's provider takes a note while it works (`inline`); a queue-only one does not. */
   canTellAgent: boolean;
   /** The agent was told about the take-over (`held` only). */
@@ -116,6 +120,7 @@ export function WorkToolPanelBar({
       canChoose={canChoose}
       viewOnly={viewOnly}
       chooseUnavailableReason={chooseUnavailableReason}
+      pendingMachineKey={mode === "agent" ? null : pendingMachineKey}
       onPick={(machine) => (mode === "agent" ? onAskMachine(kind, machine) : onChooseMachine(kind, machine))}
     />
   ) : null;
@@ -172,6 +177,7 @@ function MachineRow({
   canChoose,
   viewOnly,
   chooseUnavailableReason,
+  pendingMachineKey,
   onPick,
 }: {
   tile: CatalogCardView;
@@ -182,6 +188,7 @@ function MachineRow({
   canChoose: boolean;
   viewOnly: boolean;
   chooseUnavailableReason: string | null;
+  pendingMachineKey: string | null;
   onPick: (machine: ToolMachine) => void;
 }) {
   // Only the machines that can run it: a machine that can't is not a choice.
@@ -198,15 +205,20 @@ function MachineRow({
       <div role="radiogroup" aria-label={`${tile.label} runs on`} className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]">
         {able.map((machine) => {
           const chosen = Boolean(tile.machine && sameMachineKey(tile.machine.key, machine.key));
-          const title = machineChipTitle({ noun, machine, chosen, asking, enabled, viewOnly, chooseUnavailableReason });
+          const busy = Boolean(pendingMachineKey && sameMachineKey(pendingMachineKey, machine.key));
+          const title = busy
+            ? `Switching the ${noun} to ${machine.name}…`
+            : machineChipTitle({ noun, machine, chosen, asking, enabled, viewOnly, chooseUnavailableReason });
           return (
             <button
               key={machine.key}
               type="button"
               role="radio"
               aria-checked={chosen}
-              disabled={!enabled && !chosen}
-              onClick={() => { if (!chosen) onPick(machine); }}
+              aria-busy={busy || undefined}
+              // A switch still out holds the row: one answer, not one per click.
+              disabled={(!enabled && !chosen) || (Boolean(pendingMachineKey) && !busy && !chosen)}
+              onClick={() => { if (!chosen && !pendingMachineKey) onPick(machine); }}
               title={title}
               className={cn(
                 WORK_TOOL_CHROME_CHIP,
@@ -218,7 +230,7 @@ function MachineRow({
               )}
               data-machine-key={machine.key}
             >
-              <MachineOsMark machine={machine} size={12} />
+              {busy ? <Spinner /> : <MachineOsMark machine={machine} size={12} />}
               <span className="min-w-0 max-w-[140px] truncate">{railMachineName(machine)}</span>
               {!machine.online ? <span className="text-[10.5px] text-muted-fg">offline</span> : null}
             </button>

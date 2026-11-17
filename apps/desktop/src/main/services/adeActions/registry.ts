@@ -327,6 +327,7 @@ import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
 import { claudePassVaultFromStore } from "../adeCloud/claudePassStore";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
 import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
+import { cloudDiskGrowHost } from "../adeCloud/cloudDiskGrowHost";
 import { createCloudBrainMaker, type CloudBrainMaker, type CloudBrainMakerBase } from "../adeCloud/cloudBrainMaker";
 import {
   cloudLaneLaunchRecordsDir,
@@ -4625,6 +4626,9 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
           },
         }
       : null,
+    // On an ADE Cloud computer: its own disk grower, registered by the brain.
+    diskGrow: cloudDiskGrowHost,
+    projectRoot: runtime.projectRoot ?? null,
     analytics: runtime.productAnalyticsService ?? null,
     logger: runtime.logger,
   });

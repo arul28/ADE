@@ -316,13 +316,17 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // (completed | failed). `cloud_lane_deleted`: a person deleted a lane and its
   // computer (completed: its chats went too | kept: they kept its chats |
   // partial: its chats couldn't all be deleted | failed). `cloud_clear_caches`: a computer's caches cleared
-  // (completed | failed | denied, an agent's ask declined). `cloud_default_size`:
+  // (completed | failed | denied, an agent's ask declined). `cloud_disk_grow`: an
+  // agent's grow of its computer's disk (completed: a grow was asked | denied: the
+  // person or the agent limits said no | rejected: at the storage limit | failed:
+  // busy or couldn't run); none when it already fits. `cloud_default_size`:
   // the person picked another size for new lanes (size_<tier>). Never the
   // lane, project, computer, branch, prompt, size of a computer, or an error.
   "cloud_lane_launch",
   "cloud_lane_freed",
   "cloud_lane_deleted",
   "cloud_clear_caches",
+  "cloud_disk_grow",
   "cloud_default_size",
   // One coarse fact per automatic diagnostic send (feature "issue_report"): whether it went, was refused
   // by the client budget, or failed. Never the failure code that triggered it,
