@@ -731,8 +731,8 @@ iPhones are `compact` and use the same views stacked.
   (`ADESettingsPageIntro`). Machines comes first and the split opens on it.
   General shows "You" and "Primary machine" as panels whose rows open Account,
   Providers, Usage or Machines. Account shows who you are, "Your computers"
-  (Manage connections), Email, Account ID, a GitHub hint and "Sign out of this
-  iPhone".
+  (one ADE Cloud row, never a row per lane computer, and Manage connections),
+  Email, Account ID, a GitHub hint and "Sign out of this iPhone".
 - **Lists and details.** Lanes, PRs and Files use `DuoSplitScaffold`: side by
   side when wide, list then detail on a phone.
 - **Folding.** Folding swaps the wide columns for the phone stack. The wide Work

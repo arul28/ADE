@@ -1162,6 +1162,8 @@ func settingsPlatformName(_ raw: String) -> String {
 /// it has and how many are awake. Each lane's computer wakes when work is
 /// sent to it, so the row has no Connect.
 struct SettingsCloudMachineRow: View {
+  /// False: the row alone, inside another section's rows (Account's "Your computers").
+  var inSection = true
   @ObservedObject private var account = AccountService.shared
   /// The sync service's changes (the computer list) redraw the row.
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
@@ -1173,12 +1175,15 @@ struct SettingsCloudMachineRow: View {
     let count = max(computers.count, lanes)
     // Every account has ADE Cloud, also before its first lane.
     if account.isSignedIn {
-      ADESettingsSection(ADECloudMachine.name, symbol: ADECloudMachine.symbol, tint: .slate) {
-        ADESettingsRows {
-          ADESettingsRow(ADECloudMachine.name, hint: hint(count: count, awake: computers.filter(\.isAwake).count), symbol: ADECloudMachine.symbol)
+      let row = ADESettingsRow(ADECloudMachine.name, hint: hint(count: count, awake: computers.filter(\.isAwake).count), symbol: ADECloudMachine.symbol)
+      if inSection {
+        ADESettingsSection(ADECloudMachine.name, symbol: ADECloudMachine.symbol, tint: .slate) {
+          ADESettingsRows { row }
         }
+        .adeInspectable("Settings.Machines.ADECloud")
+      } else {
+        row.adeInspectable("Settings.Account.ADECloud")
       }
-      .adeInspectable("Settings.Machines.ADECloud")
     }
   }
 
