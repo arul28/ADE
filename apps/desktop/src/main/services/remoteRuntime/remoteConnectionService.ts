@@ -512,6 +512,12 @@ export class RemoteConnectionService {
   private autoconnectTimer: NodeJS.Timeout | null = null;
   /** The signed-in account when a machine's sign-in failure stopped its redials (`waitsForPersonFix`). */
   private readonly personFixAccountByTargetId = new Map<string, string | null>();
+  /**
+   * The sign-in failure that a change of account released: the maintenance
+   * pass and every call after it may dial until a new attempt records a new
+   * failure (a new `lastErrorInfo` object) or connects.
+   */
+  private readonly personFixReleasedFailureByTargetId = new Map<string, unknown>();
   /** Strictly increasing, so a window can always tell the newer of two snapshots. */
   private lastSnapshotAt = 0;
   /** Machine and id pairs already logged by `noteUnroutedProjectId`. */
@@ -737,6 +743,7 @@ export class RemoteConnectionService {
       this.latencyProbeTargetIds.delete(targetId);
       this.pairedFallbackSshTrustByTargetId.delete(targetId);
       this.personFixAccountByTargetId.delete(targetId);
+      this.personFixReleasedFailureByTargetId.delete(targetId);
     }
     for (const targetId of disconnectedRelayTargetIds) {
       if (removedTargetIds.has(targetId)) continue;
@@ -1138,6 +1145,7 @@ export class RemoteConnectionService {
     this.pool.clearConnectFailure(targetId);
     this.pairedFallbackSshTrustByTargetId.delete(targetId);
     this.personFixAccountByTargetId.delete(targetId);
+    this.personFixReleasedFailureByTargetId.delete(targetId);
     this.statusById.delete(targetId);
     this.slowLinkMeasures.delete(targetId);
     this.linkSummaries.delete(targetId);
@@ -2638,15 +2646,24 @@ export class RemoteConnectionService {
   private waitsForPersonFix(targetId: string, currentOwnerUserId: string | null): boolean {
     const status = this.statusById.get(targetId);
     const failure = status?.state === "error" ? status.lastErrorInfo?.failure : undefined;
-    if (failure !== "authentication") this.personFixAccountByTargetId.delete(targetId);
+    if (failure !== "authentication") {
+      this.personFixAccountByTargetId.delete(targetId);
+      this.personFixReleasedFailureByTargetId.delete(targetId);
+    }
     if (!isPersonFixFailure(failure)) return false;
     if (failure !== "authentication") return true;
+    // Released by an account change: stays released until the next attempt
+    // records its own result, so the call right after maintenance dials too.
+    const info = status?.lastErrorInfo;
+    if (this.personFixReleasedFailureByTargetId.get(targetId) === info) return false;
+    this.personFixReleasedFailureByTargetId.delete(targetId);
     if (!this.personFixAccountByTargetId.has(targetId)) {
       this.personFixAccountByTargetId.set(targetId, currentOwnerUserId);
       return true;
     }
     if (this.personFixAccountByTargetId.get(targetId) === currentOwnerUserId) return true;
     this.personFixAccountByTargetId.delete(targetId);
+    this.personFixReleasedFailureByTargetId.set(targetId, info);
     return false;
   }
 

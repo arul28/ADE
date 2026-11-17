@@ -996,6 +996,59 @@ describe("RemoteConnectionService", () => {
     }
   });
 
+  it("redials a machine whose sign-in failed once the signed-in account changes, through the call after the pass too", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const saved = target("signin-machine", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [saved]),
+      get: vi.fn((id: string) => (id === saved.id ? saved : null)),
+      pruneAccountOwned: vi.fn(() => []),
+      remove: vi.fn(() => false),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (_t: RemoteRuntimeTarget) => {
+        throw new RemoteRuntimeConnectError({
+          kind: "generic",
+          failure: "authentication",
+          message: "Sign in to ADE to reach this machine.",
+        });
+      }),
+      disconnect: vi.fn(),
+      onHostStorageWait: vi.fn(() => () => {}),
+      onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
+      onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
+    } as unknown as RemoteConnectionPool;
+    let owner: string | null = null;
+    const service = new RemoteConnectionService(registry, pool, {
+      getAuthorizedAccountOwnerId: vi.fn(async () => owner),
+    });
+    const dials = () => vi.mocked(pool.connect).mock.calls.length;
+    const pass = async () => {
+      vi.setSystemTime(Date.now() + automaticReconnectBackoffMs(9));
+      service.probeSavedConnections();
+      for (let tick = 0; tick < 5; tick += 1) await new Promise((resolve) => setImmediate(resolve));
+    };
+
+    try {
+      service.startAutoconnect();
+      await vi.waitFor(() => expect(service.snapshot().connections[0]?.lastErrorInfo?.failure).toBe("authentication"));
+      await pass();
+      await pass();
+      expect(dials(), "signed out: no redial").toBe(1);
+
+      // The person signs in: the next pass dials, and so does the call after it.
+      owner = "account-1";
+      await pass();
+      await vi.waitFor(() => expect(dials()).toBe(2));
+    } finally {
+      service.stopAutoconnect();
+      service.stopHostReturnWatches();
+      vi.useRealTimers();
+    }
+  });
+
   it("reconciles a different account's target, credentials, and live pool entry as one command", () => {
     const accountOwned = {
       ...target("account-owned", 1_700_000_000),
