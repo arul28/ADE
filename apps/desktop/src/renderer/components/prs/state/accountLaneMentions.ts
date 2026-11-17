@@ -24,10 +24,14 @@ export type LaneMention = {
   laneName: string;
   /** "ADE Cloud" for a cloud computer, else the machine's own name. */
   machineName: string;
+  /** The account key of the lane's computer. */
+  machineKey: string;
   /** An ADE Cloud computer: never offline (asleep is still readable). */
   cloud: boolean;
-  /** An own computer that is connected to the account now. */
+  /** False only for an own computer that is not connected: the offline sentence. */
   online: boolean;
+  /** An ADE Cloud computer that is asleep: opening the lane wakes it. */
+  resting: boolean;
 };
 
 /** The index's project filter for a repository address: `github.com/owner/repo`. */
@@ -49,8 +53,10 @@ export function laneMentionOf(
     laneId: row.laneId,
     laneName,
     machineName: cloud ? ADE_CLOUD_NAME : row.machineName?.trim() || "another computer",
+    machineKey: row.machineKey,
     cloud,
     online: cloud || row.online,
+    resting: cloud && !row.online,
   };
 }
 
