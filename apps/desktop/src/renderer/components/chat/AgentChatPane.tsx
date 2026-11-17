@@ -18610,8 +18610,10 @@ export function AgentChatPane({
       // Optional call: a host bridge without it (an older embedder, a test
       // double) leaves the draft on this window's own memory.
       const defaultsPin = chatApiPin(draftExecutionBindingRef.current, isBoundScopePaneRef.current);
-      const machine = defaultsPin
-        ? agentChatApiRef.current.launchDefaults?.(defaultsPin) ?? Promise.resolve(null)
+      // A machine that can't answer (asleep, refused, ADE Cloud as a tab)
+      // leaves the account's row to seed the draft.
+      const machine: Promise<AgentChatLaunchDefaults | null> = defaultsPin
+        ? (agentChatApiRef.current.launchDefaults?.(defaultsPin) ?? Promise.resolve(null)).catch(() => null)
         : Promise.resolve(null);
       void Promise.all([machine, account])
         .then(([defaults, accountDefaults]) => {
