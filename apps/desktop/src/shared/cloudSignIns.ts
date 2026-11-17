@@ -151,20 +151,6 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
   },
 ];
 
-/** Providers with no sign-in a new machine can start with, and why, in the card's words. */
-export const CLOUD_SIGN_IN_GAPS: readonly { provider: string; label: string; reason: string }[] = [
-  {
-    provider: "kimi",
-    label: "Kimi Code",
-    reason: "Reads its key only from its own config file. Sign in on the machine; Kimi shows a link to approve.",
-  },
-  {
-    provider: "antigravity",
-    label: "Antigravity",
-    reason: "Signs in with Google in a browser on the machine and has no key to hand over. Sign in on the machine.",
-  },
-];
-
 export function cloudSignInSpec(id: string): CloudSignInSpec | null {
   return CLOUD_SIGN_INS.find((spec) => spec.id === id) ?? null;
 }
