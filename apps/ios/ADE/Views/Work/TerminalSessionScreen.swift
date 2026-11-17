@@ -38,8 +38,9 @@ struct TerminalSessionScreen: View {
   @AppStorage("ade.work.cliMessageBar") private var messageBarOn = false
   /// The bar's draft. Held here so the text outlives the bar (the toggle, a
   /// resume), but only the bar observes it: a key press re-renders the bar,
-  /// never this screen.
-  @State private var messageDraft = TerminalMessageDraft()
+  /// never this screen. A state object, so the screen's many re-renders reuse
+  /// this one instead of building a draft each time.
+  @StateObject private var messageDraft = TerminalMessageDraft()
   @State private var messageBarFocusRequest = 0
 
   private var bottomIgnoredEdges: Edge.Set {
