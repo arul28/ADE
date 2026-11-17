@@ -29,6 +29,14 @@ import { resolveMachinePresence } from "../../../shared/types/power";
 import { wakeWebCloudMachine } from "../workspace/webCloudMachines";
 import { isAdeCloudComputer } from "../../state/adeCloudLaneIndex";
 import { setProjectOpenWaking } from "../../state/projectOpenWaking";
+import { adeCloudBinding, isAccountAnsweredPin, isAdeCloudBinding, isAdeCloudTargetId } from "../../../shared/adeCloud/binding";
+import { createAdeCloudAccountReader } from "../../../shared/adeCloud/accountReader";
+import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
+import { createAdeCloudSyncClient } from "./adeCloudSyncClient";
+import type { AdeCloudBridge } from "../../../shared/adeCloud/chatQueue";
+import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer, type CloudChatSendRequest } from "../../../shared/adeCloudMachine";
+import { CloudApiError } from "../../../shared/cloudApiClient";
+import { isCloudRefusalCode } from "../../../../../account-directory/src/cloud/contract";
 
 /** How long a person's connect keeps dialing a cloud computer it just woke. */
 const WOKEN_CONNECT_WAIT_MS = 120_000;
@@ -173,7 +181,8 @@ export type FederatedWebAdapter = {
   setSelectedHubTargetId(targetId: string | null): void;
   activateHub(): void;
   getSelectedChatsTargetId(): string | null;
-  openProject(targetId: string, projectId: string): Promise<RemoteBinding>;
+  /** `adeCloud`: the binding of a tab bound to ADE Cloud, for `targetId` = `ADE_CLOUD_MACHINE_ID`. */
+  openProject(targetId: string, projectId: string, adeCloud?: OpenProjectBinding | null): Promise<RemoteBinding>;
   activateChats(targetId: string): Promise<void>;
   forgetEnvironment(targetId: string): Promise<void>;
   restore(): Promise<"project" | "chats" | null>;
@@ -204,6 +213,8 @@ export function createFederatedWebAdapter({
     targetId: string;
     client: AdeSyncClient;
     adapter: AdeWebAdapter;
+    /** The account answers this binding (`isAccountAnsweredPin`): no machine client to follow. */
+    accountAnswered?: boolean;
   }>();
   const adapters = new Set<AdeWebAdapter>([fallbackAdapter]);
   let currentAdapter = fallbackAdapter;
@@ -444,7 +455,35 @@ export function createFederatedWebAdapter({
     for (const listener of activeAdapterListeners) listener();
   };
 
+  // The account reader: what a tab bound to ADE Cloud, or a lane pin of a
+  // resting cloud computer, reads with no computer awake. Its GitHub reads use
+  // the fallback adapter's GitHub client, which follows the account's grant.
+  const adeCloudReader = createAdeCloudAccountReader({
+    cloud: () => accountClient.cloudApi(),
+    github: () => fallbackAdapter.ade.githubDirect?.request ?? null,
+  });
+
+  /** One adapter per binding the account answers, over a stand-in client that never dials. */
+  const accountAnsweredAdapterFor = (binding: RemoteBinding): AdeWebAdapter => {
+    const existing = adaptersByBinding.get(binding.key);
+    if (existing?.accountAnswered) return existing.adapter;
+    const client = createAdeCloudSyncClient({
+      binding,
+      reader: adeCloudReader,
+      scope: {
+        origin: binding.gitOriginUrl ?? null,
+        machineKey: isAdeCloudBinding(binding) ? null : savedChatsMachineKey(binding.targetId),
+      },
+    });
+    const adapter = createAdeWebAdapter(client, [], accountClient);
+    adapter.bindProject(projectInfo(binding), binding.projectId);
+    adaptersByBinding.set(binding.key, { kind: "project", targetId: binding.targetId, client, adapter, accountAnswered: true });
+    adapters.add(adapter);
+    return adapter;
+  };
+
   const adapterForBinding = (binding: RemoteBinding): AdeWebAdapter => {
+    if (isAccountAnsweredPin(binding)) return accountAnsweredAdapterFor(binding);
     const client = manager.getClient(binding.targetId);
     if (!client) throw markExpected(new Error("The machine is not connected."), "network");
     const existing = adaptersByBinding.get(binding.key);
@@ -554,7 +593,7 @@ export function createFederatedWebAdapter({
       activeSurface: "project",
     };
     activeBinding = binding;
-    manager.setProtectedTargetId(binding.targetId);
+    manager.setProtectedTargetId(isAdeCloudBinding(binding) ? null : binding.targetId);
     persist();
   };
 
@@ -588,7 +627,28 @@ export function createFederatedWebAdapter({
     }
   };
 
-  const openProject = async (targetId: string, projectId: string): Promise<RemoteBinding> => {
+  /**
+   * A tab bound to ADE Cloud opens with no computer and no network: its
+   * adapter reads from the account. The binding comes from the caller, or
+   * from the tab already open.
+   */
+  const openAdeCloudProject = (projectId: string, given: OpenProjectBinding | null | undefined): RemoteBinding => {
+    const known = isAdeCloudBinding(given) ? given : workspace.openBindings.find((entry) => isAdeCloudBinding(entry) && entry.projectId === projectId);
+    const binding = adeCloudBinding({
+      accountProjectId: projectId,
+      displayName: known?.displayName ?? projectId,
+      gitOriginUrl: known?.gitOriginUrl ?? null,
+      iconDataUrl: known?.iconDataUrl ?? null,
+    });
+    setCurrentAdapter(accountAnsweredAdapterFor(binding));
+    rememberBinding(binding);
+    for (const listener of bindingListeners) listener(binding);
+    for (const listener of projectListeners) listener(projectInfo(binding));
+    return binding;
+  };
+
+  const openProject = async (targetId: string, projectId: string, adeCloud?: OpenProjectBinding | null): Promise<RemoteBinding> => {
+    if (isAdeCloudTargetId(targetId)) return openAdeCloudProject(projectId, adeCloud);
     activationsInFlight += 1;
     try {
       await wakeSleepingTarget(targetId);
@@ -751,7 +811,7 @@ export function createFederatedWebAdapter({
         ?? workspace.openBindings.find((entry) => entry.rootPath === rootPath)
         ?? null;
       if (openBinding) {
-        await openProject(openBinding.targetId, openBinding.projectId);
+        await openProject(openBinding.targetId, openBinding.projectId, openBinding);
         return {
           rootPath: openBinding.rootPath,
           displayName: openBinding.displayName,
@@ -1104,7 +1164,75 @@ export function createFederatedWebAdapter({
     }
   };
 
+  // ADE with no computer: the account's reads and the chat message queue, with
+  // this browser's own account token. No computer is asked, and none wakes
+  // except through the server's queue.
+  const cloudApiOrThrow = () => {
+    const api = accountClient.cloudApi();
+    if (!api) throw markExpected(new Error("Sign in to ADE to use ADE Cloud."), "user");
+    return api;
+  };
+  const adeCloudOverrides: AdeCloudBridge = {
+    chatMessages: async ({ machineKey, chatId }) => await cloudApiOrThrow().chatMessages(machineKey, chatId),
+    cancelChatMessage: async ({ machineKey, chatId, messageId }) => {
+      try {
+        return { ok: true, result: await cloudApiOrThrow().cancelChatMessage(machineKey, chatId, messageId) };
+      } catch (error) {
+        if (error instanceof CloudApiError) return { ok: false, code: error.code, status: error.status, message: error.message };
+        throw error;
+      }
+    },
+    projectOverview: async ({ origin }) => {
+      const api = accountClient.cloudApi();
+      return api ? await api.projectOverview(origin) : null;
+    },
+    savedSessions: async (args) => {
+      const api = accountClient.cloudApi();
+      return api ? await api.savedSessions(args) : null;
+    },
+  };
+  // The desktop's `cloud.sendChatMessage` and `cloud.serverLaunchStatus`
+  // (`registerCloudIpc.ts`), the same answers from this browser.
+  const cloudQueueOverrides = {
+    async sendChatMessage(request: CloudChatSendRequest): Promise<CloudChatSendAnswer> {
+      const text = typeof request?.text === "string" ? request.text : "";
+      if (!request?.machineKey || !request.chatId || !CLOUD_CHAT_MESSAGE_ID_PATTERN.test(request.messageId ?? "") || !text.trim()) {
+        throw markExpected(new Error("A message needs its chat and some text."), "user");
+      }
+      try {
+        const result = await cloudApiOrThrow().sendChatMessage(request.machineKey, request.chatId, {
+          messageId: request.messageId,
+          text,
+          ...(request.provider ? { provider: request.provider } : {}),
+          ...(request.modelId ? { modelId: request.modelId } : {}),
+        });
+        return { state: "sent", messageId: result.message.messageId, wake: { state: result.wake.state, launchId: result.wake.launchId ?? null } };
+      } catch (error) {
+        if (error instanceof CloudApiError) {
+          // No queue on this server, or a computer that can't drain it: the caller wakes, then sends.
+          if ((error.status === 404 && error.code === "not_found") || error.code === "update_needed") return { state: "unsupported" };
+          if (isCloudRefusalCode(error.code) || error.status === 400 || error.status === 409 || error.status === 429) {
+            return { state: "refused", code: error.code || null, message: error.message };
+          }
+        }
+        throw error;
+      }
+    },
+    async serverLaunchStatus(launchId: string) {
+      const id = typeof launchId === "string" ? launchId.trim() : "";
+      if (!id || id.length > 64) return null;
+      try {
+        return await cloudApiOrThrow().launchStatus(id);
+      } catch (error) {
+        if (error instanceof CloudApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+  };
+
   const OVERRIDES: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+    adeCloud: adeCloudOverrides,
+    cloud: cloudQueueOverrides,
     account: accountOverrides,
     machines: machinesOverrides,
     app: appOverrides,
@@ -1153,7 +1281,7 @@ export function createFederatedWebAdapter({
         const pinned = bindingFromArgs(args);
         let pinnedAdapter: AdeWebAdapter | null = null;
         if (pinned) {
-          if (!manager.getClient(pinned.targetId)) {
+          if (!isAccountAnsweredPin(pinned) && !manager.getClient(pinned.targetId)) {
             // A pin names the machine the call is for (S14): a machine that is
             // saved but not connected (parked at the session limit, or never
             // dialed in this tab) is connected first, then the call runs on
@@ -1275,7 +1403,7 @@ export function createFederatedWebAdapter({
         return;
       }
       if (workspace.activeSurface !== "project" || !activeBinding) return;
-      if (!manager.getClient(activeBinding.targetId)) return;
+      if (!isAccountAnsweredPin(activeBinding) && !manager.getClient(activeBinding.targetId)) return;
       setCurrentAdapter(adapterForBinding(activeBinding));
     } catch {
       // The machine went away between the lookup and the bind; the next
@@ -1291,7 +1419,7 @@ export function createFederatedWebAdapter({
   );
   managerDispose = manager.subscribe((snapshot) => {
     for (const [key, entry] of adaptersByBinding) {
-      if (manager.getClient(entry.targetId) === entry.client) continue;
+      if (entry.accountAnswered || manager.getClient(entry.targetId) === entry.client) continue;
       entry.adapter.dispose();
       adapters.delete(entry.adapter);
       adaptersByBinding.delete(key);
@@ -1367,8 +1495,8 @@ export function createFederatedWebAdapter({
       persist();
     },
     getSelectedChatsTargetId: () => workspace.selectedChatsTargetId,
-    async openProject(targetId, projectId) {
-      return await openProject(targetId, projectId);
+    async openProject(targetId, projectId, adeCloud) {
+      return await openProject(targetId, projectId, adeCloud);
     },
     async activateChats(targetId) {
       await manager.connectEnvironment(targetId);
@@ -1405,7 +1533,7 @@ export function createFederatedWebAdapter({
       const binding = activeBinding;
       if (!binding) return null;
       try {
-        await openProject(binding.targetId, binding.projectId);
+        await openProject(binding.targetId, binding.projectId, binding);
         return "project";
       } catch (error) {
         // The tab falls back to the welcome page; the shell says why.

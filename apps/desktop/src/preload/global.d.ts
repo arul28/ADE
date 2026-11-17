@@ -15,6 +15,7 @@ import type {
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
+import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
 import type { CloudCarriedSignIns, CloudLaunchRecord as AccountCloudLaunchRecord } from "../../../account-directory/src/cloud/contract";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
@@ -1763,9 +1764,15 @@ declare global {
           id: string,
           input?: ListMyGitHubReposInput,
         ) => Promise<ListMyGitHubReposResult>;
+        /**
+         * `adeCloud`: the binding of a tab bound to ADE Cloud
+         * (`shared/adeCloud/binding.ts`), for `id` = `ADE_CLOUD_MACHINE_ID`.
+         * Such a tab opens with no computer and no network.
+         */
         openProject: (
           id: string,
           projectId: string,
+          adeCloud?: OpenProjectBinding | null,
         ) => Promise<OpenProjectBinding>;
         callAction: (
           id: string,
@@ -4854,6 +4861,13 @@ declare global {
         ) => Promise<ConflictProposal>;
         onEvent: (cb: (ev: ConflictEventPayload) => void, pin: OpenProjectBinding) => () => void;
       };
+      /**
+       * ADE with no computer: the account reads behind a tab bound to ADE
+       * Cloud, and the open messages of a cloud chat's queue
+       * (`shared/adeCloud/chatQueue.ts`). Account-scoped: no pin. Optional:
+       * an older ADE does not have it.
+       */
+      adeCloud?: AdeCloudBridge;
       /**
        * Direct GitHub reads with the ADE account's GitHub App sign-in
        * (`shared/github/directClient.ts`). Account-scoped: no machine, so no

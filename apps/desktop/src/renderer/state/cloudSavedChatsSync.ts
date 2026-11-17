@@ -37,6 +37,7 @@ import {
   type SavedChatLocation,
   type SavedChatReach,
 } from "./cloudSavedChats";
+import { sendThroughAdeCloudQueue } from "./adeCloudChatQueue";
 
 /** Computers a reach found off the account (contract C2 `not_in_account`): gone, whatever the lists say. */
 const goneMachineKeys = new Set<string>();
@@ -175,6 +176,33 @@ function routeSavedChatsToLaneComputers(rows: readonly CloudSavedChatRow[]): Rou
   return [...kept.values()];
 }
 
+/** Chats the server answers per page (its most), and how many pages one read takes. */
+const SAVED_CHATS_PAGE = 500;
+const SAVED_CHATS_MAX_PAGES = 10;
+
+/**
+ * Every saved chat of the project, page by page (newest activity first), so a
+ * project with more than one page of chats lists them all. A page that fails
+ * after the first keeps what the earlier pages read; a failed first page is
+ * "couldn't read" (null), never an empty list.
+ */
+async function listAllSavedChats(
+  bridge: NonNullable<NonNullable<Window["ade"]["cloud"]>["savedChats"]>,
+  context: SavedChatsContext,
+): Promise<{ chats: CloudSavedChatRow[]; nextCursor: string | null } | null> {
+  const first = await bridge.list({ projectKey: context.projectKey, limit: SAVED_CHATS_PAGE });
+  if (!first) return null;
+  const chats = [...first.chats];
+  let cursor = first.nextCursor;
+  for (let page = 1; cursor && page < SAVED_CHATS_MAX_PAGES && context.isActive(); page += 1) {
+    const next = await bridge.list({ projectKey: context.projectKey, limit: SAVED_CHATS_PAGE, cursor }).catch(() => null);
+    if (!next) break;
+    chats.push(...next.chats);
+    cursor = next.nextCursor;
+  }
+  return { chats, nextCursor: cursor };
+}
+
 export async function refreshCloudSavedChats(context: SavedChatsContext): Promise<void> {
   const bridge = window.ade?.cloud?.savedChats;
   if (inFlight) {
@@ -186,7 +214,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
   lastReadAtMs = Date.now();
   lastReadProjectKey = context.projectKey;
   try {
-    const list = await bridge.list({ projectKey: context.projectKey, limit: 500 });
+    const list = await listAllSavedChats(bridge, context);
     if (!list || !context.isActive()) return;
     const store = rootAppStoreApi.getState();
     // Live here: connected, and its rows not dimmed. A connection can stay up
@@ -623,6 +651,7 @@ export function savedChatAwareAgentChatApi(api: AgentChatApi): AgentChatApi {
             .then(({ followSessionToMachine }) => followSessionToMachine(location.chatId, location.machineKey))
             .catch((error: unknown) => console.warn("[cloud] following a saved chat to its computer failed", error));
         },
+        queueSend: sendThroughAdeCloudQueue,
         wakeForSend: async (pin, sessionId) => {
           const machineKey = cloudConnectionMachineKey(pin.targetId);
           if (!machineKey) return null;

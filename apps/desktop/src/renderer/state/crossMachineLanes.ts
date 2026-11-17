@@ -85,6 +85,7 @@ import { claimSessionsLiveFirst, machineIsCloudResting, rowShowsConnected } from
 import { sessionTurnLive } from "../../shared/sessionStatusPresentation";
 import { useStableBinding } from "./laneMachineRouting";
 import { cloudConnectionMachineKey, isCloudConnectionTarget, isSavedChatsMachineId } from "./cloudSavedChats";
+import { isAdeCloudBinding } from "../../shared/adeCloud/binding";
 import { cloudMachineResting } from "../../shared/adeCloud";
 import { cloudBoxForMachine } from "../components/remoteTargets/cloudMachineModel";
 import { readWebAccountMachineKeys } from "./webAccountMachineKeys";
@@ -904,8 +905,18 @@ export function buildCrossMachineLaneRows(input: {
     if (list) list.push(session);
     else sessionsByLaneId.set(laneId, [session]);
   }
+  // A tab bound to ADE Cloud has no own computer online: an own computer that
+  // is offline lists nothing there. Its lanes come back when it connects.
+  const onAdeCloud = isAdeCloudBinding(activeBinding);
   for (const entry of entries) {
     const cloudResting = machineIsCloudResting(entry, input.cloudLaneComputers);
+    if (
+      onAdeCloud
+      && !entry.online
+      && !cloudResting
+      && !isSavedChatsMachineId(entry.machineId)
+      && !isCloudConnectionTarget(entry.machineId)
+    ) continue;
     const sessionsByLaneId = sessionsByMachineId.get(entry.machineId);
     for (const lane of entry.lanes) {
       rows.push({

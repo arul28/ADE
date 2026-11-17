@@ -138,6 +138,9 @@ export function savedChatSession(row: CloudSavedChatRow): TerminalSessionSummary
     resumeCommand: null,
     runtimeState: "idle",
     cloudSavedCopy: true,
+    // A chat another chat started nests under it in Work, as it does live.
+    ...(row.parentChatId && row.parentChatId !== row.chatId ? { orchestrationParentSessionId: row.parentChatId } : {}),
+    ...(row.spawnKind === "subagent" || row.spawnKind === "peer" ? { spawnKind: row.spawnKind } : {}),
   };
 }
 
@@ -230,6 +233,12 @@ export type SavedChatReach = {
    * not such a computer.
    */
   wakeForSend?: (pin: Extract<OpenProjectBinding, { kind: "remote" }>, sessionId: string) => Promise<OpenProjectBinding | null>;
+  /**
+   * Sends to a chat whose cloud computer is asleep through the account's
+   * queue, which wakes it: the send returns at once (`sent`). `unsupported`
+   * (an older server, files with the message): wake, then send, as before.
+   */
+  queueSend?: (location: SavedChatLocation, args: Parameters<AgentChatApi["send"]>[0]) => Promise<"sent" | "unsupported">;
 };
 
 /**
@@ -327,6 +336,9 @@ export function withSavedChatReads(
       if (!location || !reach || !(isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
         return wakeOnRefusal(pin, args.sessionId, (callPin) => api.send(args, callPin));
       }
+      // The account's queue keeps the message and wakes the computer; the
+      // send never waits for the computer to come up.
+      if (reach.queueSend && await reach.queueSend(location, args) === "sent") return;
       const reachedPin = await reach.pinFor(location);
       if (!reachedPin) return api.send(args, pin);
       const result = await api.send(args, reachedPin);

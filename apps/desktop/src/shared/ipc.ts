@@ -1206,6 +1206,17 @@ export const IPC = {
   cloudSavedChatsList: "ade.cloud.savedChats.list",
   cloudSavedChatsRead: "ade.cloud.savedChats.read",
   cloudSavedChatsDelete: "ade.cloud.savedChats.delete",
+  /**
+   * ADE with no computer (`main/services/adeCloud/adeCloudReadIpc.ts`): a
+   * tab bound to ADE Cloud, the account reads behind it, and the message
+   * queue of an existing cloud chat.
+   */
+  adeCloudOpenProject: "ade.adeCloud.openProject",
+  adeCloudProjectOverview: "ade.adeCloud.projectOverview",
+  adeCloudGitSummary: "ade.adeCloud.gitSummary",
+  adeCloudSavedSessions: "ade.adeCloud.savedSessions",
+  adeCloudChatMessages: "ade.adeCloud.chatMessages.list",
+  adeCloudChatMessageCancel: "ade.adeCloud.chatMessages.cancel",
   cloudListMachines: "ade.cloud.listMachines",
   cloudMachineAction: "ade.cloud.machineAction",
   cloudGetAgentLimits: "ade.cloud.getAgentLimits",
