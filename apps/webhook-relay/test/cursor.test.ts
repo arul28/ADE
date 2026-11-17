@@ -384,11 +384,48 @@ describe("Cursor Cloud webhook relay", () => {
   it("rejects an oversized payload before storing it", async () => {
     const env = makeEnv();
     const response = await handleRequest(
-      await cursorWebhookRequest(cursorPayload(), { contentLength: String(1024 * 1024 + 1) }),
+      await cursorWebhookRequest(cursorPayload(), { contentLength: String(64 * 1024 + 1) }),
       env,
     );
     expect(response.status).toBe(413);
     expect(env.DB.events).toHaveLength(0);
+  });
+
+  it("caps anonymous registrations per address without spending the shared allowance", async () => {
+    const env = makeEnv();
+    const ip = "203.0.113.7";
+    const registerFrom = (secret: string) => handleRequest(new Request("https://relay.test/cursor/register", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${secret}`,
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+      },
+      body: JSON.stringify({ secret }),
+    }), env);
+    for (let index = 0; index < 20; index += 1) {
+      const secret = `cursor-cloud-webhook-secret-${index}-padding-32chars`;
+      expect((await registerFrom(secret)).status, `registration ${index}`).toBe(200);
+    }
+    expect((await registerFrom("cursor-cloud-webhook-secret-over-limit-32chars")).status).toBe(429);
+    // The rejected address spent no shared slot.
+    const global = env.DB.dailyCounts.get("cursor-register");
+    expect([...(global?.values() ?? [])]).toEqual([20]);
+  });
+
+  it("keeps the newest 500 events for one secret", async () => {
+    const env = makeEnv();
+    await connectClient(env);
+    for (let index = 0; index < 501; index += 1) {
+      const response = await handleRequest(
+        await cursorWebhookRequest(cursorPayload(), { delivery: `delivery-${index}` }),
+        env,
+      );
+      expect(response.status, `event ${index}`).toBe(200);
+    }
+    expect(env.DB.events).toHaveLength(500);
+    expect(env.DB.events.some((event) => event.event_id === "delivery-0")).toBe(false);
+    expect(env.DB.events.some((event) => event.event_id === "delivery-500")).toBe(true);
   });
 
   it("accepts env-configured secrets without prior registration", async () => {
