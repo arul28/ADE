@@ -48,11 +48,10 @@ runtime. New hosted connections are account-only: the browser signs in, chooses
 a same-account machine from the directory, and receives DPoP-bound paired
 credentials through Relay. It does not keep a local SQLite replica; it uses
 changeset batches as invalidation signals and refreshes state through remote
-commands, file requests, and chat/terminal streams. Browser environments paired
-before this release can still reconnect over their saved local/direct routes,
-but the hosted client no longer creates non-account pairings.
+commands, file requests, and chat/terminal streams. For ADE Cloud it reads
+the account server and GitHub (see *ADE Cloud and the account server*).
 
-Fresh controller launches require an ADE account. A previously paired device
+Fresh controller launches require an ADE account. A device paired earlier
 may use its explicitly labeled direct/local recovery path while signed out, but
 that path is not a guest account and never becomes an account-wide view.
 
@@ -75,8 +74,7 @@ The sync authority is the machine-owned `ade serve` runtime in
 runtime — it attaches through the local runtime connection pool, exactly
 the same way the iOS app does.
 
-This is the inversion to internalise: the desktop is no longer the
-sync authority. A desktop window that is bound to a remote runtime is therefore
+The desktop is not the sync authority. A desktop window that is bound to a remote runtime is therefore
 not the authority either; the remote `ade serve` on that machine owns the
 authority role for projects opened on it.
 
@@ -178,7 +176,7 @@ account directory are both pointed at that owner, and no amount of restarting
 the idle brain changes that while the owner is still running. Sync-host startup
 conflicts are logged once with their full quit instructions and then restated at
 most once every ten minutes as a single line with an occurrence count, so an app
-left open for days no longer floods the log.
+left open for days does not flood the log.
 
 #### A brain started by hand
 
@@ -263,24 +261,18 @@ continues.
 #### One ingress implementation, two ingress paths
 
 A projectless machine and a project-scoped machine accept the *same* clients,
-so the handshake they run is one implementation with options, not two similar
-ones. Two shared modules replaced the copies that used to drift within a
-release:
+so the handshake they run is one implementation with options. Two shared
+modules hold it:
 
-- `syncHelloProtocol.ts` — the one parser for `hello` and `pairing_request`.
-  The brain's fallback handler previously carried a narrower hand-rolled copy
-  that understood only `bootstrap` and `paired` auth, so every newer auth shape
-  (the web client's `account` hello, the desktop's `account_sealed` adoption)
-  was answered with a flat "Invalid hello payload." on exactly the machine those
-  clients are meant to reach. The copy also dropped `connectionAttempt`, leaving
-  route arbitration blind on that path.
+- `syncHelloProtocol.ts` — the one parser for `hello` and `pairing_request`,
+  for every auth shape (`bootstrap`, `paired`, `account`, `account_sealed`),
+  with `connectionAttempt`.
 - `syncAccountHelloAuth.ts` — the account-hello gate chain (attestation,
   same-account check, device-key validity, pairing mint/rotate, commit-lock
   discipline) plus the canonical rejection messages. The real differences are
   options: the brain has no connection arbitration and no sealed adoption, so it
   leaves those options unset. Everything else — gate order, strings, codes — is
-  shared, which is what stopped the two ingresses from returning different codes
-  for the same cause.
+  shared, so both ingresses return the same code for the same cause.
 
 `brainMachineSyncStores.ts` is the matching state half: the machine-level PIN,
 pairing, and security stores, created once per secrets directory and handed to
@@ -293,18 +285,13 @@ for one directory.
 
 #### `sync.*` on a machine with no project
 
-Every `sync.*` RPC method used to resolve a project-scoped sync service and fail
-with "Sync service is not available. Register a project first." A machine that
-had never opened a project therefore could not set its pairing PIN — so it could
-not be paired at all, despite hosting sync perfectly well. `ade brain pin
-generate` and the desktop's `ade.sync.setPin` both hit that wall.
-
-`multiProjectRpcServer.ts` now routes those methods through `withSyncService`:
+A machine that never opened a project can still be paired.
+`multiProjectRpcServer.ts` routes the `sync.*` methods through `withSyncService`:
 the project-scoped service when one owns sync, otherwise the
 `ProjectlessSyncControls` the brain injects (`createProjectlessSyncControls`,
 backed by `brainMachineSyncStores`). A handler built *without* controls (tests,
-embedded runtimes) still fails loudly with the old error rather than pretending
-to host.
+embedded runtimes) fails with "Sync service is not available. Register a
+project first." rather than pretending to host.
 
 Only the methods a bare machine can honestly answer have a fallback:
 `sync.getPin` / `setPin` / `generatePin` / `clearPin`, `sync.forgetDevice`,
@@ -351,11 +338,16 @@ Its `accountSignedIn` gate is *ownership*, not usability — see
   directory and Relay, then reconnects with a per-device secret + WebCrypto
   DPoP. It keeps **no** local SQLite replica: it treats changeset batches as
   invalidation signals and reads through remote commands, file requests, and
-  chat/terminal streams. Its workspace Hub may retain catalogs and open project
-  bindings for many machines, but a four-client pool bounds live WebSockets;
+  chat/terminal streams. It may keep catalogs and open project bindings for
+  many machines, but a four-client pool bounds live WebSockets;
   least-recently-used non-active machines become Parked and reconnect on
-  demand. Saved pre-release local pairings remain a reconnect compatibility
-  path. See `../web-client/README.md`.
+  demand. Saved local pairings from before account-only pairing still
+  reconnect. For ADE Cloud it reads the account server and GitHub instead.
+  See `../web-client/README.md`.
+- **Cloud computers** — `ade serve` brains on ADE Cloud, one for each cloud
+  lane. They are sync authorities like any other machine while they are
+  awake. While one sleeps, the account server answers reads for it (see
+  *ADE Cloud and the account server*).
 - **Lane share guest** — another ADE account that the machine's owner
   shared one lane with. It connects over Relay only, with
   `auth: { kind: "guest", deviceId, ticket, dpop }`: a one-use ticket from
@@ -464,9 +456,11 @@ See `remote-commands.md` and `../linear-integration/README.md`.
 | Replicated ADE runtime tables in `.ade/ade.db` | cr-sqlite CRRs over WebSocket | All connected devices |
 | Source code files | `git push`/`git pull` | Desktop peers only |
 | Shared ADE scaffold/config (`.ade/.gitignore`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
-| Account settings: new-lane defaults, lane templates, CTO home, automation rules (filed under `repo:<origin>`) | Account settings store through the relay, last writer wins per key; automation rules are a rule key and a home key per rule, and only a rule's home computer runs it | Every computer and phone signed in to the account |
+| Account settings: launch defaults, quick slots, new-lane defaults, lane templates, CTO home, automation rules (filed under `repo:<origin>`) | Account settings store through the relay, last writer wins per key; automation rules are a rule key and a home key per rule, and only a rule's home computer runs it | Every computer and phone signed in to the account; the web reads and writes them too |
+| Passwords and provider API keys (`provider_api_key`) | Account vault through the push relay; never readable from a browser | Every computer, ADE Cloud too; the iPhone through its own routes |
+| Cloud lanes' chats, CLI/shell copies, Git summaries, lane index | Account server (see *ADE Cloud and the account server*) | Every client, with no computer awake |
 | Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`), including automation rules scoped to one chat or in a project with no remote | **Never syncs** | Machine-specific |
-| Worktrees, PTY processes, caches, transcripts, artifacts, sockets, secrets, connection drafts | **Never syncs** | Machine-specific |
+| Worktrees, PTY processes, caches, transcripts, artifacts and proof, sockets, machine-only secrets, connection drafts | **Never syncs** | Machine-specific |
 | Product-analytics installation IDs, consent, budgets/deduplication state, and the local `usage_events` export ledger | **Never syncs** | Machine/browser/iOS-client specific; paired-client consent is socket-scoped |
 | PR detail bodies (`pull_request_snapshots`: `files_json`, `comments_json`, `reviews_json`) | Desktop peers replicate them; phones fetch them on demand via `prs.refresh` instead | Desktop peers only |
 | Cross-machine Work chat continuation | Explicit Git publication + bounded handoff capsule over a connected machine runtime; not CRDT replication | Connected ADE desktops |
@@ -532,8 +526,8 @@ The drop is silent and per-column: the rest of the batch applies, including the
 phone's own snooze overlay (`snoozed_until` / `snoozed_at` / `woke_*`), which
 the phone legitimately owns because no host decision rides on it. The batch
 still acks `ok` — a rejecting ack would stall the peer's outbound cursor and
-make it resend the same range forever. A pre-fix phone's dropped value is
-therefore local-only divergence, never host corruption, and it heals when
+make it resend the same range forever. A dropped value is therefore
+local-only divergence, never host corruption, and it heals when
 `refreshWorkSessions` next rewrites the row from the host's `work.listSessions`
 payload — a full replace within the active project's lanes, not a per-row merge,
 so the host's value always wins. Rows in a project the phone has not activated
@@ -563,9 +557,8 @@ peer, and flushes it when the peer socket closes.
 
 The table's primary key is `(peer_device_id, host_site_id)`. A brain hosts one
 project DB at a time and each has its own `db_version` sequence, so a device
-gets one row per host site; a single-column key let one project's delivery
-record answer for another. Databases carrying the older single-column table
-drop and recreate it on open.
+gets one row per host site. A database with the older single-column table
+drops and recreates it on open.
 
 `resolveInitialPeerCursor` in `syncPeerCursorResolution.ts` is the single rule
 applied everywhere a claim seeds `lastKnownServerDbVersion` — first hello,
@@ -584,15 +577,10 @@ indistinguishable from an honest cursor by inspection. `claimed >
 hostDbVersion` is kept only as extra log detail
 (`claimExceededHostDbVersion`), never as a rule.
 
-**The one-time cost, stated plainly:** the first time each device connects to
-each host site after this ships, it receives a full changeset replay from
-version 0 — the entire synced backlog for that project DB, in the ordinary
-windowed batches, once. Nothing is lost or duplicated (CRR apply is
-idempotent), but the first post-upgrade connection is as expensive as a fresh
-pairing. It happens once per device per host site: the host writes the
-watermark row the moment it resolves the cursor, and every ack raises it, so a
-phone that dies mid-replay resumes from its last ack rather than starting over,
-and the next reconnect resumes normally.
+A device with no watermark row gets a full changeset replay from version 0,
+once per host site. Nothing is lost or duplicated (CRR apply is idempotent).
+The host writes the watermark row when it resolves the cursor, and every ack
+raises it, so a phone that dies mid-replay resumes from its last ack.
 
 A resolved cursor below the claim is logged as `sync_host.peer_cursor_rewound`
 with `claimed`, `resolved`, the reason, and `claimExceededHostDbVersion`.
@@ -602,15 +590,87 @@ launder a poisoned cursor back in.
 
 The peer side must not fight this. `SyncService`'s persisted cursor is
 versioned (`HostConnectionProfile.cursorSchemaVersion`): decoding a profile
-written by a build from the poisoned era clears `lastRemoteDbVersion` and
+of an older schema clears `lastRemoteDbVersion` and
 `remoteDbVersionBySite` once, and the cursor merge assigns the host's batch
 boundary rather than `max`-ing it against the stored value — the host is the
 authority on how far it has delivered, and it can legitimately move a peer's
 cursor *down* when it replays.
 
-The peer-side half of the same bug is `SyncService.swift`'s
-`advanceRemoteDbCursor`: iOS advances the host's entry from the batch's
+On the peer side, `SyncService.swift`'s `advanceRemoteDbCursor`: iOS advances the host's entry from the batch's
 `toDbVersion` only, never from its own local write clock.
+
+## ADE Cloud and the account server
+
+ADE works with no computer of your own. ADE Cloud is one machine that every
+signed-in account has, and it shows in every machine list and every "Run on"
+menu on web, iPhone and desktop. Behind it, each cloud lane has its own cloud
+computer. A cloud computer runs the same `ade serve` brain as an own
+computer, and it sleeps when it is idle. Clients never show a cloud computer
+by its own name.
+
+The account server (`apps/account-directory`) is the second source of truth
+next to sync. It keeps what a person can read while a cloud computer sleeps:
+
+| Data | Written by | Read by |
+|---|---|---|
+| Saved chats (encrypted, after each turn; subagent chats too) | Cloud computers only | Work on every client |
+| CLI session and shell copies (shells keep the last 5,000 lines) | Cloud computers only | Work |
+| Git summary at rest (branch, ahead/behind, changed files with line counts) | Cloud computers, before sleep | Files, Git panel, History |
+| Project overview (lanes and computers of one repository) | The server, from the rows above | Lanes, Work |
+| Fork capsules for chats whose computer is deleted | Idle cleanup, before the delete | The next computer of that chat |
+| Account lane index (name, branch, machine, PR number; one row for each lane on each machine) | Every brain, own computers too | Lane mentions only (PR rows, notifications, CTO, search) |
+| CTO account copy | The CTO home | The CTO page |
+
+Own computers never upload chats, sessions or Git summaries. The lane index
+does not fill the Lanes tab.
+
+**Reading never wakes a computer.** Files and History read GitHub at the
+lane's branch. PRs, issues, branches and checks read GitHub through the
+account. Linear and Jira go through the account server with the account's
+own sign-in. Usage, account settings and automations come from the account.
+A client reads these with the existing triggers (open, focus, a send); none
+of them polls.
+
+**Doing wakes the computer, and the UI does not wait.** A send, a terminal,
+an edit, opening a changed file or its diff, and a Git action wake the
+lane's computer. A message to an asleep or deleted cloud chat or CLI goes to
+the account's queue (`POST /cloud/chats/:machineKey/:chatId/messages`). The
+server keeps it, wakes the computer, and the computer claims it and reports
+it once (`clientSendId`). A chat whose computer was deleted continues on a
+new computer in the same chat row (fork-continue): Claude, Codex and OpenCode
+restore a native capsule; the other ten providers replay the saved
+transcript.
+
+**Refusals.** A wake that the server refuses (out of hours, too many awake,
+blocked, deleting, over the plan's disk) shows the server's sentence on every
+client. Reading still works. A blocked account can read and export its saved
+chats, read-only. A cloud computer that idle cleanup will delete shows a
+"Deleting soon" notice in its lane's chats, with **Keep it**. A Linear event
+or a webhook for a sleeping computer wakes it.
+
+**Account sync.** These follow the account to every computer:
+
+- Passwords (the account vault), including provider API keys in one store
+  (`provider_api_key`) and the Qwen DashScope key. A browser can never read
+  the vault: the push relay answers a browser only on the routes in
+  `BROWSER_ACCOUNT_ROUTES` (`apps/push-relay/src/relay.ts`), and no vault
+  route is on that list.
+- Provider sign-ins carry to cloud computers. ADE proxy logins carry as
+  access-only copies (no refresh token), and only to cloud computers.
+- Account settings through the push relay: launch defaults
+  (`chat.launchDefaults.v1`), quick slots (`quickSlots.v1`), new-lane
+  defaults, lane templates, the CTO home and automation rules.
+
+Personal (no-project) chats stay on their machine and do not show while it
+is offline. Moving a lane or chat onto ADE Cloud is not built.
+
+**Git identity on cloud computers.** At join, a cloud computer sets Git's
+`user.name` and `user.email` from the account's GitHub noreply identity, else
+`ADE Cloud <cloud@users.noreply.ade-app.dev>`. It never replaces a value that
+a person set.
+
+See [ADE Cloud](../ade-cloud/README.md) for the server routes and the
+[web client](../web-client/README.md#ade-cloud-reads) for the client side.
 
 ## Architecture layers
 
@@ -1062,12 +1122,9 @@ Runtime support files outside `services/sync/`:
   reliability telemetry. `readThisMachineRefusal` adds the optional
   `revokedAt` and `recoveryGaveUpAt` health fields for the desktop's banner,
   Account card and Connections pane. **403 only**: a 401 is an authentication problem with a
-  different repair, and counting it as a refusal both mis-attributes the
-  incident and hides the auth failure behind it. A refusal is the directory
-  looking at a valid caller and saying no. An unrecognised 403 resolves to
-  `"other"` rather than to null — "turned away for a reason this build cannot
-  name" is exactly the fact the last incident needed — and the server's prose in
-  `lastHttpReason` never travels past this function.
+  different repair. A refusal is the directory looking at a valid caller and
+  saying no. An unrecognised 403 resolves to `"other"`, not null, and the
+  server's prose in `lastHttpReason` never travels past this function.
 - `apps/ade-cli/src/services/power/` — the machine's own power and sleep truth,
   shared by the brain, the desktop main process, and tests.
   `machinePowerReader.ts` reads battery/wall power per platform (macOS
@@ -1076,8 +1133,8 @@ Runtime support files outside `services/sync/`:
   and spawned `windowsHide: true`; Linux by reading `/sys/class/power_supply`
   with no process spawn at all). A machine with no battery reports `battery`
   **absent** — never `0%` — and an unreadable read returns `null`, which
-  overwrites nothing; the constant used to be "plugged in", and one `pmset`
-  timeout then republished a 20%-on-battery laptop as on wall power.
+  overwrites nothing (a default of "plugged in" would publish a laptop on
+  battery as on wall power).
   `suspendGapDetector.ts` is the universal fallback: a 15-second tick that
   declares a suspend when it fires more than 60 seconds late, reports the whole
   absence (`overdueBy + tickMs`), and needs zero platform-specific code — which
@@ -1211,8 +1268,7 @@ Runtime support files outside `services/sync/`:
   as soon as that event arrives. The renderer's 30-second cache read remains a
   safety net for missed events and runtime restarts. A remote setting therefore
   waits for the brain's pull trigger (normally the next publisher heartbeat, up
-  to 30 seconds), then only event-delivery and hydration time; it no longer
-  waits for a second renderer beat. An idle machine still stops asking the
+  to 30 seconds), then only event-delivery and hydration time. An idle machine still stops asking the
   Worker for an answer its brain already holds.
 - `apps/ade-cli/src/services/account/accountSettingsStore.ts` and
   `accountCacheStore.ts` — the machine's copy and its shared owner/epoch,
@@ -1513,9 +1569,8 @@ Runtime support files outside `services/sync/`:
   `personalChats.streamEvents`. `sync.getStatus` with no active scope answers
   from the injected `getProjectlessSyncSnapshot` — the brain passes the real
   builder, and a process that has none falls back to
-  `buildDegradedProjectlessSyncSnapshot` — rather than the fixed all-down
-  literal it used to return, which misreported a hosting brain as unreachable
-  to `ade doctor` and to the account-directory publisher.
+  `buildDegradedProjectlessSyncSnapshot`, so `ade doctor` and the
+  account-directory publisher see a hosting brain as reachable.
   Runtime-event subscribe replies include the gap
   fields above; `projects.list` resolves at most 24 host-side icons within
   750 ms, with 128 KiB per-icon and 512 KiB aggregate wire caps, so large
@@ -1554,9 +1609,7 @@ Desktop connection UI:
   `describeUnpublishedAccountDirectory`, the per-state
   `{ summary, nextAction }` advice for a machine that is signed in but not
   published. That table is the **only** place this copy lives; the Connections
-  pane and `ade setup` both read it. They previously kept hand-mirrored copies
-  that had already drifted — the pane covered every state, the CLI covered one
-  and printed the publisher's raw `skipReason` for the rest. Never render
+  pane and `ade setup` both read it. Never render
   `skipReason` to a user: those strings are internal diagnostics ("No active
   sync scope is available.") that name a fault and say nothing about clearing
   it. `nextAction` is a CLI command, so a surface that has a button for the
@@ -1567,9 +1620,7 @@ Desktop connection UI:
   opposite things. `sync_disabled` is sync genuinely off: nothing is trying, and
   there is nothing to wait for. `sync_not_started` is sync that is *meant* to
   run and has not come up — the publisher has not attempted yet, or the sync
-  host is still failing and retrying. Both used to report `sync_disabled`, which
-  told a user whose sync host was crash-looping that sync was switched off and
-  sent them hunting for a switch that was already on. `sync_not_started` reads
+  host is still failing and retrying. `sync_not_started` reads
   "other devices can't reach this computer yet" and offers `ade doctor`, which is
   the surface that can actually say why. It is produced by `syncService.ts` and
   `projectlessSyncSnapshot.ts`, and by the account publisher's initial health
@@ -1579,9 +1630,8 @@ Desktop connection UI:
 
   `unpublishedMachineLabel` also guards the lookup with
   `isSyncAccountDirectoryState` before destructuring. A newer brain can name a
-  state this desktop build's union does not have; that used to throw a
-  `TypeError` and blank the entire Connections pane, and now degrades to
-  "Signed in — sync state isn't available on this computer yet".
+  state this desktop build's union does not have; it shows "Signed in — sync
+  state isn't available on this computer yet".
 - `apps/desktop/src/renderer/components/settings/accountDirectorySummary.ts` —
   turns that advice into the one Connections line: `Signed in — <summary>`. The
   caller passes the directory's refusal of this computer
@@ -1632,8 +1682,7 @@ Desktop connection UI:
   (`Reconnect this computer`, `Sign in again`, `Retry`, or `Repair`), with the
   machine's version chip beside it. The state line carries a quiet status dot
   rather than a check or warning icon, because it is a state with a fix beside
-  it. The list no longer renders a second banner under the Machines heading;
-  the card is the only reconnect affordance.
+  it. The card is the only reconnect affordance.
   A device sign-in it starts shows the browser-open confirmation (the code and a
   lone **Cancel**) or, when the handoff failed, the URL with **Copy link**.
   `ConnectionsPanel` passes `hideDirectorySummary` to `ThisMacCard` so the
@@ -1655,9 +1704,8 @@ Desktop connection UI:
   Initial-load failures show a short recovery action while keeping the raw
   message under **Technical details**: missing project registration asks the
   user to open a project, a build running from its output directory asks the
-  user to install this build and reopen it from the installed copy — that copy
-  names no folder, because the macOS Applications folder it used to name does
-  not exist on Windows — and other sync-service failures ask for an ADE
+  user to install this build and reopen it from the installed copy (it names
+  no folder, so it fits Windows too), and other sync-service failures ask for an ADE
   restart. When
   the account-directory state is the one failure a restart
   actually clears — `isBrainAccountSessionFailure(...)` in
@@ -1828,6 +1876,20 @@ Cross-machine Work union:
   cannot fan out reads. It is a no-op when no consumer is subscribed, because a
   refresh outside a live scope would read against an empty scope and publish
   rows nobody asked for.
+  An own computer that is offline lists no lanes. Cloud computers, resting
+  cloud computers and saved cloud copies always list; an asleep cloud computer
+  is not offline. A cloud lane's main checkout is left out, because an ADE
+  Cloud computer exists for its one lane.
+- `apps/desktop/src/renderer/state/cloudSavedChatsSync.ts`,
+  `cloudSavedChats.ts`, `cloudSavedTerminals.ts`, `adeCloudRestingReads.ts` —
+  the Work and Lanes rows of cloud computers that are not live here, read
+  from the account server (saved chats, CLI and shell copies, the project
+  overview). On the desktop, `adeCloudRestingReads.ts` gives the preload the
+  list of resting cloud connections (`adeCloud.setRestingTargets`); the
+  preload then answers their file, Git and diff reads from the account and
+  never wakes them. Their `lane.list`, `session.list` and `chat.listSessions`
+  still go to the computer. See the
+  [web client](../web-client/README.md#ade-cloud-reads).
 - `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx`,
   `SessionListPane.tsx`, and
   `apps/desktop/src/renderer/lib/terminalAttention.ts` — route chat-created
@@ -2340,9 +2402,8 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   (guarding against pid reuse), terminates that holder, logs
   `sync_listener.zombie_reaped`, and retries the freed port once. Reap
   exclusion is **this process only** — launchd's tracked main pid is often
-  the wedged predecessor still bound to 8787; excluding it is how a
-  replacement brain used to stick on 8788 with two listeners on one machine
-  (dual-brain split). Cross-channel conflicts (ADE vs ADE Alpha) are left
+  the wedged predecessor still bound to 8787; excluding it would leave a
+  replacement brain on 8788 with two listeners on one machine. Cross-channel conflicts (ADE vs ADE Alpha) are left
   alone; the "ADE is already running with phone sync" dialog is intentional.
   When already listening on a fallback port, `tryMigrateToPort(8787)` binds
   the canonical port alongside the current listener, closes the old one on
@@ -2377,8 +2438,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   route recognises, and a ticket minted before a port migration is still
   honoured after it.
 - `attachmentUploadService.ts` — that registry. The sync stack has no HTTP
-  authentication of its own (before this route the listener answered exactly
-  one request shape, an unconditional 426), so authorization is **delegated
+  authentication of its own, so authorization is **delegated
   to the already-authenticated WebSocket session**: a peer that finished
   `hello` mints a short-lived ticket over the command channel and presents
   it as an HTTP bearer on `POST /ade-attachments/upload`. A ticket names one
@@ -2408,11 +2468,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   through `resolveBrainMachineSyncStores`, so the RPC surface mutates the same
   instances it verifies against. It parses helloes with the shared
   `syncHelloProtocol` and runs account helloes through the shared
-  `syncAccountHelloAuth` gate chain. Account helloes used to be refused here on
-  the theory that only a project sync host owns the account session — which made
-  "install, sign in, connect from anywhere" impossible until the user opened a
-  project, since the web client authenticates this way and no other. They are
-  now accepted with the project host's own gates. Connection arbitration and
+  `syncAccountHelloAuth` gate chain. It accepts account helloes with the
+  project host's own gates, so a brain with no project open can be reached
+  from the web. Connection arbitration and
   sealed adoption are options it leaves unset: an `account_sealed` hello needs
   an `account_challenge` round trip this handler does not serve, so it is
   answered with a plain "pair with a code, or open a project" under
@@ -2423,7 +2481,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `MAX_CONCURRENT_PEER_READS` routed reads (`isConcurrentReadEnvelope`) overlap
   behind the last routed write (`commandWriteBarrier`), a routed write waits
   for all earlier routed work, and a freed read slot goes to the oldest waiting
-  read. One slow read no longer holds a browser's chat history behind it. It
+  read, so one slow read does not hold a browser's chat history behind it. It
   authenticates the same PIN / paired-secret / bootstrap paths as the
   per-project host, applies the same failed-PIN cooldown, attributes its
   `auth_failed` rejections with the same `host: { deviceId, name }`
@@ -2445,8 +2503,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   immediately with a `command_result` carrying
   `error.code: "host_unavailable"` and a typed snapshot (`reason`, `conflict`,
   `recoveryEligible`) instead of silently dropping the
-  command — a dropped command used to leave the phone staring at a 30 s
-  timeout with a vague "took too long" banner. Controllers retry a generic
+  command. Controllers retry a generic
   starting failure, then offer **Fix connection** for a verified conflict
   (`sync.recoverHost`). iOS still treats that code as
   transient (retryable and queueable, like a timeout), so queued
@@ -2552,8 +2609,8 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `getCloudRelayStatus`, `getRequireDpop`) go through `readSyncService` in
   `multiProjectRpcServer.ts`. When the scope that hosts sync, or most recently
   tried to, is ready, it answers as it is and host activation is not re-entered.
-  A blocked or backed-off activation therefore no longer turns the Phone tab
-  into "Another ADE brain is already hosting mobile sync".
+  A blocked or backed-off activation therefore does not show "Another ADE
+  brain is already hosting mobile sync" in the Phone tab.
   `sync.getStatus` is a read too. It answers from the ready scope of the project
   it names, else the ready scope of the sync host, else any booted project
   scope, else the machine's own state. A status read never starts a sync host.
@@ -3270,12 +3327,9 @@ Connections This computer projection and local pairing/device controls should us
 
 Renderers reach it only through `renderer/lib/localSyncStatusReader.ts`, the one
 shared reader. The `sync-status` broadcast is an *invalidation*, not a payload,
-so every subscriber re-reads the local snapshot when an event lands. That is
-free while the local runtime answers in milliseconds and pathological once it
-does not: a measured perf run recorded 64k `getLocalStatus` calls in seven
-minutes, 71% of them expiring at the 30s IPC timeout — a backlog of stacked
-in-flight invokes, not a poll. The shared reader fixes that with two properties
-and no change to the healthy cadence:
+so every subscriber re-reads the local snapshot when an event lands. When the
+local runtime is slow, those reads stack up behind the 30 s IPC timeout. The
+shared reader prevents that with two properties:
 
 - **Coalescing** — concurrent readers share one in-flight invoke, so N
   subscribers reacting to one broadcast cost one IPC.
@@ -3570,11 +3624,9 @@ surfaces therefore distinguish "no current heartbeat" from "no usable endpoint" 
 keep a row connectable while at least one directory-verified secure route
 remains. The authenticated hello is the final availability and identity check.
 
-Sleep is a **stated fact**, not an inference from silence. A closed laptop lid
-and a healthy laptop look identical from the directory's side — both stop
-heartbeating, and `last_seen_at` is equally recent for a few minutes either way
-— which is how a phone kept reporting "Connected" to an unconscious Mac.
-Migration `0006_machine_power.sql` adds three nullable columns to `machines`:
+Sleep is a **stated fact**, not an inference from silence: a closed laptop
+lid and a healthy laptop both stop heartbeating. Migration
+`0006_machine_power.sql` adds three nullable columns to `machines`:
 
 - `power` — JSON `{"batteryPercent": 0-100 | null, "charging": bool | null,
   "onExternalPower": bool | null}`. `batteryPercent` is null, never `0`, on a
@@ -3613,6 +3665,20 @@ owner-scoped `PATCH /account/machines/:machineKey` with an additive, nullable
 hostname and reachability lease but never overwrites that custom name. Clients
 preserve both values and use `customName`, then the reported hostname, as the
 display precedence.
+
+### Cloud computers in the directory
+
+A cloud computer's directory row also reads the account server's record of
+that computer (`withCloudTruth` in `apps/account-directory/src/directory.ts`):
+
+- A resting computer (asleep, stopped, or deleting) answers `online: false`
+  and `sleepState: "asleep"`, whatever its last heartbeat says. Released
+  clients already read that as "asleep, wake to reach it".
+- Every cloud row adds `cloud: { state, stateAt }`, where `state` is `awake`,
+  `waking`, `updating`, `asleep`, `stopped` or `deleting`.
+
+So every client and the awake-computer cap read the same state. Clients show
+these rows as ADE Cloud, never as separate machines.
 
 ### One computer, one row
 
@@ -3664,10 +3730,10 @@ cannot simply re-register itself. Getting back on needs a credential a removed
 machine cannot mint — either an access token whose *interactive* authentication
 happened within the last ten minutes, or the single-use pairing grant minted at
 the end of a device-flow sign-in. Spending a grant is two-phase (reserve, then
-consume or release) so a relay outage during the hand-off no longer burns the
-one credential a reinstalled machine had.
+consume or release), so a relay outage during the hand-off does not burn the
+one credential a reinstalled machine has.
 
-That repair no longer requires a human. `machinePairingAutoRecovery` runs the
+`machinePairingAutoRecovery` runs the
 same brain action the **Reconnect this computer** button runs, on a slow
 budgeted schedule (1 minute, 5 minutes, then hourly; three repairs per rolling
 six hours, persisted), for the two refusal codes and for a publish leg wedged in
@@ -4464,7 +4530,7 @@ feature is merged or because a deliberately isolated-port host is running.
   address field. Legacy shared bootstrap-token hellos are rejected over Relay.
   New hosted-browser connections instead require account sign-in and adopt a
   directory machine through Relay; only browser environments paired before
-  this release retain their saved local/direct reconnect path. Direct pairing
+  account-only pairing keep their saved local/direct reconnect path. Direct pairing
   uses a **user-set 6-digit PIN** stored as a PBKDF2 hash in
   `~/.ade/secrets/sync-pin.json` on the runtime machine. The runtime never
   auto-rotates or TTLs the PIN; the user manages it from the **This computer** card
@@ -4533,12 +4599,11 @@ feature is merged or because a deliberately isolated-port host is running.
   never converts provenance — `localTrustOrigin` keeps the record out of the
   sign-out delete sweep, which demotes it back to local trust instead.
   The `machineKey` is an unguessable 32-hex identifier and the tunnel
-  upgrades are HMAC-signed with a per-machine secret. Relay availability now
+  upgrades are HMAC-signed with a per-machine secret. Relay availability
   follows the host's account session: sign-in starts and advertises it, and
-  sign-out stops it. The old Settings/CLI kill-switch and its `enabled` /
-  `enabledSetByUser` fields are removed from the identity file; existing files
-  are rewritten without those fields. The per-computer switch that replaced it
-  lives in its own file (below). The live relay URL is also advertised to
+  sign-out stops it. The identity file drops the old `enabled` /
+  `enabledSetByUser` fields when it is read. The per-computer switch lives in
+  its own file (below). The live relay URL is also advertised to
   already-paired phones in `hello_ok` / `brain_status`
   (`cloudRelayWssUrl`), so devices paired before the relay existed learn
   the route without re-scanning a QR. Relay publication is **honest**: the host
@@ -4594,62 +4659,6 @@ any other computer, reached by account machine key over its live paired
 connection (`accountConnectionRoutes.ts` in desktop main). A computer that is
 not connected from here shows what the account directory last published and
 cannot be changed until it is.
-
-## Current implementation status
-
-| Component | Status |
-|---|---|
-| Sync service owned by `ade serve` runtime | Implemented |
-| Desktop in-process sync host | Disabled by default (`ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics) |
-| Multi-project runtime + `project_switch` handshake | Implemented |
-| Hosted web workspace Hub + four-client LRU machine pool | Implemented |
-| Hosted web repository tabs with per-binding machine selection | Implemented |
-| `SyncRemoteCommandDescriptor.scope` (`runtime` / `project`) gating | Implemented |
-| cr-sqlite extension loading (desktop/runtime) | Implemented |
-| Pure-SQL CRR emulation (iOS) | Implemented |
-| CRR marking for eligible tables | Implemented (dynamic startup) |
-| Changeset extraction/application | Implemented |
-| WebSocket sync server | Implemented |
-| Sync protocol (JSON + negotiated deflate with legacy gzip fallback) | Implemented |
-| File access sub-protocol | Implemented |
-| Terminal stream sub-protocol | Implemented |
-| Chat stream sub-protocol | Implemented |
-| All-projects chat roster sub-protocol (`roster_subscribe`/`snapshot`/`delta`, mobile Hub) | Implemented |
-| Device registry table | Implemented |
-| Desktop peer client + account/Nearby/SSH connection paths | Implemented |
-| Sync authority transfer | Implemented |
-| Shared ADE scaffold portability for desktop clones | Implemented |
-| PIN-based phone pairing + per-device secrets | Implemented |
-| Live chat-event push from runtime | Implemented |
-| Mobile project catalog + project switch handoff | Implemented |
-| Mobile project actions (browse/open/create/clone/list GitHub repos/remove from list) | Implemented |
-| Brain-level shared listener (peers adopted across project switches) | Implemented |
-| Bidirectional chunked envelopes (`envelope_chunk`, 720 KiB frame budget, 30 s bounded reassembly) | Implemented |
-| Typed sync protocol version floor/mismatch (`hello_error`, close `4406`) | Implemented |
-| Per-host-DB sync cursors (`serverDbSiteId` / `remoteDbVersionBySite`) | Implemented |
-| Resumable chat streams (per-session `seq` + `sinceSeq` replay buffer) | Implemented |
-| Durable chat log (`chatLogV2`: `sinceSequence` resume, `historyGeneration`, turn-aligned snapshots, `beforeSequence` paging) | Implemented (host) |
-| Mobile changeset diet (heavy never-read tables filtered for phones) | Implemented |
-| Lane presence decoration (`devicesOpen`) | Implemented |
-| PR mobile snapshot (`prs.getMobileSnapshot`) | Implemented |
-| iOS local replicated DB | Implemented |
-| iOS Lanes / Files / Work / PRs / Settings tabs | Implemented |
-| QR pairing UX | Implemented (payload v3 smart URL + iOS camera scanner; PIN entered separately) |
-| Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (host + brain ingress; `requireDpop` / `ADE_SYNC_REQUIRE_DPOP`) |
-| Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented whenever the host is signed in and its owner has not turned it off, with same-account per-connection proof (`syncTunnelClientService` + `apps/tunnel-relay`) |
-| Per-computer relay switch (Settings › Account) | Implemented (`sync-relay-preference.json`, `account.setRelayEnabled` locally and as a remote command) |
-| Relay end-to-end self-probe + zombie-control detection (honest relay publication) | Implemented (`syncRelaySelfProbe`, JSON control keepalive, `sync.runSelfProbe`, `ade doctor` relay check) |
-| Relay tunnel + account-directory publisher gated on the machine sync-host lease | Implemented (`syncHostSingleton` authority registry, `relayTunnelAuthorityGate`, `runServe` publisher gate) |
-| Account publication + relay for a machine with no registered project | Implemented (`projectlessSyncSnapshot`, `machineRelayTunnel`, `runServe` publisher snapshot fallback) |
-| One hello parser + one account-hello gate chain across both ingresses | Implemented (`syncHelloProtocol`, `syncAccountHelloAuth`) |
-| Machine-level pairing PIN / device forget / DPoP posture on a projectless brain | Implemented (`brainMachineSyncStores`, `ProjectlessSyncControls`, `withSyncService`) |
-| Code-first `hello_error` classification with non-destructive account/session/host-state codes | Implemented (`account_not_signed_in`, `account_verification_failed`, `host_update_required`, and `account_session_changed` across desktop, web, and iOS) |
-| Relay eviction (`4505`) suppression + surfaced outage | Implemented (bounded re-attempts, 10-minute re-arm, `routeHealth.relay.relayControlSuppressed*`, `ade doctor` relay row, desktop `relay-offline` banner) |
-| Sealed account adoption over direct routes (`ade-adopt-v1`, host `pubkey` identity, LAN → tailnet → Relay fallback, negotiated ChaCha20-Poly1305 / AES-256-GCM AEAD) | Implemented (`machineIdentitySigningStore` + `adoptChannelCrypto`; desktop + iOS clients) |
-| Legacy manual-pairing adoption into an account (DPoP-gated) + `localTrustOrigin` demotion on sign-out | Implemented (`syncPairingStore.pairPeerViaAccount` / `revokeAccountOwnedExcept`, `syncHostService` account hello) |
-| Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
-| Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
-| Work chat move to another machine (desktop, phone, CLI and agents; clean or with uncommitted work) | Implemented ([contract](./cross-machine-session-handoff.md)) |
 
 ## Gotchas
 
