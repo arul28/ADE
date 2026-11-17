@@ -114,6 +114,9 @@ describe("codexPlanHandoff", () => {
     const setup = deps([]);
 
     const release = decisions.beginAnswer("source-chat", "item-1");
+    // Two clients answering the same card at once: the second is refused, so the
+    // plan cannot be answered twice by a phone and a desktop in the same tick.
+    expect(() => decisions.beginAnswer("source-chat", "item-1")).toThrow("already being sent");
     expect(() => decisions.handoff(setup.args)).toThrow("being answered");
     release();
 
