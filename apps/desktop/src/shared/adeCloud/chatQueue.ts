@@ -35,7 +35,18 @@ export type AdeCloudBridge = {
   projectOverview: (args: { origin: string }) => Promise<CloudProjectOverview | null>;
   savedSessions: (args: { machineKey?: string | null; projectKey?: string | null; cursor?: string | null }) =>
     Promise<{ sessions: CloudSessionRow[]; nextCursor: string | null } | null>;
+  /**
+   * The connections of ADE Cloud computers that rest now (asleep, or not
+   * connected in this window), with the account key and repository address
+   * of each. The window reads their lanes' files and Git from the account,
+   * so a read never dials or wakes one. Each call replaces the list.
+   * Optional: only the desktop preload has it.
+   */
+  setRestingTargets?: (targets: readonly AdeCloudRestingTarget[]) => void;
 };
+
+/** One connection of a resting ADE Cloud computer (`AdeCloudBridge.setRestingTargets`). */
+export type AdeCloudRestingTarget = { targetId: string; machineKey: string; origin: string | null };
 
 /** A message the chat still shows as its own row: not delivered, not taken back. */
 export function queuedMessageOpen(message: Pick<CloudChatQueuedMessage, "state">): boolean {

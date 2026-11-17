@@ -6,6 +6,7 @@
 
 import { findMachineProject, remoteProjectBindingKey } from "../../shared/projectIdentity";
 import type { CloudSavedChatRow } from "../../shared/cloudSavedChats";
+import type { CloudProjectOverview } from "../../../../account-directory/src/cloud/contract";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import type { LaneSummary } from "../../shared/types/lanes";
 import type { RemoteRuntimeConnectionStatus } from "../../shared/types/remoteRuntime";
@@ -38,6 +39,7 @@ import {
   type SavedChatReach,
 } from "./cloudSavedChats";
 import { sendThroughAdeCloudQueue } from "./adeCloudChatQueue";
+import { startAdeCloudRestingReads } from "./adeCloudRestingReads";
 
 /** Computers a reach found off the account (contract C2 `not_in_account`): gone, whatever the lists say. */
 const goneMachineKeys = new Set<string>();
@@ -209,12 +211,19 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     queuedContext = context;
     return;
   }
+  startAdeCloudRestingReads();
   if (!bridge || !context.isActive() || !context.projectKey) return;
   inFlight = true;
   lastReadAtMs = Date.now();
   lastReadProjectKey = context.projectKey;
   try {
-    const list = await listAllSavedChats(bridge, context);
+    // The project's ADE Cloud lanes from the account, read with the chats:
+    // a lane with no chat, or with no computer, lists from it (null from an
+    // older server or ADE: those lanes then show as before).
+    const [list, overview] = await Promise.all([
+      listAllSavedChats(bridge, context),
+      readProjectOverview(context.projectKey),
+    ]);
     if (!list || !context.isActive()) return;
     const store = rootAppStoreApi.getState();
     // Live here: connected, and its rows not dimmed. A connection can stay up
@@ -241,7 +250,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     // A computer missing from it was deleted, even while this desktop still
     // holds a saved connection to it (a move made on another desktop).
     const cloud = watchedCloudMachines();
-    const cloudBoxes = cloud?.state === "ok" ? cloud.machines : null;
+    // A list whose computers the server did not give (`computersUnread`) says nothing about them.
+    const cloudBoxes = cloud?.state === "ok" && !cloud.computersUnread ? cloud.machines : null;
     const machineFacts = new Map<string, { connection: RemoteRuntimeConnectionStatus | null; gone: boolean; name: string | null }>();
     for (const [machineKey, rows] of byMachine) {
       const connection = connectionFor(context.connections, machineKey, rows[0]!.instanceId);
@@ -419,6 +429,50 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         error: null,
       });
     }
+    // The project's lane computers the account knows that no slice lists yet
+    // (no chat, and the lane index has not named them): each lists once, on
+    // its computer's slice. A lane kept without a computer lists in its own
+    // block (`CloudLanesWithoutComputerList`), never here.
+    for (const lane of overview?.lanes ?? []) {
+      const machineKey = lane.machineKey;
+      if (!machineKey || !lane.computer || goneMachineKeys.has(machineKey.toLowerCase())) continue;
+      const connection = connectionFor(context.connections, machineKey, lane.computer.instanceId);
+      if (liveHere(connection)) continue;
+      const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
+      const previous = rootAppStoreApi.getState().crossMachineLanesByMachineId[machineId] ?? null;
+      if (previous?.lanes.some((entry) => entry.id === lane.laneId)) {
+        if (savedSliceIds.has(machineId) || laneSliceIds.has(machineId)) continue;
+      }
+      // A connection's slice from its live reads keeps its own lanes.
+      if (previous && previous.lanes.length > 0 && connection && !isSavedChatsMachineId(machineId) && !savedSliceIds.has(machineId)) continue;
+      if (!connection) keptSyntheticIds.add(machineId);
+      laneSliceIds.add(machineId);
+      const machineName = connection?.target.name ?? previous?.machineName ?? "ADE Cloud";
+      const binding: OpenProjectBinding = previous?.binding ?? {
+        kind: "remote",
+        key: `${machineId}:${context.projectKey}`,
+        targetId: machineId,
+        runtimeName: machineName,
+        transport: "paired",
+        hostname: lane.computer.instanceId,
+        projectId: context.projectKey!,
+        rootPath: "",
+        displayName: savedProjectName(null, context.projectKey!),
+      };
+      const others = (previous?.lanes ?? []).filter((entry) => entry.id !== lane.laneId);
+      const row = laneComputerLane({ laneId: lane.laneId, laneName: lane.laneName ?? lane.laneId }, previous?.lanes.find((entry) => entry.id === lane.laneId));
+      store.mergeCrossMachineLanes({
+        machineId,
+        machineName,
+        targetId: connection?.target.id ?? null,
+        projectId: binding.kind === "remote" ? binding.projectId : null,
+        binding,
+        online: false,
+        lanes: [...others, { ...row, branchRef: lane.branch ? `refs/heads/${lane.branch}` : row.branchRef }],
+        sessions: savedSliceIds.has(machineId) ? previous?.sessions ?? [] : (previous?.sessions ?? []).filter((session) => !session.cloudSavedCopy),
+        error: null,
+      });
+    }
     replaceSavedChatLocations(nextLocations);
     const staleSynthetic = Object.keys(store.crossMachineLanesByMachineId)
       .filter((machineId) => isSavedChatsMachineId(machineId) && !keptSyntheticIds.has(machineId));
@@ -458,6 +512,17 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     const next = queuedContext;
     queuedContext = null;
     if (next) void refreshCloudSavedChats(next);
+  }
+}
+
+/** The project's ADE Cloud overview from the account, or null (an older server or ADE, or a failed read). */
+async function readProjectOverview(projectKey: string | null): Promise<CloudProjectOverview | null> {
+  const read = window.ade?.adeCloud?.projectOverview;
+  if (!read || !projectKey) return null;
+  try {
+    return await read({ origin: projectKey });
+  } catch {
+    return null;
   }
 }
 

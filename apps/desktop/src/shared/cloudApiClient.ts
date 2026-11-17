@@ -68,6 +68,7 @@ import {
   type CloudRemoteSignInStatus,
   type CloudServerLaunchRequest,
 } from "../../../account-directory/src/cloud/contract";
+import type { CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
 // --- server-edge ---
 import {
   CLOUD_EDGE_PATHS,
@@ -257,6 +258,12 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       request<CloudAccountSignIns>("DELETE", `${CLOUD_PATHS.signIns}/${encodeURIComponent(signInId)}`),
     /** Models per provider, for a picker before any computer exists. */
     modelCatalog: () => request<CloudModelCatalog>("GET", CLOUD_PATHS.models),
+    /* ---- Lanes kept without a computer (impl-renderer-core; ADE Web) ---- */
+    /** The account's lanes whose computer was freed or removed. A server from before them has none (404). */
+    lanesWithoutComputer: async () =>
+      (await orNullOn404(() => request<{ lanes?: CloudLaneWithoutComputer[] }>("GET", CLOUD_PATHS.lanesWithoutComputer)))?.lanes ?? [],
+    forgetLaneWithoutComputer: (laneId: string) =>
+      request<{ forgotten?: boolean }>("DELETE", `${CLOUD_PATHS.lanesWithoutComputer}/${encodeURIComponent(laneId)}`),
     /**
      * The account's saved chats (the server's copy, readable with no computer
      * running). A 404 is an account without ADE Cloud: no chats, not a failure.

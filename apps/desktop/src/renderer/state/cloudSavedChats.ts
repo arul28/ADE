@@ -8,7 +8,14 @@
  */
 
 import { parseAgentChatTranscript } from "../../shared/chatTranscript";
-import type { AgentChatEventEnvelope, AgentChatEventHistoryPage, AgentChatEventHistorySnapshot, AgentChatSessionSummary } from "../../shared/types/chat";
+import type {
+  AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
+  AgentChatEventHistorySnapshot,
+  AgentChatSession,
+  AgentChatSessionSummary,
+  AgentChatUpdateSessionArgs,
+} from "../../shared/types/chat";
 import { savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import { REMOTE_TARGET_NOT_FOUND_MESSAGE } from "../../shared/types/remoteRuntime";
 import type { LaneSummary } from "../../shared/types/lanes";
@@ -53,6 +60,15 @@ let cloudConnectionKeys: ReadonlyMap<string, string> = new Map();
 /** Each cloud computer's connection target id, with that computer's account key. */
 export function replaceCloudConnectionTargets(targets: Iterable<readonly [targetId: string, machineKey: string]>): void {
   cloudConnectionKeys = new Map(targets);
+  for (const listener of cloudConnectionListeners) listener();
+}
+
+const cloudConnectionListeners = new Set<() => void>();
+
+/** Calls the listener after each change of the cloud connections list. */
+export function subscribeCloudConnectionTargets(listener: () => void): () => void {
+  cloudConnectionListeners.add(listener);
+  return () => cloudConnectionListeners.delete(listener);
 }
 
 export function isCloudConnectionTarget(machineId: string): boolean {
@@ -210,6 +226,42 @@ export function savedChatSummary(location: SavedChatLocation): AgentChatSessionS
   };
 }
 
+/**
+ * The model a person picked for a resting ADE Cloud chat just before a send,
+ * by chat id. The next queued send carries it (`takeQueuedChatModel`), so the
+ * pick never reaches (and so never wakes) the computer before the send.
+ */
+const queuedChatModels = new Map<string, string>();
+
+/** The model picked for this chat's next queued send, once; null when none was picked. */
+export function takeQueuedChatModel(chatId: string): string | null {
+  const modelId = queuedChatModels.get(chatId) ?? null;
+  queuedChatModels.delete(chatId);
+  return modelId;
+}
+
+/** A send's settings that the account's queue carries (the model), and nothing a computer must store now. */
+const QUEUE_CARRIED_UPDATE_KEYS = new Set(["sessionId", "modelId", "presetId", "reasoningEffort", "fastMode", "fastTier"]);
+
+function updateCarriedByQueue(args: AgentChatUpdateSessionArgs): boolean {
+  return Object.entries(args).every(([key, value]) => QUEUE_CARRIED_UPDATE_KEYS.has(key) || value === undefined);
+}
+
+/** The chat as its saved copy knows it, after a pick the queue carries. */
+function savedChatSessionAfterPick(location: SavedChatLocation, modelId: string | null): AgentChatSession {
+  const summary = savedChatSummary(location);
+  return {
+    id: summary.sessionId,
+    laneId: summary.laneId,
+    provider: summary.provider,
+    model: modelId ?? summary.model,
+    ...(modelId ? { modelId } : {}),
+    status: "idle",
+    createdAt: summary.startedAt,
+    lastActivityAt: summary.lastActivityAt,
+  };
+}
+
 /** The chat shows as unavailable; this says why. */
 function logSavedChatReadFailure(error: unknown): null {
   console.warn("[cloud] saved chat read failed", error instanceof Error ? error.message : String(error));
@@ -352,6 +404,15 @@ export function withSavedChatReads(
     updateSession: async (args, pin) => {
       const location = locate(args.sessionId, pin);
       if (location?.computerGone) throw new Error(SAVED_CHAT_COMPUTER_GONE_MESSAGE);
+      // A model pick that goes with a send to a resting ADE Cloud chat: the
+      // queued send carries it, so this call never wakes the computer and the
+      // send never waits for it. Other changes still reach the computer.
+      if (location && reach?.queueSend && updateCarriedByQueue(args)
+        && (isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
+        const modelId = typeof args.modelId === "string" && args.modelId.trim() ? args.modelId.trim() : null;
+        if (modelId) queuedChatModels.set(location.chatId, modelId);
+        return savedChatSessionAfterPick(location, modelId);
+      }
       if (location && reach && isSavedChatsMachineId(location.machineId)) {
         const reachedPin = await reach.pinFor(location);
         if (reachedPin) return api.updateSession(args, reachedPin);

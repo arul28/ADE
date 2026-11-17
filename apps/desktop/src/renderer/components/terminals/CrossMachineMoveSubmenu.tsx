@@ -29,6 +29,7 @@ import { describeTravellingChanges, openChatOnOtherMachine } from "../chat/Cross
 import { MENU_ITEM_CLASS, MenuRowIcon, MenuSeparator, MenuSubmenu, MenuSubmenuStatus } from "../ui/MenuSubmenu";
 import { cn } from "../ui/cn";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
+import { adeCloudMoveSource, wakeAdeCloudLane } from "../../state/adeCloudLaneWake";
 
 /**
  * Session menu "Hand off ▸ Another machine ▸". The panel paints at once and
@@ -98,7 +99,11 @@ export function CrossMachineMoveSubmenu({
   const [options, setOptions] = useState<OptionsState>({ status: "idle" });
   const requestRef = useRef(0);
 
+  // An ADE Cloud chat whose computer rests or was removed (impl-renderer-core, R5):
+  // the menu never asks that computer, so opening it never dials or wakes one.
+  const cloudSource = adeCloudMoveSource(binding, session.id);
   const load = () => {
+    if (cloudSource) return;
     const request = ++requestRef.current;
     setOptions({ status: "loading" });
     void withChatPin(binding, (chatPin) => window.ade.agentChat
@@ -348,7 +353,26 @@ export function CrossMachineMoveSubmenu({
               <MenuSeparator />
             </>
           ) : null}
-          {options.status === "idle" || options.status === "loading" ? (
+          {cloudSource === "gone" ? (
+            <MenuSubmenuStatus>This chat's ADE Cloud computer was removed. Send it a message: it continues on a new ADE Cloud computer.</MenuSubmenuStatus>
+          ) : cloudSource === "resting" ? (
+            <>
+              <MenuSubmenuStatus>Your ADE Cloud computer is asleep. Wake it to move this chat.</MenuSubmenuStatus>
+              <button
+                type="button"
+                role="menuitem"
+                className={MENU_ITEM_CLASS}
+                onClick={() => {
+                  onClose();
+                  // A move is doing: wake the computer, then the person picks where to move it.
+                  wakeAdeCloudLane(binding, () => onOpenFullSetup(null));
+                }}
+              >
+                <MenuRowIcon icon={ArrowClockwise} />
+                Wake and move
+              </button>
+            </>
+          ) : options.status === "idle" || options.status === "loading" ? (
             <MenuSubmenuStatus>Finding your machines…</MenuSubmenuStatus>
           ) : options.status === "error" ? (
             <MenuSubmenuStatus>{options.message}</MenuSubmenuStatus>

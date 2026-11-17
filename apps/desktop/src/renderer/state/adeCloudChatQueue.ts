@@ -18,7 +18,7 @@ import { newClientSendId, queuedMessageOpen } from "../../shared/adeCloud/chatQu
 import type { CloudChatSendAnswer } from "../../shared/adeCloudMachine";
 import type { AgentChatSendArgs } from "../../shared/types/chat";
 import type { OpenProjectBinding } from "../../shared/types/core";
-import { savedChatLocation, savedChatLocationForSession, type SavedChatLocation } from "./cloudSavedChats";
+import { savedChatLocation, savedChatLocationForSession, takeQueuedChatModel, type SavedChatLocation } from "./cloudSavedChats";
 
 export type AdeCloudChatQueueState = {
   /** Messages the chat shows as its own rows: queued, sending, or waiting for a sign-in. Oldest first. */
@@ -141,7 +141,8 @@ export const sendThroughAdeCloudQueue: SavedChatQueueSend = async (location, arg
   if (!text.trim()) return "unsupported";
   const messageId = args.clientSendId && /^[A-Za-z0-9_-]{1,64}$/.test(args.clientSendId) ? args.clientSendId : newClientSendId();
   const provider = location.row.provider ?? null;
-  const modelId = location.row.model ?? null;
+  // A model picked just before this send (`updateSession` kept it for the queue).
+  const modelId = takeQueuedChatModel(location.chatId) ?? location.row.model ?? null;
   const answer = await send({ machineKey: location.machineKey, chatId: location.chatId, messageId, text, provider, modelId });
   if (answer.state === "unsupported") return "unsupported";
   if (answer.state === "refused") throw new Error(answer.message);

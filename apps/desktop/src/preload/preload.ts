@@ -2105,17 +2105,28 @@ const adeCloudAccountReader = createAdeCloudAccountReader({
   github: () => ((request, options) => ipcRenderer.invoke(IPC.githubDirectRequest, request, options ?? {})) as ReturnType<AdeCloudAccountReaderDeps["github"]>,
 });
 
+/**
+ * The connections of resting ADE Cloud computers (the renderer's
+ * `machineIsCloudResting`), by target id. Their lanes' file and Git reads go
+ * to the account, so a read never dials or wakes the computer.
+ */
+const restingCloudTargets = new Map<string, { machineKey: string; origin: string | null }>();
+const MAX_RESTING_CLOUD_TARGETS = 200;
+
 /** The repository address of each account-answered pin a call named, by `targetId\0projectId`. */
 const adeCloudPinOrigins = new Map<string, string | null>();
 
 function rememberAdeCloudPin(pin: OpenProjectBinding | null | undefined): void {
-  if (pin?.kind !== "remote" || !isAccountAnsweredPin(pin)) return;
+  if (pin?.kind !== "remote" || (!isAccountAnsweredPin(pin) && !restingCloudTargets.has(pin.targetId))) return;
   adeCloudPinOrigins.set(`${pin.targetId}\0${pin.projectId}`, pin.gitOriginUrl ?? null);
   while (adeCloudPinOrigins.size > 200) adeCloudPinOrigins.delete(adeCloudPinOrigins.keys().next().value as string);
 }
 
 function adeCloudOriginFor(targetId: string, projectId: string): string | null {
   const known = adeCloudPinOrigins.get(`${targetId}\0${projectId}`);
+  if (known) return known;
+  const resting = restingCloudTargets.get(targetId)?.origin;
+  if (resting) return resting;
   if (known !== undefined) return known;
   const bound = currentProjectBinding;
   return bound?.kind === "remote" && bound.targetId === targetId && bound.projectId === projectId ? bound.gitOriginUrl ?? null : null;
@@ -2125,23 +2136,32 @@ function adeCloudRefusal(): Error {
   return markExpected(new Error(ADE_CLOUD_NEEDS_LANE_SENTENCE), "user");
 }
 
+/** Listing reads a resting connection still asks its computer for: the account has no list of its own for them. */
+const RESTING_CONNECTION_OWN_READS = new Set(["lane.list", "session.list", "chat.listSessions"]);
+
 /**
  * The machine gate, with ADE Cloud reads answered here. For ADE Cloud as a
  * machine, every call is answered or refused here. For a resting cloud
- * computer's lane pin (`cloud-saved:`), only the reads the account answers
- * stay here; the rest go to main as before (a send there wakes the computer).
+ * computer's lane pin (`cloud-saved:`, or the connection of a computer that
+ * rests now), only the reads the account answers stay here; the rest go to
+ * main as before (a send there wakes the computer).
  */
 function withAdeCloudAccountReads(gate: RemoteTargetGate): RemoteTargetGate {
   return {
     async invoke<T>(channel: string, targetId: string, payload: Record<string, unknown>): Promise<T> {
       const tabOnAdeCloud = isAdeCloudTargetId(targetId);
-      const restingPin = !tabOnAdeCloud && savedChatsMachineKey(targetId) != null;
+      const savedKey = tabOnAdeCloud ? null : savedChatsMachineKey(targetId);
+      const restingConnection = tabOnAdeCloud || savedKey ? null : restingCloudTargets.get(targetId) ?? null;
+      const restingPin = savedKey != null || restingConnection != null;
       if (!tabOnAdeCloud && !restingPin) return gate.invoke<T>(channel, targetId, payload);
       if (channel === IPC.remoteRuntimeCallAction) {
         const projectId = typeof payload.projectId === "string" ? payload.projectId : "";
         const request = (payload.request ?? {}) as { domain?: string; action?: string; args?: unknown; arg?: unknown };
+        if (restingConnection && RESTING_CONNECTION_OWN_READS.has(`${String(request.domain ?? "")}.${String(request.action ?? "")}`)) {
+          return gate.invoke<T>(channel, targetId, payload);
+        }
         const answer = await adeCloudAccountReader.answer(
-          { origin: adeCloudOriginFor(targetId, projectId), machineKey: restingPin ? savedChatsMachineKey(targetId) : null },
+          { origin: adeCloudOriginFor(targetId, projectId), machineKey: savedKey ?? restingConnection?.machineKey ?? null },
           { domain: String(request.domain ?? ""), action: String(request.action ?? ""), args: request.args, arg: request.arg },
         );
         if (answer.handled) {
@@ -2163,6 +2183,18 @@ const adeCloudBridge: AdeCloudBridge = {
   cancelChatMessage: (address) => ipcRenderer.invoke(IPC.adeCloudChatMessageCancel, address),
   projectOverview: (args) => ipcRenderer.invoke(IPC.adeCloudProjectOverview, args),
   savedSessions: (args) => ipcRenderer.invoke(IPC.adeCloudSavedSessions, args),
+  setRestingTargets: (targets) => {
+    restingCloudTargets.clear();
+    for (const target of Array.isArray(targets) ? targets : []) {
+      if (restingCloudTargets.size >= MAX_RESTING_CLOUD_TARGETS) break;
+      const targetId = typeof target?.targetId === "string" ? target.targetId.trim() : "";
+      const machineKey = typeof target?.machineKey === "string" ? target.machineKey.trim() : "";
+      // ADE Cloud as a machine and `cloud-saved:` slices already read from the account.
+      if (!targetId || !machineKey || isAdeCloudTargetId(targetId) || savedChatsMachineKey(targetId) != null) continue;
+      const origin = typeof target.origin === "string" && target.origin.trim() ? target.origin.trim().slice(0, 500) : null;
+      restingCloudTargets.set(targetId, { machineKey: machineKey.slice(0, 200), origin });
+    }
+  },
 };
 // --- end ADE Cloud reads -------------------------------------------------
 

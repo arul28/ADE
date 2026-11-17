@@ -18,6 +18,8 @@ import {
   useCloudMachineWakeInFlight,
   wakeRestingCloudMachine,
 } from "../lib/cloudMachineWake";
+import { rootAppStoreApi } from "./appStore";
+import { savedChatLocationForSession } from "./cloudSavedChats";
 
 export type AdeCloudLaneWakeState = "idle" | "waking" | "failed";
 
@@ -42,6 +44,24 @@ export function wakeAdeCloudLane(
   clearCloudMachineWakeFailure(machineKey);
   wakeRestingCloudMachine({ machineId: pin.targetId, machineName: "your ADE Cloud computer", hostname: pin.hostname ?? null }, intent);
   return true;
+}
+
+/**
+ * Where a chat on an ADE Cloud computer can move from (R5): "resting" when its
+ * computer is asleep (a move wakes it first, then the usual handoff runs),
+ * "gone" when its computer was removed (a message continues the chat on a new
+ * computer through the account queue), null for a computer that is connected
+ * or any other machine (the usual handoff).
+ */
+export function adeCloudMoveSource(
+  pin: OpenProjectBinding | null | undefined,
+  sessionId: string,
+): "resting" | "gone" | null {
+  if (pin?.kind !== "remote") return null;
+  const entry = rootAppStoreApi.getState().crossMachineLanesByMachineId[pin.targetId] ?? null;
+  if (entry?.online === true) return null;
+  if (entry?.computerGone === true || savedChatLocationForSession(sessionId)?.computerGone === true) return "gone";
+  return adeCloudLaneMachineKey(pin) ? "resting" : null;
 }
 
 /**

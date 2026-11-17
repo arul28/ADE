@@ -17,7 +17,8 @@ import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { UnsupportedRemoteCommandError } from "./infra/commandCaller";
 import type { AccountCloudLaunchesBridge } from "../../../shared/accountCloudLaunches";
 import type { BrowserAccountClient } from "../account/client";
-import type { CloudAccessIpcAnswer } from "../../../shared/adeCloudMachine";
+import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudAccessIpcAnswer, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
+import { CLOUD_CHAT_MESSAGE_MAX_CHARS, isCloudRefusalCode } from "../../../../../account-directory/src/cloud/contract";
 
 /**
  * `window.ade.cloud` for the web app: enough for Settings › ADE Cloud (the
@@ -296,6 +297,76 @@ export function createWebCloudNamespace(
       const api = accountClient.cloudApi();
       if (!api) throw new Error("Account sign-in isn't configured for this web client.");
       return await api.sendSignInCode(instanceId, jobId, code);
+    },
+    // The account's lanes kept without a computer, straight from the account
+    // server (no computer needed). The rest of a lane's life (delete, free,
+    // size) runs in the desktop app.
+    laneLife: (async ({ method, args }: { method: string; args?: unknown }) => {
+      const api = accountClient.cloudApi();
+      if (!api) throw new Error("Sign in to ADE to see your ADE Cloud lanes.");
+      switch (method) {
+        case "lanesWithoutComputer":
+          return await api.lanesWithoutComputer();
+        case "forgetLaneWithoutComputer": {
+          const laneId = args && typeof args === "object" ? (args as { laneId?: unknown }).laneId : null;
+          if (typeof laneId !== "string" || !laneId.trim()) throw new Error("ADE doesn't know that lane.");
+          return { forgotten: (await api.forgetLaneWithoutComputer(laneId.trim())).forgotten === true };
+        }
+        case "listJobs":
+          return [];
+        default:
+          // The same sentence as `CLOUD_LANE_LIFE_UNAVAILABLE` (cloudLaneActions.ts).
+          throw new Error("Do this in the ADE desktop app. This window can't change ADE Cloud lanes.");
+      }
+    }) as NonNullable<Window["ade"]["cloud"]>["laneLife"],
+    // A message for an existing ADE Cloud chat through the account's queue
+    // (the same answers as the desktop's `IPC.cloudChatMessageSend`): the
+    // send never waits for a wake, and a chat whose computer is gone
+    // continues on a new one. Account-level, no pin.
+    sendChatMessage: async (args): Promise<CloudChatSendAnswer> => {
+      const api = accountClient.cloudApi();
+      if (!api) return { state: "unsupported" };
+      const field = (value: unknown, max: number) => (typeof value === "string" && value.trim() && value.length <= max ? value : null);
+      const machineKey = field(args?.machineKey, 256)?.trim() ?? null;
+      const chatId = field(args?.chatId, 256)?.trim() ?? null;
+      const messageId = typeof args?.messageId === "string" && CLOUD_CHAT_MESSAGE_ID_PATTERN.test(args.messageId) ? args.messageId : null;
+      const text = field(args?.text, CLOUD_CHAT_MESSAGE_MAX_CHARS);
+      if (!machineKey || !chatId || !messageId || !text) throw new Error("A message needs its chat and some text.");
+      const provider = field(args.provider, 64);
+      const modelId = field(args.modelId, 256);
+      try {
+        const result = await api.sendChatMessage(machineKey, chatId, {
+          messageId,
+          text,
+          ...(provider ? { provider } : {}),
+          ...(modelId ? { modelId } : {}),
+        });
+        return { state: "sent", messageId: result.message.messageId, wake: { state: result.wake.state, launchId: result.wake.launchId ?? null } };
+      } catch (error) {
+        if (error instanceof CloudApiError) {
+          // No queue on this server: the caller wakes, then sends.
+          if ((error.status === 404 && error.code === "not_found") || error.code === "update_needed") return { state: "unsupported" };
+          if (isCloudRefusalCode(error.code) || error.status === 400 || error.status === 409 || error.status === 429) {
+            return { state: "refused", code: error.code || null, message: error.message };
+          }
+        }
+        throw error;
+      }
+    },
+    serverLaunchStatus: async (launchId) => {
+      const api = accountClient.cloudApi();
+      const id = typeof launchId === "string" ? launchId.trim() : "";
+      if (!api || !id || id.length > 64) return null;
+      try {
+        return await api.launchStatus(id);
+      } catch (error) {
+        if (error instanceof CloudApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    carriedSignIns: async () => {
+      const answer = await accountClient.cloudApi()?.accountSignIns().catch(() => null);
+      return answer?.carried ?? null;
     },
     savedChats: {
       // No computer to ask (ADE Web with none connected): the account server
