@@ -14076,15 +14076,39 @@ export function createAgentChatService(args: {
   ): AgentChatEventEnvelope[] =>
     keepNewestWithinCharBudget(envelopes, maxChars, estimateEnvelopeChars, options);
 
-  // The single policy for what bounds the in-memory event ring: an event-count
-  // cap, then a byte budget. Applied wherever the ring is (re)written.
-  const boundRingEnvelopes = (envelopes: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] =>
-    trimEnvelopesToByteBudget(
-      envelopes.length > CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION
-        ? envelopes.slice(-CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION)
-        : envelopes,
-      CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS,
+  /**
+   * The single policy for what bounds the in-memory event ring: an event-count
+   * cap, then a byte budget. `total` is the sum of the sizes of every entry;
+   * a caller that keeps a running total passes it instead of summing the ring.
+   * The newest entry is kept even when it alone does not fit, so a single
+   * oversized event cannot empty the ring it was recorded in. Returns the
+   * drop from the front and the total that remains.
+   */
+  const trimRing = (
+    length: number,
+    total: number,
+    sizeOf: (index: number) => number,
+  ): { drop: number; total: number } => {
+    let drop = Math.max(0, length - CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION);
+    for (let index = 0; index < drop; index += 1) total -= sizeOf(index);
+    while (total > CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS && length - drop > 1) {
+      total -= sizeOf(drop);
+      drop += 1;
+    }
+    return { drop, total };
+  };
+
+  // Applied wherever the ring is (re)written.
+  const boundRingEnvelopes = (envelopes: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] => {
+    let total = 0;
+    for (const envelope of envelopes) total += estimateEnvelopeChars(envelope);
+    const { drop } = trimRing(
+      envelopes.length,
+      total,
+      (index) => estimateEnvelopeChars(envelopes[index]!),
     );
+    return drop > 0 ? envelopes.slice(drop) : envelopes;
+  };
 
   const touchEventHistoryRing = (sessionId: string, envelopes: AgentChatEventEnvelope[]): void => {
     eventHistoryBySession.delete(sessionId);
@@ -14158,17 +14182,13 @@ export function createAgentChatService(args: {
     }
     current.push(envelope);
     total += estimateEnvelopeChars(envelope);
-    // The same bound as boundRingEnvelopes: the count cap, then the newest
-    // events that fit the budget, keeping the newest even when it alone does
-    // not fit. Dropping from the front gives the same suffix.
-    let drop = Math.max(0, current.length - CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION);
-    for (let index = 0; index < drop; index += 1) total -= estimateEnvelopeChars(current[index]!);
-    while (total > CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS && current.length - drop > 1) {
-      total -= estimateEnvelopeChars(current[drop]!);
-      drop += 1;
-    }
+    const { drop, total: keptTotal } = trimRing(
+      current.length,
+      total,
+      (index) => estimateEnvelopeChars(current[index]!),
+    );
     const ring = drop > 0 ? current.slice(drop) : current;
-    ringCharTotals.set(ring, total);
+    ringCharTotals.set(ring, keptTotal);
     touchEventHistoryRing(envelope.sessionId, ring);
   };
 
