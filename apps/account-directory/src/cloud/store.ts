@@ -22,6 +22,7 @@ import {
 } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { keepLaneStatement, laneFactsOf } from "./lanesWithoutComputer";
+import { machineCopiesGoneStatements } from "../accountProjects/store";
 
 /**
  * The computers and accounts in D1, and the one place that moves hours. Live
@@ -544,23 +545,29 @@ export function closedComputerStatements(
 
 /**
  * A deleted computer leaves the account's machine list, as a machine the person
- * removes does: revoked (so its key can't register again) and off the roster.
- * The desktop did this itself after its own deletes; a delete from the web, the
- * phone or the server (idle cleanup, a sign-in that never finished) left it
- * listed as an offline machine. Kept when another live computer carries the
- * same key (a move or a copy of its files).
+ * removes does: revoked (so its key can't register again), off the roster, and
+ * its project copies gone (the project list's cursor moves, so every client
+ * reads it again). The desktop did this itself after its own deletes; a delete
+ * from the web, the phone or the server (idle cleanup, a sign-in that never
+ * finished) left it listed as an offline machine. Kept when another live
+ * computer of the account carries the same key (a move or a copy of its files).
  */
 function forgetMachineStatements(env: CloudDb, computer: ComputerRow, now: number): D1PreparedStatement[] {
-  if (!computer.machine_key) return [];
-  const unshared = "not exists (select 1 from cloud_computers where machine_key = ? and instance_id <> ? and deleted_at is null)";
+  const key = computer.machine_key;
+  if (!key) return [];
+  const unshared = {
+    sql: "not exists (select 1 from cloud_computers where user_id = ? and machine_key = ? and instance_id <> ? and deleted_at is null)",
+    binds: [computer.user_id, key, computer.instance_id],
+  };
   return [
+    ...machineCopiesGoneStatements(env.DB, computer.user_id, key, now, unshared),
     env.DB.prepare(`
       insert into revoked_machines (user_id, machine_key, device_id, revoked_at)
-      select user_id, machine_key, device_id, ? from machines where user_id = ? and machine_key = ? and ${unshared}
+      select user_id, machine_key, device_id, ? from machines where user_id = ? and machine_key = ? and ${unshared.sql}
       on conflict (user_id, machine_key) do update set revoked_at = excluded.revoked_at
-    `).bind(now, computer.user_id, computer.machine_key, computer.machine_key, computer.instance_id),
-    env.DB.prepare(`delete from machines where user_id = ? and machine_key = ? and ${unshared}`)
-      .bind(computer.user_id, computer.machine_key, computer.machine_key, computer.instance_id),
+    `).bind(now, computer.user_id, key, ...unshared.binds),
+    env.DB.prepare(`delete from machines where user_id = ? and machine_key = ? and ${unshared.sql}`)
+      .bind(computer.user_id, key, ...unshared.binds),
   ];
 }
 
