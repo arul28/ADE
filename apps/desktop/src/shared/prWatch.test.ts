@@ -6,6 +6,7 @@ import {
   PR_WATCH_COMMENT_ONLY_WAKE_LIMIT,
   buildPrWatchWakeText,
   evaluatePrWatch,
+  holdPrWatchChanges,
   initialPrWatchState,
   type PrMergeQueueRemoval,
   type PrWatchMode,
@@ -67,6 +68,41 @@ function step(
 }
 
 const kinds = (evaluation: { changes: { kind: string }[] }) => evaluation.changes.map((change) => change.kind);
+
+it("holds a busy chat's news and delivers it once when the turn ends", () => {
+  const state = initialPrWatchState(iso(T0), "head-1");
+  const first = [remark("c1", "devin", T0 + 1_000)];
+  const second = [remark("c2", "coderabbit", T0 + 2_000)];
+
+  // The chat is mid-turn: the first batch is parked, not queued as a message.
+  const woke = step("watch", state, { remarks: first, nowMs: T0 + 60_000 });
+  expect(kinds(woke)).toEqual(["remarks"]);
+  const held = holdPrWatchChanges(woke, state);
+  expect(held.changes).toEqual([]);
+  expect(held.next.held.map((change) => change.kind)).toEqual(["remarks"]);
+
+  // A second batch arrives while it is still busy: it joins the same update.
+  const again = step("watch", held.next, { remarks: [...first, ...second], nowMs: T0 + 120_000 });
+  const stillHeld = holdPrWatchChanges(again, held.next);
+  expect(stillHeld.changes).toEqual([]);
+  expect(stillHeld.next.held.flatMap((change) => change.kind === "remarks" ? change.remarks.map((entry) => entry.id) : []))
+    .toEqual(["c1", "c2"]);
+  // Nothing was delivered, so nothing was spent and the watch is not over.
+  expect(stillHeld.next.commentOnlyWakes).toBe(0);
+  expect(stillHeld.stop).toBeNull();
+
+  // The turn ends: one wake carrying both batches, and nothing left held.
+  const released = step("watch", stillHeld.next, { remarks: [...first, ...second], nowMs: T0 + 180_000 });
+  expect(kinds(released)).toEqual(["remarks"]);
+  expect(released.changes[0]?.kind === "remarks"
+    ? released.changes[0].remarks.map((entry) => entry.id)
+    : []).toEqual(["c1", "c2"]);
+  expect(released.next.held).toEqual([]);
+
+  // A terminal change is never held: no later pass could release it.
+  const merged = step("watch", state, { pr: { state: "merged" }, nowMs: T0 + 60_000 });
+  expect(holdPrWatchChanges(merged, state)).toBe(merged);
+});
 
 describe("evaluatePrWatch", () => {
   it("Watch tells a newly failed check once, then a human remark, and never ADE's own comment", () => {

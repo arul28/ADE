@@ -4147,6 +4147,7 @@ export async function createAdeRuntime(args: {
         prService: headlessLinearServices.prService,
         sessionService,
         messageSession: (args) => chatForPrWatch.messageSession(args),
+        getChatLiveness: chatLivenessReader(chatForPrWatch),
         emitPrEvent,
         getGithubBackgroundPauseUntilMs: () =>
           headlessLinearServices.githubService.getBackgroundRequestPauseUntilMs(),

@@ -246,6 +246,37 @@ function mergeHeld(held: PrWatchChange[], incoming: PrWatchChange[]): PrWatchCha
   return out;
 }
 
+/**
+ * Park a wake the chat cannot take yet.
+ *
+ * A wake handed to a chat that is mid-turn becomes a queued message, and a
+ * queue of wakes is exactly what an agent must not come back to: each one runs
+ * its own turn to say the same PR moved. Folded into `held`, they arrive as a
+ * single update when the turn ends, and the next pass merges anything newer on
+ * top of them.
+ *
+ * Nothing is spent here: `commentOnlyWakes` is the budget for wakes the chat
+ * actually saw, so a held update cannot exhaust a watch that never spoke. A
+ * terminal change (merged, closed, unreadable) is never held back — there is no
+ * later pass to release it from.
+ */
+export function holdPrWatchChanges(
+  evaluation: PrWatchEvaluation,
+  previous: PrWatchState,
+): PrWatchEvaluation {
+  if (evaluation.changes.length === 0 || evaluation.stop) return evaluation;
+  return {
+    changes: [],
+    next: {
+      ...evaluation.next,
+      commentOnlyWakes: previous.commentOnlyWakes,
+      held: mergeHeld(evaluation.next.held, evaluation.changes),
+    },
+    exhausted: false,
+    stop: null,
+  };
+}
+
 /** Remarks newer than what the watch already told, and the new high-water mark. */
 function readFreshRemarks(
   previous: PrWatchState,
