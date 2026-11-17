@@ -12814,11 +12814,13 @@ export function AgentChatPane({
       const restore = send.restore;
       if (!restore) continue;
       const restored = restoredComposerRef.current;
+      const wordsStillTheirs = send.draftText ? composerText === send.draftText : composerText.trim().length === 0;
+      if (!wordsStillTheirs) continue;
+      // Files and context are checked apart: a file added since makes the
+      // restored files stay, and the untouched context still goes.
       const ownsAttachments = attachmentsRef.current === restore.attachments
         || (restored?.clientSendId === send.clientSendId && attachmentsRef.current === restored.attachments);
-      const wordsStillTheirs = send.draftText ? composerText === send.draftText : composerText.trim().length === 0;
-      if (!ownsAttachments || !wordsStillTheirs) continue;
-      if (attachmentsRef.current.length) setAttachmentsWithIds([], []);
+      if (ownsAttachments && attachmentsRef.current.length) setAttachmentsWithIds([], []);
       if (restore.contextAttachments.length) {
         setContextAttachments((current) => (
           current === restore.contextAttachments
