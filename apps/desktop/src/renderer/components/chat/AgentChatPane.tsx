@@ -6188,7 +6188,10 @@ export function AgentChatPane({
       || active === document.body
       || !active.isConnected
       || active.closest("[inert], [data-chat-empty-state]") != null;
-    if (keyboardIsFree) setComposerFocusRequest((current) => current + 1);
+    // A text selection elsewhere also means the person is busy there.
+    const selection = typeof window === "undefined" ? null : window.getSelection();
+    const selectingText = selection != null && !selection.isCollapsed && selection.toString().length > 0;
+    if (keyboardIsFree && !selectingText) setComposerFocusRequest((current) => current + 1);
   }, [selectedSessionId]);
   // A browser tab attached from the Browser panel, for the composer to insert
   // at its caret (the pane cannot see the caret, only the draft).
