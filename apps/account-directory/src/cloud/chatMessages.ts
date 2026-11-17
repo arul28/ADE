@@ -103,11 +103,11 @@ function signInOf(row: ChatMessageRow): CloudLaunchSignIn | null {
   }
 }
 
-/** A launch message's state as a queued chat message's. */
 /** The sentences of a message a continue launch never sent; the launch's own sentence comes first when it has one. */
 const LAUNCH_CANCELLED_SENTENCE = "The new computer for this chat was cancelled, so this message wasn't sent. Send it again.";
 const LAUNCH_FAILED_SENTENCE = "The new computer for this chat didn't start, so this message wasn't sent. Send it again.";
 
+/** A launch message's state as a queued chat message's. */
 function stateFromLaunch(message: CloudLaunchMessage): CloudChatMessageState {
   if (message.state === "failed" && message.error === "Cancelled.") return "cancelled";
   return message.state;
@@ -163,28 +163,6 @@ async function messageOf(env: CloudEnv, keys: UserKeys, row: ChatMessageRow, ope
 async function readRow(env: CloudEnv, userId: string, machineKey: string, chatId: string, messageId: string): Promise<ChatMessageRow | null> {
   return await env.DB.prepare("select * from cloud_chat_messages where user_id = ? and machine_key = ? and chat_id = ? and message_id = ?")
     .bind(userId, machineKey, chatId, messageId).first<ChatMessageRow>();
-}
-
-/**
- * Whether an ADE version (`1.2.130`, `1.2.130-beta.49`) is at least `min`.
- * A release is newer than its betas. An unreadable version (a dev build)
- * counts as new enough: the server never refuses on a guess.
- */
-export function adeVersionAtLeast(version: string, min: string): boolean {
-  const parse = (value: string) => {
-    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z]+)\.?(\d+)?)?/.exec(value.trim());
-    if (!match) return null;
-    return { core: [Number(match[1]), Number(match[2]), Number(match[3])], pre: match[4] ? Number(match[5] ?? 0) : null };
-  };
-  const have = parse(version);
-  const need = parse(min);
-  if (!have || !need) return true;
-  for (let index = 0; index < 3; index += 1) {
-    if (have.core[index]! !== need.core[index]!) return have.core[index]! > need.core[index]!;
-  }
-  if (have.pre == null) return true;
-  if (need.pre == null) return false;
-  return have.pre >= need.pre;
 }
 
 /* ---- What the router gives this module ---- */
