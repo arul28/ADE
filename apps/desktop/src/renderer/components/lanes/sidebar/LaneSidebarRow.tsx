@@ -113,7 +113,7 @@ function AgentCluster({
       className="flex shrink-0 items-center gap-1"
       data-testid="lane-sidebar-agent-status"
       data-tone={attention ? "attention" : status.tone}
-      title={`${lane.name}: ${label}`}
+      title={`${laneDisplayName(lane)}: ${label}`}
     >
       {shown.length > 0 ? (
         <span className="flex items-center">
@@ -277,7 +277,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
           return;
         }
         const url = `ade://lane/${encodeURIComponent(lane.id)}`;
-        const title = (lane.name || "ADE lane")
+        const title = (laneDisplayName(lane) || "ADE lane")
           .replace(/&/g, "&amp;")
           .replace(/</g, "&lt;")
           .replace(/>/g, "&gt;")
@@ -332,7 +332,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
               the same name apart; on screen the hover card names it. */}
           {machine ? <span className="sr-only">, on {machine.machineName}</span> : null}
         </span>
-        {share && !deleting ? <LaneShareMark laneId={share.laneId} laneName={lane.name} pin={share.pin} /> : null}
+        {share && !deleting ? <LaneShareMark laneId={share.laneId} laneName={laneDisplayName(lane)} pin={share.pin} /> : null}
         {deleting || creating ? (
           <CircleNotch size={12} className="shrink-0 animate-spin" style={{ color: deleting ? COLORS.textMuted : COLORS.accent }} />
         ) : (
