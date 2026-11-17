@@ -231,7 +231,10 @@ export function createCloudAgentLimitsStore(deps: {
   vault: () => CloudVault | null;
   machineStore: () => { getSync(key: string): string | null; setSync(key: string, value: string): void } | null;
   logger?: CloudLogger;
-}): CloudAgentLimitsStore {
+}): CloudAgentLimitsStore & {
+  /** This computer's copy only, after the account server saved the value itself (`PUT /cloud/limits`). */
+  keepHere(limits: CloudAgentLimits): CloudAgentLimits;
+} {
   const local = () => {
     try {
       return deps.machineStore();
@@ -276,6 +279,16 @@ export function createCloudAgentLimitsStore(deps: {
         })
         : false;
       if (!saved && !savedHere) throw new Error("ADE couldn't save that to your account or this computer. Try again.");
+      return next;
+    },
+    keepHere(limits) {
+      const next = parseAgentLimits(limits);
+      try {
+        local()?.setSync(CLOUD_AGENT_LIMITS_MACHINE_CREDENTIAL_KEY, JSON.stringify({ v: 3, agents: next }));
+      } catch (error) {
+        // The account holds the value; this copy only answers while the account can't.
+        deps.logger?.warn?.("cloud.agent_limits_local_write_failed", { error: getErrorMessage(error) });
+      }
       return next;
     },
   };
