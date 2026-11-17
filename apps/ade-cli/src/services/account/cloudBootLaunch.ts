@@ -124,6 +124,12 @@ export type CloudBootLaunchDeps = {
   refreshVault?: () => Promise<void>;
   /** Sends one message to the launch's chat; `clientSendId` makes a retry a no-op. */
   sendChatMessage?: (projectId: string, sessionId: string, message: { text: string; clientSendId: string }) => Promise<void>;
+  /**
+   * Waits until the chat's running turn is over; false when it still runs at the
+   * wait's limit. Claude takes a send during a turn and then fails that turn, so
+   * a queued message goes only to an idle chat.
+   */
+  waitForChatIdle?: (projectId: string, sessionId: string) => Promise<boolean>;
   sleep?: (ms: number) => Promise<void>;
 };
 
@@ -829,6 +835,7 @@ export type CloudBootLaunchHost = {
   refreshVault?: CloudBootLaunchDeps["refreshVault"];
   /** The person's queued messages reach the chat through it. */
   sendChatMessage?: CloudBootLaunchDeps["sendChatMessage"];
+  waitForChatIdle?: CloudBootLaunchDeps["waitForChatIdle"];
 };
 
 /**
@@ -914,6 +921,7 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
       remoteSignIn: host.remoteSignIn,
       refreshVault: host.refreshVault,
       sendChatMessage: host.sendChatMessage,
+      waitForChatIdle: host.waitForChatIdle,
       launches: async (projectId) => {
         const service = await host.chatLaunchService(projectId);
         if (!service) throw new Error("This ADE runtime can't run a lane launch.");
