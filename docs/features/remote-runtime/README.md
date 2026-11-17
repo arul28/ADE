@@ -1222,7 +1222,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `machine.updateAndRestart`. Absent for embedded and test runtimes, which have
   no installed service to update; the method then refuses rather than pretending
   to have restarted something.
-  `apps/ade-cli/src/services/runtime/machineUpdateInFlight.ts` —
+- `apps/ade-cli/src/services/runtime/machineUpdateInFlight.ts` —
   `joinOrStartMachineUpdate`, the one-run-per-process coalescer the runtime RPC
   and the phone's sync command both go through.
 - `apps/ade-cli/src/services/runtime/atomicJson.ts` — the shared

@@ -1053,8 +1053,10 @@ A paired phone or ADE Web pressing **Update & restart** for another machine
 records the same `ade_feature_used` event on the brain that ran the update
 (`cli.ts`, the `machine.updateAndRestart` sync command), with
 `feature: "updates"`, `action: "remote_machine_update"`, the surface of the
-client that asked (`mobile` or `web`), and one closed `outcome`: `completed` or
-`failed`. It carries no version, machine name or step detail; those stay in the
+client that asked (`mobile` or `web`), and one closed `outcome`: `completed`
+(the machine accepted and began the update or download) or `failed` (it
+refused or the run failed before the restart). A restart that never comes back
+is in the update log, not here. It carries no version, machine name or step detail; those stay in the
 update log. Callers that join one run fold into one event by the key. A one-hour
 deduplication key per outcome bounds it to two accepted events per installation
 per hour, inside the existing `ade_feature_used` ceilings. Reading what a restart

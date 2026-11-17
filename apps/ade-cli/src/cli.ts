@@ -31766,7 +31766,9 @@ async function runServe(
             () => runMachineUpdateAndRestart(machineUpdateControls, targetVersion, requestedBy),
           );
           // Whether people update a machine from a phone or browser, and how
-          // often it fails. The detail stays in the update log.
+          // often the machine refuses. `completed` means it accepted and began
+          // (a restart that never comes back is logged, not counted here). The
+          // detail stays in the update log.
           const outcome = result.ok ? "completed" : "failed";
           brainProductAnalytics?.capture({
             event: "ade_feature_used",

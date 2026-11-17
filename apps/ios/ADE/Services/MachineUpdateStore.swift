@@ -13,7 +13,8 @@ private let machineUpdateLog = Logger(subsystem: "com.ade.ios", category: "Machi
 // (the same run the desktop's button starts) over the link it already has to
 // that machine: the focused machine's main connection, or the machine's
 // roster connection. The phone only knows which build is newest on each track,
-// read from the same release manifests the desktop reads.
+// read from the account directory's `/releases/latest`, falling back to the
+// release manifests the desktop reads.
 
 let machineUpdateImpactRemoteAction = "machine.updateImpact"
 let machineUpdateAndRestartRemoteAction = "machine.updateAndRestart"

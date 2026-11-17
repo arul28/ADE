@@ -8879,58 +8879,64 @@ describe("CTO-gated Linear sync commands", () => {
       updateAndRestart: vi.fn(async () => { throw new Error("viewer reached updateAndRestart"); }),
     };
     const uninstallMachineUpdate = setMachineUpdateRemoteCommands(machineUpdate);
-    const host = createSyncHostService({
-      ...base,
-      projectId: "project-1",
-      discoveryEnabled: false,
-      deviceRegistryService: {
-        ...base.deviceRegistryService,
-        upsertPeerMetadata: vi.fn(),
-      },
-      // `workTools.*` is registered only when the aggregator exists. Production
-      // always builds it (`bootstrap.ts`), so a fixture without it would make
-      // the loop below assert an action the host legitimately never advertised.
-      workToolsStateService: {
-        getLaneState: vi.fn(async () => ({ laneId: "lane-1" })),
-        readObservationPreview: vi.fn(async () => ({ ok: true })),
-        setActiveTool: vi.fn(() => ({ ok: true })),
-      },
-      // Same rule for `macDesktop.*`: a Mac runtime builds the service and its
-      // stream fan-out (`bootstrap.ts` / `main.ts`), so the fixture carries
-      // both. The handlers are never reached with valid args here; the loop
-      // only checks that each optional action clears the authorization gate.
-      macDesktopService: {
-        getStatus: vi.fn(async () => ({ supported: false })),
-        start: vi.fn(async () => ({ supported: true })),
-        stop: vi.fn(async () => ({ stopped: false, releasedWindows: 0 })),
-        getDisplay: vi.fn(async () => null),
-        takeControl: vi.fn(async () => ({ holder: "user" })),
-        returnControl: vi.fn(async () => null),
-        renewLease: vi.fn(async () => null),
-        click: vi.fn(async () => ({ ok: true })),
-        move: vi.fn(async () => ({ ok: true })),
-        startStreamForSubscription: vi.fn(async () => {
-          throw new Error("no display in this fixture");
-        }),
-        releaseStreamSubscription: vi.fn(async () => {}),
-        subscribe: vi.fn(() => () => {}),
-      },
-      // A runtime with an App Control service injects its live-view stream,
-      // which is what registers the optional `appControl.*` actions.
-      appControlSyncStream: {
-        getStatus: vi.fn(async () => ({ laneId: null, activeSession: null, sessions: [] })),
-        subscribe: vi.fn(async () => ({ ok: true })),
-        unsubscribe: vi.fn(() => ({ ok: true })),
-        releaseConnection: vi.fn(),
-        dispose: vi.fn(),
-      },
-      // A runtime with automations wires its webhook source, which is what
-      // registers the optional `automations.webhook*` actions.
-      getWebhookAutomations: () => null,
-      // Same for its rule source, which registers the optional
-      // `automations.list` / `saveDraft` / `deleteRule` actions.
-      getAutomationRules: () => null,
-    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let host: ReturnType<typeof createSyncHostService>;
+    try {
+      host = createSyncHostService({
+        ...base,
+        projectId: "project-1",
+        discoveryEnabled: false,
+        deviceRegistryService: {
+          ...base.deviceRegistryService,
+          upsertPeerMetadata: vi.fn(),
+        },
+        // `workTools.*` is registered only when the aggregator exists. Production
+        // always builds it (`bootstrap.ts`), so a fixture without it would make
+        // the loop below assert an action the host legitimately never advertised.
+        workToolsStateService: {
+          getLaneState: vi.fn(async () => ({ laneId: "lane-1" })),
+          readObservationPreview: vi.fn(async () => ({ ok: true })),
+          setActiveTool: vi.fn(() => ({ ok: true })),
+        },
+        // Same rule for `macDesktop.*`: a Mac runtime builds the service and its
+        // stream fan-out (`bootstrap.ts` / `main.ts`), so the fixture carries
+        // both. The handlers are never reached with valid args here; the loop
+        // only checks that each optional action clears the authorization gate.
+        macDesktopService: {
+          getStatus: vi.fn(async () => ({ supported: false })),
+          start: vi.fn(async () => ({ supported: true })),
+          stop: vi.fn(async () => ({ stopped: false, releasedWindows: 0 })),
+          getDisplay: vi.fn(async () => null),
+          takeControl: vi.fn(async () => ({ holder: "user" })),
+          returnControl: vi.fn(async () => null),
+          renewLease: vi.fn(async () => null),
+          click: vi.fn(async () => ({ ok: true })),
+          move: vi.fn(async () => ({ ok: true })),
+          startStreamForSubscription: vi.fn(async () => {
+            throw new Error("no display in this fixture");
+          }),
+          releaseStreamSubscription: vi.fn(async () => {}),
+          subscribe: vi.fn(() => () => {}),
+        },
+        // A runtime with an App Control service injects its live-view stream,
+        // which is what registers the optional `appControl.*` actions.
+        appControlSyncStream: {
+          getStatus: vi.fn(async () => ({ laneId: null, activeSession: null, sessions: [] })),
+          subscribe: vi.fn(async () => ({ ok: true })),
+          unsubscribe: vi.fn(() => ({ ok: true })),
+          releaseConnection: vi.fn(),
+          dispose: vi.fn(),
+        },
+        // A runtime with automations wires its webhook source, which is what
+        // registers the optional `automations.webhook*` actions.
+        getWebhookAutomations: () => null,
+        // Same for its rule source, which registers the optional
+        // `automations.list` / `saveDraft` / `deleteRule` actions.
+        getAutomationRules: () => null,
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+    } catch (error) {
+      uninstallMachineUpdate();
+      throw error;
+    }
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
 
     try {

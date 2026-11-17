@@ -1242,7 +1242,7 @@ export class BrowserAccountClient {
           }
           const body = await response.json().catch(() => null) as Record<string, unknown> | null;
           if (!body || typeof body !== "object") {
-            forwardSignalToSentry("web.latest_releases_read_failed", { status: response.status, body: "unreadable" }, "latest_releases_read_failed", "info");
+            forwardSignalToSentry("web.latest_releases_read_failed", { status: response.status, reason: "unreadable" }, "latest_releases_read_failed", "info");
           }
           const read = (raw: unknown) => (typeof raw === "string" ? raw : null);
           const value: LatestReleasesResponse = {
