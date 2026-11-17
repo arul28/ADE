@@ -152,6 +152,7 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useProjectTabStripOverflow } from "./useProjectTabStripOverflow";
 import { AdeWordmark } from "../ui/AdeWordmark";
 import { machineLabelForMachine } from "../../state/adeCloudLaneIndex";
+import { useProjectOpenWaking } from "../../state/projectOpenWaking";
 
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
@@ -811,6 +812,7 @@ export function TopBar({
   const musicTabOpen = useAppStore((s) => s.musicTabOpen);
   const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
+  const projectOpenWaking = useProjectOpenWaking();
   const activeNoMachineTabId = useAppStore((s) => s.activeNoMachineTabId);
   const noMachineTabs = useAppStore((s) => s.noMachineTabs);
   const noMachineTabCount = useAppStore((s) => s.noMachineTabs.length);
@@ -2713,7 +2715,10 @@ export function TopBar({
         projectTransitionLabel = "Opening project…";
         break;
       case "switching":
-        projectTransitionLabel = `Switching to ${transitionTargetName}…`;
+        // ADE Web opening a project on a sleeping ADE Cloud computer wakes it first.
+        projectTransitionLabel = projectOpenWaking
+          ? `Waking ${projectOpenWaking}…`
+          : `Switching to ${transitionTargetName}…`;
         break;
       case "closing":
         projectTransitionLabel = "Closing project…";

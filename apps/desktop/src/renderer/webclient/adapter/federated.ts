@@ -27,6 +27,8 @@ import { createAdeWebAdapter, type AdeWebAdapter } from "./index";
 import { createReconnectHold } from "./reconnectHold";
 import { resolveMachinePresence } from "../../../shared/types/power";
 import { wakeWebCloudMachine } from "../workspace/webCloudMachines";
+import { isAdeCloudComputer } from "../../state/adeCloudLaneIndex";
+import { setProjectOpenWaking } from "../../state/projectOpenWaking";
 
 /** How long a person's connect keeps dialing a cloud computer it just woke. */
 const WOKEN_CONNECT_WAIT_MS = 120_000;
@@ -175,6 +177,8 @@ export type FederatedWebAdapter = {
   activateChats(targetId: string): Promise<void>;
   forgetEnvironment(targetId: string): Promise<void>;
   restore(): Promise<"project" | "chats" | null>;
+  /** Why the last restore could not reopen its project, once; null when it did or there was none. */
+  takeRestoreFailure(): { projectName: string; message: string } | null;
   subscribeActiveAdapter(listener: () => void): () => void;
   dispose(): void;
 };
@@ -560,10 +564,34 @@ export function createFederatedWebAdapter({
   // host-driven rebind below can fire against the binding the user is in the
   // middle of leaving and write it back over the one they asked for.
   let activationsInFlight = 0;
+  /** Why the last `restore` could not reopen its project (taken once by the shell). */
+  let restoreFailure: { projectName: string; message: string } | null = null;
+
+  /**
+   * A project tab on an ADE Cloud computer that went to sleep: wake it (the
+   * top bar says so) and connect, instead of dialing it until the dial times
+   * out. Any other machine, or one connected here, is left to the open.
+   */
+  const wakeSleepingTarget = async (targetId: string): Promise<void> => {
+    if (manager.getSnapshot().sessions.some((session) => session.targetId === targetId && session.state === "live")) return;
+    const deviceId = manager.listEnvironments().find((environment) => environment.envId === targetId)?.hostDeviceId;
+    const machine = deviceId ? accountClient.getSnapshot().machines.find((entry) => entry.deviceId === deviceId) : null;
+    if (!machine?.machineKey || !isAdeCloudComputer({ machineKey: machine.machineKey })) return;
+    if (!await sleepingServerComputer(machine.machineKey)) return;
+    // Never its generated name (an instance id): the person knows it as their ADE Cloud computer.
+    setProjectOpenWaking("your ADE Cloud computer");
+    try {
+      const result = await machinesOverrides.connect(machine.machineKey);
+      if (!result.ok) throw new Error(result.message);
+    } finally {
+      setProjectOpenWaking(null);
+    }
+  };
 
   const openProject = async (targetId: string, projectId: string): Promise<RemoteBinding> => {
     activationsInFlight += 1;
     try {
+      await wakeSleepingTarget(targetId);
       const { project } = await manager.openProject(targetId, projectId);
       const info = projectInfo(project);
       const environment = manager.getSession(targetId)?.environment;
@@ -968,9 +996,19 @@ export function createFederatedWebAdapter({
       // was that it went to sleep, so a person's connect still wakes it.
       // The provider's own idle sleep says nothing to the account: an ADE
       // Cloud computer that reads offline is asked about on the account server.
-      const serverComputer = !background && presence === "offline" && machine.sleepState !== "asleep"
-        ? await sleepingServerComputer(key)
-        : null;
+      // So is one that still reads online with no connection here: the account
+      // keeps it "online" for minutes after it went to sleep, and a dial alone
+      // would wait out its timeout.
+      const liveHere = saved != null && manager.getClient(saved.envId)?.getStatus().state === "connected";
+      const askServer = machine.sleepState !== "asleep" && (
+        (!background && presence === "offline")
+        || (presence === "online" && !liveHere && isAdeCloudComputer({ machineKey: key }))
+      );
+      const serverComputer = askServer ? await sleepingServerComputer(key) : null;
+      // A background connect never wakes one: it stops here instead of dialing.
+      if (background && serverComputer) {
+        return { ok: false, reason: "unreachable", machineKey: key, message: `${machineDisplayName(machine)} is asleep.` };
+      }
       const asleep = !background && (
         presence === "asleep" || (presence === "offline" && machine.sleepState === "asleep") || serverComputer != null
       );
@@ -1349,6 +1387,7 @@ export function createFederatedWebAdapter({
     },
     forgetEnvironment,
     async restore() {
+      restoreFailure = null;
       if (workspace.activeSurface === "chats" && workspace.selectedChatsTargetId) {
         try {
           await manager.connectEnvironment(workspace.selectedChatsTargetId);
@@ -1368,13 +1407,20 @@ export function createFederatedWebAdapter({
       try {
         await openProject(binding.targetId, binding.projectId);
         return "project";
-      } catch {
+      } catch (error) {
+        // The tab falls back to the welcome page; the shell says why.
+        restoreFailure = { projectName: binding.displayName, message: error instanceof Error ? error.message : String(error) };
         activeBinding = null;
         manager.setProtectedTargetId(null);
         workspace = { ...workspace, activeBindingKey: null, activeSurface: "hub" };
         persist();
         return null;
       }
+    },
+    takeRestoreFailure() {
+      const failure = restoreFailure;
+      restoreFailure = null;
+      return failure;
     },
     subscribeActiveAdapter(listener) {
       activeAdapterListeners.add(listener);

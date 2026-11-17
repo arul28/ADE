@@ -8,7 +8,7 @@ import {
 import { repositoryTabOfNoMachineTab } from "../../state/repositoryScope";
 import { useAppStore, type NoMachineRepositoryTab } from "../../state/appStore";
 import { useAccountProjectList, useRepositoryCopies } from "../../state/useRepositoryCopies";
-import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { adeCloudLaneComputerForMachine, isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { navigateToAppTarget, openExternalUrl } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -231,6 +231,18 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   const accountMachineOf = useCallback((copy: RepositoryCopy): AdeAccountMachine | undefined => (
     copy.machineKey ? accountMachines?.find((machine) => sameMachineKey(machine.machineKey, copy.machineKey)) : undefined
   ), [accountMachines]);
+  // Any ADE Cloud computer, with a lane or not: it sleeps, and Wake starts it.
+  const cloudIndex = useAdeCloudLaneComputers();
+  /**
+   * A copy's computer, as the person should see it: ADE Cloud's own word that
+   * it sleeps wins, since the account keeps an ADE Cloud computer "online" for
+   * minutes after it went to sleep.
+   */
+  const copyPresence = useCallback((copy: RepositoryCopy) => {
+    const computer = copy.machineKey ? adeCloudLaneComputerForMachine({ machineKey: copy.machineKey }, cloudIndex.computers) : null;
+    if (computer?.state === "asleep" || computer?.state === "stopped") return "asleep" as const;
+    return accountMachinePresence(accountMachineOf(copy));
+  }, [accountMachineOf, cloudIndex.computers]);
   const autoTried = useRef(new Set<string>());
   // A hidden page connects nothing on its own; the try waits until it is shown.
   const [pageShown, setPageShown] = useState(() => !isPageHidden());
@@ -254,7 +266,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
         && copy.machineKey != null
         && !autoTried.current.has(copy.machineKey.toLowerCase())
         && !(resumeOwned && tab.lastCopyKey?.startsWith(`remote:${copy.machineId}:`))
-        && accountMachinePresence(accountMachineOf(copy)) === "online"
+        && copyPresence(copy) === "online"
       )),
       tab.lastCopyKey ?? null,
     )[0];
@@ -280,7 +292,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
         settle();
       },
     );
-  }, [accountMachineOf, accountMachines, autoOpen, copies, defaultAddress, pageShown, tab.id, tab.lastCopyKey, webMode]);
+  }, [accountMachines, autoOpen, copies, copyPresence, defaultAddress, pageShown, tab.id, tab.lastCopyKey, webMode]);
 
   // A row's Connect or Wake: the person asked, so this connect wakes a
   // sleeping ADE Cloud computer and clears a Disconnect.
@@ -334,14 +346,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     if (!machine) return null;
     const opening = openingCopyKey === copyKeyOf(copy);
     const held = machine.status === "live" || machine.status === "parked" || (machine.status === "connecting" && opening);
-    const account = machine.accountMachine;
-    const awake = account != null && resolveMachinePresence({
-      connected: false,
-      online: account.online,
-      sleepState: account.sleepState,
-      sleepStateAt: account.sleepStateAt,
-      lastSeenAt: account.lastSeenAt,
-    }) === "online";
+    const awake = machine.accountMachine != null && copyPresence(copy) === "online";
     return held || (machine.status === "available" && awake) ? machine : null;
   };
   const openOnWeb = (copy: RepositoryCopy, machine: WebMachineEntry, chat?: CloudLaunchRecord) => {
@@ -423,15 +428,13 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
       }
     })();
   };
-  // Any ADE Cloud computer, with a lane or not: it sleeps, and Wake starts it.
-  const cloudIndex = useAdeCloudLaneComputers();
   const onAdeCloud = (copy: RepositoryCopy): boolean => (
     copy.isAdeCloud || isAdeCloudComputer({ machineKey: copy.machineKey }, cloudIndex)
   );
   /** "Connect" for a copy on an awake computer with no connection here, "Wake" for a resting ADE Cloud computer. */
   const wakeOrConnectLabel = (copy: RepositoryCopy): "Connect" | "Wake" | null => {
     if (copy.isThisMachine || copy.online || !copy.machineKey) return null;
-    const presence = accountMachinePresence(accountMachineOf(copy));
+    const presence = copyPresence(copy);
     if (presence === "online") return "Connect";
     return onAdeCloud(copy) && presence === "asleep" ? "Wake" : null;
   };
@@ -445,8 +448,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     const webMachine = webMode ? webMachineOf(copy) : null;
     if (webMachine?.status === "connecting") return webMachine.statusLabel;
     if (!onAdeCloud(copy)) return "Offline";
-    const machine = accountMachineOf(copy);
-    return accountMachinePresence(machine) === "asleep" || machine?.sleepState === "asleep" ? "Asleep" : "Offline";
+    return copyPresence(copy) === "asleep" || accountMachineOf(copy)?.sleepState === "asleep" ? "Asleep" : "Offline";
   };
   const connectable = webOpenable || copies.some((copy) => wakeOrConnectLabel(copy) != null);
   // Every computer the page can reach is an asleep ADE Cloud computer: the

@@ -3,6 +3,8 @@ import { hideAccountCloudLaunch, launchInProgress, launchesForOrigin, useAccount
 import { useAdeCloudLaneComputers } from "../../../state/adeCloudLaneIndex";
 import { CloudSetupCardList, type LaunchChatState } from "../../projects/CloudSetupCard";
 import { useTabCopyPin } from "../../../state/repositoryScope";
+import { useRetainedCrossMachineSlices } from "../../../state/crossMachineLanes";
+import type { OpenProjectBinding } from "../../../../shared/types/core";
 import type { AgentChatSessionSummary } from "../../../../shared/types";
 import { refreshCloudMachines } from "../../remoteTargets/useCloudMachines";
 import { cn } from "../../ui/cn";
@@ -18,56 +20,70 @@ function chatStateOfSummary(summary: AgentChatSessionSummary): LaunchChatState {
 }
 
 /**
- * The state of the started chats, read from the computer this tab is
- * connected to (the tab copy's pin) and read again when one of them changes.
- * A chat on a computer this tab is not connected to has no state here; its
- * card then names the lane without saying what the agent is doing.
+ * The state of the started chats, each read from the computer it runs on: the
+ * Work list's row of that chat names its computer (a new ADE Cloud computer,
+ * not the one this tab is on); a chat with no row yet is asked on the tab's
+ * computer. Read again when one of them changes.
  */
 function useLaunchChatStates(sessionIds: readonly string[]): ReadonlyMap<string, LaunchChatState> {
-  const pin = useTabCopyPin();
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
-  const idsKey = [...sessionIds].sort().join("\0");
+  const tabPin = useTabCopyPin();
+  const slices = useRetainedCrossMachineSlices();
+  const targets = useMemo(() => {
+    const byKey = new Map<string, { pin: OpenProjectBinding; sessionIds: string[] }>();
+    for (const sessionId of [...sessionIds].sort()) {
+      const pin = slices.find((slice) => slice.binding && slice.sessions.some((session) => session.id === sessionId))?.binding ?? tabPin;
+      if (!pin) continue;
+      const entry = byKey.get(pin.key) ?? { pin, sessionIds: [] };
+      entry.sessionIds.push(sessionId);
+      byKey.set(pin.key, entry);
+    }
+    return [...byKey.values()];
+  }, [sessionIds, slices, tabPin]);
+  const targetsRef = useRef(targets);
+  targetsRef.current = targets;
+  // One read per chat and computer: a pin rebuilt with the same key reads nothing again.
+  const targetsKey = targets.map((target) => `${target.pin.key}=${target.sessionIds.join(",")}`).join("\0");
   const [states, setStates] = useState<ReadonlyMap<string, LaunchChatState>>(() => new Map());
   useEffect(() => {
-    const target = pinRef.current;
-    const ids = idsKey ? idsKey.split("\0") : [];
-    if (!target || ids.length === 0) {
+    const current = targetsRef.current;
+    if (current.length === 0) {
       setStates(new Map());
       return;
     }
     let cancelled = false;
-    const read = (sessionId: string) => {
-      void window.ade.agentChat.getSummary({ sessionId }, target).then(
-        (summary) => {
-          if (cancelled) return;
-          setStates((current) => {
-            const next = new Map(current);
-            if (summary) next.set(sessionId, chatStateOfSummary(summary));
-            else next.delete(sessionId);
-            return next;
-          });
-        },
-        () => undefined,
-      );
-    };
-    for (const id of ids) read(id);
-    const watched = new Set(ids);
-    // A turn's start, end or a question changes the state: read that chat again (once per burst).
-    const queued = new Set<string>();
-    const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
-      if (!watched.has(envelope.sessionId) || queued.has(envelope.sessionId)) return;
-      queued.add(envelope.sessionId);
-      window.setTimeout(() => {
-        queued.delete(envelope.sessionId);
-        if (!cancelled) read(envelope.sessionId);
-      }, 1_000);
-    }, target);
+    const unsubscribes = current.map(({ pin, sessionIds: ids }) => {
+      const read = (sessionId: string) => {
+        void window.ade.agentChat.getSummary({ sessionId }, pin).then(
+          (summary) => {
+            if (cancelled) return;
+            setStates((previous) => {
+              const next = new Map(previous);
+              if (summary) next.set(sessionId, chatStateOfSummary(summary));
+              else next.delete(sessionId);
+              return next;
+            });
+          },
+          () => undefined,
+        );
+      };
+      for (const id of ids) read(id);
+      const watched = new Set(ids);
+      // A turn's start, end or a question changes the state: read that chat again (once per burst).
+      const queued = new Set<string>();
+      return window.ade.agentChat.onEvent((envelope) => {
+        if (!watched.has(envelope.sessionId) || queued.has(envelope.sessionId)) return;
+        queued.add(envelope.sessionId);
+        window.setTimeout(() => {
+          queued.delete(envelope.sessionId);
+          if (!cancelled) read(envelope.sessionId);
+        }, 1_000);
+      }, pin);
+    });
     return () => {
       cancelled = true;
-      unsubscribe();
+      for (const unsubscribe of unsubscribes) unsubscribe();
     };
-  }, [idsKey, pin?.key]);
+  }, [targetsKey]);
   return states;
 }
 
