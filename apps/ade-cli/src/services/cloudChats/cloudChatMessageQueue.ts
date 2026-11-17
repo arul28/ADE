@@ -301,6 +301,8 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
   };
 
   const drain = (reason: string): Promise<CloudChatQueueDrainResult> => {
+    // A new wake or a new message gets its own tries.
+    if (reason !== "retry") retries = 0;
     if (running) {
       again = true;
       return running;
