@@ -1835,7 +1835,9 @@ accepted update alike, and the update dialog shows its answer per chat:
   next start does not report the same crash. Rows of the dead brain close at
   once (`listDeadProcessIdentities` passes them to
   `reconcileStaleRunningSessions` as `deadOwnerIdentities`, which skips the
-  fresh-activity grace). Projects that had a running turn are listed in
+  fresh-activity grace). A run with the new brain's own pid that started
+  before its process did is dead too: a restarted container (an ADE Cloud
+  computer) gives the brain the same pid every boot. Projects that had a running turn are listed in
   `runtime/live-turns/<endpoint>.<pid>.json` (`liveTurnProjects.ts`); the
   next brain claims each dead brain's file with a rename and opens only those
   projects, one at a time, so their chats and CLIs continue within seconds.
