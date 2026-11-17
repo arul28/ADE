@@ -63,11 +63,9 @@ None of these routes returns a secret value.
   routes are native-only. A script on the ADE Web origin cannot read a secret,
   even with a valid session.
 - `vault/item`, `vault/keys` and the directory lease route refuse an `Origin`
-  again in their own handlers.
-- A D1 outage answers a browser on a native-only path with the same `403`.
-
-The web client gets account data that needs a secret through the account
-directory (`/cloud/*` routes), which returns status and names, never values.
+  again in their own handlers. A D1 outage answers the same `403`.
+- The web client reads secret-backed account data through the account
+  directory's `/cloud/*` routes, which return status and names only.
 
 ## Endpoints
 
@@ -169,19 +167,17 @@ reads them, ADE Cloud computers too.
   `VAULT_ENCRYPTION_KEY` before it writes it to D1. A database dump alone shows
   nothing. A person who can read the Worker's secret can read the values.
 - **Fail closed.** With no key, every vault route answers `503`, and
-  `npm run deploy` refuses.
-- **An unopenable row says so.** A row the key cannot open returns
-  `value: null`, so a client does not replace a value that is good elsewhere.
-- **No caller ciphertext.** The relay seals values itself.
+  `npm run deploy` refuses. A caller cannot send its own ciphertext.
+- **An unopenable row returns `value: null`**, so a client does not replace a
+  value that is good elsewhere.
 - **`provider_login`** holds a provider CLI's login, up to 16,000 characters
   (other kinds: 6,000). The relay never refreshes one.
 - **`refresh_owner`** names the machine that may exchange a rotating
   credential, such as Linear's OAuth refresh token. The relay stores the owner
   the writer names. The stale-write rules, not the owner, protect a grant from
   an old copy. The account directory's own owner name is `ade-cloud-directory`.
-- **Item keys** are `/`-separated segments, 200 characters at most. The first
-  segment is `[A-Za-z0-9][A-Za-z0-9._:-]*`; later ones can also start with `_`
-  or `-`. No segment is empty or starts with a dot.
+- **Item keys** are `/`-separated segments, 200 characters at most, none empty
+  or starting with a dot (first: `[A-Za-z0-9][A-Za-z0-9._:-]*`).
 
 ### Per-item answers and stale writes
 
@@ -241,18 +237,11 @@ Its minute cron calls it when the person's request ended before the publish.
 `src/passwords.ts`. The relay never sees a Passwords item's contents. Items
 arrive sealed under the account's vault key and are stored as opaque text.
 
-- The vault key is stored only wrapped (`password_keys`). The key service
-  (`apps/password-key-service`) wraps and unwraps it through the
-  `PASSWORD_KEY_SERVICE` binding, with `KEY_SERVICE_AUTH_SECRET`. Neither
-  Worker opens a vault alone.
-- The relay records each key release (`password_key_releases`) for the
-  person's Activity view.
-- The "ADE Cloud computers can use Passwords" switch is enforced by the cloud
-  computer's own brain, not here.
-- A browser never reaches these routes (see "Browser access"). The web Settings
-  page sends people to ADE desktop or the iPhone.
-
-See `docs/features/passwords/README.md`.
+The vault key is stored only wrapped (`password_keys`); the key service
+(`apps/password-key-service`, `PASSWORD_KEY_SERVICE` binding) wraps and unwraps
+it. Each key release is recorded (`password_key_releases`). The cloud
+computer's own brain enforces the "ADE Cloud computers can use Passwords"
+switch. See `docs/features/passwords/README.md`.
 
 ## Publish (APNs)
 
@@ -411,13 +400,9 @@ snapshot for each issuer.
 
 - **A new account route is native-only by default.** Add it to
   `BROWSER_ACCOUNT_ROUTES` only when it returns no secret value.
-- **`vault/item` and `vault/keys` answer `item: null` or an empty list for "no
-  row".** A `404` always means an older relay without the route, and callers
-  fall back to the full `GET vault`.
-- **The vault key cannot rotate without loss.** There is no re-encrypt path.
-- **`provider_login` and Linear grants rotate.** Only the `refresh_owner`
-  exchanges a refresh token; two machines that spend one token sign each
-  other out.
+- **`vault/item` and `vault/keys` answer "no row" as `item: null` or `[]`.** A
+  `404` means an older relay, and callers fall back to the full `GET vault`.
+- **The vault key cannot rotate without loss.**
 
 ## Local dev
 

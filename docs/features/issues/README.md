@@ -184,39 +184,24 @@ for a readable answer; the default is JSON.
 
 ## With no computer: reads through the account
 
-The web Linear and Jira panes, the iPhone Linear pane, and a desktop tab bound
-to ADE Cloud read issues through the ADE account server when no computer
-answers. The server reads the project's vault connection with the caller's
-own bearer. The token stays in that request's memory: it is never stored,
-logged or sent back.
+The web Jira pane and a desktop tab bound to ADE Cloud read Jira through the
+ADE account server when no computer answers. The server uses the project's
+vault connection with the caller's bearer, and never stores, logs or returns
+the token. Linear works the same way
+([Linear](../linear-integration/README.md#with-no-computer)).
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /cloud/integrations/jira/search` | `{ origin, jql, fields?, maxResults?, nextPageToken? }` | `{ siteUrl, issues, nextPageToken }` |
+| `POST /cloud/integrations/jira/search` | `{ origin, jql, fields?, maxResults?, nextPageToken? }` | `{ siteUrl, issues, nextPageToken }` (≤ 100 a page, 50 by default) |
 | `POST /cloud/integrations/jira/issue` | `{ origin, key }` | `{ siteUrl, issue }`, with comments |
-| `POST /cloud/integrations/linear/query` | `{ origin, op, vars? }` | Linear's `data` (see [Linear](../linear-integration/README.md#with-no-computer)) |
 
-- `origin` is the project's git origin. It picks the vault scope.
-- Jira calls go only to `https://<site>.atlassian.net`. Any other site
-  answers `jira_site_unsupported`, so the server never calls an address a
-  person typed. A search returns at most 100 issues a page (50 by default).
-- Linear and Jira together allow 30 requests a minute per account.
-- Reads only. An edit, a comment, a transition or a launch needs a computer,
-  and the pane says so.
-- The answers are Jira's and Linear's own objects. `shared/jiraIssueMapping.ts`
-  and `shared/linearIssueNormalize.ts` turn them into the panes' shapes
-  (`shared/adeCloud/integrationReads.ts`).
+- `origin` (the project's git origin) picks the vault scope.
+- Calls go only to `https://<site>.atlassian.net`; any other site answers
+  `jira_site_unsupported` (409).
+- Reads only. Linear and Jira together allow 30 requests a minute per account
+  (`rate_limited`, 429). `jira_not_connected` (409) means no connection or a
+  refused one; `integration_failed` (502) means Jira failed or timed out.
 - An older server answers `404`, and the client keeps its old behavior.
-
-Refusals (clients show the server's `message`):
-
-| Code | Status | When |
-|---|---|---|
-| `jira_not_connected` | 409 | No Jira connection for the project, or Jira refused it. |
-| `jira_site_unsupported` | 409 | The site is not at `atlassian.net`. |
-| `linear_not_connected`, `linear_renewing`, `linear_needs_renewal` | 409 | See the Linear doc. |
-| `rate_limited` | 429 | Over 30 requests a minute, or the tracker asked ADE to slow down. |
-| `integration_failed` | 502 | The tracker failed or timed out (15 s). |
 
 ## Creating issues
 

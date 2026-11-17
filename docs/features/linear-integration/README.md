@@ -1,22 +1,10 @@
 # Linear Integration
 
-ADE connects a Linear workspace to a project. With it, a person can:
-
-- Browse, search and edit Linear issues in ADE (desktop, web and iPhone).
-- Start a lane or an agent from an issue, and attach issues to lanes and chats.
-- Carry the issue through the branch name, commit messages and the PR body,
-  so Linear links the PR to the issue.
-- Run the ADE agent in Linear, raise "needs you" from the Linear inbox, keep
-  lanes in step with issue changes, and post a lane's proof to its issues.
-
-The connection belongs to the project and follows it to every computer on the
-account. With no computer on, the ADE account server reads Linear for the web
-and the iPhone, and renews an ADE-app sign-in itself.
-
-ADE has no autonomous Linear workflow engine. The CTO
-([`../cto/README.md`](../cto/README.md)) reads and updates issues through its
-tools; automations react to Linear events
-([`../automations/README.md`](../automations/README.md)).
+ADE connects a Linear workspace to a project: browse and edit issues, start
+lanes and agents from them, link them to branches, commits and PRs, and run the
+ADE agent in Linear. The connection follows the project to every computer on
+the account. With no computer on, the account server reads Linear. The CTO
+reads and updates issues through its tools; automations react to Linear events.
 
 ## Source file map
 
@@ -73,8 +61,6 @@ Also:
 - `renderer/components/settings/LinearSection.tsx`: Settings › Integrations.
 - `renderer/components/lanes/LinearIssueBadge.tsx`, `linearBrand.tsx`,
   `linearIssueDisplay.ts`, `linearProjectIcon.tsx`.
-- `renderer/components/issues/`: the issue viewer and create composer (see
-  [Issues](../issues/README.md)).
 - `apps/ios/ADE/Views/Linear/`: the Work top-bar Linear pane
   (`LinearPaneSheet`, `LinearIssueListScreen`, `LinearIssueDetailScreen`,
   `LinearLaunchScreen`/`LinearLaunchModel`, `LinearPaneStore`,
@@ -90,8 +76,8 @@ Also:
 - `apps/ade-cli/src/cli.ts` (`buildLinearPlan`) and
   `apps/ade-cli/src/issueCliFields.ts`: `ade linear`.
 
-IPC channels are in `apps/desktop/src/shared/ipc.ts` (`window.ade.cto.*`).
-Session attach channels are on `window.ade.lane.*`.
+IPC channels: `apps/desktop/src/shared/ipc.ts` (`window.ade.cto.*`; session
+attach on `window.ade.lane.*`).
 
 ## The connection
 
@@ -106,7 +92,7 @@ workspaces. There are two kinds:
    token lasts about 24 hours, and each refresh returns a new refresh token.
 2. **Personal API key.** Checked with a `viewer` query. It does not expire.
 
-Until a token is stored, nothing runs.
+Until a token is stored, nothing runs (tests stub `getStatus().tokenStored`).
 
 ### It follows the project
 
@@ -177,17 +163,16 @@ POST /cloud/integrations/linear/query   { origin, op, vars? }
   shapes with `linearIssueNormalize.ts` (desktop, web) or Swift (iPhone).
 - Linear and Jira together allow 30 requests a minute per account. The iPhone
   reads at most two pages per load through this route.
-- **Reads only.** Edits, comments and launches need a computer, and the panes
-  say so.
-- An older server answers `404`, and the client keeps its old behavior.
+- Reads only: a write needs a computer. An older server answers `404`, and
+  the client keeps its old behavior.
 
 Refusals (clients show the server's `message`):
 
 | Code | Status | When |
 |---|---|---|
 | `linear_not_connected` | 409 | The project has no Linear connection. |
-| `linear_renewing` | 409 | The server is renewing the sign-in: "Linear is renewing its sign-in. Try again in a minute." |
-| `linear_needs_renewal` | 409 | The token ran out and the server cannot renew it: "Linear needs one of your computers to renew its sign-in. Open ADE on a computer once." |
+| `linear_renewing` | 409 | The server is renewing the sign-in. |
+| `linear_needs_renewal` | 409 | The token ran out and only a computer can renew it. |
 | `rate_limited` | 429 | Over 30 requests a minute. |
 | `integration_failed` | 502 | Linear failed or timed out (15 s). |
 
@@ -244,22 +229,12 @@ Other rules:
 - **Quick view.** One set of parallel GraphQL queries (viewer, organization,
   projects, teams), not the SDK's lazy relations.
 
-On desktop:
-
-- The top-bar `LinearQuickViewButton` opens the `LinearIssueBrowser`: a filter
-  rail (All, My issues, Current cycle, custom views, projects with counts),
-  multi-select, a virtualized list with state groups, and a detail pane with
-  the shared `LinearIssueView`. Keys: `j`/`k`, `x`, `Enter`, `/`, `Esc`.
-- One issue (a link, a chip, a deeplink, a lane badge) opens in the Work tools
-  pane or the issue sheet (see [Issues](../issues/README.md)).
-- Settings › Integrations › Linear (`LinearSection.tsx`) connects and
-  disconnects, and shows the workspace logo and name.
-
-On the iPhone, `apps/ios/ADE/Views/Linear/` is the Work top-bar Linear pane:
-the issue browser, detail, and a launcher for "New lane" or "Launch agent".
-It uses the computer's `cto.*` reads, or the account route with no computer.
-`DeepLinkRouter.swift` routes `ade://linear-issue/<IDENT>` to the pane, and
-ignores the `linear-oauth` host.
+The desktop pane is `LinearIssueBrowser` (filter rail, multi-select,
+virtualized list, detail pane; keys `j`/`k`, `x`, `Enter`, `/`, `Esc`). One
+issue opens in the Work tools pane or the issue sheet
+([Issues](../issues/README.md)). The iPhone pane is `apps/ios/ADE/Views/Linear/`;
+`DeepLinkRouter.swift` routes `ade://linear-issue/<IDENT>` to it and ignores
+the `linear-oauth` host.
 
 ## Lanes, commits and PRs
 
@@ -298,21 +273,12 @@ through `window.ade.lane.*`: `attachLinearIssueToSession`,
 
 ## Batch launch
 
-Selecting several issues opens `IssueLaunchHost`, the one launch dialog for
-Linear, GitHub and Jira. Each issue has a row (model, effort, Fast mode,
-kickoff prompt, branch), a default row seeds them, and `laneOnly` makes lanes
-only. `findIssueConflicts` refuses an issue that a lane already carries.
-
-`runBatchLaunch` (`linearBatchLaunch.ts`) runs create lane → create session →
-send kickoff, three at a time.
-
-- One failure does not stop the others.
-- A failure before the session exists deletes the new lane.
-- A row stays `initializing-agent` until the session's first `user_message`
-  or started event. A failed kickoff shows `agent-error` ("Needs attention").
-- `IssueLaunchHost` announces each new session (`chatSessionEvents.ts`), so
-  Work shows it at once. `BatchLaunchStatusToast.tsx` shows each row's state.
-  The Lanes tab highlights the new lanes for 30 s.
+Several selected issues open `IssueLaunchHost`, the one launcher for every
+tracker (see [Issues](../issues/README.md#starting-work-from-an-issue)). For
+Linear, `findIssueConflicts` checks each lane's primary issue and its
+`linearIssueLinks`. A row stays `initializing-agent` until the session's first
+`user_message`, and the Lanes tab highlights new lanes for 30 s
+(`launchedLanesHighlight.ts`).
 
 ## Live status
 
@@ -343,8 +309,7 @@ launch, PR or merge.
 - **Proof** (`linearProofPoster.ts`). When a lane opens a PR for its issues,
   ADE posts the lane's screenshots and recordings to each issue, once.
 - **Event wakes.** A Linear delivery wakes a resting ADE Cloud computer that
-  listens to the organization (`linear-org:<id>`) or to a routed agent session
-  (`linear-account:<id>`). See `apps/webhook-relay/README.md`.
+  listens to its organization or agent session.
 
 ## `ade linear`
 
@@ -399,30 +364,21 @@ account and repository scope while the server renews.
 
 ## Gotchas
 
-- **Nothing runs until connected.** Tests stub `getStatus().tokenStored`.
 - **Desktop OAuth needs port 19836.** The loopback flow does not pick another
   port. The phone's worker-bounce flow does not use it.
-- **Never exchange a refresh token outside the owner rule.** A second
-  exchange of the same token can revoke the grant on every computer.
+- **Never exchange a refresh token outside the owner rule.**
 - **`clientId` is written only when proven.** Do not fill it from the
   configured client: a grant from a custom client renewed with ADE's client
   fails, and the server must not try.
 - **The server keeps people on `linear_renewing` for up to the 10-minute
   grace** while a computer still owns an expired grant.
-- **Account reads are reads.** A write from the web or the iPhone with no
-  computer is refused with a sentence; it never queues.
-- **Live status is off by default.** Every hook returns at once without
-  `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`.
 - **CRR strips non-PK uniqueness.** Do not use `ON CONFLICT(<unique column>)`
   on Linear tables.
 
 ## Cross-links
 
-- [`../cto/README.md`](../cto/README.md): the CTO's Linear tools.
-- [`../lanes/README.md`](../lanes/README.md): lane creation and issue fields.
-- [`../chat/README.md`](../chat/README.md): chat context attachments.
-- [`../automations/README.md`](../automations/README.md): Linear triggers and
-  the `linear.agent_*` rules.
-- [`../issues/README.md`](../issues/README.md): the issue viewer and launcher.
-- [`../passwords/README.md`](../passwords/README.md) and
-  `apps/push-relay/README.md`: the account vault.
+[CTO](../cto/README.md), [Lanes](../lanes/README.md),
+[Chat](../chat/README.md), [Automations](../automations/README.md) (Linear
+triggers, `linear.agent_*` rules), [Issues](../issues/README.md) (viewer and
+launcher), `apps/push-relay/README.md` (the account vault),
+`apps/webhook-relay/README.md` (Linear webhooks and the agent).

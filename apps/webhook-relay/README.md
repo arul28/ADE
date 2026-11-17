@@ -34,11 +34,8 @@ the repositories ADE should track.
 - Check-family events are slimmed before storage. WebSocket fan-out sends at
   most one frame per second per repository.
 
-Check Cloudflare's current pricing before a launch:
-
-- Workers: https://developers.cloudflare.com/workers/platform/pricing/
-- D1: https://developers.cloudflare.com/d1/platform/pricing/
-- D1 limits: https://developers.cloudflare.com/d1/platform/limits/
+Check Cloudflare's current [Workers](https://developers.cloudflare.com/workers/platform/pricing/)
+and [D1](https://developers.cloudflare.com/d1/platform/pricing/) pricing before a launch.
 
 ## Endpoints
 
@@ -285,8 +282,8 @@ POST /cloud/internal/event-wake   { topic }   header x-ade-event-wake-secret
   people's actions wake them.
 - The call runs after the response. A failure only logs.
 
-Set `CLOUD_EVENT_WAKE_SECRET` with the same value here and on both account
-directories. Without it, no event wakes a resting cloud computer.
+Without `CLOUD_EVENT_WAKE_SECRET` (see "Secrets"), no event wakes a resting
+cloud computer.
 
 ## Beta timer
 
@@ -295,10 +292,9 @@ The cron (`17,47 * * * *`) also starts ADE's Beta workflow
 workflow decides if a beta is due. The timer skips a tick while a Beta run (not
 a preview) is queued or building.
 
-It needs `GITHUB_BETA_DISPATCH_TOKEN`, a fine-grained GitHub token for
-`arul28/ADE` with **Actions: read and write** only. With no token, the timer
-does nothing. A refused token throws on each tick and reaches Sentry. The
-`beta_timer.` log lines show only in `npx wrangler tail`.
+`GITHUB_BETA_DISPATCH_TOKEN` is a fine-grained token for `arul28/ADE` with
+**Actions: read and write** only. With no token, the timer does nothing; a
+refused token reaches Sentry on each tick.
 
 ## Setup
 
@@ -342,14 +338,8 @@ Do not commit these values.
 | `GITHUB_BETA_DISPATCH_TOKEN` | Optional. The Beta timer. |
 | `RELAY_ACCESS_TOKEN` | Only for self-hosted legacy project tokens. |
 
-```sh
-cd apps/webhook-relay
-printf '%s' "$GITHUB_WEBHOOK_SECRET" | npx wrangler secret put GITHUB_WEBHOOK_SECRET
-# Repeat for each secret in the table.
-npm run deploy
-```
-
-Each account token must pass RS256 verification, the exact issuer, expiry,
+Set each with `printf '%s' "$NAME" | npx wrangler secret put NAME`, then
+`npm run deploy`. An account token must pass RS256, the exact issuer, expiry,
 subject and the OAuth client of its Clerk instance.
 
 ## GitHub App setup
@@ -415,10 +405,8 @@ The Worker writes single-line JSON to `npx wrangler tail`. ADE Cloud lines:
 ## Gotchas
 
 - **A wake-up frame is a hint.** Clients always read D1 after a frame and on
-  connect. A lost frame costs at most one safety-poll interval.
+  connect.
 - **A forwarded hook is invisible to machines.** If the directory keeps
-  failing, the deliveries wait here for up to 3 days.
-- **The event-wake quiet cache is per isolate.** A computer that subscribes
-  just after a "no listener" answer can miss one wake for up to 60 s.
-- **Keep denials out of D1.** The caller picks the token, so a stored denial
-  would let anyone create rows.
+  failing, its deliveries wait here for up to 3 days.
+- **The event-wake quiet cache is per isolate**, so a new listener can miss
+  one wake for up to 60 s.
