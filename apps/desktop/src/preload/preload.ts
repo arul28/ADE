@@ -14404,6 +14404,12 @@ const adeBridge = {
     /** Through the account server, to that computer: no pin. */
     sendLaunchSignInCode: (args: { instanceId: string; jobId: string; code: string }): Promise<CloudRemoteSignInStatus> =>
       ipcRenderer.invoke(IPC.cloudLaunchSignInCode, args),
+    /** The account's message queue for an existing ADE Cloud chat: account-level, by the chat's machine key, so no pin. */
+    sendChatMessage: (args: CloudChatSendRequest): Promise<CloudChatSendAnswer> => ipcRenderer.invoke(IPC.cloudChatMessageSend, args),
+    /** A launch the queue started, by its id: account-level, no pin. */
+    serverLaunchStatus: (launchId: string): Promise<AccountCloudLaunchRecord | null> => ipcRenderer.invoke(IPC.cloudServerLaunchStatus, { launchId }),
+    /** Provider sign-ins the account carries to ADE Cloud: account-level, no pin. */
+    carriedSignIns: (): Promise<CloudCarriedSignIns | null> => ipcRenderer.invoke(IPC.cloudCarriedSignIns),
     cloudSignInStatus: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInStatus),
     cloudSignInClaudeStart: (args?: CloudSignInClaudeStartArgs): Promise<CloudSignInStatus | null> =>
       ipcRenderer.invoke(IPC.cloudSignInClaudeStart, {
@@ -14501,12 +14507,6 @@ const adeBridge = {
     preflightCreateLaneFromPrBranch: async (
       args: CreateLaneFromPrBranchArgs,
       pin?: OpenProjectBinding | null,
-    /** The account's message queue for an existing ADE Cloud chat: account-level, by the chat's machine key, so no pin. */
-    sendChatMessage: (args: CloudChatSendRequest): Promise<CloudChatSendAnswer> => ipcRenderer.invoke(IPC.cloudChatMessageSend, args),
-    /** A launch the queue started, by its id: account-level, no pin. */
-    serverLaunchStatus: (launchId: string): Promise<AccountCloudLaunchRecord | null> => ipcRenderer.invoke(IPC.cloudServerLaunchStatus, { launchId }),
-    /** Provider sign-ins the account carries to ADE Cloud: account-level, no pin. */
-    carriedSignIns: (): Promise<CloudCarriedSignIns | null> => ipcRenderer.invoke(IPC.cloudCarriedSignIns),
     ): Promise<CreateLaneFromPrBranchPreflightResult> =>
       pin
         ? callPinnedRuntimeAction(pin, "pr", "preflightCreateLaneFromPrBranch", { args })

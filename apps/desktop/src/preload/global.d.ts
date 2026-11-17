@@ -5120,6 +5120,17 @@ declare global {
          */
         sendLaunchSignInCode?: (args: { instanceId: string; jobId: string; code: string }) => Promise<CloudRemoteSignInStatus>;
         /**
+         * A message for an existing ADE Cloud chat whose computer is asleep
+         * or gone, through the account's queue. Account-level, by the chat's
+         * machine key, so no pin. `refused` carries the server's sentence;
+         * `unsupported` means wake, then send.
+         */
+        sendChatMessage?: (args: CloudChatSendRequest) => Promise<CloudChatSendAnswer>;
+        /** A launch the queue started (`wake.state: "launching"`), by its id. Account-level, no pin. Null when unknown. */
+        serverLaunchStatus?: (launchId: string) => Promise<AccountCloudLaunchRecord | null>;
+        /** Provider sign-ins the account carries to ADE Cloud (key names only). Account-level, no pin. Null when the server didn't say. */
+        carriedSignIns?: () => Promise<CloudCarriedSignIns | null>;
+        /**
          * Sign-ins for cloud machines: the provider sign-ins every new cloud
          * machine starts with. Kept in the account vault and run on this
          * computer's brain, so no pin: every computer answers the same.
@@ -5132,17 +5143,6 @@ declare global {
         cloudSignInSaveKey?: (id: CloudSignInId, key: string) => Promise<CloudSignInStatus | null>;
         cloudSignInRemove?: (id: CloudSignInId) => Promise<CloudSignInStatus | null>;
         onCloudSignInChanged?: (cb: () => void) => () => void;
-        /**
-         * A message for an existing ADE Cloud chat whose computer is asleep
-         * or gone, through the account's queue. Account-level, by the chat's
-         * machine key, so no pin. `refused` carries the server's sentence;
-         * `unsupported` means wake, then send.
-         */
-        sendChatMessage?: (args: CloudChatSendRequest) => Promise<CloudChatSendAnswer>;
-        /** A launch the queue started (`wake.state: "launching"`), by its id. Account-level, no pin. Null when unknown. */
-        serverLaunchStatus?: (launchId: string) => Promise<AccountCloudLaunchRecord | null>;
-        /** Provider sign-ins the account carries to ADE Cloud (key names only). Account-level, no pin. Null when the server didn't say. */
-        carriedSignIns?: () => Promise<CloudCarriedSignIns | null>;
         /** What unattended agents may do on ADE Cloud (account vault; no pin). */
         getAgentLimits?: () => Promise<CloudAgentLimits | null>;
         setAgentLimits?: (limits: Partial<CloudAgentLimits>) => Promise<CloudAgentLimits | null>;
