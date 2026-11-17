@@ -599,6 +599,16 @@ npm run dev:stop
 npm run dev:desktop          # tests the desktop wrapper creating the dev runtime
 ```
 
+## Test the push relay locally
+
+Use these steps to test `/attention/*`, account settings and the `/cloud/*` reads against a local push relay:
+
+1. Run the relay as its own process: `wrangler dev --local --port 8824 --env-file <relay env file>`. Do not run it in one `wrangler dev -c a -c b` with the account directory. The env file reaches only the first worker, so the relay gets no Clerk settings and the production `SENTRY_DSN`.
+2. Put these values in the relay env file: `VAULT_ENCRYPTION_KEY` (32-byte base64), `DIRECTORY_AUTH_SECRET` (the same value as the directory), the Clerk client id, and `WEB_CLIENT_ORIGIN` set to the web client's dev origin (`http://localhost:5174` by default).
+3. Start the web client with `ADE_DEV_PUSH_RELAY_PROXY_TARGET=http://127.0.0.1:8824`. If you do not set it, the dev proxy sends `/attention/*` to the production relay.
+
+The directory's `ACTIVITY_RELAY` binding reaches the separate relay through the wrangler dev registry. With no `AGENT37_API_KEY`, `/cloud/instances` answers 503 locally; that is expected.
+
 ## Rebuild ADE Alpha locally
 
 Use this command when you need a local packaged macOS Alpha build without
