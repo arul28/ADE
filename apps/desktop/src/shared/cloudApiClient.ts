@@ -22,6 +22,7 @@ import {
   type CloudAutomationRegistration,
   type CloudAutomationRun,
   type CloudAutomationSummary,
+  type CloudChatRow,
   type CloudInstance,
   type CloudLaunchJoinRequest,
   type CloudLaunchJoinResult,
@@ -198,6 +199,24 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       request<CloudAccountSignIns>("DELETE", `${CLOUD_PATHS.signIns}/${encodeURIComponent(signInId)}`),
     /** Models per provider, for a picker before any computer exists. */
     modelCatalog: () => request<CloudModelCatalog>("GET", CLOUD_PATHS.models),
+    /**
+     * The account's saved chats (the server's copy, readable with no computer
+     * running). A 404 is an account without ADE Cloud: no chats, not a failure.
+     */
+    savedChats: async (args: { machineKey?: string | null; projectKey?: string | null; limit?: number; cursor?: string | null } = {}) => {
+      const query = new URLSearchParams();
+      if (args.machineKey) query.set("machine", args.machineKey);
+      if (args.projectKey) query.set("project", args.projectKey);
+      if (args.limit) query.set("limit", String(args.limit));
+      if (args.cursor) query.set("cursor", args.cursor);
+      const suffix = query.size ? `?${query.toString()}` : "";
+      try {
+        return await request<{ chats: CloudChatRow[]; nextCursor: string | null }>("GET", `${CLOUD_PATHS.chats}${suffix}`);
+      } catch (error) {
+        if (error instanceof CloudApiError && error.status === 404) return { chats: [], nextCursor: null };
+        throw error;
+      }
+    },
 
     /* ---- A project's computers ---- */
     previewProjectComputers: (origin: string) =>

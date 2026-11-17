@@ -10,7 +10,7 @@ import { useAppStore, type NoMachineRepositoryTab } from "../../state/appStore";
 import { useAccountProjectList, useRepositoryCopies } from "../../state/useRepositoryCopies";
 import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
-import { openExternalUrl } from "../../lib/openExternal";
+import { navigateToAppTarget, openExternalUrl } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { copyMachines, repoKeyForOriginIdentity } from "./projectCopies";
 import { startCopyJob, useCopyJobs } from "./projectCopyJobs";
@@ -31,6 +31,7 @@ import { isPageHidden, observePageVisibility } from "../../lib/pageVisibility";
 import { isWebResumeOwnedTab } from "../app/webResumeOwnedTabs";
 import { accountMachinePresence, unconnectedCopyMachineKeys } from "../../state/connectRepositoryCopies";
 import { refreshCloudMachines, refreshCloudMachinesIfStale } from "../remoteTargets/useCloudMachines";
+import { useSavedChatsOfOrigin } from "../../state/savedChatsOfOrigin";
 import {
   accountCloudLaunchesAvailable,
   hideAccountCloudLaunch,
@@ -50,7 +51,7 @@ import {
   useGithubAccess,
   type AccountProjectLane,
 } from "./AccountProjectSections";
-import { CloudSetupCard } from "./CloudSetupCard";
+import { CloudSetupCardList } from "./CloudSetupCard";
 import { CloneToMachineDialog, type CloneDialogMachine } from "./CloneToMachineDialog";
 import "./ProjectWelcomePage.css";
 
@@ -320,7 +321,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     }) === "online";
     return held || (machine.status === "available" && awake) ? machine : null;
   };
-  const openOnWeb = (copy: RepositoryCopy, machine: WebMachineEntry) => {
+  const openOnWeb = (copy: RepositoryCopy, machine: WebMachineEntry, chat?: CloudLaunchRecord) => {
     const checkoutId = copy.checkoutId;
     if (!workspace || !checkoutId) return;
     const copyKey = copyKeyOf(copy);
@@ -332,7 +333,10 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
         await workspace.adapter.openProject(targetId, checkoutId);
         // The project is open now; leave this page as the desktop does when a copy opens.
         useAppStore.setState((state) => (state.activeNoMachineTabId === tab.id ? { activeNoMachineTabId: null } : {}));
-        navigate(workspace.consumePendingProjectPath() ?? "/work");
+        const pendingPath = workspace.consumePendingProjectPath();
+        // "Open chat" lands on that chat, not on the project's new-chat page.
+        if (chat?.sessionId) navigateToAppTarget({ kind: "chat", sessionId: chat.sessionId, laneId: chat.laneId ?? null });
+        else navigate(pendingPath ?? "/work");
       } catch (error) {
         setOpenError({
           title: `${machine.name} did not open ${tab.displayName}.`,
@@ -440,9 +444,9 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
         && cloudIndex.computers.some((computer) => computer.instanceId === instanceId && computer.machineKey === copy.machineKey))
     )) ?? null
   );
-  const openCloudCopy = (copy: RepositoryCopy) => {
+  const openCloudCopy = (copy: RepositoryCopy, chat?: CloudLaunchRecord) => {
     const webMachine = webMode ? webMachineFor(copy) : null;
-    if (webMachine) openOnWeb(copy, webMachine);
+    if (webMachine) openOnWeb(copy, webMachine, chat);
     else if (copy.online && copy.address) openCopyAndReport(copy);
     else connectCopy(copy);
   };
@@ -453,7 +457,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   const openLaunchChat = (record: CloudLaunchRecord) => {
     const copy = launchCopy(record.instanceId);
     if (copy) {
-      openCloudCopy(copy);
+      openCloudCopy(copy, record);
       return;
     }
     // The computer or its copy isn't listed here yet: read both again, and open it once it is.
@@ -464,8 +468,9 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   const pendingCopy = pendingLaunchOpen ? launchCopy(pendingLaunchOpen) : null;
   useEffect(() => {
     if (!pendingCopy) return;
+    const record = launches.find((entry) => entry.record?.instanceId === pendingLaunchOpen)?.record ?? undefined;
     setPendingLaunchOpen(null);
-    openCloudCopy(pendingCopy);
+    openCloudCopy(pendingCopy, record);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the copy appears
   }, [pendingCopy?.machineKey, pendingCopy?.checkoutId]);
   // A copy that never appears: read again every few seconds for a minute, then stop.
@@ -487,7 +492,11 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   }, [pendingLaunchOpen]);
   const cloudLanes = cloudLanesOfOrigin(cloudIndex.computers, launches, origin);
   // A lane whose chat is still starting (making its computer, waiting for a sign-in) is not one yet.
-  const readyCloudLaneCount = cloudLanes.filter((lane) => !lane.launch || Boolean(lane.launch.record?.sessionId)).length;
+  const readyCloudLaneIds = cloudLanes.filter((lane) => !lane.launch || Boolean(lane.launch.record?.sessionId)).map((lane) => lane.laneId);
+  // The account's saved chats of this repository count too: a chat whose computer slept or was deleted still happened.
+  const savedChats = useSavedChatsOfOrigin(origin);
+  const accountLaneCount = new Set([...readyCloudLaneIds, ...savedChats.flatMap((chat) => (chat.laneId ? [chat.laneId] : []))]).size;
+  const accountChatCount = Math.max(readyCloudLaneIds.length, savedChats.length);
   const laneRows: AccountProjectLane[] = cloudLanes.map((lane) => {
     const copy = copyOnComputer(lane.computer?.instanceId ?? lane.launch?.record?.instanceId ?? null, lane.computer?.machineKey ?? null);
     return {
@@ -498,6 +507,19 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
       onOpen: copy ? () => openCloudCopy(copy) : null,
     };
   });
+  // Lanes whose chats were saved on the account, with their computer asleep or deleted, are lanes still.
+  const listedLaneIds = new Set(cloudLanes.map((lane) => lane.laneId));
+  for (const chat of savedChats) {
+    if (!chat.laneId || listedLaneIds.has(chat.laneId)) continue;
+    listedLaneIds.add(chat.laneId);
+    laneRows.push({
+      key: `saved:${chat.laneId}`,
+      name: chat.laneName?.trim() || chat.title?.trim() || "Chat",
+      where: "ADE Cloud",
+      state: chat.computer?.state === "deleted" ? "Computer deleted" : "Saved",
+      onOpen: null,
+    });
+  }
   // Copies on the person's own computers are lanes too: each copy's main checkout.
   for (const copy of copies) {
     if (onAdeCloud(copy)) continue;
@@ -563,20 +585,17 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
           </span>
         </header>
         {githubRepo && accountProject ? (
-          <AccountProjectSteps owner={githubRepo.owner} access={githubAccess} launches={launches} chatCount={readyCloudLaneCount} laneCount={readyCloudLaneCount + ownCopies.length} />
+          <AccountProjectSteps owner={githubRepo.owner} access={githubAccess} launches={launches} chatCount={accountChatCount} laneCount={accountLaneCount + ownCopies.length} />
         ) : null}
         {cloudChats && origin ? (
           <CloudChatComposer accountProjectId={tab.id} origin={origin} owner={githubRepo?.owner ?? accountProject?.owner ?? null} access={githubAccess} />
         ) : null}
-        {launches.map((entry) => (
-          <CloudSetupCard
-            key={entry.launchId}
-            entry={entry}
-            onOpenChat={openLaunchChat}
-            onHide={() => hideAccountCloudLaunch(entry.launchId)}
-            openingChat={pendingLaunchOpen != null && pendingLaunchOpen === entry.record?.instanceId}
-          />
-        ))}
+        <CloudSetupCardList
+          entries={launches}
+          onOpenChat={openLaunchChat}
+          onHide={hideAccountCloudLaunch}
+          openingLaunchId={pendingLaunchOpen == null ? null : launches.find((entry) => entry.record?.instanceId === pendingLaunchOpen)?.launchId ?? null}
+        />
         {showCopiesCard ? (
       <section className="kit-card w-full" aria-label="Computers">
         <header className="kit-card-head">

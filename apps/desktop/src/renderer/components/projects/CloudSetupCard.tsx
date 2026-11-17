@@ -186,6 +186,92 @@ function cardPhaseOf(entry: AccountCloudLaunchEntry): CardPhase {
   return "working";
 }
 
+/** A failed launch older than this shows as one row, not the full step list. */
+const FAILED_COLLAPSE_AFTER_MS = 15 * 60 * 1000;
+
+/** A failure from an earlier visit: it folds into the "earlier launches failed" row. */
+function isEarlierFailure(entry: AccountCloudLaunchEntry, now: number): boolean {
+  const failedAt = entry.record?.updatedAt ?? null;
+  return cardPhaseOf(entry) === "failed" && failedAt != null && now - failedAt > FAILED_COLLAPSE_AFTER_MS;
+}
+
+/**
+ * Every setup card of a list, with failures from earlier visits folded into
+ * one quiet row (Retry the newest, Hide them all), so old failures never pile
+ * up above the work that is happening now.
+ */
+export function CloudSetupCardList({
+  entries,
+  onOpenChat,
+  openingLaunchId = null,
+  onHide,
+  compact = false,
+}: {
+  entries: readonly AccountCloudLaunchEntry[];
+  /** Cards above a composer: see `CloudSetupCard`'s `compact`. */
+  compact?: boolean;
+  onOpenChat?: (record: CloudLaunchRecord) => void;
+  openingLaunchId?: string | null;
+  onHide?: (launchId: string) => void;
+}) {
+  const now = Date.now();
+  const earlier = entries.filter((entry) => isEarlierFailure(entry, now));
+  const current = entries.filter((entry) => !isEarlierFailure(entry, now));
+  const newest = earlier.reduce<AccountCloudLaunchEntry | null>(
+    (best, entry) => (best && (best.record?.updatedAt ?? 0) >= (entry.record?.updatedAt ?? 0) ? best : entry),
+    null,
+  );
+  const hideable = onHide ? earlier.filter(accountCloudLaunchHideable) : [];
+  const newestName = newest ? launchCardName(newest) : "";
+  return (
+    <>
+      {current.map((entry) => (
+        <CloudSetupCard
+          key={entry.launchId}
+          entry={entry}
+          onOpenChat={onOpenChat}
+          openingChat={openingLaunchId === entry.launchId}
+          onHide={onHide ? () => onHide(entry.launchId) : undefined}
+          compact={compact}
+        />
+      ))}
+      {newest ? (
+        <section
+          className="kit-panel flex w-full items-center gap-2 px-3 py-1.5 text-[12.5px]"
+          aria-label="Earlier ADE Cloud launches"
+          data-testid="ade-cloud-earlier-failures"
+        >
+          <span className="shrink-0" style={{ color: "var(--kit-text-2)" }}>
+            {earlier.length === 1 ? "Earlier launch failed" : `${earlier.length} earlier launches failed`}
+          </span>
+          <span
+            className="min-w-0 flex-1 truncate"
+            style={{ color: "var(--kit-text-3)" }}
+            title={newest.startError?.trim() || newest.record?.error?.trim() || newestName}
+          >
+            {newestName}
+          </span>
+          <button type="button" className="kit-btn" data-size="sm" onClick={() => void retryAccountCloudLaunch(newest.launchId)}>
+            {earlier.length === 1 ? "Retry" : "Retry latest"}
+          </button>
+          {onHide && hideable.length > 0 ? (
+            <button
+              type="button"
+              className="kit-btn kit-btn-ghost"
+              data-size="sm"
+              onClick={() => {
+                for (const entry of hideable) onHide(entry.launchId);
+              }}
+            >
+              {hideable.length === 1 ? "Hide" : "Hide all"}
+            </button>
+          ) : null}
+        </section>
+      ) : null}
+    </>
+  );
+}
+
 /**
  * "Getting ADE Cloud ready": the chat's first message made a computer on
  * ADE Cloud. The message waits on the server (the tab may close) while the
@@ -199,13 +285,42 @@ function firstWords(text: string): string {
   return words.length > 6 ? `${head}…` : head;
 }
 
+/** The step happening now (or the one that failed), with how many of the steps are done. */
+function CompactSteps({ rows }: { rows: readonly SetupStep[] }) {
+  const done = rows.filter((row) => row.state === "done").length;
+  const current = rows.find((row) => row.state === "failed")
+    ?? rows.find((row) => row.state === "running" || row.state === "waiting")
+    ?? rows.find((row) => row.state === "todo");
+  if (!current) return null;
+  return (
+    <div className="flex flex-col gap-1">
+      <SetupSteps steps={[current]} label="Getting ADE Cloud ready" />
+      <span className="px-1 text-[11.5px]" style={{ color: "var(--kit-text-3)" }}>
+        {done} of {rows.length} steps done
+      </span>
+    </div>
+  );
+}
+
+/** The card's name: the lane's, or the first words of the first message. */
+function launchCardName(entry: AccountCloudLaunchEntry): string {
+  const firstText = entry.messages.find((message) => message.seq === 1)?.text ?? entry.request?.chat?.prompt ?? "";
+  return entry.record?.laneName?.trim() || firstWords(firstText);
+}
+
 export function CloudSetupCard({
   entry,
   onOpenChat,
   openingChat = false,
   onHide,
+  compact = false,
 }: {
   entry: AccountCloudLaunchEntry;
+  /**
+   * Above a composer, where height is short: only the step that is happening
+   * now (or failed), with how many are done, and no closing note.
+   */
+  compact?: boolean;
   /** Opens the chat on the cloud computer once it exists. */
   onOpenChat?: (record: CloudLaunchRecord) => void;
   /** "Open chat" waits for the computer's copy to be listed. */
@@ -272,8 +387,7 @@ export function CloudSetupCard({
   };
   const canQueue = working && record != null;
   // Two cards side by side tell apart by their lane, or by the first words of the message.
-  const firstText = entry.messages.find((message) => message.seq === 1)?.text ?? entry.request?.chat?.prompt ?? "";
-  const cardName = record?.laneName?.trim() || firstWords(firstText);
+  const cardName = launchCardName(entry);
 
   return (
     <section className="kit-card w-full" aria-label="Getting ADE Cloud ready" data-testid="ade-cloud-setup-card">
@@ -294,7 +408,11 @@ export function CloudSetupCard({
         ) : null}
       </header>
       <div className="kit-card-body flex flex-col gap-2.5" style={{ paddingTop: 4 }}>
-        <SetupSteps steps={rows} label="Getting ADE Cloud ready" />
+        {compact ? (
+          <CompactSteps rows={rows} />
+        ) : (
+          <SetupSteps steps={rows} label="Getting ADE Cloud ready" />
+        )}
         {pending.length > 0 ? (
           <ul className="m-0 flex list-none flex-col gap-1.5 p-0" aria-label="Messages waiting to send">
             {pending.map((message) => (
@@ -362,7 +480,7 @@ export function CloudSetupCard({
             </button>
           </form>
         ) : null}
-        {working ? (
+        {working && !compact ? (
           <p className="m-0 text-[11.5px]" style={{ color: "var(--kit-text-3)" }}>
             You can close this tab. ADE Cloud sends your message when the computer is ready.
           </p>

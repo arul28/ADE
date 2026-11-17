@@ -12,7 +12,7 @@ import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
 import { createBackoffPoller, type BackoffPoller } from "../lib/backoffPoller";
 import { isAdeAvailable } from "../lib/adeAvailability";
 import { refreshCloudMachines } from "../components/remoteTargets/useCloudMachines";
-import { onAccountProjectListAccountChange } from "./accountProjectListClient";
+import { accountProjectListUserId, onAccountProjectListAccountChange } from "./accountProjectListClient";
 
 /**
  * Chats started on ADE Cloud from the account server (`window.ade.cloudLaunches`),
@@ -74,6 +74,57 @@ onAccountProjectListAccountChange(() => {
     void discover();
   }
 });
+
+/**
+ * Launches the person hid, per account, kept across reloads: the first look
+ * lists failures of the last day, and a hidden one stays off the page.
+ * Pruned after two weeks (the server lists a failure for a day).
+ */
+const HIDDEN_KEY_PREFIX = "ade.cloudLaunches.hidden.v1:";
+const HIDDEN_KEEP_MS = 14 * 24 * 60 * 60 * 1000;
+const HIDDEN_MAX = 200;
+
+function hiddenKey(): string | null {
+  const userId = accountProjectListUserId();
+  return userId ? `${HIDDEN_KEY_PREFIX}${userId}` : null;
+}
+
+function readHidden(): Record<string, number> {
+  const key = hiddenKey();
+  if (!key) return {};
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(key) ?? "{}") as unknown;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const now = Date.now();
+    return Object.fromEntries(Object.entries(raw as Record<string, unknown>).filter(
+      (pair): pair is [string, number] => typeof pair[1] === "number" && now - pair[1] < HIDDEN_KEEP_MS,
+    ));
+  } catch {
+    return {};
+  }
+}
+
+/** The hidden ids of the signed-in account, read from storage once per account. */
+let hiddenCache: { key: string | null; ids: ReadonlySet<string> } | null = null;
+function hiddenLaunchIds(): ReadonlySet<string> {
+  const key = hiddenKey();
+  if (hiddenCache?.key !== key) hiddenCache = { key, ids: new Set(Object.keys(readHidden())) };
+  return hiddenCache.ids;
+}
+
+function rememberHidden(launchId: string): void {
+  const key = hiddenKey();
+  if (!key) return;
+  const next = Object.entries({ ...readHidden(), [launchId]: Date.now() })
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, HIDDEN_MAX);
+  try {
+    window.localStorage.setItem(key, JSON.stringify(Object.fromEntries(next)));
+    hiddenCache = { key, ids: new Set(next.map(([id]) => id)) };
+  } catch {
+    // Storage full or off: the card stays hidden until a reload.
+  }
+}
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -234,9 +285,10 @@ async function discover(): Promise<void> {
     const { launches } = await api.active();
     if (epoch !== accountEpoch) return;
     const known = new Map(snapshot.entries.map((entry) => [entry.launchId, entry]));
+    const hidden = hiddenLaunchIds();
     const added: AccountCloudLaunchEntry[] = [];
     for (const summary of launches) {
-      if (known.has(summary.launchId)) continue;
+      if (known.has(summary.launchId) || hidden.has(summary.launchId)) continue;
       added.push({ launchId: summary.launchId, record: null, messages: [], startError: null, request: null, startedHere: false, origin: summary.projectOrigin });
     }
     setEntries([...snapshot.entries, ...added], true);
@@ -290,7 +342,10 @@ export function useAccountCloudLaunches(): Snapshot {
 export function launchesForOrigin(entries: readonly AccountCloudLaunchEntry[], origin: string | null): AccountCloudLaunchEntry[] {
   const identity = normalizeGitRemoteIdentity(origin);
   if (!identity) return [];
+  // A launch found before the account was known, then hidden on an earlier visit, stays off.
+  const hidden = hiddenLaunchIds();
   return entries.filter((entry) => {
+    if (hidden.has(entry.launchId)) return false;
     const launchOrigin = entry.record?.projectOrigin ?? entry.origin;
     return normalizeGitRemoteIdentity(launchOrigin) === identity;
   });
@@ -448,6 +503,7 @@ export function accountCloudLaunchHideable(entry: AccountCloudLaunchEntry): bool
 export function hideAccountCloudLaunch(launchId: string): void {
   const entry = snapshot.entries.find((candidate) => candidate.launchId === launchId);
   if (!entry || !accountCloudLaunchHideable(entry)) return;
+  rememberHidden(launchId);
   setEntries(snapshot.entries.filter((candidate) => candidate.launchId !== launchId));
 }
 

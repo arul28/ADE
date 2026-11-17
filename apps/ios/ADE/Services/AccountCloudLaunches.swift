@@ -586,6 +586,16 @@ final class AccountCloudLaunchStore: ObservableObject {
   }
 
   /// An account change: the last account's launches go.
+  #if DEBUG
+  /// Fixture screens only: a model list (or a failed read) and launches, with no account server.
+  func seedPreview(catalog: CloudModelCatalog?, catalogError: String?, entries: [Entry]) {
+    self.catalog = catalog
+    self.catalogError = catalogError
+    self.entries = entries
+    activeReadAt = Date.distantFuture
+  }
+  #endif
+
   func reset() {
     pollTask?.cancel()
     pollTask = nil

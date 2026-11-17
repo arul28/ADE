@@ -25,6 +25,7 @@ struct AccountProjectCloudComposer: View {
     launches.catalog?.providers.first { $0.provider == provider }
   }
   private var desktopOnly: Bool { pickedProvider?.remoteSignIn == "desktop" }
+  private var hasModel: Bool { pickedProvider != nil && modelId != nil }
   private var canSend: Bool {
     !sending && !desktopOnly && provider != nil && modelId != nil
       && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -64,18 +65,21 @@ struct AccountProjectCloudComposer: View {
             Label("Send", systemImage: "arrow.up")
           }
         }
-        .buttonStyle(ADEKitButtonStyle(prominent: true))
+        // With no model there is nothing to send with: a plain, dimmed button, and the line below says why.
+        .buttonStyle(ADEKitButtonStyle(prominent: hasModel))
         .disabled(!canSend)
         .accessibilityHint("Starts a computer on ADE Cloud for this project and sends the message")
       }
 
-      Text(footnote)
-        .font(.system(size: 12))
-        .foregroundStyle(desktopOnly ? ADEColor.warning : ADEColor.textMuted)
-        .fixedSize(horizontal: false, vertical: true)
+      if let footnote {
+        Text(footnote)
+          .font(.system(size: 12))
+          .foregroundStyle(desktopOnly || noModelReason != nil ? ADEColor.warning : ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      }
 
       if let error = launches.catalogError, launches.catalog == nil {
-        ADESettingsNotice(message: "Couldn't load the models. \(error)", tone: .crit, actionTitle: "Try again") {
+        ADESettingsNotice(message: "Couldn't load the models, so Send is off. \(error)", tone: .crit, actionTitle: "Try again") {
           Task { await launches.loadCatalogIfNeeded(using: syncService) }
         }
       }
@@ -89,7 +93,17 @@ struct AccountProjectCloudComposer: View {
     .onChange(of: launches.catalog) { _, _ in pickDefault() }
   }
 
-  private var footnote: String {
+  /// Why Send is off for want of a model, or nil while one is picked or the list still loads.
+  private var noModelReason: String? {
+    guard !hasModel else { return nil }
+    // A list that failed to load says so in its notice below, with Try again.
+    if launches.catalog == nil { return nil }
+    return launches.catalog?.providers.isEmpty == true ? "Send needs a model, and ADE Cloud lists none for this account." : "Pick a model to send."
+  }
+
+  private var footnote: String? {
+    if let noModelReason { return noModelReason }
+    if launches.catalog == nil, launches.catalogError != nil { return nil }
     if desktopOnly {
       return "\(pickedProvider?.label ?? "This provider") signs in only in ADE desktop. Pick another model, or sign in there."
     }

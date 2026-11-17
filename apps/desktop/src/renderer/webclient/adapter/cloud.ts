@@ -285,7 +285,11 @@ export function createWebCloudNamespace(
       return await api.sendSignInCode(instanceId, jobId, code);
     },
     savedChats: {
-      list: async (args) => await savedChatRead<CloudSavedChatList>("saved_chats_list", { ...args }),
+      // No computer to ask (ADE Web with none connected): the account server
+      // answers the list itself.
+      list: async (args) => await savedChatRead<CloudSavedChatList>("saved_chats_list", { ...args })
+        ?? await accountClient.cloudApi()?.savedChats(args).catch(() => null)
+        ?? null,
       read: async (args) => await savedChatRead<CloudSavedChatPage>("saved_chats_read", { ...args }),
       delete: async () => {
         throw new Error("Delete a saved chat in the ADE desktop app.");

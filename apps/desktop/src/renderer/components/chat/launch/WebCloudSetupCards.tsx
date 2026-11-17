@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { hideAccountCloudLaunch, launchInProgress, launchesForOrigin, useAccountCloudLaunches } from "../../../state/accountCloudLaunches";
 import { useAdeCloudLaneComputers } from "../../../state/adeCloudLaneIndex";
-import { CloudSetupCard } from "../../projects/CloudSetupCard";
+import { CloudSetupCardList } from "../../projects/CloudSetupCard";
 import { refreshCloudMachines } from "../../remoteTargets/useCloudMachines";
 import { cn } from "../../ui/cn";
 import { navigateToAppTarget } from "../../../lib/openExternal";
@@ -96,21 +96,19 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
     // The bottom fades over the padding, so a list that scrolls never reads as running under the composer.
     <div
       className={cn(
-        "flex max-h-[30vh] flex-col gap-2 overflow-y-auto pb-4 text-left [&>*]:shrink-0",
+        "flex max-h-[40vh] flex-col gap-2 overflow-y-auto pb-4 text-left [&>*]:shrink-0",
         "[mask-image:linear-gradient(to_bottom,black_calc(100%-16px),transparent)]",
         className,
       )}
       data-testid="web-cloud-setup-cards"
     >
-      {shown.map((entry) => (
-        <CloudSetupCard
-          key={entry.launchId}
-          entry={entry}
-          onOpenChat={openLaunchChat}
-          openingChat={opening?.launchId === entry.launchId}
-          onHide={() => hideAccountCloudLaunch(entry.launchId)}
-        />
-      ))}
+      <CloudSetupCardList
+        entries={shown}
+        onOpenChat={openLaunchChat}
+        openingLaunchId={opening?.launchId ?? null}
+        onHide={hideAccountCloudLaunch}
+        compact
+      />
     </div>
   );
 }

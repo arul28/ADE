@@ -7,6 +7,7 @@ import { useAccountProjectList } from "../../state/useRepositoryCopies";
 import { accountProjectListUserId } from "../../state/accountProjectListClient";
 import { useAccountCloudLaunches } from "../../state/accountCloudLaunches";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { useAccountSavedChats } from "../../state/savedChatsOfOrigin";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
 import { extractError } from "../../lib/format";
@@ -50,6 +51,7 @@ export function useGetStartedState({ priorWork }: { priorWork: boolean | null })
   const list = useAccountProjectList();
   const launches = useAccountCloudLaunches();
   const cloudLanes = useAdeCloudLaneComputers();
+  const savedChats = useAccountSavedChats();
   // Finished once per account: another account in this browser starts over.
   const doneKey = `${DONE_KEY}:${accountProjectListUserId() ?? "unknown"}`;
   const [savedKey, setSavedKey] = useState<string | null>(null);
@@ -58,7 +60,8 @@ export function useGetStartedState({ priorWork }: { priorWork: boolean | null })
   const projects = list.state === "ready" ? list.projects : [];
   const githubDone = github.connected;
   const projectDone = projects.length > 0;
-  const chatDone = priorWork === true || launches.entries.some((entry) => Boolean(entry.record?.sessionId)) || cloudLanes.computers.length > 0;
+  const chatDone = priorWork === true || launches.entries.some((entry) => Boolean(entry.record?.sessionId)) || cloudLanes.computers.length > 0
+    || savedChats.length > 0;
   const allDone = githubDone && projectDone && chatDone;
   // Unknown is not "to do": the card waits for the reads before it shows.
   const known = github.loaded && list.state === "ready" && launches.known && priorWork != null;
