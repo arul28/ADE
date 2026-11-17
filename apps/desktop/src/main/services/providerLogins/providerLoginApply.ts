@@ -80,7 +80,9 @@ export type AppliedEntry = {
   kimiConfig?: { path: string };
   qwen?: { path: string; partHash: string; envKeys: string[]; wroteProviders: boolean };
   /** The OpenCode credential row apply wrote: its id, and the short hash of its value as OpenCode stored it. */
-  openCode?: { dbPath: string; id: string; valueHash: string };
+  openCode?: OpenCodeAppliedRow;
+  /** Earlier OpenCode rows apply wrote whose removal failed (a busy store): each later apply and the sign-out try again. */
+  openCodeLeft?: OpenCodeAppliedRow[];
   /** The agent settings fields apply wrote, by dotted name, with the short hash of each value. */
   antigravity?: { path: string; fields: Record<string, string> };
   /** The copy's expiry (epoch ms), for the short wait before a turn (step 3a); null when it has none. */
@@ -415,6 +417,29 @@ function openCodeLoginHashes(row: OpenCodeCarryCredential, ctx: CarryContext): s
   return "unreadable" in parsed ? [] : parsed.logins.map((login) => loginContentHash(login));
 }
 
+type OpenCodeAppliedRow = { dbPath: string; id: string; valueHash: string };
+
+/**
+ * Take ADE's own earlier OpenCode rows out: a row that is gone or that
+ * someone changed is left alone. Answers the rows a failure kept, to try again.
+ */
+async function removeOpenCodeRows(rows: readonly OpenCodeAppliedRow[]): Promise<OpenCodeAppliedRow[]> {
+  const left: OpenCodeAppliedRow[] = [];
+  for (const row of rows) {
+    const current = readOpenCodeCredentialValue(row.dbPath, row.id);
+    if (current === null || (current !== "unreadable" && shortHash(JSON.stringify(current)) !== row.valueHash)) continue;
+    try {
+      if (current === "unreadable") throw Object.assign(new Error("OpenCode's store is busy."), { code: "EBUSY" });
+      if (!openCodeWriter) throw Object.assign(new Error("OpenCode is not available here."), { code: "ENOWRITER" });
+      await openCodeWriter.remove(row.dbPath, row.id);
+    } catch (error) {
+      captureError(error, { level: "warning", handled: true, tags: { area: "provider_logins", seam: "opencode_previous_copy" } });
+      left.push(row);
+    }
+  }
+  return left;
+}
+
 export function readBackLoginHashes(provider: ProviderLoginProvider, slot: string | null, ctx: CarryContext): string[] {
   const row = carryRow(provider);
   if (!row.locate || !row.parse) return [];
@@ -566,12 +591,10 @@ export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | nu
       entry.openCode = { dbPath, id, valueHash: shortHash(JSON.stringify(stored === "unreadable" ? written : stored)) };
       if (stored === "unreadable") openCodeSentHashes = openCodeLoginHashes({ id, label, value: written }, ctx);
       // Then the copy before goes, while it is still ADE's; a row the person changed stays. The new copy is
-      // in use already, so a failed removal only leaves an unused row: reported, never a failed apply.
-      if (previous?.openCode && previousUnchanged) {
-        await openCodeWriter.remove(previous.openCode.dbPath, previous.openCode.id).catch((error: unknown) => {
-          captureError(error, { level: "warning", handled: true, tags: { area: "provider_logins", seam: "opencode_previous_copy" } });
-        });
-      }
+      // in use already, so a failed removal is never a failed apply: the row is kept on the entry to try again.
+      const earlier = [...(previous?.openCodeLeft ?? []), ...(previous?.openCode && previousUnchanged ? [previous.openCode] : [])];
+      const left = earlier.length ? await removeOpenCodeRows(earlier) : [];
+      if (left.length) entry.openCodeLeft = left;
     }
 
     // Antigravity: the token file is the whole sign-in (it names its own
@@ -824,6 +847,10 @@ export async function removeApplied(entry: AppliedEntry): Promise<{ kept: number
       if (!openCodeWriter) throw Object.assign(new Error("OpenCode is not available here."), { code: "ENOWRITER" });
       await openCodeWriter.remove(entry.openCode.dbPath, entry.openCode.id);
     }
+  }
+  if (entry.openCodeLeft?.length && (await removeOpenCodeRows(entry.openCodeLeft)).length) {
+    // The entry stays (the caller keeps it on a throw), so the next pass tries again.
+    throw Object.assign(new Error("An earlier OpenCode copy is still there."), { code: "EBUSY" });
   }
   if (entry.antigravity && isRecord(entry.antigravity.fields)) {
     const { path: settingsPath, fields } = entry.antigravity;

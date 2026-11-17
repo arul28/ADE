@@ -670,7 +670,9 @@ OpenCode's sign-in (`providerLoginCarry.ts`, `openCodeCarryWriter.ts`):
   (the refresh token is empty), on ADE Cloud and on the person's other
   computers alike. Each copy is a new row (`cred_ade…`): it is written and
   made the one in use first, then the copy before is removed, so a failed
-  write never leaves no sign-in. ADE never downloads OpenCode only to write a
+  write never leaves no sign-in. A copy before that cannot be removed then
+  stays on the entry (`openCodeLeft`) and is tried again by the next copy and
+  by sign-out. ADE never downloads OpenCode only to write a
   sign-in; it waits until OpenCode is there. On sign-out ADE removes its row
   with OpenCode's API, or with one SQL delete when OpenCode is gone. A
   removal that fails (the store is busy) stays in `applied.json`, and the
