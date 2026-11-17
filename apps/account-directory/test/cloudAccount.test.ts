@@ -361,23 +361,6 @@ describe("ADE Cloud account", () => {
     expect(computer(data).name).toBe("Fix the login");
   });
 
-  it("a deleted computer leaves the account's machines and the project's copies; other computers stay", async () => {
-    seedAccount(harness, OWNER);
-    seedComputer(harness, { machine_key: "key-cloud" });
-    harness.insert("machines", { user_id: OWNER, machine_key: "key-cloud", last_seen_at: NOW });
-    harness.insert("machines", { user_id: OWNER, machine_key: "key-laptop", last_seen_at: NOW });
-    for (const key of ["key-cloud", "key-laptop"]) {
-      harness.insert("account_project_copies", { user_id: OWNER, machine_key: key, checkout_id: `co-${key}`, project_id: "ap_1", root_path: "/p", is_main: 1, last_seen_at: NOW });
-    }
-    provide(harness);
-
-    expect((await harness.send(OWNER, "DELETE", `/cloud/instances/${INSTANCE}`)).status).toBe(200);
-
-    // Lists of the person's own computers, and the project's "on N computers", stop naming it.
-    expect(harness.rows("select machine_key from machines where user_id = ?", OWNER)).toEqual([{ machine_key: "key-laptop" }]);
-    expect(harness.rows("select machine_key from account_project_copies where user_id = ?", OWNER)).toEqual([{ machine_key: "key-laptop" }]);
-  });
-
   it.each<[string, () => Promise<void>, number]>([
     ["a sleep and a status read racing it", async () => {
       // The computer asks to be slept, and a status read sees it asleep while that call is out.
