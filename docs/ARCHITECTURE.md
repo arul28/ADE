@@ -552,17 +552,13 @@ entry remains uncached. Connected visible tabs enforce separate transport-open
 and authenticated-hello deadlines plus an inbound-traffic watchdog, then map
 Relay application close codes into stable retry/offline UI.
 
-The permanent `/hub` route merges account-directory machines with
-browser-saved environments, exposes account-scoped rename/removal separately
-from browser-local trust deletion, and opens machine project catalogs without
-repeating a picker flow for every project. `WebMachineSessionManager` bounds the
+The retired `/hub` route redirects to the welcome surface, which lists the
+account's projects, the connected machines and ADE Cloud. `WebMachineSessionManager` bounds the
 browser to four live `AdeSyncClient` objects; a fifth connection parks the
 least-recently-used non-active machine, retains its catalog/tab metadata, and
 reuses the released client slot when that machine resumes. A federated
 `window.ade` adapter persists Hub/project/Chats state per account and pins
-project calls to the exact machine + project binding. The shared top bar keeps
-Hub permanent and groups same-origin checkouts into one repository tab with a
-compact machine selector inside it. Hosted mode mounts only the active project
+project calls to the exact machine + project binding. The shared top bar groups same-origin checkouts into one repository tab. Hosted mode mounts only the active project
 surface so an inactive subscription cannot dispatch through another machine's
 adapter.
 
