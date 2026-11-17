@@ -1154,6 +1154,120 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("leaves no row running after a clean stop, and closes rows an earlier clean stop stranded but never a synced machine's", async () => {
+    // The next start runs at noon: the restart resume window reaches back to 06:00.
+    const NEXT_START_MS = Date.parse("2026-03-17T12:00:00.000Z");
+    const { createProcessRegistryService } = await import("../runtime/processRegistryService");
+    const logger = createLogger() as any;
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), logger);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    const otherMachineRoot = makeProjectRoot("ade-session-service-peer-");
+    const otherMachineDb = await openFreshKvDb(path.join(otherMachineRoot, ".ade", "ade.db"), logger);
+    activeDisposers.push(async () => otherMachineDb.close());
+    insertProjectGraph(otherMachineDb);
+    const otherMachine = createSessionService({ db: otherMachineDb });
+
+    // Pids alive on this computer: the new brain and a sibling brain.
+    const OLD_BRAIN = 1_111;
+    const NEW_BRAIN = 3_333;
+    const SIBLING = 4_444;
+    const CRASHED_BRAIN = 5_555;
+    const livePids = new Set([NEW_BRAIN, SIBLING]);
+    const registryFor = (pid: number) => createProcessRegistryService({
+      db,
+      logger,
+      pid,
+      role: "ade-serve-daemon",
+      pidLivenessCheck: (candidate) => livePids.has(candidate),
+    });
+    const createChat = (target: typeof service, sessionId: string, owner: { pid: number; startedAt: string | null }) => target.create({
+      sessionId,
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: sessionId,
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: `/tmp/${sessionId}.log`,
+      toolType: "claude-chat",
+      ownerPid: owner.pid,
+      ownerProcessStartedAt: owner.startedAt,
+    });
+
+    // A brain from before this fix stopped cleanly: its registry row is gone, its chats still read running.
+    // One chat went quiet long before the resume window; the other printed at 11:00, inside it.
+    const oldBrain = registryFor(OLD_BRAIN);
+    oldBrain.start();
+    createChat(service, "stranded-old-chat", { pid: OLD_BRAIN, startedAt: oldBrain.startedAt });
+    createChat(service, "stranded-recent-chat", { pid: OLD_BRAIN, startedAt: oldBrain.startedAt });
+    db.run("update terminal_sessions set last_output_at = ? where id = ?", ["2026-03-17T11:00:00.000Z", "stranded-recent-chat"]);
+    // A second row of that owner whose status a peer wrote last: the owner
+    // columns are this computer's, the status is not, so this computer does not
+    // end it. The clock per column, not the owner alone, decides.
+    const oldBrainIdentity = { pid: OLD_BRAIN, startedAt: oldBrain.startedAt };
+    oldBrain.stop();
+    createChat(service, "stranded-peer-status-chat", oldBrainIdentity);
+    db.run(
+      `update terminal_sessions__crsql_clock set site_id = 9
+        where col_name = 'status'
+          and key = (select __crsql_key from terminal_sessions__crsql_pks where id = ?)`,
+      ["stranded-peer-status-chat"],
+    );
+    // Another machine's chat arrives by sync. Its owner pid is not running here, and that proves nothing.
+    createChat(otherMachine, "other-machine-chat", { pid: OLD_BRAIN, startedAt: "2026-03-17T00:01:00.000Z" });
+    db.sync!.applyChanges(otherMachineDb.sync!.exportChangesSince(0).filter((change) => change.table === "terminal_sessions"));
+    const sibling = registryFor(SIBLING);
+    sibling.start();
+    createChat(service, "sibling-chat", { pid: SIBLING, startedAt: sibling.startedAt });
+    // A brain that crashed keeps its registry row. Its chat went quiet long
+    // before the resume window, but the crash is what cut it off, so the
+    // clean-stop pass leaves it to the rescan (which closes it `detached`).
+    const crashedBrain = registryFor(CRASHED_BRAIN);
+    crashedBrain.start();
+    createChat(service, "crashed-brain-chat", { pid: CRASHED_BRAIN, startedAt: crashedBrain.startedAt });
+
+    const newBrain = registryFor(NEW_BRAIN);
+    newBrain.start();
+    service.closeStrandedLocalSessions(newBrain, NEXT_START_MS);
+    // The crash owner's row is still `running` here, untouched by the clean-stop pass.
+    expect(service.get("crashed-brain-chat")?.status).toBe("running");
+    service.reconcileStaleRunningSessions({ status: "detached", ...newBrain.staleSessionOwnerScope() });
+
+    // Idle for longer than the window: restart recovery skips it, and its end is its last output.
+    expect(service.get("stranded-old-chat")).toEqual(expect.objectContaining({
+      status: "completed",
+      endedAt: "2026-03-17T00:10:00.000Z",
+    }));
+    // Inside the window: a turn may have been cut off, so restart recovery still sees it.
+    expect(service.get("stranded-recent-chat")).toEqual(expect.objectContaining({
+      status: "detached",
+      endedAt: "2026-03-17T11:00:00.000Z",
+    }));
+    expect(service.get("stranded-peer-status-chat")?.status).toBe("running");
+    expect(service.get("crashed-brain-chat")?.status).toBe("detached");
+    expect(service.get("other-machine-chat")?.status).toBe("running");
+    expect(service.get("sibling-chat")?.status).toBe("running");
+
+    // The new brain holds a chat at rest and a chat with a turn in flight, then stops cleanly:
+    // its chat service ends the resting one, and the host's last step detaches the rest.
+    createChat(service, "new-brain-resting-chat", { pid: NEW_BRAIN, startedAt: newBrain.startedAt });
+    createChat(service, "new-brain-chat", { pid: NEW_BRAIN, startedAt: newBrain.startedAt });
+    const newBrainIdentity = { pid: newBrain.pid, startedAt: newBrain.startedAt };
+    service.endRunningSessionsOwnedBy([newBrainIdentity], { sessionIds: ["new-brain-resting-chat"], isRestingChat: () => true });
+    service.endRunningSessionsOwnedBy([newBrainIdentity]);
+    newBrain.stop();
+
+    expect(service.get("new-brain-resting-chat")?.status).toBe("completed");
+
+    expect(service.get("new-brain-chat")).toEqual(expect.objectContaining({ status: "detached", ptyId: null }));
+    expect(service.get("new-brain-chat")?.endedAt).toEqual(expect.any(String));
+    expect(service.get("sibling-chat")?.status).toBe("running");
+    expect(service.get("other-machine-chat")?.status).toBe("running");
+    sibling.stop();
+  });
+
   it("does not reconcile running sessions with fresh startup or output", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

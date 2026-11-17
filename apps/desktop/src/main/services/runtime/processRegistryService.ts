@@ -254,13 +254,29 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
      * without this its chats waited the whole grace after each restart. A
      * registry this process opened earlier (a project reopened) started after
      * it and stays out. The table is local, never synced.
+     *
+     * `candidates` replaces the registry's own list with identities the
+     * caller already proved are from this computer, such as the owners of
+     * rows a clean stop left `running` before it removed its registry row
+     * (`closeStrandedLocalSessions`). The same rule applies to them.
      */
-    listDeadProcessIdentities(): RuntimeProcessIdentity[] {
-      return this.listKnownProcessIdentities().filter((identity) => (
+    listDeadProcessIdentities(candidates?: readonly RuntimeProcessIdentity[]): RuntimeProcessIdentity[] {
+      return (candidates ?? this.listKnownProcessIdentities()).filter((identity) => (
         identity.pid === pid
           ? identity.startedAt !== ownStartedAt && Date.parse(identity.startedAt) < PROCESS_STARTED_MS - PROCESS_START_SLACK_MS
           : !pidLivenessCheck(identity.pid)
       ));
+    },
+
+    /** The owner scope both hosts pass to `reconcileStaleRunningSessions`. */
+    staleSessionOwnerScope() {
+      return {
+        liveOwnerPids: this.listLivePids(),
+        liveOwnerIdentities: this.listLiveProcessIdentities(),
+        knownOwnerPids: this.listKnownPids(),
+        knownOwnerIdentities: this.listKnownProcessIdentities(),
+        deadOwnerIdentities: this.listDeadProcessIdentities(),
+      };
     },
 
     /** Quick "is this peer still heartbeating" check. */

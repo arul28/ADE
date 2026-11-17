@@ -23795,13 +23795,20 @@ export function createAgentChatService(args: {
    * loaded the chat, and its cut turn was never resumed.
    */
   const reopenSessionRowForThisProcess = (sessionId: string): void => {
-    sessionService.reopen(sessionId);
+    // Stamp this process BEFORE reopening. A reopen first leaves a window where
+    // the row reads `running` under the dead owner it named, and another brain's
+    // stranded-row cleanup (which matches by that owner) can end it: completed,
+    // so a later crash would not resume the turn this process is starting.
+    // Owned first, that cleanup's owner predicate no longer matches; if it
+    // already ended the row, the reopen below moves it back to running.
     const startedAt = processRegistry?.startedAt ?? null;
-    if (!processRegistry || !startedAt) return;
-    const row = sessionService.get(sessionId);
-    if (row && (row.ownerPid !== processRegistry.pid || row.ownerProcessStartedAt !== startedAt)) {
-      sessionService.setOwnerPid(sessionId, processRegistry.pid, startedAt);
+    if (processRegistry && startedAt) {
+      const row = sessionService.get(sessionId);
+      if (row && (row.ownerPid !== processRegistry.pid || row.ownerProcessStartedAt !== startedAt)) {
+        sessionService.setOwnerPid(sessionId, processRegistry.pid, startedAt);
+      }
     }
+    sessionService.reopen(sessionId);
   };
 
   /**
@@ -72465,7 +72472,9 @@ export function createAgentChatService(args: {
       const live = managedSessions.get(row.id)?.session;
       const running = live?.currentTurnStartedAt != null;
       if (!running) {
-        if (row.status === "disposed" || row.status === "detached") continue;
+        // `completed` is a chat a clean stop found at rest: it is not loaded,
+        // so it reserves no account room either.
+        if (row.status === "disposed" || row.status === "detached" || row.status === "completed") continue;
         // Mirror canonicalSessionState: an explicit "active" pin overrides a
         // settledAt column, and a settle only counts at rest.
         if (isSettleTupleSettled(row)) continue;
@@ -77035,7 +77044,7 @@ export function createAgentChatService(args: {
 
   const disposeManagedSession = async (
     { sessionId }: AgentChatDisposeArgs,
-    terminalStatus: "disposed" | "detached",
+    terminalStatus: "disposed" | "detached" | "completed",
   ): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     abortActiveBashControllers(managed, "Session disposed.");
@@ -77622,14 +77631,84 @@ export function createAgentChatService(args: {
     parentWakes.dispose();
   };
 
+  /**
+   * Whether a stop cuts this chat off: a turn running, accepted, shown
+   * before its runtime or awaited by a caller, a message queued or steered
+   * into it, a question or approval open, background work it waits on, or a
+   * wake still owed for work an earlier stop ended. Such a chat's row ends
+   * `detached`, so restart recovery resumes it at the next start. A chat at
+   * rest ends `completed`: the next start does not load it, and a send
+   * reopens its row (`reopenSessionRowForThisProcess`).
+   */
+  const chatHasWorkInFlightAtStop = (managed: ManagedChatSession): boolean => (
+    managed.session.status === "active"
+    || managed.turnAcceptedAt != null
+    || turnsShownBeforeRuntime.has(managed.session.id)
+    || sessionTurnCollectors.has(managed.session.id)
+    || runtimeMidTurn(managed)
+    || hasRuntimeActiveWorkload(managed.runtime)
+    || managed.backgroundLossWakePending === true
+    || hasLivePendingInput(managed)
+  );
+
+  /**
+   * End the rows of this brain's chats at rest as `completed` before the
+   * runtimes go. The host ends every other row it still owns as `detached`
+   * once all services are down (`endRunningSessionsOwnedBy`). Only rows this
+   * process owns: a chat loaded here whose runtime another brain holds is
+   * left alone.
+   */
+  const completeRestingChatRowsAtStop = (): void => {
+    const startedAt = processRegistry?.startedAt ?? null;
+    if (!processRegistry || !startedAt) return;
+    const resting = [...managedSessions.values()]
+      .filter((managed) => !managed.closed && !managed.deleted && !chatHasWorkInFlightAtStop(managed))
+      .map((managed) => managed.session.id);
+    if (!resting.length) return;
+    try {
+      sessionService.endRunningSessionsOwnedBy([{ pid: processRegistry.pid, startedAt }], {
+        sessionIds: resting,
+        isRestingChat: () => true,
+      });
+    } catch (error) {
+      logger.warn("agent_chat.complete_resting_rows_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  /**
+   * Whether this process owns a chat's row: the exact identity a clean stop
+   * writes. A chat loaded here whose runtime another brain holds is not this
+   * process's to end as `completed`; ending it would hide that brain's live
+   * chat from every other client. A row with no owner was stamped at creation
+   * here (the service writes whatever registry it has), so it is this
+   * process's when there is no registry identity to compare against.
+   */
+  const ownsChatRow = (sessionId: string): boolean => {
+    const row = sessionService.get(sessionId);
+    if (!row) return false;
+    const startedAt = processRegistry?.startedAt ?? null;
+    if (!processRegistry || !startedAt) return row.ownerPid == null;
+    return row.ownerPid === processRegistry.pid && row.ownerProcessStartedAt === startedAt;
+  };
+
   const disposeAll = async (): Promise<void> => {
     unregisterProviderAccountChatLoad();
     beginDispose();
     disposeModelManifestListener();
     unsubscribeRecordingStatus();
     for (const sessionId of [...managedSessions.keys()]) {
+      // Decided per chat, right before its own disposal: an earlier chat's
+      // disposal awaits, and a send can start a turn here meanwhile. Only a
+      // chat at rest that this process owns ends `completed`; anything else
+      // ends `detached`, which restart recovery loads.
+      const managed = managedSessions.get(sessionId);
+      const terminalStatus = managed && ownsChatRow(sessionId) && !chatHasWorkInFlightAtStop(managed)
+        ? "completed"
+        : "detached";
       try {
-        await disposeManagedSession({ sessionId }, "detached");
+        await disposeManagedSession({ sessionId }, terminalStatus);
       } catch {
         // ignore shutdown errors
       }
@@ -77639,6 +77718,8 @@ export function createAgentChatService(args: {
   };
 
   const forceDisposeAll = (): void => {
+    // Before anything below changes a chat's state.
+    completeRestingChatRowsAtStop();
     unregisterProviderAccountChatLoad();
     beginDispose();
     disposeModelManifestListener();
@@ -82687,7 +82768,8 @@ export function createAgentChatService(args: {
       // A tracked agent CLI can be resumed by ptyService.sendToSession after
       // its process exits, so an ended runtime is still a valid durable target.
       if (row.tracked && isTrackedAgentCliToolType(row.toolType)) return "active";
-      if (row.status === "running" || row.status === "detached") return "active";
+      // `completed` is a chat a clean stop found at rest: a wake reopens it.
+      if (row.status === "running" || row.status === "detached" || row.status === "completed") return "active";
       return "ended";
     },
     shouldDefer: (schedule) => {
@@ -82904,7 +82986,7 @@ ${schedule.prompt}`
       const row = sessionService.get(schedule.sessionId);
       if (!row || row.archivedAt) return;
       const managed = managedSessions.get(schedule.sessionId)
-        ?? (status === "fired" && (row.status === "running" || row.status === "detached")
+        ?? (status === "fired" && (row.status === "running" || row.status === "detached" || row.status === "completed")
           ? ensureManagedSession(schedule.sessionId)
           : null);
       if (!managed) return;

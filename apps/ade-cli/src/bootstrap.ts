@@ -1549,18 +1549,30 @@ export async function createAdeRuntime(args: {
       role: chatOnlyRuntime ? "chat-runtime" : "ade-serve-daemon",
       projectRoot,
     });
-    teardown.push(() => processRegistry.stop());
+    teardown.push(() => {
+      // Popped after every service that drives a session. The chat service
+      // already ended its chats at rest as `completed`; the rows this brain
+      // still holds `running` (a turn in flight, a CLI, a shell) become
+      // `detached` before it leaves the registry, so the next start resumes them.
+      try {
+        sessionService.endRunningSessionsOwnedBy([{ pid: processRegistry.pid, startedAt: processRegistry.startedAt }]);
+      } catch (error) {
+        logger.warn("sessions.detach_own_on_stop_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+      processRegistry.stop();
+    });
     processRegistry.start();
     const reconcileStaleRunningSessions = (reason: "startup" | "fresh-activity-grace-expired") => {
+      // Rows an earlier clean stop left `running` on this computer.
+      const stranded = sessionService.closeStrandedLocalSessions(processRegistry);
+      if (stranded.detached + stranded.completed > 0) {
+        logger.warn("sessions.closed_stranded_running", { ...stranded, reason });
+      }
       const reconciledSessions = sessionService.reconcileStaleRunningSessions({
         status: "detached",
-        liveOwnerPids: processRegistry.listLivePids(),
-        liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
-        knownOwnerPids: processRegistry.listKnownPids(),
-        knownOwnerIdentities: processRegistry.listKnownProcessIdentities(),
         // A crashed brain's rows close now, not after the 2-minute grace, so
         // the restart sweep (3 s after start) continues its chats.
-        deadOwnerIdentities: processRegistry.listDeadProcessIdentities(),
+        ...processRegistry.staleSessionOwnerScope(),
       });
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {

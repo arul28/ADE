@@ -1040,7 +1040,10 @@ describe("createAgentChatService", () => {
       // The brain stops while the job runs, so the row's end time is now.
       vi.setSystemTime(SCHEDULE_TEST_START + idleForMs);
       await starter.service.disposeAll();
-      expect(starter.sessionService.get(session.id)?.status).toBe("detached");
+      // The fixture's runtime holds no live job, so the stop saw the chat at
+      // rest. A stop with the job running ends the row `detached`, and records
+      // the loss: set both, as that stop leaves them.
+      starter.sessionService.end({ sessionId: session.id, endedAt: new Date().toISOString(), exitCode: null, status: "detached" });
       writePersistedChatState(session.id, {
         ...readPersistedChatState(session.id),
         runtimeOwner: null,

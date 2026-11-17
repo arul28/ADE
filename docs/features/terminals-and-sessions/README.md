@@ -169,8 +169,12 @@ and in tests.
   per-turn verdict on the synced session row.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
   layer for `terminal_sessions` rows. CRUD, continuation metadata
-  normalization, `reattach`, `reconcileStaleRunningSessions`, and the durable
-  settled/status-note/attention/last-turn-failure mutations. It also stores
+  normalization, `reattach`, `reconcileStaleRunningSessions`,
+  `endRunningSessionsOwnedBy` (a stopping process ends the rows it owns: a
+  chat at rest `completed`, work in flight `detached`),
+  `closeStrandedLocalSessions` (rows an earlier clean stop stranded on this
+  computer, proven from the cr-sqlite clock and the process registry), and the
+  durable settled/status-note/attention/last-turn-failure mutations. It also stores
   fixed-value, host-timestamped agent activity reports without changing the
   parent lifecycle phase, and clears them when a new turn is accepted. Normalized
   `TerminalResumeMetadata` retains optional `orchestrationParentSessionId` /
@@ -2365,7 +2369,10 @@ schema is used for:
 
 Status transitions: `running` → `completed` | `failed` | `disposed` |
 `detached`. `detached` means the durable row and transcript remain, but the
-process-local PTY is no longer reachable from the current ADE runtime.
+process-local PTY is no longer reachable from the current ADE runtime. For a
+chat, a clean stop ends a chat at rest `completed` (the next start does not
+load it; a send or a scheduled wake reopens the row) and a chat with work in
+flight `detached`, which restart recovery resumes.
 
 Those persisted process statuses are intentionally separate from the canonical
 UI phase. `CanonicalSessionPhase` adds `needs_you`, `stale`, `ready`, `idle`,
@@ -2798,6 +2805,35 @@ not affect canonical session state; iOS stores them for sync compatibility.
    start, so leaving stale `running` chat rows behind only causes UI
    confusion. Ended chat sessions stay in the table and are resumable
    through the SDK (or removable via `ade.agentChat.delete`).
+
+   **A clean stop ends its own rows first.** Both hosts call
+   `sessionService.endRunningSessionsOwnedBy([{ pid, startedAt }])` with the
+   stopping process's registry identity, after every service that drives a
+   session is down and before `processRegistry.stop()` removes its row. The
+   chat service ends its chats at rest as `completed` on the way out
+   (`chatHasWorkInFlightAtStop`); the host ends every other row it still owns
+   as `detached`, the state a crash leaves, so restart recovery resumes it. A
+   desktop project close or quit goes through `disposeAll`, which records
+   `completed` only for a chat at rest whose row this process owns and
+   `detached` for everything else in its list — including a chat whose runtime
+   another brain holds, which keeps the `detached` a stop has always written
+   rather than being marked completed. The brain's shutdown (and the desktop's
+   emergency path) go through `forceDisposeAll`, which ends only rows this
+   process owns as `completed` and leaves the rest to the host step above.
+
+   **Rows an earlier clean stop stranded.** `closeStrandedLocalSessions` runs
+   before the reconcile at every start and rescan. The cr-sqlite clock proves
+   an owner is from this computer (site 0 wrote the owner columns and the
+   status, so a row synced from another machine never qualifies). Owners the
+   registry still lists are a crash, not a clean stop — `stop()` removes its
+   row — so those rows stay with the reconcile above and close `detached`.
+   For the others, each qualifying row ends once its pid is gone, at its own
+   last output: a chat quiet for longer than `RESTART_RESUME_MAX_AGE_MS`
+   (6 h) ends `completed`, so restart recovery never loads or resumes it, and a
+   newer one ends `detached`. The call passes those row ids, so a row a peer
+   wrote last stays untouched even when another row of the same owner
+   qualifies, and the update re-checks the owner so a chat another brain takes
+   over mid-scan is left alone.
 
    Both hosts re-run the reconcile once after startup —
    `setTimeout(…, STALE_RUNNING_SESSION_RESCAN_DELAY_MS)` in desktop `main.ts`

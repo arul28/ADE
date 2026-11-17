@@ -496,7 +496,7 @@ describe("createAgentChatService", () => {
       expect(claudeSubprocessReaper.reapAll).toHaveBeenCalledWith("dispose_all");
     });
 
-    it("disposeAll ends sessions as detached and preserves scheduled work", async () => {
+    it("disposeAll ends a chat at rest as completed and preserves its scheduled work", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);
       const scheduledWork = createScheduledWorkDb();
@@ -514,18 +514,24 @@ describe("createAgentChatService", () => {
         sessionId: session.id,
         text: "Schedule work across restart.",
       });
+      // Loaded here, but its runtime is another brain's: not this process's to
+      // end as completed, so it keeps the state a stop has always left it.
+      const elsewhere = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      sessionService.setOwnerPid(elsewhere.id, 9_999, "2026-11-17T04:00:00.000Z");
 
       await service.disposeAll();
 
-      expect(sessionService.end).toHaveBeenCalledWith(expect.objectContaining({
-        sessionId: session.id,
-        status: "detached",
-      }));
+      // At rest, so the next start's restart recovery does not load it.
       expect(sessionService.get(session.id)).toEqual(expect.objectContaining({
-        status: "detached",
+        status: "completed",
         endedAt: expect.any(String),
       }));
-      expect(scheduledWork.readState()?.schedules).toEqual([
+      expect(sessionService.get(elsewhere.id)?.status).toBe("detached");
+      expect(scheduledWork.readState()?.schedules.filter((row) => row.sessionId === session.id)).toEqual([
         expect.objectContaining({ sessionId: session.id, status: "scheduled" }),
       ]);
     });
@@ -590,7 +596,7 @@ describe("createAgentChatService", () => {
       restarted.service.forceDisposeAll();
     });
 
-    it("scheduled fire into a detached session still delivers by cold resume", async () => {
+    it("scheduled fire into a chat a stop ended at rest still delivers by cold resume", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);
       const scheduledWork = createScheduledWorkDb();
@@ -610,6 +616,7 @@ describe("createAgentChatService", () => {
         text: "Schedule restart work.",
       });
       await first.service.disposeAll();
+      expect(first.sessionService.get(session.id)?.status).toBe("completed");
 
       const events: AgentChatEventEnvelope[] = [];
       installClaudeResponseFixture({
@@ -690,6 +697,36 @@ describe("createAgentChatService", () => {
   });
 
   describe("forceDisposeAll", () => {
+    it("ends a chat at rest as completed and leaves a chat with a turn in flight for the host to detach", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const brain = { pid: 4_321, startedAt: "2026-11-17T05:00:00.000Z" };
+      const { service, sessionService } = createService({
+        processRegistry: { ...brain, isProcessIdentityLive: () => true },
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const resting = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const working = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      // Loaded here, but its runtime is another brain's: never this brain's to end.
+      const elsewhere = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      sessionService.setOwnerPid(elsewhere.id, 9_999, "2026-11-17T04:00:00.000Z");
+      await service.sendMessage({ sessionId: working.id, text: "Start a turn that is still active during shutdown." }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === working.id && event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      service.forceDisposeAll();
+
+      expect(sessionService.get(resting.id)?.status).toBe("completed");
+      expect(sessionService.get(working.id)?.status).toBe("running");
+      expect(sessionService.get(elsewhere.id)?.status).toBe("running");
+      // The host's last step, as both hosts run it: the turn the stop cut off resumes at the next start.
+      sessionService.endRunningSessionsOwnedBy([brain]);
+      expect(sessionService.get(working.id)?.status).toBe("detached");
+      expect(sessionService.get(elsewhere.id)?.status).toBe("running");
+    });
+
     it("rejects active runSessionTurn calls during shutdown", async () => {
       let releaseStream!: () => void;
       const streamGate = new Promise<void>((resolve) => {
