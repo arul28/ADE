@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { isWebClientMode } from "../lib/webClientMode";
 import { isAdeCloudComputer, useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
+import { refreshCloudMachines } from "../components/remoteTargets/useCloudMachines";
 import { useOptionalWebWorkspace, useWebMachines } from "../webclient/workspace/WebWorkspaceContext";
 import type { WebMachineEntry } from "../webclient/workspace/webWorkspaceModel";
 
@@ -12,14 +13,31 @@ import type { WebMachineEntry } from "../webclient/workspace/webWorkspaceModel";
 export function useOwnWebComputers(): WebMachineEntry[] {
   const machines = useWebMachines();
   const index = useAdeCloudLaneComputers();
-  return useMemo(
+  const own = useMemo(
     () => machines.filter((machine) =>
       // A machine this browser only remembers (no longer on the account) counts while it is connected.
       (!machine.rememberedOnly || machine.status === "live")
       && !isAdeCloudComputer({ machineKey: machine.accountMachine?.machineKey ?? null }, index)),
     [index, machines],
   );
+  // A cloud computer made since the last read of the account's computers (a
+  // launch from this page, the phone, another window) is not in the index yet
+  // and would count as the person's own: read the list again, once per key.
+  useEffect(() => {
+    let unseen = false;
+    for (const machine of own) {
+      const key = machine.accountMachine?.machineKey?.trim();
+      if (!key || checkedMachineKeys.has(key)) continue;
+      checkedMachineKeys.add(key);
+      unseen = true;
+    }
+    if (unseen) refreshCloudMachines();
+  }, [own]);
+  return own;
 }
+
+/** Machine keys the account's cloud computers were read again for (`useOwnWebComputers`). */
+const checkedMachineKeys = new Set<string>();
 
 /**
  * Whether the person has a computer of their own on this client: always on

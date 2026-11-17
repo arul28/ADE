@@ -22,6 +22,7 @@ import {
 } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { keepLaneStatement, laneFactsOf } from "./lanesWithoutComputer";
+import { machineCopiesDeleteStatements } from "../accountProjects/store";
 
 /**
  * The computers and accounts in D1, and the one place that moves hours. Live
@@ -508,6 +509,14 @@ export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: 
       lane_id = null, lane_name = null, lane_project_origin = null, lane_branch = null, lane_keep_reason = null
     where instance_id = ?
   `).bind(now, now, computer.instance_id));
+  // The computer leaves the account's machines with it, and its project
+  // copies too: a deleted computer is never a computer of the person's own
+  // nor a place the project is. Safe to repeat.
+  const machineKey = computer.machine_key?.trim();
+  if (machineKey) {
+    statements.push(env.DB.prepare("delete from machines where user_id = ? and machine_key = ?").bind(computer.user_id, machineKey));
+    statements.push(...machineCopiesDeleteStatements(env.DB, computer.user_id, machineKey, now));
+  }
   return statements;
 }
 

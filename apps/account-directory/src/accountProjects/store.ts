@@ -804,6 +804,23 @@ export async function deleteMachineCopies(db: D1Database, userId: string, machin
   return count;
 }
 
+/**
+ * The batch statements that take one machine's copies off the account, for a
+ * caller with a batch of its own (a deleted ADE Cloud computer). The counter
+ * and the projects that held a copy move, so every client reads them again.
+ */
+export function machineCopiesDeleteStatements(db: D1Database, userId: string, machineKey: string, now: number): D1PreparedStatement[] {
+  return [
+    bumpAccountSeq(db, userId, now),
+    db.prepare(`
+      update account_projects set change_seq = ${ACCOUNT_SEQ}
+       where user_id = ? and id in (
+         select project_id from account_project_copies where user_id = ? and machine_key = ?)
+    `).bind(userId, userId, userId, machineKey),
+    db.prepare("delete from account_project_copies where user_id = ? and machine_key = ?").bind(userId, machineKey),
+  ];
+}
+
 /** Clerk `user.deleted`: every row of the account goes. Safe to repeat. */
 export async function deleteAccountProjects(db: D1Database, userId: string): Promise<void> {
   await db.batch([
