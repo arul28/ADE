@@ -17,6 +17,7 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { LaneSummary, OpenProjectBinding, RemoteRuntimeConnectionSnapshot } from "../../shared/types";
+import { isPersonFixConnectionFailure } from "../../shared/types/remoteRuntime";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { readLocalSyncStatus } from "../lib/localSyncStatusReader";
 import { useAppStore, useRootAppStore } from "./appStore";
@@ -185,6 +186,40 @@ export function useRemoteTargetReconnecting(targetId: string | null): boolean {
     },
     () => false,
   );
+}
+
+/**
+ * The target's last connect failed in a way only the person fixes (pair
+ * again, sign in): that failure and its message, else null. The service then
+ * stops redialing it (`recovery` is not "reconnecting"). Same shared feed.
+ */
+export function useRemoteTargetPersonFixFailure(
+  targetId: string | null,
+): { failure: "pairing" | "authentication" | "identity"; message: string } | null {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  // A string, so an unchanged failure in a new snapshot renders nothing.
+  const key = useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return "";
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      const failure = connection?.state === "error" ? connection.lastErrorInfo?.failure : undefined;
+      if (!isPersonFixConnectionFailure(failure)) return "";
+      return `${failure}\u0000${connection?.lastErrorInfo?.message ?? connection?.lastError ?? ""}`;
+    },
+    () => "",
+  );
+  return useMemo(() => {
+    if (!key) return null;
+    const split = key.indexOf("\u0000");
+    return {
+      failure: key.slice(0, split) as "pairing" | "authentication" | "identity",
+      message: key.slice(split + 1),
+    };
+  }, [key]);
 }
 
 /**

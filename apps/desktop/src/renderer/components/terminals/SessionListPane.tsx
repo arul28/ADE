@@ -111,7 +111,7 @@ import {
 import { moveSessionOnBoard } from "./sessionBoardMoveUi";
 import { showToast } from "../app/toast/toastStore";
 import { Banner } from "../ui/notice";
-import { useRemoteTargetReconnecting, useSlowLinkActive } from "../../state/projectMachines";
+import { useRemoteTargetPersonFixFailure, useRemoteTargetReconnecting, useSlowLinkActive } from "../../state/projectMachines";
 import { findGridSetForSession } from "../../lib/workGrid";
 import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -1328,6 +1328,18 @@ export const SessionListPane = React.memo(function SessionListPane({
   const tabReconnecting = useRemoteTargetReconnecting(tabBinding?.kind === "remote" ? tabBinding.targetId : null);
   const reconnectingMachineName = !tabCopyPin && tabReconnecting && tabBinding?.kind === "remote"
     ? tabBinding.runtimeName || "the machine"
+    : null;
+  // The tab's machine turned this device away (its pairing is out of date, or
+  // the account would not vouch for it): no redial fixes that, so the list
+  // says what happened and offers the step that does.
+  const tabFixFailure = useRemoteTargetPersonFixFailure(tabBinding?.kind === "remote" ? tabBinding.targetId : null);
+  const tabFix = !tabCopyPin && !reconnectingMachineName && tabFixFailure && tabBinding?.kind === "remote"
+    ? {
+      title: `Can't reach ${tabBinding.runtimeName || "the machine"}`,
+      detail: tabFixFailure.message,
+      actionLabel: tabFixFailure.failure === "pairing" ? "Pair again" : "Show machine",
+      open: () => openConnectionsPanel({ tab: "machines", machineId: tabBinding.targetId }),
+    }
     : null;
   // Standalone callers can omit the hook's full-roster filing map, so keep the
   // foreign slice fresh here as well. The normal Work path supplies the map and
@@ -4433,6 +4445,20 @@ export const SessionListPane = React.memo(function SessionListPane({
           }}
         />
       ) : null}
+      {tabFix && hasAnySessions ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "6px 8px 0" }}
+          model={{
+            id: "work-machine-needs-fix",
+            tone: "warning",
+            title: tabFix.title,
+            detail: tabFix.detail,
+            actions: [{ label: tabFix.actionLabel, variant: "primary", onClick: tabFix.open }],
+            dismiss: false,
+          }}
+        />
+      ) : null}
 
       {/* Session list */}
       <div
@@ -4477,6 +4503,8 @@ export const SessionListPane = React.memo(function SessionListPane({
             <div className="text-[12px] font-medium text-fg/70">
               {reconnectingMachineName
                 ? `Reconnecting to ${reconnectingMachineName}…`
+                : tabFix
+                ? tabFix.title
                 : !tabCopyPin
                 ? "No computer connected"
                 : firstLoadRetrying ? "Waiting for this machine to answer" : "No chats yet"}
@@ -4484,6 +4512,8 @@ export const SessionListPane = React.memo(function SessionListPane({
             <div className="mt-1 text-[11px] text-muted-fg/60">
               {reconnectingMachineName
                 ? "Your chats show again as soon as it answers"
+                : tabFix
+                ? tabFix.detail
                 : !tabCopyPin
                 ? "Connect a computer to see this project's chats"
                 : firstLoadRetrying ? "Your chats will show up as soon as it does" : "Start one from the prompt box"}
@@ -4492,9 +4522,9 @@ export const SessionListPane = React.memo(function SessionListPane({
               <button
                 type="button"
                 className="mt-2.5 rounded-md px-2 py-1 text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg"
-                onClick={() => openConnectionsPanel("machines")}
+                onClick={tabFix ? tabFix.open : () => openConnectionsPanel("machines")}
               >
-                Connect a computer
+                {tabFix ? tabFix.actionLabel : "Connect a computer"}
               </button>
             ) : null}
           </div>

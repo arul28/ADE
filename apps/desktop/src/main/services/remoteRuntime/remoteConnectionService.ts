@@ -64,6 +64,7 @@ import {
 } from "../../../shared/chatAttachmentLimits";
 import {
   capRemoteRuntimeErrorDetail,
+  isPersonFixConnectionFailure as isPersonFixFailure,
   REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE,
   REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE,
   REMOTE_TARGET_NOT_FOUND_MESSAGE,
@@ -495,6 +496,8 @@ export class RemoteConnectionService {
     (snapshot: RemoteRuntimeConnectionSnapshot) => void
   >();
   private autoconnectTimer: NodeJS.Timeout | null = null;
+  /** The signed-in account when a machine's sign-in failure stopped its redials (`waitsForPersonFix`). */
+  private readonly personFixAccountByTargetId = new Map<string, string | null>();
   /** Strictly increasing, so a window can always tell the newer of two snapshots. */
   private lastSnapshotAt = 0;
   /** Machine and id pairs already logged by `noteUnroutedProjectId`. */
@@ -1396,7 +1399,7 @@ export class RemoteConnectionService {
         state: "error",
         ...statusError,
         lastAttemptedAt: Date.now(),
-        recovery: this.recoveryAfterFailure(target.id),
+        recovery: this.recoveryAfterFailure(target.id, statusError.lastErrorInfo?.failure),
       });
       // A redial that found a cloud computer asleep ends the redials. A
       // person's Connect woke it first, so its failure is a real one.
@@ -2300,10 +2303,11 @@ export class RemoteConnectionService {
   private async maintainSavedConnections(
     options: { pingTimeoutMs?: number } = {},
   ): Promise<void> {
-    await this.reconcileAuthorizedAccountOwnership();
+    const { currentOwnerUserId } = await this.reconcileAuthorizedAccountOwnership();
     for (const target of this.registry.list()) {
       if (!shouldAutoconnectTarget(target)) continue;
       if (this.isManuallyDisconnected(target) || this.isHeldForUserAction(target.id)) continue;
+      if (this.waitsForPersonFix(target.id, currentOwnerUserId)) continue;
       if (!this.automaticReconnectRetryIsDue(target.id)) continue;
       if (this.asleepChecks.isResting(target.id)) {
         // Still asleep: no dial, ask again later. Awake (something else woke
@@ -2586,6 +2590,28 @@ export class RemoteConnectionService {
   }
 
   /**
+   * The machine's last connect failed in a way no redial fixes: it rejected
+   * this device's pairing or identity (Pair again), or the account would not
+   * vouch for it. The 30 s maintenance leaves it alone until the person acts
+   * (Connect, Pair again, an edit) or, for a sign-in failure, until the
+   * signed-in account changes.
+   */
+  private waitsForPersonFix(targetId: string, currentOwnerUserId: string | null): boolean {
+    const status = this.statusById.get(targetId);
+    const failure = status?.state === "error" ? status.lastErrorInfo?.failure : undefined;
+    if (failure !== "authentication") this.personFixAccountByTargetId.delete(targetId);
+    if (!isPersonFixFailure(failure)) return false;
+    if (failure !== "authentication") return true;
+    if (!this.personFixAccountByTargetId.has(targetId)) {
+      this.personFixAccountByTargetId.set(targetId, currentOwnerUserId);
+      return true;
+    }
+    if (this.personFixAccountByTargetId.get(targetId) === currentOwnerUserId) return true;
+    this.personFixAccountByTargetId.delete(targetId);
+    return false;
+  }
+
+  /**
    * The 30 s saved-connection maintenance redials this machine on its own
    * (installed apps), with the automatic-reconnect backoff and no time limit.
    */
@@ -2681,13 +2707,21 @@ export class RemoteConnectionService {
     if (isConnectionBackoffThrottle(error)) return !this.pool.needsUserAction(targetId);
     if (error instanceof PairedRuntimeRelayAuthRequiredError) return false;
     if (!this.isConnectionFailure(targetId, error) || this.pool.needsUserAction(targetId)) return false;
-    return failure !== "pairing" && failure !== "authentication" && failure !== "identity";
+    return !isPersonFixFailure(failure);
   }
 
-  /** What a failed call or connect leaves in `recovery`. */
-  private recoveryAfterFailure(targetId: string): RemoteRuntimeConnectionRecovery | null {
+  /**
+   * What a failed call or connect leaves in `recovery`. A failure only the
+   * person can fix (pair again, sign in) is not "reconnecting": no redial
+   * fixes it, and the windows show the failure itself with its action.
+   */
+  private recoveryAfterFailure(
+    targetId: string,
+    failure = this.statusById.get(targetId)?.lastErrorInfo?.failure,
+  ): RemoteRuntimeConnectionRecovery | null {
     const target = this.registry.get(targetId);
     if (!target || this.isHeldForUserAction(targetId) || this.isManuallyDisconnected(target)) return null;
+    if (isPersonFixFailure(failure)) return null;
     if (this.hostReturnWatches.has(targetId) || this.savedConnectionMaintenanceOwns(target)) {
       return "reconnecting";
     }
@@ -2798,14 +2832,15 @@ export class RemoteConnectionService {
     // A refusal to dial changes nothing; the status already holds the failure
     // that started the wait, with its kind (SSH sign-in, unreachable).
     if (isConnectionBackoffThrottle(error)) return;
+    const statusError = errorStatusPatch(
+      error,
+      this.withRetryNotice(targetId, this.noteAutomaticReconnectFailure(targetId, error)),
+    );
     this.mergeStatus(targetId, {
       state: "error",
-      ...errorStatusPatch(
-        error,
-        this.withRetryNotice(targetId, this.noteAutomaticReconnectFailure(targetId, error)),
-      ),
+      ...statusError,
       lastAttemptedAt: Date.now(),
-      recovery: this.recoveryAfterFailure(targetId),
+      recovery: this.recoveryAfterFailure(targetId, statusError.lastErrorInfo?.failure),
     });
   }
 

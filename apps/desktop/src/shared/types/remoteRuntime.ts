@@ -248,6 +248,17 @@ export type RemoteRuntimeConnectionAttemptFailure =
   | "protocol"
   | "unknown";
 
+/**
+ * A connect failure no redial fixes: the machine rejected this device's
+ * pairing or identity (pair it again), or the account would not vouch for
+ * this device (sign in). ADE stops redialing and shows it with its action.
+ */
+export function isPersonFixConnectionFailure(
+  failure: RemoteRuntimeConnectionAttemptFailure | null | undefined,
+): failure is "pairing" | "authentication" | "identity" {
+  return failure === "pairing" || failure === "authentication" || failure === "identity";
+}
+
 export type RemoteRuntimeConnectionAttempt = {
   kind: RemoteRuntimeRouteKind;
   /** Host and optional port only. Paths, query strings, and credentials are excluded. */
