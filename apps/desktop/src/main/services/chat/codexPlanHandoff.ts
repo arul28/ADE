@@ -179,7 +179,22 @@ export function createCodexPlanDecisions() {
           if (!record?.submitted) {
             const request = await args.pending();
             if (!request || request.kind !== "plan_approval" || request.source !== "codex" || request.subagent) {
-              if (record) await dropReservation(record);
+              // The card is gone, but the destination may still own the plan: a
+              // send can have landed before a save failed. Never discard a chat
+              // that holds it — settle the handoff instead.
+              if (record) {
+                const presence = await args.hasPlan(record.implementationSessionId, args.itemId).catch(() => "unknown" as const);
+                if (presence === "present") {
+                  record.submitted = true;
+                  args.save();
+                  await args.complete(record);
+                  return { implementationSessionId: record.implementationSessionId };
+                }
+                if (presence === "unknown") {
+                  throw new Error("Couldn't read the implementation chat for this plan. Nothing was changed; retry in a moment.");
+                }
+                await dropReservation(record);
+              }
               throw new Error("This Codex plan is no longer waiting for approval.");
             }
             const plan = request.description?.trim() || request.questions[0]?.question?.trim();

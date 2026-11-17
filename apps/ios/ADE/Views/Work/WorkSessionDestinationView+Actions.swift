@@ -660,6 +660,10 @@ extension WorkSessionDestinationView {
       }
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
+      // The handoff stands — the chat exists and holds the plan — but the open
+      // is the person's to see: if they left the planning screen while the call
+      // ran, do not push the implementation chat over whatever they moved to.
+      guard chatDestinationVisible else { return }
       syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(
         sessionId: implementationSessionId,
         laneId: (session ?? initialSession)?.laneId

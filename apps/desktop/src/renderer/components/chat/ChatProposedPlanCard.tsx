@@ -48,11 +48,16 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
   const menuItemRef = useRef<HTMLButtonElement>(null);
   const keepPlanningRef = useRef<HTMLButtonElement>(null);
   const showMenu = menuOpen && Boolean(onImplementInNewChat) && !disabled;
-  // Focus the item in the same commit the menu appears in. A `requestAnimationFrame`
-  // here put focus one frame behind the menu, and a keyboard Escape inside that
-  // frame left focus on the document instead of back on the caret.
+  // Focus the item as soon as the menu is offered. `AnchoredMenu` mounts hidden
+  // and becomes visible in its own layout-effect pass, so a browser may refuse
+  // the immediate focus; the frame after covers that without moving the caret's
+  // own focus anywhere in the meantime.
   useEffect(() => {
-    if (showMenu) menuItemRef.current?.focus();
+    if (!showMenu) return;
+    menuItemRef.current?.focus();
+    if (document.activeElement === menuItemRef.current) return;
+    const frame = requestAnimationFrame(() => menuItemRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
   }, [showMenu]);
 
   const implementInNewChat = () => {

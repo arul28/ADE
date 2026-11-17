@@ -76148,20 +76148,56 @@ export function createAgentChatService(args: {
    * is what stops a crash between the send and its receipt from putting the
    * plan — and a second implementation turn — into the chat twice.
    */
+  /**
+   * Whether the destination chat already owns this plan.
+   *
+   * Read from the plan's own `user_message` marker in the transcript, not from
+   * "the chat has messages": a retry must not re-send the plan into a chat that
+   * already shows it, and a chat that failed before the send must not read as
+   * delivered.
+   *
+   * The head of the file is enough and is exact: the plan is the destination's
+   * first message, so it sits in the first few lines however long the chat has
+   * grown since. A windowed history read cannot answer this — it drops the
+   * oldest events first, which is precisely where the marker lives.
+   */
+  /**
+   * How much of the destination's transcript the plan check reads. The plan is
+   * its first message and plans are capped at 256 KB, so this is generous; a
+   * head that fills it reports "unknown" rather than guessing.
+   */
+  const PLAN_HANDOFF_HEAD_BYTES = 2 * 1024 * 1024;
   const implementationChatHasPlan = async (sessionId: string, itemId: string): Promise<PlanPresence> => {
     if (!sessionService.get(sessionId)) return "absent";
-    const history = await getChatEventHistory(sessionId, { maxEvents: 512 }).catch(() => null);
-    // A read that failed says nothing about the chat. Reporting `absent` would
-    // delete a destination that already holds the plan and send it again.
-    if (!history) return "unknown";
-    if (history.truncated) return "present";
-    const found = history.events.some(({ event }) => {
-      if (event.type !== "user_message") return false;
-      const marker = event.metadata?.planHandoff;
-      return Boolean(marker) && typeof marker === "object"
-        && (marker as { itemId?: unknown }).itemId === itemId;
-    });
-    return found ? "present" : "absent";
+    try {
+      const transcriptPath = await resolveChatTranscriptPath(sessionId);
+      if (!transcriptPath) return "absent";
+      const handle = await fs.promises.open(transcriptPath, "r");
+      try {
+        const buffer = Buffer.allocUnsafe(PLAN_HANDOFF_HEAD_BYTES);
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        const text = buffer.subarray(0, bytesRead).toString("utf8");
+        for (const line of text.split("\n")) {
+          // The cheap test first: only a line naming this card can be the marker.
+          if (!line.includes(itemId)) continue;
+          try {
+            const parsed = JSON.parse(line) as { event?: { type?: unknown; metadata?: { planHandoff?: { itemId?: unknown } } } };
+            if (parsed?.event?.type === "user_message" && parsed.event.metadata?.planHandoff?.itemId === itemId) {
+              return "present";
+            }
+          } catch {
+            // A cut last line is the only one that can fail to parse.
+          }
+        }
+        // A head that filled the whole buffer may have been cut before the
+        // marker, so say so rather than claiming the plan is absent.
+        return bytesRead < buffer.length ? "absent" : "unknown";
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      return "unknown";
+    }
   };
 
   const implementCodexPlanInNewChat = async (input: AgentChatRespondToInputArgs): Promise<{ implementationSessionId: string }> => {

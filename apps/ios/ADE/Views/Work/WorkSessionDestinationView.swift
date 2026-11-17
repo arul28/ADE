@@ -501,7 +501,9 @@ struct WorkSessionDestinationView: View {
   /// transcript loads.
   @State var postSendRefreshTask: Task<Void, Never>?
   @State private var hubActivationRebindTask: Task<Void, Never>?
-  @State private var chatDestinationVisible = false
+  /// Read by the actions in this file's sibling extension, which must not open
+  /// another chat over a screen the person already left.
+  @State var chatDestinationVisible = false
   @State var optimisticPendingSteers: [WorkPendingSteerModel] = []
   @State var subagentSnapshots: [WorkSubagentSnapshot] = []
   @State var subagentSnapshotsRenderSignature = 0
