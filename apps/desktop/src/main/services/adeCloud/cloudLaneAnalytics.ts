@@ -12,7 +12,7 @@ export type CloudLaneAnalyticsCapture = { capture(input: ProductAnalyticsCapture
 type Surface = ProductAnalyticsCapture["surface"];
 
 /** Sent from main. The renderer sends `cloud_default_size` itself (`cloudDefaultTier.ts`). */
-export type CloudLaneAnalyticsAction = "cloud_lane_launch" | "cloud_lane_freed" | "cloud_lane_deleted" | "cloud_clear_caches";
+export type CloudLaneAnalyticsAction = "cloud_lane_launch" | "cloud_lane_freed" | "cloud_lane_deleted" | "cloud_clear_caches" | "cloud_disk_grow";
 
 export function captureCloudLaneAnalytics(
   analytics: CloudLaneAnalyticsCapture,

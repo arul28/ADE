@@ -50,6 +50,10 @@ export type AdeCardVariant =
   | "claude_session_quota"
   /** A chat's new-lane setup record (fetch, checkout, environment, start agent). */
   | "lane_setup"
+  /** An ADE Cloud disk grow on the chat's computer, before and after its restart (`./cloudDiskGrowCard.ts`). */
+  | "cloud_disk_grow"
+  /** A disk grow refused at a limit, with the lanes that hold the disk (`./cloudDiskGrowCard.ts`). */
+  | "cloud_disk_limit"
   /**
    * An MCP App: the page an MCP server ships with a tool (`./mcpApp.ts`). The
    * desktop runs it in a sandboxed frame. Not in the known list below on
@@ -166,6 +170,8 @@ export const KNOWN_ADE_CARD_VARIANTS: readonly AdeCardVariant[] = [
   "claude_session_quota",
   "cross_machine_batch_move_approval",
   "lane_setup",
+  "cloud_disk_grow",
+  "cloud_disk_limit",
 ];
 
 export function isKnownAdeCardVariant(variant: string | null | undefined): boolean {

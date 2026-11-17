@@ -358,7 +358,7 @@ const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
   ANDROID_LOW_MEMORY:
     "hint: stop an emulator you do not need (`ade android stop` in its lane) or close apps, then try again. Never start one with the raw `emulator` binary instead. Ask the user before you run `ade android start --force`: it boots anyway, and the machine can swap.",
   ANDROID_LOW_DISK:
-    "hint: the disk can't hold a new device's data. Tell the user: on ADE Cloud the Android pane offers Grow the disk (it restarts the computer); elsewhere they free disk space. Never delete files to make room yourself.",
+    "hint: the disk can't hold a new device's data. On ADE Cloud, ADE grows the disk itself: if the message says it is growing, the computer restarts and your chat continues; run `ade android start` again then. If it couldn't, grow it yourself with `ade cloud resize --free 8 --reason \"Android emulator first boot\"` (inside the plan no yes is needed; never ask the user to press Grow). Elsewhere, tell the user to free disk space. Never delete files to make room yourself.",
   // P1 agent suite.
   ANDROID_ELEMENT_NOT_FOUND:
     "hint: run `ade android snapshot --text` to see the screen's elements, then aim with --ref, --identifier, --label or --text.",

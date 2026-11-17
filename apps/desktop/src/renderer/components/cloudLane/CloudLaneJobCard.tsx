@@ -15,6 +15,7 @@ import {
 } from "@phosphor-icons/react";
 import {
   CLOUD_LANE_JOB_STAGE_LABELS,
+  cloudLaneJobGrowsDiskOnly,
   type CloudLaneJobSnapshot,
   type CloudLaneJobStage,
   type CloudLaneJobStageId,
@@ -89,6 +90,22 @@ export type CloudLaneJobPresentation = {
 export function cloudLaneJobPresentation(job: CloudLaneJobSnapshot, account: CloudAccountState | null): CloudLaneJobPresentation {
   const to = sizeLabel(account, job.toSizeId) ?? "the new size";
   const move = job.kind === "move";
+  // The same size with a bigger disk: a disk grow (the Android pane's Grow the disk).
+  if (cloudLaneJobGrowsDiskOnly(job)) {
+    const disk = `${job.laneName}'s disk`;
+    switch (job.phase) {
+      case "waiting":
+        return { title: `${disk} grows to ${job.diskGb} GB when the agent is idle`, stepLine: liveStepLine(job), tone: "accent", note: "ADE waits for the agent to finish its turn. Your files and chats stay.", row: { state: "starting", label: "Grows when idle" } };
+      case "running":
+        return { title: `Growing ${disk} to ${job.diskGb} GB`, stepLine: liveStepLine(job), tone: "accent", note: "The computer restarts for a moment. Your files and chats stay. You can close this window.", row: { state: "starting", label: "Growing disk" } };
+      case "online":
+        return { title: `${disk} grew to ${job.diskGb} GB`, stepLine: null, tone: "success", note: "ADE connected to the computer again.", row: { state: "awake", label: "Disk grown" } };
+      case "failed":
+        return { title: "The disk grow stopped", stepLine: job.error ?? job.stages.find((stage) => stage.status === "failed")?.error ?? null, tone: "error", note: null, row: { state: "failed", label: "Disk grow stopped" } };
+      case "cancelled":
+        return { title: `Kept ${disk} as it is`, stepLine: null, tone: "neutral", note: null, row: null };
+    }
+  }
   switch (job.phase) {
     case "waiting":
       return {
@@ -332,13 +349,15 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
               <LaneIcon size={10} className="adecl-lane-ic" />
               <span className="min-w-0 truncate">{job.laneName}</span>
             </Chip>
-            <Chip title={`${fromLabel ?? "?"} to ${toLabel ?? job.toSizeId}`}>
-              {job.fromSizeId ? <CloudSizeIcon tier={job.fromSizeId} size={11} /> : null}
-              {fromLabel ? <span>{fromLabel}</span> : null}
-              <span aria-hidden className="text-fg/30">to</span>
-              <CloudSizeIcon tier={job.toSizeId} size={11} />
-              <span>{toLabel}</span>
-            </Chip>
+            {cloudLaneJobGrowsDiskOnly(job) ? null : (
+              <Chip title={`${fromLabel ?? "?"} to ${toLabel ?? job.toSizeId}`}>
+                {job.fromSizeId ? <CloudSizeIcon tier={job.fromSizeId} size={11} /> : null}
+                {fromLabel ? <span>{fromLabel}</span> : null}
+                <span aria-hidden className="text-fg/30">to</span>
+                <CloudSizeIcon tier={job.toSizeId} size={11} />
+                <span>{toLabel}</span>
+              </Chip>
+            )}
             {job.kind === "move" ? <Chip title="A new computer gets the lane's files, then the old one goes">New computer</Chip> : null}
             {job.diskGb ? <Chip title="The disk grows in the same restart">Disk to {job.diskGb} GB</Chip> : null}
           </>

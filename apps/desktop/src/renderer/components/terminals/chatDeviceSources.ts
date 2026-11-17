@@ -2,8 +2,10 @@ import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { ChatDeviceSources, DeviceKind } from "../../../shared/types/deviceSources";
 import { normalizeChatDeviceSources } from "../../../shared/types/deviceSources";
+import { isRemoteMachineAwayError } from "../../../shared/runtimeErrors";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ipcErrorMessage } from "../../lib/format";
+import { isAdeCloudComputer, machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { showToast } from "../app/toast/toastStore";
 
 /*
@@ -30,6 +32,8 @@ type Entry = ChatDeviceSourcesState & {
   pin: OpenProjectBinding | null;
   sessionId: string;
   readSeq: number;
+  /** Counts switches: only the newest one's answer (or rollback) lands. */
+  writeSeq: number;
   listeners: Set<() => void>;
   /** What readers see: replaced on every change, so React notices it. */
   snapshot: ChatDeviceSourcesState;
@@ -55,6 +59,19 @@ export function deviceSourceErrorText(error: unknown): string {
 
 function isUnsupportedAnswer(text: string): boolean {
   return /not callable|unknown action|not allowed|no ADE brain|device choice is kept for ADE chats|is not an agent chat session|was not found/i.test(text);
+}
+
+/** A failed switch in words a person can act on. */
+function setFailureText(reason: string, pin: OpenProjectBinding | null): string {
+  if (isUnsupportedAnswer(reason)) return "The ADE on this chat's machine can't keep a device choice. Update ADE there.";
+  if (isRemoteMachineAwayError(reason)) {
+    const label = machineLabelForBinding(pin);
+    // An ADE Cloud computer drops its link while it restarts (a disk grow, a wake).
+    return pin?.kind === "remote" && isAdeCloudComputer({ hostname: pin.hostname })
+      ? `${label} is restarting. Try again when it is back.`
+      : `${label} isn't answering right now. Try again when it is back.`;
+  }
+  return reason;
 }
 
 function apiOf() {
@@ -101,7 +118,7 @@ function ensureEntry(sessionId: string, pin: OpenProjectBinding | null): Entry {
   const key = entryKey(sessionId, pin);
   let entry = entries.get(key);
   if (!entry) {
-    entry = { ...EMPTY_STATE, pin, sessionId, readSeq: 0, listeners: new Set(), snapshot: EMPTY_STATE };
+    entry = { ...EMPTY_STATE, pin, sessionId, readSeq: 0, writeSeq: 0, listeners: new Set(), snapshot: EMPTY_STATE };
     entries.set(key, entry);
     if (entries.size > MAX_ENTRIES) {
       for (const [oldKey, old] of entries) {
@@ -144,6 +161,7 @@ export async function setChatDeviceSource(args: {
   }
   entry.sources = next;
   entry.readSeq += 1;
+  const mine = ++entry.writeSeq;
   emit(entry);
   try {
     const answer = await set({
@@ -153,19 +171,27 @@ export async function setChatDeviceSource(args: {
         ? { kind: "machine", machineKey: args.machine.key, machineName: args.machine.name }
         : { kind: "here" },
     }, args.pin);
-    entry.sources = normalizeChatDeviceSources(answer?.sources) ?? {};
-    emit(entry);
+    // The newest switch's answer is the brain's choice now, even over a read that came back
+    // meanwhile; a read still out is from before it, so it no longer lands. A newer switch
+    // (another pane, after a remount) owns the row instead.
+    if (mine === entry.writeSeq) {
+      entry.readSeq += 1;
+      entry.sources = normalizeChatDeviceSources(answer?.sources) ?? {};
+      emit(entry);
+    }
     return true;
   } catch (error) {
-    entry.sources = previous;
-    emit(entry);
-    const reason = deviceSourceErrorText(error);
+    // Rolled back only while nothing newer (a switch, or a read of the brain) replaced it.
+    if (mine === entry.writeSeq && entry.sources === next) {
+      entry.sources = previous;
+      emit(entry);
+    }
     showToast({
+      // One toast per chat: a second failure replaces it instead of stacking.
+      id: `chat-device-source-failed:${entryKey(args.sessionId, args.pin)}`,
       tone: "error",
       title: "Couldn't change this chat's device",
-      message: isUnsupportedAnswer(reason)
-        ? "The ADE on this chat's machine can't keep a device choice. Update ADE there."
-        : reason,
+      message: setFailureText(deviceSourceErrorText(error), args.pin),
       report: false,
     });
     return false;

@@ -1173,6 +1173,8 @@ export type CloudBusyTerminalFacts = {
   state: TerminalRuntimeState;
   atPrompt: boolean | null;
   foreground: string | null;
+  /** The foreground process's command line, or null. */
+  foregroundArgs: string[] | null;
   lastOutputAt: number;
   lastInputAt: number;
 };
@@ -9936,6 +9938,7 @@ export function createPtyService({
           state: runtime?.state ?? "running",
           atPrompt: foreground?.atPrompt ?? (entry.shellPromptVisible ? true : null),
           foreground: foreground?.name ?? null,
+          foregroundArgs: foreground?.args ?? null,
           lastOutputAt: runtime?.lastActivityAt ?? entry.createdAt,
           lastInputAt: entry.lastUserInputAt ?? 0,
         });

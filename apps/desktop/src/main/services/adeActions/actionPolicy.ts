@@ -1228,6 +1228,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "tier_request",
     // Clear a cloud computer's caches: the person from the dashboard; an agent asks the person with a card.
     "clear_caches",
+    // Grow the disk of the cloud computer this runs on: inside the plan with no card; extra disk asks the person.
+    "grow_disk",
     // Sign-ins for new machines: which are kept (never a value), and the
     // person's own saves and Claude sign-in (user-only, below).
     "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES,

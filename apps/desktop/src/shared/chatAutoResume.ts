@@ -418,6 +418,8 @@ function restartCauseLead(cause: RestartCause | null | undefined): string | null
     }
     case "service_restarted":
       return `ADE's background service was restarted${atClause}`;
+    case "disk_grow":
+      return `ADE grew this computer's disk${cause.fromGb != null ? ` from ${cause.fromGb} GB` : ""} to ${cause.toGb} GB, which restarted the computer${atClause}`;
     case "unknown":
       return `ADE's background service stopped unexpectedly${atClause} and started again`;
   }
@@ -487,6 +489,8 @@ function restartCauseShort(cause: RestartCause): string {
       return `ADE's background service froze and restarted${memory}`;
     case "service_restarted":
       return "ADE's background service was restarted";
+    case "disk_grow":
+      return `ADE grew the disk to ${cause.toGb} GB (the computer restarted)`;
     case "unknown":
       return `ADE restarted unexpectedly${memory}`;
   }

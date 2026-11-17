@@ -1175,6 +1175,8 @@ struct WorkAdeCardModel: Identifiable, Hashable {
     "claude_session_quota",
     "lane_setup",
     "pr_watch_wake",
+    "cloud_disk_grow",
+    "cloud_disk_limit",
   ]
 
   let id: String

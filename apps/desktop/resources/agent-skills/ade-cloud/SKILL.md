@@ -1,6 +1,6 @@
 ---
 name: ade-cloud
-description: "Before any ADE Cloud work via `ade cloud`: the account (plan, hours, disk, computers, lanes, sizes, agent limits, whether a new lane can start and why not), start a lane on its own cloud computer, follow, retry or cancel that launch, explain a refusal, propose a cleanup, sleep, wake, resize, copy, move, delete, clear caches."
+description: "Before any ADE Cloud work via `ade cloud`, and when this computer needs more free disk (grow it with `ade cloud resize --free`): the account (plan, hours, disk, computers, lanes, sizes, agent limits, whether a new lane can start), start, follow, retry or cancel a cloud lane, explain a refusal, propose a cleanup, sleep, wake, resize, copy, move, delete, clear caches."
 ---
 
 # ADE Cloud
@@ -78,7 +78,7 @@ warnings; using the computer, or "Keep it" in Settings › ADE Cloud, keeps it.
 ## Never
 
 - Delete a computer you didn't make, or any computer over ADE MCP.
-- Change a size (`ade cloud resize`) yourself. Ask instead: `ade cloud resize --request --size large --reason "<why>"` puts a card in your chat, and the person confirms it.
+- Change a size (`ade cloud resize --shape`) yourself (growing the disk with `--free` is yours to do). Ask instead: `ade cloud resize --request --size large --reason "<why>"` puts a card in your chat, and the person confirms it.
 - Wake computers to look at them: the status already knows.
 - Sign a provider in for the person, or save a sign-in. The person does it once in ADE (ade://settings/integrations.ade-cloud-sign-ins).
 - Print, ask for or pass on a key or token.
@@ -88,6 +88,18 @@ warnings; using the computer, or "Keep it" in Settings › ADE Cloud, keeps it.
 `ade help cloud` lists `list`, `hours`, `limits`, `sleep`, `wake`, `resize`,
 `update`, `copy`, `move` and `delete`. Each asks the person like a new
 lane when it uses hours or deletes.
+On a lane's cloud computer that needs more disk (a build, an emulator, a
+big install), grow it yourself: `ade cloud resize --free <GB> --reason "<why>"`
+(or `--disk <GB>` for a size). Inside the plan's disk it grows with no card,
+unattended chats too. Paid extra disk past the plan asks the person on a card in
+a watched chat. With nobody watching, the agent limits answer: inside
+`agents.extraDiskMonthCents` (null, the default, means up to the account's own
+monthly extra-disk limit; 0 means none) it grows and your chat gets a line with
+the cost; past it the answer is no. Extra disk the person never turned on is no
+for everyone. At the account's storage limit, or past the agents' extra disk, a
+card names the computers that hold the disk. The grow restarts the computer: the
+command waits, and ADE continues your chat after the restart with a note that
+the disk grew. Never ask the person to grow it instead.
 On a lane's cloud computer with a full disk, `ade actions run cloud.clear_caches`
 deletes package and build caches there (never a repository or dependencies). It
 asks the person with a card first; with nobody watching the answer is no. A computer sleeps 3 minutes after its last

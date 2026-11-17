@@ -64,10 +64,15 @@ Plain `adb shell …` reads (`dumpsys`, `getprop`, `pm list`) are fine, with
   the user. Ask the user before `android start --force`.
   `ANDROID_LOW_DISK` means the disk has too little free space for a new
   device's first start (its data partition takes about 7 GB free); the
-  sentence gives both numbers. Where the Android pane offers **Grow the
-  disk**, the user grows it there (the computer restarts). Elsewhere, tell
-  the user to free space. Never delete project files, build
-  output or caches to make room, and `--force` does not help.
+  sentence gives both numbers. On an ADE Cloud computer ADE grows the disk
+  itself before it refuses: when the sentence says the disk is growing, the
+  computer restarts and ADE continues your chat; run `android start` again
+  then. When it couldn't grow on its own, grow it yourself with
+  `ade cloud resize --free 8 --reason "Android emulator first boot"` (inside
+  the plan it needs no yes; paid extra disk asks the person on a card). Do
+  not ask the user to press Grow. Elsewhere, tell the user to free space.
+  Never delete project files, build output or caches to make room, and
+  `--force` does not help.
 - `state: booted`: drive it.
 
 ADE stops an emulator it started that nobody has used for 20 minutes

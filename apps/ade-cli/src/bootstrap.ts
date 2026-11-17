@@ -414,6 +414,7 @@ import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationA
 import { shouldIsolateEmbeddedProviderLogins } from "../../desktop/src/shared/providerLoginIsolation";
 import { createWebhookRemoteSource } from "../../desktop/src/main/services/automations/webhookAutomationFactory";
 import { readMachineIdFile } from "./services/sync/machineIdFile";
+import { cloudDiskGrowHost } from "../../desktop/src/main/services/adeCloud/cloudDiskGrowHost";
 import { logSlowProjectOpen } from "./services/projects/projectFilesystemKind";
 import { createPhaseClock, type PhaseClock } from "../../desktop/src/shared/phaseClock";
 
@@ -2645,6 +2646,8 @@ export async function createAdeRuntime(args: {
         // A chat on another machine (`remote-work-…`) uses its work copy in
         // this project as its lane.
         projectRoot,
+        // An ADE Cloud computer's grower: a first start the disk can't hold asks it for room.
+        diskGrow: cloudDiskGrowHost,
         // Where a screenshot's `outPath` must stay; without it a named path
         // is refused.
         resolveLaneWorktreePath: (laneId: string): string | null => {

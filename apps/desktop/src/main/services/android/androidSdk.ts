@@ -291,15 +291,41 @@ function parseAccelCheck(output: string, exitCode: number | null): AndroidAccele
   return { kind, usable: status === 0 && exitCode === 0, detail };
 }
 
-type AccelCacheEntry = { key: string; at: number; value: AndroidAcceleration };
+/** `transient`: the check never answered (timed out, could not start), so it says nothing about the machine. */
+type AccelCheckResult = { value: AndroidAcceleration; transient: boolean };
+type AccelCacheEntry = { key: string; at: number } & AccelCheckResult;
 const accelCache = new Map<string, AccelCacheEntry>();
-/** A usable answer holds for 10 minutes; a failure only 30 s, so a fix shows quickly. */
+/** The check running now per emulator binary: callers at the same time share one process. */
+const accelInFlight = new Map<string, { key: string; promise: Promise<AccelCheckResult> }>();
+/**
+ * A usable answer holds for 10 minutes, and so does a definite "not usable"
+ * (the emulator ran and said so: no KVM on a cloud computer, WHPX off). Turning
+ * acceleration on takes a reboot, a re-login or a new SDK, and each of those
+ * starts ADE again or forces a fresh check (`forceAccelCheck`). A check that
+ * never answered (timed out, could not start) is retried after 30 s.
+ */
 const ACCEL_OK_TTL_MS = 10 * 60_000;
-const ACCEL_FAIL_TTL_MS = 30_000;
+const ACCEL_FAIL_TTL_MS = 10 * 60_000;
+const ACCEL_TRANSIENT_TTL_MS = 30_000;
 const ACCEL_CHECK_TIMEOUT_MS = 20_000;
 
+function runAccelCheck(emulatorPath: string): Promise<AccelCheckResult> {
+  return new Promise<AccelCheckResult>((resolve) => {
+    execFile(emulatorPath, ["-accel-check"], { timeout: ACCEL_CHECK_TIMEOUT_MS, windowsHide: true }, (error, stdout, stderr) => {
+      // A numeric code is the emulator's own exit; anything else (killed on
+      // the timeout, ENOENT, EACCES) means it never answered.
+      const exitCode = error ? (typeof error.code === "number" ? error.code : null) : 0;
+      if (error && exitCode === null) {
+        resolve({ value: { kind: null, usable: false, detail: `emulator -accel-check did not run: ${error.message}` }, transient: true });
+        return;
+      }
+      resolve({ value: parseAccelCheck(`${stdout}\n${stderr}`, exitCode), transient: false });
+    });
+  });
+}
+
 /** Runs `emulator -accel-check`, cached per emulator binary (path + mtime). */
-async function readAndroidAcceleration(emulatorPath: string, options: { force?: boolean } = {}): Promise<AndroidAcceleration> {
+async function readAndroidAcceleration(emulatorPath: string, options: { force?: boolean; recheckUnusableAfterMs?: number } = {}): Promise<AndroidAcceleration> {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(emulatorPath);
@@ -309,21 +335,21 @@ async function readAndroidAcceleration(emulatorPath: string, options: { force?: 
   const key = `${stat.mtimeMs}:${stat.size}`;
   const cached = accelCache.get(emulatorPath);
   if (!options.force && cached && cached.key === key) {
-    const ttl = cached.value.usable ? ACCEL_OK_TTL_MS : ACCEL_FAIL_TTL_MS;
+    const failTtl = options.recheckUnusableAfterMs != null ? Math.min(ACCEL_FAIL_TTL_MS, options.recheckUnusableAfterMs) : ACCEL_FAIL_TTL_MS;
+    const ttl = cached.transient ? ACCEL_TRANSIENT_TTL_MS : cached.value.usable ? ACCEL_OK_TTL_MS : failTtl;
     if (Date.now() - cached.at < ttl) return cached.value;
   }
-  const value = await new Promise<AndroidAcceleration>((resolve) => {
-    execFile(emulatorPath, ["-accel-check"], { timeout: ACCEL_CHECK_TIMEOUT_MS, windowsHide: true }, (error, stdout, stderr) => {
-      const exitCode = error ? (typeof error.code === "number" ? error.code : null) : 0;
-      if (error && exitCode === null) {
-        resolve({ kind: null, usable: false, detail: `emulator -accel-check did not run: ${error.message}` });
-        return;
-      }
-      resolve(parseAccelCheck(`${stdout}\n${stderr}`, exitCode));
-    });
-  });
-  accelCache.set(emulatorPath, { key, at: Date.now(), value });
-  return value;
+  const running = accelInFlight.get(emulatorPath);
+  if (running && running.key === key) return (await running.promise).value;
+  const promise = runAccelCheck(emulatorPath);
+  accelInFlight.set(emulatorPath, { key, promise });
+  try {
+    const result = await promise;
+    accelCache.set(emulatorPath, { key, at: Date.now(), ...result });
+    return result.value;
+  } finally {
+    if (accelInFlight.get(emulatorPath)?.promise === promise) accelInFlight.delete(emulatorPath);
+  }
 }
 
 export type ReadyAndroidSdk = { sdk: AndroidSdkStatus; root: string; avdHome: string; adbPath: string; emulatorPath: string };
@@ -355,6 +381,8 @@ export function requireAndroidSdkTools(
 export type AndroidSdkStatusOptions = AndroidSdkLocateOptions & {
   /** Re-run `emulator -accel-check` even when a cached answer is fresh. */
   forceAccelCheck?: boolean;
+  /** Re-run it when the cached answer says "not usable" and is older than this (a fixed `/dev/kvm` works now). */
+  recheckUnusableAccelAfterMs?: number;
 };
 
 /** The SDK as the panel and `ade android status` read it. */
@@ -419,7 +447,7 @@ export async function readAndroidSdkStatus(options: AndroidSdkStatusOptions = {}
     },
   ];
   const acceleration = emulatorFound
-    ? await readAndroidAcceleration(paths.emulator, { force: options.forceAccelCheck })
+    ? await readAndroidAcceleration(paths.emulator, { force: options.forceAccelCheck, recheckUnusableAfterMs: options.recheckUnusableAccelAfterMs })
     : { kind: null, usable: false, detail: "The Android emulator is not installed." };
   return {
     found: true,
