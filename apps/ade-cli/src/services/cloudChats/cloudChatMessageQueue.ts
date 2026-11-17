@@ -22,7 +22,6 @@
  * wake; after a cold restart the process is gone and the message fails.
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import {
   cloudChatMessageSettingsOf,
@@ -38,6 +37,7 @@ import {
   writeMessageJournal,
 } from "../account/cloudLaunchMessages";
 import { SIGN_IN_WAIT_MS, waitForSignIn, type SignInWaitDeps } from "../account/cloudLaunchSignInWait";
+import { saveCloudFiles, withAttachmentPaths, type SavedCloudFile } from "./cloudAttachmentFiles";
 
 type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
@@ -46,8 +46,6 @@ type Logger = {
 
 /** Chats whose messages go side by side. */
 const CHAT_PARALLEL = 4;
-/** The file ids the server accepts (`launches.ts`). */
-const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const MESSAGE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 export type CloudChatQueueDeps = {
@@ -102,18 +100,12 @@ export type CloudChatMessageQueue = {
 };
 
 /** A file a queued message carries, downloaded here. */
-type QueuedFile = { path: string; type: "image" | "file" };
+type QueuedFile = SavedCloudFile;
 
 /** The CLI's process is gone (a cold restart): nothing ADE types reaches it. */
 const CLI_ENDED_SENTENCE = "This CLI isn't running on its computer any more (the computer restarted), so ADE couldn't type the message. Open the CLI and send the message again.";
 
-/** A CLI reads files by path: a message for a CLI names its downloaded files after its text. */
-const withFilePaths = (text: string, files: readonly QueuedFile[]): string =>
-  files.length ? [text, "", "Attached files:", ...files.map((file) => `- ${file.path}`)].join("\n") : text;
-
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
-const safeFileName = (name: string): string => name.replace(/[/\\\u0000-\u001f]/g, "_").replace(/^\.+/, "_").slice(0, 120) || "file";
 
 async function downloadAttachments(
   api: CloudApiClient,
@@ -121,18 +113,14 @@ async function downloadAttachments(
   messageId: string,
   attachments: readonly CloudChatMessageAttachment[],
 ): Promise<QueuedFile[]> {
-  const out: QueuedFile[] = [];
-  if (!attachments.length) return out;
+  if (!attachments.length) return [];
   if (!MESSAGE_ID.test(messageId)) throw new Error("The message has an id this computer can't keep files under.");
-  const folder = path.join(rootPath, ".ade", "attachments", `chat-message-${messageId}`);
-  for (const file of attachments) {
-    if (!FILE_ID.test(file.fileId)) throw new Error(`The message names a file this computer can't keep ("${safeFileName(file.name)}").`);
-    fs.mkdirSync(folder, { recursive: true });
-    const target = path.join(folder, `${file.fileId}-${safeFileName(file.name)}`);
-    if (!fs.existsSync(target)) fs.writeFileSync(target, Buffer.from(await api.readLaunchFile(file.launchId, file.fileId)));
-    out.push({ path: target, type: file.contentType.startsWith("image/") ? "image" : "file" });
-  }
-  return out;
+  return await saveCloudFiles(
+    path.join(rootPath, ".ade", "attachments", `chat-message-${messageId}`),
+    attachments,
+    (file) => api.readLaunchFile(file.launchId, file.fileId),
+    "message",
+  );
 }
 
 export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChatMessageQueue {
@@ -142,6 +130,8 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
     timer.unref?.();
   }));
   const journalFile = path.join(deps.adeHome, "cloud", "chat-messages.json");
+  /** Holds the computer awake for one step; with no keep-awake, just runs it. */
+  const holdFor = deps.holdFor ?? (<T>(_reason: string, _ttlMs: number, run: () => Promise<T>) => run());
   let running: Promise<CloudChatQueueDrainResult> | null = null;
   let again = false;
 
@@ -210,7 +200,6 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
           const provider = message.provider ?? await deps.chatProvider(where.projectId, sessionId).catch(() => null);
           if (!provider) return { kind: "failed", error: "This chat is not on its computer any more. Send the message again." };
           if (!deps.signIn) return { kind: "go" };
-          const holdFor = deps.holdFor ?? (<T>(_reason: string, _ttlMs: number, run: () => Promise<T>) => run());
           const waited = await holdFor("chat_message_sign_in", SIGN_IN_WAIT_MS + 10 * 60_000, () => waitForSignIn(deps.signIn!, provider, {
             show: async (signIn) => {
               try {
@@ -246,7 +235,7 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
           const attachments = await downloadAttachments(api, where.rootPath, message.messageId, message.attachments ?? []);
           if ((await kindOf(where.projectId)) === "cli" && deps.typeIntoCli) {
             const outcome = await deps.typeIntoCli(where.projectId, sessionId, {
-              text: withFilePaths(message.text, attachments),
+              text: withAttachmentPaths(message.text, attachments),
               clientMessageId: message.clientSendId || message.messageId,
             });
             if (outcome === "ended") throw new Error(CLI_ENDED_SENTENCE);
@@ -292,7 +281,6 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
       again = true;
       return running;
     }
-    const holdFor = deps.holdFor ?? (<T>(_reason: string, _ttlMs: number, run: () => Promise<T>) => run());
     running = (async () => {
       let result: CloudChatQueueDrainResult;
       do {

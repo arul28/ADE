@@ -53,6 +53,7 @@ import {
 } from "../../../../account-directory/src/cloud/contract";
 import type { CloudProvider } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { parseChatLaunchArgs } from "../../../../desktop/src/main/services/chat/chatLaunchArgs";
+import { saveCloudFiles, withAttachmentPaths } from "../cloudChats/cloudAttachmentFiles";
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { CloudApiError, type CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
 import type {
@@ -197,8 +198,6 @@ type PendingContinue = {
 const JOIN_ATTEMPTS = 3;
 /** A device sign-in a person still has to approve: asked again this often, each a fresh 10-minute code, never past the join window. */
 const APPROVAL_ROUNDS = 6;
-/** The file ids the server accepts (`launches.ts`): a file's name on disk starts with it. */
-const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** The join's refusals a fresh device sign-in can get past (the code was given back, or the server was busy). */
 const JOIN_RETRY_CODES: ReadonlySet<string> = new Set(["expired", "not_found", "already_used", "unavailable", "network", "timeout"]);
 /** The server is still making this computer (its create answer was lost): asked again with a backoff, this long at most. */
@@ -294,8 +293,6 @@ function laneConfigOf(request: CloudServerLaunchRequest): ChatLaunchLaneConfig {
     ...(request.lane.autoName === true ? { autoName: true } : {}),
   };
 }
-
-const safeFileName = (name: string): string => name.replace(/[/\\\u0000-\u001f]/g, "_").replace(/^\.+/, "_").slice(0, 120) || "file";
 
 /**
  * The launch as `chat.startLaunch`'s raw payload, before `parseChatLaunchArgs`
@@ -451,15 +448,12 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
     // Past the clone, anything that stops the hand-off is the launch's failure, reported as one.
     let pendingContinue: PendingContinue | null = null;
     try {
-      const attachments: Array<{ path: string; type: "image" | "file" }> = [];
-      for (const file of request.chat?.attachments ?? []) {
-        if (!FILE_ID.test(file.fileId)) throw new Error(`The launch names a file this computer can't keep ("${file.name}").`);
-        const folder = path.join(project.rootPath, ".ade", "attachments", `launch-${launchId}`);
-        fs.mkdirSync(folder, { recursive: true });
-        const target = path.join(folder, `${file.fileId}-${safeFileName(file.name)}`);
-        fs.writeFileSync(target, Buffer.from(await api.readLaunchFile(launchId, file.fileId)));
-        attachments.push({ path: target, type: file.contentType.startsWith("image/") ? "image" : "file" });
-      }
+      const attachments = await saveCloudFiles(
+        path.join(project.rootPath, ".ade", "attachments", `launch-${launchId}`),
+        request.chat?.attachments ?? [],
+        (file) => api.readLaunchFile(launchId, file.fileId),
+        "launch",
+      );
       // A chat whose provider isn't signed in here waits for the person's sign-in first.
       const startStages = [computerStage, joinStage, cloneStage];
       if (request.chat && deps.providerReady) {
@@ -524,12 +518,6 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
     await follow(deps, after.projectId, report, after.reported ?? "");
     await reportAutomationRunEnd(deps, after.projectId);
   }
-}
-
-/** A CLI reads files by path: a message for a CLI names its downloaded files after its text. */
-export function withAttachmentPaths(text: string, attachments: ReadonlyArray<{ path: string }>): string {
-  if (!attachments.length) return text;
-  return [text, "", "Attached files:", ...attachments.map((file) => `- ${file.path}`)].join("\n");
 }
 
 /** Sends one stage update; true when it landed, or the server refused it for good. */
