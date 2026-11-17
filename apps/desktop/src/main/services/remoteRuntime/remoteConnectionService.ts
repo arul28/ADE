@@ -618,8 +618,14 @@ export class RemoteConnectionService {
         recovery,
       });
       // A cloud computer that went to sleep closes its link the same way; it
-      // then rests instead of showing an error and redialing.
-      void this.asleepAfterFailure(targetId, error);
+      // then rests instead of showing an error and redialing. A cloud
+      // computer found awake ends the hold and the fast redials too, so the
+      // windows see its drop (and later its rest) as before.
+      void this.asleepAfterFailure(targetId, error)?.then(() => {
+        if (!this.asleepChecks.isCloud(targetId) || !this.reconnectHoldSinceByTargetId.has(targetId)) return;
+        this.endDropRecovery(targetId);
+        this.emit();
+      });
     });
   }
 
@@ -2584,9 +2590,13 @@ export class RemoteConnectionService {
     // A link that was up: fast redials, also where the 30 s maintenance owns
     // the machine (it takes over when the fast window ends), and the hold.
     // A dial that never finished keeps the old path.
-    const wasConnected = this.statusById.get(target.id)?.state === "connected";
-    if (!wasConnected && maintenanceOwns) return { recovery: "reconnecting", watching: false };
-    if (wasConnected) this.beginDropRecovery(target.id, { hold: true });
+    // A cloud computer's drop is most often its sleep: no fast redials and no
+    // hold, so its rest shows as soon as its status says so.
+    const fast = this.statusById.get(target.id)?.state === "connected"
+      && !this.asleepChecks.isCloud(target.id)
+      && !this.asleepChecks.isResting(target.id);
+    if (!fast && maintenanceOwns) return { recovery: "reconnecting", watching: false };
+    if (fast) this.beginDropRecovery(target.id, { hold: true });
     this.hostReturnWatches.start(target.id);
     return { recovery: "reconnecting", watching: true };
   }

@@ -27,6 +27,8 @@ export class CloudAsleepChecks {
   private readonly restingTargetIds = new Set<string>();
   private readonly runningByTargetId = new Map<string, Promise<boolean>>();
   private readonly followUpsByTargetId = new Map<string, NodeJS.Timeout>();
+  /** Machines a question found to be cloud computers (asleep or not). */
+  private readonly cloudTargetIds = new Set<string>();
   /** Goes up each time a machine answers or is connected on purpose; an answer older than that is dropped. */
   private readonly aliveStampByTargetId = new Map<string, number>();
 
@@ -42,6 +44,11 @@ export class CloudAsleepChecks {
 
   isResting(targetId: string): boolean {
     return this.restingTargetIds.has(targetId);
+  }
+
+  /** Whether a question found this machine to be a cloud computer. */
+  isCloud(targetId: string): boolean {
+    return this.cloudTargetIds.has(targetId);
   }
 
   aliveStamp(targetId: string): number {
@@ -81,6 +88,7 @@ export class CloudAsleepChecks {
       this.runningByTargetId.delete(target.id);
       // Not a cloud computer after all: no rest and no later questions.
       if (asleep === null) return false;
+      this.cloudTargetIds.add(target.id);
       // Woken, reconnected, removed or disconnected by hand while the question was out.
       if (this.aliveStamp(target.id) !== stamp || !this.callbacks.stillWanted(target)) return false;
       if (!asleep) {
