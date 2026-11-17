@@ -12,18 +12,19 @@ import {
   parseCloudSignIn,
   type CloudSignInId,
 } from "../../../desktop/src/shared/cloudSignIns";
-import { CLAUDE_PASS_KEY_PREFIX } from "../../../desktop/src/shared/types/providerLogins";
+import { CLAUDE_PASS_KEY_PREFIX, isProviderLoginProvider } from "../../../desktop/src/shared/types/providerLogins";
 import { randomHex } from "../githubApp/seal";
-import type { CloudAccountSignIn, CloudAccountSignInId, CloudAccountSignIns } from "./contract";
-import { relayFetch, type RelayEnv } from "./accountVault";
+import type { CloudAccountSignIn, CloudAccountSignInId, CloudAccountSignInsWithCarried, CloudCarriedSignIns } from "./contract";
+import { readVaultItem, readVaultKeyList, relayFetch, type RelayEnv, type VaultKeyRecord } from "./accountVault";
 import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import { logCloud } from "./store";
 
 /**
- * The account's ADE Cloud sign-ins, for the web (`/cloud/sign-ins`). The web
- * can't reach the push relay's vault (no CORS there), so this route carries
- * its reads and writes, with the caller's own bearer: the relay takes the
- * account from the token, so a caller only ever reaches its own vault.
+ * The account's ADE Cloud sign-ins, for the web (`/cloud/sign-ins`). The push
+ * relay refuses every vault route to a browser (a request with an Origin;
+ * `BROWSER_ACCOUNT_ROUTES` in its relay.ts), so this route carries the web's
+ * reads and writes, with the caller's own bearer: the relay takes the account
+ * from the token, so a caller only ever reaches its own vault.
  *
  * The items are the ones the desktop's Settings card and every cloud
  * computer's brain already use, in the stored form all three share
@@ -88,8 +89,51 @@ async function readItems(env: RelayEnv, authorization: string): Promise<VaultIte
   return items;
 }
 
-async function statusOf(env: RelayEnv, authorization: string): Promise<CloudAccountSignIns> {
+/** Provider sign-ins carried to ADE Cloud, from the `provider_login` key names only (`<provider>/<origin12>.<slot>`). */
+function carriedOf(keys: Array<{ kind?: unknown; key?: unknown }>): CloudCarriedSignIns {
+  const carried: CloudCarriedSignIns = { antigravity: false };
+  for (const item of keys) {
+    if (item.kind !== PROVIDER_LOGIN_KIND || typeof item.key !== "string") continue;
+    const provider = item.key.split("/")[0] ?? "";
+    if (isProviderLoginProvider(provider)) carried[provider] = true;
+  }
+  return carried;
+}
+
+const PROVIDER_LOGIN_KIND = "provider_login";
+/** Claude passes read one by one; past this many the full read is cheaper. */
+const MAX_PASS_READS = 20;
+
+/**
+ * The live sign-in items, read through the relay's narrow routes: the key
+ * list (no values), then only the sign-in items it names, so no other
+ * credential of the account is opened. On a relay without those routes, the
+ * old full read. `carried` comes from key names alone.
+ */
+async function readSignInItems(env: RelayEnv, authorization: string): Promise<{ items: VaultItem[] | null; carried: CloudCarriedSignIns | null }> {
+  const listed = await readVaultKeyList(env, authorization, SCOPE);
+  if (!listed.ok && listed.reason === "failed") return { items: null, carried: null };
+  if (listed.ok) {
+    const signInKeys = new Set([...CLOUD_SIGN_INS.map((spec) => cloudSignInVaultKey(spec.id)), LEGACY_CLAUDE_SIGN_IN_KEY]);
+    const wanted = listed.value.filter((row: VaultKeyRecord) =>
+      (row.kind === KEY_KIND && signInKeys.has(row.key)) || (row.kind === PASS_KIND && row.key.startsWith(CLAUDE_PASS_KEY_PREFIX)));
+    const carried = carriedOf(listed.value);
+    if (wanted.filter((row) => row.kind === PASS_KIND).length <= MAX_PASS_READS) {
+      const reads = await Promise.all(wanted.map((row) => readVaultItem(env, authorization, row)));
+      if (reads.every((read) => read.ok)) {
+        return { items: reads.flatMap((read) => (read.ok && read.value ? [read.value] : [])), carried };
+      }
+      if (reads.some((read) => !read.ok && read.reason === "failed")) return { items: null, carried };
+    }
+    const items = await readItems(env, authorization);
+    return { items, carried };
+  }
   const items = await readItems(env, authorization);
+  return { items, carried: items ? carriedOf(items) : null };
+}
+
+async function statusOf(env: RelayEnv, authorization: string): Promise<CloudAccountSignInsWithCarried> {
+  const { items, carried } = await readSignInItems(env, authorization);
   const found = new Map<string, number | null>();
   let claudePasses = 0;
   let claudeAt: number | null = null;
@@ -122,7 +166,7 @@ async function statusOf(env: RelayEnv, authorization: string): Promise<CloudAcco
       savedAt: saved ? (claude ? claudeAt ?? found.get(LEGACY_CLAUDE_SIGN_IN_KEY) ?? null : found.get(keyOf) ?? null) : null,
     };
   });
-  return { signIns, claudePasses, unknown: items === null };
+  return { signIns, claudePasses, unknown: items === null, ...(carried ? { carried } : {}) };
 }
 
 /** One write of one item through the relay. True when it landed. */
@@ -202,8 +246,9 @@ export async function routeAccountSignIns(request: Request, path: string, env: R
 
   if (request.method === "DELETE") {
     if (id === "claude") {
-      // Every pass, and the single item of older versions: the Settings card's Remove.
-      const items = await readItems(env, authorization);
+      // Every pass, and the single item of older versions: the Settings card's Remove. Key names only.
+      const listed = await readVaultKeyList(env, authorization, SCOPE, PASS_KIND);
+      const items = listed.ok ? listed.value : listed.reason === "no_route" ? await readItems(env, authorization) : null;
       if (!items) return unavailable();
       const keys = items.flatMap((item) => (item.kind === PASS_KIND && typeof item.key === "string" && item.key.startsWith(CLAUDE_PASS_KEY_PREFIX) ? [item.key] : []));
       for (const key of keys) if (!await deleteItem(env, authorization, PASS_KIND, key)) return unavailable();

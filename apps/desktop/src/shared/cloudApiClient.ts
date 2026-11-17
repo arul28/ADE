@@ -68,6 +68,25 @@ import {
   type CloudRemoteSignInStatus,
   type CloudServerLaunchRequest,
 } from "../../../account-directory/src/cloud/contract";
+// --- server-edge ---
+import {
+  CLOUD_EDGE_PATHS,
+  cloudInstanceEventWakesPath,
+  type CloudAccountSecretKind,
+  type CloudAccountSecrets,
+  type CloudAccountSignInsWithCarried,
+  type CloudAgentLimitsState,
+  type CloudAgentLimitsUpdate,
+  type CloudCtoCopySummary,
+  type CloudEventWakesRequest,
+  type CloudEventWakesResult,
+  type CloudJiraIssueRequest,
+  type CloudJiraIssueResult,
+  type CloudJiraSearchRequest,
+  type CloudJiraSearchResult,
+  type CloudLinearQueryRequest,
+  type CloudLinearQueryResult,
+} from "../../../account-directory/src/cloud/contract";
 
 export type CloudApiFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -230,7 +249,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       request<CloudRemoteSignInStatus>("GET", `${instancePath(instanceId)}/sign-ins/${encodeURIComponent(jobId)}`, { timeoutMs: timeoutMs * 3 }),
 
     /* ---- The account's ADE Cloud sign-ins (status only, never a value) ---- */
-    accountSignIns: () => request<CloudAccountSignIns>("GET", CLOUD_PATHS.signIns),
+    accountSignIns: () => request<CloudAccountSignInsWithCarried>("GET", CLOUD_PATHS.signIns),
     /** A key, or for `claude` a Claude pass, saved to the account vault. */
     saveAccountSignIn: (signInId: string, key: string) =>
       request<CloudAccountSignIns>("PUT", `${CLOUD_PATHS.signIns}/${encodeURIComponent(signInId)}`, { body: { key } }),
@@ -248,7 +267,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       if (args.projectKey) query.set("project", args.projectKey);
       if (args.limit) query.set("limit", String(args.limit));
       if (args.cursor) query.set("cursor", args.cursor);
-      const suffix = query.size ? `?${query.toString()}` : "";
+      const suffix = query.toString() ? `?${query.toString()}` : "";
       try {
         return await request<{ chats: CloudChatRow[]; nextCursor: string | null }>("GET", `${CLOUD_PATHS.chats}${suffix}`);
       } catch (error) {
@@ -261,7 +280,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       const query = new URLSearchParams();
       if (args.before != null) query.set("before", String(args.before));
       if (args.limit) query.set("limit", String(args.limit));
-      const suffix = query.size ? `?${query.toString()}` : "";
+      const suffix = query.toString() ? `?${query.toString()}` : "";
       try {
         return await request<CloudChatTranscriptPage>(
           "GET",
@@ -283,7 +302,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       if (args.machineKey) query.set("machine", args.machineKey);
       if (args.projectKey) query.set("project", args.projectKey);
       if (args.cursor) query.set("cursor", args.cursor);
-      const suffix = query.size ? `?${query.toString()}` : "";
+      const suffix = query.toString() ? `?${query.toString()}` : "";
       return orNullOn404(() => request<{ sessions: CloudSessionRow[]; nextCursor: string | null }>("GET", `${CLOUD_PATHS.sessions}${suffix}`));
     },
     /** One copy; null when the server has none (or predates copies). */
@@ -301,7 +320,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       const query = new URLSearchParams();
       if (args.project) query.set("project", args.project);
       if (args.pr != null) query.set("pr", String(args.pr));
-      const suffix = query.size ? `?${query.toString()}` : "";
+      const suffix = query.toString() ? `?${query.toString()}` : "";
       return orNullOn404(() => request<{ lanes: AccountLaneIndexRow[] }>("GET", `${CLOUD_PATHS.accountLanes}${suffix}`));
     },
 
@@ -408,6 +427,40 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** Any brain: its whole lane set; the same hash writes nothing. Null from an older server. */
     putAccountLanes: (index: AccountLaneIndexPut) =>
       orNullOn404(() => request<AccountLaneIndexPutResult>("PUT", CLOUD_PATHS.accountLanes, { body: index })),
+
+    // --- server-edge ---
+    /* Account data and integrations with no computer. Null: an older server without the route (keep today's behavior). */
+    /** The account's agent limits. 409 `limits_unreadable` when a newer ADE saved them. */
+    agentLimits: () => orNullOn404(() => request<CloudAgentLimitsState>("GET", CLOUD_EDGE_PATHS.limits)),
+    /** Changes only the fields sent; 409 `limits_changed` when `ifRevision` is no longer the stored one. */
+    saveAgentLimits: (update: CloudAgentLimitsUpdate) =>
+      orNullOn404(() => request<CloudAgentLimitsState>("PUT", CLOUD_EDGE_PATHS.limits, { body: update })),
+    /** Saved secrets' names (never values), account-wide or of one repository (`origin`). */
+    accountSecrets: (args: { kind?: CloudAccountSecretKind; origin?: string | null } = {}) => {
+      const query = new URLSearchParams();
+      if (args.kind) query.set("kind", args.kind);
+      if (args.origin) query.set("origin", args.origin);
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return orNullOn404(() => request<CloudAccountSecrets>("GET", `${CLOUD_EDGE_PATHS.accountSecrets}${suffix}`));
+    },
+    /** The CTO's account copy for a repository. */
+    ctoCopy: (origin: string) =>
+      orNullOn404(() => request<CloudCtoCopySummary>("GET", `${CLOUD_EDGE_PATHS.cto}?origin=${encodeURIComponent(origin)}`)),
+    /** One fixed Linear read with the project's connection; 409 `linear_needs_renewal` / `linear_not_connected` say why not. */
+    linearQuery: (query: CloudLinearQueryRequest) =>
+      orNullOn404(() => request<CloudLinearQueryResult>("POST", CLOUD_EDGE_PATHS.linearQuery, { body: query })),
+    jiraSearch: (search: CloudJiraSearchRequest) =>
+      orNullOn404(() => request<CloudJiraSearchResult>("POST", CLOUD_EDGE_PATHS.jiraSearch, { body: search })),
+    /** Null also when Jira has no such issue (or this sign-in can't see it). */
+    jiraIssue: (issue: CloudJiraIssueRequest) =>
+      orNullOn404(() => request<CloudJiraIssueResult>("POST", CLOUD_EDGE_PATHS.jiraIssue, { body: issue })),
+    /** From the computer, at rest: the event topics that wake it (the whole list; `[]` removes it). */
+    putEventWakes: (instanceId: string, topics: string[]) =>
+      orNullOn404(() => request<CloudEventWakesResult>("PUT", cloudInstanceEventWakesPath(instanceId), {
+        body: { topics } satisfies CloudEventWakesRequest,
+        headers: { [CLOUD_INSTANCE_HEADER]: instanceId },
+      })),
+    // --- end server-edge ---
   };
 }
 

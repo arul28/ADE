@@ -25,15 +25,21 @@ export type RelayEnv = CloudEnv & {
 /** The vault items a cloud computer's git can use (`ACCOUNT_GIT_CREDENTIAL_ITEMS` in cloudGitCredential.ts). */
 const GIT_CREDENTIAL_KEYS = ["github", "github-cli"] as const;
 /** The agent limits' vault item (`CLOUD_AGENT_LIMITS_VAULT_KEY` in cloudSleep.ts). */
-const AGENT_LIMITS_KEY = "cloud-budget";
+export const AGENT_LIMITS_KEY = "cloud-budget";
 const VAULT_PAGES = 4;
 const RELAY_TIMEOUT_MS = 8_000;
 const GITHUB_TIMEOUT_MS = 5_000;
 
 /** What an unattended agent may spend (`CloudAgentLimits` in the desktop's adeCloud.ts). */
-export type CloudAgentLimits = { unattendedSpend: boolean; machinesPerDay: number; maxShape: string };
+export type CloudAgentLimits = {
+  unattendedSpend: boolean;
+  machinesPerDay: number;
+  maxShape: string;
+  /** Paid extra disk an unattended agent may grow into, cents a month; null or left out: the account's own extra-disk limit. */
+  extraDiskMonthCents?: number | null;
+};
 /** The desktop's default (`CLOUD_DEFAULT_AGENT_LIMITS`, "balanced"). */
-export const DEFAULT_AGENT_LIMITS: CloudAgentLimits = { unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16" };
+export const DEFAULT_AGENT_LIMITS: CloudAgentLimits = { unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", extraDiskMonthCents: null };
 
 export type VaultFacts = {
   /** `ok`: a git-capable credential follows the account; `none`: none does; `unknown`: the vault didn't answer. */
@@ -65,7 +71,15 @@ function tokenOf(raw: unknown): boolean {
   }
 }
 
-function limitsOf(raw: unknown): CloudAgentLimits | null {
+/** The most `extraDiskMonthCents` may be (`CLOUD_AGENT_EXTRA_DISK_MAX_CENTS` in the desktop's cloudDiskGrowRules.ts). */
+export const AGENT_EXTRA_DISK_MAX_CENTS = 100_000;
+
+/** A whole number of cents from 0 to the max, or null (the account's own limit), like the desktop's `cloudAgentExtraDiskCentsOf`. */
+export function extraDiskCentsOf(raw: unknown): number | null {
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 0 && raw <= AGENT_EXTRA_DISK_MAX_CENTS ? raw : null;
+}
+
+export function limitsOf(raw: unknown): CloudAgentLimits | null {
   if (typeof raw !== "string" || !raw) return null;
   try {
     const parsed = JSON.parse(raw) as { v?: unknown; agents?: Record<string, unknown> } | null;
@@ -76,57 +90,189 @@ function limitsOf(raw: unknown): CloudAgentLimits | null {
       unattendedSpend: typeof agents.unattendedSpend === "boolean" ? agents.unattendedSpend : DEFAULT_AGENT_LIMITS.unattendedSpend,
       machinesPerDay: typeof perDay === "number" && Number.isInteger(perDay) && perDay >= 0 && perDay <= 100 ? perDay : DEFAULT_AGENT_LIMITS.machinesPerDay,
       maxShape: typeof agents.maxShape === "string" && /^\d+x\d+$/.test(agents.maxShape) ? agents.maxShape : DEFAULT_AGENT_LIMITS.maxShape,
+      extraDiskMonthCents: extraDiskCentsOf(agents.extraDiskMonthCents),
     };
   } catch {
     return null;
   }
 }
 
-/**
- * The git credential and the agent limits, read once from the account-wide
- * (`all`) part of the vault with the caller's own token. Never throws.
- */
-export async function readVaultFacts(env: RelayEnv, authorization: string | null): Promise<VaultFacts> {
+/** One vault row as the relay returns it. `value` is null for a tombstone or a row the relay can't open. */
+export type VaultRecord = { scope: string; kind: string; key: string; value: string | null; updatedAt: string; deleted?: boolean };
+/** One live key with no value (`GET vault/keys`). */
+export type VaultKeyRecord = { scope: string; kind: string; key: string; updatedAt: string };
+/** `no_route`: a relay from before the narrow reads (it answers 404), so the caller reads the old way. */
+export type VaultRead<T> = { ok: true; value: T } | { ok: false; reason: "no_route" | "failed" };
+
+async function relayGet(env: RelayEnv, authorization: string, path: string, event: string): Promise<VaultRead<Record<string, unknown>>> {
   const relay = relayFetch(env);
-  if (!relay || !authorization) return UNKNOWN;
+  if (!relay) return { ok: false, reason: "failed" };
+  try {
+    const response = await relay.fetch(`${relay.base}${path}`, {
+      headers: { accept: "application/json", authorization },
+      redirect: "manual",
+      signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
+    });
+    if (response.status === 404) {
+      await response.body?.cancel().catch(() => {});
+      return { ok: false, reason: "no_route" };
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      logCloud(`${event}_refused`, { status: response.status });
+      return { ok: false, reason: "failed" };
+    }
+    return { ok: true, value: await response.json() as Record<string, unknown> };
+  } catch (error) {
+    logCloud(`${event}_failed`, { error: error instanceof Error ? error.name : "unknown" });
+    return { ok: false, reason: "failed" };
+  }
+}
+
+function vaultRecordOf(raw: unknown): VaultRecord | null {
+  if (!raw || typeof raw !== "object") return null;
+  const item = raw as Record<string, unknown>;
+  if (typeof item.scope !== "string" || typeof item.kind !== "string" || typeof item.key !== "string") return null;
+  return {
+    scope: item.scope,
+    kind: item.kind,
+    key: item.key,
+    value: typeof item.value === "string" ? item.value : null,
+    updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "",
+    ...(item.deleted === true ? { deleted: true } : {}),
+  };
+}
+
+/** Every row of one vault scope (the full read, which opens every item), or null when it didn't answer or ran past `maxPages`. */
+export async function readVaultScope(env: RelayEnv, authorization: string, scope: string, maxPages: number, options: { partial?: boolean } = {}): Promise<VaultRecord[] | null> {
+  const rows: VaultRecord[] = [];
+  let since: string | null = null;
+  for (let page = 0; page < maxPages; page += 1) {
+    const read = await relayGet(env, authorization, `/attention/account/vault?scope=${encodeURIComponent(scope)}${since ? `&since=${encodeURIComponent(since)}` : ""}`, "cloud.vault_read");
+    if (!read.ok) return null;
+    for (const raw of Array.isArray(read.value.items) ? read.value.items : []) {
+      const row = vaultRecordOf(raw);
+      if (row) rows.push(row);
+    }
+    if (read.value.truncated !== true || typeof read.value.cursor !== "string") return rows;
+    since = read.value.cursor;
+  }
+  // `partial`: the caller has always read only the first pages (the facts read).
+  if (options.partial) return rows;
+  logCloud("cloud.vault_read_too_long", { pages: maxPages });
+  return null;
+}
+
+/**
+ * One named item through the relay's narrow read (`GET vault/item`), which
+ * opens only that item. `value: null` when there is no live row.
+ */
+export async function readVaultItem(env: RelayEnv, authorization: string, item: { scope: string; kind: string; key: string }): Promise<VaultRead<VaultRecord | null>> {
+  const query = new URLSearchParams({ scope: item.scope, kind: item.kind, key: item.key });
+  const read = await relayGet(env, authorization, `/attention/account/vault/item?${query.toString()}`, "cloud.vault_item_read");
+  if (!read.ok) return read;
+  const row = vaultRecordOf(read.value.item);
+  return { ok: true, value: row && !row.deleted ? row : null };
+}
+
+/**
+ * The live keys of one scope (and kind), with no value (`GET vault/keys`).
+ * On a relay without that route it falls back to the full read and drops the
+ * values here, so a caller never holds a value it did not ask for.
+ */
+export async function readVaultKeys(env: RelayEnv, authorization: string, scope: string, kind?: string): Promise<VaultKeyRecord[] | null> {
+  const read = await readVaultKeyList(env, authorization, scope, kind);
+  if (read.ok) return read.value;
+  if (read.reason !== "no_route") return null;
+  const rows = await readVaultScope(env, authorization, scope, LEGACY_SCOPE_PAGES);
+  return rows?.flatMap((row) => (row.deleted || (kind && row.kind !== kind) ? [] : [{ scope: row.scope, kind: row.kind, key: row.key, updatedAt: row.updatedAt }])) ?? null;
+}
+
+/** The relay's keys read alone (`GET vault/keys`): `no_route` on a relay without it. */
+export async function readVaultKeyList(env: RelayEnv, authorization: string, scope: string, kind?: string): Promise<VaultRead<VaultKeyRecord[]>> {
+  const query = new URLSearchParams({ scope, ...(kind ? { kind } : {}) });
+  const read = await relayGet(env, authorization, `/attention/account/vault/keys?${query.toString()}`, "cloud.vault_keys_read");
+  if (!read.ok) return read;
+  const keys: VaultKeyRecord[] = [];
+  for (const raw of Array.isArray(read.value.items) ? read.value.items : []) {
+    const row = vaultRecordOf(raw);
+    if (row) keys.push({ scope: row.scope, kind: row.kind, key: row.key, updatedAt: row.updatedAt });
+  }
+  return { ok: true, value: keys };
+}
+
+/** The relay's pages include tombstones, so a long-lived vault takes several (the sign-ins read's cap). */
+const LEGACY_SCOPE_PAGES = 25;
+
+/**
+ * One write of one item through the relay, with the revision it replaces
+ * (`absent` for "no row"). `stale`: the row changed since that revision.
+ */
+export async function writeVaultItem(
+  env: RelayEnv,
+  authorization: string,
+  item: { scope: string; kind: string; key: string; value: string; ifRevision: string },
+  writer: string,
+): Promise<"ok" | "stale" | "failed"> {
+  const relay = relayFetch(env);
+  if (!relay) return "failed";
+  const at = new Date().toISOString();
+  try {
+    const response = await relay.fetch(`${relay.base}/attention/account/vault`, {
+      method: "PUT",
+      headers: { accept: "application/json", "content-type": "application/json", authorization },
+      body: JSON.stringify({ deviceId: writer, sentAt: at, itemResults: true, items: [{ ...item, writtenAt: at }] }),
+      redirect: "manual",
+      signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      logCloud("cloud.vault_write_refused", { status: response.status });
+      return "failed";
+    }
+    const body = await response.json() as { results?: Array<{ status?: unknown }> };
+    const status = body.results?.[0]?.status;
+    if (status === "ok") return "ok";
+    return status === "stale" ? "stale" : "failed";
+  } catch (error) {
+    logCloud("cloud.vault_write_failed", { error: error instanceof Error ? error.name : "unknown" });
+    return "failed";
+  }
+}
+
+function factsOf(rows: Array<VaultRecord | null>): VaultFacts {
   let git = false;
   let limits: CloudAgentLimits | null = null;
   let limitsStored = false;
-  let since: string | null = null;
-  try {
-    for (let page = 0; page < VAULT_PAGES; page += 1) {
-      const url = `${relay.base}/attention/account/vault?scope=all${since ? `&since=${encodeURIComponent(since)}` : ""}`;
-      const response = await relay.fetch(url, {
-        headers: { accept: "application/json", authorization },
-        redirect: "manual",
-        signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
-      });
-      if (!response.ok) {
-        await response.body?.cancel().catch(() => {});
-        logCloud("cloud.vault_read_refused", { status: response.status });
-        return UNKNOWN;
-      }
-      const body = await response.json() as { items?: Array<Record<string, unknown>>; truncated?: unknown; cursor?: unknown };
-      for (const item of body.items ?? []) {
-        if (item.kind !== "integration" || item.deleted === true) continue;
-        if (GIT_CREDENTIAL_KEYS.includes(item.key as typeof GIT_CREDENTIAL_KEYS[number]) && tokenOf(item.value)) git = true;
-        if (item.key === AGENT_LIMITS_KEY) {
-          limitsStored = true;
-          const parsed = limitsOf(item.value);
-          if (parsed) limits = parsed;
-          else logCloud("cloud.vault_limits_unreadable", {});
-        }
-      }
-      if (body.truncated !== true || typeof body.cursor !== "string") break;
-      since = body.cursor;
+  for (const item of rows) {
+    if (!item || item.kind !== "integration" || item.deleted === true) continue;
+    if (GIT_CREDENTIAL_KEYS.includes(item.key as typeof GIT_CREDENTIAL_KEYS[number]) && tokenOf(item.value)) git = true;
+    if (item.key === AGENT_LIMITS_KEY) {
+      limitsStored = true;
+      const parsed = limitsOf(item.value);
+      if (parsed) limits = parsed;
+      else logCloud("cloud.vault_limits_unreadable", {});
     }
-  } catch (error) {
-    logCloud("cloud.vault_read_failed", { error: error instanceof Error ? error.name : "unknown" });
-    return UNKNOWN;
   }
   // Limits stored but unreadable (a newer ADE's format, a broken value) are unknown,
   // and unknown never spends; the defaults apply only when none are stored.
   return { git: git ? "ok" : "none", limits: limits ?? (limitsStored ? null : DEFAULT_AGENT_LIMITS) };
+}
+
+/**
+ * The git credential and the agent limits, read from the account-wide
+ * (`all`) part of the vault with the caller's own token: three named items
+ * through the relay's narrow read, or the old paged read of the whole scope
+ * on a relay without it. Never throws.
+ */
+export async function readVaultFacts(env: RelayEnv, authorization: string | null): Promise<VaultFacts> {
+  if (!relayFetch(env) || !authorization) return UNKNOWN;
+  const reads = await Promise.all([...GIT_CREDENTIAL_KEYS, AGENT_LIMITS_KEY].map((key) =>
+    readVaultItem(env, authorization, { scope: "all", kind: "integration", key })));
+  if (reads.every((read) => read.ok)) return factsOf(reads.map((read) => (read.ok ? read.value : null)));
+  if (reads.some((read) => !read.ok && read.reason === "failed")) return UNKNOWN;
+  const rows = await readVaultScope(env, authorization, "all", VAULT_PAGES, { partial: true });
+  return rows ? factsOf(rows) : UNKNOWN;
 }
 
 export type RepoVisibility = "public" | "private" | "unknown";

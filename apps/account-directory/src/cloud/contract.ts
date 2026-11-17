@@ -1859,7 +1859,7 @@ export type CloudLaunchStagesUpdate = {
 export const CLOUD_REMOTE_SIGN_IN_KINDS = ["device", "url_paste", "api_key", "desktop"] as const;
 export type CloudRemoteSignInKind = (typeof CLOUD_REMOTE_SIGN_IN_KINDS)[number];
 /** The sign-ins the account vault keeps for ADE Cloud (the desktop's `CloudSignInId`). OpenRouter's key serves OpenCode and Pi. */
-export type CloudAccountSignInId = "claude" | "codex" | "cursor" | "droid" | "grok" | "copilot" | "devin" | "muse" | "openrouter";
+export type CloudAccountSignInId = "claude" | "codex" | "cursor" | "droid" | "grok" | "copilot" | "devin" | "muse" | "qwen" | "openrouter";
 export type CloudRemoteSignInRow = {
   provider: string;
   label: string;
@@ -1898,7 +1898,8 @@ export const CLOUD_REMOTE_SIGN_IN: readonly CloudRemoteSignInRow[] = [
   { provider: "opencode", label: "OpenCode", remoteSignIn: "api_key", reason: "OpenCode on ADE Cloud uses your OpenRouter key: add it in ADE Cloud's sign-ins.", accountSignIn: "openrouter" },
   { provider: "pi", label: "Pi", remoteSignIn: "api_key", reason: "Pi on ADE Cloud uses your OpenRouter key: add it in ADE Cloud's sign-ins.", accountSignIn: "openrouter" },
   { provider: "antigravity", label: "Antigravity", remoteSignIn: "desktop", reason: "Antigravity signs in with Google in a browser on the same computer.", accountSignIn: null },
-  { provider: "qwen", label: "Qwen Code", remoteSignIn: "desktop", reason: "ADE doesn't run Qwen Code's sign-in on another computer.", accountSignIn: null },
+  // Qwen's own OAuth sign-in ended on 2026-04-15; Qwen Code runs on a DashScope API key.
+  { provider: "qwen", label: "Qwen Code", remoteSignIn: "api_key", reason: "Qwen Code on ADE Cloud uses your Alibaba Cloud Model Studio (DashScope) API key: add it in ADE Cloud's sign-ins.", accountSignIn: "qwen" },
 ];
 
 /** Why a provider can't be signed in on a computer from here, with one way to do it: only a `desktop` row adds where. */
@@ -2142,3 +2143,127 @@ export type CloudAutomationSummary = {
   nextFireAt: number | null;
   runs: CloudAutomationRun[];
 };
+
+// --- server-edge ---
+/*
+ * Account data and integrations for a client with no computer, and wakes
+ * from events (owner: the server-edge track). Every route takes the Clerk
+ * bearer and reaches only the caller's own account; none returns a secret
+ * value.
+ *
+ *   GET    /cloud/limits                         CloudAgentLimitsState
+ *   PUT    /cloud/limits                         CloudAgentLimitsState   (CloudAgentLimitsUpdate; 409 `limits_changed`)
+ *   GET    /cloud/account-secrets?kind=&origin=  CloudAccountSecrets   (keys only)
+ *   GET    /cloud/cto?origin=                    CloudCtoCopySummary
+ *   POST   /cloud/integrations/linear/query      CloudLinearQueryResult   (CloudLinearQueryRequest)
+ *   POST   /cloud/integrations/jira/search       CloudJiraSearchResult   (CloudJiraSearchRequest)
+ *   POST   /cloud/integrations/jira/issue        CloudJiraIssueResult   (CloudJiraIssueRequest)
+ *   PUT    /cloud/instances/:id/event-wakes      CloudEventWakesResult   (from the computer: CloudEventWakesRequest)
+ *   POST   /cloud/internal/event-wake            CloudEventWakeInternalResult   (webhook relay only, `CLOUD_EVENT_WAKE_HEADER`)
+ */
+export const CLOUD_EDGE_PATHS = {
+  limits: "/cloud/limits",
+  accountSecrets: "/cloud/account-secrets",
+  cto: "/cloud/cto",
+  linearQuery: "/cloud/integrations/linear/query",
+  jiraSearch: "/cloud/integrations/jira/search",
+  jiraIssue: "/cloud/integrations/jira/issue",
+  internalEventWake: "/cloud/internal/event-wake",
+} as const;
+/** `/cloud/instances/:id/event-wakes`: the topics that wake this computer at rest. */
+export const cloudInstanceEventWakesPath = (instanceId: string): string =>
+  `${CLOUD_PATHS.instances}/${encodeURIComponent(instanceId)}/event-wakes`;
+
+/** What an unattended agent may spend: the account vault's `cloud-budget` item (the desktop's `CloudAgentLimits`). */
+export type CloudAgentLimitsValue = {
+  unattendedSpend: boolean;
+  machinesPerDay: number;
+  maxShape: "2x4" | "4x8" | "4x16" | "4x32";
+  /** Cents a month of paid extra disk agents may grow into; null: the account's own extra-disk limit. */
+  extraDiskMonthCents: number | null;
+};
+/** `revision`: what a write names in `ifRevision` (null: none stored yet). `stored: false`: these are the defaults. */
+export type CloudAgentLimitsState = { limits: CloudAgentLimitsValue; revision: string | null; stored: boolean };
+/** Only the fields sent change; every other stored field stays. `ifRevision` from the last GET (left out: last writer wins). */
+export type CloudAgentLimitsUpdate = { limits: Partial<CloudAgentLimitsValue>; ifRevision?: string | null };
+
+/** The vault kinds `GET /cloud/account-secrets` lists. Sign-ins, the CTO copy and ADE MCP's own items are never listed. */
+export const CLOUD_ACCOUNT_SECRET_KINDS = ["secret", "provider_api_key", "provider_key", "integration", "project_secret"] as const;
+export type CloudAccountSecretKind = (typeof CLOUD_ACCOUNT_SECRET_KINDS)[number];
+/** One saved secret's name: never its value. `scope` is `all` or `repo:<host>/<owner>/<repo>`. */
+export type CloudAccountSecretKey = { scope: string; kind: CloudAccountSecretKind; key: string; updatedAt: string };
+export type CloudAccountSecrets = { secrets: CloudAccountSecretKey[] };
+
+/** The newest part of the CTO's last turns `GET /cloud/cto` shows; the start is cut. */
+export const CLOUD_CTO_TAIL_MAX_CHARS = 12_000;
+export type CloudCtoCopy = {
+  ownerName: string;
+  savedAt: string | null;
+  identity: Record<string, unknown>;
+  projectNotes: string;
+  userNotes: string;
+  openWork: string | null;
+  routines: Array<{ title: string; cron: string; timeZone?: string; paused: boolean }>;
+  tail: string;
+  tailTruncated: boolean;
+  story: { summary: string; coveredThrough: string | null } | null;
+};
+/** `available: false`: no copy for this repository yet (its CTO home hasn't run a turn), or one this ADE can't read. */
+export type CloudCtoCopySummary = { available: boolean; copy: CloudCtoCopy | null };
+
+/**
+ * Provider sign-ins carried to ADE Cloud, from the vault's `provider_login`
+ * key names only. `GET /cloud/sign-ins` adds it as `carried` (left out when
+ * the vault didn't answer).
+ */
+export type CloudCarriedSignIns = { antigravity: boolean } & Partial<Record<string, boolean>>;
+export type CloudAccountSignInsWithCarried = CloudAccountSignIns & { carried?: CloudCarriedSignIns };
+
+/** Linear and Jira requests one account may make in a minute, together. */
+export const CLOUD_INTEGRATION_REQUESTS_PER_MINUTE = 30;
+/**
+ * The fixed Linear reads (`integrations.ts` holds the documents):
+ * - `identity`: viewer and organization. `teams`: teams with their states.
+ * - `projects`: the quick view's projects. `customViews`: saved views.
+ * - `issues` `{first?, after?, includeArchived?, filter?}`; `searchIssues` `{term, ...}`.
+ * - `issue` `{id}` (detail); `issuesByIds` `{ids}` (≤ 50).
+ * - `comments` `{issueId, first?, after?}`; `notifications` `{first?}`.
+ */
+export const CLOUD_LINEAR_OPS = ["identity", "teams", "projects", "issues", "searchIssues", "issue", "issuesByIds", "comments", "customViews", "notifications"] as const;
+export type CloudLinearOp = (typeof CLOUD_LINEAR_OPS)[number];
+/** `origin`: the project's git origin; its Linear connection is the one used. */
+export type CloudLinearQueryRequest = { origin: string; op: CloudLinearOp; vars?: Record<string, unknown> };
+/** Linear's own `data` for the op's document, as the desktop's normalizers read it. */
+export type CloudLinearQueryResult = { op: CloudLinearOp; data: Record<string, unknown>; authMode: "manual" | "oauth" };
+export type CloudJiraSearchRequest = { origin: string; jql: string; fields?: string[]; maxResults?: number; nextPageToken?: string | null };
+/** Jira's own issue objects; `siteUrl` is `https://<site>.atlassian.net`. */
+export type CloudJiraSearchResult = { siteUrl: string; issues: Record<string, unknown>[]; nextPageToken: string | null };
+export type CloudJiraIssueRequest = { origin: string; key: string };
+export type CloudJiraIssueResult = { siteUrl: string; issue: Record<string, unknown> };
+/**
+ * Integration refusals besides `CLOUD_REFUSAL_CODES` (`linear_needs_renewal`,
+ * `rate_limited`, `unavailable`). Clients show `message`.
+ */
+export const CLOUD_INTEGRATION_ERROR_CODES = {
+  linear_not_connected: 409,
+  jira_not_connected: 409,
+  jira_site_unsupported: 409,
+  integration_failed: 502,
+} as const;
+
+/** Topics one computer may listen to. */
+export const CLOUD_EVENT_WAKE_MAX_TOPICS = 20;
+/** One event wake per computer in this long, however many deliveries arrive. */
+export const CLOUD_EVENT_WAKE_COOLDOWN_MS = 5 * 60_000;
+/** The header the webhook relay proves itself with (secret `CLOUD_EVENT_WAKE_SECRET` on both Workers). */
+export const CLOUD_EVENT_WAKE_HEADER = "x-ade-event-wake-secret";
+/**
+ * Topics: `linear-org:<organization id>`, `linear-account:<own user id>`,
+ * `hooks-account:<own user id>` (the webhook relay's topic names). The whole
+ * list replaces the computer's; `[]` removes it.
+ */
+export type CloudEventWakesRequest = { topics: string[] };
+export type CloudEventWakesResult = { topics: string[] };
+export type CloudEventWakeInternalRequest = { topic: string };
+/** `subscribed: false`: no computer listens; the relay may skip this topic for a while. */
+export type CloudEventWakeInternalResult = { subscribed: boolean; woken: number };

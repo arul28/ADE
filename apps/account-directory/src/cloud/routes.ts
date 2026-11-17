@@ -13,6 +13,14 @@ import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, routeLaunch
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
 import { serverGitCheck } from "./accountVault";
 import { routeAccountSignIns } from "./accountSignIns";
+// --- server-edge ---
+import { routeAccountSecrets } from "./accountSecrets";
+import { routeCtoCopy } from "./ctoCopy";
+import { handleInternalEventWake, isInternalEventWakeRequest, routeEventWakeSubscription, type EventWakeOutcome } from "./eventWakes";
+import { routeJiraIssue, routeJiraSearch, routeLinearQuery } from "./integrations";
+import { routeCloudLimits } from "./limits";
+import { CLOUD_EDGE_PATHS } from "./contract";
+// --- end server-edge ---
 import { handleCloudModels } from "./models";
 import { handleAutomationDelivery, isAutomationDeliveryRequest, noteAutomationLaunchProgress, routeAutomations } from "./automations";
 import { routeProjectComputersDelete } from "./projectComputers";
@@ -394,6 +402,24 @@ async function recordStatus(env: CloudEnv, computer: ComputerRow, status: string
   const statements = statusChangeStatements(env, computer, status, now, reason);
   if (statements.length) await env.DB.batch(statements);
 }
+
+// --- server-edge ---
+/**
+ * One event wake (`eventWakes.ts`): the checks a person's wake makes, without
+ * waiting at the awake cap and without counting as use for the idle cleanup.
+ */
+async function eventWakeComputer(env: CloudEnv, computer: ComputerRow, now: number): Promise<EventWakeOutcome> {
+  const provider = providerFor(env);
+  if (!provider) return "failed";
+  if (await isCloudBlocked(env, computer.user_id)) return "refused:account_blocked";
+  const { blocked } = await wakeBlocker(env, computer.user_id, now);
+  if (blocked) return `refused:${blocked.refusal}`;
+  if (await awakeRoom(env, computer, now)) return "refused:too_many_awake";
+  const status = await provider.startInstance(computer.instance_id);
+  await recordStatus(env, computer, status, now, "event_wake");
+  return "woken";
+}
+// --- end server-edge ---
 
 async function markGone(env: CloudEnv, computer: ComputerRow, now: number): Promise<void> {
   await env.DB.batch(goneFromProviderStatements(env, computer, now));
@@ -1492,6 +1518,11 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
       createComputer: (userId, launchProvider, extras) => createComputerSettled(env, userId, launchProvider, extras, { now, waitUntil }),
     }));
   }
+  // --- server-edge --- The webhook relay's event wake: its shared secret is the proof, no account token.
+  if (isInternalEventWakeRequest(path)) {
+    return providerCall(() => handleInternalEventWake(request, env, (computer, now) => eventWakeComputer(env, computer, now), Date.now()));
+  }
+  // --- end server-edge ---
   const caller = await authenticate(request, env);
   if (!caller.ok) {
     return caller.reason === "authentication unavailable"
@@ -1546,6 +1577,16 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   }
   // The account vault's ADE Cloud sign-ins, for the web (status only), and the model list: no provider needed.
   if (path === CLOUD_PATHS.signIns || path.startsWith(`${CLOUD_PATHS.signIns}/`)) return routeAccountSignIns(request, path, env, now);
+  // --- server-edge --- Account data and integrations with no computer; no provider needed.
+  if (path === CLOUD_EDGE_PATHS.limits) return routeCloudLimits(request, env);
+  if (path === CLOUD_EDGE_PATHS.accountSecrets) return routeAccountSecrets(request, url, env);
+  if (path === CLOUD_EDGE_PATHS.cto) return routeCtoCopy(request, url, env);
+  if (path === CLOUD_EDGE_PATHS.linearQuery) return routeLinearQuery(request, env, caller.userId, now);
+  if (path === CLOUD_EDGE_PATHS.jiraSearch) return routeJiraSearch(request, env, caller.userId, now);
+  if (path === CLOUD_EDGE_PATHS.jiraIssue) return routeJiraIssue(request, env, caller.userId, now);
+  const eventWakes = /^\/cloud\/instances\/([^/]+)\/event-wakes$/.exec(path);
+  if (eventWakes) return INSTANCE_ID.test(eventWakes[1]!) ? routeEventWakeSubscription(request, env, caller.userId, eventWakes[1]!, now) : notFound();
+  // --- end server-edge ---
   if (path === CLOUD_PATHS.models) return handleCloudModels(request);
   // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.
   if (path === CLOUD_PATHS.launches || path.startsWith(`${CLOUD_PATHS.launches}/`)) {
