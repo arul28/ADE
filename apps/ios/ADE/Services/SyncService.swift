@@ -17723,21 +17723,35 @@ final class SyncService: ObservableObject {
     itemId: String,
     decision: AgentChatApprovalDecision? = nil,
     answers: [String: AgentChatInputAnswerValue]? = nil,
-    responseText: String? = nil
-  ) async throws {
+    responseText: String? = nil,
+    planAction: String? = nil
+  ) async throws -> AgentChatRespondToInputResult {
     let scope = chatCommandScope(for: sessionId)
-    _ = try await sendChatCommand(
+    let result = try await sendDecodableChatCommand(
       action: chatActionName("chat.respondToInput", sessionId: sessionId),
       payload: AgentChatRespondToInputRequest(
         sessionId: sessionId,
         itemId: itemId,
         decision: decision,
         answers: answers,
-        responseText: responseText
+        responseText: responseText,
+        planAction: planAction
       ),
       targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatRespondToInputResult.self
     )
+    // A chat created on this phone's behalf belongs to the same project (and
+    // machine) as the planning chat. Carrying that routing across now is what
+    // lets the next screen read it; the row itself arrives with the next
+    // refresh.
+    if let implementationSessionId = result.implementationSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !implementationSessionId.isEmpty,
+       chatCommandScopeBySession[implementationSessionId] == nil,
+       let scope = chatCommandScopeBySession[sessionId] {
+      chatCommandScopeBySession[implementationSessionId] = scope
+    }
+    return result
   }
 
   /// Throw a dismissible question away. The host rejects any card the provider

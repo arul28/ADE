@@ -1,3 +1,4 @@
+import { createCodexPlanDecisions, readCodexPlanHandoffs, type CodexPlanHandoffRecord } from "./codexPlanHandoff";
 import { cutTextAtCodePoint, tailTextAtCodePoint } from "../../../shared/codePointText";
 import { StringDecoder } from "node:string_decoder";
 import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
@@ -2627,6 +2628,7 @@ type PersistedChatState = {
    * truth it stands in for.
    */
   answeredPlanApprovalItemIds?: string[];
+  codexPlanHandoffs?: CodexPlanHandoffRecord[];
   /** See `ManagedChatSession.codexPendingCollaborationMode`. */
   codexPendingCollaborationMode?: "default" | "plan";
   requestedCwd?: string | null;
@@ -6030,6 +6032,7 @@ type ManagedChatSession = {
   codexTerminalTurnIds: Set<string>;
   /** Live mirror of `PersistedChatState.answeredPlanApprovalItemIds`. */
   answeredPlanApprovalItemIds: Set<string>;
+  codexPlanHandoffs?: CodexPlanHandoffRecord[];
   /**
    * A Codex collaboration mode ADE chose (an approved plan, a composer mode
    * change) that the thread has not yet run a turn under.
@@ -21921,6 +21924,7 @@ export function createAgentChatService(args: {
       ...(managed.codexTerminalTurnIds.size
         ? { codexTerminalTurnIds: [...managed.codexTerminalTurnIds].slice(-64) }
         : prevPersisted?.codexTerminalTurnIds?.length ? { codexTerminalTurnIds: prevPersisted.codexTerminalTurnIds.slice(-64) } : {}),
+      ...(managed.codexPlanHandoffs?.length ? { codexPlanHandoffs: managed.codexPlanHandoffs } : {}),
       // Written from the live set ONLY — never carried forward from the previous
       // record. The drain's whole job is to empty this, and a carry-forward
       // would make an emptied set unpersistable.
@@ -22581,6 +22585,8 @@ export function createAgentChatService(args: {
         ...(() => { const promptCache = normalizeClaudePromptCache(record.promptCache); return promptCache ? { promptCache } : {}; })(),
         ...(codexTerminalTurnIds?.length ? { codexTerminalTurnIds } : {}),
         ...(answeredPlanApprovalItemIds?.length ? { answeredPlanApprovalItemIds } : {}),
+        ...(readCodexPlanHandoffs(record.codexPlanHandoffs).length
+          ? { codexPlanHandoffs: readCodexPlanHandoffs(record.codexPlanHandoffs) } : {}),
         ...(record.codexPendingCollaborationMode === "default" || record.codexPendingCollaborationMode === "plan"
           ? { codexPendingCollaborationMode: record.codexPendingCollaborationMode }
           : {}),
@@ -31200,6 +31206,7 @@ export function createAgentChatService(args: {
       claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
       answeredPlanApprovalItemIds: new Set<string>(persisted?.answeredPlanApprovalItemIds ?? []),
+      codexPlanHandoffs: persisted?.codexPlanHandoffs,
       codexPendingCollaborationMode: persisted?.codexPendingCollaborationMode ?? null,
       unprocessedMessageResolutionReceipts: new Map(
         normalizeUnprocessedMessageResolutionReceipts(
@@ -42311,7 +42318,7 @@ export function createAgentChatService(args: {
         || pending.request?.description === planSummary
       ),
     );
-    if (hasExistingApproval) {
+    if (hasExistingApproval || (turnId && managed.codexPlanHandoffs?.some((record) => record.submitted && record.turnId === turnId))) {
       return true;
     }
 
@@ -42336,7 +42343,7 @@ export function createAgentChatService(args: {
       allowsFreeform: true,
       blocking: true,
       canProceedWithoutAnswer: false,
-      providerMetadata: { tool: "codexPlanApproval" },
+      providerMetadata: { tool: "codexPlanApproval", planHandoffSupported: managed.session.surface !== "personal" },
       turnId: turnId ?? runtime.activeTurnId ?? null,
     };
     runtime.approvals.set(planApprovalItemId, {
@@ -42402,7 +42409,7 @@ export function createAgentChatService(args: {
         || pending.request?.description === planText
       ),
     );
-    if (hasExistingApproval) return true;
+    if (hasExistingApproval || (turnId && managed.codexPlanHandoffs?.some((record) => record.submitted && record.turnId === turnId))) return true;
 
     const planApprovalItemId = randomUUID();
     const request: PendingInputRequest = {
@@ -42425,7 +42432,7 @@ export function createAgentChatService(args: {
       allowsFreeform: true,
       blocking: true,
       canProceedWithoutAnswer: false,
-      providerMetadata: { tool: "codexPlanApproval" },
+      providerMetadata: { tool: "codexPlanApproval", planHandoffSupported: managed.session.surface !== "personal" },
       turnId: turnId ?? runtime.activeTurnId ?? null,
     };
     runtime.approvals.set(planApprovalItemId, {
@@ -72098,7 +72105,12 @@ export function createAgentChatService(args: {
               allowsFreeform: true,
               blocking: true,
               canProceedWithoutAnswer: false,
-              providerMetadata: { tool: "codexPlanApproval" },
+              providerMetadata: {
+                tool: "codexPlanApproval",
+                planHandoffSupported: (managedSessions.get(sessionId)?.session.surface
+                  ?? readPersistedState(sessionId)?.surface
+                  ?? "work") !== "personal",
+              },
               turnId: typeof event.turnId === "string" && event.turnId.trim().length ? event.turnId.trim() : null,
             });
           } else {
@@ -76120,6 +76132,178 @@ export function createAgentChatService(args: {
     await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
   };
 
+  const planDecisions = createCodexPlanDecisions();
+
+  /**
+   * Whether the destination chat already owns this plan.
+   *
+   * Read from the transcript's `user_message` marker, not from "the chat has
+   * messages": a retry must not re-send the plan into a chat that already shows
+   * it, and an empty or failed-before-send chat must not read as delivered.
+   *
+   * The window is wide on purpose. The destination is created seconds before a
+   * retry reads it, so the marker is normally the first event after the header;
+   * a window that has already dropped earlier events can only mean the chat has
+   * run a long turn, which the plan started. Reading that as "it has the plan"
+   * is what stops a crash between the send and its receipt from putting the
+   * plan — and a second implementation turn — into the chat twice.
+   */
+  const implementationChatHasPlan = async (sessionId: string, itemId: string): Promise<boolean> => {
+    if (!sessionService.get(sessionId)) return false;
+    const history = await getChatEventHistory(sessionId, { maxEvents: 512 }).catch(() => null);
+    if (!history) return false;
+    if (history.truncated) return true;
+    return history.events.some(({ event }) => {
+      if (event.type !== "user_message") return false;
+      const marker = event.metadata?.planHandoff;
+      return Boolean(marker) && typeof marker === "object"
+        && (marker as { itemId?: unknown }).itemId === itemId;
+    });
+  };
+
+  const implementCodexPlanInNewChat = async (input: AgentChatRespondToInputArgs): Promise<{ implementationSessionId: string }> => {
+    const managed = ensureManagedSession(input.sessionId);
+    if (managed.session.provider !== "codex" || managed.session.surface === "personal" || managed.session.runtimeMode === "print") {
+      throw new Error("Implementing a plan in a new chat is available for Codex project chats only.");
+    }
+    const records = managed.codexPlanHandoffs ??= [];
+    const save = () => {
+      if (managed.deleted || !persistChatState(managed, { fsync: true })) {
+        throw new Error("Couldn't save the plan handoff. The planning chat is unchanged; retry when storage is available.");
+      }
+    };
+    const link = (sessionId: string) =>
+      buildDeeplink({ kind: "session", sessionId, laneId: managed.session.laneId }, { form: "ade" });
+    try {
+      return await planDecisions.handoff({
+        sessionId: input.sessionId,
+        itemId: input.itemId,
+        records,
+        save,
+        exists: (sessionId) => Boolean(sessionService.get(sessionId)),
+        hasPlan: implementationChatHasPlan,
+        pending: async () => {
+          if (managed.deleted) return null;
+          if (managed.session.interactionMode !== "plan" && managed.session.permissionMode !== "plan") return null;
+          if (managed.answeredPlanApprovalItemIds.has(input.itemId)) return null;
+          const runtime = managed.runtime?.kind === "codex" ? managed.runtime : null;
+          return runtime?.approvals.get(input.itemId)?.request
+            ?? await latestTranscriptPlanApprovalRequest(input.sessionId, input.itemId);
+        },
+        create: async (record) => {
+          if (managed.deleted) throw new Error("The planning chat was deleted.");
+          const existing = sessionService.get(record.implementationSessionId);
+          if (existing) {
+            if (existing.laneId !== managed.session.laneId || !isChatToolType(existing.toolType)) {
+              throw new Error("The reserved implementation chat no longer matches this plan.");
+            }
+            return;
+          }
+          const source = managed.session;
+          const sourceTitle = sessionService.get(source.id)?.title?.trim();
+          const created = await createSessionInternal({
+            sessionId: record.implementationSessionId,
+            laneId: source.laneId,
+            provider: "codex",
+            model: source.model,
+            modelId: source.modelId,
+            title: `${sourceTitle || "Approved plan"} — implementation`,
+            sessionProfile: source.sessionProfile,
+            reasoningEffort: source.reasoningEffort,
+            fastMode: source.fastMode,
+            fastTier: source.fastTier,
+            codexDaybreak: source.codexDaybreak,
+            codexApprovalPolicy: source.codexApprovalPolicy,
+            codexSandbox: source.codexSandbox,
+            codexConfigSource: source.codexConfigSource,
+            instanceId: source.instanceId,
+            presetId: source.presetId,
+            credentialId: source.credentialId,
+            interactionMode: "default",
+            ...(source.requestedCwd ? { requestedCwd: source.requestedCwd } : {}),
+            mcpServers: source.mcpServers,
+            strictMcpConfig: source.strictMcpConfig,
+            permissionPolicy: source.permissionPolicy,
+            instructions: source.instructions,
+            settingSources: source.settingSources,
+            surface: "work",
+            rememberLaunchDefaults: false,
+          });
+          // An approved plan hands the session straight to full access, exactly
+          // as "Implement here" does (`stageCodexPlanApprovalFollowup`). Doing it
+          // here as well is what keeps the two buttons the same promise: the
+          // new chat must not run with different access than the old one. A chat
+          // held to a host permission policy keeps that policy — it is what
+          // decides approvals, and the plan approval does not overrule it.
+          const destination = ensureManagedSession(created.id);
+          if (!destination.session.permissionPolicy) {
+            applyLegacyPermissionModeToNativeControls(destination.session, "full-auto");
+            destination.session.interactionMode = "default";
+            reassertIdentityPermissionMode(destination.session);
+          }
+          persistChatState(destination, { fsync: true });
+        },
+        onAcceptedSendError: (error) => logger.warn("agent_chat.plan_handoff_dispatch_uncertain", { sessionId: input.sessionId, itemId: input.itemId, error: getErrorMessage(error) }),
+        discard: async (sessionId) => {
+          await deleteSession({ sessionId });
+        },
+        send: async (sessionId, plan) => {
+          if (managed.deleted) throw new Error("The planning chat was deleted.");
+          const note = input.responseText?.trim();
+          await sendMessage({
+            sessionId,
+            text:
+              "Implement the following approved plan in this lane. The user approved implementation.\n\n"
+              + `Planning chat: ${link(managed.session.id)}\n\n`
+              + plan
+              + (note ? `\n\nUser's implementation note:\n${note}` : ""),
+            clientSendId: `plan-handoff:${input.itemId}`,
+            interactionMode: "default",
+            metadata: { kind: "plan_handoff", planHandoff: { sourceSessionId: input.sessionId, itemId: input.itemId } },
+          }, { awaitBackendDispatch: true });
+        },
+        complete: async (record) => {
+          if (managed.deleted) throw new Error("The planning chat was deleted.");
+          if (!sessionService.get(record.implementationSessionId)) {
+            // The chat this plan went to is gone. Put the card back rather than
+            // leaving a dead end: the plan is still in this conversation, so the
+            // person can implement here or start another chat.
+            const index = records.indexOf(record);
+            if (index >= 0) records.splice(index, 1);
+            save();
+            throw new Error("The implementation chat was deleted. The plan is still in this conversation, so choose Implement here or start another new chat.");
+          }
+          // Durable before the receipt: from here a restart reopens the same
+          // chat instead of creating a second one, and the card can settle for
+          // good. A failure here leaves the card open and the reservation held.
+          save();
+          const runtime = managed.runtime?.kind === "codex" ? managed.runtime : null;
+          runtime?.approvals.delete(input.itemId);
+          managed.answeredPlanApprovalItemIds.delete(input.itemId);
+          const alreadyNoted = (await getChatEventHistory(input.sessionId, { maxEvents: 64 }).catch(() => null))?.events.some(({ event }) =>
+            event.type === "system_notice"
+            && event.status === "plan_handoff"
+            && event.openSessionId === record.implementationSessionId);
+          if (!alreadyNoted) {
+            emitPendingInputResolved(managed, { itemId: input.itemId, decision: "accept", turnId: record.turnId, questions: [] });
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "info",
+              status: "plan_handoff",
+              openSessionId: record.implementationSessionId,
+              message: "Plan handed to a new implementation chat. This planning conversation stays here.",
+            });
+          }
+          sessionService.clearTurnStartMarkers(input.sessionId);
+          resetSessionActivity(input.sessionId);
+        },
+      });
+    } catch (error) {
+      logger.warn("agent_chat.plan_handoff_failed", { sessionId: input.sessionId, itemId: input.itemId, error: getErrorMessage(error) });
+      throw error;
+    }
+  };
+
   /**
    * Answer a card, then stop the row saying "Needs you".
    *
@@ -76144,14 +76328,52 @@ export function createAgentChatService(args: {
    * `pending_input_item_id` is NOT written here — it is owned by the card
    * stores and their `pending_input_resolved` receipts.
    */
-  const respondToInput = async (args: AgentChatRespondToInputArgs): Promise<void> => {
+  const respondToInput = async (args: AgentChatRespondToInputArgs): Promise<{ implementationSessionId: string } | void> => {
     assertChatRuntimeOwnedHere(args.sessionId, "answer input for");
     assertChatNotMovedAway(args.sessionId, "respond_to_input");
-    await deliverInputResponse(args);
-    const answeredSession = managedSessions.get(args.sessionId);
-    if (answeredSession) answeredSession.turnFailureMarked = false;
-    sessionService.clearTurnStartMarkers(args.sessionId);
-    resetSessionActivity(args.sessionId);
+    // Only a person starts an implementation chat: it is a new conversation
+    // with the access an approved plan grants, and an agent or the CTO could
+    // otherwise use a plan it wrote itself to open one.
+    if (args.planAction != null && args.runtimeActor != null) {
+      throw new Error("Only the person can implement an approved plan in a new chat.");
+    }
+    if (args.planAction != null) {
+      if (args.planAction !== "new_chat" || args.decision !== "accept") {
+        throw new Error("A new implementation chat requires approving the plan.");
+      }
+      return implementCodexPlanInNewChat(args);
+    }
+    const managed = ensureManagedSession(args.sessionId);
+    const pendingPlan = managed.runtime?.kind === "codex"
+      ? managed.runtime.approvals.get(args.itemId)
+      : undefined;
+    // A plan card takes one answer, whoever sends it. "Implement here" and
+    // "Implement in a new chat" are two different answers to the same card, so
+    // the second one waits instead of implementing the plan twice.
+    const releasePlanAnswer = pendingPlan?.kind === "plan_approval"
+      ? planDecisions.beginAnswer(args.sessionId, args.itemId)
+      : null;
+    try {
+      if (planDecisions.isHandoffStarting(args.sessionId)) {
+        throw new Error("An implementation chat is starting for this plan. Wait for it to finish.");
+      }
+      const reserved = managed.codexPlanHandoffs?.find((record) => record.itemId === args.itemId);
+      if (reserved) {
+        if (reserved.submitted || await implementationChatHasPlan(reserved.implementationSessionId, args.itemId)) {
+          throw new Error("This plan already has an implementation chat. Retry Implement in a new chat to open it.");
+        }
+        if (sessionService.get(reserved.implementationSessionId)) await deleteSession({ sessionId: reserved.implementationSessionId });
+        managed.codexPlanHandoffs = managed.codexPlanHandoffs?.filter((record) => record !== reserved);
+        if (!persistChatState(managed, { fsync: true })) throw new Error("Couldn't save the plan decision. Retry when storage is available.");
+      }
+      await deliverInputResponse(args);
+      const answeredSession = managedSessions.get(args.sessionId);
+      if (answeredSession) answeredSession.turnFailureMarked = false;
+      sessionService.clearTurnStartMarkers(args.sessionId);
+      resetSessionActivity(args.sessionId);
+    } finally {
+      releasePlanAnswer?.();
+    }
   };
 
   /**

@@ -1922,11 +1922,16 @@ func pendingWorkPlanApprovalFromApproval(
     return description
   }()
   let title = optionalString(request["title"]) ?? "Plan Ready for Review"
+  // The host names which approvals can start a chat of their own; a brain that
+  // predates the option, a personal chat and a share guest all say nothing.
+  let providerMetadata = request["providerMetadata"] as? [String: Any]
+  let canImplementInNewChat = workBoolValue(providerMetadata?["planHandoffSupported"]) == true
   return WorkPendingPlanApprovalModel(
     id: itemId,
     source: source,
     planText: planText,
-    title: title
+    title: title,
+    canImplementInNewChat: canImplementInNewChat
   )
 }
 

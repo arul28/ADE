@@ -2,6 +2,18 @@ import SwiftUI
 import UIKit
 import AVKit
 
+/// A plan approval the host accepted without naming the chat it started.
+///
+/// Presenting that as success would answer the card and leave the person with
+/// no chat to look at, so it is refused like any other failed action.
+enum WorkPlanHandoffError: LocalizedError {
+  case noChatStarted
+
+  var errorDescription: String? {
+    "The computer did not confirm the new implementation chat. The plan is still here, so you can implement it in this chat."
+  }
+}
+
 func workFilteredQuestionAnswersForSubmit(
   _ answers: [String: AgentChatInputAnswerValue]
 ) -> [String: AgentChatInputAnswerValue] {
@@ -618,6 +630,40 @@ extension WorkSessionDestinationView {
       )
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  /// "Implement in a new chat": approve the plan and let the host start a chat
+  /// of its own for it, then open that chat. The planning chat keeps the plan
+  /// and its whole conversation, so this is a fork of the work, not a move.
+  ///
+  /// A host that answers without a chat id is not a success — the plan was not
+  /// implemented anywhere the person can see — so it is reported rather than
+  /// leaving the card optimistically answered.
+  @MainActor
+  func implementPlanInNewChat(itemId: String) async {
+    do {
+      let result = try await syncService.respondToChatInput(
+        sessionId: sessionId,
+        itemId: itemId,
+        decision: .accept,
+        planAction: "new_chat"
+      )
+      guard let implementationSessionId = result.implementationSessionId?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !implementationSessionId.isEmpty
+      else {
+        throw WorkPlanHandoffError.noChatStarted
+      }
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+      syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(
+        sessionId: implementationSessionId,
+        laneId: (session ?? initialSession)?.laneId
+      )
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription

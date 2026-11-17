@@ -1,6 +1,10 @@
-import React from "react";
-import { CopySimple } from "@phosphor-icons/react";
+import React, { useEffect, useId, useRef, useState } from "react";
+import { CaretDown, CopySimple } from "@phosphor-icons/react";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
+import { MENU_ITEM_CLASS, MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
+import { Z_LAYERS } from "../ui/zLayers";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { ChatMarkdown } from "./chatMarkdown";
 import { ProviderLogo } from "../shared/ProviderLogos";
@@ -15,9 +19,15 @@ interface ChatProposedPlanCardProps {
   disabled: boolean;
   onApprove: () => void;
   onReject: () => void;
+  onImplementInNewChat?: () => void;
+  planHandoffResponding?: boolean;
+  planHandoffError?: string | null;
 }
 
 /* ── Component ── */
+
+const PLAN_PRIMARY_BUTTON_CLASS =
+  "inline-flex min-h-8 items-center border border-[color:color-mix(in_srgb,var(--chat-accent)_45%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_82%,var(--color-fg))] transition-colors hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] focus-visible:z-10 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-fg/80 disabled:pointer-events-none disabled:opacity-40";
 
 const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
   source,
@@ -26,8 +36,30 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
   disabled,
   onApprove,
   onReject,
+  onImplementInNewChat,
+  planHandoffResponding = false,
+  planHandoffError = null,
 }: ChatProposedPlanCardProps) {
   const { copy, copied } = useCopyToClipboard();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuId = useId();
+  const primaryRef = useRef<HTMLButtonElement>(null);
+  const caretRef = useRef<HTMLButtonElement>(null);
+  const menuItemRef = useRef<HTMLButtonElement>(null);
+  const keepPlanningRef = useRef<HTMLButtonElement>(null);
+  const showMenu = menuOpen && Boolean(onImplementInNewChat) && !disabled;
+  useEffect(() => {
+    if (!showMenu) return;
+    const frame = requestAnimationFrame(() => menuItemRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [showMenu]);
+
+  const implementInNewChat = () => {
+    if (disabled) return;
+    setMenuOpen(false);
+    caretRef.current?.focus();
+    onImplementInNewChat?.();
+  };
   const bodyText = description?.trim() || question?.trim() || "The agent has prepared a plan.";
   // Provider-identified header — "{Provider} · Plan ready" — matching the
   // question card. The card chrome inherits the per-provider `--chat-accent`.
@@ -56,24 +88,90 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
         <ChatMarkdown tone="neutral">{bodyText}</ChatMarkdown>
       </div>
 
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <div className="inline-flex max-w-full items-stretch">
+          <button
+            ref={primaryRef}
+            type="button"
+            disabled={disabled}
+            className={cn(
+              PLAN_PRIMARY_BUTTON_CLASS,
+              "min-w-0 px-3 py-1.5 text-left text-[11px] font-medium",
+              onImplementInNewChat ? "rounded-l-lg" : "rounded-lg",
+            )}
+            onClick={onApprove}
+          >
+            {onImplementInNewChat ? "Implement here" : "Implement"}
+          </button>
+          {onImplementInNewChat ? (
+            <button
+              ref={caretRef}
+              type="button"
+              aria-label="Implementation options"
+              aria-haspopup="menu"
+              aria-expanded={showMenu}
+              aria-controls={showMenu ? menuId : undefined}
+              aria-disabled={disabled}
+              title="Implementation options"
+              className={cn(
+                PLAN_PRIMARY_BUTTON_CLASS,
+                "-ml-px min-w-8 shrink-0 justify-center rounded-r-lg aria-disabled:cursor-default aria-disabled:opacity-40",
+              )}
+              onClick={() => { if (!disabled) setMenuOpen(!showMenu); }}
+              onKeyDown={(event) => {
+                if (disabled || (event.key !== "ArrowDown" && event.key !== "ArrowUp")) return;
+                event.preventDefault();
+                if (showMenu) menuItemRef.current?.focus();
+                else setMenuOpen(true);
+              }}
+            >
+              <CaretDown size={12} weight="bold" aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
+        {showMenu ? (
+          <AnchoredMenu
+            id={menuId}
+            role="menu"
+            aria-label="Implementation options"
+            open={showMenu}
+            anchorRef={caretRef}
+            placement="top-start"
+            zIndex={Z_LAYERS.popover}
+            className={cn(MENU_SURFACE_CLASS, "max-w-[calc(100vw-16px)]")}
+            onClose={() => setMenuOpen(false)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" || event.key === "Tab") {
+                event.preventDefault();
+                event.stopPropagation();
+                setMenuOpen(false);
+                const tabTarget = event.shiftKey ? primaryRef : keepPlanningRef;
+                (event.key === "Escape" ? caretRef : tabTarget).current?.focus();
+              } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+                event.preventDefault();
+                menuItemRef.current?.focus();
+              }
+            }}
+          >
+            <button
+              ref={menuItemRef}
+              type="button"
+              role="menuitem"
+              tabIndex={-1}
+              className={cn(MENU_ITEM_CLASS, "w-full text-left hover:bg-fg/[0.07] focus-visible:bg-fg/[0.09] focus-visible:text-fg")}
+              onClick={implementInNewChat}
+            >
+              Implement in a new chat
+            </button>
+          </AnchoredMenu>
+        ) : null}
         <button
+          ref={keepPlanningRef}
           type="button"
           disabled={disabled}
           className={cn(
-            "rounded-lg border px-3 py-1.5 text-[11px] font-medium transition-colors disabled:pointer-events-none disabled:opacity-40",
-            "border-[color:color-mix(in_srgb,var(--chat-accent)_45%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_88%,white_12%)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)]",
-          )}
-          onClick={onApprove}
-        >
-          Implement
-        </button>
-        <button
-          type="button"
-          disabled={disabled}
-          className={cn(
-            "rounded-lg border border-fg/[0.06] px-3 py-1.5 text-[11px] text-fg/50 transition-colors",
-            "hover:bg-fg/[0.04] disabled:pointer-events-none disabled:opacity-40",
+            "min-h-8 rounded-lg border border-fg/[0.06] px-3 py-1.5 text-[11px] text-fg/60 transition-colors",
+            "hover:bg-fg/[0.04] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-fg/80 disabled:pointer-events-none disabled:opacity-40",
           )}
           onClick={onReject}
         >
@@ -81,13 +179,33 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
         </button>
         <button
           type="button"
-          className="ml-auto flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-fg/[0.06] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-fg/35 transition-colors hover:bg-fg/[0.04] hover:text-fg/55"
+          className="ml-auto flex min-h-7 items-center gap-1 rounded-[var(--chat-radius-pill)] border border-fg/[0.06] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-fg/60 transition-colors hover:bg-fg/[0.04] hover:text-fg/80 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-fg/80"
           onClick={() => void copy(bodyText)}
         >
-          <CopySimple size={10} weight="bold" />
+          <CopySimple size={10} weight="bold" aria-hidden="true" />
           {copied ? "Copied" : "Copy plan"}
         </button>
       </div>
+      {planHandoffResponding ? (
+        <div role="status" className="mt-2 text-xs text-fg/70">
+          Starting implementation in a new chat…
+        </div>
+      ) : null}
+      {planHandoffError ? (
+        <Banner
+          layout="inline"
+          style={{ marginTop: 8 }}
+          model={{
+            id: "plan-handoff-error",
+            tone: "error",
+            title: "Couldn’t start implementation in a new chat",
+            error: planHandoffError,
+            actions: onImplementInNewChat
+              ? [{ label: "Retry", onClick: implementInNewChat, disabled, busy: planHandoffResponding }]
+              : [],
+          }}
+        />
+      ) : null}
     </div>
   );
 });

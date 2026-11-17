@@ -154,6 +154,10 @@ struct WorkPlanComposerStrip: View {
   let busy: Bool
   var fallbackProvider: String? = nil
   let onDecision: @MainActor (AgentChatApprovalDecision, String?) async -> Void
+  /// Approve the plan and implement it in a chat of its own. Nil when this
+  /// host cannot offer it (an older brain, a personal chat, a share guest),
+  /// which is also what hides the caret beside Approve.
+  var onImplementInNewChat: (() -> Void)? = nil
 
   @State private var rejectFlowVisible = false
   @State private var feedbackText = ""
@@ -229,6 +233,35 @@ struct WorkPlanComposerStrip: View {
           Task { await onDecision(.accept, nil) }
         }
         .disabled(busy)
+
+        if let onImplementInNewChat {
+          // Approve is the default; this caret is the second way to approve,
+          // mirroring the desktop card's split button. It is a menu rather than
+          // a second pill so the destructive-looking choice ("a new chat") is
+          // never one stray tap away.
+          Menu {
+            Button {
+              onImplementInNewChat()
+            } label: {
+              Label("Implement in a new chat", systemImage: "plus.bubble")
+            }
+          } label: {
+            Image(systemName: "chevron.down")
+              .font(.system(size: 9, weight: .bold))
+              .foregroundStyle(ADEColor.success)
+              .padding(.horizontal, 7)
+              .padding(.vertical, 6)
+              .background(ADEColor.success.opacity(0.08), in: Capsule(style: .continuous))
+              .overlay(
+                Capsule(style: .continuous)
+                  .stroke(ADEColor.success.opacity(0.28), lineWidth: 0.8)
+              )
+          }
+          .menuOrder(.fixed)
+          .disabled(busy)
+          .accessibilityLabel("More ways to approve this plan")
+          .accessibilityHint("Opens a menu with Implement in a new chat.")
+        }
 
         compactActionButton(
           title: "Reject",

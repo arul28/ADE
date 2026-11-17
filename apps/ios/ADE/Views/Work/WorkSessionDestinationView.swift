@@ -2440,6 +2440,7 @@ struct WorkSessionDestinationView: View {
       onContinueUsageLimitOnAlternate: continueUsageLimitOnAlternateAction,
       onStopSubagentTask: stopTaskAction,
       onApproveRequest: approveRequest,
+      onImplementPlanInNewChat: implementPlanInNewChat,
       onRespondToQuestion: respondToQuestion,
       onSubmitQuestionAnswers: submitQuestionAnswers,
       onDeclineQuestion: declineQuestion,

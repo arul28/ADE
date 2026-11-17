@@ -804,6 +804,7 @@ import type {
   AgentChatParallelLaunchStateArgs,
   AgentChatDismissPendingInputArgs,
   AgentChatRespondToInputArgs,
+  AgentChatRespondToInputResult,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatSlashCommand,
@@ -9596,21 +9597,14 @@ const adeBridge = {
     respondToInput: async (
       args: AgentChatRespondToInputArgs,
       pin?: OpenProjectBinding | null,
-    ): Promise<void> => {
+    ): Promise<AgentChatRespondToInputResult | void> => {
       agentChatSummaryCache.clear();
-      if (pin) {
-        await callPinnedRuntimeAction<void>(pin, "chat", "respondToInput", { args });
-        agentChatSummaryCache.clear();
-        return;
-      }
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "chat",
-        "respondToInput",
-        { args },
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatRespondToInputResult | void>(
+        pin, "chat", "respondToInput", { args },
+        () => ipcRenderer.invoke(IPC.agentChatRespondToInput, args),
       );
-      if (!runtime.handled)
-        await ipcRenderer.invoke(IPC.agentChatRespondToInput, args);
       agentChatSummaryCache.clear();
+      return result;
     },
     dismissPendingInput: async (
       args: AgentChatDismissPendingInputArgs,

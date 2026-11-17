@@ -3828,7 +3828,11 @@ export async function createAdeRuntime(args: {
         chat: {
           sendMessage: (args) => agentChat.sendMessage(args, { routeActiveToSteer: true }),
           interrupt: (args) => agentChat.interrupt(args),
-          respondToInput: (args) => agentChat.respondToInput(args),
+          // A headless embedder has no composer to hand a plan to a new chat
+          // from, so the answer is only ever "implement here".
+          respondToInput: async (args) => {
+            await agentChat.respondToInput(args);
+          },
           getAvailableModels: (args) => agentChat.getAvailableModels(args),
         },
         laneService,

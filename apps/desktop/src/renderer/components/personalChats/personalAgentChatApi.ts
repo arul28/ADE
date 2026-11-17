@@ -1,5 +1,6 @@
 import type {
   AgentChatEventEnvelope,
+  AgentChatRespondToInputArgs,
   AgentChatSessionSummary,
   PersonalChatAction,
   PersonalChatCallArgs,
@@ -131,7 +132,9 @@ export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): Machine
     restoreCancelledQueue: (args: unknown) => call("restoreCancelledQueue", args),
     recoverTurn: (args: unknown) => call("recoverTurn", args),
     resolveUnprocessedMessage: (args: unknown) => call("resolveUnprocessedMessage", args),
-    respondToInput: (args: unknown) => call<void>("respondToInput", args),
+    respondToInput: (args: AgentChatRespondToInputArgs) => args.planAction === "new_chat"
+      ? boundChatRefusal("Implementing a plan in a new chat", "in a personal chat")()
+      : call<void>("respondToInput", args),
     approve: (args: unknown) => call<void>("approve", args),
     updateSession: async (args: { sessionId: string }) =>
       sessionFromSummary(await call<AgentChatSessionSummary>("updateSession", args)),
