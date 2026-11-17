@@ -50,6 +50,8 @@ export async function deleteCloudAccount(
     env.DB.prepare("delete from cloud_event_wakes where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_event_wake_state where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_request_windows where user_id = ?").bind(userId),
+    // Sealed Linear grants that wait for their publish.
+    env.DB.prepare("delete from cloud_linear_renewals where user_id = ?").bind(userId),
   ]);
   // Lane names, repository origins and branches of lanes whose computer is gone.
   await env.DB.prepare("delete from cloud_lanes_without_computer where user_id = ?").bind(userId).run();
