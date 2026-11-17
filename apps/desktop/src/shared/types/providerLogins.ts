@@ -26,6 +26,7 @@ const PROVIDER_LOGIN_PROVIDERS = [
   "devin",
   "antigravity",
   "muse",
+  "proxy",
 ] as const;
 
 export type ProviderLoginProvider = (typeof PROVIDER_LOGIN_PROVIDERS)[number];

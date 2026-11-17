@@ -782,7 +782,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "size_small", "size_medium", "size_large", "size_xlarge",
     // The provider of a sign-in saved for cloud machines (`CLOUD_SIGN_INS`).
     "signin_claude", "signin_codex", "signin_cursor", "signin_droid", "signin_grok",
-    "signin_copilot", "signin_devin", "signin_muse", "signin_openrouter",
+    "signin_copilot", "signin_devin", "signin_muse", "signin_openrouter", "signin_qwen",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
     // are. `backend_window` captures the Simulator window on this Mac;
     // `backend_host_encoded` encodes on the machine that owns the simulator and

@@ -85,8 +85,12 @@ type ApplyPolicy = {
 };
 
 const CLOUD_COMPUTER_POLICY: ApplyPolicy = { down: false, takes: () => true, savedKeysAndEnv: true, ownCopy: true, renewal: true, copilot: true };
-/** Never down: Claude (its normal sign-in stays on each computer; ADE Cloud uses a pass) and Copilot (a GitHub credential). */
-const NEVER_DOWN: ReadonlySet<ProviderLoginProvider> = new Set(["claude", "copilot"]);
+/**
+ * Never down: Claude (its normal sign-in stays on each computer; ADE Cloud
+ * uses a pass), Copilot (a GitHub credential) and the proxy's logins (each
+ * computer's proxy has its own; only ADE Cloud computers get copies).
+ */
+const NEVER_DOWN: ReadonlySet<ProviderLoginProvider> = new Set(["claude", "copilot", "proxy"]);
 const OWN_COMPUTER_POLICY: ApplyPolicy = {
   down: true,
   takes: (provider) => !NEVER_DOWN.has(provider),
