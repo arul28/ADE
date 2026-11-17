@@ -15,9 +15,6 @@ ADE Cloud lets a person use ADE fully with no computer of their own.
   person reads (see [ADE Cloud with no computer of your own](#ade-cloud-with-no-computer-of-your-own)).
   Doing (send, run, continue) wakes it.
 
-The product plan is in
-[docs/plans/ade-cloud-roadmap.md](../../plans/ade-cloud-roadmap.md).
-
 The calls in this doc are account level. They act on the account's cloud
 computers, not on a lane, a chat or another machine, so these IPC calls take no
 pin. A computer's own actions go through the machine list like any other
@@ -631,8 +628,7 @@ in `shared/cloudDiskGrowRules.ts` (re-exported from `shared/adeCloud.ts`).
 
 ## Referrals and the free plan
 
-The owner's rules are decisions 4 and 5 of `docs/plans/cloud-5/PLAN.md`. The
-server enforces all of it (`referrals.ts`, `freePlan.ts`, migration `0026`);
+The server enforces all of it (`referrals.ts`, `freePlan.ts`, migration `0026`);
 clients only show it. Every route is behind the `/cloud` access gate except
 the website's invite lookup.
 
