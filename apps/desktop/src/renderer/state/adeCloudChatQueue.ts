@@ -126,6 +126,15 @@ export function markAdeCloudQueuedMessageDelivered(clientSendId: string): void {
   }
 }
 
+/** True when the account's queue holds the message with this send id as an open row (a send went to the queue, not to a computer). */
+export function adeCloudQueueHoldsMessage(messageId: string): boolean {
+  if (!messageId) return false;
+  for (const state of states.values()) {
+    if (state.messages.some((message) => message.messageId === messageId)) return true;
+  }
+  return false;
+}
+
 /**
  * A send the queue took (`state: "sent"`): the row shows it at once, then
  * reads the server's copy once.
