@@ -148,41 +148,50 @@ export function createAdeCloudIntegrationReads(accountCall: () => AdeCloudAccoun
 
   // ---- Linear ----
 
-  const linearStatus = async (origin: string): Promise<LinearConnectionStatus> => {
+  /** The connection, and the identity read that proved it (null when not connected). */
+  const linearConnection = async (origin: string): Promise<{ connection: LinearConnectionStatus; identity: Data | null }> => {
     const checkedAt = new Date().toISOString();
     try {
       const { data, authMode } = await linear(origin, "identity");
       const viewer = isRecord(data.viewer) ? data.viewer : {};
       const organization = isRecord(data.organization) ? data.organization : null;
       return {
-        tokenStored: true,
-        connected: true,
-        viewerId: str(viewer.id),
-        viewerName: str(viewer.displayName) ?? str(viewer.name),
-        organizationId: organization ? str(organization.id) : null,
-        organizationName: organization ? str(organization.name) : null,
-        organizationUrlKey: organization ? str(organization.urlKey) : null,
-        organizationLogoUrl: organization ? str(organization.logoUrl) : null,
-        checkedAt,
-        message: null,
-        authMode,
-        // A sign-in starts on a computer, not from a tab with no computer.
-        oauthAvailable: false,
+        identity: data,
+        connection: {
+          tokenStored: true,
+          connected: true,
+          viewerId: str(viewer.id),
+          viewerName: str(viewer.displayName) ?? str(viewer.name),
+          organizationId: organization ? str(organization.id) : null,
+          organizationName: organization ? str(organization.name) : null,
+          organizationUrlKey: organization ? str(organization.urlKey) : null,
+          organizationLogoUrl: organization ? str(organization.logoUrl) : null,
+          checkedAt,
+          message: null,
+          authMode,
+          // A sign-in starts on a computer, not from a tab with no computer.
+          oauthAvailable: false,
+        },
       };
     } catch (error) {
       const code = (error as Partial<AdeCloudIntegrationError>).code;
       if (!code || !LINEAR_NOT_CONNECTED.has(code)) throw error;
       return {
-        tokenStored: code !== "linear_not_connected",
-        connected: false,
-        viewerId: null,
-        viewerName: null,
-        checkedAt,
-        message: (error as Error).message,
-        oauthAvailable: false,
+        identity: null,
+        connection: {
+          tokenStored: code !== "linear_not_connected",
+          connected: false,
+          viewerId: null,
+          viewerName: null,
+          checkedAt,
+          message: (error as Error).message,
+          oauthAvailable: false,
+        },
       };
     }
   };
+
+  const linearStatus = async (origin: string): Promise<LinearConnectionStatus> => (await linearConnection(origin)).connection;
 
   const linearSearch = async (origin: string, input: CtoSearchLinearIssuesArgs): Promise<CtoSearchLinearIssuesResult> => {
     const first = typeof input.first === "number" && input.first >= 1 ? Math.min(50, Math.floor(input.first)) : 25;
@@ -222,8 +231,8 @@ export function createAdeCloudIntegrationReads(accountCall: () => AdeCloudAccoun
   const linearTeams = async (origin: string) => nodes((await linear(origin, "teams")).data.teams);
 
   const linearQuickView = async (origin: string): Promise<CtoLinearQuickView> => {
-    const connection = await linearStatus(origin);
-    if (!connection.connected) {
+    const { connection, identity } = await linearConnection(origin);
+    if (!connection.connected || !identity) {
       return {
         connection,
         organization: null,
@@ -236,15 +245,20 @@ export function createAdeCloudIntegrationReads(accountCall: () => AdeCloudAccoun
         sdk: { packageName: "@linear/sdk", surfaces: [] },
       };
     }
-    const [identity, projects, teams, recent, assigned] = await Promise.all([
-      linear(origin, "identity"),
-      linearProjects(origin).catch(() => []),
-      linearTeams(origin).catch(() => [] as Data[]),
-      linearSearch(origin, { first: 12 }).catch(() => null),
-      linearSearch(origin, { first: 12, assignedToViewer: true }).catch(() => null),
+    // One part that fails (a rate limit, a renewal mid-read) leaves its list out, not the whole view.
+    // `sdk.surfaces` names only the parts that loaded; the code (never the data) goes to the console.
+    const partFailed = (part: string) => (error: unknown) => {
+      console.warn("ade_cloud.linear_quick_view_part_failed", { part, code: (error as Partial<AdeCloudIntegrationError>)?.code ?? "unknown" });
+      return null;
+    };
+    const [projects, teams, recent, assigned] = await Promise.all([
+      linearProjects(origin).catch(partFailed("projects")),
+      linearTeams(origin).catch(partFailed("teams")),
+      linearSearch(origin, { first: 12 }).catch(partFailed("issues")),
+      linearSearch(origin, { first: 12, assignedToViewer: true }).catch(partFailed("assignedIssues")),
     ]);
-    const viewer = isRecord(identity.data.viewer) ? identity.data.viewer : {};
-    const organization = isRecord(identity.data.organization) ? identity.data.organization : null;
+    const viewer = isRecord(identity.viewer) ? identity.viewer : {};
+    const organization = isRecord(identity.organization) ? identity.organization : null;
     return {
       connection,
       organization: organization ? {
@@ -268,12 +282,22 @@ export function createAdeCloudIntegrationReads(accountCall: () => AdeCloudAccoun
         guest: null,
         url: null,
       },
-      projects,
-      teams: teams.map(mapLinearQuickViewTeam).filter((team) => team.id && team.key).slice(0, 8),
+      projects: projects ?? [],
+      teams: (teams ?? []).map(mapLinearQuickViewTeam).filter((team) => team.id && team.key).slice(0, 8),
       assignedIssues: assigned?.issues ?? [],
       recentIssues: recent?.issues ?? [],
       fetchedAt: new Date().toISOString(),
-      sdk: { packageName: "@linear/sdk", surfaces: ["viewer", "organization", "projects", "teams", "assignedIssues", "issues"] },
+      sdk: {
+        packageName: "@linear/sdk",
+        surfaces: [
+          "viewer",
+          "organization",
+          ...(projects ? ["projects"] : []),
+          ...(teams ? ["teams"] : []),
+          ...(assigned ? ["assignedIssues"] : []),
+          ...(recent ? ["issues"] : []),
+        ],
+      },
     };
   };
 
