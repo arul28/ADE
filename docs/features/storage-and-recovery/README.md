@@ -885,25 +885,19 @@ Right before each removal the sweep reads working folders and mounts again
 live work with nothing awaited before the removal. With the chat or terminal
 service missing, the lane is kept.
 
-Removal is unpatched `fs.rm` (no link following), up to three whole passes a
-second apart for busy or permission errors, making read-only entries writable
-between passes (Node's `maxRetries` retries every level and is not used). A
-folder that cannot go keeps a plain reason; removed bytes still count. A run
-starts nothing new after 15 minutes.
+Removal is unpatched `fs.rm` (no link following, no `maxRetries`), up to
+three passes a second apart that make read-only entries writable. A folder that
+cannot go keeps a plain reason. A run starts nothing new after 15 minutes.
 
 Each folder is recorded in local-only `local_lane_build_output_cleanups`
 (folder, bytes, error, time; 90 days or 1,000 rows). `lifecycle.buildOutput`
-feeds the Rules card, and a lane's row says "Build output removed 3d ago:
-node_modules. Reinstall or build to bring it back." while the folders are
-missing (up to 30 days). Older brains send neither field.
-
-The lane overview shows an info banner (`LaneBuildOutputNotice.tsx`, storage
-action `laneBuildOutputRemoved`, read on the lane's machine through its pin):
-"Build output was removed 9d ago to free 1.3 GB", the folders (three, then
-"and N more") and "Reinstall or build before you run it." It reads only the
-latest run and still-missing folders, so a reinstall anywhere clears it. It
-reads again on focus, on visibility, and each minute while shown. Dismiss
-hides that cleanup for the app session.
+feeds the Rules card, and the lane row says "Build output removed 3d ago" while
+the folders are missing (up to 30 days). The lane overview banner
+(`LaneBuildOutputNotice.tsx`, storage action `laneBuildOutputRemoved`, read on
+the lane's machine through its pin) names the size and the folders. It reads
+only the latest run and still-missing folders, so a reinstall clears it; it
+reads again on focus, on visibility and each minute while shown. Dismiss hides
+it for the app session.
 
 Proof and attachment cleanup accepts only `.ade/artifacts` or
 `.ade/attachments` (or below) after the same link and path checks. Removing
@@ -967,30 +961,25 @@ worktrees use the typed-confirmation path.
    auto-vacuum); later runs free pages in bounded chunks. New indexes start
    incremental. The one-time `VACUUM` blocks the brain for that moment.
 
-The step 6 hooks are awaited one by one (two are `async`, paced deletes), and
-each is called with method-level optional chaining
-(`maintenance?.pruneEventLogs?.bind(…)`), so an older database handle without
-a step degrades. The run goes to the maintenance journal and a
-`storage.maintenance_completed` log (`completed` / `partial` / `failed`). One
-deduped `ade_feature_used` (`feature: storage_doctor`) per run, at most one per
-20 h.
+The step 6 hooks run one by one, each through method-level optional chaining
+(`maintenance?.pruneEventLogs?.bind(…)`), so an older database handle skips a
+missing step. The run goes to the maintenance journal and
+`storage.maintenance_completed` (`completed` / `partial` / `failed`), plus one
+`ade_feature_used` (`feature: storage_doctor`) at most every 20 h.
 
 **Provider history.** Settings › Storage › Details › *Provider history on this
-machine* shows each agent CLI's own session folders for all projects and who
-manages them (Claude prunes after 30 days by default; Codex never does). ADE
-does not touch them, except *Copies of chats from deleted lanes*
-(`deleted_lane_provider_sessions`): the Claude and Codex session files ADE
-started for chats from deleted lanes. A session is skipped when the chat was
-imported from the person's own CLI or a live chat names it. Removal deletes
-only those files. The "Chats from deleted lanes" removal includes them in the
-same plan, because the chats' records hold the only copy of their session ids.
-The measurement runs with the project scan, is cached 10 minutes, and adds at
-most 2 s to a snapshot.
+machine* shows each agent CLI's own session folders and who manages them
+(Claude prunes after 30 days by default; Codex never does). ADE touches only
+*Copies of chats from deleted lanes* (`deleted_lane_provider_sessions`): the
+Claude and Codex files ADE started for chats from deleted lanes, never one
+imported from the person's CLI or named by a live chat. The "Chats from
+deleted lanes" removal includes them, because the chats' records hold the only
+copy of their session ids. The measurement runs with the project scan (cached
+10 minutes, at most 2 s).
 
 **Reminder.** At 25 or more chats from deleted lanes, or 100 MB, a docked
-banner says how many, that ADE no longer tracks them and which folder holds
-them. *Review in Storage* opens the page. Every answer snoozes it two weeks
-per project. Nothing is deleted without the confirm dialog.
+banner says so; *Review in Storage* opens the page, and every answer snoozes it
+two weeks per project.
 
 **Chats from deleted lanes.** Older builds deleted a lane's chat rows and left
 the transcripts. Settings › Storage › Details lists them as one review-first
@@ -1002,9 +991,8 @@ is listed only when its row is gone, the lane in its `session_init` header no
 longer exists, and all its files have been idle 7 days. An empty lane table
 lists nothing.
 
-**Recently deleted chats.** Deleting one chat (not a lane) writes a
-`deleted_chats` row just before the chat row goes, naming the agent's own copy
-of the conversation.
+**Recently deleted chats.** Deleting one chat (not a lane) first writes a
+`deleted_chats` row naming the agent's own copy of the conversation.
 
 - Settings › Storage & cleanup › Recently deleted lists rows whose copy is
   still on this machine, with a preview, Reopen and Remove from list;
@@ -1025,10 +1013,9 @@ of the conversation.
 **Recently deleted lanes.** The same tab lists deleted lanes whose unsaved
 work the delete kept as git refs under `refs/ade/deleted-lanes/`, for 30 days.
 Restore brings one back as a new lane; Drop (the person only) deletes the ref.
-Free up space with its discard option saves the same way, marked "Space
-freed", and Put back (or restoring the lane) returns the files. The phone shows
-the list under Lanes › Archived. See
-[Saved work](../lanes/worktree-isolation.md).
+Free up space with discard saves the same way ("Space freed"), and Put back
+returns the files. The phone lists them under Lanes › Archived
+([Saved work](../lanes/worktree-isolation.md)).
 
 ### Storage ledger and policy
 
