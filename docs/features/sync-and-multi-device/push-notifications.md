@@ -82,11 +82,10 @@ TypeScript, in Swift for iOS, and in the push relay, which imports nothing from
 this repo. `activityBoardColumn.cases.json` beside it pins all three: change the
 rule there first, update the cases, then let the mirrors follow.
 
-The older six-group table (needs-you, failed, planning, working, idle, done) now
-lives only in the relay, which still fills the Live Activity's `groups` field
-from it for app builds that predate the four-column Live Activity.
-`activityStateGroup.cases.json` pins that relay mapping (and the iOS mirror
-until it moves); desktop and the hosted web client no longer read it.
+The six-group table (needs-you, failed, planning, working, idle, done) lives in
+the relay, which fills the Live Activity's `groups` field from it for app builds
+that predate the four columns. `activityStateGroup.cases.json` pins the relay
+and the iOS mirror. Desktop and the hosted web client do not read it.
 
 ## Topology
 
@@ -215,14 +214,12 @@ around each asynchronous relay reconciliation.
 
 ### Acknowledgments
 
-Acknowledgments are no longer fenced on "did this client personally see the item
-at this exact source revision". Revision is a raw epoch-ms that advances on every
-publish, so a live agent outruns any poll and that fence rejected the normal
-case. What remains is narrow: `alertFingerprints` maps `itemId -> the alert
-identity the caller had on screen`, and the relay refuses only when the stored
-alert has since changed. That is exactly the case worth refusing — an in-flight
-"Clear all" swallowing a `needs_you` published after the poll — and items with no
-quoted fingerprint stay unfenced, so one bulk call still clears an inbox.
+The relay does not fence an acknowledgment on the source revision, because the
+revision advances on every publish. `alertFingerprints` maps
+`itemId -> the alert identity the caller had on screen`, and the relay refuses
+only when the stored alert has changed since. This stops a "Clear all" that is
+in flight from clearing a `needs_you` published after the poll. An item with no
+quoted fingerprint is not fenced, so one bulk call still clears an inbox.
 
 One acknowledgment request may carry at most
 `ATTENTION_ACKNOWLEDGMENT_BATCH_LIMIT` (64) item ids. That is the relay's own
@@ -496,10 +493,9 @@ publisher.
 What it filters and how:
 
 - **Identity chats are excluded.** A roster chat with an `identityKey` (CTO and
-  the other identity threads) never becomes an item. The machine-wide sync
-  roster now omits those rows and their attached descendants before publishing;
-  this defensive filter remains for stale or legacy roster payloads, mirroring
-  the desktop sidebar and keeping the separate CTO surface out of Activity.
+  the other identity threads) never becomes an item. The sync roster already
+  omits those rows and their descendants; this filter covers an old roster
+  payload.
 - **Child shells fold into their parent.** A roster chat whose parent chat is
   itself in the roster is dropped — a shell attached to a visible chat is one
   piece of work, and publishing 1 + N items per chat inflated every count.
@@ -1028,7 +1024,7 @@ from their explicitly paired host through the viewer-allowed
 `attention.getMachineSnapshot` command. Their acknowledgments return through
 `attention.acknowledgeMachine`, fenced on the loaded account owner. Source
 revisions still ride along, but the brain records them rather than refusing on
-them: it now reports ids it does not recognize as `skipped` instead of rejecting
+them: it reports ids it does not recognize as `skipped` instead of rejecting
 the whole batch, so one unknown row cannot fail a Clear all. An older host that
 lacks those actions produces an Update host state;
 the adapter never converts an unsupported call into an empty list. If the
@@ -1088,8 +1084,10 @@ as suppressed so the brain stops retrying.
 
 The content state leads with `columns`: `{ needsYou, working, waiting, done }`,
 the account-wide agent counts in the four states. It is always present, zeros
-included. The relay still sends the older `runs`, `prs`, `groups` and
-`activeCount` fields for app builds that predate the four-tile design.
+included. For app builds that predate the four tiles, the relay also sends
+`runs`, `prs`, `activeCount`, `groups` (the account-wide agent tally per state
+group; PR rows never count) and `moreCount` (the roster overflow). It omits
+`groups` and `moreCount` when it has nothing to say.
 
 - The activity lives while any agent needs you, works, or waits. When only Done
   remains, the relay ends it.
@@ -1112,14 +1110,6 @@ included. The relay still sends the older `runs`, `prs`, `groups` and
   check before rendering and shows only a neutral Updating ADE state during the
   brief interval before the app can end a delayed old-account activity.
 
-The content state carries two additive optional fields alongside the rows:
-`groups`, the per-state-group tally, and `moreCount`, the roster overflow. Both
-are omitted rather than zero-filled when there is nothing to say, and a client
-that does not receive them derives the tally locally. The relay's tally counts
-agent rows only and is account-wide rather than derived from the capped roster —
-counting PR rows there inflated every group they touched, because a pull request
-is not planning.
-
 **iOS rendering.** The Lock Screen is four equal tiles in one row — Needs you,
 Working, Waiting, Done — each an SF Symbol, a big number and a label in the
 column colour; a zero tile dims, and each tile links to
@@ -1129,38 +1119,20 @@ the compact trailing is Working when the leading shows Needs you; the expanded
 island is the four tiles. A frame without `columns` (an older relay) is counted
 from `groups`, or from the run roster. On launch and on foreground the app ends
 every machine-scoped activity at once and never observes its tokens, and keeps
-one account-wide activity. Home Screen small and medium widgets show the same
-four tiles; the rectangular accessory shows four count pairs, the circular one
+one account-wide activity. The rectangular accessory widget shows four count pairs, the circular one
 the Needs-you count (or Working), and the inline one "2 need you · 5 working".
 
-The rest of this section describes the older row layout that builds predating
-the four tiles still render.
-
-The Lock Screen and Dynamic Island lead with one focused item and show a small
-overflow count instead of presenting a miniature monitoring dashboard. The
-Dynamic Island's compact leading is the leading group's glyph and count and its
-compact trailing is the top event signal, so the island says "one needs you, two
-working" at a glance. Each compact-strip glyph is a `Link` to
-`ade://activity?state=<group>`, so tapping the amber "4" opens the Activity
-drawer already filtered to that band. The expanded island adds a state strip,
-up to two agent rows, and a footer for the remainder: three rows plus a footer
-silently clip, because the expanded island clips overflow with no visible tell.
-The expanded leading/trailing regions inset 10pt horizontally and 2pt vertically
-so the corner glyphs keep their edges inside the island's rounder capsule. The
-lock-screen banner still budgets three agent rows (two when a lead row carries
-Approve/Deny capsules). A PR only earns its own card when there are no agent
-rows at all. Each secondary row owns an element-level `Link`, so tapping a PR or
-agent opens that row rather than one activity-wide fallback URL.
+App builds that predate the four tiles render one focused row, an overflow
+count and up to two agent rows in the expanded island, from the older fields.
+Each row has its own `Link`.
 
 When the app is foreground, `LiveActivityService.refreshLocalContent` writes the
 merged account+live feed into the running Activity with a local
-`Activity.update` (hash-deduped, 1 s floor). The relay spends APNs pushes only
-on transitions worth the ActivityKit budget — exact counts for `needs_you` and
-`failed`, presence for the rest — so a working count going 3 → 7 never reached
-the island from a push. The local write is the real-time path; the relay push
-stays the backstop for a suspended app. `Run.statusSince` is additive so a
-working row can render a system-ticking relative date instead of a string frozen
-at push time.
+`Activity.update` (hash-deduped, at most once a second). This local write is
+the real-time path. The relay push is the backstop for a suspended app, and it
+spends the ActivityKit budget only on the transitions above.
+`Run.statusSince` lets a working row show a relative date that the system
+updates.
 
 `chatActivityMode` never spends a push on its own. It is excluded from the alert
 fingerprint and from the relay's APNs transition gate, because planning and
@@ -1180,14 +1152,12 @@ or Reply navigation instead of executing an action against the wrong machine.
 
 ### Widgets and freshness
 
-`ADELockScreenWidget` now serves both accessory and Home Screen families
-(rectangular, circular, inline, small, medium, large) from one definition, and
-reads the same App Group snapshot under the same priority, state vocabulary,
-privacy, and routing rules. The accessory families stay single-focus with one tap
-target; the Home Screen families render the state-group header, up to two, three,
-or six rows depending on size, and a footer carrying the event signal and an
-overflow link. Rows carry per-row `Link`s, so a tap lands on the item rather than
-on the app.
+`ADELockScreenWidget` serves the accessory families (rectangular, circular,
+inline) and, through `ADEActivityHomeWidget.swift`, the Home Screen families
+(small, medium, large) from one definition. All read the same App Group
+snapshot under the same privacy and routing rules. Small and medium show the
+four tiles. Large adds up to six rows under a four-count header, an "N more"
+tail and one events line. Each row has its own `Link`.
 
 A widget cannot say "I am current" by rendering, so the snapshot is written with
 an explicit fetch timestamp and every surface derives a `Freshness` from it:
@@ -1200,9 +1170,8 @@ Two paths keep it fed. The app registers a `BGAppRefreshTask`
 (`com.ade.ios.activity.refresh`, permitted in `Info.plist` alongside the `fetch`
 background mode) which re-arms itself first, then bootstraps the account and
 refreshes the snapshot, and always reloads widget timelines even when the refresh
-fails. Silent pushes refresh the snapshot before reloading, and now reload on the
-no-change path too — a push that found nothing new still proves the data is
-current, which is exactly what the staleness tag is asking about.
+fails. A silent push refreshes the snapshot and then reloads, also when nothing
+changed, because that still proves the data is current.
 
 When there is no account feed at all, the Home Screen families fall back to the
 machine-local `LockScreenPriorityStatus` derivation rather than an empty card.

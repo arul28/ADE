@@ -347,687 +347,216 @@ apps/ios/
 ├── ADE.xcodeproj/
 ├── ADE/
 │   ├── App/
-│   │   ├── ADEApp.swift             # SwiftUI app entry
-│   │   ├── ADEAppDelegate.swift     # UIApplicationDelegate: APNs device-token
-│   │   │                            # callbacks + notification presentation,
-│   │   │                            # feeds PushNotificationService
-│   │   ├── ContentView.swift        # account-required launch gate with an
-│   │   │                            # explicit paired-host recovery path, then
-│   │   │                            # 5-tab TabView with a custom
-│   │   │                            # `ADERootBottomTabBar` overlay
-│   │   │                            # (Work/Lanes/PRs/Files/CTO + Work
-│   │   │                            # running-chat badge); the system tab
-│   │   │                            # strip is hidden and individual screens
-│   │   │                            # can hide the custom bar via
-│   │   │                            # `adeRootTabBarHidden()`. When no active
-│   │   │                            # project is selected the root shows the
-│   │   │                            # Hub (HubScreen, all-projects roster home)
-│   │   │                            # instead of the tabs. The tab view also
-│   │   │                            # owns the two project-host surfaces: the
-│   │   │                            # "Still starting this project's services…"
-│   │   │                            # top inset (with the stale marker naming
-│   │   │                            # the selected tab's rows) and the
-│   │   │                            # ProjectHostRecoveryScreen overlay; the Hub
-│   │   │                            # includes Add
-│   │   │                            # project when the runtime advertises
-│   │   │                            # projectActions
-│   │   ├── RemoteProjectAddSheet.swift # Add project flow: computer,
-│   │   │                               # open/create/clone or From GitHub,
-│   │   │                               # then "Put a copy" on more computers
-│   │   ├── RemoteProjectAddSteps.swift # The flow's step views (GitHub
-│   │   │                               # repo picker, folder browser,
-│   │   │                               # create/clone forms, success card)
-│   │   ├── DeepLinkRouter.swift     # ade:// and https://ade-app.dev/open
-│   │   │                            # handler. Compact PR links flip tabs via
-│   │   │                            # .adeDeepLinkRequested. A device sign-in
-│   │   │                            # link posts .adeDeviceSignInRequested, and
-│   │   │                            # ADEApp shows the approval sheet. Session links publish
-│   │   │                            # WorkSessionNavigationRequest with lane/repo/
-│   │   │                            # branch/event/offset scope; the app-root task
-│   │   │                            # routes the request to Hub or Work, including
-│   │   │                            # when it is already present at cold launch.
-│   │   │                            # `ade://activity[?state=<group>]` opens the
-│   │   │                            # Activity drawer, optionally pre-filtered to
-│   │   │                            # that state band; an unrecognised `state` is
-│   │   │                            # ignored so a newer widget still opens the
-│   │   │                            # drawer. Linear issue links route in-app when a
-│   │   │                            # project is open; lane/file/commit/artifact/
-│   │   │                            # repo-branch, full PR, and projectless
-│   │   │                            # Linear issue links post
-│   │   │                            # .adeSendToMacRequested so SendToMacCard can
-│   │   │                            # bounce the URL to a paired host via the
-│   │   │                            # deeplinks.open sync command.
+│   │   ├── ADEApp.swift, ADEAppDelegate.swift  # entry; APNs callbacks → PushNotificationService
+│   │   ├── ContentView.swift        # account gate (with paired-host recovery), the Hub
+│   │   │                            #   when no project is open, else the 5 tabs
+│   │   │                            #   (ADERootTabBarVisibilityModifier), the "Still
+│   │   │                            #   starting" inset and ProjectHostRecoveryScreen
+│   │   ├── RemoteProjectAddSheet.swift, RemoteProjectAddSteps.swift # Add project
+│   │   └── DeepLinkRouter.swift     # ade://, ade-beta:// and https://ade-app.dev/open:
+│   │                                #   PR, session (WorkSessionNavigationRequest),
+│   │                                #   device sign-in, `ade://activity[?state=]`,
+│   │                                #   Linear; other links go to SendToMacCard
 │   ├── Models/
-│   │   ├── RemoteModels.swift       # Codable structs mirroring shared types,
-│   │   │                            # including legacy and dotted subagent
-│   │   │                            # lifecycle chat events
-│   │   └── ChatLaunchModels.swift   # hand mirror of shared/types/chatLaunch.ts
-│   │                                # (snapshot, stages, queued messages,
-│   │                                # chat_launch_event envelope); tolerant
-│   │                                # decoding, only launchId required
+│   │   ├── RemoteModels.swift       # Codable mirrors of shared types, lenient
+│   │   └── ChatLaunchModels.swift   # mirror of shared/types/chatLaunch.ts
 │   ├── Resources/
-│   │   ├── DatabaseBootstrap.sql    # generated from desktop kvDb.ts; carries
-│   │   │                            # the replicated `terminal_sessions`
-│   │   │                            # lifecycle columns for fresh installs
-│   │   │                            # (Database.swift owns the matching
-│   │   │                            # ensureColumn migrations for upgrades)
-│   │   ├── SceneShell.html          # generated from desktop buildSceneDocument
-│   │   │                            # (policy, base styles, the in-frame SDK,
-│   │   │                            # ade.chart) with tokens Swift fills.
-│   │   │                            # Regenerate after a change to
-│   │   │                            # shared/chatScene*.ts:
-│   │   │                            # node apps/desktop/scripts/generate-ios-scene-shell.mjs
-│   │   │                            # (--check exits 1 when it is stale)
-│   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
+│   │   ├── DatabaseBootstrap.sql    # generated from desktop kvDb.ts (Database.swift
+│   │   │                            #   has the matching ensureColumn migrations)
+│   │   ├── SceneShell.html          # generated by
+│   │   │                            #   apps/desktop/scripts/generate-ios-scene-shell.mjs
+│   │   │                            #   (--check exits 1 when stale)
+│   │   └── VoiceGlossary.json       # dictation cleanup glossary
 │   ├── Services/
-│   │   ├── AccountCloudStore.swift  # ADE Cloud account reads: access, saved
-│   │   │                            #   chat copies, the message queue
-│   │   │                            #   (queueSend, followQueue), Keep it
-│   │   ├── AccountCloudLaunches.swift # cloud launches, the model catalog,
-│   │   │                            #   sign-in status (/cloud/sign-ins)
-│   │   ├── CloudServerClient.swift  # /cloud/* routes, refusal mapping
-│   │   ├── CloudAtRestReads.swift   # CloudAtRestStore: project overview,
-│   │   │                            #   Git summaries, session copies
-│   │   ├── SyncService+Cloud.swift  # cloud rows, resting rows, wakes
+│   │   ├── SyncService.swift (+ extensions) # WebSocket client, command routing,
+│   │   │                            #   pairing and account adoption, projections,
+│   │   │                            #   terminals, chat push, personal chats,
+│   │   │                            #   session.* lifecycle, project-host readiness,
+│   │   │                            #   the session read chokepoint (localSessions())
+│   │   ├── SyncService+Cloud.swift, AccountCloudStore.swift,
+│   │   │   AccountCloudLaunches.swift, CloudServerClient.swift,
+│   │   │   CloudAtRestReads.swift   # ADE Cloud: rows, wakes, queue, launches,
+│   │   │                            #   catalog, sign-ins, overview, Git summaries
 │   │   ├── SyncService+LinearAccount.swift # Linear through the account
-│   │   ├── GitHubDirectClient+Contents.swift # folders, files, commits
-│   │   │                            #   of a branch, straight from GitHub
-│   │   ├── AccountService.swift     # Clerk-backed account identity,
-│   │   │                            # transferable social auth outcomes,
-│   │   │                            # durable sign-out/device-ownership epochs,
-│   │   │                            # serialized account push registration,
-│   │   │                            # and exact pairing generations
-│   │   ├── AccountEmailAuthFlow.swift # identifier-first email sign-in-or-up:
-│   │   │                              # precise account-not-found fallback and
-│   │   │                              # matching attempt verification
-│   │   ├── AccountDirectory.swift   # account machine directory list/rename +
-│   │   │                            # install labels (channel/adeHome →
-│   │   │                            # installLabel/rowLabel) + Attention relay
-│   │   │                            # clients
-│   │   ├── DeviceSignInApproval.swift # the sign-in link of another computer
-│   │   │                            # (https://ade-app.dev/device?user_code=…):
-│   │   │                            # parses the code and calls the account
-│   │   │                            # directory's /device/approve to read what
-│   │   │                            # the code is for and to approve it. The
-│   │   │                            # sheet is Views/Account/
-│   │   │                            # DeviceSignInApprovalSheet.swift; every web
-│   │   │                            # sign-in sheet anchors through Views/
-│   │   │                            # Components/WebAuthPresentationAnchor.swift
-│   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
-│   │   ├── KeychainService.swift    # per-host pairing secrets, stable device
-│   │   │                            # identity, and SSH credential storage
-│   │   ├── MobileTrustResetPolicy.swift # one-time connection-token/profile
-│   │   │                                 # reset; preserves account + identity
-│   │   ├── DpopKeyService.swift     # Secure Enclave P-256 key + signed
-│   │   │                            # DPoP proof for every paired hello
+│   │   ├── GitHubAccountCredential.swift, GitHubDirectClient.swift,
+│   │   │   GitHubDirectClient+Contents.swift # GitHub straight from the phone
+│   │   ├── SyncService+ChatLaunch.swift, ChatLaunchStore.swift # new-lane launches
+│   │   ├── SyncService+MachineWake.swift, SyncMachineWake.swift # Mac wake prompt
+│   │   ├── SyncRecoveryPolicy.swift # reconnect, roam, path change, foreground resume
+│   │   ├── SyncConnectionRace.swift # one race over direct and Relay routes,
+│   │   │                            #   route memory, relay dial single-flight
+│   │   ├── SyncTerminalInputQueue.swift # ordered terminal input with ACK and retry
+│   │   ├── AccountService.swift, AccountEmailAuthFlow.swift # Clerk account,
+│   │   │                            #   ownership epochs, email sign-in-or-up
+│   │   ├── AccountDirectory.swift   # account machines, install labels, relay clients
+│   │   ├── AccountProjects.swift    # AccountProjectStore
+│   │   ├── DeviceSignInApproval.swift # approve another computer's sign-in link
+│   │   │                            #   (sheet: Views/Account/DeviceSignInApprovalSheet,
+│   │   │                            #   anchor: Views/Components/WebAuthPresentationAnchor)
+│   │   ├── Database.swift           # SQLite, pure-SQL CRR, offline caches
+│   │   ├── KeychainService.swift, DpopKeyService.swift,
+│   │   │   MobileTrustResetPolicy.swift, PairingQrPayload.swift # trust and pairing
 │   │   ├── SSHBootstrapModels.swift, SSHBootstrapService.swift,
 │   │   │   SSHCredentialStore.swift, SSHGeneratedKey.swift,
 │   │   │   SSHHostFingerprintValidator.swift, SSHHostKeyPinStore.swift,
-│   │   │   SSHPrivateKeyParser.swift # one-time SSH pairing bootstrap,
-│   │   │                              # key handling, and host-key pinning
-│   │   ├── PairingQrPayload.swift   # smart-URL QR parser (port of
-│   │   │                            # shared/pairingQr.ts)
-│   │   ├── PushNotificationService.swift # APNs registration, alert/deep-link
-│   │   │                                 # handling, prefs, push.getStatus
-│   │   ├── LiveActivityService.swift # ActivityKit start/update/end for the
-│   │   │                             # account-wide "agent runs" activity
-│   │   ├── MobileUsageQuotaStore.swift # host-scoped cached Claude/Codex
-│   │   │                               # quota snapshot + refresh state
-│   │   ├── PendingSessionSettleStates.swift # in-flight settle/unsettle/
-│   │   │                            # override intents, applied over session
-│   │   │                            # reads. Purely local and never persisted,
-│   │   │                            # because the settle columns are
-│   │   │                            # host-authoritative and a replicating
-│   │   │                            # write could defeat a host rejection by
-│   │   │                            # CRDT merge
-│   │   ├── PendingAttentionClearStates.swift # the same shape for the
-│   │   │                            # attention columns: a short-lived local
-│   │   │                            # overlay that drops a row out of
-│   │   │                            # "Needs you" the moment the user's answer
-│   │   │                            # is known, keyed on the exact host row it
-│   │   │                            # was armed against
-│   │   ├── ProviderAccountsStore.swift # `SyncService` calls for the host's
-│   │   │                            # `providerAccounts.*` commands plus the
-│   │   │                            # @MainActor store behind Settings → AI
-│   │   │                            # accounts: list/getSettings/refresh,
-│   │   │                            # create/remove/rename/setDefault/
-│   │   │                            # dismissReplaced/setSettings, and the
-│   │   │                            # loginStart/loginStatus/loginSubmitCode/
-│   │   │                            # loginCancel sign-in relay. Decodes the
-│   │   │                            # same `{ instance }`/`{ login }`
-│   │   │                            # envelopes the desktop bridge uses and
-│   │   │                            # re-reads the list after every change.
-│   │   ├── SyncRecoveryPolicy.swift # deterministic reconnect, roam-trigger
-│   │   │                            # policy (failover vs upgrade probe),
-│   │   │                            # path-change, heartbeat-silence,
-│   │   │                            # foreground-resume classification
-│   │   │                            # (syncForegroundResumeAction), and
-│   │   │                            # timeout policy
-│   │   ├── SyncConnectionRace.swift # one happy-eyeballs race over direct +
-│   │   │                            # Relay candidates: stagger/budget/relay
-│   │   │                            # join delay, relay accepted/ready
-│   │   │                            # deadlines, coarse network fingerprint +
-│   │   │                            # per-network route memory, endpoint
-│   │   │                            # failure memory, relay dial single-flight
-│   │   │                            # registry, and route truth
-│   │   ├── SyncMachineWake.swift    # sleep vocabulary shared with the desktop:
-│   │   │                            # syncMachinePresence, staleness window,
-│   │   │                            # wake need, wake-prompt request/stage
-│   │   ├── SyncService+MachineWake.swift # the confirm/waking/failed prompt
-│   │   │                            # state machine and its 90 s decision
-│   │   │                            # deadline
-│   │   ├── ChatLaunchStore.swift    # new-lane launch snapshots per project
-│   │   │                            # plus this device's local facts (start
-│   │   │                            # in flight, retry request, deferred
-│   │   │                            # messages); own observable so launch
-│   │   │                            # ticks re-render only launch surfaces
-│   │   ├── SyncService+ChatLaunch.swift # chat.startLaunch … commands,
-│   │   │                            # chat_launch_event handling, hydration
-│   │   │                            # and foreign-project pull refresh
-│   │   ├── SyncTerminalInputQueue.swift # bounded ordered terminal input,
-│   │   │                                # ACK timeout/retry, stable input ids
-│   │   ├── Dictation/               # SpeechDictationService,
-│   │   │                            # DictationController, deterministic
-│   │   │                            # cleanup, VoiceGlossary loader
-│   │   ├── AppUpdateAdvisor.swift   # public App Store version check (<=1×/6h,
-│   │   │                            # incl. on foreground), low-priority root
-│   │   │                            # banner with Update / per-version Later;
-│   │   │                            # silent on missing listing or network error
-│   │   └── SyncService.swift        # WebSocket client, command routing,
-│   │                                # PIN + sealed account adoption,
-│   │                                # scoped projection
-│   │                                # revisions, lane presence, logical-offset
-│   │                                # terminal snapshots, gap recovery,
-│   │                                # reliable input/resize,
-│   │                                # CLI launcher (startCliSession), chat push,
-│   │                                # provider-aware scheduled-work cancel,
-│   │                                # machine project browse/open/create/clone,
-│   │                                # Linear read/launch RPC wrappers, retained
-│   │                                # background lane-deletion tasks + scoped
-│   │                                # completion refresh, worktree
-│   │                                # discovery, personal-chat cache/actions/
-│   │                                # subscription routing, session.* lifecycle
-│   │                                # (settle / override / snooze / wake /
-│   │                                # clear-woke-marker) callers, the
-│   │                                # project-host readiness phase with its
-│   │                                # silent-retry loop and the
-│   │                                # diagnose/recover callers behind
-│   │                                # Fix connection, and the
-│   │                                # session read chokepoint (localSessions()
-│   │                                # / localSession(id:)) that overlays
-│   │                                # in-flight settle intents onto rows
-│   ├── Shared/
-│   │   ├── ADESharedContainer.swift # App Group UserDefaults + WorkspaceSnapshot helpers
-│   │   ├── ADESharedModels.swift    # AgentSnapshot, PrSnapshot — shared with widgets
-│   │   ├── ADESharedTheme.swift     # Provider color/icon table mirrored from desktop
-│   │   ├── ADEAgentActivityAttributes.swift # account-wide ActivityKit
-│   │   │                            # content-state + exact machine links +
-│   │   │                            # non-PII ownership-epoch fence
-│   │   ├── ActivityRowPresentation.swift # pure item → label/tone/glyph/elapsed
-│   │   │                            # mapper; the iOS mirror of desktop
-│   │   │                            #   sessionStatusPresentation.ts +
-│   │   │                            #   activityPresentation.ts. Owns
-│   │   │                            #   activityStatusShoutsLabel (Needs you /
-│   │   │                            #   Failed only — same as desktop
-│   │   │                            #   sessionStatusShoutsLabel). No SwiftUI —
-│   │   │                            #   tones are tokens. Compiles into the
-│   │   │                            #   widget extension, so iOS 17 only.
-│   │   ├── ActivityWidgetPresentation.swift # tone → colour binding and the
-│   │   │                            # lock-screen ranking, shared by the app and
-│   │   │                            #   the widget so the two cannot describe the
-│   │   │                            #   same session differently. Owns
-│   │   │                            #   `activityURL(for:)` (`ade://activity?state=`).
-│   │   │                            #   iOS 17 only.
-│   │   └── AttentionActionIntents.swift # widget actions for approve/deny/restart/retry
+│   │   │   SSHPrivateKeyParser.swift # one-time SSH pairing
+│   │   ├── PushNotificationService.swift, LiveActivityService.swift # APNs, Live Activity
+│   │   ├── MobileUsageQuotaStore.swift # cached Claude/Codex quota per host
+│   │   ├── PendingSessionSettleStates.swift, PendingAttentionClearStates.swift
+│   │   │                            # local, never-persisted overlays over host-owned
+│   │   │                            #   columns (a replicated write could undo a host
+│   │   │                            #   refusal)
+│   │   ├── ProviderAccountsStore.swift # providerAccounts.* calls behind AI accounts
+│   │   ├── Dictation/               # SpeechDictationService, DictationController
+│   │   └── AppUpdateAdvisor.swift   # App Store version check, at most once in 6 h
+│   ├── Shared/                      # also compiled into the widget extension
+│   │   ├── ADESharedContainer.swift, ADESharedModels.swift, ADESharedTheme.swift
+│   │   ├── ADEAgentActivityAttributes.swift # Live Activity state + ownership epoch
+│   │   ├── ActivityRowPresentation.swift # item → label/tone/glyph; mirror of desktop
+│   │   │                            #   sessionStatusPresentation.ts and
+│   │   │                            #   activityPresentation.ts (no SwiftUI)
+│   │   ├── ActivityWidgetPresentation.swift # tone colours, lock-screen ranking,
+│   │   │                            #   activityURL(for:)
+│   │   └── AttentionActionIntents.swift # widget approve/deny/restart/retry
 │   ├── Views/
-│   │   ├── Activity/                # ActivityDrawerSheet (global account-wide
-│   │   │                            #   Sessions/Inbox drawer), ActivityDrawerModel
-│   │   │                            #   (snapshot + local dismissals + acks),
-│   │   │                            # ActivityRow, ActivityBellButton
-│   │   ├── Account/                 # account choice/sign-in plus the mobile
-│   │   │                            # access gate and connections section
-│   │   ├── Components/              # ADEDesignSystem (incl. ADEConnectionDot,
-│   │   │                            # ADEUIKitAppearance.configureTabBar(),
-│   │   │                            # ADERootTabBarHiddenPreferenceKey),
-│   │   │                            # ADEUsageDesign (shared usage type scale,
-│   │   │                            #   pressure colors, chart geometry —
-│   │   │                            #   iOS counterpart of usageDesign.ts),
-│   │   │                            # MachineRowView (shared Mac row used by the
-│   │   │                            #   Settings account/machines lists and the
-│   │   │                            #   Hub quick-connect home; .row / .card looks),
-│   │   │                            # haptics, ADEMobilePrimitives (incl.
-│   │   │                            # ADEOptionButton for selection rows),
-│   │   │                            # ADEInstructionErrorCard (title, one
-│   │   │                            #   sentence, next step, optional Retry),
-│   │   │                            # ADETechnicalDetailsFold (the only place
-│   │   │                            #   raw internals appear; collapsed, with
-│   │   │                            #   Copy on the disclosure row),
-│   │   │                            # ADEStaleContentMarker (one shared
-│   │   │                            #   "<rows> (may be out of date)" rule),
-│   │   │                            # dictation mic, recording pill, global
-│   │   │                            # dictation pill
+│   │   ├── Activity/                # ActivityDrawerSheet, ActivityDrawerModel,
+│   │   │                            #   ActivityRow, ActivityBellButton
+│   │   ├── Account/                 # sign-in, access gate, connections
+│   │   ├── Components/              # ADEDesignSystem (ADEConnectionDot,
+│   │   │                            #   ADERootTabBarHiddenPreferenceKey), ADEUsageDesign,
+│   │   │                            #   MachineRowView, ADEMobilePrimitives,
+│   │   │                            #   ADEInstructionErrorCard, ADETechnicalDetailsFold,
+│   │   │                            #   ADEStaleContentMarker, StartOnPicker, dictation
+│   │   ├── Cloud/                   # CloudPaneSheet (Settings › ADE Cloud, over a
+│   │   │                            #   computer or the account server), limits,
+│   │   │                            #   sign-ins, sizes; CloudLaneAtRest (resting lane);
+│   │   │                            #   CloudPhoneFormat ("ADE Cloud" names);
+│   │   │                            #   CloudPreviews, CloudNoComputerPreviews,
+│   │   │                            #   CloudAtRestPreviews (fixtures)
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView,
-│   │   │                            # CtoAccountCopy (the CTO's account copy)
-│   │   ├── Hub/                     # HubScreen (all-projects roster home),
-│   │   │                            # HubActivityState (canonical six-group
-│   │   │                            #   glyphs/tallies plus Hub roster filter
-│   │   │                            #   All/Working/Needs you/Finished),
-│   │   │                            # HubRosterFilterBar (compact status cards),
-│   │   │                            # HubComponents (project/lane/chat cards,
-│   │   │                            #   HubNoMachineState), HubQuickConnect
-│   │   │                            #   (HubQuickConnectSection — one-tap connect
-│   │   │                            #   cards for online account/paired machines
-│   │   │                            #   on the no-machine home), HubComposerDrawer
-│   │   │                            #   (HubInlineComposer — inline keyboard
-│   │   │                            #   composer, not a modal drawer),
-│   │   │                            # HubComposerFleetDestination (composer
-│   │   │                            #   destinations on other live machines),
-│   │   │                            # HubScreen+ChatNavigation (chat open +
-│   │   │                            #   cross-project quick look),
-│   │   │                            # HubHeaderRow (the header row and its
-│   │   │                            #   tiers: on the Duo's outer display it
-│   │   │                            #   sits in the band beside the clock, with
-│   │   │                            #   the machines as one glyph),
-│   │   │                            # HubStatusBand (finds that band: it
-│   │   │                            #   measures the status block, or uses the
-│   │   │                            #   display's shape when the phone reports
-│   │   │                            #   none; Settings › Advanced shows the
-│   │   │                            #   reading). HubComponents
-│   │   │                            #   gives the projectless Chats button a
-│   │   │                            #   small count badge for personal chats
-│   │   │                            #   awaiting input and an equivalent
-│   │   │                            #   VoiceOver label; it remains hidden when
-│   │   │                            #   the host does not advertise personal
-│   │   │                            #   chats.
-│   │   │                            # Account projects (see "Account
-│   │   │                            #   projects on the phone"):
-│   │   │                            #   HubAccountProjects (join, resolver,
-│   │   │                            #   status line, account project scope),
-│   │   │                            #   HubAccountCards (card pass, chips,
-│   │   │                            #   saved order, account sheets),
-│   │   │                            #   ProjectLocationScreen,
-│   │   │                            #   DeleteProjectSheet, HubPhoneLayout,
-│   │   │                            #   HubRemoveProjects (Remove… sheet,
-│   │   │                            #   "Only on" sections, select bar,
-│   │   │                            #   hidden-on-phone list),
-│   │   │                            #   HubScreen+Selection (select mode,
-│   │   │                            #   hide, remove, where each folder is).
-│   │   │                            # Also ProjectHostRecoveryScreen (the
-│   │   │                            #   Swift mirror of
-│   │   │                            #   shared/syncHostRecoveryUi.ts:
-│   │   │                            #   snapshot/conflict/result parsing, the
-│   │   │                            #   phase machine, step labels, and the
-│   │   │                            #   full-surface Fix connection / Retry /
-│   │   │                            #   Switch Mac card shown over the project
-│   │   │                            #   tabs when this Mac's project host is
-│   │   │                            #   blocked)
-│   │   ├── PersonalChats/           # Hub-only projectless chat list,
-│   │   │                            # new-chat model composer, and reused
-│   │   │                            # Work transcript destination adapter
-│   │   ├── Lanes/                   # LaneDetailScreen,
-│   │   │                            # LaneDetailSectionChrome (collapsible
-│   │   │                            #   sections + wrapping chip-flow layout),
-│   │   │                            # LaneDetailGitActionsPane (commit /
-│   │   │                            #   stage / stash / history / escape
-│   │   │                            #   hatches, desktop pane parity),
-│   │   │                            # LaneBatchManageSheet, LaneManageSheet
-│   │   │                            #   (tabbed manage dialog),
-│   │   │                            # LaneStackGraphSheet,
-│   │   │                            # LaneDeeplinkHelpers (envelope-aware
-│   │   │                            #   https/ade lane/session/branch/PR
-│   │   │                            #   link minting),
-│   │   │                            # LaneMoveSheet ("Move to…" and the
-│   │   │                            #   resting cloud lane's move),
-│   │   │                            # LaneEnvInitProgressView, etc.
+│   │   │                            #   CtoAccountCopy, CtoHomeChooser
+│   │   ├── CursorCloud/             # Cursor Cloud fleet pane (CursorCloudPaneSheet,
+│   │   │                            #   ...ToolbarButton, ...PaneStore, ...AgentList/
+│   │   │                            #   DetailScreen, CursorCloudModels); every action
+│   │   │                            #   runs on the host; shown only when the host
+│   │   │                            #   advertises the fleet command
+│   │   ├── Deeplinks/               # SendToMacCard
+│   │   ├── Duo/                     # iPhone Duo and iPad layouts, DuoPreviews,
+│   │   │                            #   DuoSplitPreviews
 │   │   ├── Files/                   # FilesRootScreen, FilesDirectoryScreen,
-│   │   │                            # FilesDetailScreen, *+Actions helpers,
-│   │   │                            # FilesSearchScreen (full-screen unified
-│   │   │                            #   name+content search),
-│   │   │                            # FilesWorkspacePickerDropdown
-│   │   ├── Work/                    # WorkRootScreen, WorkChatSessionView,
-│   │   │                            # WorkCloudMachine (ADE Cloud new chat,
-│   │   │                            #   setup card, held messages, state
-│   │   │                            #   lines), WorkCloudAtRest (CLI and
-│   │   │                            #   shell copies, the resting chat move),
-│   │   │                            # WorkNewChatMachinePicker (ADE Cloud
-│   │   │                            #   is always an option),
-│   │   │                            # WorkRootComponents (list chrome: one-row
-│   │   │                            #   header, filter panel — including the
-│   │   │                            #   Machine chip row and
-│   │   │                            #   WorkMachineFilterOption — sticky lane
-│   │   │                            #   section headers, WorkSessionListRow
-│   │   │                            #   swipe/context-menu shell),
-│   │   │                            # WorkSessionRowCard (the row card itself:
-│   │   │                            #   WorkSessionRow, its leaf views, the
-│   │   │                            #   render signature, and the preview-line
-│   │   │                            #   helpers; a parent row carries one
-│   │   │                            #   nested-subagent mark: count + worst
-│   │   │                            #   child state),
-│   │   │                            # WorkSessionCanonicalState (Swift mirror of
-│   │   │                            #   the shared derivation +
-│   │   │                            #   workSessionRowPresentation),
-│   │   │                            # WorkSpawnNesting (Swift mirror of
-│   │   │                            #   sessionSpawnNesting.ts: same-lane
-│   │   │                            #   subagent filing, quiet-parent pull-up,
-│   │   │                            #   grandchild flatten, the parent mark,
-│   │   │                            #   Chat Info's child-chat roster),
-│   │   │                            # WorkSessionGrouping (by-lane/status/time
-│   │   │                            #   groups, quiet-zone shelves,
-│   │   │                            #   WorkViewStateStore whose per-project
-│   │   │                            #   record includes the machine filter
-│   │   │                            #   and tolerates records predating it; nested
-│   │   │                            #   filing comes from WorkSpawnNesting),
-│   │   │                            # WorkChatLaunch* (new-lane launches:
-│   │   │                            #   Presentation = hand mirror of
-│   │   │                            #   shared/chatLaunch.ts wording, Views =
-│   │   │                            #   palette/glyphs/rail/stage row,
-│   │   │                            #   SetupCard, PendingScreen + the route
-│   │   │                            #   gate, ListProjection = Work/Hub row
-│   │   │                            #   overlay), WorkLaneSetupTranscriptCard
-│   │   │                            #   (the lane_setup ade_card row),
-│   │   │                            # Work*Helpers, WorkNewChatScreen (chat/CLI
-│   │   │                            #   launcher + per-project interface
-│   │   │                            #   preference shared with Hub; pinned
-│   │   │                            #   lane picker under a tiered
-│   │   │                            #   progressive-disclosure header,
-│   │   │                            #   WorkNewChatHeaderTier),
-│   │   │                            # WorkUsageActivityCarousel (Limits/Activity
-│   │   │                            #   tab switch over host quota limits +
-│   │   │                            #   cross-client activity charts),
-│   │   │                            # WorkUsageSkyline (the Activity tab: the
-│   │   │                            #   desktop 3D contribution skyline, one
-│   │   │                            #   cached Canvas, one-shot rise),
-│   │   │                            # WorkUsageLimitsModule (the Limits tab:
-│   │   │                            #   per-provider headroom cards, one
-│   │   │                            #   segment per account, account detail
-│   │   │                            #   sheet),
-│   │   │                            # WorkUsageLimitResume (pure resume model,
-│   │   │                            #   viewer-zone pill copy, state/action
-│   │   │                            #   derivation, and legacy mirror fallback),
-│   │   │                            # WorkUsageLimitResumeViews (neutral pill +
-│   │   │                            #   compact bottom sheet and actions),
-│   │   │                            # WorkImportSessionScreen +
-│   │   │                            #   WorkImportSessionRows/Preview/
-│   │   │                            #   Presentation + WorkImportActionBar
-│   │   │                            #   (provider session browse/details,
-│   │   │                            #   preview, plan-driven action bar),
-│   │   │                            # WorkExternalSessionAffordances (Swift
-│   │   │                            #   port of the import policy),
-│   │   │                            # WorkLanePickerDropdown (sheet-presented
-│   │   │                            #   searchable lane list; reports its
-│   │   │                            #   presentation state so a caller can
-│   │   │                            #   park and restore composer focus),
-│   │   │                            # WorkChatAccountNote (Chat Info's
-│   │   │                            #   account row and switch menu),
-│   │   │                            # WorkChatRichCardViews (de-glassed,
-│   │   │                            #   centered compact tool-call /
-│   │   │                            #   file-change summary rows that expand
-│   │   │                            #   to inline details, plus work-log /
-│   │   │                            #   command transcript cards, inline
-│   │   │                            #   subagent spawn/result/background-chip
-│   │   │                            #   timeline rows, plus the unified Chat
-│   │   │                            #   rich `ade_card` rows (duration,
-│   │   │                            #   degraded/stale state, truncated counts,
-│   │   │                            #   and failure-only mobile CI detail),
-│   │   │                            #   Info sheet — ordered Subagents /
-│   │   │                            #   Background / Schedule sections mirroring
-│   │   │                            #   desktop — the subagent strip/badge, and
-│   │   │                            #   the resolved-question card that collapses
-│   │   │                            #   an answered question to a one-line
-│   │   │                            #   "Answered · <choice>" / "Declined" row),
-│   │   │                            # WorkPlanComposerViews (plan-approval
-│   │   │                            #   strip + review sheet),
-│   │   │                            # WorkComposerTypedTriggers (UITextView
-│   │   │                            #   composer + cursor-relative /command
-│   │   │                            #   & @file detection, inline suggestion
-│   │   │                            #   strip; the /command rows are the
-│   │   │                            #   host's discovered registry over
-│   │   │                            #   chat.getSlashCommands, with a minimal
-│   │   │                            #   static fallback for an older host or
-│   │   │                            #   an offline fetch, chip pills,
-│   │   │                            #   smart-link detection,
-│   │   │                            #   atomic deletion + Copy/Remove menus,
-│   │   │                            #   deferred/coalesced
-│   │   │                            #   UIKit focus transitions; replaced the
-│   │   │                            #   WorkMentionsPickerSheet /
-│   │   │                            #   WorkSlashCommandsSheet modals),
-│   │   │                            # WorkComposerSuggestionStrip (the
-│   │   │                            #   sectioned @ / / / # list above the
-│   │   │                            #   field, with Show more per section),
-│   │   │                            # WorkComposerModelChips (the model
-│   │   │                            #   chip's look, pill image and part
-│   │   │                            #   picker),
-│   │   │                            # WorkChatAttachmentTray,
-│   │   │                            # WorkComposerAttachmentStaging (kind
-│   │   │                            #   detection, image vs chunked file/video
-│   │   │                            #   routes, availability gating, pickers,
-│   │   │                            #   upload-on-stage) and
-│   │   │                            #   WorkChatAttachmentPreviewSheets
-│   │   │                            #   (chunked read-back into QuickLook and
-│   │   │                            #   video playback),
-│   │   │                            # WorkDrafts + WorkDraftScheduleSheet
-│   │   │                            #   (composer-overflow drafts/schedule,
-│   │   │                            #   drafts list sheet, scheduled-send
-│   │   │                            #   half-sheet),
-│   │   │                            # WorkContextUsageViews (turn-end meter),
-│   │   │                            # WorkChatComposerAndInputViews (always-open
-│   │   │                            #   icon-only queued-steer strip + the
-│   │   │                            #   structured-question card: pinned provider
-│   │   │                            #   row / tab strip above and freeform +
-│   │   │                            #   Send/Decline footer below a
-│   │   │                            #   budget-capped internal scroll, plus
-│   │   │                            #   WorkPendingInputHeightBoundedCard for the
-│   │   │                            #   non-question gates),
-│   │   │                            # WorkDraftPersistence (WorkComposerDraftStore
-│   │   │                            #   per-chat/Hub/New-Chat composer text +
-│   │   │                            #   WorkQuestionDraftStore per-request
-│   │   │                            #   selections, over App Group UserDefaults;
-│   │   │                            #   debounced autosave + workPersistedDraft
-│   │   │                            #   view modifier),
-│   │   │                            # WorkArtifactTerminalViews (minimal
-│   │   │                            #   collapsed in-thread proof row with a
-│   │   │                            #   44pt target, compact thumbnail/status,
-│   │   │                            #   expandable preview, and a friendly
-│   │   │                            #   unavailable fallback),
-│   │   │                            # WorkProofSheet + WorkProofDrawerModel
-│   │   │                            #   (the Proof drawer: turn-grouped,
-│   │   │                            #   segmented-grid sheet and full-screen
-│   │   │                            #   paged viewer; the grouping mirrors
-│   │   │                            #   shared/proofDrawerModel.ts), and
-│   │   │                            # WorkProofCitation (an inline
-│   │   │                            #   `ade-proof://` citation or a
-│   │   │                            #   `proof-compare` pair rendered in a
-│   │   │                            #   chat answer), split out of
-│   │   │                            #   WorkArtifactTerminalViews),
-│   │   │                            # WorkPreviews (DEBUG-only fixture screens
-│   │   │                            #   + ADEPreviewScreenHost),
-│   │   │                            # TerminalSessionScreen + SwiftTermSessionView
-│   │   │                            #   (full-screen SwiftTerm terminal,
-│   │   │                            #   offset resume/history paging +
-│   │   │                            #   viewport reporter),
-│   │   │                            # WorkSessionDestination*,
-│   │   │                            # WorkRootScreen+Selection (multi-select state +
-│   │   │                            #   bulk close/archive/restore/delete/export),
-│   │   │                            # WorkSelectionActionBar,
-│   │   │                            # WorkLaneOrder (pure lane ordering + the
-│   │   │                            #   singleton/headerless rule; the port of
-│   │   │                            #   desktop workLaneOrder.ts and the
-│   │   │                            #   headerlessLaneIds memo. Models manual
-│   │   │                            #   drag and handoff jobs even though iOS
-│   │   │                            #   has neither yet — they are the two rules
-│   │   │                            #   that decide whether a lane keeps its
-│   │   │                            #   header, and dropping them is how a port
-│   │   │                            #   silently loses a rule later), etc.
-│   │   ├── Linear/                  # LinearPaneSheet, issue list/detail screens,
-│   │   │                            # launch config, brand/logo paths, pane store
-│   │   │                            # and toolbar button. Uses existing cto.* read
-│   │   │                            # RPCs plus lane/chat/CLI launch primitives.
-│   │   │                            # LinearConnectionScreen (gear → connect via
-│   │   │                            #   OAuth/API key, reconnect, disconnect;
-│   │   │                            #   shared LinearConnectActions on the
-│   │   │                            #   disconnected pane) +
-│   │   │                            # LinearOAuthRunner (worker-bounce OAuth via
-│   │   │                            #   ASWebAuthenticationSession, ade:// capture),
-│   │   │                            #   all gated on supportsRemoteAction.
-│   │   ├── GitHubIssues/             # GitHub Issues pane from the Work ⋯ menu:
-│   │   │                            #   GitHubIssuesPaneSheet (list → detail with
-│   │   │                            #   close/reopen/comment) + GitHubIssuesPaneStore
-│   │   │                            #   (github.* remote commands, menu shown only
-│   │   │                            #   when the repo has open issues; see
-│   │   │                            #   docs/features/issues).
-│   │   ├── Cloud/                    # Settings › ADE Cloud (CloudPaneSheet: over
-│   │   │                            #   cloud.read / cloud.write on a computer,
-│   │   │                            #   or the account server directly with no
-│   │   │                            #   computer), limits, sign-ins, sizes.
-│   │   │                            # CloudLaneAtRest: the lane detail, files
-│   │   │                            #   and history of a resting cloud lane.
-│   │   │                            # CloudPhoneFormat: every cloud computer
-│   │   │                            #   is named "ADE Cloud".
-│   │   │                            # CloudAtRestPreviews,
-│   │   │                            #   CloudNoComputerPreviews: fixtures.
-│   │   ├── CursorCloud/              # Cursor Cloud fleet pane: CursorCloudPaneSheet
-│   │   │                            #   (full-screen sheet mirroring the Linear
-│   │   │                            #   pane's presentation) +
-│   │   │                            # CursorCloudPaneToolbarButton (Work top-bar
-│   │   │                            #   button beside the Linear one; shown only
-│   │   │                            #   with an active project, a confirmed Cursor
-│   │   │                            #   connection, and the advertised fleet
-│   │   │                            #   command — the same fail-closed entry-point
-│   │   │                            #   rule as Linear) + CursorCloudPaneStore
-│   │   │                            #   (fleet load /
-│   │   │                            #   status-lane-archived filters / active,
-│   │   │                            #   per-lane, and unlinked repo·branch grouping
-│   │   │                            #   over ai.cursorCloudFleet),
-│   │   │                            # CursorCloudAgentListScreen (pull-to-refresh,
-│   │   │                            #   skeleton/failure/connect/empty states) +
-│   │   │                            # CursorCloudAgentDetailScreen (facts, summary,
-│   │   │                            #   Open in ADE / Stop / Pull into lane /
-│   │   │                            #   cursor.com actions) +
-│   │   │                            # CursorCloudModels (Swift mirrors of the fleet
-│   │   │                            #   DTOs). Every action executes host-side like
-│   │   │                            #   Linear; no Cursor credentials live on device.
-│   │   │                            #   The sheet can still render a connect
-│   │   │                            #   prompt if credentials disappear after it
-│   │   │                            #   was opened; older brains omit the entry
-│   │   │                            #   because the optional commands are absent.
-│   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen
-│   │   │                            #   (PrDetailView — Overview emitted as
-│   │   │                            #   sibling List rows, not a monolith),
-│   │   │                            # PrConversationDigest (the PR story:
-│   │   │                            #   pushes, bots, comments), PrDetailOverviewTab,
-│   │   │                            # PrDetailHeaderComponents (compact summary,
-│   │   │                            #   collapsible local-lane offer, description),
-│   │   │                            # PrGitHubDescriptionParser (safe embedded
-│   │   │                            #   HTML → Markdown/native disclosures),
-│   │   │                            # PrMergeGateCard,
-│   │   │                            # PrHelpers, PrModels, PrRowCard (GitHub
-│   │   │                            #   state colours: prStateColor/PrStatePill),
-│   │   │                            #
-│   │   │                            # CreatePrWizardView,
-│   │   │                            # PrTargetBranchPickerDropdown,
-│   │   │                            # PrDetailOverviewPreviews (preview fixtures)
-│   │   ├── Settings/                # ConnectionSettingsView (the settings
-│   │   │                            #   list, grouped like the desktop: General,
-│   │   │                            #   You, App, Project, System; each page has
-│   │   │                            #   back and close), SettingsRoute (the
-│   │   │                            #   pages, their titles and subtitles, and
-│   │   │                            #   SettingsPageCopy with the shared save
-│   │   │                            #   helper), SettingsGeneralPage,
-│   │   │                            #   SettingsChatPage, SettingsProvidersPage,
-│   │   │                            #   SettingsIntegrationsPage,
-│   │   │                            #   SettingsLanesPage (read and write the
-│   │   │                            #   desktop's settings through the machine),
-│   │   │                            # SettingsMachinesSection
-│   │   │                            #   (reachable-machine list: top 3 + See all),
-│   │   │                            # SettingsMachineRenameSheet (account-wide
-│   │   │                            #   custom name set/clear),
-│   │   │                            # SettingsPairingSection,
-│   │   │                            # SettingsPairingScannerSheet (camera QR
-│   │   │                            #   scanner),
-│   │   │                            # SettingsConnectionHeader,
-│   │   │                            #   host compatibility warning banner,
-│   │   │                            # SettingsUsagePage + SettingsUsageChart
-│   │   │                            #   (full Usage page: cost hero, daily
-│   │   │                            #   chart, Live limits, breakdown),
-│   │   │                            # SettingsProviderAccountsPage +
-│   │   │                            #   ProviderAccountsScreen, ProviderAccountRow
-│   │   │                            #   (quota meters, next-chat marker),
-│   │   │                            #   ProviderAccountDetailPage (make default,
-│   │   │                            #   sign in again, rename, remove),
-│   │   │                            #   ProviderAccountAddSheet — Settings → AI
-│   │   │                            #   accounts for the connected machine,
-│   │   │                            #   segmented Claude/Codex, smart balance
-│   │   │                            #   toggle, also reachable from the machine
-│   │   │                            #   page's per-provider account counts,
-│   │   │                            # SettingsProviderAccountSignIn.swift
-│   │   │                            #   (ProviderAccountSignInSheet: start the
-│   │   │                            #   host's login, poll it, paste the Claude
-│   │   │                            #   code / show the Codex device code, cancel),
-│   │   │                            # SettingsProviderAccountsPreviews.swift
-│   │   │                            #   (list / detail / add / sign-in fixtures),
-│   │   │                            # SettingsPinSheet, SettingsPushDeliverySection
-│   │   │                            #   (push + Live Activity diagnostics/toggles),
-│   │   │                            # SSHPairingView + view model/state
-│   │   │                            #   — SettingsVoiceInputSection and
-│   │   │                            #   SettingsAnalyticsSection were removed
-│   │   │                            #   (analytics is default-on; dictation has
-│   │   │                            #   no settings panel)
-│   │   └── LanesTabView.swift
-│   └── Assets.xcassets/             # App icon, brand mark, provider logos
-│                                    # (Anthropic, Claude, Codex, Cursor,
-│                                    # Droid, OpenAI, OpenCode)
+│   │   │                            #   FilesDetailScreen, FilesSearchScreen,
+│   │   │                            #   FilesWorkspacePickerDropdown
+│   │   ├── GitHubIssues/            # GitHubIssuesPaneSheet, GitHubIssuesPaneStore
+│   │   │                            #   (see docs/features/issues)
+│   │   ├── Hub/                     # HubScreen (+ChatNavigation, +Selection),
+│   │   │                            #   HubActivityState, HubRosterFilterBar,
+│   │   │                            #   HubComponents (HubNoMachineState), HubQuickConnect,
+│   │   │                            #   HubComposerDrawer, HubComposerFleetDestination,
+│   │   │                            #   HubHeaderRow, HubStatusBand, HubPhoneLayout;
+│   │   │                            #   account projects: HubAccountProjects,
+│   │   │                            #   HubAccountCards, HubRemoveProjects,
+│   │   │                            #   ProjectLocationScreen, DeleteProjectSheet;
+│   │   │                            #   ProjectHostRecoveryScreen (mirror of
+│   │   │                            #   shared/syncHostRecoveryUi.ts)
+│   │   ├── Lanes/                   # LaneDetailScreen, LaneDetailSectionChrome,
+│   │   │                            #   LaneDetailGitActionsPane, LaneManageSheet,
+│   │   │                            #   LaneBatchManageSheet,
+│   │   │                            #   LaneDeeplinkHelpers, LaneMoveSheet,
+│   │   │                            #   LaneEnvInitProgressView
+│   │   ├── Linear/                  # LinearPaneSheet, LinearPaneStore, issue screens,
+│   │   │                            #   LinearConnectionScreen, LinearOAuthRunner
+│   │   ├── PersonalChats/           # Hub-only projectless chats
+│   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen (PrDetailView),
+│   │   │                            #   PrConversationDigest, PrDetailOverviewTab,
+│   │   │                            #   PrDetailHeaderComponents,
+│   │   │                            #   PrGitHubDescriptionParser,
+│   │   │                            #   PrHelpers, PrModels, PrRowCard,
+│   │   │                            #   CreatePrWizardView, PrTargetBranchPickerDropdown,
+│   │   │                            #   PrDetailOverviewPreviews
+│   │   ├── Settings/                # ConnectionSettingsView, SettingsRoute, the
+│   │   │                            #   General/Chat/Providers/Integrations/Lanes pages,
+│   │   │                            #   SettingsMachines (one ADE Cloud row),
+│   │   │                            #   SettingsMachineRenameSheet, SettingsPairingSection,
+│   │   │                            #   SettingsPairingScannerSheet, SettingsPinSheet,
+│   │   │                            #   SettingsConnectionHeader, SettingsUsagePage,
+│   │   │                            #   SettingsUsageChart, SettingsProviderAccounts
+│   │   │                            #   (SettingsProviderAccountsPage, ProviderAccountRow,
+│   │   │                            #   ProviderAccountDetailPage),
+│   │   │                            #   SettingsProviderAccountSignIn,
+│   │   │                            #   SettingsProviderAccountsPreviews,
+│   │   │                            #   SettingsPushDeliverySection,
+│   │   │                            #   SettingsCloudAccountProviders, SSHPairingView
+│   │   ├── Work/                    # see "The Work tab" and the sections below:
+│   │   │                            #   WorkRootScreen (+Actions, +Selection),
+│   │   │                            #   WorkRootComponents, WorkSessionRowCard,
+│   │   │                            #   WorkSessionCanonicalState, WorkSpawnNesting,
+│   │   │                            #   WorkSessionGrouping, WorkLaneOrder,
+│   │   │                            #   WorkSelectionActionBar; WorkNewChatScreen,
+│   │   │                            #   WorkNewChatMachinePicker, WorkLanePickerDropdown,
+│   │   │                            #   WorkChatLaunch*, WorkLaneSetupTranscriptCard;
+│   │   │                            #   WorkCloudMachine, WorkCloudAtRest (ADE Cloud);
+│   │   │                            #   WorkChatSessionView, WorkSessionDestination*,
+│   │   │                            #   WorkChatAccountNote, WorkChatRichCardViews,
+│   │   │                            #   WorkPlanComposerViews,
+│   │   │                            #   WorkChatComposerAndInputViews,
+│   │   │                            #   WorkComposerTypedTriggers,
+│   │   │                            #   WorkComposerSuggestionStrip,
+│   │   │                            #   WorkComposerModelChips, WorkChatAttachmentTray,
+│   │   │                            #   WorkComposerAttachmentStaging,
+│   │   │                            #   WorkChatAttachmentPreviewSheets, WorkDrafts,
+│   │   │                            #   WorkDraftScheduleSheet, WorkDraftPersistence,
+│   │   │                            #   WorkContextUsageViews; WorkUsageActivityCarousel,
+│   │   │                            #   WorkUsageSkyline, WorkUsageLimitsModule,
+│   │   │                            #   WorkUsageLimitResume(+Views);
+│   │   │                            #   WorkImportSessionScreen, WorkImportSessionRows,
+│   │   │                            #   WorkImportSessionPreview, WorkImportActionBar,
+│   │   │                            #   WorkExternalSessionAffordances;
+│   │   │                            #   WorkArtifactTerminalViews, WorkProofSheet,
+│   │   │                            #   WorkProofDrawerModel, WorkProofCitation;
+│   │   │                            #   TerminalSessionScreen, SwiftTermSessionView;
+│   │   │                            #   WorkPreviews (DEBUG fixtures)
+│   │   └── WorkTabView.swift, LanesTabView.swift, PRsTabView.swift, FilesTabView.swift
+│   └── Assets.xcassets/             # app icon, brand mark, provider logos
 ├── ADEWidgets/
-│   ├── ADEWidgetBundle.swift        # WidgetBundle registering the lock-screen
-│   │                                # widget AND the "agent runs" Live Activity
-│   ├── ADELockScreenWidget.swift    # the widget definition, its timeline
-│   │                                # provider, and the accessory views
-│   ├── ADEActivityHomeWidget.swift  # Home Screen small/medium/large views for
-│   │                                # that same definition
-│   ├── LockScreenPriorityStatus.swift # machine-local single-focus derivation,
-│   │                                # used when there is no account feed
-│   └── ADEAgentActivityWidget.swift # ActivityKit Live Activity + Dynamic Island
-│                                    # presentation for active agent runs;
-│                                    # expanded island insets corner glyphs and
-│                                    # budgets two agent rows (banner still three)
-└── ADETests/
-    ├── ADETests.swift
-    ├── AccountEmailAuthFlowTests.swift # returning email sign-in, new-email
-    │                                   # sign-up fallback, exact error codes
-    ├── ActivityDrawerModelTests.swift # live-host merge, six-group sections,
-    │                                   # glyph-strip filter, resting collapse
-    ├── ActivityRowPresentationTests.swift # six-group table pinned to
-    │                                   # activityStateGroup.cases.json, plus
-    │                                   # the drawer row's headline, provider
-    │                                   # mark and action admission
-    ├── ApprovalRequestKindPrecedenceTests.swift # top-level requestKind over
-    │                                   # detail.request.kind, on both the
-    │                                   # decode and transcript-parse paths
-    ├── WorkSpawnCompletionNoticeFoldTests.swift # adjacent same-child
-    │                                   # spawn_completed notices fold to ×N
-    ├── WorkUsageLimitResumeTests.swift # usage-limit pill/sheet copy, legacy
-    │                                   # mirror fallback, and subagent grouping
-    ├── HubProjectPresentationTests.swift # Hub state glyphs, snooze→idle,
-    │                                   # runningCount excludes snoozed
-    ├── PairingAndDpopTests.swift    # smart-URL QR parse + DPoP proof tests
-    ├── PrMergeMergeStateTests.swift # PR merge state, history/count decoding,
-    │                                # reconciliation, partial-detail retention
-    ├── SSHBootstrapTests.swift      # key parsing, fingerprint, bootstrap policy
-    ├── SyncEnvelopeChunkAssemblerTests.swift # bidirectional frame budget,
-    │                                          # reassembly bounds/expiry,
-    │                                          # compression + version matrices
-    ├── SyncRecoveryPolicyTests.swift # reconnect/backoff, path-change,
-    │                                 # roam-trigger (failover vs upgrade), and
-    │                                 # foreground-resume classification policy
-    ├── SyncTransportSelectionTests.swift # single-race candidate plan, relay
-    │                                     # join delay, network fingerprint +
-    │                                     # route memory, endpoint failure
-    │                                     # memory, relay dial single-flight
-    ├── WorkSessionCanonicalStateTests.swift # settle-override / snooze / filing
-    │                                # parity against the shared TS derivation,
-    │                                # plus the row status-slot vocabulary
-    └── WorkSessionGroupingTests.swift # grouping, quiet lanes, and the
-                                     # Snoozed/Settled quiet-zone shelves
+│   ├── ADEWidgetBundle.swift        # registers the widget and the Live Activity
+│   ├── ADELockScreenWidget.swift, ADEActivityHomeWidget.swift # lock and home widgets
+│   ├── LockScreenPriorityStatus.swift # single-focus status with no account feed
+│   └── ADEAgentActivityWidget.swift # Live Activity and Dynamic Island
+└── ADETests/                        # ADETests.swift plus one file per area, for
+                                     #   example SyncRecoveryPolicyTests,
+                                     #   SyncTransportSelectionTests,
+                                     #   SyncEnvelopeChunkAssemblerTests,
+                                     #   PairingAndDpopTests, SSHBootstrapTests,
+                                     #   ActivityRowPresentationTests,
+                                     #   WorkSessionCanonicalStateTests,
+                                     #   WorkSessionGroupingTests
 ```
+
+Rules that live in these files:
+
+- **Deep links.** A compact PR link changes the tab through
+  `.adeDeepLinkRequested`. A session link is routed to the Hub or Work, also
+  when it arrives at cold launch. A lane, file, commit, artifact, repo-branch,
+  full PR or projectless Linear link posts `.adeSendToMacRequested`, and
+  `SendToMacCard` sends it to a paired host with `deeplinks.open`. An unknown
+  `ade://activity?state=` value is ignored.
+- **Add project** shows on the Hub only when the runtime advertises
+  `projectActions`.
+- **Slash commands** in the composer come from the host's registry
+  (`chat.getSlashCommands`), with a small static list for an older host or an
+  offline fetch.
+- **Pending-input cards.** The structured-question card and
+  `WorkPendingInputHeightBoundedCard` (the other gates) share the height rule
+  in Gotchas.
+- **`WorkLaneOrder`** ports desktop `workLaneOrder.ts` and the
+  `headerlessLaneIds` memo, including manual drag and handoff jobs that iOS
+  does not have yet, because those two rules decide whether a lane keeps its
+  header.
+- **Cursor Cloud** reads `ai.cursorCloudFleet`. The toolbar button shows only
+  with an open project, a confirmed Cursor connection and the advertised
+  command. No Cursor credential is on the phone.
+- **Settings** groups its list like the desktop: General, You, App, Project,
+  System. Analytics is on by default, and dictation has no settings page.
 
 Each tab is factored into a root screen, one `+Actions` extension for
 side-effecting work, and several helper modules (timeline, markdown
@@ -4256,11 +3785,11 @@ the existing paired-host recovery path is the only account-less continuation.
 
 | Tab | Icon | Desktop equivalent | Capabilities |
 |---|---|---|---|
-| **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/manage, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane detail screen (full-screen, custom tab bar hidden) is organized into collapsible sections (`LaneDetailSectionChrome`): each section auto-opens when it has content and auto-collapses when empty (`LaneSectionDisclosure`), and stays where the user last put it once they toggle it manually. Header chips and the git action buttons flow through `LaneChipFlowLayout`, a wrapping flow layout that wraps onto new lines instead of horizontally scrolling. Lane rows in the list carry a cheap render-relevant signature (mirroring the Hub row-signature pattern) so `.equatable()` re-renders only rows whose visible state changed. It embeds `LaneDetailGitActionsPane`, a port of desktop's git actions pane: commit message field with amend toggle, pull (rebase/merge mode) / push (with force-with-lease) / fetch, staged + unstaged file lists with per-file and bulk stage / unstage / discard / restore / open-diff / open-files, stash push/apply/pop/drop, recent-commit history with context-menu view-files / copy-message / revert / cherry-pick, and a "more actions" menu holding switch branch plus the destructive escape hatches (rebase lane, rebase and push, force push). A conflict banner offers rebase **and merge** continue/abort (`git.rebaseContinue`/`Abort`, `git.mergeContinue`/`Abort`), and the creation sheet copies uncommitted changes into a new lane. The lane options menu copies shareable deeplinks (`LaneDeeplinkHelpers`: `ade://lane/<id>`, `ade://repo/<owner>/<repo>/branch/<branch>`) and opens `LaneManageSheet`, a tabbed manage dialog (delete / appearance / archive) mirroring desktop's `ManageLaneDialog`. The sheet keeps the lane name in the nav bar with a pencil rename on the right (hidden for the primary lane and hosts that omit `lanes.rename`), drops the oversized body title, and shows branch and path as icon rows. Every lane is managed the same way regardless of where its worktree lives, so there is no adopt or "move into `.ade/worktrees`" action. |
+| **Lanes** | `square.stack.3d.up` | `/lanes` | The lane list (search, filter chips, `devicesOpen` presence chips) and the lane detail screen. See [The Lanes tab](#the-lanes-tab). |
 | **Files** | `doc.text` | `/files` | Lane-backed workspace picker (`FilesWorkspacePickerDropdown`, a desktop-shaped searchable dropdown), live file tree/read. Search is a single full-screen page (`FilesSearchScreen`) opened from the magnifying-glass button in the Files top bar (desktop `FilesSearchPanel` parity): one query searches file *names* (quick open) and file *contents* (text search) together — name matches surface first under "Files", content hits are grouped per file with collapsible line previews, and tapping a line opens the file at that line. Files are freely editable, as on the desktop. With no computer awake, a cloud lane's files come from GitHub (see [ADE Cloud on the phone](#ade-cloud-on-the-phone)). |
-| **Work** | `terminal` | `/work` | Terminal + chat session list (standalone CLI sessions stay listed after they end, matching desktop — `workSessionShouldAppearInWorkList` in `WorkBrowserHelpers.swift` hides orphaned chat-owned child shells that are no longer live), cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **Chat** and **CLI** via a compact nav-bar pill toggle (desktop `ModeSwitcherPills` parity); the lane is chosen through `WorkLanePickerDropdown` (searchable, with an auto-create-lane row), and in CLI mode the provider is derived from the picked model via `workResolveCliProvider` instead of a separate provider row. The composer's `⋯` menu owns the launch options that are not the model: **Issue context** (Linear on both surfaces and GitHub in Chat mode only — a CLI start records Linear links only — each gated on the host advertising its attach command, with picked issues drawn as pills above the composer) and **Account** (a Claude or Codex launch on another signed-in account of the chosen machine; shown when there is a real choice, hidden when the only working login is the machine default, and never fed by the machine inventory's provider logins, which no launch can switch to). **Issue context** reads the focused machine's project: a new chat's issue picks ride its first message and are recorded on the session, and a running chat's attach writes the same session link; a chat on another machine, or in another project on this machine, keeps the section hidden rather than drawing links from the wrong tracker. The lane picker is **pinned** directly above the composer, so it stays reachable no matter how tall the composer grows or whether the keyboard is up; everything above it is a collapsible header that steps through `WorkNewChatHeaderTier` (`full` word-mark + tagline + chips + usage carousel -> `compact` chips + carousel -> `minimal` chips only -> `hidden`). The tier is resolved from the measured height actually left for the scroll area — never from keyboard notifications — so a grown composer collapses the header exactly like the keyboard does, and a small hysteresis on stepping *up* keeps it from oscillating once hidden content frees the height that would re-show it. The usage carousel stays mounted at every tier and collapses to zero height rather than leaving the tree: it owns fetched stats behind a `.task(id:)`, so unmounting it would refetch and flash an empty card each time the tier stepped back up. The picker presents its list as a **sheet** (medium/large detents, drag indicator, 16pt-class text, keyboard-dismissing scroll) rather than a popover, because UIKit squeezed a popover into whatever space the keyboard and a grown composer left and clipped the lane list to a few rows. The screen owns the composer's focus binding so it can park focus while that sheet is up and restore it from the sheet's `onDismiss` — restoring on the `isPresented` change instead would race the dismissal animation and lose the keyboard. The new-chat composer shares the in-session chat composer's `WorkComposerControlsRow` (the same controls strip used by `WorkComposerChipStrip`): a permission/access control that is a single tone-dot dropdown at every width (iPad and landscape included, so they match the phone), a model pill, and a fast-mode lightning toggle. The fast-mode toggle is shown only in **Chat** mode for fast-capable models (threaded into `chat.create` via `codexFastMode`) and is hidden in CLI mode, where the launcher has no fast-mode parameter. The composer's last-used selection (model + access mode + reasoning effort + fast mode) persists across surfaces through `WorkComposerPreferences` (App Group `UserDefaults`, versioned key): the New Chat screen seeds its initial state from the saved selection instead of hardcoded defaults, and every change or send — from the New Chat composer, the in-session inline picker (`WorkSessionDestinationView`), or the session settings sheet — writes it back. Because the inline picker is cross-provider, the persisted provider is re-derived from the picked model, and a provider change resets the coupled access mode / sub-settings to that provider's defaults. Droid (Factory) is in the new-chat provider allowlist (`workNormalizedNewChatProvider`), so Droid Core models (GLM / Kimi / MiniMax) keep the `droid` provider instead of silently collapsing to the Claude runtime. The new-chat send button is the shared `ADEComposerSendButton` (an arrow-in-circle disc matching the in-session composer). The session list itself is described in [Work session list rows](#work-session-list-rows). Each row carries a minimal per-lane PR status indicator (`WorkLanePrIndicator`: a state-colored dot + `#num` + Open/Draft/Closed/Merged) beside its title. It and the Lanes tab chip both render the unified `LanePrTag` (`LaneHelpers.swift`, `selectLaneTabPrTag`, desktop parity), which merges ADE-mapped PRs (the synced `pull_requests` table) with GitHub PRs opened outside ADE — matched to a lane by branch and fetched into the shared `SyncService.laneGithubPrItems` cache (`refreshLaneGithubPrItems`, best-effort, throttled, reset on project switch / reconnect). When a row resolves a `LanePrTag` (mapped or GitHub-by-branch), its long-press context menu (`WorkSessionListRow`) also offers **"Open in PRs tab"**; `WorkRootScreen+Actions.openPullRequest` waits out the menu-dismiss animation, then publishes `syncService.requestedPrNavigation` (a `PrNavigationRequest` carrying the PR id + number + lane id, or just the GitHub PR number for an unmapped tag), and `ContentView`'s `onChange(of: requestedPrNavigation?.id)` flips the app to the PRs tab and opens that PR — the same cross-tab handoff the deep-link router and the in-chat PR menu use. CLI mode submits `work.startCliSession` with the resolved provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. Only real user drags can un-pin the viewport: layout-driven geometry changes (keyboard show/hide, key bar, pinch font changes) re-assert the live tail after the pass settles, so a pinned terminal with large scrollback keeps the prompt visible above the keyboard instead of stranding it (SwiftTerm only re-snaps when cols/rows change, and a mouse-mode TUI repainting in place emits no scroll events to self-heal). When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. Running chats show in the session list and in a Work tab badge bound to `SyncService.runningChatSessionCount`. In chat sessions, user-message attachments render through `WorkChatAttachmentTray` (image thumbnails embedded in the bubble, desktop `ChatAttachmentTray` parity, placeholder tiles when the image bytes have not synced from the host yet), and the chat header's PR menu opens the lane's open PR on GitHub, copies its link, or launches the create-PR wizard in `singleModeOnly` mode (eligibility read from `prs.getMobileSnapshot.createCapabilities`). Whether a chat resolves a lane PR at all is one policy object, `WorkChatLanePrPolicy`, read by the lookup, the task that runs it, and the badge alike. Before it, `showsLaneActions: false` hid only the header menu while the lane→PR lookup still ran — so the CTO chat, which reuses this view with a synthetic lane id, resolved the project's primary-lane PR and rendered it as its own badge (and did the network work on every mount). The lookup now bails before any request and clears the cached PR state, and `rendersPrBadge` folds in the subagent rule so both exclusions come from one place. The chat composer input is a `UITextView`-backed field (`WorkComposerTextView` in `WorkComposerTypedTriggers.swift`) rather than a plain SwiftUI `TextField`, because it needs the cursor position and inline styled runs. `WorkComposerTriggerDetector` runs the same cursor-relative regexes as the shared desktop `composerTriggers.ts` (slash `(?:^|\s)/([^\s/]*)$`, at `(?:^|\s)@([^\s@]*)$`), so a `/command` or `@file` trigger is detected anywhere in the draft, not just at position 0. `WorkComposerSuggestionController` drives an inline suggestion strip (`WorkComposerSuggestionStrip`) above the input — a curated per-provider slash catalog (`WorkComposerSlashCatalog`) resolved locally, and `@file` quick-open resolved over sync via `SyncService.quickOpen` against the lane's files workspace (40 ms debounce, workspace id cached per lane, invalidated on lane change). Its visibility derives purely from the active trigger match, never from `@FocusState`. Committing a suggestion splices exactly the trigger span on the live text view, and confirmed `/command` / `@path` tokens render as tinted chip pills drawn by a custom TextKit 1 `WorkComposerChipLayoutManager` (provider-accent tint, monospace for slash, semibold for at) while `draftState.text` stays the plain-text source of truth that is sent. `WorkSmartLinkDetector` styles GitHub, Linear, ADE, and generic web URLs with the same chip layout manager in both new-chat and in-session composers; Backspace/Delete removes an intersected URL atomically, and long press offers Copy link and Remove link. The raw URL remains the SwiftUI draft and sent prompt. |
+| **Work** | `terminal` | `/work` | Chats, CLI sessions and shells of every connected machine, the new-session screen, the terminal and the chat composer. See [The Work tab](#the-work-tab). |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, per-PR action capabilities. The PR detail screen (`PrDetailView`) is a single-column adaptation of the desktop Timeline+Rails layout — its Overview is emitted as sibling `List` rows so the list virtualizes offscreen content, and it stays live off a warm-cache freshness gate (see [PR detail screen](#pr-detail-screen)). |
-| **CTO** | `brain` | `/cto` | The CTO chat thread rendered inline as the tab body (single persistent session via `CtoSessionDestinationView`) with a compact one-line voice/send composer. The top-bar gear opens settings for the home machine, identity (name and standing instructions), live model/reasoning/Fast selection, read-only Linear status, and memory via `cto.getMemory`. What the tab shows is decided by the pure `ctoRootContent(identity:loadError:hostUnreachable:)`, mirroring desktop `CtoPage`'s order: loading / load error / **model pick** / thread. The model-pick state exists because `CtoIdentity.modelPreferences` is optional and the host normalizes a stored preference on a provider that cannot steer a live turn back to null; in that state the screen deliberately does not build `CtoSessionDestinationView`, so nothing ensures — and therefore nothing creates — a session on a provider the user has not chosen. Both CTO model pickers pass `modelFilter` into `WorkModelPickerSheet`, which prunes providers and groups that empty out so the provider rail never shows a tab with nothing behind it; the predicate is `providerSupportsLiveRedirect`, the hand mirror of `CTO_LIVE_REDIRECT_PROVIDERS` pinned by a parity test. `applyModelPick` writes identity preferences, then ensures the session, then pins the exact model, and publishes the refreshed snapshot only at the end — publishing earlier would drop the picker mid-flight and let a second concurrent ensure run. The composer never offers *Send after turn* on this thread: `liveRedirectOnlySends` is threaded from `CtoSessionDestinationView` through `WorkSessionDestinationView` into `workChatActiveSendCapability`, which filters `queue` out of `WorkActiveSendCapability.forProvider` (and, since the default is the first mode, moves the default with it). It is its own flag rather than a second meaning for `showsLaneActions` or `compactComposer`. The host enforces the rule regardless — the CTO session's steer queue cap is zero — so this only keeps the menu from offering a wait the host would not honor. The tab badges when the thread is blocked on the user: `SyncService.refreshCtoAttentionIfNeeded()` calls the optional `cto.getAttention` command (5 s debounce, gated on `supportsRemoteAction`) and publishes `ctoAttention`. It rides the change pulse that rebuilds the session roster, but is invoked *before* `refreshActiveSessionsAndSnapshot`'s roster-signature early return — the CTO is excluded from that roster, so a CTO-only change leaves the signature unchanged and a probe below the guard could never fire. `saveRemoteCommandDescriptors` also calls it with `force: true`, so the first probe after a (re)connect happens as soon as the host advertises the command. Transport failures and the host's explicit `unknown` status both keep the last known value; an older brain that does not advertise the action clears it. The decoded status is optional so a new phone still infers idle/waiting correctly from the legacy `awaitingInput` field. |
+| **CTO** | `brain` | `/cto` | The CTO chat thread as the tab body, with a one-line voice and send composer and a settings gear. See [The CTO tab](#the-cto-tab). |
 | **Settings** | `gearshape` | `/settings` (sync subset) | Connections — account sign-in (primary, PIN-less directory + Relay adoption), account-wide machine rename/clear, scan the QR (`SettingsPairingScannerSheet`) + PIN, or Nearby + PIN — plus advanced SSH bootstrap, appearance, diagnostics, reconnect, forget, and a **Push delivery** panel (`SettingsPushDeliverySection`: registration/permission state, APNs environment, relay reachability from `push.getStatus`, and notification / Live-Activity / quiet-hours toggles). `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` / `SettingsPushDeliverySnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`, `SettingsPushDeliverySection`) instead of having them reach into `SyncService` directly. The About row formats the marketing and build versions together as `v<marketing> (<build>)`. Settings also hosts the full **Usage** page (`SettingsUsagePage`) and the **AI accounts** page (`SettingsProviderAccountsPage`), the phone's counterparts of desktop Settings > Usage and the hosted web client's AI accounts card. |
 
 The **AI accounts** page lives in Settings → App (and is also reachable from a
@@ -4348,6 +3877,150 @@ as desktop when Claude-family models are unavailable: a compact
 Call sites with lane context pass their lanes; otherwise the sheet
 fetches the current lane list before reporting that no active lane is
 available.
+
+### The Work tab
+
+The session list is in [Work session list rows](#work-session-list-rows).
+Running chats also count in the Work tab badge
+(`SyncService.runningChatSessionCount`). A standalone CLI session stays listed
+after it ends, as on desktop. `workSessionShouldAppearInWorkList`
+(`WorkBrowserHelpers.swift`) hides a chat-owned child shell that is not live.
+
+**New session** (`WorkNewChatScreen`):
+
+- A nav-bar pill switches between **Chat** and **CLI**. In CLI mode,
+  `workResolveCliProvider` takes the provider from the picked model.
+  `workNormalizedNewChatProvider` keeps Droid models on the `droid` provider.
+- The lane picker (`WorkLanePickerDropdown`, searchable, with an
+  auto-create-lane row) is pinned above the composer and opens its list as a
+  sheet. The screen parks the composer's focus while the sheet is up and
+  restores it in the sheet's `onDismiss`.
+- The header above the picker steps through `WorkNewChatHeaderTier` (`full`,
+  `compact`, `minimal`, `hidden`) from the measured height left for the scroll
+  area, never from keyboard notifications, with hysteresis on the way up. The
+  usage carousel stays mounted at every tier and collapses to zero height, so
+  it does not fetch again.
+- The composer's `⋯` menu holds **Issue context** and **Account**:
+  - Issue context: Linear in both modes, GitHub in Chat mode only, each when
+    the host advertises its attach command. It reads the focused machine's
+    project, so it is hidden for a chat on another machine or project.
+  - Account: a Claude or Codex launch on another signed-in account of the
+    chosen machine, shown only when there is a real choice.
+- The controls row (`WorkComposerControlsRow`) is shared with the in-session
+  composer: the access dropdown, the model pill, and fast mode (Chat mode and
+  fast-capable models only, as `codexFastMode`).
+- `WorkComposerPreferences` (App Group `UserDefaults`) keeps the last model,
+  access mode, reasoning effort and fast mode. The New Chat screen, the inline
+  picker and the session settings sheet read and write it. A provider change
+  resets the coupled access mode to that provider's defaults.
+- CLI mode sends `work.startCliSession` with the provider, the permission mode
+  (Claude also has `auto`), an optional `reasoningEffort` and an optional
+  opening message. Codex gets the opening message as its last argv argument
+  (`buildTrackedCliLaunchCommand`); other providers get it typed into the PTY.
+
+**Terminal** (`TerminalSessionScreen` + `SwiftTermSessionView`):
+
+- A full-bleed SwiftTerm emulator. A tap raises the keyboard, and keystrokes
+  go to the PTY as `terminal_input` (coalesced about 16 ms). The PTY echo is
+  the only source of truth. A key bar gives esc, tab, a latching Ctrl, arrows
+  and return. Pinch changes the font size.
+- While the screen is open, the phone owns the PTY size (`terminal_resize`).
+  The runtime restores the desktop size on detach.
+- Output streams as offset-stamped `terminal_data` with gap detection and
+  `sinceOffset` resume. Near the top, `terminal_history` loads older output.
+  A "↓ Live N" pill returns to the live tail. Only a user drag unpins the
+  view; a layout change keeps a pinned view at the tail.
+- With mouse reporting on (Claude Code, htop), a vertical pan is sent as SGR
+  wheel events. A host with no offsets gets a 2 s tail refresh until offsets
+  appear.
+- `terminal_unsubscribe` runs on disappear. An ended agent CLI row takes a
+  message to continue (see Gotchas).
+
+**Chat composer and chat header:**
+
+- The input is `WorkComposerTextView` (`WorkComposerTypedTriggers.swift`), a
+  `UITextView`, because it needs the cursor position and styled runs.
+  `WorkComposerTriggerDetector` uses the desktop `composerTriggers.ts`
+  regexes, so `/command` and `@file` work anywhere in the draft. See
+  [Chips on the phone](#chips-on-the-phone).
+- `WorkComposerSuggestionController` shows the suggestion strip from the
+  active trigger only: a per-provider slash catalog, and `@file` quick-open
+  through `SyncService.quickOpen` (40 ms debounce). Confirmed tokens draw as
+  chips (`WorkComposerChipLayoutManager`), and `draftState.text` stays the
+  plain text that is sent.
+- `WorkSmartLinkDetector` draws GitHub, Linear, ADE and web URLs as chips.
+  Delete removes a whole URL, and a long press offers Copy link and Remove
+  link.
+- Attachments draw in `WorkChatAttachmentTray`, with placeholder tiles until
+  the image bytes sync.
+- The chat header's PR menu opens the lane's PR on GitHub, copies its link,
+  or starts the create-PR wizard (`singleModeOnly`). `WorkChatLanePrPolicy`
+  decides whether a chat looks up a lane PR at all. The CTO chat and
+  subagents do not, so they show no badge and send no request.
+- A row with a lane PR (`LanePrTag`) offers "Open in PRs tab" in its
+  long-press menu. It publishes `syncService.requestedPrNavigation`, and
+  `ContentView` opens the PR.
+
+### The Lanes tab
+
+- **List.** Each row carries a render signature, as Hub rows do, so
+  `.equatable()` re-renders only rows whose visible state changed.
+- **Detail screen.** It is full-screen and hides the tab bar. Its sections
+  (`LaneDetailSectionChrome`) open when they have content and close when empty
+  (`LaneSectionDisclosure`), until the user toggles one. Header chips and Git
+  buttons wrap through `LaneChipFlowLayout`.
+- **Git** (`LaneDetailGitActionsPane`, a port of the desktop Git pane):
+  - commit with amend; pull (rebase or merge), push (force-with-lease), fetch
+  - staged and unstaged files with stage, unstage, discard, restore, diff and
+    open, per file and in bulk
+  - stash push, apply, pop and drop
+  - recent commits with view files, copy message, revert and cherry-pick
+  - a "more actions" menu: switch branch, rebase lane, rebase and push, force
+    push
+- **Conflicts.** A banner offers continue and abort for a rebase and a merge
+  (`git.rebaseContinue`/`Abort`, `git.mergeContinue`/`Abort`).
+- **Create.** The creation sheet can copy uncommitted changes into the new lane.
+  Template-backed environment setup shows its progress.
+- **Options menu.** It copies deeplinks (`LaneDeeplinkHelpers`:
+  `ade://lane/<id>`, `ade://repo/<owner>/<repo>/branch/<branch>`) and opens
+  `LaneManageSheet` (delete, appearance, archive), the mirror of desktop
+  `ManageLaneDialog`. The sheet title has a pencil rename, hidden for the main
+  checkout and for hosts without `lanes.rename`. Every lane is managed the same
+  way wherever its worktree is, so there is no adopt action.
+
+### The CTO tab
+
+- **Content.** The pure `ctoRootContent(identity:loadError:hostUnreachable:)`
+  picks loading, load error, **model pick** or the thread, in the order of
+  desktop `CtoPage`. `CtoSessionDestinationView` holds the one session.
+- **Model pick.** `CtoIdentity.modelPreferences` is optional, and the host sets
+  a preference to null when its provider cannot steer a live turn. In that
+  state the screen does not build `CtoSessionDestinationView`, so no session
+  starts on a provider the user did not choose.
+- **Pickers.** Both CTO model pickers pass `modelFilter` to
+  `WorkModelPickerSheet`, which removes providers and groups that become empty.
+  The predicate `providerSupportsLiveRedirect` mirrors
+  `CTO_LIVE_REDIRECT_PROVIDERS` (a parity test pins it). `applyModelPick` writes
+  the identity preferences, ensures the session, pins the model, and publishes
+  the snapshot last, so the picker does not close early and no second ensure
+  runs.
+- **No "Send after turn".** `liveRedirectOnlySends` goes from
+  `CtoSessionDestinationView` through `WorkSessionDestinationView` to
+  `workChatActiveSendCapability`, which removes `queue` (and moves the default).
+  It is its own flag, not a second meaning of `showsLaneActions` or
+  `compactComposer`. The host also caps the CTO steer queue at zero.
+- **Settings gear.** Home machine, identity (name and standing instructions),
+  model, reasoning and Fast, read-only Linear status, and memory
+  (`cto.getMemory`).
+- **Badge.** `SyncService.refreshCtoAttentionIfNeeded()` calls the optional
+  `cto.getAttention` (5 s debounce, gated on `supportsRemoteAction`) and
+  publishes `ctoAttention`. It runs before the roster-signature early return
+  of `refreshActiveSessionsAndSnapshot`, because the roster leaves out the CTO.
+  `saveRemoteCommandDescriptors` calls it with `force: true` after a connect. A
+  transport failure or an `unknown` status keeps the last value. A brain
+  without the action clears it, and the phone falls back to `awaitingInput`.
+- **Home asleep.** "Read where <name> left off" opens the CTO account copy (see
+  [ADE Cloud on the phone](#ade-cloud-on-the-phone)).
 
 ## Lane data projection
 
@@ -4855,50 +4528,25 @@ the stats and shows update guidance.
 
 ## Implementation status (phone specifics)
 
-| Component | Status |
+The sections above describe each area. This table gives only its state.
+
+| Area | State |
 |---|---|
-| Xcode project setup | Implemented |
-| Native SQLite3 + pure-SQL CRR | Implemented |
-| WebSocket client | Implemented |
-| Negotiated deflate with byte-identical legacy gzip fallback | Implemented |
-| Bidirectional chunked envelopes with bounded 30 s reassembly | Implemented |
-| Typed protocol version floor/mismatch guidance | Implemented |
-| PIN pairing flow | Implemented |
-| QR pairing payload (v3 smart URL) + camera scanner (`SettingsPairingScannerSheet`) | Implemented |
-| Account launch gate + account machine directory | Implemented; sign-in is the primary PIN-less path, while signed-out launches can continue with QR + PIN, Nearby + PIN, or advanced SSH pairing |
-| Account discovery + device-bound direct trust | Implemented; signed directory adoption, exact session-generation commit checks, direct trust retained across sign-out, fresh Relay proof per connection |
-| Account `hello_ok` credential resolution (`syncResolveAccountHelloPairedSecret`) | Implemented; an omitted `accountPairing` keeps the stored secret (profile or Keychain), a present-but-mismatched one is rejected |
-| Machine-switch recovery | Implemented; a failed switch restores the interrupted connection, retargets the saved profile back, and keeps the attempt's failure message (`lastConnectAttemptFailure`) after the restore clears `lastError` |
-| Attempt-scoped connection copy | Implemented (`SyncConnectAttemptTarget` + `syncConnectionSubjectMachineName`); connecting/unreachable lines name the machine being dialed, not the last-connected one |
-| SSH one-time pairing bootstrap | Implemented; explicit host fingerprint trust, JSON-stdin device grant, optional Keychain recovery credentials |
-| One-time mobile machine-trust reset | Implemented; clears connection tokens/profiles after update while preserving account and stable device/DPoP identity |
-| Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (`DpopKeyService`; signed proof on every paired hello) |
-| Cloud relay (same-account `relay` transport, raced alongside LAN and Tailscale direct routes and ranked behind them) | Implemented; fresh in-memory account proof on every Relay connection, fetched concurrently with the socket upgrade and guarded by a per-machine single-flight dial registry |
-| Project hub + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
-| Hub personal chats | Implemented; per-machine list/create/read/send/interactive routing across the live fleet, owner-only scheduled-work creation capability, controller Cancel/Pause actions, per-machine offline summary cache, explicit personal transcript subscriptions, native new-chat machine/model flow, named retry for failed machine reads, Chat Info Cancel/Pause controls, and project/lane actions suppressed |
-| Lanes tab | Implemented to live machine parity (with `devicesOpen`, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
-| Files tab | Implemented with freely-editable workspaces (mobile read-only file gate removed) and a unified full-screen name + content search page (`FilesSearchScreen`) |
-| Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`) with camera-roll and pasted-image prompts, external provider-session browse/preview/import (`work.listExternalSessions` / `work.getExternalSessionDetail` / `work.importExternalSession`), message-to-continue on ended agent CLI rows, cross-client activity carousel in the new-chat screen's collapsible header (kept mounted, collapsed rather than unmounted, when the header tier hides it) |
-| PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
-| Settings tab (pairing / appearance / diagnostics) | Implemented |
-| ADE Cloud with no computer (account scope, saved copies, server queue, at-rest lanes, lane and chat moves) | Implemented; see [ADE Cloud on the phone](#ade-cloud-on-the-phone) |
-| Automations / History tabs | Not built |
-| Full Settings parity | Not built |
-| Lock Screen widget | Implemented; one prioritized account status across signed-in machines/projects, agents, PRs, sync, offline, and idle states |
-| Push notifications (APNs alerts + exact cross-machine deep links) | Implemented (on-device E2E needs a physical iPhone) |
-| Account-wide Live Activity + Dynamic Island (`ADEAgentActivityWidget`) | Implemented; one prioritized activity per phone (push-to-start / background updates verifiable on-device only) |
-| Push delivery settings panel (`SettingsPushDeliverySection`) | Implemented |
-| Home Screen widgets (`ADEActivityHomeWidget`, small/medium/large) | Implemented; state-group header, per-row deep links, and an explicit staleness tag |
-| Control Center widgets | Not shipped |
-| iPad and iPhone Duo adaptive layout | Implemented (`Views/Duo/`) |
-| Spotlight indexing | Not built |
+| Connection: account sign-in and Relay, QR or Nearby with PIN, SSH bootstrap, DPoP device trust, LAN/Tailscale/Relay routes | Implemented |
+| Sync: native SQLite with pure-SQL CRR, deflate, chunked envelopes, protocol version floor | Implemented |
+| Hub, account projects, personal chats, several machines at once | Implemented |
+| Lanes, Files, Work, PRs and CTO tabs | Implemented |
+| ADE Cloud with no computer | Implemented ([ADE Cloud on the phone](#ade-cloud-on-the-phone)) |
+| Push notifications, Live Activity, Lock Screen and Home Screen widgets | Implemented (push and Live Activity starts need a physical iPhone to verify) |
+| iPad and iPhone Duo layouts | Implemented (`Views/Duo/`) |
+| Settings | Implemented for pairing, account, providers, usage, machines and ADE Cloud; not all desktop settings |
+| Automations and History tabs, Control Center widgets, Spotlight | Not built |
 
 ## Gotchas
 
 - **Screens observe `SyncMenuSafePublisher`, not `SyncService`.** SwiftUI
   rebuilds an open `Menu` (toolbar, header or picker) whenever a view above it
-  re-renders, so at a connected phone's ~15 publishes a second a long menu
-  flickered and snapped back to its top while scrolled. Views read
+  re-renders, and a connected phone publishes about 15 times a second. Views read
   `syncService` through `SyncMenuSafePublisher.shared`, which forwards every
   publish except while UIKit's context-menu container is on screen, then sends
   one when it closes. Declare new observers the same way
@@ -4917,11 +4565,9 @@ the stats and shows update guidance.
   on the phone. Avoid adding runtime-only caches that the phone has no
   way to observe.
 - **The synced model catalog is sized for the phone.** `ade.agentChat.modelCatalog`
-  emits only connected OpenCode providers' models; the full OpenCode directory is
-  models.dev in its entirety (~195 providers / ~7.2k models, ~4.85 MB) and shipping
-  it stalled or killed the iOS model picker. The host still emits an empty block
-  for each unconnected provider, but that is for the desktop payload shape — the
-  phone drops them (`providers.filter { !$0.models.isEmpty }`, then the same
+  emits only connected OpenCode providers' models, because the full OpenCode
+  directory (about 7.2k models, 4.85 MB) is too large for the phone. The host
+  still emits an empty block for each unconnected provider; the phone drops them (`providers.filter { !$0.models.isEmpty }`, then the same
   filter on groups), because iOS has no OpenCode connect flow and an empty row
   would be a dead end. The phone's connect affordance is a static hint in
   `WorkModelPickerSheet` pointing at the paired machine, not a catalog block.
@@ -4972,10 +4618,9 @@ the stats and shows update guidance.
   The `pull_request_chat_sessions` table is part of the PR projection and is
   cleaned with PR rows and retired chat sessions; it has no secondary UNIQUE
   index because CRR only supports the primary-key identity here.
-  `changeset_batch` apply no longer fails on tables the phone's
-  schema doesn't know — those rows are skipped so a newer desktop can
-  never freeze a phone's sync — but the skipped tables' data is
-  simply missing until the app updates.
+  `changeset_batch` apply skips rows of tables the phone's schema does not
+  know, so a newer desktop never freezes a phone's sync. That data is
+  missing until the app updates.
 - **`InitialHydrationGate` can fire its 15s timeout on slow links.**
   The visible symptom is "The machine returned incomplete ... data."
   Bumping the timeout globally is not recommended; instead improve
@@ -5029,27 +4674,14 @@ the stats and shows update guidance.
   backpressure it leaves the transcript offset unchanged and retries in
   order. Events without `seq` (older hosts) bypass the watermark entirely.
 - **`seq` is a resume cursor, not an event identity.** Older hosts reset the
-  counter across desktop restarts while the durable transcript kept being
-  appended, so legacy transcripts can contain two events numbered 67 hours
-  apart. The phone's dedupe is first-key-wins over file order, so keying
-  `AgentChatEventEnvelope.id` on `sessionId:sequence` made the newer event look
-  like a replay of the older one and silently discarded it — on a real
-  425-event transcript that destroyed 103 events,
-  including the `approval_request` envelopes carrying AskUserQuestion cards
-  (the phone showed no question at all) and 31 short text chunks (short text
-  has no content dedupe key, which needs >= 24 characters, so it fell through
-  to the sequence-derived id and a reply rendered mid-word). The envelope id
-  now includes the timestamp, so a genuine redelivery — identical timestamp
-  *and* sequence — still collapses while cross-epoch collisions are broken
-  apart. The thread engine keys its log on
-  the durable envelope `sequence` (the transport `seq` is only the legacy
-  resume watermark). Host-side, `readTranscriptHydrationState`
-  (`agentChatService.ts`) now seeds a rehydrated session's `eventSequence`
-  from the transcript's maximum instead of restarting at 0, while
-  `syncHostService.ts` carries its wire-sequence high-water marks through host
-  handoff. Current hosts therefore keep `(sessionId, seq)` pairs unique across
-  rehydration. Phone-side identity remains timestamp-qualified so old
-  transcripts and older hosts stay compatible.
+  counter across desktop restarts while the durable transcript kept growing, so
+  an old transcript can hold two events with one number. The envelope id
+  (`AgentChatEventEnvelope.id`) includes the timestamp, so a true redelivery
+  (same timestamp and sequence) collapses and a cross-epoch collision does not.
+  The thread engine keys its log on the durable envelope `sequence`; the
+  transport `seq` is only the resume watermark. Current hosts keep
+  `(sessionId, seq)` unique across rehydration (`readTranscriptHydrationState`
+  in `agentChatService.ts`) and across host handoff (`syncHostService.ts`).
 - **One thread engine per warm chat is the only transcript on the phone.**
   `ChatThreadRegistry` (owned by `SyncService`) keeps an actor-isolated
   `ChatThreadEngine` for each open chat, the 8 most recently used, and every
@@ -5067,9 +4699,8 @@ the stats and shows update guidance.
   only, placed by timestamp between its neighbours: never written to `ChatLogStore`,
   never a paging cursor, never keyed by sequence, and cleared when the engine's
   history is reset. The Work list warms engines for its top rows and every live turn, and
-  launch warms the 5 most recently opened chats. The legacy fallback transcript
-  fetch (`chat.getTranscript`), the terminal-buffer parse, the presentation
-  cache, the `chatEventEnvelopesBySession` ring and its idle prune are gone.
+  launch warms the 5 most recently opened chats. The engine is the only
+  transcript source; there is no fallback fetch or terminal-buffer parse.
   Forgetting a machine purges its cache; sign-out and account switches purge
   everything; backgrounding flushes pending writes. Offline, a cached chat shows
   its rows under the existing connection indicator; the skeleton appears only
@@ -5145,19 +4776,16 @@ the stats and shows update guidance.
   data-driven and never invents file changes for providers that did not emit
   them.
 - **A swept pending-input gate is marked, not deleted, and the host decides.**
-  The phone mirrors desktop's split (see the "Pending input derivation" entry in
-  [Chat](../chat/README.md#fragile-and-tricky-wiring)) because it had the same
-  bug: a gate whose asker outlives its turn — a backgrounded `ade actions run`,
-  an `ask_user` whose caller stopped waiting — vanished from the strip while the
-  host went on counting it, so the composer unlocked, the send was refused, and
-  no card was left to answer. `workPendingInputSweepState`
-  (`WorkErrorAndMessageHelpers.swift`) now returns
-  `{ openItemIds, sweptItemIds }` instead of deleting: only
-  `pending_input_resolved` removes an id outright, while a `done` boundary or
-  the `tool_result` / `command` / `file_change` sharing the gate's `itemId`
-  merely records the sweep (and a re-request under the same id clears it, since
-  a fresh ask is not a swept one). `deriveWorkPendingInputQueue` returns a
-  `WorkPendingInputQueue` carrying both halves.
+  The phone mirrors desktop's split (see "Pending input derivation" in
+  [Chat](../chat/README.md#fragile-and-tricky-wiring)). A gate can outlive its
+  turn (a backgrounded `ade actions run`, an `ask_user` whose caller stopped
+  waiting), and the host still counts it. `workPendingInputSweepState`
+  (`WorkErrorAndMessageHelpers.swift`) returns
+  `{ openItemIds, sweptItemIds }`: only `pending_input_resolved` removes an id;
+  a `done` boundary, or a `tool_result` / `command` / `file_change` with the
+  gate's `itemId`, only records the sweep. A new ask under the same id clears
+  the sweep. `deriveWorkPendingInputQueue` returns a `WorkPendingInputQueue`
+  with both halves.
 
   The queue has **two** readers, and the distinction is the point.
   `liveItems` is what the transcript alone can prove, and serves the surfaces
@@ -5165,7 +4793,7 @@ the stats and shows update guidance.
   `suppressedItemIds`, and `SyncService.pendingInputItemIdForSnapshot`, which
   walks `derivePendingWorkInputs(...).last?.itemId` for the App Group widget
   snapshot when the session row carries no `pendingInputItemId` of its own.
-  `derivePendingWorkInputs` is now just `liveItems`, and it must stay that way —
+  `derivePendingWorkInputs` is just `liveItems`, and it must stay that way —
   routing it through `resolved(...)` with the nil id those callers have would
   make every receipt-less sweep look live, and the Lock Screen widget would
   start over-claiming "needs you" with nothing in the app to show for it.
@@ -5192,9 +4820,9 @@ the stats and shows update guidance.
 
   One divergence is deliberate. Desktop's `keepAfterCompletedTurn` spares a
   `plan_approval` after a completed turn because Codex raises one *after* its
-  turn ends; iOS classifies plan gates as approvals and sweeps them. That is now
-  safe rather than wrong — the host naming the gate in `pendingInputItemId`
-  brings it straight back — but it is why the two derivations are not
+  turn ends; iOS classifies plan gates as approvals and sweeps them. That is
+  safe, because the host naming the gate in `pendingInputItemId` brings it
+  back, but it is why the two derivations are not
   line-for-line equal.
 - **A gate's outcome is first-receipt-wins, on both surfaces and in both
   renderings.** `workPendingInputResolutions` in `WorkTimelineHelpers.swift`
@@ -5296,7 +4924,7 @@ the stats and shows update guidance.
   provider with no such channel, and for a brain that does not advertise
   `chat.dispatchSteer` — the same gate the staged strip's buttons read, so the
   composer can never request a promotion the strip is hiding the recovery for.
-  A `queued: true` answer now has two causes: a host old enough to advertise
+  A `queued: true` answer has two causes: a host old enough to advertise
   `chat.dispatchSteer` but too old to accept `dispatchMode` on `chat.steer`, and
   a current host that staged the row on purpose because the live run refused an
   inline steer. Both fall back to the legacy two-step promotion — right for the
@@ -5316,8 +4944,8 @@ the stats and shows update guidance.
   buttons go through the one private `dispatchSteer(_:mode:)` helper so they
   cannot disagree about what a null answer means.
 - **The staged strip is only ever "you queued this".** With active-turn sends
-  atomic, `WorkQueuedSteerStrip` renders exclusively messages the user chose to
-  queue, so it no longer hides behind an accordion. There is no frame or
+  atomic, `WorkQueuedSteerStrip` renders only messages the user chose to
+  queue, with no accordion. There is no frame or
   header around the rows (the same list desktop draws above its composer): each
   queued message is one glass row — waiting glyph, one truncated line of the
   message, a small `Sends next` / `Queued` tag, and **Send now** /
@@ -5369,10 +4997,8 @@ the stats and shows update guidance.
   `buildWorkEventCards` can paint the desktop-shaped
   hairline · logo · `HANDOFF` · arrow · logo divider instead of a sentence;
   the `Model handoff · Codex → Claude` string survives as the accessibility
-  label. A malformed `detail` drops the row rather than drawing it half-empty,
-  and a same-provider pair is dropped too — the host no longer emits one, but
-  old transcripts still hold `Claude → Claude`, and a divider with the same
-  logo on both sides says nothing. See
+  label. A malformed `detail` drops the row, and so does a same-provider pair
+  (old transcripts hold `Claude → Claude`). See
   [chat transcript-and-turns.md](../chat/transcript-and-turns.md).
 
 - **Subagent lifecycle is rendered as chat structure, not event spam.**
@@ -5389,19 +5015,13 @@ the stats and shows update guidance.
   mirroring `deriveSubagentTimelineRows` in `chatSubagents.ts` so a
   subagent never repaints per tick.
   Before that derivation, `collapseLegacyWorkSubagentResultEnvelopes` drops
-  the legacy `subagent.completed` twin of a canonical `subagent_result` in
-  transcripts old hosts wrote as a pair. The host emits exactly one end event,
-  so this exists only to keep replayed history honest. It is deliberately a DROP,
-  not a merge: a field-by-field merge cannot tell the legacy twin apart from
-  two genuine results for one agent (a completion followed by a stopped
-  teardown, which must stay two rows), so the wire type is the only honest
-  signal — the decoder records it as `AgentChatEventEnvelope.isLegacySubagentCompletedFrame`
-  and the pass drops flagged frames whose normalized task or agent id a
-  canonical frame already claims. A legacy frame with no canonical twin is kept
-  verbatim and the canonical frame is never rewritten. This prevents one
-  finished agent — especially one that failed at a usage limit — from appearing
-  twice on the phone. `buildWorkSubagentSnapshots` and the timeline row scan
-  both run it, so the roster and the transcript fold the same list.
+  the legacy `subagent.completed` twin of a canonical `subagent_result` in old
+  transcripts. It drops (never merges) a frame flagged
+  `AgentChatEventEnvelope.isLegacySubagentCompletedFrame` whose task or agent id
+  a canonical frame already claims, because a merge cannot tell a twin from two
+  real results (a completion, then a stopped teardown). A legacy frame with no
+  canonical twin stays. `buildWorkSubagentSnapshots` and the timeline row scan
+  both run it, so the roster and the transcript agree.
 - **Known divergence — a running background job has no mobile presence.**
   Desktop folds `scheduled_work_update {kind: "background_task"}` into a
   single live in-thread `background_job_line` (`chatTranscriptRows.ts`),
@@ -5458,9 +5078,8 @@ the stats and shows update guidance.
   following prose still parse correctly.
 - **Work assistant rows use `messageId` as their cross-source identity.**
   Canonical transcript entries and live `chat_event` frames can carry both
-  `messageId` and provider `itemId`, but the two paths did not historically
-  choose them in the same order. `workAssistantMessageStableId`
-  (`WorkEventMapping.swift`) now prefers the trimmed `messageId` everywhere
+  `messageId` and provider `itemId`. `workAssistantMessageStableId`
+  (`WorkEventMapping.swift`) prefers the trimmed `messageId` everywhere
   and falls back to `itemId` only for providers that omit it. Canonical mapping
   (`WorkErrorAndMessageHelpers.swift`), typed live-event mapping, and raw JSONL
   replay (`WorkTranscriptParser.swift`) all use that helper, so live/canonical
@@ -5474,15 +5093,13 @@ the stats and shows update guidance.
   turn into many tiny rows.
 - **Assistant fragments merge the same way whatever their source.** Live
   `chat_event` frames carry a `sequence`; rows from `chat.getTranscript` do not.
-  Both go through `mergeWorkStreamingText`, because the host now guarantees the
+  Both go through `mergeWorkStreamingText`, because the host guarantees the
   canonical text is byte-identical to what the phone renders from the same
   fragments (see
   [Canonical assistant text](../chat/transcript-and-turns.md#canonical-assistant-text-fragile--read-before-editing)).
-  A client-side guard that treated every sequence-less envelope as a *complete*
-  message was tried and removed: `getChatTranscriptPage` can split one message
-  across two byte-cursor pages, so both chunks arrive without a sequence and
-  neither is whole — keeping only the longer one silently dropped part of the
-  answer. Fix disagreements on the host, not with a client rule that has to
+  Do not treat a sequence-less envelope as a complete message:
+  `getChatTranscriptPage` can split one message across two byte-cursor pages.
+  Fix disagreements on the host, not with a client rule that has to
   guess what a sequence-less envelope contains.
 - **A graduated steer renders once.** The host writes a steered message
   twice: a `deliveryState: "queued"` row when it is staged and a non-queued row
@@ -5490,48 +5107,32 @@ the stats and shows update guidance.
   `pruneResolvedQueuedSteerEnvelopes` over the merged log, and an incremental
   append that carries a graduating row forces that full fold, so a stale queued
   row never outlives its delivered twin. The host half of the same fix is in
-  `transcriptEntriesFromEnvelopes`, which now emits a graduated steer once.
+  `transcriptEntriesFromEnvelopes`, which emits a graduated steer once.
 - **CLI launcher provider IDs are runtime-validated.** The Work
-  new-session screen sends `provider` strings that
-  `parseCliProvider` matches verbatim against
-  `claude | codex | cursor | droid | opencode | shell`. The phone
-  has no way to pass arbitrary `command` / `startupCommand` payloads
-  — those come from the shared
-  `apps/desktop/src/shared/cliLaunch.ts`. On the phone the provider is
-  derived from the picked model via `workResolveCliProvider`
-  (`WorkModelCatalog.swift`, mirroring desktop's
-  `resolveCliProviderForModel`), so adding a provider means updating
-  both the runtime registry and the phone's model-catalog grouping
-  together; the phone's Claude fallback catalog leads with Opus 5.5 (its
-  positional default), then Fable 5.2, Sonnet 5.5, Sonnet 5, Haiku 5.5, Fable 5.1, Opus 5,
-  and legacy Sonnet 4.6 /
-  Fable 5 / Opus 4.8 / Opus 4.7 selections normalize forward instead of
-  appearing as rows, while the generic `opus` alias resolves to Opus 5.5 and the
-  generic `sonnet` alias resolves to Sonnet 5.5. The OpenAI picker
-  always follows the Codex catalog order (GPT-6.1 Sol, GPT-6 Astra,
-  GPT-6.1 Terra, GPT-6 Sol, GPT-6 Luna, GPT-5.6 Sol, GPT-5.6 Luna) even when a
-  host returns another order; GPT-6.1 Sol is the fallback default
-  and GPT-5.5 remains below them. The phone prefers host-advertised reasoning
-  tiers/defaults in their original order and falls back to Light / Medium /
-  High / Extra High / Max on the Lunas and through Ultra on Astra, the Sols and Terra
-  (`low` for Astra/Sol; `medium` for Terra/Luna). `shell` remains valid runtime-side but the phone no longer
-  offers a plain-shell launch. `SyncStartCliSessionArgs` also carries
-  an optional `reasoningEffort` field that the runtime forwards to
-  `buildTrackedCliLaunchCommand`, so the phone can launch a Codex /
-  Claude CLI session at a non-default effort tier without going
-  through the desktop.
-- **Codex CLI launches receive the initial prompt as argv, not PTY
-  echo.** Image attachments prepend the same `Attached files and images:`
-  temp-path manifest as desktop; attachment-only launches send that manifest
-  without synthetic message text. Other providers receive the same composed
-  `initialInput` as bytes typed
-  into the spawned PTY (`writeBySessionId(sessionId, "${input}\\r")`),
-  but Codex receives it as the final positional argv on `codex` via
-  `buildTrackedCliLaunchCommand` so the model sees a clean first turn
-  instead of a typed shell line. Runtime-side, plain `shell` launches
-  still go through `resolveCleanShellLaunchFields` so the spawned shell
-  never reads the user's profile / rc / config files (the phone UI no
-  longer offers that option).
+  new-session screen sends `provider` strings that `parseCliProvider` matches
+  verbatim against `claude | codex | cursor | droid | opencode | shell`. The
+  phone cannot pass `command` / `startupCommand`; those come from
+  `apps/desktop/src/shared/cliLaunch.ts`. The phone derives the provider from
+  the picked model (`workResolveCliProvider` in `WorkModelCatalog.swift`, the
+  mirror of desktop `resolveCliProviderForModel`), so a new provider needs the
+  runtime registry and the phone's model grouping updated together. The phone
+  offers no plain-shell launch; a runtime `shell` launch still goes through
+  `resolveCleanShellLaunchFields`, so the shell reads no profile or rc files.
+  - Claude fallback catalog: Opus 5.5 (the default), Fable 5.2, Sonnet 5.5,
+    Sonnet 5, Haiku 5.5, Fable 5.1, Opus 5. Older selections (Sonnet 4.6,
+    Fable 5, Opus 4.8, Opus 4.7) normalize forward. `opus` resolves to Opus
+    5.5 and `sonnet` to Sonnet 5.5.
+  - OpenAI picker: always the Codex catalog order (GPT-6.1 Sol, GPT-6 Astra,
+    GPT-6.1 Terra, GPT-6 Sol, GPT-6 Luna, GPT-5.6 Sol, GPT-5.6 Luna), then
+    GPT-5.5. GPT-6.1 Sol is the fallback default.
+  - Reasoning: host-advertised tiers first, in their order. The fallback is
+    Light to Max on the Lunas and up to Ultra on Astra, the Sols and Terra
+    (default `low` for Astra/Sol, `medium` for Terra/Luna).
+  - `SyncStartCliSessionArgs.reasoningEffort` reaches
+    `buildTrackedCliLaunchCommand`.
+  - Codex gets the first prompt as its last argv argument, not typed into the
+    PTY. Image attachments prepend the same `Attached files and images:`
+    manifest as desktop; an attachment-only launch sends only the manifest.
 - **Pending-input item id flows out through chat summaries.** Both
   `AgentChatSessionSummary.pendingInputItemId` and
   `TerminalSessionSummary.pendingInputItemId` are populated by the
@@ -5582,9 +5183,7 @@ the stats and shows update guidance.
 - **Consolidated pending-input strip with optimistic removal.** The Work
   chat session collapses all pending inputs into one strip pinned above
   the composer (`consolidatedPendingStripSection` in
-  `WorkChatSessionView+Timeline.swift`), replacing the earlier split of
-  plan/approval composer strips plus inline question/permission/model-
-  selection transcript cards. Answering an item inserts its id into
+  `WorkChatSessionView+Timeline.swift`). Answering an item inserts its id into
   `optimisticallyAnsweredInputIds` so it hides immediately and the strip
   advances to the next request without waiting for the host round-trip;
   the id is reconciled out once the item leaves the host-derived queue
@@ -5648,8 +5247,8 @@ the stats and shows update guidance.
   copy only once the host has taken the message. While that send is in flight
   the composer's autosave and its attachment persist both stand down, so the
   emptied field cannot be written over the payload they are holding. Leaving the
-  chat, switching chats, or relaunching therefore restores the message — the
-  case that used to lose it outright. The reverse cost is explicit: a kill
+  chat, switching chats, or relaunching therefore restores the message. The
+  reverse cost: a kill
   between the host accepting and the confirmation returning restores an
   already-sent message as a draft, which is what the
   `SyncRequestTimeout.chatSendMessage` copy already tells the user to check the
@@ -5666,12 +5265,10 @@ the stats and shows update guidance.
   every child has finished and the upload legs park in non-cancellable
   continuations. A failed send restores the composer and shows one retry row
   above the field — "Couldn't send. Tap to retry." — whose tap runs the same
-  `performSend` the button does, in the same send mode. The upload the tracker
-  runs calls `workChatStageAttachmentOnHost` (the raw host call) and never
-  `workChatSaveInputAttachments`: that wrapper resolves through this tracker, so
-  routing the upload through it made the task await its own completion and every
-  message carrying an image sat at "Sending" forever, with no error, no retry,
-  and the draft already cleared.
+  `performSend` the button does, in the same send mode. The tracker's upload
+  calls `workChatStageAttachmentOnHost` (the raw host call), never
+  `workChatSaveInputAttachments`: that wrapper resolves through this tracker,
+  so the upload would wait for itself.
 - **Optimistic steers reconcile on the active-to-idle turn boundary.**
   A message the phone sends mid-turn is echoed as an optimistic "Sends
   after turn" row (`WorkQueuedSteerRow`) using the host-assigned steer id
@@ -5706,18 +5303,13 @@ the stats and shows update guidance.
   message, and sends it with the durable `sessionId`. The runtime writes
   to a live PTY when present, or starts the provider continuation
   internally and attaches the new PTY to the same session row.
-- **`TerminalSessionScreen` + `SwiftTermSessionView` drive a real
-  SwiftTerm grid, not a free text view.** The viewport reported back to
-  the runtime is in (cols, rows) inferred from the rendered glyph cell,
-  not pixel dimensions. The terminal unsubscribes the runtime stream on
-  `onDisappear` so a user paging through the session list does not keep
-  a phone-owned viewport attached; `restoreTerminalSubscriptions`
-  re-subscribes on reconnect with the last known transcript end offset
-  for any session id still tracked in `subscribedTerminalSessionIds`.
-  Terminal snapshots request up to 240 KB for legacy hosts; offset-aware
-  hosts use `sinceOffset` delta snapshots and `terminal_history` pages
-  so the phone can keep older scrollback without reloading the whole
-  tail.
+- **The terminal is a real SwiftTerm grid** (see [The Work tab](#the-work-tab)).
+  The size sent to the runtime is (cols, rows) from the glyph cell, not
+  pixels. The unsubscribe on disappear keeps a phone that pages through the
+  list from holding the PTY size. `restoreTerminalSubscriptions` re-subscribes
+  on reconnect from the last end offset of each id in
+  `subscribedTerminalSessionIds`. A host with no offsets gets snapshots of up
+  to 240 KB.
 - **Lane presence is best-effort with a TTL.** The phone
   re-announces on a 30 s cadence; the runtime prunes stale entries at
   60 s. A phone that crashes without sending `lanes.presence.release`
