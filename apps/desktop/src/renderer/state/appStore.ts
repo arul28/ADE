@@ -103,6 +103,7 @@ export {
 } from "./appearanceStore";
 export type { InterfaceMonoFont, InterfacePreferences, InterfaceSansFont, ThemeId } from "./appearanceStore";
 import { captureHomeTabOpened } from "../components/home/homeAnalytics";
+import { adeCloudBinding, isAdeCloudBinding, isAdeCloudTargetId, type AdeCloudBindingProject } from "../../shared/adeCloud/binding";
 import { applyInterfacePreferences } from "../theme/applyInterface";
 
 export const DEFAULT_TERMINAL_FONT_FAMILY = [
@@ -419,66 +420,51 @@ const EMPTY_CTO_ATTENTION: CtoAttentionState = {
 
 const WORK_VIEW_STORAGE_KEY = "ade.workViewState.v1";
 
-/** A repository tab with no copy open (see `AppState.noMachineTabs`). */
-export type NoMachineRepositoryTab = {
-  /** The repository tab id: the account project id, or the repository's address before the account knows it. */
-  id: string;
-  displayName: string;
-  iconDataUrl: string | null;
-  /**
-   * The copy the tab showed before its computer left (a binding key). When
-   * that computer is back, the tab opens this copy again, not another one.
-   */
-  lastCopyKey?: string | null;
-  /**
-   * The repository, when `id` is a copy's own key: a second folder of one
-   * repository on one computer has its own tab, keyed by that folder.
-   */
-  repositoryId?: string | null;
-};
+/**
+ * Before ADE Cloud was a machine, a repository tab with no copy online was a
+ * separate "no-machine" tab, kept in session storage under this key. Such a
+ * tab is now a normal tab bound to ADE Cloud. `takeLegacyNoMachineTabs` reads
+ * the old key once, deletes it, and hands the tabs to the top bar, which
+ * opens each one bound to ADE Cloud.
+ */
+const LEGACY_NO_MACHINE_TABS_STORAGE_KEY = "ade.repositoryTabs.noMachine.v1";
+
+/** A tab from the old session-storage key: the account project id and its name. */
+export type LegacyNoMachineTab = { id: string; displayName: string };
 
 /**
- * The window's no-machine tabs survive a reload of the window. They live in
- * session storage, which is per window: the window restore in main (S5)
- * brings them back after a restart. Old versions never read this key.
+ * The project of a tab bound to ADE Cloud, from the open tab with that
+ * project. A caller that opens a new one passes its project itself.
  */
-const NO_MACHINE_TABS_STORAGE_KEY = "ade.repositoryTabs.noMachine.v1";
+function adeCloudProjectForTab(tabs: readonly OpenProjectBinding[], projectId: string): AdeCloudBindingProject {
+  const open = tabs.find((entry) => isAdeCloudBinding(entry) && entry.projectId === projectId);
+  return open
+    ? { accountProjectId: projectId, displayName: open.displayName, gitOriginUrl: open.gitOriginUrl ?? null, iconDataUrl: open.kind === "remote" ? open.iconDataUrl ?? null : null }
+    : { accountProjectId: projectId, displayName: projectId };
+}
 
-function readNoMachineTabs(): NoMachineRepositoryTab[] {
+let legacyNoMachineTabsTaken = false;
+
+/** The old no-machine tabs of this window, once. Later calls return none. */
+export function takeLegacyNoMachineTabs(): LegacyNoMachineTab[] {
+  if (legacyNoMachineTabsTaken) return [];
+  legacyNoMachineTabsTaken = true;
   try {
-    const parsed: unknown = JSON.parse(window.sessionStorage.getItem(NO_MACHINE_TABS_STORAGE_KEY) ?? "[]");
+    const raw = window.sessionStorage.getItem(LEGACY_NO_MACHINE_TABS_STORAGE_KEY);
+    if (raw == null) return [];
+    window.sessionStorage.removeItem(LEGACY_NO_MACHINE_TABS_STORAGE_KEY);
+    const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap((entry): NoMachineRepositoryTab[] => {
+    return parsed.flatMap((entry): LegacyNoMachineTab[] => {
       if (!entry || typeof entry !== "object") return [];
       const row = entry as Record<string, unknown>;
-      if (typeof row.id !== "string" || !row.id || typeof row.displayName !== "string") return [];
-      return [{
-        id: row.id,
-        displayName: row.displayName,
-        iconDataUrl: typeof row.iconDataUrl === "string" ? row.iconDataUrl : null,
-        lastCopyKey: typeof row.lastCopyKey === "string" && row.lastCopyKey ? row.lastCopyKey : null,
-        repositoryId: typeof row.repositoryId === "string" && row.repositoryId ? row.repositoryId : null,
-      }];
+      // A tab keyed by a copy's folder names its repository apart.
+      const id = typeof row.repositoryId === "string" && row.repositoryId ? row.repositoryId : row.id;
+      if (typeof id !== "string" || !id || typeof row.displayName !== "string") return [];
+      return [{ id, displayName: row.displayName }];
     });
   } catch {
     return [];
-  }
-}
-
-function writeNoMachineTabs(tabs: readonly NoMachineRepositoryTab[]): void {
-  try {
-    // No icons: a data URL can be large, and the tab reads the icon again from the account.
-    window.sessionStorage.setItem(
-      NO_MACHINE_TABS_STORAGE_KEY,
-      JSON.stringify(tabs.map((tab) => ({
-        id: tab.id,
-        displayName: tab.displayName,
-        lastCopyKey: tab.lastCopyKey ?? null,
-        repositoryId: tab.repositoryId ?? null,
-      }))),
-    );
-  } catch {
-    // Storage unavailable: the tabs still hold until the window reloads.
   }
 }
 const TERMINAL_PREFERENCES_STORAGE_KEY = "ade.terminalPreferences.v1";
@@ -1793,15 +1779,6 @@ export type AppState = {
   cachedProjectViewRoot: string | null;
   openRemoteProjectTabs: Extract<OpenProjectBinding, { kind: "remote" }>[];
   openProjectTabRoots: string[];
-  /**
-   * Repository tabs with no copy open in this window: no computer that holds
-   * the repository is online, or the window has not opened a copy yet. A
-   * repository tab with a copy open is the copy's binding in the two lists
-   * above (one copy per repository).
-   */
-  noMachineTabs: NoMachineRepositoryTab[];
-  /** The no-machine tab in front, or null. While it is set, no project surface shows. */
-  activeNoMachineTabId: string | null;
   projectInfoByRoot: Record<string, ProjectInfo>;
   /** True when the user removed all projects — forces welcome screen even though backend still has a project loaded. */
   showWelcome: boolean;
@@ -2138,10 +2115,12 @@ export type AppState = {
 
   openNewTab: () => void;
   cancelNewTab: () => void;
-  /** Adds the no-machine tab (or updates it) and, unless `activate` is false, brings it to the front. */
-  showNoMachineTab: (tab: NoMachineRepositoryTab, options?: { activate?: boolean }) => void;
-  /** Closes a no-machine tab. Its tab order and saved route stay for the next open. */
-  closeNoMachineTab: (id: string) => void;
+  /**
+   * Opens a repository tab bound to ADE Cloud: the tab for a project with no
+   * own computer online. Unless `activate` is false, it comes to the front.
+   * The open needs no network: ADE Cloud answers from the account.
+   */
+  openAdeCloudProject: (project: AdeCloudBindingProject, options?: { activate?: boolean }) => Promise<void>;
   setStandaloneSettingsOpen: (open: boolean) => void;
   setPersonalChatsTabOpen: (open: boolean) => void;
   closePersonalChatsTab: () => void;
@@ -2191,14 +2170,15 @@ export type AppState = {
   /** The user said Cancel: nothing is trusted, the folder stays closed. */
   dismissGitFolderTrustPrompt: () => void;
   /**
-   * Opens a remote copy in front. `keepNoMachineTab`: a waiting tab in front
-   * stays on its page until this copy is open, instead of showing the project
-   * under it while the open runs. `carryWorkView`: as for `switchProjectToPath`.
+   * Opens a remote copy in front. `carryWorkView`: as for `switchProjectToPath`.
+   * `adeCloudProject`: the project of a tab bound to ADE Cloud
+   * (`ADE_CLOUD_MACHINE_ID`); without it the store finds the project in the
+   * open tabs or the account's project list.
    */
   switchRemoteProject: (
     targetId: string,
     projectId: string,
-    options?: { keepNoMachineTab?: boolean; carryWorkView?: boolean },
+    options?: { carryWorkView?: boolean; adeCloudProject?: AdeCloudBindingProject },
   ) => Promise<OpenProjectBinding>;
   /**
    * True once for the binding of a remote open that Home superseded: the
@@ -2397,13 +2377,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   /** The remote open that Home superseded, until its project report arrives or another open starts. */
   let remoteOpenSupersededByHome: { targetId: string; projectId: string } | null = null;
   /**
-   * Home or a no-machine tab opened in front wins over a remote project open
+   * Home opened in front wins over a remote project open
    * still on its way: that open must not finish over it, and its "switching"
    * state ends here, since the open's own end skips a superseded switch. The
    * open still reports its project when it lands (`app.onProjectChanged`, the
    * web adapter's swap); for Home that report opens it under Home.
    */
-  const supersedeRemoteProjectSwitch = (prev: AppState, by: "home" | "no-machine-tab"): Partial<AppState> => {
+  const supersedeRemoteProjectSwitch = (prev: AppState, by: "home"): Partial<AppState> => {
     if (!pendingRemoteSwitch) return {};
     ++remoteProjectSwitchGeneration;
     const ownsTransition = prev.projectTransition === pendingRemoteSwitch.transition;
@@ -2567,8 +2547,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   projectHydrated: false,
   cachedProjectViewRoot: null,
   openProjectTabRoots: [],
-  noMachineTabs: readNoMachineTabs(),
-  activeNoMachineTabId: null,
   projectInfoByRoot: {},
   showWelcome: true,
   projectTransition: null,
@@ -3402,39 +3380,21 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     isNewTabOpen: true,
     showWelcome: true,
     standaloneSettingsOpen: false,
-    activeNoMachineTabId: null,
     ...supersedeRemoteProjectSwitch(prev, "home"),
   })),
   cancelNewTab: () => {
     const hasProject = get().project != null;
-    set({ isNewTabOpen: false, showWelcome: !hasProject, activeNoMachineTabId: null });
+    set({ isNewTabOpen: false, showWelcome: !hasProject });
   },
-  showNoMachineTab: (tab, options) => {
-    const activate = options?.activate !== false;
-    set((prev) => {
-      const index = prev.noMachineTabs.findIndex((entry) => entry.id === tab.id);
-      const noMachineTabs = index === -1
-        ? [...prev.noMachineTabs, tab]
-        : prev.noMachineTabs.map((entry, at) => (at === index ? { ...entry, ...tab } : entry));
-      return activate
-        ? {
-            noMachineTabs,
-            activeNoMachineTabId: tab.id,
-            isNewTabOpen: false,
-            standaloneSettingsOpen: false,
-            ...supersedeRemoteProjectSwitch(prev, "no-machine-tab"),
-          }
-        : { noMachineTabs };
-    });
-    writeNoMachineTabs(get().noMachineTabs);
-  },
-  closeNoMachineTab: (id) => {
-    set((prev) => ({
-      noMachineTabs: prev.noMachineTabs.filter((entry) => entry.id !== id),
-      activeNoMachineTabId: prev.activeNoMachineTabId === id ? null : prev.activeNoMachineTabId,
-      showWelcome: prev.activeNoMachineTabId === id && prev.project == null ? true : prev.showWelcome,
-    }));
-    writeNoMachineTabs(get().noMachineTabs);
+  openAdeCloudProject: async (project, options) => {
+    const binding = adeCloudBinding(project);
+    if (options?.activate === false) {
+      set((prev) => (prev.openRemoteProjectTabs.some((entry) => entry.key === binding.key)
+        ? {}
+        : { openRemoteProjectTabs: [...prev.openRemoteProjectTabs, binding] }));
+      return;
+    }
+    await get().switchRemoteProject(binding.targetId, binding.projectId, { adeCloudProject: project });
   },
   setStandaloneSettingsOpen: (standaloneSettingsOpen) => set({ standaloneSettingsOpen }),
   setPersonalChatsTabOpen: (personalChatsTabOpen) =>
@@ -3925,7 +3885,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // Warm-tab switches (rootPath already in openProjectTabRoots) bypass the gate
     // entirely. inspectPath failures fall through to the normal open — the gate
     // must never break project opening.
-    if (get().activeNoMachineTabId) set({ activeNoMachineTabId: null });
     if (!opts?.skipWorktreeGate && !get().openProjectTabRoots.includes(rootPath)) {
       try {
         const inspection = await window.ade.project.inspectPath(rootPath);
@@ -4209,7 +4168,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   switchRemoteProject: async (targetId: string, projectId: string, options) => {
     const switchGeneration = ++remoteProjectSwitchGeneration;
     const outgoingBinding = get().projectBinding;
-    if (!options?.keepNoMachineTab && get().activeNoMachineTabId) set({ activeNoMachineTabId: null });
     ++laneRefreshVersion;
     const outgoingProjectKey = selectActiveProjectStateKey(get());
     const outgoingSelection = {
@@ -4236,7 +4194,14 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         : {}),
     }));
     try {
-      const binding = await window.ade.remoteRuntime.openProject(targetId, projectId);
+      // A tab bound to ADE Cloud opens with no computer: the runtime layer
+      // takes its binding as it is (web adapter, preload).
+      const adeCloud = isAdeCloudTargetId(targetId)
+        ? adeCloudBinding(options?.adeCloudProject ?? adeCloudProjectForTab(get().openRemoteProjectTabs, projectId))
+        : null;
+      const binding = adeCloud
+        ? await window.ade.remoteRuntime.openProject(targetId, projectId, adeCloud)
+        : await window.ade.remoteRuntime.openProject(targetId, projectId);
       if (switchGeneration !== remoteProjectSwitchGeneration) {
         return binding;
       }
@@ -4289,9 +4254,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           projectTransitionError: null,
           isNewTabOpen: false,
           standaloneSettingsOpen: false,
-          // A no-machine tab put in front during the open superseded it, so
-          // the one still in front here is the tab this open replaces.
-          activeNoMachineTabId: null,
           openRemoteProjectTabs,
           laneSnapshots: cachedLanes?.laneSnapshots ?? [],
           lanes: cachedLanes?.lanes ?? [],

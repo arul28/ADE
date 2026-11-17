@@ -2109,14 +2109,6 @@ describe("appStore", () => {
           expect(useAppStore.getState().projectBinding?.key).not.toBe(staleBindingA.key);
         },
       },
-      {
-        what: "a no-machine tab",
-        supersede: () => useAppStore.getState().showNoMachineTab({ id: "repo-waiting", displayName: "Waiting", iconDataUrl: null }),
-        expectFront: () => {
-          expect(useAppStore.getState().activeNoMachineTabId).toBe("repo-waiting");
-          expect(useAppStore.getState().projectBinding?.key).not.toBe(staleBindingA.key);
-        },
-      },
     ])("a pending switchRemoteProject never finishes over $what, and its switching state ends", async ({ supersede, expectFront }) => {
       let resolveSlow: (value: typeof staleBindingA) => void = () => {};
       (window.ade.remoteRuntime.openProject as any).mockImplementation(

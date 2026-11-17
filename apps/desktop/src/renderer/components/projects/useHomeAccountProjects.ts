@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AccountProjectView } from "../../../shared/accountProject";
 import type { RecentProjectSummary, RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
+import { adeCloudProjectOf } from "../../state/adeCloudTabs";
 import { useAccountProjectList, useRepositoryCopySources, useThisMachineKey } from "../../state/useRepositoryCopies";
 import { readThisComputerCatalog, useThisComputerCatalog, withCatalogFolders } from "../../state/thisComputerCatalog";
 import { foreignCopyPaths } from "../app/projectTabGrouping";
@@ -135,20 +136,22 @@ export function useHomeAccountProjects(args: {
     };
   }, [accountProjects, desktopFolders, hidden, pendingForgetKeys, remoteSnapshot, sources, thisMachineKey, thisMachineName, webComputers, webComputersByKey, webMode, webRecents]);
 
-  // A project with no computer online opens as its repository tab, with no
-  // machine (0M): the tab waits for a computer instead of failing.
-  const showNoMachineTab = useAppStore((s) => s.showNoMachineTab);
+  // A project with no own computer online opens as its repository tab, bound
+  // to ADE Cloud: the normal project tabs, with its cloud lanes.
+  const openAdeCloudProject = useAppStore((s) => s.openAdeCloudProject);
   const openNoMachineTab = useCallback((rp: RecentProjectSummary): boolean => {
-    const origin = cachedGitRemoteIdentity(rp.gitOriginUrl ?? rp.remote?.gitOriginUrl ?? null);
+    const originUrl = rp.gitOriginUrl ?? rp.remote?.gitOriginUrl ?? null;
+    const origin = cachedGitRemoteIdentity(originUrl);
     if (!origin) return false;
-    const project = accountProjects ? accountProjectForOrigin(accountProjects, rp.gitOriginUrl ?? rp.remote?.gitOriginUrl) : null;
-    showNoMachineTab({
-      id: project?.id ?? `repo:${origin}`,
+    const project = accountProjects ? accountProjectForOrigin(accountProjects, originUrl) : null;
+    void openAdeCloudProject({
+      accountProjectId: project?.id ?? `repo:${origin}`,
       displayName: project?.name ?? rp.displayName,
+      gitOriginUrl: project ? `https://${project.host || "github.com"}/${project.owner}/${project.name}` : originUrl,
       iconDataUrl: rp.remote?.iconDataUrl ?? (project ? rememberedIcons.get(project.id) ?? null : null),
-    });
+    }).catch(() => undefined);
     return true;
-  }, [accountProjects, showNoMachineTab]);
+  }, [accountProjects, openAdeCloudProject]);
 
   return { list, openNoMachineTab };
 }
@@ -173,6 +176,6 @@ export function useDesktopFirstAccountTab({ enabled, hasLocalProjects }: { enabl
       return;
     }
     const newest = projects.slice().sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0))[0];
-    if (newest) useAppStore.getState().showNoMachineTab({ id: newest.id, displayName: newest.name, iconDataUrl: null });
+    if (newest) void useAppStore.getState().openAdeCloudProject(adeCloudProjectOf(newest)).catch(() => undefined);
   }, [enabled, hasLocalProjects, projects]);
 }
