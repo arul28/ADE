@@ -3804,6 +3804,11 @@ again" on every connect. Now, for a record that already exists:
   the device has no follow-up to arm one with, and the old secret was valid
   before the adoption anyway. A paired hello still needs the record's pinned
   DPoP key.
+- A later staging (another adoption, or a PIN re-pair) does not take an
+  unproven adoption secret away: it moves to `displacedAccountSecretHashes`
+  (newest first, at most three) and still authenticates and promotes like the
+  staged one. Proving any staged secret clears the list. A phone that saved
+  one adoption's secret and lost the next reply keeps working.
 
 A first-time account pairing (no record) still writes straight through: the
 device holds no secret that a lost reply could strand. On the client,

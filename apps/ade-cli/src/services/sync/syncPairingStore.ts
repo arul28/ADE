@@ -46,10 +46,20 @@ export type SyncPairingRecord = {
    * or a commit-capable client acknowledges hello_ok.
    */
   pendingRotation?: PendingPairingRotation | null;
+  /**
+   * Hashes of account-adoption secrets that a later staging (another
+   * adoption, or a PIN re-pair) displaced from `pendingRotation` before any
+   * hello proved them. The device may have saved one, so each still
+   * authenticates (the pinned DPoP key still applies) and promotes like the
+   * staged secret. Newest first, at most MAX_DISPLACED_ACCOUNT_SECRETS;
+   * cleared once a staged secret is proven. Hosts that predate the field
+   * ignore it.
+   */
+  displacedAccountSecretHashes?: string[];
 };
 
 /** A pairing record as committed on disk, with no rotation staged behind it. */
-export type CommittedPairingRecord = Omit<SyncPairingRecord, "pendingRotation">;
+export type CommittedPairingRecord = Omit<SyncPairingRecord, "pendingRotation" | "displacedAccountSecretHashes">;
 
 export type PendingPairingRotation = {
   /** Wall-clock ms after which the staged record is abandoned. */
@@ -78,6 +88,9 @@ export const PAIRING_ROTATION_WINDOW_MS = 10 * 60_000;
  * a paired hello still needs the record's pinned DPoP key.
  */
 const ACCOUNT_ROTATION_EXPIRES_AT_MS = Number.MAX_SAFE_INTEGER;
+
+/** How many displaced account secrets a record keeps accepting. */
+const MAX_DISPLACED_ACCOUNT_SECRETS = 3;
 
 type PairingSecretsFile = Record<string, SyncPairingRecord>;
 type RuntimeHostGrantFile = Record<string, { expiresAt: number }>;
@@ -255,8 +268,36 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
   };
 
   const committedView = (record: SyncPairingRecord): SyncPairingRecord => {
-    const { pendingRotation: _pending, ...committed } = record;
+    const { pendingRotation: _pending, displacedAccountSecretHashes: _displaced, ...committed } = record;
     return committed;
+  };
+
+  /**
+   * The displaced account secrets to keep once `record`'s staged rotation is
+   * replaced. Only an account adoption's secret is kept: the device got it in
+   * hello_ok and may have saved it. A PIN re-pair's secret expires anyway.
+   */
+  const displacedAfterRestaging = (record: SyncPairingRecord): string[] | undefined => {
+    const pending = record.pendingRotation;
+    const kept = [
+      ...(pending?.secretOnly ? [pending.record.secretHash] : []),
+      ...(record.displacedAccountSecretHashes ?? []),
+    ].slice(0, MAX_DISPLACED_ACCOUNT_SECRETS);
+    return kept.length > 0 ? kept : undefined;
+  };
+
+  /**
+   * Which staged secret `presentedHash` proves, if any: the staged rotation,
+   * or a displaced account secret. Every comparison is constant-time.
+   */
+  const matchStagedSecret = (
+    record: SyncPairingRecord,
+    presentedHash: string,
+  ): { kind: "pending"; pending: PendingPairingRotation } | { kind: "displaced"; secretHash: string } | null => {
+    const pending = record.pendingRotation;
+    if (pending && safeHashEquals(pending.record.secretHash, presentedHash)) return { kind: "pending", pending };
+    const displaced = (record.displacedAccountSecretHashes ?? []).find((hash) => safeHashEquals(hash, presentedHash));
+    return displaced ? { kind: "displaced", secretHash: displaced } : null;
   };
 
   /**
@@ -265,10 +306,13 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
    */
   const promotedRecord = (
     entry: SyncPairingRecord,
-    pending: PendingPairingRotation,
-  ): CommittedPairingRecord => pending.secretOnly
-    ? { ...committedView(entry), secretHash: pending.record.secretHash }
-    : { ...pending.record };
+    staged: NonNullable<ReturnType<typeof matchStagedSecret>>,
+  ): CommittedPairingRecord => {
+    if (staged.kind === "displaced") return { ...committedView(entry), secretHash: staged.secretHash };
+    return staged.pending.secretOnly
+      ? { ...committedView(entry), secretHash: staged.pending.record.secretHash }
+      : { ...staged.pending.record };
+  };
 
   const writeNewPairingRecord = (
     peer: SyncPeerMetadata,
@@ -406,6 +450,9 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
           ? false
           : existing.syncHostRecoveryGranted,
         pendingRotation: { expiresAtMs, record: replacement },
+        // A phone may hold an adoption's secret it never proved. A PIN reply
+        // lost now must not take that one away too.
+        displacedAccountSecretHashes: displacedAfterRestaging(existing),
       };
       writeRecords(records);
       return { deviceId: peer.deviceId, secret, pendingRotationExpiresAtMs: expiresAtMs };
@@ -422,25 +469,32 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     //   the first hello that authenticates with it.
     if (trust.kind === "account" && existing) {
       const current = pruneExpiredRotation(existing, Date.now()).record!;
-      const pending = current.pendingRotation ?? null;
       const presented = options?.presentedSecret?.trim() || null;
       const presentedHash = presented ? hashSecret(presented) : null;
       const provedCommitted = presentedHash != null && safeHashEquals(current.secretHash, presentedHash);
-      const provedPending = !provedCommitted
-        && presentedHash != null
-        && pending != null
-        && safeHashEquals(pending.record.secretHash, presentedHash);
-      if (presented && (provedCommitted || provedPending)) {
-        records[peer.deviceId] = {
-          ...replacement,
-          secretHash: provedCommitted ? current.secretHash : pending!.record.secretHash,
-          lastUsedAt: nowIso(),
-          // Proving the staged secret promotes it. Proving the committed one
-          // leaves a staged rotation in place: it is not this device's to
-          // discard, since it may hold the staged secret in a store another
-          // process writes.
-          pendingRotation: provedCommitted ? pending : null,
-        };
+      const provedStaged = !provedCommitted && presentedHash != null
+        ? matchStagedSecret(current, presentedHash)
+        : null;
+      if (presented && (provedCommitted || provedStaged)) {
+        records[peer.deviceId] = provedCommitted
+          ? {
+            ...replacement,
+            secretHash: current.secretHash,
+            lastUsedAt: nowIso(),
+            // A staged secret is not this device's to discard: it may hold it
+            // in a store another process writes.
+            pendingRotation: current.pendingRotation ?? null,
+            displacedAccountSecretHashes: current.displacedAccountSecretHashes,
+          }
+          : {
+            // Proving a staged secret promotes it and retires the rest.
+            ...replacement,
+            secretHash: provedStaged!.kind === "pending"
+              ? provedStaged!.pending.record.secretHash
+              : provedStaged!.secretHash,
+            lastUsedAt: nowIso(),
+            pendingRotation: null,
+          };
         writeRecords(records);
         return {
           deviceId: peer.deviceId,
@@ -458,6 +512,9 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
           record: replacement,
           secretOnly: true,
         },
+        // The secret staged before this one left in an earlier hello_ok. A
+        // device that saved it and then lost this reply must keep working.
+        displacedAccountSecretHashes: displacedAfterRestaging(current),
       };
       writeRecords(records);
       // No window for the caller to arm: the staged secret never expires and
@@ -587,9 +644,10 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         writeRecords(records);
         return true;
       }
-      const pending = entry.pendingRotation;
-      if (pending && safeHashEquals(pending.record.secretHash, presented)) {
-        if (options.deferPendingCommit) {
+      const staged = matchStagedSecret(entry, presented);
+      if (staged) {
+        const pending = staged.kind === "pending" ? staged.pending : null;
+        if (options.deferPendingCommit && pending) {
           // Backfills the committed record only. The staged replacement keeps
           // whatever the re-pair decided, so rotation staging is untouched.
           records[normalized] = withBackfilledSyncHostRecoveryGrant({
@@ -601,7 +659,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
           });
         } else {
           records[normalized] = withBackfilledSyncHostRecoveryGrant({
-            ...promotedRecord(entry, pending),
+            ...promotedRecord(entry, staged),
             lastUsedAt: nowIso(),
           });
         }
@@ -628,10 +686,8 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (!entry) return null;
       const presented = hashSecret(secret);
       if (safeHashEquals(entry.secretHash, presented)) return committedView(entry);
-      const pending = entry.pendingRotation;
-      return pending && safeHashEquals(pending.record.secretHash, presented)
-        ? promotedRecord(entry, pending)
-        : null;
+      const staged = matchStagedSecret(entry, presented);
+      return staged ? promotedRecord(entry, staged) : null;
     },
 
     /**
@@ -653,7 +709,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         }
         return null;
       }
-      records[normalized] = { ...promotedRecord(pruned.record!, pending), lastUsedAt: nowIso() };
+      records[normalized] = { ...promotedRecord(pruned.record!, { kind: "pending", pending }), lastUsedAt: nowIso() };
       writeRecords(records);
       return committedView(records[normalized]!);
     },
@@ -670,9 +726,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (!entry) return null;
       const presented = hashSecret(secret);
       if (safeHashEquals(entry.secretHash, presented)) return "committed";
-      const pending = entry.pendingRotation;
-      if (pending && safeHashEquals(pending.record.secretHash, presented)) return "pending";
-      return null;
+      return matchStagedSecret(entry, presented) ? "pending" : null;
     },
 
     /**
