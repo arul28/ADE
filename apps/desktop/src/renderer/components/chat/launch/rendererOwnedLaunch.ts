@@ -12,6 +12,7 @@ import {
   type DraftLaunchSnapshot,
   type PreparedDraftLaunch,
 } from "../../../lib/draftLaunchJobs";
+import { isRemoteCallNotSentError } from "../../../../shared/runtimeErrors";
 import { extractError } from "../../../lib/format";
 import { invalidateSessionListCache } from "../../../lib/sessionListCache";
 import type { ComposerHandoff } from "./chatLaunchDock";
@@ -241,7 +242,18 @@ export type RendererOwnedLaunchDeps = {
   refreshLanes: () => Promise<unknown>;
   openLaunchedDraftSession: (launch: OpenLaunchedDraftSessionInput) => void;
   clearSelectedSession: () => void;
+  /** The name of the machine the launch runs on, for a launch it could not reach. */
+  launchMachineName?: () => string | null;
 };
+
+/** A launch refused before anything reached its machine (it is reconnecting). */
+function notStartedMessage(kind: DraftLaunchKind, machineName: string | null, promptInComposer: boolean): string {
+  const what = kind === "chat" ? "the chat" : "the CLI session";
+  const where = promptInComposer
+    ? "Your message is still in the composer."
+    : "Press Restore to put your message back in the composer.";
+  return `Can't reach ${machineName?.trim() || "that machine"}, so ${what} was not started. ${where}`;
+}
 
 export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Promise<void> {
   const { kind, mode, snapshot, launchBinding, jobId } = deps;
@@ -413,7 +425,9 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
         await deps.refreshLanes().catch(() => undefined);
       }
     }
-    const message = extractError(launchError);
+    const message = isRemoteCallNotSentError(launchError)
+      ? notStartedMessage(kind, deps.launchMachineName?.() ?? null, holdsComposerUntilOpen)
+      : extractError(launchError);
     const jobStillVisible = deps.draftLaunchJobExists(jobId);
     deps.patchDraftLaunchJob(jobId, {
       status: "failed",

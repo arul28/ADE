@@ -5840,6 +5840,8 @@ export function AgentChatPane({
     pinOverride: hostRuntimePin,
   });
   // The send's failure note names the chat's machine without a callback dependency.
+  /** The draft's machine, named in a launch that could not reach it. */
+  const draftMachineDisplayNameRef = useRef<string | null>(null);
   const chatMachineNameRef = useRef(chatMachineName);
   chatMachineNameRef.current = chatMachineName;
   // Held in a ref so the ~40 call sites below can read the pin without
@@ -13820,7 +13822,7 @@ export function AgentChatPane({
         // only here, and the prompt stays in the composer.
         onOpeningMessageOut?.(false);
         await cleanupDraftChatSession({ id: sessionId }, targetLane, pin, { deleteOnMachine: false });
-        throw new Error(`Can't reach ${chatMachineNameRef.current || "that machine"}, so the chat was not started. Your message is still in the composer.`);
+        throw launchError;
       }
       if (!isRemoteOutcomeUnknownError(launchError)) {
         // A brain error: the brain deleted the chat after a failed send. The
@@ -14559,6 +14561,7 @@ export function AgentChatPane({
         refreshLanes: refreshLanesStore,
         openLaunchedDraftSession,
         clearSelectedSession: () => setSelectedSessionId(null),
+        launchMachineName: () => "ADE Cloud",
       });
       return;
     }
@@ -14631,6 +14634,7 @@ export function AgentChatPane({
       refreshLanes: refreshLanesStore,
       openLaunchedDraftSession,
       clearSelectedSession: () => setSelectedSessionId(null),
+      launchMachineName: () => draftMachineDisplayNameRef.current,
     });
 
     if (draftLaunchTargetIsAutoCreate) {
@@ -18346,6 +18350,7 @@ export function AgentChatPane({
    * placeholder and every launch path say the same sentence.
    */
   const draftMachineDisplayName = selectedDraftMachine?.name ?? draftBoundMachineDisplayName;
+  draftMachineDisplayNameRef.current = draftMachineDisplayName;
   const draftLaneCatalogLoadingMessage = draftLaneCatalogLoading
     ? `Loading lanes for ${draftMachineDisplayName ?? "the selected machine"}\u2026`
     : null;
