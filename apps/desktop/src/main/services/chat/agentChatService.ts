@@ -8479,14 +8479,21 @@ function claudeSubagentLabelFields(
   return {};
 }
 
+/**
+ * The last non-blank line of `text`, trimmed and clipped. It reads back from
+ * the end: a streaming reply calls this on every chunk with the whole reply so
+ * far, and splitting all of it each time grew with the reply's length.
+ */
 function normalizePreview(text: string, maxChars = 220): string | null {
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (!lines.length) return null;
-  const preview = lines[lines.length - 1] ?? "";
-  return preview.length > maxChars ? preview.slice(0, maxChars) : preview;
+  let end = text.length;
+  while (end > 0) {
+    const start = text.lastIndexOf("\n", end - 1) + 1;
+    // trim() also drops the "\r" of a "\r\n" line end.
+    const line = text.slice(start, end).trim();
+    if (line) return line.length > maxChars ? line.slice(0, maxChars) : line;
+    end = start - 1;
+  }
+  return null;
 }
 
 const REJECTED_TITLES = new Set([
@@ -14135,10 +14142,34 @@ export function createAgentChatService(args: {
     }
   };
 
+  // The serialized size of each live ring, kept as events arrive. Without it
+  // every streamed event walked the whole ring (up to 4,000 cached sizes) to
+  // re-check the budget: with five chats streaming that walk was the largest
+  // cost in the brain. Rings are replaced, never edited, except by the push
+  // below, so a ring this map does not know is summed once.
+  const ringCharTotals = new WeakMap<AgentChatEventEnvelope[], number>();
+
   const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
     const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
+    let total = ringCharTotals.get(current);
+    if (total == null) {
+      total = 0;
+      for (const entry of current) total += estimateEnvelopeChars(entry);
+    }
     current.push(envelope);
-    touchEventHistoryRing(envelope.sessionId, boundRingEnvelopes(current));
+    total += estimateEnvelopeChars(envelope);
+    // The same bound as boundRingEnvelopes: the count cap, then the newest
+    // events that fit the budget, keeping the newest even when it alone does
+    // not fit. Dropping from the front gives the same suffix.
+    let drop = Math.max(0, current.length - CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION);
+    for (let index = 0; index < drop; index += 1) total -= estimateEnvelopeChars(current[index]!);
+    while (total > CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS && current.length - drop > 1) {
+      total -= estimateEnvelopeChars(current[drop]!);
+      drop += 1;
+    }
+    const ring = drop > 0 ? current.slice(drop) : current;
+    ringCharTotals.set(ring, total);
+    touchEventHistoryRing(envelope.sessionId, ring);
   };
 
   const rememberTranscriptHistoryCache = (
