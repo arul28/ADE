@@ -1911,9 +1911,11 @@ ms · Slow connection`.
 
 What the mode changes is only what would be hidden or delayed: a transcript
 picture from that machine waits as a `Show picture · <size>` tile until it is
-clicked (a picture already shown stays), and a plain-shell terminal types
-ahead. Pictures in the proof drawer and the lightbox load as before. The
-always-on transport work below runs in every mode.
+clicked (a picture already shown stays), a plain-shell terminal types ahead,
+and an agent CLI's terminal gets a local line (below) so a typed letter shows in
+one frame instead of most of a second later. Pictures in the proof drawer and
+the lightbox load as before. The always-on transport work below runs in every
+mode.
 
 **Bulk pieces, sized to the link.** A transcript picture is read from the other
 machine in pieces about 250 ms of the measured delivery rate (1 MiB on a fast
@@ -1947,6 +1949,33 @@ message is confirmed, so an identical message later is a message of its own.
 When one call loses a dropped connection, the other reads on that machine wait
 for the same redial and ask again, while a write still reports that its outcome
 is unknown.
+
+Text for a running agent CLI (`chat.typeIntoCli`) gets the same treatment from
+both ways of typing into it: the Work box (`when: "free"`, typed at a free
+prompt) and the terminal's local line (`when: "now"`, typed at once). A brain
+that announces `agentCliTypeNow` answers a repeated `clientMessageId` once for
+both modes; the pool sends the text again after a reconnect only to such a
+brain, and a send refused before it dialled comes back to the caller as not
+sent. See
+[Terminal and Session UI Surfaces](../terminals-and-sessions/ui-surfaces.md#the-terminals-local-line-on-a-slow-link).
+
+**A drop that is a blip.** A link that was up and dropped redials every 2 s for
+3 minutes (`FAST_REDIAL_WINDOW_MS`, cleared by the ordinary bounded backoff
+after that); each redial waits for the one before it, so a dead link costs one
+dial per interval and a failed redial writes no snapshot update. A window's
+network change (`online`, or the browser's connection change, merged by main)
+redials dropped machines at once and pings the connected ones, as a wake does.
+For the first 20 s (`RECONNECT_HOLD_MS`) the dropped machine still reads as
+connected, with `reconnectingSinceMs` saying when it dropped: the open chat and
+the Work list stay, the new-chat picker keeps that machine, and a call waits up
+to 8 s (`RECONNECT_CALL_WAIT_MS`) for the link instead of failing. A cloud
+computer skips the hold, so its drop is shown and a sleeping one can rest;
+Disconnect, Remove, a rest, and the end of the hold all end it at once.
+
+**Text the person is not looking at.** A window tells its machine which
+terminals it shows (`ptyDataIds`), and the brain sends only their output; see
+[PTY and sessions](../terminals-and-sessions/pty-and-sessions.md) for the
+capability and the list update.
 
 **Numbers on both ends.** `remote.link_summary` on the desktop and
 `rpc.link_summary` in the brain write one line per connection every five

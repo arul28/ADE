@@ -776,7 +776,7 @@ and nothing is typed. The queue shows each waiting text with its state and
 | Queued | The CLI is mid-turn. | Asked again every 1.5 s, slowing to 4 s after 30 s and 10 s after 5 min, and at once when the CLI's runtime state changes. |
 | Typing it now | Being typed. | Removed when the host confirms. |
 | Sends when *computer* reconnects | The CLI's machine is disconnected (connection snapshot), or the call was refused before it was sent. | Sent when the machine reconnects; nothing is asked while it is gone. |
-| Unconfirmed | The connection dropped mid-send, so it may already have been typed. | Never retried by itself. **Send again** or **Remove**. |
+| Unconfirmed | The connection dropped mid-send, so it may already have been typed. | ADE sent it once more with the same id after a short reconnect (a brain that announces `agentCliTypeNow` types a repeated id once). Still unconfirmed after that: never retried by itself. **Send again** or **Remove**. |
 | Failed | The host refused it (archived, not an agent CLI). | **Send again**, **Edit** or **Remove**. |
 
 When the CLI has ended (`ended`, nothing typed and nothing relaunched), the
@@ -787,6 +787,41 @@ claims a text before typing it, so the other does not send it too.
 
 Typing into a CLI clears its prompt line first (the same as scheduled work), so
 a half-typed line in the terminal itself is replaced by the box's text.
+
+### The terminal's local line on a slow link
+
+`TerminalLocalLineBar.tsx` and `terminalLocalLine.ts` are the other way to type
+into a running agent CLI. On a slow-connection link (see
+[A slow or dropping link](../remote-runtime/README.md#a-slow-or-dropping-link))
+`TerminalView` keeps plain text on this computer instead of writing each key to
+the machine: the overlay draws the line in the terminal's own font, and Enter
+sends it through `agentChat.typeIntoCli` with `when: "now"`, which the host
+types and submits as one line (`typeLineIntoAgentCli`). The host's answer is
+the same shape as the box's; `agentCliTypeSend.ts` classifies it for both.
+
+- **Offered only when** the terminal's machine is in slow-connection mode and
+  announces `agentCliTypeNow`, the session's tool type takes a line
+  (`toolTypeTakesLocalLine` in `shared/cliLaunch.ts`: not Cursor or Devin),
+  the terminal is interactive, the program has bracketed paste on, and the
+  session is not in box mode (`localLineAllowed={!showInputBox}`). Otherwise
+  every key goes to the machine as before.
+- **Keys.** Plain text collects in the line; Backspace, Ctrl+U, Ctrl+W and
+  Option+Backspace edit it; Shift+Enter adds a line break. Enter on a line
+  sends it; Enter on an empty line goes to the CLI. Any other key (Esc, Tab, an
+  arrow, Ctrl+C, a function key) first hands the line to the CLI as keys, then
+  sends the key, so completion and interruption behave as they do when typing
+  there. The terminal's own replies (focus, mouse reports, query answers) go to
+  the CLI and leave the line alone.
+- **Pasting** joins the line; a pasted control character is dropped (ESC is
+  shown as `␛`), so a paste cannot act as a key.
+- **A failed send** puts the line back, in front of anything typed since, and
+  says why (`Not sent: this terminal has stopped / the connection dropped / the
+  machine did not take it`). A line sent again unchanged keeps its id, so the
+  machine types it once.
+- **The switch** in the corner turns the line off for that session
+  (`ade.terminal.localLineOff`, most recent 200 sessions) and hands any text
+  already in it to the CLI as keys. With the line off, a fast link's type-ahead
+  (`terminalTypeAhead.ts`) is what a plain shell gets.
 
 Claude CLI surfaces whose recent preview/transcript reports `Please run
 /login` or a 401 invalid-credentials error show the same dismissible

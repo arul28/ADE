@@ -16,6 +16,19 @@ pump. Remote-bound windows therefore have their PTYs spawn on the
 remote machine — `node-pty` runs on the remote host, the bytes stream
 back over SSH, on the remote host.
 
+A window receives terminal output only for the terminals it shows. Main keeps
+the window's list (`ptyDataSubscriptions.ts`, fed by the renderer's
+`pty.setDataSubscriptions`) and sends it to a remote brain as `ptyDataIds` on
+`runtimeEvents.subscribe` and `stream_events`, then updates it with
+`runtimeEvents.setPtyDataFilter` when the window's terminals change; a brain
+that announces `ptyDataFilter` skips `pty_data` for every terminal outside the
+list and sends every other event. The poll's cursor moves past what it skipped,
+so a filtered poll cannot stall. A window that has never set a list, and a
+brain without the capability, keep sending everything — so an older or a newer
+end in either direction behaves as before. A terminal that comes back reads its
+screen again after the machine applied the new list, so output printed in
+between is not lost.
+
 Both services carry cross-wiring through the ADE runtime's project boot and `registerIpc.ts`. Re-read them before any non-trivial change.
 
 Adjacent: the `apps/desktop/src/main/services/computerUse/`
@@ -871,6 +884,32 @@ For fresh `initialInput` writes, ADE still waits up to
 output and settle before writing. Ended-session continuations avoid
 that readiness race by passing the first follow-up prompt as a resume
 command argument whenever structured resume metadata is available.
+
+#### A line typed at once (a slow link's local line)
+
+`typeLineIntoAgentCli({ sessionId, text, inputOrigin })` is the host half of a
+terminal's local line (`chat.typeIntoCli` with `when: "now"`; see
+[Terminal and Session UI Surfaces](ui-surfaces.md#the-terminals-local-line-on-a-slow-link)).
+It writes the line into the CLI's input and then presses Enter, with no line
+clear, no readiness wait and no `@` expansion, because it stands in for the
+person's own keys:
+
+- CR/LF is normalized to a line feed and an ESC in the text becomes `␛`, so
+  text never acts as a key. A multi-line line goes as one bracketed paste (and
+  gets `LOCAL_LINE_PASTE_SUBMIT_DELAY_MS = 100 ms` before Enter; Codex keeps
+  its own 180 ms); a single line is typed as text.
+- Lines to one session run in order: the work joins the same
+  `submitInputFlights` chain `sendToSession` uses, so a local line and an
+  `ade chat` send to one CLI cannot interleave.
+- A blank line and a session with no live PTY answer `false`/`ended`, which
+  the renderer puts back in the line. A repeated `clientMessageId` is answered
+  once by `typeIntoAgentCliWhenFree`'s ledger (session + id, ten minutes),
+  shared with the Work box's `when: "free"` sends, so a repeat after a dropped
+  link types the line once.
+- The function requires no tracked-CLI row: any agent CLI terminal takes it,
+  as it takes the person's keys. Cursor and Devin are not offered the line by
+  the renderer (`toolTypeTakesLocalLine`), and the line appears only once the
+  program has turned bracketed paste on.
 
 ### AI-driven titles
 
