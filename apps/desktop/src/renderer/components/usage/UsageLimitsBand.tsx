@@ -362,6 +362,22 @@ export function UsageLimitsBand({
     );
   }
 
+  // The web client with no computer connected: only the account answers, so
+  // provider limits have no source. Desktop has no such check (undefined).
+  const liveReadings = (window.ade?.usage as { liveReadings?: () => boolean } | undefined)?.liveReadings?.();
+  if (liveReadings === false && !snapshot) {
+    return (
+      <section className="flex flex-col gap-3" data-usage-detail-host>
+        <div className={cn(USAGE_CARD_CLASS, "px-3.5 py-3")} data-testid="usage-no-live-computer">
+          <div className={cn(USAGE_TEXT.body, "font-semibold text-fg")}>Provider limits</div>
+          <div className={cn(USAGE_TEXT.detail, "mt-1 max-w-[52ch] text-muted-fg")}>
+            Claude, Codex and the other providers report their limits through one of your computers. They show here while one is on.
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="flex flex-col gap-3" data-usage-detail-host>
       {visibleProviders.length === 0 ? (

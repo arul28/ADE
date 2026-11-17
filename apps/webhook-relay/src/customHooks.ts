@@ -23,12 +23,14 @@ import {
   isRecord,
   json,
   parseLimit,
+  readBodyWithinLimit,
   readString,
   requireWebSocketUpgrade,
   sha256Hex,
   text,
   type RelayEnv,
 } from "./shared";
+import { wakeCloudComputersForTopics } from "./cloudEventWakes";
 
 export const MAX_CUSTOM_HOOK_BODY_BYTES = 1024 * 1024;
 const MAX_CUSTOM_HOOK_REGISTRATION_BYTES = 8 * 1024;
@@ -314,37 +316,6 @@ function decodeBody(bytes: Uint8Array): { body: string; encoding: "utf8" | "base
   }
 }
 
-/**
- * Reads the request body, stopping as soon as it would exceed `maxBytes` and
- * returning null so the caller can answer 413. A chunked body carries no
- * content-length to trust, so the cap is enforced on the bytes as they arrive
- * instead of buffering the whole body first. GET stays an empty body.
- */
-async function readBodyWithinLimit(request: Request, maxBytes: number): Promise<Uint8Array | null> {
-  if (request.method === "GET" || !request.body) return new Uint8Array(0);
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => {});
-      return null;
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
-}
-
 async function pruneExpiredHookEvents(env: RelayEnv): Promise<void> {
   // At most once per isolate every ten minutes, like the other event sweeps: a
   // delivery is a public request, and each one must not cost a table sweep.
@@ -428,6 +399,8 @@ export async function handleCustomHookDelivery(
     await Promise.all([
       // A forwarded hook's deliveries go to ADE Cloud; its machines aren't woken for them.
       hook.forward_url ? forwardHeld(env, hook) : notifyLinearTopic(env, hookTopic(hook.account_id), { t: "hook_delivery" }),
+      // A resting cloud computer of the account holds no socket: the account directory wakes it.
+      hook.forward_url ? Promise.resolve() : wakeCloudComputersForTopics(env, [hookTopic(hook.account_id)]),
       pruneExpiredHookEvents(env),
     ]);
   });

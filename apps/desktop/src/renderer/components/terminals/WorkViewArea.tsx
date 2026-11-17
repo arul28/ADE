@@ -34,6 +34,8 @@ const EMPTY_GRID_SETS: WorkGridSet[] = [];
 import { scheduleTerminalViewPreload, TerminalView } from "./LazyTerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
+import { SavedTerminalCopyView } from "./SavedTerminalCopy";
+import { isSavedTerminalSession } from "../../state/cloudSavedTerminals";
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
 import {
   composerTriggerSpansWholeDraft,
@@ -993,6 +995,8 @@ export function SessionSurface({
       />
     );
   }
+  // A CLI or shell of an ADE Cloud computer at rest: its saved text, read-only.
+  if (isSavedTerminalSession(session)) return <SavedTerminalCopyView session={session} />;
   if (isRunningPtySession(session)) {
     if (isAgentCliSession(session)) {
       return (

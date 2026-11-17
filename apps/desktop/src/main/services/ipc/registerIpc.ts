@@ -955,6 +955,7 @@ import {
 } from "../account/accountBridge";
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
 import { cloudAccountChanged, registerCloudIpc } from "../adeCloud/registerCloudIpc";
+import { registerAdeCloudReadIpc } from "../adeCloud/adeCloudReadIpc";
 import { registerCloudLaneLifeIpc } from "../adeCloud/registerCloudLaneLifeIpc";
 import { registerMachineConnectIpc } from "../machines/registerMachineConnectIpc";
 import type { MachineWakeResult } from "../machines/machineConnector";
@@ -12964,6 +12965,8 @@ export function registerIpc({
   const accountVaultBridge = createAccountVaultBridge(vaultBridgeOptions);
 
   registerCloudSavedChatsIpc({ logger: getCtx().logger });
+  // ADE with no computer: a tab bound to ADE Cloud, its account reads, and the chat message queue.
+  registerAdeCloudReadIpc({ logger: getCtx().logger, bindRemoteProject });
 
   /**
    * One account-wide action on this computer's own brain, through a machine

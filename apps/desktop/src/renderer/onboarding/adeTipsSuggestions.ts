@@ -4,6 +4,7 @@ import {
   At,
   DeviceMobile,
   Gauge,
+  FileLock,
   Key,
   LinkSimple,
   Repeat,
@@ -42,7 +43,8 @@ export type AdeSuggestionId =
   | "issue-tracker"
   | "parallel-chats"
   | "repeat-prompt"
-  | "pair-phone";
+  | "pair-phone"
+  | "env-import";
 
 export type AdeSuggestionDefinition = {
   id: AdeSuggestionId;
@@ -127,6 +129,15 @@ export const ADE_SUGGESTIONS: Record<AdeSuggestionId, AdeSuggestionDefinition> =
       + "On your phone you can follow chats, answer them and hear when one needs you.",
     icon: DeviceMobile,
     actionLabel: "Pair your phone",
+  },
+  "env-import": {
+    id: "env-import",
+    title: "Import your .env to ADE secrets",
+    why: "This project has a .env file that git ignores, so new lanes and ADE Cloud start without it. "
+      + "As ADE secrets, its values reach every lane and computer, and agents never see them.",
+    icon: FileLock,
+    actionLabel: "Import it",
+    neverPer: "scope",
   },
 };
 

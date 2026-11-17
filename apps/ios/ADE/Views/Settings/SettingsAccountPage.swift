@@ -162,6 +162,8 @@ struct SettingsAccountPage: View {
           }
           .buttonStyle(ADEKitRowButtonStyle())
         }
+        // ADE Cloud is one machine: one row here, never a row per lane computer.
+        SettingsCloudMachineRow(inSection: false)
         // The desktop's "Manage connections".
         ADESettingsPageLink(title: SettingsRoute.machines.title, destination: machinesPage) { _, pushes in
           ADESettingsRow(title: "Manage connections", symbol: SettingsRoute.machines.symbol, tint: SettingsRoute.machines.tint) {

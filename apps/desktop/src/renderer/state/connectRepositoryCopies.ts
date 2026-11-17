@@ -39,7 +39,7 @@ import { isPageHidden } from "../lib/pageVisibility";
 import type { RepositoryCopy } from "../../shared/repositoryTab";
 import type { AdeAccountMachine } from "../../shared/types";
 import { resolveMachinePresence, type MachinePresence } from "../../shared/types/power";
-import { useVisibleRepositoryTab } from "./repositoryScope";
+import { useActiveRepositoryTab } from "./repositoryScope";
 import { useRepositoryCopies } from "./useRepositoryCopies";
 
 /** The first retry of a computer that did not join (offline, unreachable); each failure in a row doubles it. */
@@ -188,7 +188,7 @@ function schedule(machineKeys: readonly string[], fromTimer: boolean): void {
  * copies are all on computers that are not connected. Mount once per window.
  */
 export function useConnectRepositoryCopies(): void {
-  const tab = useVisibleRepositoryTab();
+  const tab = useActiveRepositoryTab();
   const copies = useRepositoryCopies(tab, tab?.kind === "account");
   const keys = unconnectedCopyMachineKeys(copies);
   useEffect(() => {

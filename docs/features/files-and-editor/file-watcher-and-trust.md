@@ -213,9 +213,9 @@ with the watcher:
 
 There is no content index. Entries are `path` / `lowerPath` / `size` /
 `mtimeMs` and nothing more: the build walk only stats paths (no file
-reads), so `quickOpen` never waits on content, and retaining decoded
-lines here previously cost hundreds of megabytes of heap and crashed the
-app once "include ignored files" widened the pile. `searchText` reads,
+reads), so `quickOpen` never waits on content. Do not keep decoded lines
+here: they cost hundreds of megabytes of heap with "include ignored files"
+on. `searchText` reads,
 scans, and discards — nothing it decodes outlives the call. `quickOpen`
 results are cached per `(query, limit, mode)` per index; any watcher
 mutation clears the query cache.

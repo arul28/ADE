@@ -2,7 +2,7 @@
 
 ADE does not ship a standalone agents hub page. Agent behavior is delivered through three runtime surfaces: the CTO, regular lane-bound chat sessions, and machine-owned personal chats. This feature folder documents identity, persona overlays, capability modes, the smart-memory system, and the ADE CLI tool bridge the project surfaces share.
 
-The former worker/hiring agents were removed. There is one persistent identity — the CTO — and everything else is an ephemeral chat session. Regular sessions bind a visible lane; personal sessions use an internal compatibility lane that is never exposed as project context.
+There is one persistent identity, the CTO. Everything else is an ephemeral chat session. Regular sessions bind a visible lane; personal sessions use an internal compatibility lane that is never exposed as project context.
 
 ## Source file map
 
@@ -95,7 +95,7 @@ into the Work list:
   without claiming the work is done; a hand-raise wakes it early.
 
 Agents deliberately **cannot settle**. `ade chat settle`, `ade chat unsettle`,
-`ade session settle`, and `ade session unsettle` were removed in 2026-07:
+`ade session settle`, and `ade session unsettle` do not exist:
 whether work is actually finished is a subjective judgment agents are
 unreliable at, and a chat that settles itself disappears from the user's active
 list on the agent's say-so. Two paths remain — the user settling the row in

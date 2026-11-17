@@ -42,6 +42,7 @@ import { useCloudMachines } from "../remoteTargets/useCloudMachines";
 import { showToast } from "../app/toast/toastStore";
 import type { CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 import { CtoGreeting } from "./CtoGreeting";
+import { CtoAccountCopyView } from "./CtoAccountCopyView";
 import "./ctoPage.css";
 
 const MAX_WAKING_RETRIES = 4;
@@ -154,7 +155,7 @@ function useContainerWidth(): [React.RefCallback<HTMLDivElement>, number] {
 
 export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const ctoHome = useCtoHome(active);
-  const { computers: laneComputers } = useAdeCloudLaneComputers();
+  const cloudIndex = useAdeCloudLaneComputers();
   /** Every CTO call carries this. Null until the home is reachable: call nothing then. */
   // Held by its key, so a rebuilt pin for the same machine restarts nothing.
   const ctoPin = useStableBinding(ctoHome.status === "ready" ? ctoHome.pin : null);
@@ -238,7 +239,9 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
 
   const primaryLaneId = useMemo(() => resolveCtoPrimaryLaneId(lanes), [lanes]);
 
-  const ctoDisplayName = ctoIdentity?.name?.trim() || "CTO";
+  // While no home answers, the account copy's saved name (`CtoAccountCopyView`).
+  const [copyName, setCopyName] = useState<string | null>(null);
+  const ctoDisplayName = ctoIdentity?.name?.trim() || copyName || "CTO";
   const look = useMemo(() => resolveCtoAvatarLook(ctoIdentity?.avatar ?? null), [ctoIdentity?.avatar]);
   const accent = look.color;
 
@@ -611,9 +614,9 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   // second ADE Cloud row would only find the same computer.
   const chooserCloud = cloudHome.job || !(ctoHome.cloudInstanceId && ctoHome.home) ? cloudHome : null;
   const otherMachineCount = useMemo(
-    () => ctoHomeCandidates(ctoHome.machines, ctoHome.home?.machineId ?? null, laneComputers)
+    () => ctoHomeCandidates(ctoHome.machines, ctoHome.home?.machineId ?? null, cloudIndex)
       .filter((machine) => !machine.isThisMachine).length,
-    [ctoHome.home?.machineId, ctoHome.machines, laneComputers],
+    [ctoHome.home?.machineId, ctoHome.machines, cloudIndex],
   );
   // Settings offers "Change" when the chooser has somewhere else to go:
   // another machine, or ADE Cloud (a free plan is sent to the upgrade there).
@@ -689,6 +692,13 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     />
   );
 
+  // While the home is asleep, gone or away, the page reads the CTO's account
+  // copy (never the home itself, so nothing wakes). Waking or moving it is
+  // the state card's action.
+  const accountCopy = stage === "cloudAsleep" || stage === "cloudGone" || stage === "away"
+    ? <CtoAccountCopyView origin={ctoHome.origin} active={active} homeOnAdeCloud={stage !== "away"} onSavedName={setCopyName} />
+    : null;
+
   const renderStage = (): React.ReactNode => {
     switch (stage) {
       case "bridgeMissing":
@@ -728,6 +738,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
               },
             }}
             secondaryAction={{ label: "Move to…", onClick: () => setChooserOpen(true) }}
+            below={accountCopy}
           />
         );
       case "cloudAsleep":
@@ -740,6 +751,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             statusHint={`${ctoHome.homeName ?? "Its computer"} sleeps when idle. Waking it takes a moment.`}
             action={{ label: waking ? "Waking…" : "Wake", onClick: () => void wakeCloudHome(), disabled: waking }}
             secondaryAction={{ label: "Move to…", onClick: () => setChooserOpen(true) }}
+            below={accountCopy}
           />
         );
       case "away":
@@ -753,6 +765,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
               ? `${ctoHome.offlineReason ?? "Can't be reached right now."} Notes and chat are safe there and pick up when it's back.`
               : `${ctoHome.offlineReason ?? "Can't be reached right now."} Move it to keep going; its notes and recent chat come along.`}
             action={{ label: "Move to…", onClick: () => setChooserOpen(true) }}
+            below={accountCopy}
           />
         );
       case "welcome":
@@ -912,6 +925,7 @@ function CtoStateCard({
   detail = null,
   action,
   secondaryAction,
+  below = null,
 }: {
   look: ReturnType<typeof resolveCtoAvatarLook>;
   name: string;
@@ -926,6 +940,8 @@ function CtoStateCard({
   action?: { label: string; onClick: () => void; disabled?: boolean };
   /** A quieter second way out. */
   secondaryAction?: { label: string; onClick: () => void };
+  /** Read-only content under the card: the CTO's account copy while its home is away. */
+  below?: React.ReactNode;
 }) {
   return (
     <div className="ade-cto-waking" data-testid="cto-waking">
@@ -956,6 +972,7 @@ function CtoStateCard({
           <TechnicalDetailsFold text={detail} className="mt-4 w-full max-w-[420px] text-left" />
         ) : null}
       </div>
+      {below}
     </div>
   );
 }

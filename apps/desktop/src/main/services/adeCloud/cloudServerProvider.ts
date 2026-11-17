@@ -10,6 +10,7 @@
 
 import { readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState, type CloudDiskLaneUse, type CloudFreeUnlockResult } from "../../../shared/adeCloud";
 import {
+  CLOUD_COMPUTER_FEATURES,
   CLOUD_COMPUTER_HEADER,
   CLOUD_COMPUTER_PLATFORM_HEADER,
   CLOUD_PATHS,
@@ -24,6 +25,7 @@ import {
   type CloudCreateInstanceInput,
   type CloudExecResult,
   type CloudInstance,
+  type CloudAccessAnswer,
   type CloudProvider,
   type CloudUpdateChannel,
   type CloudUpdateCheck,
@@ -204,6 +206,14 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       return record(await request("GET", "/cloud/access"))?.enabled === true;
     },
 
+    async accessAnswer(): Promise<CloudAccessAnswer> {
+      const body = record(await request("GET", "/cloud/access"));
+      const enabled = body?.enabled === true;
+      const reason = typeof body?.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 500) : null;
+      // An old server sends only `enabled`: no is read-only (blocked).
+      return { enabled, readOnly: enabled ? body?.readOnly === true : true, reason };
+    },
+
     async getAccount(): Promise<CloudAccountState> {
       const account = await request("GET", "/cloud/account");
       // Every surface reads the plan's period; an answer without it is a failed read, not a crash.
@@ -298,7 +308,8 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     },
 
     async reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean }> {
-      const body = record(await request("POST", instancePath(id, "booted"), { body: { adeVersion } }));
+      // Only the computer's own brain sends it, and that brain has every feature this build lists.
+      const body = record(await request("POST", instancePath(id, "booted"), { body: { adeVersion, features: CLOUD_COMPUTER_FEATURES } }));
       return { sleepWhenIdle: body?.sleepWhenIdle === true };
     },
 

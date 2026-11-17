@@ -44,15 +44,19 @@ export type ClientSendLedger = {
     send: () => Promise<T>,
     whenTakenWithoutResult: () => T,
   ): Promise<T>;
+  /** The running send for this chat wrote the user's message. */
+  noteMessageWritten(sessionId: string): void;
   /**
-   * The running send for this chat wrote the user's message. Returns that
-   * send's client id, which the message records, or null when no send with
-   * an id is running for this chat here (a queued steer written later, say).
+   * The running send's id for this chat, once: the first person's message it
+   * writes carries the id (`user_message.clientSendId`). Null outside a send
+   * with an id, for another chat, or after the first claim.
    */
-  noteMessageWritten(sessionId: string): string | null;
+  claimSendId(sessionId: string): string | null;
+  /** Runs `work` outside any send, so a message it writes (a `/compact` before the send) is not the send's. */
+  outsideSend<T>(work: () => T): T;
 };
 
-type SendScope = { sessionId: string; clientSendId: string; written: boolean };
+type SendScope = { sessionId: string; id: string; written: boolean; claimed: boolean };
 
 type LedgerEntry =
   | { state: "running"; settled: Promise<void> }
@@ -111,7 +115,7 @@ export function createClientSendLedger(options: {
       }
       let settle = (): void => {};
       put(key, { state: "running", settled: new Promise<void>((resolve) => { settle = resolve; }) });
-      const scope: SendScope = { sessionId, clientSendId: id, written: false };
+      const scope: SendScope = { sessionId, id, written: false, claimed: false };
       try {
         const value = await scopes.run(scope, send);
         put(key, { state: "taken", at: now(), result: { value } });
@@ -126,9 +130,16 @@ export function createClientSendLedger(options: {
     },
     noteMessageWritten(sessionId) {
       const scope = scopes.getStore();
-      if (!scope || scope.sessionId !== sessionId) return null;
-      scope.written = true;
-      return scope.clientSendId;
+      if (scope && scope.sessionId === sessionId) scope.written = true;
+    },
+    claimSendId(sessionId) {
+      const scope = scopes.getStore();
+      if (!scope || scope.sessionId !== sessionId || scope.claimed) return null;
+      scope.claimed = true;
+      return scope.id;
+    },
+    outsideSend(work) {
+      return scopes.exit(work);
     },
   };
 }

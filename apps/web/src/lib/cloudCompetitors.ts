@@ -4,12 +4,15 @@ import { planCostsFor } from "./cloudPricing";
  * What other agent apps charge for a cloud computer, for the home page's
  * charts: the apps ademark.dev measures, plus Replicas. Only apps that
  * publish an hourly compute price are charted; the monthly bill drops any
- * row whose bill the vendor's page does not give. Every number was read from the vendor's own
- * pricing page on `CHECKED_ON`; an `estimate` is our arithmetic from that
- * page and is drawn with "≈". Re-check before changing copy around them.
+ * row whose bill the vendor's page does not give. Every number was read from
+ * the vendor's own pricing page on `CHECKED_ON` (Capy's on `CAPY_CHECKED_ON`);
+ * an `estimate` is our arithmetic from that page and is drawn with "≈". Re-check
+ * before changing copy around them.
  */
 
 export const CHECKED_ON = "November 16, 2026";
+/** Capy's page was re-read on this date; the other rows keep their earlier check. */
+export const CAPY_CHECKED_ON = "November 17, 2026";
 
 export type Rival = {
   id: string;
@@ -52,20 +55,45 @@ function replicasBest(hours: number): { price: number; usd: number } {
   return best;
 }
 
+/**
+ * Capy's cheapest way to run `hours` of Medium (2 vCPU · 8 GB). One machine
+ * minute is one minute on 1 vCPU / 4 GB, and a machine uses one for every 4 GB
+ * of RAM, so Medium uses 2 a minute (120 an hour). Lite ($20) includes 30,000
+ * machine minutes (250 hours here), Pro ($100) 150,000 (1,250), Max ($200)
+ * 300,000 (2,500). Past a plan, 60 machine minutes cost $0.10 of credits, which
+ * is $0.20 an hour here. Credits without a plan cost the same, from a $5 top-up.
+ */
+const CAPY_OVERAGE_USD_PER_HOUR = 0.2;
+const CAPY_PLANS = [
+  { plan: "$20 Lite plan", price: 20, credits: 20, hours: 250 },
+  { plan: "$100 Pro plan", price: 100, credits: 100, hours: 1_250 },
+  { plan: "$200 Max plan", price: 200, credits: 200, hours: 2_500 },
+] as const;
+
+function capyBest(hours: number): { plan: string; usd: number } {
+  let best = { plan: "Credits only", usd: hours * CAPY_OVERAGE_USD_PER_HOUR };
+  for (const plan of CAPY_PLANS) {
+    // A plan's model-usage allowance arrives as credits, and those credits also
+    // pay for machine time past the included minutes.
+    const overageUsd = Math.max(0, hours - plan.hours) * CAPY_OVERAGE_USD_PER_HOUR;
+    const usd = plan.price + Math.max(0, overageUsd - plan.credits);
+    if (usd <= best.usd) best = { plan: plan.plan, usd };
+  }
+  return best;
+}
+
 export const RIVALS: Rival[] = [
   {
     id: "capy",
     name: "Capy",
     logo: "/images/competitors/logo-capy.webp",
     machine: "2 vCPU · 8 GB",
-    plan: "$20 Lite plan",
-    rateKind: "usage rate",
-    // $0.20 an hour from plan credits; Lite ($20 a month, $20 of credits) is the least you can pay.
-    monthlyUsd: (hours) => Math.max(20, hours * 0.2),
-    perHourCents: 20,
+    plan: CAPY_PLANS[0].plan,
+    rateKind: "overage",
+    monthlyUsd: (hours) => capyBest(hours).usd,
+    planFor: (hours) => capyBest(hours).plan,
+    perHourCents: Math.round(CAPY_OVERAGE_USD_PER_HOUR * 100),
     freeHours: 0,
-    // Credits past the plan's $20 are assumed to cost the same $0.20 an hour; the page does not print a top-up rate.
-    estimate: true,
     source: "https://capy.ai/pricing",
   },
   {

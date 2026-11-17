@@ -1,6 +1,6 @@
 import * as Sentry from "@sentry/cloudflare";
 import type { CallerTokenEnv } from "../callerToken";
-import { overPlanDiskSentence, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanId } from "./contract";
+import { CLOUD_INTEGRATION_REQUESTS_PER_MINUTE, overPlanDiskSentence, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanId } from "./contract";
 import type { CloudEmailEnv } from "./email";
 import {
   CLOUD_PLANS,
@@ -178,6 +178,11 @@ export type ComputerRow = {
   idle_failed_count?: number | null;
   /** Files git ignores that a delete would lose (`CloudIgnoredFiles` as JSON). */
   ignored_files_json?: string | null;
+  /** The ADE version of its last brain start (migration 0039, `POST .../booted`). */
+  ade_version?: string | null;
+  ade_version_at?: number | null;
+  /** Comma list of `CLOUD_COMPUTER_FEATURES` from the last boot report; null: an older image. */
+  ade_features?: string | null;
 };
 
 export type AccountRow = {
@@ -260,6 +265,43 @@ export function logCloud(event: string, meta: Record<string, unknown> = {}): voi
   console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-account-directory", kind: event, ...meta }));
 }
 
+/** Requests one account may make in a minute, per bucket (`takeRequest`). */
+const REQUESTS_PER_MINUTE = {
+  /** Linear and Jira, with the account's own credentials (`integrations.ts`). */
+  integrations: CLOUD_INTEGRATION_REQUESTS_PER_MINUTE,
+  /**
+   * A computer's saved copies: shell and CLI copies, Git summaries, fork
+   * capsule parts and commits. A delete's save sends one capsule per chat,
+   * four at a time, from every computer of the account; this stops a loop,
+   * never a real save.
+   */
+  uploads: 1_200,
+  /** Agent limits, event-wake topics and the account lane index. */
+  settings: 120,
+} as const;
+
+export type CloudRequestBucket = keyof typeof REQUESTS_PER_MINUTE;
+
+/**
+ * Counts one request against the account's minute for `bucket`. True when it
+ * is within the bucket's limit. One row per account and bucket
+ * (`cloud_request_windows`); a new minute resets it.
+ */
+export async function takeRequest(env: CloudDb, userId: string, bucket: CloudRequestBucket, now: number): Promise<boolean> {
+  const windowStart = Math.floor(now / 60_000) * 60_000;
+  const row = await env.DB.prepare(`
+    insert into cloud_request_windows (user_id, bucket, window_start, count) values (?, ?, ?, 1)
+    on conflict (user_id, bucket) do update set
+      count = case when cloud_request_windows.window_start = excluded.window_start then cloud_request_windows.count + 1 else 1 end,
+      window_start = excluded.window_start
+    returning count
+  `).bind(userId, bucket, windowStart).first<{ count: number }>();
+  if ((row?.count ?? 1) <= REQUESTS_PER_MINUTE[bucket]) return true;
+  // Once a minute per bucket, at the first refused request.
+  if (row?.count === REQUESTS_PER_MINUTE[bucket] + 1) logCloud("cloud.rate_limited", { bucket });
+  return false;
+}
+
 /** One Sentry issue per failure kind and isolate an hour: these repeat each tick while the cause lasts. */
 const FAILURE_REPORT_INTERVAL_MS = 60 * 60_000;
 const lastFailureReport = new Map<string, number>();
@@ -309,12 +351,15 @@ export async function reportCloudAbuse(env: CloudDb, kind: string, userId: strin
 /** A reservation with no computer behind it after this long is given up on. */
 export const PENDING_TIMEOUT_MS = 15 * 60_000;
 /**
- * What the awake cap counts (`AWAKE_COMPUTER_CAP`): awake, or a reservation
- * still being made. Binds one `?`, the reservation cutoff (`now -
- * PENDING_TIMEOUT_MS`). Shared by the wake and create checks (`routes.ts`) and
- * the timed wakes (`cloudWake.ts`), so they all count the same computers.
+ * What the awake cap counts (`AWAKE_COMPUTER_CAP`): awake, on its way there
+ * (`waking`, `starting`), or a reservation still being made. One on its way
+ * counts only for `PENDING_TIMEOUT_MS` after it started (the tick reads the
+ * provider's status meanwhile), so a lost wake never holds a slot. Binds one
+ * `?`, that cutoff (`now - PENDING_TIMEOUT_MS`). Shared by the wake and create
+ * checks (`routes.ts`) and the timed wakes (`cloudWake.ts`), so they all
+ * count the same computers.
  */
-export const AWAKE_CAP_COUNT_SQL = "(status in ('running', 'restarting', 'updating') or (status = 'provisioning' and created_at > ?))";
+export const AWAKE_CAP_COUNT_SQL = "(status in ('running', 'restarting', 'updating') or (status in ('provisioning', 'waking', 'starting') and (case when status = 'provisioning' then created_at else status_changed_at end) > ?))";
 const PENDING_PREFIX = "pending:";
 export const isPendingId = (id: string): boolean => id.startsWith(PENDING_PREFIX);
 export const newPendingId = (): string => `${PENDING_PREFIX}${crypto.randomUUID()}`;
@@ -540,6 +585,9 @@ export function closedComputerStatements(
     ...(args.reason === "account_deleted" ? [] : [keepLaneStatement(env, computer.instance_id, now)]),
     ...markDeletedStatements(env, computer, now),
     ...forgetMachineStatements(env, computer, now),
+    // The topics that woke it at rest and its last event wake (`eventWakes.ts`) go with it.
+    env.DB.prepare("delete from cloud_event_wakes where instance_id = ?").bind(computer.instance_id),
+    env.DB.prepare("delete from cloud_event_wake_state where instance_id = ?").bind(computer.instance_id),
   ];
 }
 

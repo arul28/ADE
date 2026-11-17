@@ -39,6 +39,13 @@ export type LinearAccountCredential = {
   authMode: "manual" | "oauth";
   refreshToken: string | null;
   expiresAt: string | null;
+  /**
+   * The OAuth client that issued the grant. Set only when it is proven: a
+   * sign-in or a refresh with that client succeeded, or the vault said so.
+   * ADE Cloud's server renews a grant only when this names ADE's own public
+   * client (account-directory `linearRenewal.ts`); without it, it never does.
+   */
+  clientId?: string | null;
 };
 
 type Logger = {
@@ -71,6 +78,7 @@ function encodeLinearAccountCredential(record: LinearAccountCredential): string 
     token: record.token,
     refreshToken: record.authMode === "oauth" ? record.refreshToken : null,
     expiresAt: record.authMode === "oauth" ? record.expiresAt : null,
+    ...(record.authMode === "oauth" && record.clientId?.trim() ? { clientId: record.clientId.trim() } : {}),
   });
 }
 
@@ -88,12 +96,14 @@ function decodeLinearAccountCredential(raw: string | null | undefined): LinearAc
       authMode,
       refreshToken: authMode === "oauth" ? text(parsed.refreshToken) : null,
       expiresAt: authMode === "oauth" ? text(parsed.expiresAt) : null,
+      clientId: authMode === "oauth" ? text(parsed.clientId) : null,
     };
   } catch {
     return null;
   }
 }
 
+/** The same turn of the same grant. `clientId` is metadata about the grant, not a turn of it. */
 function sameCredential(left: LinearAccountCredential, right: LinearAccountCredential): boolean {
   return left.token === right.token
     && left.authMode === right.authMode

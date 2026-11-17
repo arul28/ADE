@@ -1,3 +1,4 @@
+import { readBoundedBody } from "../sinkUtils";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { captureCloudAction, captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
 import { CLOUD_WEB_BILLING_RETURN_PARAM, formatCloudCents, type CloudBillingReturnOutcome, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
@@ -49,6 +50,8 @@ const REQUEST_TIMEOUT_MS = 15_000;
 /** The extra-hours tab is charged each time it reaches this many cents. */
 const EXTRA_THRESHOLD_CENTS = "500";
 const SIGNATURE_TOLERANCE_SECONDS = 300;
+/** Real Stripe events are far smaller; this keeps an anonymous body out of the isolate's 128 MB. */
+const MAX_WEBHOOK_BODY_BYTES = 1_048_576;
 /** A claimed event with no finish after this long was lost mid-work, so Stripe's retry takes it. */
 const EVENT_CLAIM_STALE_MS = 2 * 60_000;
 const MILLI_PER_HOUR = 1000;
@@ -1213,7 +1216,12 @@ async function handleStripeWebhook(request: Request, env: CloudEnv, waitUntil: C
     return json({ error: "not configured" }, 503);
   }
   const now = Date.now();
-  const rawBody = await request.text();
+  const read = await readBoundedBody(request, MAX_WEBHOOK_BODY_BYTES);
+  if (!read.ok) {
+    logCloud("cloud.stripe_webhook_too_large");
+    return json({ error: "payload too large" }, 413);
+  }
+  const rawBody = read.text;
   if (!await verifyStripeSignature(rawBody, request.headers.get("stripe-signature"), secret, now)) {
     return json({ error: "invalid signature" }, 400);
   }

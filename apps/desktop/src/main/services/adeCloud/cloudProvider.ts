@@ -72,9 +72,17 @@ export class CloudProviderError extends Error {
   }
 }
 
+/** `GET /cloud/access`: `enabled: false` with `readOnly` and the server's sentence for a blocked account. */
+export type CloudAccessAnswer = { enabled: boolean; readOnly: boolean; reason: string | null };
+
 export type CloudProvider = {
   /** Whether this account has ADE Cloud at all. */
   accessEnabled(): Promise<boolean>;
+  /**
+   * The same answer with the server's reason when the account can only read
+   * (blocked). Servers before the reason send only `enabled`.
+   */
+  accessAnswer?(): Promise<CloudAccessAnswer>;
   /** Plan, hours, disk and billing state (`/cloud/account`). */
   getAccount(): Promise<CloudAccountState>;
   listInstances(): Promise<CloudInstance[]>;

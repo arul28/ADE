@@ -1630,13 +1630,6 @@ export type AgentChatEvent =
       displayText?: string;
       metadata?: AgentChatEventMetadata | null | undefined;
       messageId?: string;
-      /**
-       * The id the sending client gave this message
-       * (`AgentChatSendArgs.clientSendId`), when ADE wrote it for that send.
-       * A client whose call was lost looks for its id here before it puts the
-       * words back in a composer.
-       */
-      clientSendId?: string;
       attachments?: AgentChatFileRef[];
       contextAttachments?: AgentChatContextAttachment[];
       turnId?: string;
@@ -1644,6 +1637,13 @@ export type AgentChatEvent =
       deliveryState?: AgentChatUserMessageDeliveryState;
       processed?: boolean;
       runtime?: AgentChatRuntime;
+      /**
+       * The `clientSendId` of the send that wrote this message (at most 128
+       * characters), so a client finds its own message by id, not by text.
+       * Only the first person's message a send writes carries it. Absent: an
+       * older host, a send without an id, or a message ADE wrote itself.
+       */
+      clientSendId?: string;
     }
   | {
       /**

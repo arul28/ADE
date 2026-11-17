@@ -57,6 +57,8 @@ type QuickSlotsState = QuickSlotsPreferences & {
   resetSlots: () => void;
   /** Re-read after another window wrote the key. */
   reload: () => void;
+  /** The account's copy, newer than this computer's (`useQuickSlotsAccountSync`). */
+  applyAccount: (value: unknown) => void;
 };
 
 function writePreferences(
@@ -118,6 +120,12 @@ export const useQuickSlotsStore = create<QuickSlotsState>((set, get) => ({
   },
   resetSlots: () => writePreferences(get, set, { slots: defaultQuickSlotsPreferences().slots }),
   reload: () => set(readPreferences()),
+  applyAccount: (value) => {
+    if (!value || typeof value !== "object") return;
+    const next = normalizeQuickSlots(value);
+    persist(next);
+    set(next);
+  },
 }));
 
 // Another ADE window on this computer saved: follow it, as shortcuts do.

@@ -186,7 +186,9 @@ extension SyncService {
   /// live, so opening a project shows every machine's lanes and chats with no
   /// pick.
   func activeProjectCopyMachineKeys() -> [String] {
-    guard activeProjectId != nil, machineFleet != nil else { return [] }
+    // An account project open with no computer's copy counts too: its
+    // online copies on other computers still serve its lanes.
+    guard activeProject != nil, machineFleet != nil else { return [] }
     let focused = focusedMachineKey
     var keys: [String] = []
     if let project = accountProjectForActiveProject() {

@@ -1,13 +1,39 @@
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { AdeExpectedError } from "../../../shared/expectedError";
-import type { PasswordSecretsImportResult } from "../../../shared/types/passwords";
+import fs from "node:fs/promises";
+import path from "node:path";
+import type { PasswordLaneEnvPreview, PasswordSecretsImportResult } from "../../../shared/types/passwords";
+import { listIgnoredDotenvFiles } from "../projects/projectRemovalState";
 import { capturePasswordsAnalytics } from "../analytics/featureProductAnalytics";
 import { createDomainArgReaders } from "../adeActions/domainArgs";
-import { PROJECT_SECRET_ENV_MAX_ENTRIES, writeSecretsEnvFile } from "../secrets/projectSecretEnv";
+import {
+  PROJECT_SECRET_ENV_MAX_BYTES,
+  PROJECT_SECRET_ENV_MAX_ENTRIES,
+  parseProjectSecretEnv,
+  writeSecretsEnvFile,
+} from "../secrets/projectSecretEnv";
 import { requestPasswordLoginFromUser } from "./passwordLoginRequest";
 import { signInWithPasswords, signUpWithPasswords, type PasswordAgentUse } from "./passwordSignin";
 
 type OpaqueService = Record<string, unknown>;
+
+/**
+ * One ignored `.env` file of the main checkout, parsed. Only a path the
+ * checkout's own ignored-file list names is read, so a caller can't name any
+ * other file on this machine.
+ */
+async function readMainCheckoutEnv(projectRoot: string | null | undefined, rawPath: unknown) {
+  const wanted = typeof rawPath === "string" ? rawPath.trim() : "";
+  if (!projectRoot || !wanted) throw new AdeExpectedError("Pick a .env file to import.", "user");
+  if (!(await listIgnoredDotenvFiles(projectRoot)).includes(wanted)) {
+    throw new AdeExpectedError("That .env file isn't in this project's main checkout anymore.", "user");
+  }
+  const absolute = path.join(projectRoot, ...wanted.split("/"));
+  const stat = await fs.stat(absolute);
+  if (!stat.isFile()) throw new AdeExpectedError("Pick a .env file to import.", "user");
+  if (stat.size > PROJECT_SECRET_ENV_MAX_BYTES) throw new AdeExpectedError("That .env file is larger than 1 MB.", "user");
+  return { path: wanted, entries: parseProjectSecretEnv(await fs.readFile(absolute, "utf8")) };
+}
 
 /**
  * The `passwords` action domain over the brain's Passwords service. Each
@@ -16,7 +42,7 @@ type OpaqueService = Record<string, unknown>;
  * tables keep them for this computer's own desktop app (user-only,
  * this-desktop-only, secret-bearing).
  */
-export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "passwordService" | "agentChatService" | "builtInBrowserService" | "productAnalyticsService">>): OpaqueService | null {
+export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "passwordService" | "agentChatService" | "builtInBrowserService" | "productAnalyticsService">> & { projectRoot?: string | null }): OpaqueService | null {
   const passwords = runtime.passwordService;
   if (!passwords) return null;
   const objectArg = createDomainArgReaders("passwords").objectArgs;
@@ -134,6 +160,36 @@ export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "p
       const entries = (Array.isArray(input.entries) ? input.entries : [])
         .filter((entry): entry is { name: string; value: string } => Boolean(entry) && typeof (entry as { name?: unknown }).name === "string" && typeof (entry as { value?: unknown }).value === "string");
       if (entries.length === 0) throw new AdeExpectedError("Pick at least one secret to import.", "user");
+      if (entries.length > PROJECT_SECRET_ENV_MAX_ENTRIES) throw new AdeExpectedError(`Pick no more than ${PROJECT_SECRET_ENV_MAX_ENTRIES} secrets.`, "user");
+      const before = new Set((await passwords.allSecretEntries()).filter((entry) => entry.projectScope === projectScope).map((entry) => entry.name));
+      const result: PasswordSecretsImportResult = { imported: [], replaced: [] };
+      for (const entry of entries) {
+        const name = entry.name.trim();
+        await passwords.saveSecret({ name, value: entry.value, projectScope });
+        (before.has(name) ? result.replaced : result.imported).push(name);
+      }
+      return result;
+    },
+    // A `.env` file in this project's main checkout, on this machine (the
+    // tip's pinned call): names and lengths only. The file must be one of
+    // the ignored `.env` files the dependency status lists.
+    previewLaneEnv: async (args?: unknown) => {
+      const file = await readMainCheckoutEnv(runtime.projectRoot, objectArg(args).path);
+      return {
+        fileName: path.posix.basename(file.path),
+        path: file.path,
+        entries: file.entries.map((entry) => ({ name: entry.name, length: entry.value.length })),
+      } satisfies PasswordLaneEnvPreview;
+    },
+    // Saves the picked names of that file as secrets, here; the values never
+    // leave this machine (the vault syncs them to the account).
+    importLaneEnv: async (args?: unknown) => {
+      const input = objectArg(args);
+      const projectScope = typeof input.projectScope === "string" ? input.projectScope : null;
+      const names = new Set((Array.isArray(input.names) ? input.names : []).filter((name): name is string => typeof name === "string"));
+      if (names.size === 0) throw new AdeExpectedError("Pick at least one secret to import.", "user");
+      const file = await readMainCheckoutEnv(runtime.projectRoot, input.path);
+      const entries = file.entries.filter((entry) => names.has(entry.name));
       if (entries.length > PROJECT_SECRET_ENV_MAX_ENTRIES) throw new AdeExpectedError(`Pick no more than ${PROJECT_SECRET_ENV_MAX_ENTRIES} secrets.`, "user");
       const before = new Set((await passwords.allSecretEntries()).filter((entry) => entry.projectScope === projectScope).map((entry) => entry.name));
       const result: PasswordSecretsImportResult = { imported: [], replaced: [] };

@@ -384,6 +384,12 @@ describe("ProjectWelcomePage multi-machine recents", () => {
         },
       },
     ]);
+    // Only a connected computer's copy counts: an offline own computer is hidden.
+    (window as any).ade.remoteRuntime.getConnectionSnapshot.mockResolvedValue({
+      connections: [{ target: { id: "studio", name: "Mac Studio" }, state: "connected" }],
+      connectedCount: 1,
+      updatedAt: Date.now(),
+    });
 
     renderWelcome();
 

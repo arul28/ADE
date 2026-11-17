@@ -131,8 +131,9 @@
  * image. `{ reason: "idle", computerIdle: true }` is the computer updating
  * itself: refused unless it is running, and a no-op (`started: false`) unless
  * it is behind the image a passed check allowed. One update at a time.
- * `POST /cloud/instances/:id/booted` takes `{ adeVersion }`; every brain start
- * sends it, and it settles a waiting update.
+ * `POST /cloud/instances/:id/booted` takes `{ adeVersion, features }`; every
+ * brain start sends it, and it settles a waiting update. `features` lists
+ * `CLOUD_COMPUTER_FEATURES` that this image has; an older image sends none.
  * `POST /cloud/instances/:id/resize` takes `{ origin: "auto" }` from the
  * computer's own disk grower, so analytics can tell it from a person's grow.
  * With `{ origin: "auto", launchId }` it is a server launch's setup moving its
@@ -189,7 +190,38 @@ export const CLOUD_PATHS = {
   projectComputersDelete: "/cloud/projects/computers/delete",
   /** Automations whose home is ADE Cloud (`automations.ts`, C9). */
   automations: "/cloud/automations",
+  /** `GET ?origin=`: one project's whole ADE Cloud view with no computer awake (`CloudProjectOverview`). */
+  projectsOverview: "/cloud/projects/overview",
+  /** CLI-session and shell copies (`sessionCopies.ts`). */
+  sessions: "/cloud/sessions",
+  /** Git summaries saved at rest (`gitSummaries.ts`). */
+  git: "/cloud/git",
+  /** Fork capsules saved before a delete (`forkCapsules.ts`). */
+  capsules: "/cloud/capsules",
+  /** The account lane index of every machine (`accountLanes/`): not under `/cloud`, so a blocked account's brains keep it. */
+  accountLanes: "/account/lanes",
 } as const;
+
+/** `/cloud/chats/:machine/:chat/messages[/:msg]`: the person's queue for an existing cloud chat. */
+export const cloudChatMessagesPath = (machineKey: string, chatId: string, messageId?: string): string =>
+  `${CLOUD_PATHS.chats}/${encodeURIComponent(machineKey)}/${encodeURIComponent(chatId)}/messages${messageId ? `/${encodeURIComponent(messageId)}` : ""}`;
+/** `/cloud/chats/:machine/:chat/move`: from the new computer after a fork restore. */
+export const cloudChatMovePath = (machineKey: string, chatId: string): string =>
+  `${CLOUD_PATHS.chats}/${encodeURIComponent(machineKey)}/${encodeURIComponent(chatId)}/move`;
+/** `/cloud/instances/:id/messages[/:msg[/claim]]`: the computer's side of the queue. */
+export const cloudInstanceMessagesPath = (instanceId: string, messageId?: string, claim = false): string =>
+  `${CLOUD_PATHS.instances}/${encodeURIComponent(instanceId)}/messages${messageId ? `/${encodeURIComponent(messageId)}${claim ? "/claim" : ""}` : ""}`;
+/** `/cloud/instances/:id/use`: the computer records a person's use during an idle save. */
+export const cloudInstanceUsePath = (instanceId: string): string => `${CLOUD_PATHS.instances}/${encodeURIComponent(instanceId)}/use`;
+/** `/cloud/sessions/:machine/:session`. */
+export const cloudSessionPath = (machineKey: string, sessionId: string): string =>
+  `${CLOUD_PATHS.sessions}/${encodeURIComponent(machineKey)}/${encodeURIComponent(sessionId)}`;
+/** `/cloud/git/:machine/:lane`. */
+export const cloudGitPath = (machineKey: string, laneId: string): string =>
+  `${CLOUD_PATHS.git}/${encodeURIComponent(machineKey)}/${encodeURIComponent(laneId)}`;
+/** `/cloud/capsules/:machine/:chat[/parts/:n | /commit]`. */
+export const cloudCapsulePath = (machineKey: string, chatId: string, tail?: { part: number } | "commit"): string =>
+  `${CLOUD_PATHS.capsules}/${encodeURIComponent(machineKey)}/${encodeURIComponent(chatId)}${tail === "commit" ? "/commit" : tail ? `/parts/${tail.part}` : ""}`;
 
 /**
  * Sent by the desktop and a machine's brain with every `/cloud` call: SHA-256
@@ -300,6 +332,13 @@ export type CloudInstance = {
   diskUsage?: CloudDiskUsage | null;
   /** Its lane's work as it last read it while awake (for "Safe to delete"); null before its first report. */
   laneWork?: CloudLaneWork | null;
+  /**
+   * The idle cleanup's save holds it now: its own short wake makes `status`
+   * read running, so a client that wants to use it calls `/start` anyway
+   * (the start records the use and calls the delete off, or answers
+   * `computer_deleting`). Older servers leave it out: read it as false.
+   */
+  idleSaving?: boolean;
 };
 
 /**
@@ -596,7 +635,21 @@ export type CloudAccountState = {
   freePlan?: CloudFreePlan;
   /** The account's invite link and what it earned. Older servers leave it out. */
   referral?: CloudReferralSummary;
+  /**
+   * The owner blocked ADE Cloud for this account: it reads its saved chats,
+   * lanes and copies, and every wake, create or send is refused with
+   * `account_blocked`. Older servers answer the whole route 403 instead.
+   */
+  blocked?: boolean;
 };
+
+/**
+ * `GET /cloud/access`. `enabled` stays false for a blocked account, as older
+ * apps read it. `readOnly`: blocked, but the account may still read what ADE
+ * Cloud keeps (the GET allowlist, `CLOUD_BLOCKED_READ_ROUTES`); `reason` is
+ * the server's sentence. Older servers send `enabled` only.
+ */
+export type CloudAccess = { enabled: boolean; readOnly?: boolean; reason?: string };
 
 /* ---- Referrals, earned hours and the free plan per computer (README "Referrals and the free plan") ---- */
 
@@ -972,6 +1025,14 @@ export type CloudChatRowInput = {
   projectId: string | null;
   projectRoot: string | null;
   lastActivityAt: string | null;
+  /**
+   * A chat ADE started from another chat (`ade chat spawn`, a CTO child):
+   * the parent chat's id on the same computer, so the saved Work tree nests
+   * it. Older computers leave it out.
+   */
+  parentChatId?: string | null;
+  /** How the chat came from its parent: `subagent`, `cto_child`, `fork` or another short word. */
+  spawnKind?: string | null;
 };
 
 /**
@@ -1001,6 +1062,12 @@ export type CloudChatRow = CloudChatRowInput & {
   updatedAt: number;
   /** Set on list rows only. */
   computer?: CloudChatComputer | null;
+  /**
+   * The saved chat this row continues after a fork restore moved it to a
+   * new computer (`POST /cloud/chats/:machine/:chat/move`): the same chat,
+   * with its full history, under its new machine key. Null otherwise.
+   */
+  forkedFrom?: { machineKey: string; chatId: string } | null;
 };
 
 /** `lastSeq` is what the server holds now; replay rules are in `chats.ts`. */
@@ -1013,6 +1080,463 @@ export type CloudChatTranscriptPage = {
   hasMore: boolean;
   /** Pass as `before` for the next older page. Null at the start of the chat. */
   nextBefore: number | null;
+};
+
+/* ---- ADE without a computer: what the server keeps and does for cloud lanes ---- */
+
+/*
+ * Routes (all with the account bearer; a computer's calls use its own account
+ * session and name itself with `instanceId` in the body or `x-ade-instance`):
+ *
+ *   GET    /cloud/projects/overview?origin=          CloudProjectOverview   (never wakes)
+ *   POST   /cloud/chats/:m/:c/messages               CloudChatMessageAddResult   (201 new, 200 the same id again)
+ *   GET    /cloud/chats/:m/:c/messages               { messages: CloudChatQueuedMessage[] }
+ *   DELETE /cloud/chats/:m/:c/messages/:msg          CloudChatQueuedMessage   (cancel while queued; 409 `message_taken`)
+ *   POST   /cloud/chats/:m/:c/move                   CloudChatMoveResult   (from the new computer: CloudChatMoveRequest)
+ *   GET    /cloud/instances/:id/messages             { messages: CloudComputerQueuedMessage[] }   (from the computer)
+ *   POST   /cloud/instances/:id/messages/:msg/claim  CloudComputerQueuedMessage   ({ claimId }; 409 `message_taken`)
+ *   PUT    /cloud/instances/:id/messages/:msg        CloudComputerQueuedMessage   (CloudChatMessageReport)
+ *   POST   /cloud/instances/:id/use                  { ok: true }   (from the computer; 409 `computer_deleting`)
+ *   GET    /cloud/sessions?machine&project&cursor    { sessions: CloudSessionRow[], nextCursor }
+ *   GET    /cloud/sessions/:m/:s                     CloudSessionCopy
+ *   PUT    /cloud/sessions/:m/:s                     { ok: true, updatedAt }   (from the computer: CloudSessionUpload)
+ *   DELETE /cloud/sessions/:m/:s                     { deleted }
+ *   POST   /cloud/sessions/:m/:s/move                CloudSessionMoveResult   (from the new computer: CloudChatMoveRequest)
+ *   GET    /cloud/git?project=                       { summaries: CloudGitSummary[] }
+ *   GET    /cloud/git/:m/:lane                       CloudGitSummary
+ *   PUT    /cloud/git/:m/:lane                       { ok: true, kept: boolean }   (from the computer: CloudGitSummaryUpload)
+ *   PUT    /cloud/capsules/:m/:c/parts/:n            { ok: true, bytes }   (raw body, from the computer)
+ *   POST   /cloud/capsules/:m/:c/commit              CloudCapsuleManifest   (CloudCapsuleCommit)
+ *   GET    /cloud/capsules/:m/:c                     CloudCapsuleManifest
+ *   GET    /cloud/capsules/:m/:c/parts/:n            the part's bytes
+ *   PUT    /account/lanes                            AccountLaneIndexPutResult   (from every brain: AccountLaneIndexPut)
+ *   GET    /account/lanes?project=&pr=               { lanes: AccountLaneIndexRow[] }
+ */
+
+/**
+ * Every refusal a wake, a start, a send or a create can answer, with its HTTP
+ * status. Clients show the server's `message`; the code only decides what
+ * else they offer (Update, Get hours). Reading keeps working after any of them.
+ */
+export const CLOUD_REFUSAL_CODES = {
+  account_blocked: 403,
+  out_of_hours: 402,
+  over_plan_disk: 402,
+  plan_past_due: 402,
+  too_many_awake: 429,
+  computer_deleting: 409,
+  computer_deleted: 409,
+  unavailable: 503,
+  update_in_progress: 409,
+  update_needed: 409,
+  computer_busy: 409,
+  creates_paused: 503,
+  rate_limited: 429,
+  needs_paid_plan: 403,
+  disk_limit: 403,
+  over_plan_limits: 403,
+  git_credential_missing: 403,
+  github_app_not_installed: 403,
+  template_unset: 503,
+  template_unavailable: 503,
+  linear_needs_renewal: 409,
+  /** The queue's caps: too many messages wait in this chat or this account. */
+  too_many_messages: 429,
+  /** A queued message a claim already took (sent, sending, or cancelled). */
+  message_taken: 409,
+} as const;
+export type CloudRefusalCode = keyof typeof CLOUD_REFUSAL_CODES;
+export const isCloudRefusalCode = (code: unknown): code is CloudRefusalCode =>
+  typeof code === "string" && Object.hasOwn(CLOUD_REFUSAL_CODES, code);
+
+/** `plan_past_due`: a paid plan whose last payment failed; its computers are suspended until the card works. */
+export const CLOUD_PLAN_PAST_DUE_SENTENCE = "ADE Cloud suspended this machine because your last payment didn't go through, so ADE can't wake it right now. Update your card in Manage billing.";
+
+/**
+ * The GET routes a blocked account still reads (`readOnly`): everything it
+ * can look at, nothing that wakes, makes or sends. A path matches when it is
+ * one of these or starts with one plus `/`. The Linear and Jira reads are
+ * POST routes that use the account's own credentials, so a blocked account
+ * can not use them.
+ */
+export const CLOUD_BLOCKED_READ_ROUTES = [
+  "/cloud/account",
+  "/cloud/chats",
+  "/cloud/sessions",
+  "/cloud/git",
+  "/cloud/lanes/without-computer",
+  "/cloud/automations",
+  "/cloud/launches",
+  "/cloud/sign-ins",
+  "/cloud/models",
+  "/cloud/limits",
+  "/cloud/account-secrets",
+  "/cloud/projects/overview",
+  "/cloud/cto",
+] as const;
+
+/* ---- Wakes ---- */
+
+/**
+ * What a send did to its computer: `awake` (it was up; the computer claims
+ * the message now), `waking` (the server woke it; it claims the message when
+ * it is up), `launching` (its computer was deleted: the server started
+ * launch `launchId` for the same lane, which restores the chat in the same
+ * row and sends this message; show its setup card).
+ */
+export type CloudWakeOutcome = { state: "awake" | "waking" | "launching"; launchId?: string | null };
+
+/* ---- The message queue for an existing cloud chat ---- */
+
+/** Characters of one queued message. */
+export const CLOUD_CHAT_MESSAGE_MAX_CHARS = 100_000;
+/** Open (queued, sending or waiting for a sign-in) messages one chat may hold, and one account. */
+export const CLOUD_CHAT_MESSAGES_OPEN_PER_CHAT = 20;
+export const CLOUD_CHAT_MESSAGES_OPEN_PER_ACCOUNT = 200;
+/** Sends one account may make in a minute, over all its chats. */
+export const CLOUD_CHAT_MESSAGES_PER_MINUTE = 60;
+/** A message still queued after this fails (`expired`); a final one is pruned after `CLOUD_CHAT_MESSAGE_PRUNE_MS`. */
+export const CLOUD_CHAT_MESSAGE_TTL_MS = 24 * 60 * 60_000;
+export const CLOUD_CHAT_MESSAGE_PRUNE_MS = 7 * 24 * 60 * 60_000;
+/** Most rows `GET .../messages` answers: every open one, then the newest final ones. */
+export const CLOUD_CHAT_MESSAGES_LIST_MAX = 50;
+
+/**
+ * - `queued`: kept here, not sent yet.
+ * - `sending`: the computer claimed it.
+ * - `waiting_for_sign_in`: the computer woke with the provider signed out;
+ *   `signIn` says what the person does (the same card as a launch).
+ * - `delivered`: in the chat.
+ * - `failed`: not sent (`error`); a message the computer may have sent but
+ *   couldn't confirm is failed too, never sent twice.
+ * - `cancelled`: the person took it back while it was queued.
+ */
+export type CloudChatMessageState = "queued" | "sending" | "waiting_for_sign_in" | "delivered" | "failed" | "cancelled";
+
+/** A file sent with a message: uploaded first to a draft launch (`PUT /cloud/launches/:launch/files/:file`). */
+export type CloudChatMessageAttachment = CloudLaunchAttachment & { launchId: string };
+
+/**
+ * A chat's settings the person picked before a queued message: the computer
+ * applies them to the chat (its `updateSession`) before it sends the message.
+ * Each key is left out when not picked. A CLI ignores them. Older servers and
+ * computers ignore the whole field.
+ */
+export type CloudChatMessageSettings = {
+  /** A saved preset (its harness and its model), or null to leave the preset the chat runs on. */
+  presetId?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean;
+  fastTier?: "ultrafast" | null;
+};
+
+const SETTING_TEXT = /^[A-Za-z0-9._:/-]{1,120}$/;
+
+/**
+ * The settings of a queued message, checked: known keys only, short plain
+ * strings and booleans. Anything else is left out. Null when nothing is left.
+ */
+export function cloudChatMessageSettingsOf(value: unknown): CloudChatMessageSettings | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const settings: CloudChatMessageSettings = {};
+  const text = (entry: unknown, max: number): string | null | undefined => {
+    if (entry === null) return null;
+    return typeof entry === "string" && entry.length <= max && SETTING_TEXT.test(entry) ? entry : undefined;
+  };
+  const presetId = text(record.presetId, 120);
+  if (presetId !== undefined) settings.presetId = presetId;
+  const reasoningEffort = text(record.reasoningEffort, 40);
+  if (reasoningEffort !== undefined) settings.reasoningEffort = reasoningEffort;
+  if (typeof record.fastMode === "boolean") settings.fastMode = record.fastMode;
+  if (record.fastTier === "ultrafast" || record.fastTier === null) settings.fastTier = record.fastTier;
+  return Object.keys(settings).length > 0 ? settings : null;
+}
+
+/** `POST /cloud/chats/:m/:c/messages`. `messageId` is the client's `clientSendId` (1 to 64 of `A-Za-z0-9_-`). */
+export type CloudChatMessageRequest = {
+  messageId: string;
+  text: string;
+  attachments?: CloudChatMessageAttachment[];
+  provider?: string | null;
+  modelId?: string | null;
+  /** Kept sealed with the text; given back only to the chat's computer. */
+  settings?: CloudChatMessageSettings | null;
+};
+
+export type CloudChatQueuedMessage = {
+  messageId: string;
+  machineKey: string;
+  chatId: string;
+  /** Order of the account's sends to this chat. */
+  seq: number;
+  state: CloudChatMessageState;
+  /** The owner's own text; never in a log. */
+  text: string;
+  attachments: CloudChatMessageAttachment[];
+  provider: string | null;
+  modelId: string | null;
+  signIn: CloudLaunchSignIn | null;
+  error: string | null;
+  /** The launch that carries it when its computer was gone (`wake.state: "launching"`). */
+  launchId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type CloudChatMessageAddResult = { message: CloudChatQueuedMessage; wake: CloudWakeOutcome };
+
+/** What the computer lists: its own queued messages, oldest first, with what it needs to send them. */
+export type CloudComputerQueuedMessage = CloudChatQueuedMessage & {
+  /** The chat's project on the computer, from its saved row; null when the row never named it. */
+  projectId: string | null;
+  laneId: string | null;
+  /** Send it with this `clientSendId`, so a direct send of the same id is the same message. */
+  clientSendId: string;
+  /** What the message goes to: a chat, or a CLI session (send it as typed input). Older servers leave it out (a chat). */
+  targetKind?: "chat" | "cli";
+  /** The chat settings picked with the message, applied before it is sent. Older servers leave it out. */
+  settings?: CloudChatMessageSettings | null;
+};
+
+/** `PUT /cloud/instances/:id/messages/:msg`, from the computer that claimed it. */
+export type CloudChatMessageReport = {
+  claimId: string;
+  state: "delivered" | "failed" | "waiting_for_sign_in" | "sending";
+  sessionId?: string | null;
+  error?: string | null;
+  /** With `waiting_for_sign_in`. Any other state clears it. */
+  signIn?: CloudLaunchSignIn | null;
+};
+
+/**
+ * The commands the server runs on a cloud computer. A computer whose ADE is
+ * older refuses them (a non-zero exit), which the server reads as "nothing
+ * done": no capsule (the restore replays the saved transcript), and queued
+ * messages wait for the brain's own drain at its next start.
+ */
+export const CLOUD_COMPUTER_COMMANDS = {
+  drainMessages: "ade cloud messages drain --json",
+  saveForRest: "ade cloud save-for-rest --capsules --json",
+} as const;
+/**
+ * What a computer's ADE can do, in its boot report
+ * (`POST /cloud/instances/:id/booted` `features`). `chat_queue`: it drains
+ * the chat message queue. A computer that reported no list is an older image.
+ */
+export const CLOUD_COMPUTER_FEATURES = ["chat_queue"] as const;
+export type CloudComputerFeature = typeof CLOUD_COMPUTER_FEATURES[number];
+
+/** `ade cloud save-for-rest --capsules --json` prints one line of this. */
+export type CloudSaveForRestReport = {
+  ok: boolean;
+  /** Chats and CLI sessions with a capsule saved now. */
+  capsules: number;
+  /** Shell and CLI copies saved. */
+  sessions: number;
+  /** Lanes whose Git summary was saved. */
+  git: number;
+  /** Chats with no capsule (a provider that replays, over the cap, a failed build). */
+  skipped: number;
+  error?: string | null;
+};
+
+/* ---- Chat move after a fork restore ---- */
+
+/** `POST /cloud/chats/:oldMachine/:chat/move`, from the new computer that restored the chat. */
+export type CloudChatMoveRequest = { toMachineKey: string; instanceId: string };
+/**
+ * The chat's row under its new machine key, with its full history (the
+ * saved parts stay where they are; nothing is uploaded again). `lastSeq` is
+ * where the new computer's uploader continues. `moved: false` when it was
+ * already moved (the same call again).
+ */
+export type CloudChatMoveResult = { chat: CloudChatRow; moved: boolean };
+/**
+ * `POST /cloud/sessions/:oldMachine/:session/move` (a `CloudChatMoveRequest`),
+ * from the new computer that continued a deleted computer's CLI: the copy and
+ * its queued messages go to the new machine key. `moved: false` when it was
+ * already moved.
+ */
+export type CloudSessionMoveResult = { moved: boolean };
+
+/* ---- CLI-session and shell copies ---- */
+
+export const CLOUD_SESSION_MAX_LINES = 5_000;
+/** Largest copy, as text, and the most one account keeps; a computer keeps its newest `CLOUD_SESSION_MAX_PER_COMPUTER`. */
+export const CLOUD_SESSION_MAX_BYTES = 2 * 1024 * 1024;
+export const CLOUD_SESSION_MAX_ACCOUNT_BYTES = 512 * 1024 * 1024;
+export const CLOUD_SESSION_MAX_PER_COMPUTER = 50;
+
+/** What the computer sends with a copy. */
+export type CloudSessionRowInput = {
+  /** `cli`: a provider's CLI in an ADE terminal; `shell`: a plain shell. */
+  kind: "cli" | "shell";
+  title: string | null;
+  laneId: string | null;
+  laneName: string | null;
+  /** The CLI's tool type (`claude-code`, `codex`, …); null for a shell. */
+  toolType: string | null;
+  projectKey: string | null;
+  projectId: string | null;
+  /** The chat that started it, when an agent did. */
+  parentChatId: string | null;
+  /** `running` or `exited`, as the computer last saw it. */
+  status: string | null;
+  lastActivityAt: string | null;
+};
+
+export type CloudSessionRow = CloudSessionRowInput & {
+  machineKey: string;
+  sessionId: string;
+  instanceId: string | null;
+  lineCount: number;
+  bytes: number;
+  updatedAt: number;
+};
+
+/** `text`: the last `CLOUD_SESSION_MAX_LINES` lines; `xterm`: a serialized screen (xterm's serialize addon) for a CLI. */
+export type CloudSessionCopyFormat = "text" | "xterm";
+
+export type CloudSessionCopy = { session: CloudSessionRow; format: CloudSessionCopyFormat; text: string };
+
+/** `PUT /cloud/sessions/:m/:s`: replaces the copy. */
+export type CloudSessionUpload = { instanceId: string; row: CloudSessionRowInput; format: CloudSessionCopyFormat; text: string; lineCount: number };
+
+/* ---- Git summaries saved at rest ---- */
+
+export const CLOUD_GIT_MAX_CHANGED = 500;
+export const CLOUD_GIT_SUMMARY_MAX_BYTES = 64 * 1024;
+
+export type CloudGitChangedFile = { path: string; status: string; added: number; removed: number };
+
+/** What the computer read of one lane at rest. */
+export type CloudGitSummaryInput = {
+  branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  headSha: string | null;
+  dirty: boolean;
+  /** At most `CLOUD_GIT_MAX_CHANGED`; `truncated` when there were more. */
+  changed: CloudGitChangedFile[];
+  truncated: boolean;
+  /** When the computer read it (ms): an older read never replaces a newer one. */
+  checkedAt: number;
+};
+
+export type CloudGitSummary = CloudGitSummaryInput & {
+  machineKey: string;
+  laneId: string;
+  instanceId: string | null;
+  projectKey: string | null;
+  updatedAt: number;
+};
+
+/** The overview's form: counts only, no file list. */
+export type CloudGitSummaryCounts = Omit<CloudGitSummary, "changed"> & { changedCount: number; added: number; removed: number };
+
+/** `PUT /cloud/git/:m/:lane`. */
+export type CloudGitSummaryUpload = { instanceId: string; projectKey: string | null; summary: CloudGitSummaryInput };
+
+/* ---- Fork capsules ---- */
+
+export const CLOUD_CAPSULE_MAX_PART_BYTES = 6 * 1024 * 1024;
+export const CLOUD_CAPSULE_MAX_BYTES = 20 * 1024 * 1024;
+export const CLOUD_CAPSULE_MAX_ACCOUNT_BYTES = 1024 * 1024 * 1024;
+
+/** `POST /cloud/capsules/:m/:c/commit`, after parts 1..`parts` were put. */
+export type CloudCapsuleCommit = {
+  instanceId: string;
+  parts: number;
+  bytes: number;
+  provider: string;
+  /** The capsule's own transport (`claude-jsonl`, `codex-rollout`, `opencode-export`, `droid-jsonl`, `transcript`). */
+  transportKind: string;
+  laneId: string | null;
+  sessionKind: "chat" | "cli";
+};
+
+export type CloudCapsuleManifest = Omit<CloudCapsuleCommit, "instanceId"> & { machineKey: string; chatId: string; createdAt: number };
+
+/* ---- One project's ADE Cloud view, with no computer awake ---- */
+
+export const CLOUD_OVERVIEW_MAX_LANES = 200;
+
+/**
+ * A cloud computer's state from the server's own rows (the truth every
+ * client reads; never the provider's live list).
+ * - `awake`, `waking` (start asked, not up yet), `asleep`, `stopped`,
+ *   `updating`, `deleting` (the idle cleanup claimed its delete).
+ */
+export type CloudComputerState = "awake" | "waking" | "asleep" | "stopped" | "updating" | "deleting";
+
+export type CloudComputerTruth = {
+  instanceId: string;
+  machineKey: string | null;
+  laneId: string | null;
+  state: CloudComputerState;
+  stateAt: number;
+  /** The idle cleanup's save holds it (see `CloudInstance.idleSaving`). */
+  idleSaving: boolean;
+  lastActiveAt: number | null;
+};
+
+/** One cloud lane: on a computer (`computer` set) or without one (`withoutComputer` set). */
+export type CloudLaneOverview = {
+  laneId: string;
+  laneName: string | null;
+  branch: string | null;
+  /** The machine key its saved chats are under (the computer's, or the former computer's). */
+  machineKey: string | null;
+  computer: CloudComputerTruth | null;
+  withoutComputer: Pick<CloudLaneWithoutComputer, "reason" | "since" | "formerInstanceId"> | null;
+  prState: CloudLaneWork["prState"];
+};
+
+export type CloudProjectOverview = {
+  origin: string;
+  lanes: CloudLaneOverview[];
+  /** More than `CLOUD_OVERVIEW_MAX_LANES` lanes. */
+  truncated: boolean;
+  /** The first page of the project's saved chats (`GET /cloud/chats` reads the rest with `nextChatCursor`). */
+  chats: CloudChatRow[];
+  nextChatCursor: string | null;
+  sessions: CloudSessionRow[];
+  git: CloudGitSummaryCounts[];
+  deletingSoon: Array<{ instanceId: string; laneId: string | null; deletesAt: number }>;
+  checkedAt: number;
+};
+
+/* ---- The account lane index (every machine; used only where something mentions a lane) ---- */
+
+export const ACCOUNT_LANE_INDEX_MAX_PER_MACHINE = 500;
+export const ACCOUNT_LANE_INDEX_MAX_PER_ACCOUNT = 5_000;
+
+export type AccountLaneIndexEntry = {
+  laneId: string;
+  /** The account project id (`ap_…`) when the brain knows it. */
+  projectId: string | null;
+  /** The repo identity (`github.com/owner/repo`), so a client with only the origin finds it. */
+  projectKey: string | null;
+  name: string;
+  branch: string | null;
+  prNumber: number | null;
+  isPrimary: boolean;
+};
+
+/** `PUT /account/lanes`: the whole set of one machine's lanes. The same `hash` again writes nothing. */
+export type AccountLaneIndexPut = { machineKey: string; hash: string; lanes: AccountLaneIndexEntry[] };
+export type AccountLaneIndexPutResult = { changed: boolean; count: number };
+
+export type AccountLaneIndexRow = AccountLaneIndexEntry & {
+  machineKey: string;
+  /** The machine's name as the directory shows it; null when the directory has no row for it. */
+  machineName: string | null;
+  online: boolean;
+  /** The machine is one of the account's ADE Cloud computers (a resting one is asleep, not offline). Older servers leave it out. */
+  cloud?: boolean;
+  updatedAt: number;
 };
 
 /* ---- The server launcher (C6): a lane on a new computer for a caller with no computer ---- */
@@ -1188,6 +1712,27 @@ export type CloudServerLaunchRequest = {
    * as it is.
    */
   retry?: boolean;
+  /**
+   * Continue an existing saved chat on the new computer (its old computer
+   * is gone): the computer restores it with the same chat id from its
+   * saved copy and fork capsule, moves the saved copy to its own machine
+   * key, then sends `chat.prompt` to it. One launch per (lane id, chat id):
+   * a second start for the same pair answers the first launch. Needs
+   * `lane.id` of the chat's lane. A server or computer that predates it
+   * starts a new chat.
+   */
+  continueChat?: {
+    machineKey: string;
+    chatId: string;
+    /** `cli`: the saved row is a CLI session copy (`chatId` is its session id); the computer restores the CLI. Left out: a chat. */
+    kind?: "chat" | "cli";
+    /**
+     * The settings the person picked with the message (`CloudChatMessageRequest.settings`).
+     * The computer applies them to the restored chat before it sends the message.
+     * Only the server sets it; a launch start from a client never carries it.
+     */
+    settings?: CloudChatMessageSettings;
+  };
 };
 
 /**
@@ -1388,7 +1933,7 @@ export type CloudLaunchStagesUpdate = {
 export const CLOUD_REMOTE_SIGN_IN_KINDS = ["device", "url_paste", "api_key", "desktop"] as const;
 export type CloudRemoteSignInKind = (typeof CLOUD_REMOTE_SIGN_IN_KINDS)[number];
 /** The sign-ins the account vault keeps for ADE Cloud (the desktop's `CloudSignInId`). OpenRouter's key serves OpenCode and Pi. */
-export type CloudAccountSignInId = "claude" | "codex" | "cursor" | "droid" | "grok" | "copilot" | "devin" | "muse" | "openrouter";
+export type CloudAccountSignInId = "claude" | "codex" | "cursor" | "droid" | "grok" | "copilot" | "devin" | "muse" | "qwen" | "openrouter";
 export type CloudRemoteSignInRow = {
   provider: string;
   label: string;
@@ -1427,7 +1972,8 @@ export const CLOUD_REMOTE_SIGN_IN: readonly CloudRemoteSignInRow[] = [
   { provider: "opencode", label: "OpenCode", remoteSignIn: "api_key", reason: "OpenCode on ADE Cloud uses your OpenRouter key: add it in ADE Cloud's sign-ins.", accountSignIn: "openrouter" },
   { provider: "pi", label: "Pi", remoteSignIn: "api_key", reason: "Pi on ADE Cloud uses your OpenRouter key: add it in ADE Cloud's sign-ins.", accountSignIn: "openrouter" },
   { provider: "antigravity", label: "Antigravity", remoteSignIn: "desktop", reason: "Antigravity signs in with Google in a browser on the same computer.", accountSignIn: null },
-  { provider: "qwen", label: "Qwen Code", remoteSignIn: "desktop", reason: "ADE doesn't run Qwen Code's sign-in on another computer.", accountSignIn: null },
+  // Qwen's own OAuth sign-in ended on 2026-04-15; Qwen Code runs on a DashScope API key.
+  { provider: "qwen", label: "Qwen Code", remoteSignIn: "api_key", reason: "Qwen Code on ADE Cloud uses your Alibaba Cloud Model Studio (DashScope) API key: add it in ADE Cloud's sign-ins.", accountSignIn: "qwen" },
 ];
 
 /** Why a provider can't be signed in on a computer from here, with one way to do it: only a `desktop` row adds where. */
@@ -1671,3 +2217,130 @@ export type CloudAutomationSummary = {
   nextFireAt: number | null;
   runs: CloudAutomationRun[];
 };
+
+/*
+ * Account data and integrations for a client with no computer, and wakes
+ * from events. Every route takes the Clerk
+ * bearer and reaches only the caller's own account; none returns a secret
+ * value.
+ *
+ *   GET    /cloud/limits                         CloudAgentLimitsState
+ *   PUT    /cloud/limits                         CloudAgentLimitsState   (CloudAgentLimitsUpdate; 409 `limits_changed`)
+ *   GET    /cloud/account-secrets?kind=&origin=  CloudAccountSecrets   (keys only)
+ *   GET    /cloud/cto?origin=                    CloudCtoCopySummary
+ *   POST   /cloud/integrations/linear/query      CloudLinearQueryResult   (CloudLinearQueryRequest)
+ *   POST   /cloud/integrations/jira/search       CloudJiraSearchResult   (CloudJiraSearchRequest)
+ *   POST   /cloud/integrations/jira/issue        CloudJiraIssueResult   (CloudJiraIssueRequest)
+ *   PUT    /cloud/instances/:id/event-wakes      CloudEventWakesResult   (from the computer: CloudEventWakesRequest)
+ *   POST   /cloud/internal/event-wake            CloudEventWakeInternalResult   (webhook relay only, `CLOUD_EVENT_WAKE_HEADER`)
+ */
+export const CLOUD_EDGE_PATHS = {
+  limits: "/cloud/limits",
+  accountSecrets: "/cloud/account-secrets",
+  cto: "/cloud/cto",
+  linearQuery: "/cloud/integrations/linear/query",
+  jiraSearch: "/cloud/integrations/jira/search",
+  jiraIssue: "/cloud/integrations/jira/issue",
+  internalEventWake: "/cloud/internal/event-wake",
+} as const;
+/** `/cloud/instances/:id/event-wakes`: the topics that wake this computer at rest. */
+export const cloudInstanceEventWakesPath = (instanceId: string): string =>
+  `${CLOUD_PATHS.instances}/${encodeURIComponent(instanceId)}/event-wakes`;
+
+/** What an unattended agent may spend: the account vault's `cloud-budget` item (the desktop's `CloudAgentLimits`). */
+export type CloudAgentLimitsValue = {
+  unattendedSpend: boolean;
+  machinesPerDay: number;
+  maxShape: "2x4" | "4x8" | "4x16" | "4x32";
+  /** Cents a month of paid extra disk agents may grow into; null: the account's own extra-disk limit. */
+  extraDiskMonthCents: number | null;
+};
+/** `revision`: what a write names in `ifRevision` (null: none stored yet). `stored: false`: these are the defaults. */
+export type CloudAgentLimitsState = { limits: CloudAgentLimitsValue; revision: string | null; stored: boolean };
+/** Only the fields sent change; every other stored field stays. `ifRevision` from the last GET (left out: last writer wins). */
+export type CloudAgentLimitsUpdate = { limits: Partial<CloudAgentLimitsValue>; ifRevision?: string | null };
+
+/** The vault kinds `GET /cloud/account-secrets` lists. Sign-ins, the CTO copy and ADE MCP's own items are never listed. */
+export const CLOUD_ACCOUNT_SECRET_KINDS = ["secret", "provider_api_key", "provider_key", "integration", "project_secret"] as const;
+export type CloudAccountSecretKind = (typeof CLOUD_ACCOUNT_SECRET_KINDS)[number];
+/** One saved secret's name: never its value. `scope` is `all` or `repo:<host>/<owner>/<repo>`. */
+export type CloudAccountSecretKey = { scope: string; kind: CloudAccountSecretKind; key: string; updatedAt: string };
+export type CloudAccountSecrets = { secrets: CloudAccountSecretKey[] };
+
+/** The newest part of the CTO's last turns `GET /cloud/cto` shows; the start is cut. */
+export const CLOUD_CTO_TAIL_MAX_CHARS = 12_000;
+export type CloudCtoCopy = {
+  ownerName: string;
+  savedAt: string | null;
+  identity: Record<string, unknown>;
+  projectNotes: string;
+  userNotes: string;
+  openWork: string | null;
+  routines: Array<{ title: string; cron: string; timeZone?: string; paused: boolean }>;
+  tail: string;
+  tailTruncated: boolean;
+  story: { summary: string; coveredThrough: string | null } | null;
+};
+/** `available: false`: no copy for this repository yet (its CTO home hasn't run a turn), or one this ADE can't read. */
+export type CloudCtoCopySummary = { available: boolean; copy: CloudCtoCopy | null };
+
+/**
+ * Provider sign-ins carried to ADE Cloud, from the vault's `provider_login`
+ * key names only. `GET /cloud/sign-ins` adds it as `carried` (left out when
+ * the vault didn't answer).
+ */
+export type CloudCarriedSignIns = { antigravity: boolean } & Partial<Record<string, boolean>>;
+export type CloudAccountSignInsWithCarried = CloudAccountSignIns & { carried?: CloudCarriedSignIns };
+
+/** Linear and Jira requests one account may make in a minute, together. */
+export const CLOUD_INTEGRATION_REQUESTS_PER_MINUTE = 30;
+/**
+ * The fixed Linear reads (`integrations.ts` holds the documents):
+ * - `identity`: viewer and organization. `teams`: teams with their states.
+ * - `projects`: the quick view's projects. `customViews`: saved views.
+ * - `issues` `{first?, after?, includeArchived?, filter?}`; `searchIssues` `{term, ...}`.
+ * - `issue` `{id}` (detail); `issuesByIds` `{ids}` (≤ 50).
+ * - `comments` `{issueId, first?, after?}`; `notifications` `{first?}`.
+ */
+export const CLOUD_LINEAR_OPS = ["identity", "teams", "projects", "issues", "searchIssues", "issue", "issuesByIds", "comments", "customViews", "notifications"] as const;
+export type CloudLinearOp = (typeof CLOUD_LINEAR_OPS)[number];
+/** `origin`: the project's git origin; its Linear connection is the one used. */
+export type CloudLinearQueryRequest = { origin: string; op: CloudLinearOp; vars?: Record<string, unknown> };
+/** Linear's own `data` for the op's document, as the desktop's normalizers read it. */
+export type CloudLinearQueryResult = { op: CloudLinearOp; data: Record<string, unknown>; authMode: "manual" | "oauth" };
+export type CloudJiraSearchRequest = { origin: string; jql: string; fields?: string[]; maxResults?: number; nextPageToken?: string | null };
+/** Jira's own issue objects; `siteUrl` is `https://<site>.atlassian.net`. */
+export type CloudJiraSearchResult = { siteUrl: string; issues: Record<string, unknown>[]; nextPageToken: string | null };
+export type CloudJiraIssueRequest = { origin: string; key: string };
+export type CloudJiraIssueResult = { siteUrl: string; issue: Record<string, unknown> };
+/**
+ * Integration refusals besides `CLOUD_REFUSAL_CODES` (`linear_needs_renewal`,
+ * `rate_limited`, `unavailable`). Clients show `message`.
+ */
+export const CLOUD_INTEGRATION_ERROR_CODES = {
+  linear_not_connected: 409,
+  /** The server is renewing the project's Linear sign-in (`linearRenewal.ts`); try again in a minute. */
+  linear_renewing: 409,
+  jira_not_connected: 409,
+  jira_site_unsupported: 409,
+  integration_failed: 502,
+} as const;
+
+export const CLOUD_LINEAR_RENEWING_MESSAGE = "Linear is renewing its sign-in. Try again in a minute.";
+
+/** Topics one computer may listen to. */
+export const CLOUD_EVENT_WAKE_MAX_TOPICS = 20;
+/** One event wake per computer in this long, however many deliveries arrive. */
+export const CLOUD_EVENT_WAKE_COOLDOWN_MS = 5 * 60_000;
+/** The header the webhook relay proves itself with (secret `CLOUD_EVENT_WAKE_SECRET` on both Workers). */
+export const CLOUD_EVENT_WAKE_HEADER = "x-ade-event-wake-secret";
+/**
+ * Topics: `linear-org:<organization id>`, `linear-account:<own user id>`,
+ * `hooks-account:<own user id>` (the webhook relay's topic names). The whole
+ * list replaces the computer's; `[]` removes it.
+ */
+export type CloudEventWakesRequest = { topics: string[] };
+export type CloudEventWakesResult = { topics: string[] };
+export type CloudEventWakeInternalRequest = { topic: string };
+/** `subscribed: false`: no computer listens; the relay may skip this topic for a while. */
+export type CloudEventWakeInternalResult = { subscribed: boolean; woken: number };

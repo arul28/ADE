@@ -115,7 +115,7 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 - every error toast (`showToast` with `tone: "error"`), as the log event `toast.<start of title>` (`toastGroupKey`, so a lane or file name in the title does not make one event name per name), with the title and message cut to 300 characters. The failure behind a toast already opened its own issue, with a stack. A toast that names a `report` logs as `toast.<surface>` with its title, `code` and `technicalDetail` only, never its message (which can quote the person's words, such as an unsent prompt); `report: false` logs nothing;
 - every failure notice shown (an error-tone `Banner`, `InlineErrorNotice`, or a notice given a `report`, `ui/notice/NoticeReport.tsx`), once per surface and raw error per renderer, as `notice.shown` with its surface, headline, code and the raw error cut to 300 characters; a `hint`, a `status` given no report (`noticeKind.ts`; a lane delete that left files behind is a `status` that passes one, and logs), or `report: false` logs nothing. Its "Report" action sends the manual diagnostic report (`diagnostics.sendManual`), not a Sentry event (on the hosted web client, the User Feedback note below);
 - a failed connection to another machine, and the other machine's view of it. `remote.connect_failed` and `remote.connect_recovered` (`main/services/remoteRuntime/remoteDialTelemetry.ts`) come from the machine dialing, first failure of an outage and then one an hour, with each route's kind, result, fixed error token and duration but never its address (the hosts are only in the local line in `runtime/desktop-main.jsonl`, which a report's log tail carries like any other line). `sync_host.peer_accepted` and `sync_host.hello_rejected` come from the machine being dialed, through either of its hello handlers, and `sync.host_started` says when it could take connections again. `device_ref` and `peer_device_ref` are `syncDeviceTelemetryRef` hashes that both sides can compute and appear swapped on the other side, so filtering on them shows one connection from both machines;
-- conditions worth counting but not worth an issue, through `forwardSignalToSentry` (`shared/sentry/logBridge.ts`): `ai.provider_status.stale_runtime_snapshot` (the CLI snapshot says a provider's runtime is missing while the tools cache says ready; once per disagreement), `work.machine_read_failed` (a paired machine failed the Work sidebar's reads twice in a row), `work.machine_read_bridge_missing` (a window has no pinned lane or session list, so it cannot read another machine's lanes at all), `repository.copy_connect_failed` (info: a computer with a copy of the open repository did not join the tab in the background, keyed by reason), `web.sync_own_project_reassert_failed` (warning: ADE Web asked a computer to host the project it shows again, after a restart or another client's switch, and the computer refused or did not answer; keyed by reason), `web.sync_own_project_reassert_skipped` (info: that request came again within 15 s, so it waits for the gap to end; two clients may be showing different projects of one computer), `web.sync_own_project_yielded` (info: after ADE Web asked for its project back, another client moved the computer away again on the same connection, so ADE Web follows the computer instead of moving it again), `web.cloud_saved_chats_read_failed` (info: ADE Web asked a connected computer for an ADE Cloud computer's saved chats and the read failed for a reason other than an older brain; keyed by action), `remote.reconnect_failed` (the fourth automatic reconnect failure of one outage), `local_runtime.service_repair_attempt` (the desktop repairing or starting the brain service, keyed by reason), and `windows_desktop.background_unavailable` (input on the Windows main desktop to an app the background table lists, keyed by exe, input and fallback, with whether the screen then changed; exe and window class only, never a title or typed text: `macDesktopBackgroundInput.ts`);
+- conditions worth counting but not worth an issue, through `forwardSignalToSentry` (`shared/sentry/logBridge.ts`): `ai.provider_status.stale_runtime_snapshot` (the CLI snapshot says a provider's runtime is missing while the tools cache says ready; once per disagreement), `work.machine_read_failed` (a paired machine failed the Work sidebar's reads twice in a row), `work.machine_read_bridge_missing` (a window has no pinned lane or session list, so it cannot read another machine's lanes at all), `repository.copy_connect_failed` (info: a computer with a copy of the open repository did not join the tab in the background, keyed by reason), `web.sync_own_project_reassert_failed` (warning: ADE Web asked a computer to host the project it shows again, after a restart or another client's switch, and the computer refused or did not answer; keyed by reason), `web.sync_own_project_reassert_skipped` (info: that request came again within 15 s, so it waits for the gap to end; two clients may be showing different projects of one computer), `web.sync_own_project_yielded` (info: after ADE Web asked for its project back, another client moved the computer away again on the same connection, so ADE Web follows the computer instead of moving it again), `web.cloud_saved_chats_read_failed` (info: ADE Web asked a connected computer for an ADE Cloud computer's saved chats and the read failed for a reason other than an older brain; keyed by action), `web.account_settings_relay_failed` (info: an ADE Web account settings call to the push relay failed, and the caller keeps its local copy; method and status only, keyed by method), `remote.reconnect_failed` (the fourth automatic reconnect failure of one outage), `local_runtime.service_repair_attempt` (the desktop repairing or starting the brain service, keyed by reason), and `windows_desktop.background_unavailable` (input on the Windows main desktop to an app the background table lists, keyed by exe, input and fallback, with whether the screen then changed; exe and window class only, never a title or typed text: `macDesktopBackgroundInput.ts`);
 - a project open that took 5 seconds or more, as the warn line `project.open_slow` (one producer, `logSlowProjectOpen` in `projectFilesystemKind.ts`; a Sentry Log and breadcrumb where Sentry runs). The brain's scope registry (`projectScope.ts`) owns the clock of a brain open and logs it to the brain's own log, for failed opens too; `createAdeRuntime` logs it itself, to the project's log, only when no caller passed a clock (a runtime opened outside the brain's registry). Every action on a project waits for its open, so a folder on a network mount shows up as many calls timing out together; this line says which step was slow. It carries `totalMs`, `phases` (`prepare`, `queued` when it waited for a project opening alone, `root_check`, `base_ref`, `db_open`, `services`, `identity`, with milliseconds each), `filesystemKind` (`network`, `fuse`, `local`, `unknown`) and `filesystemType` (the kernel's mount type such as `nfs4`; read from `/proc/self/mountinfo` on Linux only, and only on this slow path), plus `projectId` and `outcome` (`opened`, `failed`) from the brain, or `runtimeProfile` and `hadAdeDb` from a runtime's own line. It never carries the folder path. An open that freezes the event loop cannot log anything itself, so the watchdog worker writes `brain.project_open_stalled` to stderr after 5 s blocked (each opening project's id, step, time in the open and in the step), a near miss (`brain.event_loop_near_miss`) carries the same as `openingProjects` (the step reached when the loop came back), and a kill's breadcrumb does too;
 - a project refused because opening it froze the brain into the freeze guard twice in 15 minutes (a folder on a drive too slow for its database; `projectOpenStrikes.ts`). The next start logs warn `project.open_freeze_killed` (each struck project's id, step, strikes, and `blockedUntil` and `level` once refused), the first refused open of each refusal logs warn `project.open_blocked` (id, `code`, `level`, `blockedUntil`, filesystem kind), `ade projects retry` logs info `project.open_retry`, a successful open that forgot strikes logs info `project.open_strikes_cleared`, and an unreadable or unwritable strikes file logs warn `project.open_strikes_read_failed` / `project.open_strikes_write_failed`. Ids and codes only: the refusal's message names the project for the person reading it, and the sync host loop logs its code, not that message. None is a PostHog event;
 - a brain that dropped under an SSH `ade rpc --stdio` relay, as `remote.brain_connection_lost` (`remoteRuntime/runtimeRpcClient.ts`, grouped by brain state), reported by the desktop because the other machine may have no route to Sentry. It carries the method, `brainState` (`alive`, `exited`, `exited_and_replaced`, `unknown`), the socket's errno, the heartbeat age in seconds and up to six of the brain log's last lines as level, code-defined event name and error code, each re-validated against a fixed shape. It never carries log message text, paths, URLs or names. A remote event read or subscribe that hit its 2-minute ceiling is `remote.event_setup_timed_out`, keyed by the step it was on (`remoteConnectionService.ts`), with the transport, step timings and total; one that was only slow (10 s) is a breadcrumb;
@@ -877,6 +877,112 @@ passed another $50 below the limit: step, estimate, limit; one owner email),
 `cloud.extra_disk_capped` (a day of extra disk
 billed only up to the person's monthly limit), and
 `cloud.analytics_capture_failed`.
+
+#### ADE with no computer: log events
+
+These events serve ADE Cloud with no computer awake (see `docs/ARCHITECTURE.md`
+section 1.1). None of them logs chat text, a secret, a token, a file path, a
+lane name or an email subject; they carry ids, counts and closed codes.
+
+Account directory (`apps/account-directory/src/cloud/`, Worker logs):
+
+- The message queue: `cloud.chat_message_queued`, `cloud.chat_message_launch`,
+  `cloud.chat_message_wake_failed`, `cloud.chat_message_unreadable`,
+  `cloud.chat_message_rate_limited`; the sweep `cloud.chat_messages_swept`,
+  `cloud.chat_messages_sweep_failed`; the moves `cloud.chat_moved` and
+  `cloud.session_moved` (a continued CLI's copy and messages).
+- Saved copies: `cloud.session_account_full`, `cloud.session_bucket_missing`,
+  `cloud.session_copy_unreadable`, `cloud.git_summary_unreadable`,
+  `cloud.capsule_account_full`, `cloud.capsule_bucket_missing`,
+  `cloud.capsule_committed`, `cloud.capsule_part_unreadable`.
+- Idle cleanup's save step: `cloud.save_for_rest`,
+  `cloud.save_for_rest_unavailable`.
+- Email: `cloud.email_skipped` (warn; reason `no_resend_key`, `no_clerk_key`,
+  `no_recipient` or `no_alert_address`).
+- Timed wakes: `cloud.timed_wake_recorded`, `cloud.timed_wake_record_failed`.
+- The machine list: `directory.cloud_truth_read_failed`.
+- The lane index: `account_lanes.refused`,
+  `account_lanes.machine_lanes_delete_failed`.
+- Vault and account reads: `cloud.vault_item_read_refused`,
+  `cloud.vault_item_read_failed`, `cloud.vault_keys_read_refused`,
+  `cloud.vault_keys_read_failed`, `cloud.vault_read_refused`,
+  `cloud.vault_read_failed`, `cloud.vault_read_too_long`, `cloud.vault_write_*`,
+  `cloud.limits_saved` (field names only), `cloud.cto_copy_unreadable`.
+- Rate limits: `cloud.rate_limited` (bucket: `integrations`, `uploads` or
+  `settings`), once a minute at an account's first refused request.
+- Integrations: `cloud.linear_needs_renewal`,
+  `cloud.linear_query_refused`, `cloud.linear_query_failed`, `cloud.jira_*`.
+- Linear renewal: `cloud.linear_lease_claimed`, `cloud.linear_lease_lost`
+  (reason), `cloud.linear_renewed` (via), `cloud.linear_renewal_superseded`,
+  `cloud.linear_renewal_invalid_grant`, `cloud.linear_renewal_refused`
+  (status), `cloud.linear_renewal_publish_failed`. Sentry:
+  `cloud.linear_renewal_failed`, `cloud.linear_lease_claim_failed`,
+  `cloud.linear_renewal_seal_failed`, `cloud.linear_renewal_cron_failed`.
+- Event wakes: `cloud.event_wakes_set` (instanceId, count), `cloud.event_wake`
+  (userId, instanceId, topicKind, outcome). Sentry: `cloud.event_wake_failed`.
+
+Webhook relay (`apps/webhook-relay/`): `cloud_event_wake_sent`,
+`cloud_event_wake_refused`, `cloud_event_wake_failed`; forwarded custom
+webhooks `hook_forward_refused`, `hook_forward_failed`, `hook_forward_gone`,
+`hook_forward_key_refused`, and `hook_forward_dropped` (Sentry too).
+
+The cloud computer's brain (`apps/ade-cli/src/services/cloudChats/`,
+`services/account/`, `services/github/cloudGitIdentity.ts`):
+
+- Save at rest: `cloud.rest_save`, `cloud.rest_save_git_failed`,
+  `cloud.rest_save_session_failed`, `cloud.rest_save_sessions_read_failed`,
+  `cloud.rest_save_lanes_read_failed`, `cloud.rest_save_chats_failed`,
+  `cloud.rest_save_subagents_failed`, `cloud.rest_save_state_write_failed`,
+  `cloud.rest_save_event_wakes_failed`, `cloud.rest_capsule_failed`,
+  `cloud.rest_capsule_over_cap`, `cloud.idle_rest_save_failed`,
+  `cloud.prepare_stop_rest_save_failed`, `cloud.subagent_copy_failed`.
+- The queue drain: `cloud.chat_queue_drain`, `cloud.chat_queue_drained`,
+  `cloud.chat_queue_read_failed`, `cloud.chat_queue_chat_failed`,
+  `cloud.chat_queue_sign_in_report_failed`, `cloud.chat_queue_retry_scheduled`
+  {attempt, delayMs} (a round that left messages, tried again up to 3 times),
+  `cloud.on_woke_failed`,
+  `cloud.use_report_failed`.
+- Restore after a delete: `cloud.chat_restored` (with `kind: "cli"` for a CLI
+  session), `cloud.restore_capsule_read_failed`,
+  `cloud.restore_capsule_unreadable`, `cloud.restore_move_failed` (with
+  `kind: "cli"` for a CLI's copy),
+  `agent_chat.cloud_restored`, `agent_chat.cloud_restore_capsule_failed`,
+  `agent_chat.cloud_restored_cli`, `agent_chat.cloud_restore_cli_place_failed`,
+  `agent_chat.cloud_restore_cli_mark_failed` (the send id the CLI got could
+  not be saved, so a retry could type the message again),
+  `cloud_boot_launch.chat_continued`.
+- The lane index: `account.lanes_published`, `account.lanes_publish_failed`,
+  `account.lanes_read_failed`, `account.lanes_cache_write_failed`.
+- Git identity: `cloud.git_identity_written`, `cloud.git_identity_failed`,
+  `cloud.git_identity_app_read_failed`, `cloud.git_identity_user_read_failed`.
+
+Desktop main process (`apps/desktop/src/main/services/adeCloud/adeCloudReadIpc.ts`):
+`ade_cloud.account_read_failed` {channel, error class name, status},
+`ade_cloud.account_write_refused` {channel, code, status},
+`ade_cloud.account_write_failed` {channel, error},
+`ade_cloud.account_call_refused` (warn) {call, code, status}: an account call
+(CTO, automations, Linear, Jira and other account data) that the server
+refused; a 404 is not logged. In `cloudSignInStore.ts`:
+`cloud.cloud_key_store_read_failed` (warn) {id, reason},
+`cloud.cloud_key_mirror_failed` (warn) {id} and
+`cloud.cloud_key_unmirror_failed` (warn) {id}, a read, a write or a removal in
+the one API key store that failed (never the key). The account server's
+`/cloud/sign-ins` route logs `cloud.cloud_key_mirror_failed` and
+`cloud.cloud_key_unmirror_failed` {id} too, and then answers 503. The ignored `.env` list logs
+`projects.dotenv_list_failed` (warn) {reason, exitCode or error class name}.
+The agent limits store (`adeCloud/cloudSleep.ts`), used by the desktop IPC and
+the `cloud.write set_limits` action, logs `cloud.agent_limits_server_write_failed`
+(warn) {error} when the account server's `PUT /cloud/limits` fails without a
+refusal (a refusal shows the server's sentence and is not logged), and
+`cloud.agent_limits_local_write_failed` (warn) {error} when this computer's copy
+can't be written. `cloud.agent_limits_set` {unattendedSpend, machinesPerDay,
+onServer} records a desktop save.
+The Linear quick view of a tab with no computer logs
+`ade_cloud.linear_quick_view_part_failed` {part, code} to the console when
+one of its parts fails. The renderer logs
+`[cloud] the action after a wake failed` to the console from
+`renderer/lib/cloudMachineWake.ts`. The web client, the iPhone and the other renderer
+surfaces add no events for this work.
 
 The new product facts reuse `ade_feature_used`; they do not add an event name or
 raise a ceiling. The taxonomy is closed at the producer and again by
@@ -2443,8 +2549,6 @@ Host-recorded mobile mutations may still appear in the canonical `ade_*` namespa
 ### Public marketing site
 
 The public-site implementation is `apps/web/src/lib/marketingAnalytics.ts` and `marketingAnalyticsBrowser.ts`, mounted by `MarketingAnalyticsBridge.tsx`. It is default-on with a browser-local opt-out (an explicit "false" preference, settable on /privacy) and uses a separate `ade_marketing_*` namespace.
-
-The same preference gates the Freebuff ad pixel (`apps/web/src/lib/freebuffPixel.ts`): it loads only when website analytics is on, and any download or copy-install click reports Freebuff's `installation_completed` goal with no event id, so Freebuff keeps one per ad click. That event means a download intent; the site cannot see an install finish.
 
 Its durable browser-local ceiling is 40 events per UTC day: 1 app open, 12 screen views, 12 conversion CTA clicks, 16 other feature clicks, 3 coarse browser error categories, and 1 budget summary. A CTA click emits only `ade_marketing_cta_clicked`, never a duplicate feature event. Per-screen/per-key caps and deduplication windows are tighter still. If durable storage is unavailable, analytics fails closed so reloads cannot bypass the budget.
 

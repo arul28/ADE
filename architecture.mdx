@@ -1,10 +1,12 @@
 ---
 title: "Architecture"
-description: "How the ADE brain, project state, the desktop app, the web client, iOS, and optional remote runtimes over SSH fit together."
+description: "How ADE Cloud, your own machines, the ADE account, the desktop app, the web client, iOS, and remote runtimes over SSH fit together."
 icon: "diagram-project"
 ---
 
-ADE is local-first. The center is the **brain** — the always-on, machine-owned ADE process for a channel. The brain owns the project catalog, the durable project state, the sync websocket, and the authority to run agents. Everything you see is a **client** of that brain: the desktop app, the web client, the `ade` CLI, the iOS app, and any SSH-attached desktop window.
+ADE has three parts: **machines** that run the work, the **ADE account** that holds what you read with no machine awake, and **clients** that show both. You don't need a machine of your own: every account has **ADE Cloud**.
+
+On each machine, the center is the **brain** — the always-on, machine-owned ADE process for a channel. The brain owns the project catalog, the durable project state, the sync websocket, and the authority to run agents. Everything you see is a **client** of that brain: the desktop app, the web client, the `ade` CLI, the iOS app, and any SSH-attached desktop window.
 
 ```mermaid
 flowchart TB
@@ -22,6 +24,17 @@ flowchart TB
   Desktop <-->|"SSH · ade rpc --stdio"| Remote
 ```
 
+## ADE Cloud and the account
+
+ADE Cloud is one machine that every account always has. It shows in every machine list and every **Run on** menu, next to your own computers. Each cloud lane gets its own Linux computer underneath, which you never manage: it sleeps when idle and wakes when you send it work.
+
+- **Reading never wakes a computer.** Saved chats, CLI sessions and shells, a Git summary, files and history from GitHub, pull requests, the CTO, automations, Linear and Jira all come from your account or from GitHub.
+- **Doing wakes it.** Sending a message, running a command, opening a changed file or a Git action wakes the lane's computer. ADE never blocks the screen while it wakes. A message to an asleep chat waits on ADE's server and is delivered once.
+- **Your account syncs** API keys, Passwords and secrets, provider sign-ins, launch defaults and quick slots to every machine, ADE Cloud included. A browser never reads a secret value.
+- **An offline computer of your own is hidden.** An asleep cloud computer is not offline: its work stays listed.
+
+See [ADE Cloud](/cloud/overview).
+
 ## The brain
 
 The brain is the source of truth on a machine. It owns lanes, agent chats, terminals, Git operations, PR actions, provider sessions, proof artifacts, the project catalog, and the sync service. It runs every supported provider runtime against the same projects. Because desktop and CLI clients call the same brain, a chat you start in the app and one you start with the `ade` CLI operate on the same project state.
@@ -37,13 +50,13 @@ Because the brain is the whole engine, a machine does not need a desktop app to 
     The Electron control plane — windows, navigation, the renderer UI, and platform integrations. Each window attaches to a local brain, or binds to a remote one over SSH. macOS-only integrations such as the iOS Simulator drawer are hidden on [Windows](/getting-started/windows).
   </Card>
   <Card title="iOS app" icon="mobile-screen">
-    A SwiftUI controller that pairs with a machine over WebSocket. It mirrors state and sends commands; it never runs agents itself.
+    A SwiftUI controller. It reads your account and ADE Cloud, and pairs with your own machines over WebSocket. It never runs agents itself.
   </Card>
   <Card title="ade CLI" icon="terminal" href="/reference/cli">
     The typed control plane for any shell — used by humans and by the agents running inside ADE.
   </Card>
   <Card title="Web client" icon="globe" href="https://app.ade-app.dev">
-    The same workspace in a browser, for any machine you have connected to your account.
+    The same workspace in a browser, for ADE Cloud and any machine you have connected to your account.
   </Card>
   <Card title="ADE SDK" icon="cube" href="/sdk/overview">
     Third-party apps spawn an embedded runtime as a guest sidecar (`@ade-dev/sdk`, `@ade-dev/chat-ui`). Not a client of the machine brain — an isolated child process.

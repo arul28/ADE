@@ -10,6 +10,7 @@ import {
   evictExpiredCacheEntries,
   isRecord,
   json,
+  readBodyWithinLimit,
   readBoolean,
   readNested,
   readString,
@@ -181,8 +182,8 @@ export async function readLinearAgentJsonBody(
   if (contentLengthExceedsLimit(request.headers, MAX_LINEAR_AGENT_BODY_BYTES)) {
     return { ok: false, response: linearAgentError(413, "payload too large") };
   }
-  const raw = await request.arrayBuffer();
-  if (raw.byteLength > MAX_LINEAR_AGENT_BODY_BYTES) {
+  const raw = await readBodyWithinLimit(request, MAX_LINEAR_AGENT_BODY_BYTES);
+  if (!raw) {
     return { ok: false, response: linearAgentError(413, "payload too large") };
   }
   if (raw.byteLength === 0) return { ok: true, body: {} };

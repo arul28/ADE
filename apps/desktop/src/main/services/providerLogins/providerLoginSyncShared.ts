@@ -23,7 +23,7 @@ import {
   type ProviderLoginSignIn,
   type ProviderLoginStatus,
 } from "../../../shared/types/providerLogins";
-import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
+import { CLOUD_SIGN_INS, cloudKeyApiStoreRows } from "../../../shared/cloudSignIns";
 import {
   PROVIDER_LOGINS_CLOUD_SETTING,
   cloudChoiceKey,
@@ -110,6 +110,35 @@ export const SAVED_KEYS: ReadonlyArray<{ id: string; env: string; provider: Prov
     env: spec.env,
     provider: spec.providers.length === 1 ? spec.providers[0]! : null,
   }));
+
+/** The `provider_api_key` vault keys a cloud computer reads for one ADE Cloud key, in order. */
+export function cloudKeyApiStoreKeys(id: string): string[] {
+  const rows = cloudKeyApiStoreRows(id);
+  return rows ? [rows.cloud, rows.own] : [];
+}
+
+/** A `provider_api_key` value: the key as plain text (`apiKeyStore.ts` stores it so). */
+function apiStoreTokenOf(raw: string | null | undefined): string | null {
+  const token = typeof raw === "string" ? raw.trim() : "";
+  return token && !/\s/.test(token) ? token : null;
+}
+
+/**
+ * One ADE Cloud key, read in the one order every cloud computer uses: the
+ * one API key store first (`<provider>#ade-cloud`, then `<provider>`), then
+ * the older `integration/cloud-key-<id>` item. Only this one value goes under
+ * the key's env name, so two stores never give a provider two keys.
+ */
+export function readCloudKeyToken(
+  id: string,
+  get: (kind: "provider_api_key" | "integration", key: string) => string | null,
+): string | null {
+  for (const key of cloudKeyApiStoreKeys(id)) {
+    const token = apiStoreTokenOf(get("provider_api_key", key));
+    if (token) return token;
+  }
+  return savedKeyTokenOf(get("integration", savedKeyVaultKey(id)));
+}
 
 /** A saved key's token from its vault value (`integration/cloud-key-<id>`), or null. */
 export function savedKeyTokenOf(raw: string | null | undefined): string | null {
@@ -271,7 +300,8 @@ export type VaultRow = {
 export type ProviderLoginVault = {
   list(scope?: string): VaultRow[];
   /** `provider_login` items, and on a cloud computer the saved ADE Cloud keys (`integration`). */
-  get(scope: string, kind: typeof PROVIDER_LOGIN_VAULT_KIND | "integration", key: string): string | null;
+  /** And on a cloud computer the one API key store's items (`provider_api_key`). */
+  get(scope: string, kind: typeof PROVIDER_LOGIN_VAULT_KIND | "integration" | "provider_api_key", key: string): string | null;
   set(scope: string, kind: typeof PROVIDER_LOGIN_VAULT_KIND, key: string, value: string, options?: { refreshOwner?: string | null }): boolean;
   remove(scope: string, kind: typeof PROVIDER_LOGIN_VAULT_KIND, key: string): boolean;
   health(): { state: "ok" | "failing" | "unavailable"; syncReady?: boolean };

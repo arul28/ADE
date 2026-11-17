@@ -81,6 +81,19 @@ export type FilesExplorerProps = {
   compact?: boolean;
   /** Paint no surface of its own, e.g. in the project sidebar. */
   flat?: boolean;
+  /**
+   * The root listing's state. An empty tree while it loads, or after it
+   * failed, says so instead of "No files yet" (a false empty folder).
+   */
+  rootStatus?: "loading" | "ready" | "failed";
+  /** Reads the root listing again after a failure. */
+  onRetryRoot?: () => void;
+  /**
+   * Why nothing can be made here (a lane read from the account while its
+   * computer is at rest). New file and New folder stay visible but do
+   * nothing, and their tooltip says why.
+   */
+  readOnlyReason?: string | null;
 };
 
 function parentDirOfPath(filePath: string): string {
@@ -189,6 +202,9 @@ export function FilesExplorer({
   onInlineRenameSettled,
   compact = false,
   flat = false,
+  rootStatus = "ready",
+  onRetryRoot,
+  readOnlyReason = null,
 }: FilesExplorerProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const fileIconColorFor = useFileIconColor();
@@ -354,25 +370,31 @@ export function FilesExplorer({
             </SmartTooltip>
           ) : null}
         </div>
-        <SmartTooltip content={{ label: "New file", description: "Create a new file in the current directory." }}>
+        <SmartTooltip content={{ label: "New file", description: readOnlyReason ?? "Create a new file in the current directory." }}>
           <button
             type="button"
             aria-label="New file"
-            style={{ ...outlineButton({ height: compact ? 24 : 28, padding: "0 7px", fontSize: 10 }) }}
-            onClick={() => onCreateFile(activeContextDir)}
-            onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
+            aria-disabled={readOnlyReason ? true : undefined}
+            style={{ ...outlineButton({ height: compact ? 24 : 28, padding: "0 7px", fontSize: 10 }), ...(readOnlyReason ? { opacity: 0.45, cursor: "not-allowed" } : null) }}
+            onClick={() => {
+              if (!readOnlyReason) onCreateFile(activeContextDir);
+            }}
+            onMouseEnter={(event) => { if (readOnlyReason) return; event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
             onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
           >
             <FilePlus2 size={compact ? 12 : 13} weight="regular" />
           </button>
         </SmartTooltip>
-        <SmartTooltip content={{ label: "New folder", description: "Create a new folder in the current directory." }}>
+        <SmartTooltip content={{ label: "New folder", description: readOnlyReason ?? "Create a new folder in the current directory." }}>
           <button
             type="button"
             aria-label="New folder"
-            style={{ ...outlineButton({ height: compact ? 24 : 28, padding: "0 7px", fontSize: 10 }) }}
-            onClick={() => onCreateDirectory(activeContextDir)}
-            onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
+            aria-disabled={readOnlyReason ? true : undefined}
+            style={{ ...outlineButton({ height: compact ? 24 : 28, padding: "0 7px", fontSize: 10 }), ...(readOnlyReason ? { opacity: 0.45, cursor: "not-allowed" } : null) }}
+            onClick={() => {
+              if (!readOnlyReason) onCreateDirectory(activeContextDir);
+            }}
+            onMouseEnter={(event) => { if (readOnlyReason) return; event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
             onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
           >
             <FolderPlus size={compact ? 12 : 13} weight="regular" />
@@ -390,12 +412,30 @@ export function FilesExplorer({
         <div className="min-h-0 flex-1" data-tour="files.searchResults">{searchResults}</div>
       ) : (
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto" style={{ paddingTop: 4, paddingBottom: 4 }} data-tour="files.fileTree">
-        {rows.length === 0 ? (
+        {rows.length === 0 && !searchQuery.trim() && rootStatus !== "ready" ? (
+          <div
+            className="flex flex-col items-center gap-2 px-3 py-6 text-center font-sans text-[12px]"
+            style={{ color: COLORS.textMuted }}
+            role={rootStatus === "failed" ? "alert" : undefined}
+            aria-busy={rootStatus === "loading" ? true : undefined}
+          >
+            <span>{rootStatus === "failed" ? "Couldn't load the files" : "Loading files…"}</span>
+            {rootStatus === "failed" && onRetryRoot ? (
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 text-[12px] font-medium text-accent hover:bg-fg/[0.05]"
+                onClick={onRetryRoot}
+              >
+                Retry
+              </button>
+            ) : null}
+          </div>
+        ) : rows.length === 0 ? (
           // The app's one empty-state style: centred, muted sans, no period,
           // with the next step when there is one.
           <div className="flex flex-col items-center gap-2 px-3 py-6 text-center font-sans text-[12px]" style={{ color: COLORS.textMuted }}>
             <span>{searchQuery.trim() ? "No matching paths" : "No files yet"}</span>
-            {searchQuery.trim() ? null : (
+            {searchQuery.trim() || readOnlyReason ? null : (
               <button
                 type="button"
                 className="rounded-md px-2 py-1 text-[12px] font-medium text-accent hover:bg-fg/[0.05]"

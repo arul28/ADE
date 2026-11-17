@@ -26,6 +26,7 @@ import { isRecord } from "../shared/utils";
 import {
   adoptOldCodexKeyFile,
   applyCodexKey,
+  applyQwenKey,
   appliedEntryUnchanged,
   applySignIn,
   emptyAppliedState,
@@ -47,9 +48,8 @@ import {
   accountHash,
   cloudPlacePicks,
   isSavedKeySource,
+  readCloudKeyToken,
   savedKeySource,
-  savedKeyTokenOf,
-  savedKeyVaultKey,
   type CloudSetting,
   type LoginMemo,
   type ProviderLoginVault,
@@ -85,8 +85,12 @@ type ApplyPolicy = {
 };
 
 const CLOUD_COMPUTER_POLICY: ApplyPolicy = { down: false, takes: () => true, savedKeysAndEnv: true, ownCopy: true, renewal: true, copilot: true };
-/** Never down: Claude (its normal sign-in stays on each computer; ADE Cloud uses a pass) and Copilot (a GitHub credential). */
-const NEVER_DOWN: ReadonlySet<ProviderLoginProvider> = new Set(["claude", "copilot"]);
+/**
+ * Never down: Claude (its normal sign-in stays on each computer; ADE Cloud
+ * uses a pass), Copilot (a GitHub credential) and the proxy's logins (each
+ * computer's proxy has its own; only ADE Cloud computers get copies).
+ */
+const NEVER_DOWN: ReadonlySet<ProviderLoginProvider> = new Set(["claude", "copilot", "proxy"]);
 const OWN_COMPUTER_POLICY: ApplyPolicy = {
   down: true,
   takes: (provider) => !NEVER_DOWN.has(provider),
@@ -244,8 +248,9 @@ export function createApplyPass(s: SyncShared) {
     return s.appliedCache;
   }
 
+  /** One ADE Cloud key: the one API key store first, then the older `cloud-key-<id>` item (`readCloudKeyToken`). */
   function savedKeyToken(id: string, vault: ProviderLoginVault): string | null {
-    return savedKeyTokenOf(vault.get(ACCOUNT_SCOPE_ALL, "integration", savedKeyVaultKey(id)));
+    return readCloudKeyToken(id, (kind, key) => vault.get(ACCOUNT_SCOPE_ALL, kind, key));
   }
 
   /**
@@ -534,7 +539,8 @@ export function createApplyPass(s: SyncShared) {
         if (policy.copilot && applyCopilot(vault, state, place, want, have, pickedBefore, noteSwitch)) changed.add(provider);
         continue;
       }
-      const fileLess = want?.kind === "key" && want.provider !== "codex";
+      // Codex's and Qwen's saved keys go in their own files; every other saved key is an env variable only.
+      const fileLess = want?.kind === "key" && want.provider !== "codex" && want.provider !== "qwen";
       if (!want || fileLess) {
         applyStates.set(place, { state: want ? "key" : "none", key: want ? "key" : null });
         if (!have) continue;
@@ -585,7 +591,9 @@ export function createApplyPass(s: SyncShared) {
       }
       let result: Awaited<ReturnType<typeof applySignIn>>;
       if (want.kind === "key") {
-        result = applyCodexKey(source, want.token, ctx, have, now());
+        result = want.provider === "qwen"
+          ? applyQwenKey(source, want.token, ctx, have, now())
+          : applyCodexKey(source, want.token, ctx, have, now());
       } else {
         const payload = readProviderLoginPayload(vault.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, want.key));
         result = payload && payload.provider === provider
@@ -644,7 +652,8 @@ export function createApplyPass(s: SyncShared) {
         const want = spec.provider ? wants.get(spec.provider) : null;
         // Copilot's key never goes into the brain's env: the launch helper gives it to Copilot processes only (G1 Q3).
         // An old value apply set here leaves.
-        const token = spec.id === "copilot" ? null
+        // Qwen's key is only in Qwen's settings.json (`applyQwenKey`): never in the brain's env.
+        const token = spec.id === "copilot" || spec.id === "qwen" ? null
           : spec.provider
             ? (want?.kind === "key" && want.id === spec.id ? want.token : null)
             : savedKeyToken(spec.id, vault);

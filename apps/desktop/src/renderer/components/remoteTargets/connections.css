@@ -540,23 +540,17 @@
     flex-wrap: wrap;
   }
   .ade-cx-row-actions > .ade-cx-kebab { margin-left: auto; }
-  /* A cloud lane's row keeps the chevron and gives the lane name the room. */
-  .adecl-cx-details-label { display: none; }
   /* Touch: controls draw at 36 px and take touches across 44 px. */
   @media (pointer: coarse) {
     .ade-cx-row-actions > button,
-    .ade-cx-list-head .ade-cx-add-btn,
-    .adecl-cx-row .kit-btn { position: relative; min-height: 36px; }
+    .ade-cx-list-head .ade-cx-add-btn { position: relative; min-height: 36px; }
     .ade-cx-kebab,
     .ade-cx-icon-btn { position: relative; min-width: 36px; min-height: 36px; }
     .ade-cx-row-actions > button::after,
-    .ade-cx-list-head .ade-cx-add-btn::after,
-    .adecl-cx-row .kit-btn::after { content: ""; position: absolute; inset: -4px 0; }
+    .ade-cx-list-head .ade-cx-add-btn::after { content: ""; position: absolute; inset: -4px 0; }
     /* Icon-only controls take touches on every side. The row-actions rule
        above is more specific, so ⋯ in a row is named here too. */
-    .adecl-cx-row .kit-btn:has(> .adecl-cx-details-label) { min-width: 36px; justify-content: center; }
     .ade-cx-row-actions > .ade-cx-kebab::after,
-    .adecl-cx-row .kit-btn:has(> .adecl-cx-details-label)::after,
     .ade-cx-kebab::after,
     .ade-cx-icon-btn::after { content: ""; position: absolute; inset: -4px; }
   }

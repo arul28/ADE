@@ -1,7 +1,7 @@
 import { BRAND_IMG_SRC, brandDocument, escapeHtml } from "./brandPage";
 import { isLoopbackHostname, trustedHttpsOrigin } from "./trustedOrigin";
 import { boundedDisplayText } from "./displayText";
-import { readBoundedBody } from "./sinkUtils";
+import { readBoundedBody, readBoundedFormData } from "./sinkUtils";
 
 const DEVICE_CODE_TTL_SECONDS = 10 * 60;
 const DEVICE_POLL_INTERVAL_SECONDS = 5;
@@ -490,8 +490,13 @@ async function handleDeviceApproval(
 
   let rawUserCode: string | null = null;
   try {
-    const value = (await request.formData()).get("user_code");
-    rawUserCode = typeof value === "string" ? value : null;
+    // The same 8 KB streamed cap as the JSON device routes: request.formData()
+    // would buffer and parse an anonymous body of any size before this check.
+    const form = await readBoundedFormData(request, MAX_DEVICE_FLOW_BODY_BYTES);
+    if (form) {
+      const value = form.get("user_code");
+      rawUserCode = typeof value === "string" ? value : null;
+    }
   } catch {
     // Invalid form submissions fall through to the blank confirmation form.
   }

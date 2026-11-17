@@ -9,6 +9,7 @@ import { useAccountCloudLaunches } from "../../state/accountCloudLaunches";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { useAccountSavedChats } from "../../state/savedChatsOfOrigin";
 import { useAppStore } from "../../state/appStore";
+import { adeCloudProjectForTabId } from "../../state/adeCloudTabs";
 import { showToast } from "../app/toast/toastStore";
 import { extractError } from "../../lib/format";
 import { openExternalUrl } from "../../lib/openExternal";
@@ -35,9 +36,9 @@ function writeFlag(key: string): void {
   }
 }
 
-/** Opens an account project's page (its repository tab, with no copy needed). */
+/** Opens an account project's tab, on ADE Cloud until an own computer with a copy is online. */
 function openAccountProject(project: { id: string; name: string }): void {
-  useAppStore.getState().showNoMachineTab({ id: project.id, displayName: project.name, iconDataUrl: null });
+  void useAppStore.getState().openAdeCloudProject(adeCloudProjectForTabId(project.id, project.name)).catch(() => undefined);
 }
 
 /**

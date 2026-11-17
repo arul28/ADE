@@ -43,6 +43,7 @@ import {
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
 import { createBackoffPoller } from "../../lib/backoffPoller";
+import { isAdeCloudBinding } from "../../../shared/adeCloud/binding";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 // A backstop for a connection made outside this window (the CLI, another
@@ -335,8 +336,14 @@ export function LinearQuickViewButton({
 
   // Disconnected retry. The poller backs off while the answer stays "not
   // connected", pauses while the page is hidden, and reads at once on return.
+  // An ADE Cloud tab reads Linear through the account (each check is one
+  // account request and one Linear call, inside a shared per-account limit),
+  // so it checks only when the tab opens, the window gets focus, or Settings
+  // says the connection changed (the effects above). No retry poller.
+  const accountAnswered = isAdeCloudBinding(projectBinding);
   useEffect(() => {
     if (!shouldAutoCheckVisibility) return;
+    if (accountAnswered) return;
     if (visible) return;
     if (!activeProjectRoot) return;
     // A read still in flight when the project changes answers for the old one.
@@ -356,7 +363,7 @@ export function LinearQuickViewButton({
       stopped = true;
       poller.stop();
     };
-  }, [loadVisibility, visible, activeProjectRoot, visibilityRetryIntervalMs, shouldAutoCheckVisibility]);
+  }, [loadVisibility, visible, activeProjectRoot, visibilityRetryIntervalMs, shouldAutoCheckVisibility, accountAnswered]);
 
   const openQuickView = useCallback(() => {
     if (cachedQuickViewRef.current) {

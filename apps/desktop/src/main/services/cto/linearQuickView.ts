@@ -2,6 +2,7 @@ import type { CtoLinearQuickView, CtoLinearQuickViewProject, CtoLinearQuickViewT
 import type { IssueTrackerIssueSearchQuery, IssueTrackerIssueSearchResult } from "./issueTracker";
 import { isRecord, toOptionalString as asString, asArray } from "../shared/utils";
 import type { LinearRequest } from "./linearClientShared";
+import { mapLinearQuickViewProject, mapLinearQuickViewTeam } from "../../../shared/linearIssueNormalize";
 
 /** The Linear pane's overview: viewer, organization, projects, teams, and recent/assigned issues. */
 export function createLinearQuickView({ request, searchIssues }: {
@@ -42,44 +43,7 @@ export function createLinearQuickView({ request, searchIssues }: {
       `,
       maxRetries: 2,
     });
-    return asArray(data.projects?.nodes).filter(isRecord).map((project) => {
-      const status = isRecord(project.status) ? project.status : null;
-      const lead = isRecord(project.lead) ? project.lead : null;
-      const teamNodes = asArray(isRecord(project.teams) ? project.teams.nodes : []).filter(isRecord);
-      const teamName = teamNodes
-        .map((team) => asString(team.name))
-        .find((entry): entry is string => Boolean(entry?.trim())) ?? "Unassigned";
-      const teamKey = teamNodes
-        .map((team) => asString(team.key))
-        .find((entry): entry is string => Boolean(entry?.trim())) ?? null;
-      return {
-        id: String(project.id ?? ""),
-        name: String(project.name ?? "Untitled project"),
-        slug: String(project.slugId ?? ""),
-        teamName,
-        ...(teamKey ? { teamKey } : {}),
-        url: asString(project.url),
-        color: asString(project.color),
-        icon: asString(project.icon),
-        description: asString(project.description),
-        statusName: status ? asString(status.name) : null,
-        statusType: status ? asString(status.type) : null,
-        health: asString(project.health),
-        progress: typeof project.progress === "number" ? project.progress : null,
-        scope: typeof project.scope === "number" ? project.scope : null,
-        priority: typeof project.priority === "number" ? project.priority : null,
-        priorityLabel: asString(project.priorityLabel),
-        // Weekly snapshot, not a live count. Live counts come from countIssues.
-        issueCount: Array.isArray(project.issueCountHistory) ? Number(project.issueCountHistory.at(-1) ?? 0) : null,
-        completedIssueCount: Array.isArray(project.completedIssueCountHistory)
-          ? Number(project.completedIssueCountHistory.at(-1) ?? 0)
-          : null,
-        startDate: asString(project.startDate),
-        targetDate: asString(project.targetDate),
-        leadName: lead ? (asString(lead.displayName) ?? asString(lead.name)) : null,
-        teamKeys: teamNodes.map((team) => asString(team.key)).filter((entry): entry is string => Boolean(entry)),
-      };
-    });
+    return asArray(data.projects?.nodes).filter(isRecord).map(mapLinearQuickViewProject);
   };
 
   const fetchQuickViewTeams = async (): Promise<CtoLinearQuickViewTeam[]> => {
@@ -93,16 +57,7 @@ export function createLinearQuickView({ request, searchIssues }: {
       `,
       maxRetries: 2,
     });
-    return asArray(data.teams?.nodes).filter(isRecord).map((team) => ({
-      id: String(team.id ?? ""),
-      key: String(team.key ?? ""),
-      name: String(team.name ?? "Team"),
-      displayName: String(team.displayName ?? team.name ?? "Team"),
-      color: asString(team.color),
-      issueCount: typeof team.issueCount === "number" ? team.issueCount : null,
-      cyclesEnabled: typeof team.cyclesEnabled === "boolean" ? team.cyclesEnabled : null,
-      private: typeof team.private === "boolean" ? team.private : null,
-    }));
+    return asArray(data.teams?.nodes).filter(isRecord).map(mapLinearQuickViewTeam);
   };
 
   const getQuickView = async (connection: CtoLinearQuickView["connection"]): Promise<CtoLinearQuickView> => {

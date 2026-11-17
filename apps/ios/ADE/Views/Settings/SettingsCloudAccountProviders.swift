@@ -15,6 +15,10 @@ struct SettingsCloudAccountProviders: View {
   @State private var saveGeneration = 0
   @State private var savesOut = 0
   @State private var savesOverlapped = false
+  #if DEBUG
+  /// Fixture screens show these sign-ins and read nothing.
+  var fixtureSignIns: CloudAccountSignIns?
+  #endif
 
   var body: some View {
     ADESettingsSection("Providers on ADE Cloud", hint: "What each coding agent needs before it runs a chat on ADE Cloud. Keys save to your account, so every cloud computer can use them.") {
@@ -36,6 +40,7 @@ struct SettingsCloudAccountProviders: View {
               provider: provider,
               signIn: signIns?.signIns.first { $0.providers.contains(provider.provider) },
               vaultUnknown: signIns?.unknown == true,
+              carried: signIns?.carried[provider.provider],
               beginSave: beginSave,
               finishSave: finishSave
             )
@@ -48,6 +53,12 @@ struct SettingsCloudAccountProviders: View {
       }
     }
     .task {
+      #if DEBUG
+      if let fixtureSignIns {
+        signIns = fixtureSignIns
+        return
+      }
+      #endif
       async let catalog: Void = launches.loadCatalogIfNeeded(using: syncService)
       async let keys: Void = loadSignIns()
       _ = await (catalog, keys)
@@ -88,6 +99,8 @@ private struct SettingsCloudProviderRow: View {
   let provider: CloudCatalogProvider
   let signIn: CloudAccountSignIn?
   let vaultUnknown: Bool
+  /// Whether ADE desktop's sign-in reached ADE Cloud (a `desktop` provider); nil when unknown.
+  let carried: Bool?
   let beginSave: () -> Int
   let finishSave: (CloudAccountSignIns?, _ generation: Int) -> Void
   @Environment(\.openURL) private var openURL
@@ -102,7 +115,7 @@ private struct SettingsCloudProviderRow: View {
 
   private var status: (text: String, tone: ADEKitTone) {
     switch provider.remoteSignIn {
-    case "desktop": return ("Sign in from ADE desktop", .neutral)
+    case "desktop": return carried == true ? ("Signed in from ADE desktop", .ok) : ("Sign in from ADE desktop", .neutral)
     case "api_key":
       if saved { return ("Key saved", .ok) }
       return vaultUnknown ? ("Couldn't check", .neutral) : ("Needs a key", .warn)
@@ -113,7 +126,10 @@ private struct SettingsCloudProviderRow: View {
 
   private var line: String {
     switch provider.remoteSignIn {
-    case "desktop": return "This provider signs in only in ADE desktop. Sign in there, and cloud chats can use it."
+    case "desktop":
+      return carried == true
+        ? "Your ADE desktop sign-in reached ADE Cloud, so cloud chats can use it."
+        : "This provider signs in only in ADE desktop. Sign in there, and cloud chats can use it."
     case "api_key": return "\(signIn?.keyName ?? "An API key"), saved to your account."
     case "url_paste": return "The cloud computer opens a sign-in page. Paste the code it shows, and ADE keeps the pass for later computers."
     default: return "The cloud computer shows a code. Enter it on the provider's page."

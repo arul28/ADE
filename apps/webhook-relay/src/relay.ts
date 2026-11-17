@@ -15,6 +15,7 @@ import {
   json,
   parseLimit,
   parseSequenceCursor,
+  readBodyWithinLimit,
   readBoolean,
   readNested,
   readString,
@@ -1438,8 +1439,8 @@ async function handleGitHubWebhook(request: Request, env: RelayEnv, projectId: s
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
 
-  const body = await request.arrayBuffer();
-  if (body.byteLength > MAX_GITHUB_WEBHOOK_BODY_BYTES) {
+  const body = await readBodyWithinLimit(request, MAX_GITHUB_WEBHOOK_BODY_BYTES);
+  if (!body) {
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
   const verified = await verifyGitHubSignature(webhookSecret, body, signature);

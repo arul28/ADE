@@ -169,6 +169,41 @@ extension SyncService {
     )
   }
 
+  /// A lane move (`chat.startCrossMachineBatchMove`): the lane's open Work
+  /// chats move to `machineKey`, each after its parent, and the lane with
+  /// its commits and uncommitted work arrives there first. The batch runs on
+  /// the brain that owns the lane, reached through one of its chats
+  /// (`viaSessionId`), as every chat action is. The person asked, so no
+  /// approval waits. Returns the batch id when the brain sent one.
+  @discardableResult
+  func startLaneMove(viaSessionId: String, sessionIds: [String], machineKey: String) async throws -> String? {
+    let projectAction = "chat.startCrossMachineBatchMove"
+    let action = chatActionName(projectAction, sessionId: viaSessionId)
+    try requireInvokableChatAction(projectAction, sessionId: viaSessionId)
+    let scope = chatCommandScope(for: viaSessionId)
+    let raw = try await sendCommand(
+      action: action,
+      args: [
+        "machine": machineKey,
+        "sessionIds": sessionIds,
+        "includeDescendants": true,
+        "includeChanges": true,
+        "mode": "fork",
+      ],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 60_000_000_000,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+    return (raw as? [String: Any])?["batchId"] as? String
+  }
+
+  /// The lane's brain can run a lane move.
+  func laneMoveAvailable(viaSessionId: String) -> Bool {
+    supportsChatRemoteAction("chat.getCrossMachineHandoffOptions", sessionId: viaSessionId)
+      && supportsChatRemoteAction("chat.startCrossMachineBatchMove", sessionId: viaSessionId)
+  }
+
   /// Approves or denies the entire batch waiting on this caller chat. The
   /// session id selects the remote machine/project; the batch id selects the
   /// approval record on that brain.

@@ -125,6 +125,13 @@ struct SettingsMachine: Identifiable, Equatable {
   }
 }
 
+/// Whether an account machine is an ADE Cloud lane computer.
+@MainActor
+func settingsMachineIsCloud(_ machine: AccountMachine, syncService: SyncService) -> Bool {
+  if syncService.cloudAccountMachineKeys?.contains(machine.machineKey) == true { return true }
+  return CloudLaneComputerLabels.label(machineKey: machine.machineKey, hostName: machine.name) != nil
+}
+
 /// Builds the machine list from the account directory, the saved pairings and
 /// the fleet. Deduplicated by device identity; hidden machines stay out.
 @MainActor
@@ -181,6 +188,9 @@ func settingsMachines(
   }
 
   for machine in account.machines {
+    // ADE Cloud is one machine: its lane computers show as one row
+    // (`SettingsCloudMachineRow`), never one row each.
+    if settingsMachineIsCloud(machine, syncService: syncService) { continue }
     let identity = nonEmptyTrimmed(machine.deviceId)
     let dedupeKey = (identity ?? machine.machineKey).lowercased()
     guard seen.insert(dedupeKey).inserted else { continue }
@@ -611,6 +621,7 @@ struct SettingsMachineSections: View {
           }
         }
       }
+      SettingsCloudMachineRow()
     }
     .task { await account.loadMachines() }
     .task { await MachineUpdateStore.shared.refreshLatestBuilds() }
@@ -1144,5 +1155,41 @@ func settingsPlatformName(_ raw: String) -> String {
   case "win32", "windows": return "Windows"
   case "linux": return "Linux"
   default: return raw.capitalized
+  }
+}
+
+/// ADE Cloud as one machine in Settings › Machines: how many lane computers
+/// it has and how many are awake. Each lane's computer wakes when work is
+/// sent to it, so the row has no Connect.
+struct SettingsCloudMachineRow: View {
+  /// False: the row alone, inside another section's rows (Account's "Your computers").
+  var inSection = true
+  @ObservedObject private var account = AccountService.shared
+  /// The sync service's changes (the computer list) redraw the row.
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
+
+  var body: some View {
+    let computers = syncService.cloudServerInstances
+    let lanes = account.machines.filter { settingsMachineIsCloud($0, syncService: syncService) }.count
+    let count = max(computers.count, lanes)
+    // Every account has ADE Cloud, also before its first lane.
+    if account.isSignedIn {
+      let row = ADESettingsRow(ADECloudMachine.name, hint: hint(count: count, awake: computers.filter(\.isAwake).count), symbol: ADECloudMachine.symbol)
+      if inSection {
+        ADESettingsSection(ADECloudMachine.name, symbol: ADECloudMachine.symbol, tint: .slate) {
+          ADESettingsRows { row }
+        }
+        .adeInspectable("Settings.Machines.ADECloud")
+      } else {
+        row.adeInspectable("Settings.Account.ADECloud")
+      }
+    }
+  }
+
+  private func hint(count: Int, awake: Int) -> String {
+    guard count > 0 else { return "No cloud lanes yet. A chat you start on ADE Cloud makes one." }
+    let lanes = count == 1 ? "1 lane computer" : "\(count) lane computers"
+    return "\(lanes), \(awake) awake. A computer wakes when you send it work."
   }
 }

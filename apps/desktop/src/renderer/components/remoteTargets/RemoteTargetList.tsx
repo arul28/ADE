@@ -1722,7 +1722,7 @@ export function RemoteTargetList({
         {renderSection("connected")}
         {renderSection("available")}
         {renderSection("unavailable")}
-        {cloudGroup.renderGroup(renderRow)}
+        {cloudGroup.renderGroup()}
 
         {accountMachinesLoadFailed ? (
           <div style={helperTextStyle}>

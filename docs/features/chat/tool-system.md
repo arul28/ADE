@@ -16,7 +16,7 @@ its names were ever callable and which were not.
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only: `spawnChat`, lanes/PRs/git/tests, Linear reads and lightweight updates, and the `remember` / `forget` / `trackWork` / `finishWork` / `readHistory` memory tools. Git reads default their lane (`resolveReadLaneId`); git mutations require an explicit one (`requireMutationLaneId`) and are refused for the CTO. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | `buildCodingAgentSystemPrompt` -- renders the top-of-context system prompt; adapts wording based on available tools and the runtime-specific native-subagent versus ADE-child routing contract. |
 | `apps/desktop/src/main/services/ai/toolExposurePolicy.ts` | Filters tools by context (e.g., frontend-repo discovery tools). |
-| `apps/desktop/src/main/services/ai/tools/readFileRange.ts` / `grepSearch.ts` / `globSearch.ts` / `editFile.ts` | Primitive file/search tools used by every agent. |
+| `apps/desktop/src/main/services/ai/tools/readFileRange.ts` / `grepSearch.ts` / `globSearch.ts` | Primitive file/search tools used by every agent. |
 | `apps/desktop/src/main/services/ai/tools/webFetch.ts` / `webSearch.ts` | Web access tools. |
 | `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Pi's custom-tool surface: ADE's `ask_user` tool definition (`createPiAskUserTool`), the per-tool-call approval gate (`createPiApprovalGate`), and the `withPiApproval` wrapper that rebuilds a Pi built-in behind that gate. |
 | `apps/desktop/src/shared/cliLaunch.ts` | `piToolsForPermissionMode` (tracked Pi CLI, allowlist only) and `piSdkToolPolicyForPermissionMode` (Pi chat: allowlist + approval-tool list + an explicit `readOnly` flag). |
@@ -121,39 +121,28 @@ Consequences worth knowing:
 The full mode-to-policy table lives in
 [Agent Routing › Pi](agent-routing.md#pi).
 
-## Tier 2: workflow tools (historical)
+## PR and lane tools
 
-**This tier no longer exists as code.** `workflowTools.ts`, its
-`workflowToolNames()` export, and `agentChatService.previewSessionToolNames`
-— the only consumer — have been deleted; none of them had a non-test caller.
-The table below is kept as the **historical record** of the names that tier
-used to enumerate, because the live/dead split across those names is not
-obvious and has already put a wrong claim into `ARCHITECTURE.md` once.
+There is no separate workflow-tool tier. An agent can call these PR and lane
+tools:
 
-Read it as: what an agent may actually call today is the **Live** row (the
-snake_case `pr_*` RPC tools) plus `createLane` / `createPrFromLane`, which
-are implemented in `ctoOperatorTools.ts` and reach agents through the CTO
-operator tier below. Everything else in the table was a name with no
-implementation behind it in any registry.
+- `createLane` and `createPrFromLane`, from `ctoOperatorTools.ts`, through the
+  CTO operator tier below.
+- The five **snake_case** `pr_*` RPC tools, registered, allow-listed and
+  dispatched in `apps/ade-cli/src/adeRpcServer.ts`.
 
-**CAREFUL — camelCase versus snake_case.** The `pr*` names are the subtle
-case, and the reason this table survives its module: the **camelCase**
-spellings (`prGetChecks`, `prGetReviewComments`, …) were always dead, while
-their **snake_case** counterparts (`pr_get_checks`, …) are live agent tools
-registered on the ADE RPC server. Do not treat the two spellings as the same
-tool, and do not "fix" a snake_case name to camelCase. `systemPrompt.ts`
-keeps a code-comment copy of this warning next to `PR_ISSUE_TOOL_NAMES`;
-this is the canonical prose copy.
+**CAREFUL: camelCase versus snake_case.** The camelCase `pr*` names
+(`prGetChecks`, `prGetReviewComments`, …) are not tools. Do not "fix" a
+snake_case name to camelCase. `systemPrompt.ts` keeps a code-comment copy of
+this warning next to `PR_ISSUE_TOOL_NAMES`.
 
-| Tool | Purpose |
+| Tool | Status |
 |---|---|
-| `createLane({ name, description?, parentLaneId? })` | Creates a new lane (git worktree + branch). Returns lane id, branch ref, worktree path. |
-| `createPrFromLane({ laneId, title?, body? })` | Creates a pull request from the lane's changes. |
-| `captureScreenshot()` | **Not callable.** The name was listed by the deleted `workflowToolNames()` but no tool registry ever received an implementation, so an agent that called it got "tool not found". Use `ade proof capture --caption "…"` to file reviewer-facing proof, or `screenshot_environment` for a bare look at the screen. |
-| `reportCompletion(...)` | **Not callable.** A name with no implementation in any registry. Its system-prompt bullet has been removed, so nothing advertises it either. |
-| `pr_get_checks`, `pr_get_review_comments`, `pr_rerun_failed_checks`, `pr_reply_to_review_thread`, `pr_resolve_review_thread` | **Live**, but not from this module. They are registered, allow-listed and dispatched in `apps/ade-cli/src/adeRpcServer.ts` (registration `:1109+`, allowlist `:1399+`, dispatch `:5415+`) under **snake_case** names, and are called by agents. `pr_get_checks` returns the persisted checks verdict in preference to a row-level rollup, because a row tally cannot see required contexts that never reported. |
-| `pr_get_check_log`, `pr_refresh_issue_inventory`, `pr_reply_to_comment` | **Not callable** under either spelling — no dispatch handler exists. The first two are still in `systemPrompt.ts`'s `PR_ISSUE_TOOL_NAMES` set, which is harmless: that set only filters names a caller already passed, so it can never make the prompt claim a tool that does not exist. |
-| The camelCase `pr*` names (`prGetChecks`, `prGetReviewComments`, …) | **Not callable.** They appeared only in the deleted `workflowToolNames()` and in the `PR_ISSUE_TOOL_NAMES` set, which survives. The working spellings are the snake_case ones above. |
+| `createLane({ name, description?, parentLaneId? })` | Live. Creates a new lane (git worktree + branch). Returns lane id, branch ref, worktree path. |
+| `createPrFromLane({ laneId, title?, body? })` | Live. Creates a pull request from the lane's changes. |
+| `pr_get_checks`, `pr_get_review_comments`, `pr_rerun_failed_checks`, `pr_reply_to_review_thread`, `pr_resolve_review_thread` | Live. `pr_get_checks` returns the persisted checks verdict in preference to a row-level rollup, because a row tally cannot see required contexts that never reported. |
+| `pr_get_check_log`, `pr_refresh_issue_inventory`, `pr_reply_to_comment` | Not callable: no dispatch handler exists. The first two are in `PR_ISSUE_TOOL_NAMES`, which only filters names a caller already passed, so the prompt never claims them. |
+| `captureScreenshot`, `reportCompletion`, the camelCase `pr*` names | Not callable. Use `ade proof capture --caption "…"` for proof, or `screenshot_environment` for a bare look at the screen. |
 
 ### PR issue resolution
 
@@ -170,15 +159,12 @@ What does not exist is the surface that was supposed to *launch* such a chat for
 you off a failing PR:
 
 - `launchPrIssueResolutionChat` is not defined anywhere in the repo.
-- `apps/desktop/src/main/services/prs/prIssueResolver.ts` does not exist, and
-  neither do `prRebaseResolver.ts` or `githubPrStackService.ts`. (`prs/` does
-  have `githubStackStore.ts`, `prCommentMutations.ts`, `integrationPlanning.ts`
-  and others — see [ARCHITECTURE.md](../../ARCHITECTURE.md).)
+- `apps/desktop/src/main/services/prs/` has no issue or rebase resolver
+  module. It holds `githubStackStore.ts`, `prCommentMutations.ts` and others
+  (see [ARCHITECTURE.md](../../ARCHITECTURE.md)).
 - `getPrIssueResolutionAvailability()` in
-  `apps/desktop/src/shared/prIssueResolution.ts` is real and tested, and is
-  currently callerless: its one caller lived inside the dead
-  `prRefreshIssueInventory` body that was removed. It belongs to the unbuilt
-  inventory tool and is waiting for it, not left over from a deleted feature.
+  `apps/desktop/src/shared/prIssueResolution.ts` is real and tested, and has
+  no caller. It belongs to the unbuilt inventory tool.
 
 So: driving a PR from an agent is supported today by calling the `pr_*` tools
 directly. Building the one-click "resolve this PR's issues" flow means adding a
@@ -294,12 +280,9 @@ through `executeAdeTool`, which wraps it in `runAdeToolWithDeadline`
   own defaults still apply to ADE's tools there; an approval card left open
   past that default can end the call on the provider side first.
 
-`buildCtoOperatorToolDeps` builds the dependency set for the runtime map. It
-used to be shared with `previewSessionToolNames`, a name-enumeration helper that
-was removed along with `workflowTools.ts` because it had no non-test caller — so
-"one definition feeds both the advertised and the callable surface" is a design
-intent to preserve if a prompt manifest is ever built, not a guarantee that
-holds today. There is no second enumeration of these names to drift from.
+`buildCtoOperatorToolDeps` builds the dependency set for the runtime map.
+There is no second enumeration of these names to drift from. If a prompt
+manifest is ever built, feed it from the same definition.
 
 ### Lane defaulting is read-only
 
@@ -335,8 +318,6 @@ Additional exposure rules:
 - Linear tools are NOT hidden when the Linear integration is not connected.
   They come from `ctoOperatorTools.ts`, are registered unconditionally for CTO
   sessions, and report `Linear issue tracker is not available.` at call time.
-  (A `linearTools.ts` module did hide them by returning an empty tool set; it
-  had no caller and was deleted.)
 
 ## Mac Desktop tool and its prompt line
 
@@ -366,9 +347,8 @@ gets `MAC_DESKTOP_PROMPT_LINE` (`ade screen`), a Windows brain gets
 `WINDOWS_DESKTOP_PROMPT_LINE` (`ade screen`). It is epoch-scoped like the
 computer-use block (`deliveredDirectiveKeys.laneScreen`): sent when the lane
 gains a screen or the line changes, and again after the provider thread is
-replaced, not on every turn. Personal chats never get it. Before 2026-10-20 the
-Mac line rode every turn on every host, which told a Windows lane's agent it
-had a macOS screen.
+replaced, not on every turn. Personal chats never get it. Each host gets only
+its own line, so a Windows lane's agent never reads that it has a macOS screen.
 
 See [Mac Desktop](../mac-desktop/README.md).
 

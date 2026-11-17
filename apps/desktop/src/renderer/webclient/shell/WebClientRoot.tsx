@@ -394,8 +394,8 @@ export function WebClientRoot({
     if (accountProjectIdOfTarget(target)) {
       // The link names an account project (L33): the account list picks a
       // copy on a computer that is online, follows a merge, or says the
-      // project is gone. With no copy online, the repository opens with no
-      // machine, as on the desktop.
+      // project is gone. With no copy online, the repository opens on ADE
+      // Cloud, as on the desktop.
       const list = await accountClient.readAccountProjects().catch(() => ({ state: "not_loaded" as const, projects: [] as [] }));
       const online = accountClient.getSnapshot().machines
         .filter((machine) => machine.online)
@@ -405,7 +405,8 @@ export function WebClientRoot({
       if (step.kind === "stop") {
         if (step.noCopy) {
           const { useAppStore } = await import("../../state/appStore");
-          useAppStore.getState().showNoMachineTab({ id: step.noCopy.id, displayName: step.noCopy.name, iconDataUrl: null });
+          const { adeCloudProjectForTabId } = await import("../../state/adeCloudTabs");
+          await useAppStore.getState().openAdeCloudProject(adeCloudProjectForTabId(step.noCopy.id, step.noCopy.name)).catch(() => undefined);
           return { ok: false, failure: { ...step.failure, projectPath: WELCOME_PATH } };
         }
         return { ok: false, failure: step.failure };

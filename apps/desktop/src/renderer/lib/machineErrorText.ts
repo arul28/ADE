@@ -2,17 +2,18 @@
  * A failed call to another machine, as a person reads it: the machine's own
  * sentence ("Can't reach … — it may be asleep or ADE may be stopped there."),
  * without Electron's "Error invoking remote method …" wrapper, and with an
- * ADE Cloud computer named the way the rest of ADE names it ("Cloud · <lane>",
- * or "Cloud"), never by the id its provider generated ("gfuzrbefvm").
+ * ADE Cloud computer named the way the rest of ADE names it ("ADE Cloud"),
+ * never by the id its provider generated ("gfuzrbefvm").
  *
  * The main process builds the sentence from the saved connection's name, which
- * for a cloud computer is that id; the lane a computer serves is known only
- * here, from the lane computer index, so the name is mapped where it is shown.
+ * for a cloud computer is that id; which ids are ADE Cloud computers is known
+ * only here, from the lane computer index, so the name is mapped where it is shown.
  */
 
 import type { CloudMachine } from "../../shared/adeCloud";
 import { watchedCloudMachines } from "../components/remoteTargets/useCloudMachines";
-import { ADE_CLOUD_MACHINE_LABEL, adeCloudLaneComputersNow, adeCloudLaneLabel, type AdeCloudLaneComputer } from "../state/adeCloudLaneIndex";
+import { adeCloudLaneComputersNow, type AdeCloudLaneComputer } from "../state/adeCloudLaneIndex";
+import { ADE_CLOUD_NAME } from "../../shared/adeCloudMachine";
 import { extractError, ipcErrorMessage } from "./format";
 import { formatSessionActionError } from "./sessions";
 
@@ -21,9 +22,8 @@ function escapeRegExp(text: string): string {
 }
 
 /**
- * `text` with every cloud computer id this window knows replaced by its label:
- * a lane computer's "Cloud · <lane>", any other of the account's cloud
- * computers "Cloud". Text that names no cloud computer comes back unchanged.
+ * `text` with every cloud computer id this window knows replaced by "ADE
+ * Cloud". Text that names no cloud computer comes back unchanged.
  */
 export function withCloudComputerLabels(
   text: string,
@@ -36,11 +36,11 @@ export function withCloudComputerLabels(
   if (!text) return text;
   const labels = new Map<string, string>();
   for (const box of boxes ?? []) {
-    if (box.instanceId.trim()) labels.set(box.instanceId.trim().toLowerCase(), ADE_CLOUD_MACHINE_LABEL);
+    if (box.instanceId.trim()) labels.set(box.instanceId.trim().toLowerCase(), ADE_CLOUD_NAME);
   }
   for (const computer of computers) {
     const id = computer.instanceId.trim().toLowerCase();
-    if (id) labels.set(id, computer.laneName.trim() ? adeCloudLaneLabel(computer.laneName.trim()) : ADE_CLOUD_MACHINE_LABEL);
+    if (id) labels.set(id, ADE_CLOUD_NAME);
   }
   let out = text;
   for (const [id, label] of labels) {

@@ -49,9 +49,8 @@ Renderer surfaces:
 
 | Component | Role |
 |-----------|------|
-| `renderer/components/settings/storage/StorageDiagnostics.tsx` | Diagnostics view, inside Project → Storage & cleanup → Space |
 | `renderer/components/settings/LaneTemplatesSection.tsx` | Template management |
-| `renderer/components/settings/NewLaneSettingsSection.tsx` | Start defaults and lane templates. Cleanup policy lives in `StorageSection.tsx`. |
+| `renderer/components/settings/NewLaneSettingsSection.tsx` | Start defaults and lane templates. Cleanup policy lives in `health/HealthCleanups.tsx`. |
 
 ## Environment initialization (W1)
 

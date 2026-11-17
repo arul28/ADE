@@ -41,6 +41,8 @@
   // A binding ignores the URL's host, so customHooks.ts picks one by the
   // forward URL's origin: production desktops register on the production
   // directory, development builds on the default one.
+  // Event wakes (cloudEventWakes.ts) use both bindings. They need the secret
+  // CLOUD_EVENT_WAKE_SECRET, with the same value on both account directories.
   "services": [
     { "binding": "ACCOUNT_DIRECTORY", "service": "ade-account-directory" },
     { "binding": "ACCOUNT_DIRECTORY_PRODUCTION", "service": "ade-account-directory-production" }

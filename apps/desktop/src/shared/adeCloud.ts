@@ -652,7 +652,8 @@ export type CloudWakeForUseResult =
   | { state: "woken"; instanceId: string; wakeMs: number }
   | { state: "awake"; instanceId: string }
   | { state: "not_cloud" }
-  | { state: "refused"; message: string };
+  /** `code`: the server's refusal code (`CLOUD_REFUSAL_CODES`) when it sent one; `message` is its sentence. */
+  | { state: "refused"; message: string; code?: string | null };
 
 /** "Sleeps when idle" / "Sleeps once ADE on it updates". */
 export function describeCloudSleepPolicy(policy: CloudSleepPolicy): string {

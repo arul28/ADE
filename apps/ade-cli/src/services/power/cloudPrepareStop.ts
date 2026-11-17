@@ -18,6 +18,9 @@ export type CloudPrepareStopResult = {
   stillRunning: number;
   chatsUploaded: number;
   chatsNotUploaded: number;
+  /** Shell and CLI copies and Git summaries saved after the chats (`cloudRestSave.ts`); 0 when no time was left. */
+  sessionsSaved: number;
+  gitSaved: number;
   timedOut: boolean;
 };
 
@@ -31,6 +34,8 @@ export async function prepareCloudComputerToStop(args: {
   logger?: { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
   /** A disk grow's restart: the turns keep running (they continue after it), only the chat copy is written. */
   keepTurns?: boolean;
+  /** The rest save without capsules, in the time left after the chats (`cloudRestSave.ts`). */
+  saveForRest?: (budgetMs: number) => Promise<{ sessions: number; git: number }>;
 }): Promise<CloudPrepareStopResult> {
   const deadline = Date.now() + Math.max(1_000, args.timeoutMs);
   const counts: Array<{ chats: number; clis: number }> = args.keepTurns ? [] : await Promise.all(args.runtimes.map(async (runtime) => {
@@ -56,12 +61,22 @@ export async function prepareCloudComputerToStop(args: {
     args.logger?.warn("cloud.prepare_stop_flush_failed", { error: error instanceof Error ? error.message : String(error) });
     return { uploaded: 0, remaining: -1, timedOut: true };
   });
+  // Copies and Git summaries only with real time left: the chats come first.
+  const restMs = deadline - Date.now();
+  const rest = args.saveForRest && restMs > 3_000
+    ? await args.saveForRest(restMs - 1_000).catch((error: unknown) => {
+        args.logger?.warn("cloud.prepare_stop_rest_save_failed", { error: error instanceof Error ? error.message : String(error) });
+        return { sessions: 0, git: 0 };
+      })
+    : { sessions: 0, git: 0 };
   const result: CloudPrepareStopResult = {
     interruptedChats,
     interruptedClis,
     stillRunning: remaining,
     chatsUploaded: flush.uploaded,
     chatsNotUploaded: flush.remaining < 0 ? 0 : flush.remaining,
+    sessionsSaved: rest.sessions,
+    gitSaved: rest.git,
     timedOut: remaining > 0 || flush.timedOut || Date.now() >= deadline,
   };
   args.logger?.info("cloud.prepare_stop", result);

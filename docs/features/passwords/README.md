@@ -7,8 +7,7 @@ signed-in account, on every computer the person signs in to. Agents can **use**
 anything in it and never **see** a value: they sign in with
 `ade browser signin`, and run commands with secrets through `ade secrets exec`.
 
-It replaced the old per-project Secrets store and Settings › Secrets: a
-project's secrets are now Passwords & Secrets items for that project (see
+A project's secrets are Passwords & Secrets items for that project (see
 [Secrets](#secrets-use-never-read)).
 
 It is not the account vault (`account_vault`, `AccountVault*`), which is the
@@ -103,6 +102,12 @@ shown.
   with a shared secret. A dump of the relay's database opens nothing.
 - Every time the relay hands the key out, it records the device and machine
   kind (`password_key_releases`).
+- Only native clients and brains reach the relay's Passwords routes
+  (`GET`/`PUT passwords/items`, `POST passwords/key`, `POST passwords/reset`,
+  `GET passwords/releases`, under `/attention/account/`). A request from a
+  browser page (it has an `Origin` header) gets `403` before authentication
+  (`BROWSER_ACCOUNT_ROUTES` in `apps/push-relay/src/relay.ts`). The account
+  vault routes are native-only for the same reason. See "On the web".
 - On a person's computer the key is cached in ADE's encrypted file store; on
   an ADE Cloud computer it stays in memory only.
 - A write made on an old copy of an item is refused (`stale`) instead of
@@ -262,6 +267,27 @@ computer (1 MB), lists its names with each value's length, and saves the
 chosen ones for one project or every project (`passwords.importSecrets`). Files
 never leave the computer except as sealed items; delete them afterwards.
 
+### The `.env` tip
+
+A project whose main checkout has a `.env` file that git ignores gets a
+suggestion card: "Import your .env to ADE secrets". New lanes and ADE Cloud
+start without that file, and secrets reach every lane and computer.
+
+- The signal is `envFiles` on the lane dependency status of the main checkout
+  (`listIgnoredDotenvFiles` in `main/services/projects/projectRemovalState.ts`).
+  It lists each ignored `.env*` file once and skips `.env.example`,
+  `.env.sample` and files under `node_modules`. The status read already exists
+  for the lane-template notice, so the tip costs no call of its own.
+- Only a connected computer of the person's own shows it
+  (`components/app/suggestions/useEnvImportSuggestion.ts`). ADE Cloud has no
+  checkout of the person's own to import from.
+- **Import it** opens Settings › Passwords & Secrets with the import dialog.
+  The file is read on its own machine, through the lane's pin:
+  `passwords.previewLaneEnv` returns names and value lengths only, and
+  `passwords.importLaneEnv` saves the picked names there. No value comes to
+  the window. Only a path that the checkout's own ignored-file list names is
+  read.
+
 ## In the browser, for the person
 
 - **The key button** in the address bar shows when Passwords has logins for the
@@ -277,6 +303,29 @@ never leave the computer except as sealed items; delete them afterwards.
   never right after an agent's own click, and never for a login already saved
   with the same password. A two-step sign-in's username page is remembered
   until its password page is sent.
+
+## On the web
+
+The web app never reads the vault: the push relay refuses every passwords
+route to a browser. Settings › Passwords & Secrets on the web shows only one
+sentence, `WEB_PASSWORDS_SENTENCE` (`shared/adeCloud/accountCalls.ts`): "Open
+ADE desktop or the iPhone to see and change Passwords. Agents on every
+computer, ADE Cloud too, still use them." The web adapter's passwords calls
+throw the same sentence.
+
+Why: items are sealed under the account's vault key, which only a signed-in
+device opens. A script on the ADE Web origin must never get that key or a
+value, so the relay gives a browser page no `passwords/*` or `vault` route
+(see "How it is kept").
+
+## Gotchas
+
+- **A brain with sync off has no Passwords.** The machine route
+  `passwords.call` answers "action_not_callable: passwords.status is
+  unavailable in this runtime" when the brain made no machine account stores.
+  `npm run dev:desktop` starts its brain with `--no-sync`, and a scratch
+  `ADE_HOME` is not a sync-capable home, so Settings › Passwords & Secrets
+  fails there. Project (pinned) calls such as the `.env` import still work.
 
 ## Not yet
 

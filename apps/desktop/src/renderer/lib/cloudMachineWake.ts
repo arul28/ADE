@@ -5,6 +5,8 @@ import { cloudConnectionMachineKey, isCloudConnectionTarget } from "../state/clo
 import { readWebAccountMachineKeys } from "../state/webAccountMachineKeys";
 import { showToast } from "../components/app/toast/toastStore";
 import { connectMachine } from "./machineConnect";
+import { ipcErrorMessage } from "./format";
+import { MachineConnectError, type MachineAddress } from "../../shared/machineAddress";
 
 /**
  * Wakes from a list, by machine key: one under way (a second open of the same
@@ -49,6 +51,9 @@ export function clearCloudMachineWakeFailure(machineKey: string): void {
   if (listWakes.get(machineKey)?.state === "failed") setListWake(machineKey, null);
 }
 
+/** Actions waiting for a wake under way, by machine key. */
+const pendingIntents = new Map<string, Array<(address: MachineAddress) => void>>();
+
 export type RestingCloudMachine = {
   machineId: string;
   machineName: string;
@@ -80,17 +85,51 @@ export function restingCloudMachineKey(machine: Pick<RestingCloudMachine, "machi
  * shows the progress (`useCloudMachineWakeInFlight`); a failure says why in a
  * toast and stays for the opened view (`useCloudMachineWakeFailure`).
  */
-export function wakeRestingCloudMachine(machine: RestingCloudMachine): void {
+export function wakeRestingCloudMachine(
+  machine: RestingCloudMachine,
+  /**
+   * What the person asked for, run once the computer is connected (never
+   * awaited by the caller). A second wake while one is under way adds its
+   * intent to that wake.
+   */
+  onConnected?: (address: MachineAddress) => void,
+): void {
   const machineKey = restingCloudMachineKey(machine);
-  if (!machineKey || listWakes.get(machineKey)?.state === "waking") return;
+  if (!machineKey) return;
+  if (onConnected) {
+    const intents = pendingIntents.get(machineKey) ?? [];
+    intents.push(onConnected);
+    pendingIntents.set(machineKey, intents);
+  }
+  if (listWakes.get(machineKey)?.state === "waking") return;
   setListWake(machineKey, WAKING);
   let failure: ListWake | null = null;
   void connectMachine(machineKey)
+    .then((address) => {
+      const intents = pendingIntents.get(machineKey) ?? [];
+      pendingIntents.delete(machineKey);
+      for (const intent of intents) {
+        try {
+          intent(address);
+        } catch (error) {
+          console.warn("[cloud] the action after a wake failed", error instanceof Error ? error.message : String(error));
+        }
+      }
+    })
     .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      // The toast has the details; the opened view offers Try again.
-      failure = { state: "failed", message: `ADE couldn't wake ${machine.machineName}. Try again.` };
-      showToast({ title: `Couldn't wake ${machine.machineName}`, message, tone: "error" });
+      pendingIntents.delete(machineKey);
+      // The server's sentence for a refusal (hours, a block, too many awake); never the computer's name.
+      const reason = ipcErrorMessage(error).trim();
+      const message = reason ? `Can't wake: ${reason}` : "ADE couldn't wake your ADE Cloud computer. Try again.";
+      failure = { state: "failed", message };
+      // A failed connect result is a known sentence (a refusal, asleep, out of
+      // reach), not an ADE bug, so it offers no report. Any other throw does.
+      showToast({
+        title: "Couldn't wake your ADE Cloud computer",
+        message: reason || message,
+        tone: "error",
+        ...(error instanceof MachineConnectError ? { report: false as const } : {}),
+      });
     })
     .finally(() => setListWake(machineKey, failure));
 }

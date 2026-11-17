@@ -1,1048 +1,689 @@
 # Files and Editor
 
-An IDE-style file explorer and Monaco editor surface integrated into
-ADE. Shared workspace selection, atomic writes, file watching with
-reference-counted watcher subscriptions, Monaco model reuse, streaming
-large-file previews, and specialized view modes (diff, conflict, and the
-flagged v2 workbench shell).
-
-This feature sits at the boundary between the filesystem and everything
-else: context packs use it to discover docs, the chat surface links
-back to it for "open this file", and lanes surface files by worktree.
+An IDE-style file explorer and Monaco editor in ADE: shared workspace
+selection, atomic writes, file watching with reference-counted
+subscriptions, Monaco model reuse, streamed large-file previews, and diff and
+conflict modes. Context packs use it to find docs, chat links open files in
+it, and lanes show their files through it.
 
 ## Where this runs
 
-File listing, atomic writes, the file-name index and content search, and the
-file watcher all run inside the **active runtime**
-for the window's project binding — the local ADE daemon for
-local-bound windows and the SSH-attached remote runtime for
-remote-bound windows. The Monaco editor in the renderer is purely
-client-side; every byte it reads or writes flows through
-`window.ade.files.*` in `apps/desktop/src/preload/preload.ts`, which
-routes file actions through the remote runtime first, then through the
-strict local-runtime route for local-bound windows. It only falls
-through to the legacy in-process IPC handlers when no runtime route is
-available, for example before a project binding exists or in tests /
-diagnostic harnesses that run without a runtime pool. Watcher events
-arrive over the runtime's event stream
-(category `"runtime"`) and are dispatched into renderer subscribers
-through the same preload pump that powers lane / pty / process
-events. Remote-bound desktop windows therefore browse and edit files
-on the remote machine; the file tree, search results, and watcher
-events all reflect the remote worktree.
+File listing, atomic writes, the file-name index, content search and the file
+watcher run inside the **active runtime** of the window's project binding:
+the local ADE daemon for a local window, the remote runtime for a remote
+window. Monaco runs only in the renderer. Every byte it reads or writes goes
+through `window.ade.files.*` (`apps/desktop/src/preload/preload.ts`): the
+remote-runtime route first, then the strict local-runtime route. The legacy
+in-process IPC handlers answer only when no runtime route exists (before a
+project binding, or in tests). Watcher events arrive on the runtime event
+stream (category `"runtime"`) through the same preload pump as lane, PTY and
+process events. A remote window therefore browses and edits the remote
+worktree.
 
-A window is not limited to the machine it is bound to. Every
-`window.ade.files.*` method takes an optional trailing **machine pin**
-(`OpenProjectBinding | null`) that addresses one machine explicitly —
-see [Which machine answers a file call](#which-machine-answers-a-file-call).
+Every `window.ade.files.*` method takes an optional trailing **machine pin**
+(`OpenProjectBinding | null`). See
+[Which machine answers a file call](#which-machine-answers-a-file-call).
 
-Git ignore lookups split paths at submodules and query within each submodule,
-so one nested path does not discard the rest of a batch. Failed lookups are
-not cached. Chat editor links using `cursor://` or `vscode://` open the target
-file in ADE.
+An ADE Cloud lane whose computer is at rest is read from GitHub, with no
+computer awake. See [With no computer awake](#with-no-computer-awake).
+
+Git ignore lookups split paths at submodules and query each submodule, so one
+nested path does not discard the rest of a batch. Failed lookups are not
+cached. Chat editor links that use `cursor://` or `vscode://` open the file in
+ADE.
 
 ## Source file map
 
-Runtime services back the canonical implementation. The desktop
-`apps/desktop/src/main/services/files/` files below stay as fallback
-targets for the legacy IPC path.
+Paths are under `apps/desktop/src/` unless they say otherwise. Runtime
+services are the real implementation; `main/services/files/` also serves the
+legacy IPC fallback.
 
-- `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts`
-  — local runtime project registration, file action dispatch, and event
-  polling; file actions use a bounded per-call timeout before the
-  desktop IPC handler timeout can fire.
-- `apps/desktop/src/main/services/ipc/runtimeBridge.ts`,
-  `apps/desktop/src/main/services/remoteRuntime/remoteConnectionPool.ts`,
-  `apps/desktop/src/main/services/remoteRuntime/remoteConnectionService.ts`,
-  and `apps/ade-cli/src/multiProjectRpcServer.ts` — bridge the runtime
-  event stream to bound desktop windows. A `replay: false` subscription
-  returns the runtime's current cursor, so a remote Files tab can begin
-  watching live changes without replaying stale runtime events.
-- `apps/desktop/src/main/services/remoteRuntime/runtimeRpcClient.ts` —
-  JSON-RPC client used by both local and remote runtime transports,
-  including per-call timeout overrides for file actions and event
+Main process and runtime:
+
+- `main/services/localRuntime/localRuntimeConnectionPool.ts`: local runtime
+  project registration, file action dispatch and event polling, with a bounded
+  per-call timeout for file actions.
+- `main/services/ipc/runtimeBridge.ts`,
+  `main/services/remoteRuntime/remoteConnectionPool.ts`,
+  `main/services/remoteRuntime/remoteConnectionService.ts`,
+  `apps/ade-cli/src/multiProjectRpcServer.ts`: bridge the runtime event stream
+  to bound windows. A `replay: false` subscription returns the current cursor,
+  so a remote Files tab watches live changes without stale events.
+- `main/services/remoteRuntime/runtimeRpcClient.ts`: the JSON-RPC client for
+  local and remote runtimes, with per-call timeouts for file actions and event
   polling.
-- `apps/desktop/src/main/services/files/fileService.ts` — directory
-  listing, paginated child loading, Git status decorations, range reads,
-  blame, atomic writes, quick open, content search, path safety. Its
-  decoration response is capped (see [Git status overlay](#git-status-overlay)),
-  and its read path collapses what used to be up to three opens into one: above
-  the 1 MiB text cap it reads a single 256 KB prefix, in the 256 KB–1 MiB band
-  it sniffs an 8 KB prefix first so a 900 KB video is not read whole and thrown
-  away, and at or below 256 KB it reads the file once and sniffs its own head.
-- `apps/desktop/src/main/services/files/externalFilesWorkspaceRegistry.ts`
-  — local-only registry for files or folders opened from outside the active
-  project through Finder / OS open-file events or renderer drag-and-drop.
-- `apps/desktop/src/main/services/shared/treeWatcher.ts` — `watchTree`,
-  the tree watcher under the file watcher and the automation file trigger.
-  One recursive native watch per root on macOS and Windows; chokidar on
-  Linux (see "File watching").
-- `apps/desktop/src/main/services/files/fileWatchLedger.ts` — the watches a
-  client still holds, so the stops a vanished page never sent can be sent
-  for it.
-- `apps/desktop/src/main/services/files/fileWatcherService.ts` —
-  `watchTree` wrapper with per-sender ref counting, debounced events,
-  idle watcher close, plus `stopAllForWorkspace(workspaceId)` and
-  `countActiveForWorkspace(workspaceId)` helpers used by the lane
-  delete pipeline to tear down watchers as a discrete teardown step
-  before the worktree is removed. ~290 lines.
-- `apps/desktop/src/main/services/files/fileSearchIndexService.ts` —
-  the file-**name** index (keyed per workspace and per `includeIgnored`
-  mode, incrementally updated from watcher events), a parallel directory
-  map behind the opt-in `includeDirectories` flag, plus the two-tier
-  content search that backs `searchText`. The index holds no file
-  contents; `git grep` is the first tier and a streaming JS scan the
-  second. See [Quick open and content search](#quick-open-and-content-search).
-- `apps/desktop/src/main/services/files/fileService.test.ts` and
-  `fileWatcherService.test.ts` — unit coverage.
-- `apps/desktop/src/main/services/diffs/` — diff computation for diff
-  mode (staged vs working tree, commit-to-commit).
-- `apps/desktop/src/main/services/conflicts/conflictService.ts` —
-  used by conflict mode for 3-way merge data.
-- `apps/desktop/src/main/services/editors/editorDetection.ts`,
-  `openPathInEditor.ts`, `editorProcessEnv.ts` — detect installed
-  editors from `EDITOR_TARGETS` and open a local workspace/file in one,
-  or mint an SSH remote editor URL. See
-  [Opening in an external editor](#opening-in-an-external-editor).
+- `main/services/files/fileService.ts`: listing, paged children, Git status
+  decorations (capped, see [Git status overlay](#git-status-overlay)), range
+  reads, blame, atomic writes, quick open, content search, path safety. One
+  open per read: above the 1 MiB text cap it reads one 256 KB prefix; from
+  256 KB to 1 MiB it sniffs an 8 KB prefix first; at or below 256 KB it reads
+  the file once.
+- `main/services/files/externalFilesWorkspaceRegistry.ts`: local-only registry
+  of files and folders opened from Finder, OS open-file events or drag and
+  drop.
+- `main/services/shared/treeWatcher.ts`: `watchTree`, under the file watcher
+  and the automation file trigger (see [File watching](#file-watching)).
+- `main/services/files/fileWatchLedger.ts`: the watches a client still holds,
+  so the stops a vanished page never sent can be sent for it.
+- `main/services/files/fileWatcherService.ts`: `watchTree` wrapper with
+  per-sender ref counts, debounced events, idle close,
+  `stopAllForWorkspace(workspaceId)` and `countActiveForWorkspace` (the lane
+  delete pipeline stops watchers before it removes a worktree).
+- `main/services/files/fileSearchIndexService.ts`: the file-**name** index
+  (per workspace and `includeIgnored` mode, updated from watcher events), the
+  opt-in directory map, and the two-tier content search behind `searchText`.
+- `main/services/files/fileService.test.ts`, `fileWatcherService.test.ts`:
+  unit coverage.
+- `main/services/diffs/`: diff computation for diff mode.
+- `main/services/conflicts/conflictService.ts`: 3-way merge data for conflict
+  mode.
+- `main/services/editors/editorDetection.ts`, `openPathInEditor.ts`,
+  `editorProcessEnv.ts`, `editorWindowsInstall.ts`: detect installed editors
+  and open a local path or an SSH remote URL in one (see
+  [Opening in an external editor](#opening-in-an-external-editor)).
+- `main/services/lanes/laneService.ts`: `getFilesWorkspaces`,
+  `resolveWorkspaceById`.
+
+ADE Cloud reads (no computer awake):
+
+- `shared/adeCloud/accountReader.ts`: answers file calls for an
+  account-answered pin from GitHub (`listContents`, `getFileContent` at the
+  lane's branch), with read-only workspaces. `githubReadSentence` gives the
+  "Connect GitHub" and "branch isn't on GitHub yet" sentences.
+- `shared/adeCloud/binding.ts`: `isAdeCloudBinding`, `isAccountAnsweredPin`.
+- `shared/github/directClient.ts`: the GitHub App calls those reads use.
+- `renderer/webclient/adapter/federated.ts`, `renderer/webclient/adapter/files.ts`:
+  the web client's routing to the account reader.
 
 Shared types and IPC:
 
-- `apps/desktop/src/shared/types/files.ts` — `FilesWorkspace`,
-  `FileTreeNode`, `FilesListTreeChildrenResult`, `FileContent`,
-  `FilesReadFileRangeResult`, `FilesGitStatusEvent`,
-  `FilesGitBlameResult`, `FilesQuickOpenItem`, `FilesSearchTextMatch`,
-  `FilesOpenExternalPathResult`, and the IPC arg shapes.
-- `apps/desktop/src/shared/editorTargets.ts` — `EDITOR_TARGETS`,
-  `EditorTarget`, `OpenPathTarget`, `OpenInTarget`, remote SSH URL
-  builders, and `resolveOpenInTarget` / `canOfferOpenIn`. Consumed by
-  main-process editor launch and by lane/session **Open in** menus.
-- `apps/desktop/src/shared/types/git.ts` (and related shared types) —
-  `FileDiff`, `FilePatch`, and other shapes returned by `diffService`
-  for the diff viewer.
-- `apps/desktop/src/shared/ipc.ts` — channels `ade.files.*` and
-  `ade.diff.getChanges` / `ade.diff.getFile` / `ade.diff.getFilePatch`
-  (lane-scoped diff lists and per-file payloads).
-- `apps/desktop/src/main/services/ipc/registerIpc.ts` — handler
-  registrations (`filesListWorkspaces`, `filesListTree`,
-  `filesListTreeChildren`, `filesRefreshGitDecorations`,
-  `filesReadFile`, `filesReadFileRange`, `filesGitBlame`,
-  `filesWriteTextAtomic`, `filesWriteText`, `filesCreateFile`,
-  `filesCreateDirectory`, `filesRename`, `filesDelete`, `filesQuickOpen`,
-  `filesSearchText`, `filesWatchChanges`, `filesStopWatching`,
-  `filesOpenExternalPath`, plus
-  `diffGetChanges`, `diffGetFile`, `diffGetFilePatch`).
-  Also `appGetInstalledEditors` / `appOpenPathInEditor`
-  (`ade.app.getInstalledEditors`, `ade.app.openPathInEditor`) for
-  detected-editor launch.
-
-Preload bridge:
-
-- `apps/desktop/src/preload/preload.ts` — `window.ade.files` and
-  `window.ade.diff` (`getChanges`, `getFile`, `getFilePatch`; changes
+- `shared/types/files.ts`: `FilesWorkspace`, `FileTreeNode`,
+  `FilesListTreeChildrenResult`, `FileContent`, `FilesReadFileRangeResult`,
+  `FilesGitStatusEvent`, `FilesGitBlameResult`, `FilesQuickOpenItem`,
+  `FilesSearchTextMatch`, `FilesOpenExternalPathResult`, IPC args.
+- `shared/editorTargets.ts`: `EDITOR_TARGETS`, `OpenPathTarget`,
+  `OpenInTarget`, remote SSH URL builders, `resolveOpenInTarget`,
+  `canOfferOpenIn`.
+- `shared/types/git.ts`: `FileDiff`, `FilePatch` and the other diff shapes.
+- `shared/ipc.ts`: `ade.files.*`, `ade.diff.getChanges`, `ade.diff.getFile`,
+  `ade.diff.getFilePatch`.
+- `main/services/ipc/registerIpc.ts`: the `files*` and `diff*` handlers, plus
+  `appGetInstalledEditors` and `appOpenPathInEditor`.
+- `preload/preload.ts`: `window.ade.files` and `window.ade.diff` (the changes
   list is short-cached per lane). Every `files` method except
-  `openExternalPath` takes an optional trailing machine pin, routed by
+  `openExternalPath` takes a trailing machine pin, routed by
   `callPinnedFileActionOr`.
 
-Renderer:
+Renderer (`renderer/components/files/`):
 
-- `apps/desktop/src/renderer/components/files/FilesTab.tsx` — shared
-  route/sidebar entry point. It always renders the workbench and forwards
-  router-state chat file targets as workspace-relative paths, preserving
-  the lane id and source position for local and remote-bound projects. Router
-  state is validated rather than trusted: `openPathType` selects a tree reveal
-  instead of an editor open, `searchQuery` opens the search panel instead of a
-  file, and `filesPin` is accepted only when it really is an
-  `OpenProjectBinding` (a `local` binding needs `displayName`; a `remote` one
-  needs `targetId` / `projectId` / `runtimeName`), so a malformed history entry
-  cannot aim file calls at a machine that does not exist.
-- `apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx` —
-  Files tab shell: workspace chrome, activity bar, explorer, editor
-  groups, Monaco edit host, diff/conflict surfaces, quick open, text
-  search, trust warnings, persisted recent-file
-  pruning, project-level open-tab state across lane/workspace switches,
-  dirty-buffer publishing for agent reads, optional Git-decoration
-  fallback, and file-type viewers. Accepts optional
-  `preferredLaneId` and `embedded` props so the same component can mount inside
-  the Work right-edge sidebar; embedded, it collapses its controls into one
-  `workToolChrome` row with the path breadcrumb, provides
-  `MonochromeFileIconsContext`, and below `EMBEDDED_SINGLE_SURFACE_PX` (520)
-  shows one surface at a time (tree, or editor with a "Back to files" crumb)
-  with the other column mounted but `inert`. It also owns the **machine pin**: the amber
-  machine chip, the "Back to this computer" control, the pinned-machine
-  liveness read, and the release of caches written under a pinned key.
-- `apps/desktop/src/renderer/components/files/v2/pinnedFilesApi.ts` —
-  `createPinnedFilesApi(pin)` returns the whole Files API with one machine
-  already bound to it, cached per binding key so its identity changes exactly
-  when the machine does. The workbench hands that object to `useFilesTree`,
-  `EditorGroups`, `useFileContent`, `streamFileBytes`, and every viewer;
-  nothing under the workbench calls `window.ade.files` directly.
-- `apps/desktop/src/renderer/components/files/v2/useFilesTree.ts` — the
-  explorer tree as a hook: listing, paging, expansion, per-path serialized
-  tree ops, and git decorations, driven by (workspace, machine) alone. The
-  file watcher deliberately stayed in `FilesWorkbench` because it refreshes
-  the tree *and* reloads open editor tabs.
-- `apps/desktop/src/renderer/components/files/v2/FilesSearchPanel.tsx` — the
-  single Files search surface, rendered in three places (explorer sidebar,
-  centred modal, Work tools pane). Also owns the "Include ignored files"
-  preference (`getFilesSearchIncludeIgnored` / `setFilesSearchIncludeIgnored`)
-  and the shared `Backdrop` / `SEARCH_PANEL_SURFACE` chrome that
-  `overlays.tsx` re-uses.
-- `apps/desktop/src/renderer/components/files/v2/filesOpenRequests.ts` —
-  one-shot module channel that carries "open this path in the Work tools-pane
-  Files panel" from a chat click to the embedded workbench. Holds one pending
-  request across the gap between the click and the panel mounting; the
-  consumer clears the hold so a later mount cannot re-open it.
-- `apps/desktop/src/renderer/components/ui/OpenInSubmenu.tsx` — shared
-  **Open in** submenu used by lane and session context menus. Probes
-  `window.ade.app.getInstalledEditors`, filters to
-  `supportsRemote` when an SSH `remote` is set, and calls
-  `window.ade.app.openPathInEditor`. Projectless chats never mount
-  this menu.
-- `apps/desktop/src/renderer/components/files/FilesExplorer.tsx` —
-  virtualized file tree (`@tanstack/react-virtual`), inline rename/create,
-  create/rename/delete controls, and context-menu wiring; git status coloring
-  uses helpers from `filePresentation.tsx`. It renders the search field and a
-  `searchResults` slot; with a non-empty query the results replace the tree
-  entirely, so the old client-side filter over whatever slice of the tree
-  happened to be loaded is skipped.
-- `apps/desktop/src/renderer/components/files/filePresentation.tsx` —
-  file-type icons and `changeStatus*` helpers shared with the explorer, plus
-  `MonochromeFileIconsContext` / `useFileIconColor`: the embedded Work pane
-  provides `true` and every glyph paints muted instead of its catalogue colour.
-- `apps/desktop/src/renderer/components/files/v2/monacoLoader.ts` — the
-  memoized Monaco init, and ADE's own `ade-dark` / `ade-light` themes. They
-  inherit `vs-dark` / `vs` tokenization and override only the surface colours,
-  which are literals rather than a live `--color-surface` read because the
-  themes are defined once and a token read would freeze both to whichever was
-  active when the first editor opened.
-- `apps/desktop/src/renderer/components/files/monacoModelRegistry.ts`
-  and `treeHelpers.ts` — reusable Monaco model lifetime tracking and
-  tree/decorations helpers used by the workbench. `treeHelpers` also
-  owns the incremental-tree utilities (`loadedDirectoryChildrenCount`,
-  `mergeTreePreservingLoadedChildren`, `appendTreeNodeChildren`) so
-  watcher refreshes re-list only the already-loaded window.
-- `apps/desktop/src/renderer/components/files/v2/filesTreeCache.ts` —
-  bounded module-level workspace-roster and explorer-tree caches
-  (node/byte-accounted LRU with per-key pinning for mounted explorers;
-  `FILES_TREE_CACHE_NODE_BUDGET`, `FILES_TREE_CACHE_BYTE_BUDGET`,
-  `FILES_ROSTER_CACHE_MAX_PROJECTS`, `filesProjectCacheKey`,
-  `pinCachedTree` / `unpinCachedTree`, `releaseFilesProjectCaches`).
-- `apps/desktop/src/renderer/components/files/v2/` — VS Code-style
-  workbench shell: editor groups, preview/pinned tabs, split/move
-  support, project-scoped tab-scope persistence, warm empty state,
-  the search panel, the create prompt (`overlays.tsx`, which now holds
-  `CreatePromptModal` and the shared modal chrome only), and
-  viewers for code, markdown, sandboxed HTML, image (SVG source, converted
-  TIFF/HEIC), Mermaid diagram files, fonts, audio/video playback, CSV/TSV,
-  PDF, spreadsheets (`.xlsx`), presentations (`.pptx`), Word documents
-  (`.docx`), the legacy-Office fallback, large text, binary, and diffs.
-  `v2/viewerRegistry.ts` decides both which viewer renders a file and
-  whether a tab is editable (`tabIsTextEditable` = editable viewer kind
-  AND a full, non-binary text payload). The markdown Preview↔Source and
-  HTML Preview↔Source and CSV Table↔Source viewers share
-  `viewers/ViewerModeToggle.tsx` for the
-  toggle pill and `viewers/viewerModeMemory.ts` to remember each tab's
-  last mode across viewer remounts (e.g. the reload after a save). The
-  presentation viewer uses both for its Slides↔Outline toggle, so a
-  `.pptx` remembers its mode the same way a `.csv` does.
-- `apps/desktop/src/renderer/components/files/v2/viewers/office/` — the
-  OOXML readers behind those two viewers: `ooxmlZip.ts` (lazy fflate,
-  entry-scoped reads, a streaming byte cap), `ooxmlXml.ts` (namespace-aware
-  lookups, entity decoding, event-loop yields), `xlsx.ts`, `pptx.ts` and `docx.ts`
-  (the display models), `ooxmlMedia.ts` (the one media extension → MIME map), and `ooxmlError.ts` (a typed failure reason each
-  viewer turns into copy). See [Office previews](#office-previews).
-- `apps/desktop/src/renderer/components/files/v2/viewers/OoxmlPreviewShell.tsx`
-  — the shell both office viewers share: size pre-check, capped byte stream,
-  parse through a dynamic import, cancellation, and the one failure card (with
-  a retry only where retrying can help). `load` is held in a ref, so a caller
-  passing an inline arrow cannot restart the read on a re-render.
-- `apps/desktop/src/renderer/components/files/v2/viewers/WordViewer.tsx` and
-  `WordBlocks.tsx` — the `.docx` page, outline rail and zoom (the viewer) and
-  the block renderers (paragraphs, lists, tables, pictures, links). Element ids
-  are scoped per viewer, so two open documents never share an anchor.
-- `apps/desktop/src/renderer/components/files/v2/viewers/FontViewer.tsx` and
-  `fontInfo.ts` — the font specimen and its bounded sfnt/WOFF metadata reader.
-- `apps/desktop/src/renderer/components/files/v2/viewers/MermaidViewer.tsx` —
-  `.mmd`/`.mermaid` Diagram↔Source over the shared `MermaidDiagram`
-  (`keepLastGood`).
-- `apps/desktop/src/renderer/components/files/v2/viewers/usePanZoom.ts` and
-  `ZoomControls.tsx` — the pan/zoom state and toolbar the image, Mermaid and
-  Word viewers share.
-- `apps/desktop/src/renderer/components/files/v2/viewers/DocumentSurface.tsx`
-  — the one "no in-app preview" card (icon, name, mime · size, an honest
-  notice, Copy full path, Open externally). `DocumentViewer` renders it for
-  documents with no renderer, and the spreadsheet/presentation viewers reuse it
-  when the bytes turn out to be something their parser refuses.
-- `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
-  shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
-  `PatchDiff` with split/unified, wrap, line numbers, and an
-  **Ignore whitespace** toggle); editable working-tree diffs delegate to
-  `MonacoDiffView`. ⌘F opens its find bar (`useDiffFind.ts`, see
-  [editor surfaces](./editor-surfaces.md#find-in-a-diff)). Also used from `LaneDiffPane`,
-  `ChatFileChangesPanel`, and `PrDetailPane`. The toggle is persisted per
-  view under `ade:diff:ignoreWhitespace:<persistKey>` (the PR code tab and
-  chat turn diff panel pass one; default off). `diffWhitespace.ts` owns the
-  pure rule: full-contents diffs set `parseDiffOptions.ignoreWhitespace`,
-  and pre-parsed patches turn a `-`/`+` pair equal after `trim()` back into a
-  context line (the new-side text, as `git diff -w` prints it) rather than
-  deleting it, so the hunk keeps its order and its own `@@` start and counts
-  stay exact. A file left with no change lines shows a
-  "whitespace-only changes hidden" state instead of an empty diff.
-- `apps/desktop/src/renderer/components/files/v2/*.test.ts(x)` — renderer
-  workbench state tests, including
-  `viewerRegistry.test.ts` (viewer + editability resolution),
-  `EditorGroup.test.tsx` (clean-model save guard), and
-  `FilesSearchPanel.test.tsx` (independent name/content requests, the
-  include-ignored toggle, keyboard navigation).
-- `apps/ios/ADE/Views/Files/FilesRootScreen.swift` — mobile Files
-  root with workspace picker, live file tree/read, a magnifying-glass
-  button that opens the search page, and live file-action gating from
-  sync policy.
-- `apps/ios/ADE/Views/Files/FilesSearchScreen.swift` — full-screen
-  unified search page (desktop `FilesSearchPanel` parity): one query
-  searches file names (`quickOpen`) and contents (`searchText`)
-  together, name matches first under "Files" and content hits grouped
-  per file with collapsible line previews. Replaced the inline
-  `FilesQueryCard` quick-open / text-search cards and their first-40
-  result caps.
-- `apps/ios/ADE/Views/Files/FilesDetailScreen.swift` and
-  `FilesRootComponents.swift` — mobile file preview/detail chrome and
-  proof-artifact/file-result rows.
+- `FilesTab.tsx`: route entry. It renders the workbench and forwards chat file
+  targets from router state. It validates that state: `openPathType` reveals in
+  the tree, `searchQuery` opens search, and `filesPin` is accepted only when it
+  is a well-formed `OpenProjectBinding`.
+- `v2/FilesWorkbench.tsx`: the shell (workspace chrome, explorer, editor
+  groups, Monaco host, diff and conflict surfaces, quick open, search, trust
+  warnings, recent files, project-level tabs across lane switches, dirty-buffer
+  publishing, viewers). `preferredLaneId` and `embedded` let it mount in the
+  Work tools pane; embedded, it uses one `workToolChrome` row and below
+  `EMBEDDED_SINGLE_SURFACE_PX` (520) shows one surface at a time. It owns the
+  machine pin (the machine chip, "Back to this computer", liveness, cache
+  release) and the read-only state of an account-answered lane.
+- `v2/pinnedFilesApi.ts`: `createPinnedFilesApi(pin)`, the Files API bound to
+  one machine, cached per binding key. Nothing under the workbench calls
+  `window.ade.files` directly.
+- `v2/useFilesTree.ts`: the explorer tree (listing, paging, expansion,
+  serialized tree ops, decorations, `rootStatus`), keyed by workspace and
+  machine. The watcher stays in the workbench because it also reloads tabs.
+- `v2/FilesSearchPanel.tsx`: the one search surface (sidebar, modal, Work
+  tools pane), the "Include ignored files" preference, and the shared
+  `Backdrop` / `SEARCH_PANEL_SURFACE` chrome.
+- `v2/filesOpenRequests.ts`: one-shot channel for "open this path in the Work
+  tools-pane Files panel".
+- `FilesExplorer.tsx`: virtualized tree, inline rename and create, the search
+  field and its results slot, the "Loading files…" and "Couldn't load the
+  files" states, and `readOnlyReason`.
+- `filePresentation.tsx`: file icons, `changeStatus*` helpers,
+  `MonochromeFileIconsContext`.
+- `v2/monacoLoader.ts`: memoized Monaco init and the `ade-dark` /
+  `ade-light` themes (literal colours, because the themes are defined once).
+- `monacoModelRegistry.ts`, `treeHelpers.ts`: Monaco model lifetime, and tree
+  helpers (`loadedDirectoryChildrenCount`,
+  `mergeTreePreservingLoadedChildren`, `appendTreeNodeChildren`).
+- `v2/filesTreeCache.ts`: bounded roster and tree caches (node and byte LRU,
+  per-key pinning, `releaseFilesProjectCaches`).
+- `v2/`: editor groups, preview and pinned tabs, splits, tab persistence, the
+  create prompt (`overlays.tsx`), and the viewers (code, markdown, sandboxed
+  HTML, image, Mermaid, font, audio and video, CSV/TSV, PDF, `.xlsx`, `.pptx`,
+  `.docx`, legacy Office, large text, binary, diff). `v2/viewerRegistry.ts`
+  picks the viewer and `tabIsTextEditable`. `viewers/ViewerModeToggle.tsx` and
+  `viewers/viewerModeMemory.ts` hold the Preview/Source style toggles.
+- `v2/viewers/office/`: the OOXML readers (`ooxmlZip.ts`, `ooxmlXml.ts`,
+  `xlsx.ts`, `pptx.ts`, `docx.ts`, `ooxmlMedia.ts`, `ooxmlError.ts`).
+- `v2/viewers/OoxmlPreviewShell.tsx`: shared size check, capped stream,
+  dynamic parse, cancel and failure card for the Office viewers.
+- `v2/viewers/WordViewer.tsx`, `WordBlocks.tsx`, `FontViewer.tsx`,
+  `fontInfo.ts`, `MermaidViewer.tsx`, `usePanZoom.ts`, `ZoomControls.tsx`,
+  `DocumentSurface.tsx`: the Word, font and Mermaid viewers, shared pan and
+  zoom, and the "no in-app preview" card.
+- `renderer/components/shared/AdeDiffViewer.tsx`: read-only diff chrome
+  (`@pierre/diffs`, split or unified, **Ignore whitespace**); editable diffs use
+  `MonacoDiffView`. Also used by `LaneDiffPane`, `ChatFileChangesPanel`,
+  `PrDetailPane`. `diffWhitespace.ts` owns the whitespace rule. The toggle
+  persists under `ade:diff:ignoreWhitespace:<persistKey>`.
+- `renderer/components/ui/OpenInSubmenu.tsx`: the shared **Open in** submenu.
+- `v2/*.test.ts(x)`: `viewerRegistry.test.ts`, `EditorGroup.test.tsx`,
+  `FilesSearchPanel.test.tsx` and the workbench tests.
 
-Lane integration:
-
-- `apps/desktop/src/main/services/lanes/laneService.ts` —
-  `getFilesWorkspaces`, `resolveWorkspaceById`. Provides the list of
-  available workspaces (primary + lane worktrees + attached) to
-  `fileService`.
+iOS (`apps/ios/ADE/Views/Files/`): `FilesRootScreen.swift` (workspace picker,
+tree, search button, action gating), `FilesSearchScreen.swift` (one query for
+names and contents), `FilesDetailScreen.swift` and `FilesRootComponents.swift`.
 
 ## Detail docs
 
-- [file-watcher-and-trust.md](./file-watcher-and-trust.md) — the
-  watcher service, path safety invariants, the preload trust boundary,
-  and how external-change sync reaches open tabs.
-- [editor-surfaces.md](./editor-surfaces.md) — Monaco host, tab bar,
-  diff and conflict views, the search panel, keyboard
-  shortcuts, context menu.
+- [file-watcher-and-trust.md](./file-watcher-and-trust.md): the watcher, path
+  safety, the preload trust boundary, external-change sync.
+- [editor-surfaces.md](./editor-surfaces.md): Monaco host, tabs, diff and
+  conflict views, search panel, shortcuts, context menu.
 
 ## Which machine answers a file call
 
-A file lives on the disk of the machine that owns the lane, so a read or a
-write is a per-machine fact exactly like a chat, a terminal, or a PR record.
-Every `window.ade.files.*` method therefore takes an optional **second
-positional argument**, a machine pin (`OpenProjectBinding | null`):
+A file lives on the disk of the machine that owns the lane. Every
+`window.ade.files.*` method takes an optional second argument, a machine pin:
 
-- **Absent or `null`** — the machine this project tab is bound to. Byte for
-  byte the pre-pin path: the remote-runtime route first, then the strict
-  local-runtime route, then the legacy in-process IPC fallback, and the
-  project-transition guard still applies.
-- **A binding** — that machine, whatever the tab is bound to. A pinned call is
-  explicitly targeted work, so it bypasses the transition guard (which only
-  protects the ambiguous *active* binding) and has no local IPC fallback.
+- **Absent or `null`**: the machine the project tab is bound to, through the
+  remote route, the local route, then the IPC fallback. The project-transition
+  guard applies.
+- **A binding**: that machine. A pinned call bypasses the transition guard and
+  has no local IPC fallback.
 
-Reads and writes both honour it. A file belonging to a chat on another machine
-opens **fully editable** without rebinding the window: `writeText`,
+Reads and writes both follow the pin. A file of a chat on another machine
+opens fully editable without rebinding the window: `writeText`,
 `writeTextAtomic`, `createFile`, `createDirectory`, `rename`, `delete`,
-`watchChanges`, `stopWatching`, and the `onChange` change feed all land on the
-machine that owns the bytes.
+`watchChanges`, `stopWatching` and `onChange` go to the machine that owns the
+bytes.
 
-Two deliberate exceptions:
+Two exceptions:
 
-- `openExternalPath` takes **no** pin. The path comes from this machine's
-  Finder, open-file dialog, or drag/drop, so it only exists on this disk, and
-  no runtime exposes a `file` action for it.
-- `external-local:*` workspaces **drop** a supplied pin. They are registered
-  only in this process's file service and their root path is meaningful only on
-  this disk, so a caller that pins every file call uniformly still gets the
-  correct local behaviour. A pinned `onChange` follows the same rule: it
-  subscribes to the lane's machine's `file_change` feed, but still forwards this
-  process's local loose-folder events, since those watchers run here whatever
-  the pin says.
+- `openExternalPath` takes no pin. Its path exists only on this disk.
+- `external-local:*` workspaces drop a pin. A pinned `onChange` still forwards
+  this process's loose-folder events.
 
-Coverage is the whole point, not a nicety: a Files workspace id **is** a lane
-id, and lane rows sync across machines, so the same id resolves on both. An
-unpinned write while pinned elsewhere does not fail — it silently writes to
-this machine's worktree for that lane. That is why the renderer binds the
-machine once in `pinnedFilesApi.ts` and passes the resulting object down,
-rather than threading a `pin` argument through a dozen call sites: the object's
-identity changes exactly when the machine does, so effects that hold it (the
-file watcher above all) unsubscribe from the machine they subscribed to before
-subscribing to the new one. A ref would have lied — a callback built before the
-pin arrived would read the current value, and a file watcher could be left
-running on a remote host with nothing left to stop it.
+A workspace id is a lane id, and lane rows sync, so the same id resolves on
+every machine. An unpinned write while the workbench is pinned elsewhere
+writes silently to this machine's worktree. For that reason the renderer binds
+the machine once in `pinnedFilesApi.ts` and passes the object down. Its
+identity changes exactly when the machine does, so the watcher unsubscribes
+from the old machine before it subscribes to the new one. Do not replace it
+with a ref: a callback built before the pin arrived would read the new value,
+and a watcher could stay on a remote host with nothing to stop it.
 
-The workspace picker groups lanes by machine and labels each group. Choosing a
-lane on another machine pins the workbench to that lane's owner without
-rebinding the project tab. The workbench keeps the machine chip and an explicit
-way back to the tab's machine; an offline owner remains identifiable while its
-file actions are unavailable.
+The workspace picker groups lanes by machine. Picking a lane on another
+machine pins the workbench to it without rebinding the tab. The machine chip
+and a way back stay visible. An offline owner stays identifiable while its
+file actions are unavailable. On an ADE Cloud tab, a lane that the account
+workspace list already has shows once, not again under its computer.
+
+## With no computer awake
+
+An ADE Cloud tab, or a lane pin of a cloud computer this window has no
+connection to (`cloud-saved:<machineKey>`), is an **account-answered pin**
+(`isAccountAnsweredPin`). Its file calls go to the account reader, never to a
+computer, so a read never wakes one:
+
+- The tree and the file contents come from GitHub at the lane's branch,
+  through the account's GitHub App sign-in. A file over the reader's text cap
+  opens as "too large".
+- Every workspace is read-only (`isReadOnlyByDefault: true`). New file and New
+  folder stay visible but do nothing. Their tooltip says: "Read-only: these
+  are the files on GitHub. Wake the lane's computer to change them." The empty
+  tree hides its New file link.
+- A read failure is the reader's sentence in the error banner, with Refresh
+  and dismiss and no "Report…": "Connect GitHub to your ADE account to see
+  this repository's files with no computer on.", "This lane has no branch on
+  GitHub yet…", "The branch … isn't on GitHub yet…", or "ADE reads files with
+  no computer on only for repositories on GitHub."
+- The explorer shows "Loading files…" while the root lists, and "Couldn't load
+  the files" with Retry when it fails, never an empty tree.
+- Writes, search and the watcher are not answered by the reader. Waking the
+  lane's computer (any "do" action) moves the pin back to the computer.
 
 ## Workspace model
 
-A **workspace** is a directory the Files tab can browse. Three kinds
-exist:
+A **workspace** is a directory the Files tab can browse:
 
 | Kind | Source | Notes |
 |---|---|---|
 | `primary` | Repository root | Always present. |
 | `worktree` | `.ade/worktrees/<lane>` | One per active lane. `laneId` set. |
-| `attached` | User-provided path | External worktrees the user linked in. |
-| `external` | Explicit local open | Ephemeral local-only roots created from OS open-file events or drag/drop. |
+| `attached` | A path the user linked | External worktrees. |
+| `external` | An explicit local open | Local-only roots from OS open-file events or drag and drop. |
 
-`laneService.getFilesWorkspaces()` produces the list;
-`resolveWorkspaceById(workspaceId)` does the reverse lookup and is used
-on every lane-backed file-scoped IPC call. `external` workspaces are
-registered by `externalFilesWorkspaceRegistry.ts` and have stable
-`external-local:<hash>` ids for the lifetime of the local runtime. If the
-opened absolute path is already inside a known project/worktree workspace,
-`files.openExternalPath` returns that existing workspace instead of creating
-an external root.
+`laneService.getFilesWorkspaces()` builds the list. `resolveWorkspaceById`
+does the reverse lookup on every lane-backed file call. `external` workspaces
+have stable `external-local:<hash>` ids for the life of the local runtime. An
+opened path inside a known workspace returns that workspace instead.
 
-The renderer always shows the active workspace name prominently so the
-user never edits primary when they meant to edit a lane worktree.
-External tabs also show the full host path in the status bar and path-copy
-menus so it is clear when a file comes from outside the project.
+The renderer always shows the active workspace name. External tabs show the
+full host path in the status bar and copy menus.
 
-The v2 workbench keeps one project-level editor session whose tab ids include
-both `workspaceId` and path. Switching the explorer workspace changes the tree
-being browsed, but it does not close tabs or discard dirty buffers from another
-lane/worktree. Selecting an already-open tab from a different workspace moves
-the explorer back to that tab's workspace so the tree, mutation controls, and
-file actions stay aligned.
+The workbench keeps one project-level editor session; tab ids include the
+`workspaceId` and the path. Switching the explorer workspace does not close
+tabs or drop dirty buffers. Selecting a tab of another workspace moves the
+explorer to that workspace.
 
-Workspace ids are not portable across binding identities. The module-level
-workspace and root-tree caches are keyed by `bindingKey::projectRoot` (where
-`bindingKey` is `local` or `remote:<targetId>`), so a local and a remote
-session for the same path keep separate caches. Editor sessions, however, are
-keyed by project root alone, so a local↔remote rebind keeps tabs and dirty
-buffers open. Because a remote host lists workspaces under its own machine's
-lane UUIDs, a persisted tab's `workspaceId` can be stale after a rebind. After
-each `listWorkspaces`, `remapTabWorkspaces` repairs those tabs — matching by
-`laneId` to the corresponding host workspace, else falling back to the primary
-workspace — recomputing composite tab ids, deduping collisions to the
-authoritative tab, and leaving `external-local:*` tabs untouched. Live Monaco
-models follow via `registry.rekey`, and dirty/reload state is migrated with the
-new ids. See [editor-surfaces.md](./editor-surfaces.md) for the full remap and
-rekey rules.
+Workspace ids are not portable across binding identities. The workspace and
+root-tree caches are keyed by `bindingKey::projectRoot` (`local` or
+`remote:<targetId>`). Editor sessions are keyed by project root only, so a
+local↔remote rebind keeps tabs and dirty buffers. After each `listWorkspaces`,
+`remapTabWorkspaces` repairs stale tab workspace ids (by `laneId`, else the
+primary workspace), recomputes tab ids, dedupes collisions and leaves
+`external-local:*` tabs alone. Monaco models follow through `registry.rekey`.
+See [editor-surfaces.md](./editor-surfaces.md).
 
 ## Editor modes
 
-Three modes, each driven by a tab's internal state (no service-side
-mode concept):
+A tab's own state picks the mode; the service has no mode concept.
 
-- **Edit** — Monaco with read/write semantics, syntax highlighting,
-  Cmd+S saves atomically. Markdown / `.md` / `.mdx` tabs open in a
-  Preview↔Source toggle; Source mounts the same editable Monaco host.
-  CSV/TSV tabs open in a Table↔Source toggle; Source is offered only
-  when the payload loaded completely (a partial streamed CSV keeps the
-  read-only table so a truncated buffer can never be saved back).
-  Editability is a viewer capability (`viewerRegistry.tabIsTextEditable`):
-  every text-backed viewer that mounts Monaco over a full text payload is
-  editable immediately — there is no trust toggle, enable-editing step,
-  read-only default, or per-workspace gate. The only read-only states are
-  honest boundaries: partial/streamed oversized text (`largeText` viewer),
-  binary/base64 payloads, and real filesystem or remote-write failures,
-  which surface as errors instead of silent no-ops.
-- **Diff** — `AdeDiffViewer` backed by `diffService`. Read-only views
-  use `@pierre/diffs`; editable working-tree views use `MonacoDiffView`.
-  Scopes: **Branch** (committed work), staged vs working tree
-  (**Uncommitted**), HEAD vs index (**Staged**), or a commit.
+- **Edit**: Monaco, read and write, Cmd+S saves atomically. Markdown,
+  `.md` and `.mdx` open in Preview↔Source. CSV/TSV open in Table↔Source;
+  Source shows only for a complete payload, so a truncated buffer is never
+  saved. Editability is `viewerRegistry.tabIsTextEditable` (an editable viewer
+  over a full text payload). There is no trust toggle and no per-workspace
+  gate. A tab is read-only only for partial large text, binary payloads, an
+  account-answered lane, or a real write failure (which shows as an error).
+- **Diff**: `AdeDiffViewer` over `diffService`; editable working-tree diffs
+  use `MonacoDiffView`. Scopes: **Branch**, **Uncommitted**, **Staged**, or a
+  commit.
+- **Conflict**: 3-way merge (Base, Ours, Theirs, Result) with Accept Ours,
+  Accept Theirs and Accept Both, through `conflictService`.
 
 ### Branch scope
 
 `DiffMode` `branch` is what a lane committed since its base: the file at
-merge-base(base, HEAD) against the file at HEAD. Uncommitted edits are the
-`unstaged`/`staged` modes, so the two never overlap. `diffService.getBranchChanges`
-lists the files with line counts (`git diff <merge-base> HEAD`). An ask for a
-lane shares an in-flight read that has not started reading git yet (opening a
-lane asks twice); once it has, a later ask starts a fresh read, so a commit
-made after that read's snapshot is never missed. A single-file patch looks up
-the file's rename first, so a renamed file shows as a rename rather than a new
-file. `getFileDiff` / `getFilePatch` take `mode: "branch"` the same way.
+merge-base(base, HEAD) against HEAD. Uncommitted edits are the `unstaged` and
+`staged` modes, so the two never overlap. `diffService.getBranchChanges` lists
+files with line counts. A second ask shares an in-flight read only before that
+read starts git; after that a new read starts, so a later commit is never
+missed. A single-file patch looks up the rename first. `getFileDiff` and
+`getFilePatch` take `mode: "branch"` too.
 
 The base is the lane's compare base (its open PR's base, else the default
-branch); the primary lane compares with its branch's upstream, else
-`origin/<base>`, so unpushed work shows. A base that does not resolve, or a lane
-with no history in common with it, is an error ("The base branch "x" was not
-found."), never an empty diff that reads as "nothing changed".
+branch). The primary lane compares with its upstream, else `origin/<base>`. A
+base that does not resolve, or no common history, is an error ("The base
+branch "x" was not found."), never an empty diff.
 
-An older host reads an unknown mode as `unstaged` without complaint, so clients
-offer Branch only once `git.getBranchChanges` answered (remote command, the
-`diff` action domain, `diff.getBranchChanges` in the web adapter): the Files
-viewer asks once per lane; iOS checks the advertised command. The Git pane
-(`LaneGitActionsPane`) shows three sections top to bottom, with no toggle:
-**Uncommitted changes** (staged and unstaged, stage/discard, the commit box,
-an empty state when clean), **Committed on this branch** (read-only, vs the
-compare base; hidden on a host without branch diffs), and **History**. The CLI
-form is `ade diff changes --lane <id> --mode branch --text`.
-- **Conflict** — 3-way merge. Base / Ours / Theirs / Result panes.
-  Interactive "Accept Ours", "Accept Theirs", "Accept Both". Resolves
-  via `conflictService`.
+An older host reads an unknown mode as `unstaged`. Clients offer Branch only
+after `git.getBranchChanges` answers (the `diff` action domain,
+`diff.getBranchChanges` on the web); iOS checks the advertised command. The
+Git pane (`LaneGitActionsPane`) shows **Uncommitted changes**, **Committed on
+this branch** (hidden on a host without branch diffs) and **History**. CLI:
+`ade diff changes --lane <id> --mode branch --text`.
 
 ## Atomic saves
 
-`fileService.writeTextAtomic` uses `secureWriteTextAtomicWithinRoot`:
-
-1. Write content to a temp file in the same directory as the target.
-2. `fs.rename` the temp file onto the target.
-
-This avoids partial-write races that break dev servers watching the
-file. `writeText` (non-atomic) is also available for callers that
-prefer a direct write (used internally for quick fixes where the
-atomic guarantee is not needed).
-
-Both writers go through `resolvePathWithinRoot` so they refuse to write
-outside the workspace root and refuse any path that traverses `.git`.
+`fileService.writeTextAtomic` (`secureWriteTextAtomicWithinRoot`) writes a
+temp file in the target's directory, then renames it onto the target, so a dev
+server never sees a partial file. `writeText` writes directly. Both resolve
+through `resolvePathWithinRoot`: no writes outside the workspace root and none
+into `.git`.
 
 ## File watching
 
-`fileWatcherService` wraps a single tree watcher (`watchTree`) per
-`workspaceId + senderId` key. It supports two ignore profiles:
+`fileWatcherService` keeps one tree watcher per `workspaceId + senderId`, with
+two ignore profiles:
 
-- **default** — ignores `.git/`, `node_modules/`, `.ade/`
-- **include ignored** — ignores only `.git/`
+- **default**: ignores `.git/`, `node_modules/`, `.ade/`.
+- **include ignored**: ignores only `.git/`.
 
-Both profiles share the same watcher when possible. The
-watcher tracks `defaultRefCount` and `includeIgnoredRefCount`; adding a
-subscription in `include ignored` mode will tear down and restart the
-watcher if the mode changed. When all ref counts hit zero, an idle
-timer (`IDLE_WATCHER_CLOSE_MS = 15_000`) schedules a soft close.
+The profiles share one watcher where possible (`defaultRefCount`,
+`includeIgnoredRefCount`); a mode change restarts it. At zero references an
+idle timer (`IDLE_WATCHER_CLOSE_MS = 15_000`) closes it.
 
-`watchTree` (`services/shared/treeWatcher.ts`) reports chokidar's events
-(`add`, `change`, `unlink`, `addDir`, `unlinkDir`) on every platform. On
-Linux it is chokidar. On macOS and Windows it is one recursive native watch per root: the
-native event says where to look, and the path is read again and compared with
-a snapshot of the tree to decide what happened, so a new directory is walked
-and a removed one is reported entry by entry, as chokidar reports them.
-chokidar's own native mode opens one watch per directory, and closing a few
-thousand of those blocks the event loop (13 s measured on this repository),
-which is why the watcher polled on macOS before; polling checked every path
-once a second (about 11% of a core for this repository's root). One known
-difference from the poller: a file replaced by a directory of the same name
-is reported as a delete and creates, where the poller reported one `change`.
-(A file written in pieces may get a `change` after its `add` from either
-watcher, depending on timing.)
-`scripts/perf/service/tree-watcher-parity.mts` compares the two.
+`watchTree` reports chokidar's events (`add`, `change`, `unlink`, `addDir`,
+`unlinkDir`) on every platform:
 
-Windows adds two rules of its own. When Windows drops events it sends one
-event with no file name, and the watcher re-reads the whole tree, so a burst
-that changed thousands of files is not reported as one. A Windows watch
-follows a moved folder and cannot see its root deleted or recreated, so the
-root's parent is watched too and the root's watch is reopened when the root
-comes back. On this repository the watcher is ready in about 90 ms, where
-chokidar's one-watch-per-directory mode took 2.5-3.4 s and blocked the event
-loop for about 200 ms (`docs/perf/windows-baseline.md`).
+- Linux uses chokidar.
+- macOS and Windows use one recursive native watch per root. The event says
+  where to look; the path is read again and compared with a tree snapshot. Do
+  not switch to chokidar's native mode: it opens one watch per directory, and
+  closing thousands of them blocks the event loop.
+- A file replaced by a directory of the same name is a delete plus creates.
+- On Windows, an event with no file name (dropped events) re-reads the whole
+  tree, and the root's parent is watched too so a deleted and recreated root
+  is watched again.
+- `scripts/perf/service/tree-watcher-parity.mts` compares the watchers;
+  `docs/perf/windows-baseline.md` has the Windows numbers.
 
-A watch is one reference and a stop releases one. A page that goes away
-without its cleanup (a reload, a dead renderer, a closed window, the app
-quitting) never sends its stops, so two places keep a ledger of outstanding
-references (`fileWatchLedger.ts`): the desktop's runtime bridge sends the
-missing stops when a page starts a new document, loses its renderer or is
-destroyed, and the brain releases a connection's watches when the connection
-closes.
+A watch is one reference; a stop releases one. A page that goes away without
+its cleanup never sends its stops, so `fileWatchLedger.ts` tracks outstanding
+references: the runtime bridge sends the missing stops when a page navigates,
+loses its renderer or closes, and the brain releases a connection's watches
+when the connection closes.
 
-Events are debounced per file key for 140 ms, so a build tool writing
-hundreds of files gets coalesced. Volatile `.ade/` paths (transcripts,
-the SQLite DB, caches, ADE CLI config files) are filtered out even when
-`includeIgnored` is true — see
-[file-watcher-and-trust.md](./file-watcher-and-trust.md) for the full
-list.
+Events are debounced per file for 140 ms. Volatile `.ade/` paths
+(transcripts, the database, caches, CLI config) are filtered even with
+`includeIgnored` (list in [file-watcher-and-trust.md](./file-watcher-and-trust.md)).
 
-The renderer listens on `ade.files.change` for `created`, `modified`,
-`deleted`, `renamed` events. Open tabs that are clean (no unsaved
-edits) reload automatically; dirty tabs do not, so external changes do
-not silently clobber work. Dirty Monaco buffers are also published into
-the renderer dirty-buffer map for the active workspace so agent file
-reads can see unsaved editor-only text.
+The renderer listens on `ade.files.change` (`created`, `modified`, `deleted`,
+`renamed`):
 
-A change event carries an optional `origin`. The web adapter stamps
-`origin: "self"` on the events it synthesizes for its own writes, and the
-workbench treats a self-originated `modified` as neither a cache invalidation
-nor a tab reload — the editor already holds those bytes and primed the cache,
-and on a slow relay the echo of your own save could otherwise clobber the
-buffer.
-
-Two shapes of event get special handling. An event with neither `path` nor
-`oldPath` is a path-less "something moved" hint — the web adapter's CRR
-invalidation fans one out per workspace — so it queues a full refresh throttled
-to one every `FULL_REFRESH_MIN_INTERVAL_MS = 5_000`, rather than paying a
-workspace list plus root listing plus git sweep per hint. And an event whose
-path is the empty string means the workspace root, which is distinct from the
-field being absent; conflating the two meant root-level changes never
-refreshed. A plain `modified` event no longer re-lists the tree at all, since a
-content-only change cannot alter the listing; it only queues a decoration
-refresh.
+- A clean open tab reloads. A dirty tab does not.
+- Dirty Monaco buffers are published to the dirty-buffer map of the active
+  workspace, so agent file reads see unsaved text.
+- An event with `origin: "self"` (the web adapter's echo of its own write) is
+  neither a cache invalidation nor a reload.
+- An event with neither `path` nor `oldPath` is a "something moved" hint: it
+  queues a full refresh, at most one every `FULL_REFRESH_MIN_INTERVAL_MS`
+  (5,000).
+- An empty-string path means the workspace root, not a missing path.
+- A plain `modified` event does not re-list the tree; it queues a decoration
+  refresh.
 
 ## Quick open and content search
 
-`FileSearchIndexService` maintains a flat list of file paths per
-`workspaceId::mode` key (where `mode` is `default` or `all`). The
-index is built lazily on the first quick-open call and kept in sync
-with the watcher:
+`FileSearchIndexService` keeps a flat list of file paths per
+`workspaceId::mode` (`default` or `all`). It builds lazily on the first quick
+open and follows the watcher: `add`, `unlink` and `rename` update it;
+`addDir` and `unlinkDir` invalidate the subtree.
 
-- `add`, `unlink`, `rename` events incrementally update the list
-- `addDir` / `unlinkDir` events invalidate the subtree
-- `fileService.quickOpen({ workspaceId, query, limit, includeIgnored })`
-  runs a scoring pass over the matching index. An empty query is a valid
-  browse: it returns shallowest-paths-first (`scoreBrowseDepth`) instead of
-  an empty list, which is what the composer `@` menu, iOS, and
-  web clients rely on for the pre-typing state — all three funnel into this
-  one service, so no caller-side empty-query guards should be reintroduced
+`fileService.quickOpen({ workspaceId, query, limit, includeIgnored })` scores
+the index. An empty query is a valid browse: it returns the shallowest paths
+first (`scoreBrowseDepth`). The composer `@` menu, iOS and the web rely on it;
+do not add empty-query guards in callers.
 
-**Folders are indexed, and opt-in.** Directories live in their own
-`Map<string, IndexedDirectory>`, kept apart from `files` so that nothing which
-scans file contents — text search, size limits, mtime — can ever pick a
-directory up by accident; only name matching reads it. They are recorded during
-the full walk and by `upsertFile` (so a folder created after the build is
-suggestable immediately rather than only after the next rebuild), and removed on
-the same subtree rule as files, or a deleted folder would keep appearing in the
-composer `@` menu until the next rebuild.
+**Folders are indexed, and opt-in.** Directories live in their own map, apart
+from `files`, so content scans never see them. The full walk and `upsertFile`
+record them, and they leave on the same subtree rule as files. `quickOpen`
+returns them only with `includeDirectories: true`, marked
+`FilesQuickOpenItem.isDirectory`. Only the composer `@` menu opts in (it
+inserts a pointer chip; a folder has no bytes to attach). The flag is part of
+the quick-open cache key.
 
-`quickOpen` returns them only when the caller passes `includeDirectories: true`,
-and `FilesQuickOpenItem.isDirectory` marks them. Off by default because **most
-callers open what they receive**: the Files panel renders every hit under a
-Files header and hands it to the editor, and ⌘K mints a file deeplink for it.
-Only the composer `@` menu opts in, and it
-inserts a pointer chip rather than opening or attaching anything — a folder has
-no bytes to upload, and attaching one reaches the model as
-`Attachment unavailable: <dir>`. The flag is part of the quick-open cache key,
-or a generic caller could be served the composer's cached rows, folders and all.
+The index is a **name** index: `path`, `lowerPath`, `size`, `mtimeMs`. Do not
+keep file contents in it; decoded lines cost hundreds of megabytes. Content
+search reads, scans and discards.
 
-The index is a **name** index. Entries carry `path` / `lowerPath` / `size` /
-`mtimeMs` and nothing else: retaining decoded lines cost hundreds of megabytes
-of heap (80 MiB of raw bytes becomes millions of small JS strings) and crashed
-the app once "include ignored files" widened the pile. Content search reads,
-scans, and discards.
+`fileService.searchText({ workspaceId, query, limit, includeIgnored })` has two
+tiers:
 
-`fileService.searchText({ workspaceId, query, limit, includeIgnored })` is
-two-tier:
+1. **`git grep`**, when the root is inside a git work tree (the answer is
+   cached per root). It streams, stops at `limit`, and times out at 10 s.
+   Flags: `-F` (the query is literal), `-i`, `-I`, `-n`, `-z`, `--untracked`,
+   `-m <limit>`. Exclusions go to git as pathspecs and are filtered again
+   after parsing. `parseGitGrepRecord` reads the modern NUL format, the older
+   NUL-path format and plain `path:line:text`.
+2. **A streaming JS scan** over the name index, for non-git folders and for
+   runs where git was missing, failed or timed out. It skips files over
+   `MAX_TEXT_FILE_BYTES` (1 MB) and files with a NUL byte, and yields.
 
-1. **`git grep`**, whenever the workspace root is inside a git work tree (the
-   `rev-parse --is-inside-work-tree` answer is cached per workspace root and
-   dropped on the same signals that drop the name index). It is roughly 5×
-   faster than the walk below on a mid-size repo and needs no name index at
-   all, so a query that matches nothing no longer costs a tree walk plus a read
-   of every file. The run is streamed and stopped the moment `limit` matches
-   are in hand, with a 10 s timeout. Flags: `-F` so the query is literal (users
-   type `foo.ts(`, and a regex parse error must never reach them), `-i`, `-I`,
-   `-n`, `-z`, `--untracked`, and `-m <limit>` per file. Exclusions are pushed
-   into git as pathspecs rather than filtered out of the output, so one
-   `node_modules` cannot flood the stream; the parsed results are filtered too,
-   as the correctness backstop. Records are parsed by `parseGitGrepRecord`,
-   which accepts NUL-delimited path *and* line (modern git), NUL path with a
-   colon line (older git), and the plain `path:line:text` shape.
-2. **A streaming JS scan** over the name index, for workspaces that are not git
-   work trees (a folder opened from Finder) and for any run where git was
-   missing, failed, or timed out. Each file is read, scanned, and released;
-   files over `MAX_TEXT_FILE_BYTES` (1 MB) and files with a NUL byte are
-   skipped, and the loop yields cooperatively.
-
-`GitGrepOutcome` distinguishes three results, and only one of them retires the
-fast tier:
-
-| Outcome | Meaning | Effect |
+| `GitGrepOutcome` | Meaning | Effect |
 |---|---|---|
-| `answered` | exit 0 (matches) or 1 (no matches), or the limit was reached | returned as-is; exit 1 is a complete, correct answer |
-| `unfinished` | the 10 s timeout fired, or the process was killed from outside (`code == null`) | falls through to tier 2 this once; says nothing about future runs |
-| `unusable` | spawn threw, `error` fired, or git refused the invocation (e.g. `-m` needs git ≥ 2.38 → exit 129, bad pathspec → 128) | the tier is retired for that workspace until the index is invalidated |
+| `answered` | exit 0 or 1, or the limit was reached | returned as is |
+| `unfinished` | the timeout fired, or the process was killed (`code == null`) | tier 2 this once |
+| `unusable` | spawn failed, or git refused the call (exit 129 or 128) | tier 1 retired for the workspace until the index is invalidated |
 
-Three divergences between the tiers are deliberate and worth knowing, because
-they mean the same query can return slightly different sets:
+The tiers can return different sets: `git grep` also searches files over
+`MAX_TEXT_FILE_BYTES` and tracked-but-ignored files, and it does not enter
+submodules (`--recurse-submodules` cannot be used with `--untracked`).
 
-- `git grep` also searches files **above** `MAX_TEXT_FILE_BYTES`, which the JS
-  scan skips so one enormous file cannot be read whole.
-- `git grep` also searches **tracked-but-gitignored** files.
-- `git grep` does **not** descend into submodules. `--recurse-submodules` would
-  fix that but git rejects it outright alongside `--untracked` (exit 128), and
-  untracked files matter far more here — a file an agent just wrote is the
-  common case, a submodule is not.
-
-Quick open results are `{ path, score }`. Text-search matches are
-`{ path, line, column, preview }` (preview clipped to 240 chars). Because git's
-case folding is not JavaScript's, a column that cannot be relocated in the
-matched line reports column 1 — the line is right, only the caret is
-approximate.
+Quick open returns `{ path, score }`. A text match is
+`{ path, line, column, preview }` (preview up to 240 chars). When git's case
+folding puts the match where JavaScript cannot find it, the column is 1.
 
 ## The search UI
 
-`v2/FilesSearchPanel.tsx` is the one search surface. It backs three mounts:
-the explorer sidebar column, the centred modal, and the Work tools pane —
-which previously had no search at all. There is no separate overlay component:
-the modal renders `FilesSearchPanel` with `variant="overlay"` off the same
-`searchQuery` state the sidebar uses, and only one of the two mounts is live at
-a time so the same workspace is never searched twice.
+`v2/FilesSearchPanel.tsx` is the one search surface: the explorer sidebar, the
+centred modal (`variant="overlay"`, same `searchQuery` state) and the Work
+tools pane. Only one of sidebar and modal is live, so a workspace is never
+searched twice.
 
-Names and contents are **two independent debounced requests**, not one
-`Promise.all`. Names come from the in-memory index and land first
-(`quickOpen`, 120 ms debounce, limit 30); contents fill in behind them
-(`searchText`, 250 ms debounce, limit 300) and never clear what is already on
-screen. Freshness is tracked by a `searchKey` of
-`[workspaceId, includeIgnored, query]`: results whose key no longer matches stay
-visible (no flicker) but do not count as an answer, which is also how
-"Searching…" is derived.
+Names and contents are two independent debounced requests: `quickOpen` (120 ms,
+limit 30) lands first; `searchText` (250 ms, limit 300) fills in behind and
+never clears what is on screen. A `searchKey` of
+`[workspaceId, includeIgnored, query]` marks old results: they stay visible
+but do not count as an answer ("Searching…").
 
-An **"Include ignored files"** toggle sits in the panel toolbar, defaults
-**off**, and persists under a single global localStorage key
-(`ade.files.search.includeIgnored`). Both the old call sites hardcoded
-`includeIgnored: true`, which is why searching a repo used to return
-`node_modules` hits nobody asked for. The key is deliberately not
-per-workspace: "do I want ignored files in my results" is a preference about
-how the user searches, not a property of a lane, and a per-workspace key wrote
-a new entry for every lane ever searched with nothing pruning archived ones.
+**Include ignored files** defaults off and persists in one global key,
+`ade.files.search.includeIgnored`. It is a search preference, not a lane
+property, so it is not per workspace.
 
-Results are one flat, keyboard-navigable list (↑/↓, Enter, Escape): name hits
-under a "Files" header first, then content hits grouped per file with
-collapsible line previews. Picking a file opens it; picking a line opens the
-file and reveals that line. The modal is a one-shot pick and closes on open;
-the sidebar keeps its results so several hits can be opened in a row. In the
-sidebar the search field lives in the explorer header, outside the panel, so
-keys are read from a ref-backed snapshot via a document listener rather than
-re-subscribing on every keystroke.
+Results are one keyboard list (↑/↓, Enter, Escape): name hits under "Files",
+then content hits grouped per file. A line hit opens the file at that line.
+The modal closes on open; the sidebar keeps its results. In the sidebar the
+field lives in the explorer header, so keys come from a ref-backed snapshot.
 
 ## Opening a file from a chat
 
-A path an agent writes into chat is resolved by
-`renderer/components/chat/chatWorkspacePaths.tsx` and then routed to one of two
-Files surfaces:
+`renderer/components/chat/chatWorkspacePaths.tsx` resolves a path an agent
+wrote and routes it:
 
-- **Same machine, and the chat's own lane** → the Work **tools-pane** Files
-  panel, through the `filesOpenRequests.ts` module channel. Clicking a filename
-  should open next to the conversation, not throw the user into the Files tab.
-  `TerminalsPage` subscribes only to reveal the Files panel; the request itself
-  waits in the channel until the embedded workbench mounts and drains it. Only
-  the embedded mount listens, and it clears the channel's hold once it owns the
-  request, so a later mount (after a lane or project switch) cannot re-open the
-  same file unprompted.
-- **Anything else** — another lane, another machine, or a chat rendered outside
-  `/work` (PRs, personal chats) → the full **Files tab**, via router state, so
-  the destination stays deep-linkable. A foreign machine rides along as
-  `filesPin`, which the workbench applies as a machine pin *before* it looks the
-  lane up, because the roster it needs is that machine's.
+- **Same machine and the chat's own lane**: the Work tools-pane Files panel,
+  through `filesOpenRequests.ts`. `TerminalsPage` only reveals the panel; the
+  embedded workbench drains the request when it mounts and clears the hold, so
+  a later mount cannot open it again.
+- **Anything else** (another lane, another machine, a chat outside `/work`):
+  the Files tab through router state. A foreign machine rides as `filesPin`,
+  applied before the lane lookup.
 
-Before routing, the clicked token is probed against the workspace's name index
-(`probeWorkspacePath`), which fixes the two silent failures users hit most:
-agents write a bare filename far more often than a full path, and the old code
-assumed any separator-less token sat at the workspace root. The probe resolves
-a bare name to its real path, opens the search panel (`searchQuery` in router
-state) when several files share that name, reveals a folder in the tree instead
-of opening it as a file, and raises a toast for a path that is not inside this
-project. A bare name the index does not know walks the workspace again once, on
-that click (`refreshIndex`), because a file an agent just created is not indexed
-yet. A probe **miss is not fatal** for a path containing `/`: the index is
-stale by design (built once per workspace, refreshed only from watcher events,
-which run only while a Files or Git panel is open, and it excludes gitignored
-files and stops at 25,000), so the file an agent just created would otherwise be
-reported missing forever. Such a path is opened anyway and a real read error is
-allowed to speak for itself. Only a bare name, where the index is the only thing
-that can turn it into a path, gets the "can't find that file" toast.
+Before routing, `probeWorkspacePath` checks the token against the name index:
 
-Whichever surface receives the click, the viewer is chosen by extension: a
-spreadsheet or a presentation path an agent writes into a reply opens on the
-native preview rather than a metadata card (see [Office previews](#office-previews)).
+- A bare name resolves to its path. Several matches open search. A folder is
+  revealed in the tree. A path outside the project shows a toast.
+- A bare name the index does not know walks the workspace once
+  (`refreshIndex`), because a new file is not indexed yet.
+- A miss is not fatal for a path with `/`: the index is stale by design (built
+  once, refreshed only while a Files or Git panel watches, no ignored files,
+  25,000 files at most). The path opens and a real read error speaks for
+  itself. Only a bare name gets the "can't find that file" toast.
 
-See [../chat/README.md](../chat/README.md#source-file-map) for the parsing and
-resolution contract.
+The viewer is chosen by extension, so an Office file opens on its preview. See
+[../chat/README.md](../chat/README.md#source-file-map) for the parsing rules.
+
+## Opening a file from elsewhere
+
+A path clicked in a chat, tool-call or diff row, or printed in a terminal,
+opens through `useWorkspacePathOpener` (`chatWorkspacePaths.tsx`):
+
+- An absolute path resolves to the deepest workspace root that holds it.
+- A relative path resolves by its ending: one match opens, several open
+  search, none shows a toast after a real read.
+- Navigation carries the file in router state. `App.tsx` passes page routes
+  the real location, because a route given to `<Routes>` as a string loses its
+  state.
+
+Terminal paths become links only under the pointer: `terminalPathLinks.ts`
+scans the hovered row (and its wrapped rows) in one capped pass, checks the
+file exists after a short rest, and links only real files. A network path
+never becomes a link.
 
 ## Opening in an external editor
 
-Lane and session context menus offer **Open in** for the worktree, not
-the in-app Monaco tab. Detection and launch are main-process work;
-the renderer only names a target from `EDITOR_TARGETS`.
+Lane and session menus offer **Open in** for the worktree. Detection and launch
+run in the main process; the renderer names a target from `EDITOR_TARGETS`.
 
 | Piece | Role |
 |-------|------|
-| `shared/editorTargets.ts` | Catalog (`vscode`, `cursor`, `zed`, JetBrains, Xcode, …), `OpenPathTarget` (`default` / `finder` / editor id), `OpenInTarget`, `resolveOpenInTarget` / `canOfferOpenIn` / `isRemoteEditorOpenRequest`, and `buildRemoteEditorUrl`. |
-| `services/editors/editorDetection.ts` | `detectInstalledEditorTargets`: macOS `open -Ra <macAppName>`, else `which` / `where.exe`, PATH augmented by `editorProcessEnv`. Every target is probed in parallel. Targets that share one app (`zed` / `zeditor`) collapse to a single entry on every platform — on Windows both resolve to the same executable. On Windows a miss off PATH falls through to `editorWindowsInstall.ts` and records the resolved absolute executable for the open action. |
-| `services/editors/editorWindowsInstall.ts` | Windows-only, read-only resolution beyond PATH: `%ProgramFiles%` / `%ProgramFiles(x86)%` / `%LOCALAPPDATA%\Programs` install folders, `<ProgramFiles>\JetBrains\<Product>*\bin`, `%LOCALAPPDATA%\JetBrains\Toolbox\apps\<Product>\ch-*\`, and the `HKLM`/`HKCU` uninstall registry keys (`DisplayName` + `InstallLocation` / `DisplayIcon`). `reg.exe` is resolved through `resolveTrustedWindowsTool` (never a bare name), and a host that refuses the lookup just skips registry discovery. Registry `DisplayName` matching prefers an exact name and never claims an entry a more specific editor names more fully (so vscode does not match "Visual Studio Code - Insiders"). Every path is verified to exist; the executable and registry rows each cache for five minutes, and it never launches a GUI or asks for elevation. |
-| `services/editors/openPathInEditor.ts` | Local: `open -a` then CLI spawn; on Windows uses the executable `editorDetection` resolved (falling back to the bare command); `default` uses `shell.openPath`; `finder` uses `shell.showItemInFolder`. Remote SSH: mint a URL and `openEditorExternalUrl`. |
-| `ade.app.getInstalledEditors` / `ade.app.openPathInEditor` | Direct IPC (not a runtime action). Local `rootPath` must sit under a known workspace root. |
-| `OpenInSubmenu` | Shared UI on `LaneContextMenu`, `LaneActionsSubmenu`, `SessionContextMenu`, and `ForeignLaneContextMenu`. |
+| `shared/editorTargets.ts` | The catalog (`vscode`, `cursor`, `zed`, JetBrains, Xcode, …), `OpenPathTarget` (`default` / `finder` / editor id), `resolveOpenInTarget`, `canOfferOpenIn`, `isRemoteEditorOpenRequest`, `buildRemoteEditorUrl`. |
+| `services/editors/editorDetection.ts` | `detectInstalledEditorTargets`: macOS `open -Ra <app>`, else `which` / `where.exe` with PATH from `editorProcessEnv`, all in parallel. Targets that share one app (`zed` / `zeditor`) collapse. On Windows a miss falls through to `editorWindowsInstall.ts`. |
+| `services/editors/editorWindowsInstall.ts` | Windows-only, read-only lookup beyond PATH: Program Files, `%LOCALAPPDATA%\Programs`, JetBrains and Toolbox folders, and the uninstall registry keys (`reg.exe` through `resolveTrustedWindowsTool`). Exact `DisplayName` first; a more specific editor's entry is never claimed. Paths are checked; results cache for 5 minutes; it never launches a GUI or asks for elevation. |
+| `services/editors/openPathInEditor.ts` | Local: `open -a`, then a CLI spawn (Windows uses the resolved executable); `default` uses `shell.openPath`, `finder` uses `shell.showItemInFolder`. Remote SSH: mint a URL and call `openEditorExternalUrl`. |
+| `ade.app.getInstalledEditors` / `ade.app.openPathInEditor` | Direct IPC. A local `rootPath` must be under a known workspace root. |
+| `OpenInSubmenu` | Used by `LaneContextMenu`, `LaneActionsSubmenu`, `SessionContextMenu`, `ForeignLaneContextMenu`. |
 
-Remote Open in is SSH-only. The main process mints:
+Remote Open in is SSH only:
 
-- VS Code family: `<scheme>://vscode-remote/ssh-remote+<host><path>` (`vscode`, `vscode-insiders`, `vscodium`)
-- Zed: `zed://ssh/<host><path>`
+- VS Code family: `<scheme>://vscode-remote/ssh-remote+<host><path>`
+  (`vscode`, `vscode-insiders`, `vscodium`).
+- Zed: `zed://ssh/<host><path>`.
 
-`isRemoteEditorOpenRequest` requires a hostname and `transport !== "paired"`. Paired remotes have no SSH host ADE can hand an editor, so `resolveOpenInTarget` returns `null` and the submenu is omitted. Editors with `supportsRemote: false` (Cursor, Windsurf, JetBrains, Xcode, …) drop out of the remote picker.
-
-The CLI allowlist in `apps/ade-cli/src/lib/externalLinks.ts` (`normalizeEditorExternalUrl` / `openEditorExternalUrl`) accepts only those VS Code-family `vscode-remote` URLs and `zed://ssh/…`. Generic `openExternalUrl` still allows only `http(s)` and `mailto:`.
-
-Preload skips `assertNotRemoteProjectPathAction` when the request is a valid SSH remote editor open — the path is not opened locally. Files-tab Reveal in Finder / Open with default app still go through `openPathInEditor` with `target: "finder"` or `"default"` against a **local** root.
-
-Projectless personal chats must not mount **Open in**, lane, repo, or PR actions — they have no user-visible worktree. See [personal chats](../personal-chats/README.md).
+`isRemoteEditorOpenRequest` needs a hostname and `transport !== "paired"`. A
+paired remote has no SSH host, so the submenu is left out. Editors with
+`supportsRemote: false` leave the remote picker. The CLI allowlist
+(`apps/ade-cli/src/lib/externalLinks.ts`, `openEditorExternalUrl`) accepts only
+those URLs; `openExternalUrl` allows only `http(s)` and `mailto:`. Preload skips
+`assertNotRemoteProjectPathAction` for a valid SSH editor open. Reveal in
+Finder and Open with default app use `openPathInEditor` on a local root.
+Personal chats never mount **Open in** or lane, repo or PR actions.
 
 ## Git status overlay
 
-File tree listings include a `changeStatus`. The status map is cached
-per workspace root for 5 seconds (`GIT_STATUS_CACHE_TTL_MS`) and
-populated by a single `git status --porcelain=v2` call. The first tree
-paint should not block on a fresh status scan: renderers can call
-`files.refreshGitDecorations({ forceFresh: true })` after the structure
-loads and apply the returned flat file statuses plus ancestor directory
-rollups without refetching the tree. Remote runtimes that do not expose the
-optional `file.refreshGitDecorations` action are treated as decoration-missing,
-not tree-load failures; the remote connection pool returns an empty decoration
-set with an optional-action hint.
+Tree listings carry a `changeStatus`. The status map is cached per root for
+5 s (`GIT_STATUS_CACHE_TTL_MS`) from one `git status --porcelain=v2`. The first
+paint does not wait for it: the renderer calls
+`files.refreshGitDecorations({ forceFresh })` after the tree loads and applies
+file statuses plus directory rollups without listing again. A remote runtime
+without the optional `file.refreshGitDecorations` action gives an empty
+decoration set, not a tree failure.
 
-The decoration response is bounded, because an unbounded dirty tree (an
-`rm -rf`, a committed build output) produces one oversized RPC payload, and one
-oversized payload kills the whole desktop↔brain socket. `fileService` caps at
-`MAX_GIT_DECORATION_ENTRIES = 20_000` entries and
-`MAX_GIT_DECORATION_BYTES = 2 MiB` of estimated serialized size — far under the
-socket's own ceiling, so the rest of the response keeps headroom. Files and
-directories share that single budget: files are capped first, directories
-against what is left, since both ride the same response and independent caps
-would let the pair overrun together. When either budget binds, entries are
-sorted shallowest-first so the visible near-root decorations survive and the
-deep tail is what is dropped, and an entry that would overrun is skipped rather
-than ending the loop, so one pathological path does not forfeit the room every
-shorter path after it would still fit in.
+The response is bounded, because one oversized RPC payload kills the
+desktop↔brain socket: at most `MAX_GIT_DECORATION_ENTRIES` (20,000) entries
+and `MAX_GIT_DECORATION_BYTES` (2 MiB) estimated size. Files and directories
+share the budget (files first). When a budget binds, entries go shallowest
+first, and an entry that does not fit is skipped, not the end of the loop.
+The response then sets `truncated`, and the explorer shows "Some git
+decorations hidden (large change set)", because an undecorated file would read
+as committed.
 
-Truncation is never silent: the response sets `truncated`, and the workbench
-renders a muted **"Some git decorations hidden (large change set)"** strip
-under the explorer. An undecorated file would otherwise be indistinguishable
-from a clean one, which reads as a false "everything is committed".
-
-On mount, `refreshRoot` issues the tree listing and the decoration fetch in one
-`Promise.all` and applies both in the same `setTree` — one round trip instead of
-two, which is the dominant mount cost over a relay. That path passes
-`forceFresh: false` so the host's short status cache can serve it; only the
-explicit refresh action forces a fresh scan.
+On mount, `refreshRoot` lists the tree and fetches decorations in one
+`Promise.all` and applies both in one `setTree`, with `forceFresh: false`. Only
+the explicit refresh forces a fresh scan.
 
 ## Cache-first open, then revalidate
 
-`useFileContent.ts` keeps a bounded LRU of initial `readFile` payloads keyed by
-workspace and path (`MAX_CACHE = 48`). Opening a file paints from that cache
-when it hits, so reopening a file you just closed or previewed costs zero round
-trips — on the hosted web client, zero relay hops.
+`useFileContent.ts` keeps an LRU of initial `readFile` payloads by workspace and
+path (`MAX_CACHE = 48`). A hit paints at once, with no round trip. Nothing on
+the other side invalidates it (the web has no host watcher, and the desktop
+watcher runs only while Files is active), so a cache-painted open is followed
+by `revalidateOpenedFile`. It swaps the viewer only if the bytes differ
+(`sameFileContent`: content, size, total size, encoding, binary and partial
+flags). Rules:
 
-Nothing invalidates that LRU on its own from the other side: the web client has
-no host-side watcher across the relay, and the desktop watcher only runs while
-the Files tab is active. So a cache-painted open is followed by a background
-`revalidateOpenedFile`, which re-reads and swaps the viewer only if the bytes
-genuinely differ (`sameFileContent` compares content, size, total size,
-encoding, and the binary/partial flags — `FileContent` carries no timestamp, so
-this is exact rather than heuristic). Three rules keep it safe: a dirty tab is
-checked *before* the read and skipped entirely, so unsaved edits are never
-discarded and a dirty tab costs nothing; dirtiness is re-checked after the
-await; and a read that throws returns without priming, because a failed read
-must not poison the cache — the next explicit read surfaces the error.
+- A dirty tab is skipped before the read, and dirtiness is checked again after
+  it, so unsaved edits are never dropped.
+- A read that throws does not prime the cache; the next explicit read shows
+  the error.
 
 ## Large-file and range reads
 
-`files.readFile` returns inline text up to 1 MB, inline image previews
-up to 1 MB, and small unsupported binary payloads up to 256 KB. When a
-text-like file is larger than the editor limit, the service returns a
-UTF-8-safe first chunk with `isPartial`, `rangeStart`, `rangeEnd`, and
-`nextOffset`. Viewers stream the rest with `files.readFileRange`.
+`files.readFile` returns inline text up to 1 MB, inline image previews up to
+1 MB, and small unsupported binaries up to 256 KB. A larger text file returns a
+UTF-8-safe first chunk with `isPartial`, `rangeStart`, `rangeEnd` and
+`nextOffset`; viewers stream the rest with `files.readFileRange`. Larger images
+and unsupported binaries return `contentOmitted`.
 
-`readFileRange` uses byte offsets, clamps each request, and trims
-non-final UTF-8 responses to a complete code-point boundary so chunks
-can be concatenated without corrupting text. Binary/image/PDF range
-responses, plus audio/video, font, TIFF/HEIC and Office-document ranges, are base64-encoded
-per range; consumers must treat each range as independently decodable bytes
+`readFileRange` uses byte offsets, clamps each request, and trims a non-final
+UTF-8 chunk to a whole code point. Binary, image, PDF, audio, video, font,
+TIFF/HEIC and Office ranges are base64 per range: decode each range on its own
 and advance only by `nextOffset`.
 
 ## Office previews
 
-A `.xlsx` opened from the Files tab, the Work tools-pane Files panel, or a chat
-attachment previews natively: a virtualized grid with the sheet's own column
-letters, row numbers, column widths, and date/number formats, with sheet tabs
-and a row × column count. A `.pptx` gets a slide rail and a canvas drawn from the
-deck's real geometry, pictures and tables, plus an Outline view and arrow-key
-navigation scoped to the viewer itself. A `.docx` renders as a page at the
-document's own size and margins (Letter with 1" margins when the package has no
-section properties): styled headings, run formatting, numbered and bulleted
-lists, tables with merged cells, embedded raster pictures, links and page
-breaks, with an Outline rail of its headings and Fit / 100% / zoom controls.
-External links open in ADE's browser (http, https and mailto only), internal
-bookmarks scroll the page, and a picture whose relationship is external is
-never fetched.
+`.xlsx`, `.pptx` and `.docx` preview natively from the Files tab, the Work
+Files panel or a chat attachment:
 
-The readers are ADE's own (`viewers/office/`) on top of a bounded zip reader,
-which is what keeps "native preview" from costing anything until someone asks
-for one:
+- A sheet: a virtualized grid with the sheet's column letters, widths and
+  number formats, sheet tabs, and a row × column count.
+- A deck: a slide rail and a canvas from the deck's geometry, pictures and
+  tables, an Outline view, and arrow keys scoped to the viewer.
+- A document: a page at its own size and margins (Letter with 1" margins when
+  it has none), headings, run formatting, lists, tables with merged cells,
+  raster pictures, links, page breaks, an Outline rail, and Fit / 100% / zoom.
+  Links open in ADE's browser (http, https, mailto only). An external picture
+  is never fetched.
 
-- **Nothing loads until a file is opened.** `fflate` is imported dynamically
-  from `ooxmlZip.ts` and is the only zip dependency; `openXlsx` / `openPptx`
-  load the same way. Neither the parser nor the zip library is on the Files
-  route's startup path.
-- **Reads are scoped and capped.** Only the archive's central directory is held;
-  each part is inflated on demand, and the cap is enforced on the bytes as they
-  arrive (a declared-size check rejects the obvious case first, but the arriving
-  bytes are the guarantee — a deflate stream can expand past any header). One
-  budget spans the whole package, so 300 slide parts cannot add up to gigabytes.
-  A file over 25 MB, an entry over 24 MB, 64 MB of parts, or an embedded image
-  over 12 MB reports "too large" and falls back to the open-externally card.
-- **The model is bounded, not the file.** A sheet materializes at most
-  2,000 rows × 64 columns and says "showing the first 2,000 of 5,000 rows"
-  instead of growing; a deck parses at most 300 slides, 120 shapes per slide,
-  50 table rows × 20 columns per table, and 200 outline lines per slide.
-  A document stops at 20,000 blocks or 2 million characters, 500 rows ×
-  100 columns per table and four levels of nested tables, and says it was
-  cut short.
-  The grid virtualizes rows (`@tanstack/react-virtual`), so the DOM stays one
-  screenful however long the sheet is.
-- **Parsing yields.** A worksheet body is scanned in row chunks that yield to
-  the event loop, so a very long sheet cannot freeze a frame, and the
-  decompression runs in fflate's worker wherever the runtime has one.
+The readers (`viewers/office/`) cost nothing until a file opens:
 
-Legacy binary formats are a different format, not a different extension: `.doc`,
-`.xls` and `.ppt` are OLE2 compound files, so they stay on the fallback card, which
-says so plainly. The same OLE2 signature is also how an encrypted
-(password-protected) OOXML package is recognized. `.xlsm` and `.pptm` are not
-routed to the previews yet. What a preview deliberately does not draw is counted
-rather than dropped — a slide reads "Not shown in this preview: 2 charts, 1
-picture", and a document counts its charts, text boxes, shapes, footnotes,
-comments, headers and footers the same way — and a formula with no cached result shows the formula text instead of
-a blank cell.
+- `fflate` and the parsers load by dynamic import, off the Files startup path.
+- Only the central directory is held; each part inflates on demand, and the
+  cap counts arriving bytes. One budget covers the whole package. Over 25 MB
+  per file, 24 MB per entry, 64 MB of parts or 12 MB per image reports "too
+  large" and shows the open-externally card.
+- The model is bounded: 2,000 rows × 64 columns per sheet ("showing the first
+  2,000 of 5,000 rows"); 300 slides, 120 shapes per slide, 50 × 20 table cells,
+  200 outline lines per slide; 20,000 blocks or 2 million characters per
+  document, 500 × 100 table cells, four levels of nested tables.
+- Parsing yields to the event loop, and decompression uses fflate's worker
+  where there is one.
 
-This is a desktop and hosted-web decision: the classification lives in the
-renderer (`v2/viewerRegistry.ts`), so iOS keeps its own handling of these
-formats and is unaffected.
+`.doc`, `.xls` and `.ppt` are OLE2 files and stay on the fallback card, which
+says so. The same signature marks an encrypted OOXML package. `.xlsm` and
+`.pptm` do not route to the previews. What a preview does not draw is counted
+("Not shown in this preview: 2 charts, 1 picture"). A formula with no cached
+result shows the formula. The classification is in the renderer
+(`v2/viewerRegistry.ts`); iOS has its own handling.
 
 ## Trust boundary
 
-The preload bridge (`apps/desktop/src/preload/preload.ts`) exposes
-`window.ade.files` and `window.ade.diff`; nothing from `node:fs` or
-`node:path` leaks into the renderer. All path resolution for file
-writes and workspace roots happens server-side — inside the active
-ADE runtime for runtime-routed calls and inside the desktop main
-process for the fallback IPC path — through `resolvePathWithinRoot`,
-which refuses `..` escapes, null bytes, and `.git` internals. Remote
-runtimes apply the same path-safety primitives on the remote host, so
-the trust boundary still holds when the renderer is browsing files on
-a remote machine.
+The preload bridge exposes `window.ade.files` and `window.ade.diff`; nothing
+from `node:fs` or `node:path` reaches the renderer. Path resolution happens in
+the runtime (or the main process on the fallback path) through
+`resolvePathWithinRoot`, which refuses `..` escapes, null bytes and `.git`
+internals. Remote runtimes apply the same rules on their host.
 
-`files.openExternalPath` is intentionally local-only. It registers an
-absolute path that the user explicitly opened from Finder / the OS or dropped
-into the desktop renderer. A remote-bound desktop window continues to route
-normal workspace reads/writes to the remote runtime, but `external-local:*`
-workspace ids are handled by the local desktop process so arbitrary local
-files can open beside remote project tabs without pretending they belong to
-the remote filesystem. It is also the one `files` method with no machine pin
-argument, and `external-local:*` workspace ids drop a pin even when one is
-supplied — see [Which machine answers a file call](#which-machine-answers-a-file-call).
+`files.openExternalPath` is local only. It registers a path the user opened
+from the OS or dropped into the window. `external-local:*` ids are handled by
+the local process even in a remote window, take no pin, and drop a supplied
+one.
 
-A pin that arrives as router state is untrusted input like any other:
-`FilesTab` accepts only a well-formed `OpenProjectBinding`, so a malformed
-history entry cannot aim file calls at a machine that does not exist.
-
-For deeper detail on the watcher + trust boundary, see
-[file-watcher-and-trust.md](./file-watcher-and-trust.md).
+A pin from router state is untrusted input: `FilesTab` accepts only a
+well-formed `OpenProjectBinding`.
 
 ## Gotchas
 
-- The file tree is listed with `includeIgnored: true` in the renderer,
-  so dotfiles show up by default, but volatile ADE runtime paths such
-  as `.ade/worktrees/`, `.ade/cache/`, transcripts, secrets, and the
-  SQLite DB are still filtered out. Pair callers that pass
-  `includeIgnored: false` (search indexing, watcher default mode) with
-  the corresponding start/stop pair — the watcher refcounts are
-  per-mode. Search is separate from the tree: it defaults to
-  `includeIgnored: false` and only widens when the user turns the toggle on.
-- While a machine pin is active the workbench publishes **nothing** into the
-  dirty-buffer map. That map is keyed by absolute path with no machine in the
-  key, and the main process reads it to serve agent file reads on *this*
-  machine — and one user's laptop and desktop routinely check the same repo out
-  at the same absolute path, so publishing would hand a local agent the remote
-  machine's unsaved text and let it write that back. Tabs stay editable and
-  save over the wire as normal. Clearing the pin does not resume publishing in
-  the same commit either: it waits until the roster has been re-listed for the
-  machine the tab is actually bound to, because until then `resolveTabContext`
-  still resolves the machine just left.
-- `fileService.readFile` sends inline text previews up to 1 MB, inline
-  image previews up to 1 MB, and small unsupported binary payloads up
-  to 256 KB. Oversized text returns a partial first chunk and streams
-  through `readFileRange`; oversized images and unsupported binaries
-  still return `contentOmitted`.
-- HTML preview is renderer-only and deliberately inert: it uses `srcDoc` in an
-  empty-sandbox iframe plus a restrictive CSP/no-referrer policy. Scripts,
-  forms, parent navigation, downloads, and remote resource fetches stay
-  disabled; oversized HTML follows the large-text streaming path instead of
-  constructing a multi-megabyte iframe document.
-- `listTree` and `listTreeChildren` must share filtering and ordering:
-  skip `.git`, skip volatile `.ade` runtime paths, honor
-  `includeIgnored`, sort directories before files, and paginate via
-  `nextOffset` rather than silently dropping entries.
-- Directory expansion fetches exactly one `TREE_PAGE_SIZE` (2,000) page —
-  a single IPC round trip — and renders it immediately with a "Load
-  more…" row for the remainder; each load-more click appends one more
-  page. Watcher-driven refreshes re-list only the already-loaded window
-  (`loadedDirectoryChildrenCount`), never an arbitrary 10,000 children.
-  Path reveals (external opens) are the exception and page up to
-  `REVEAL_MAX_CHILDREN` so the revealed entry materializes.
-- The cross-mount workspace roster and explorer tree caches live in
-  `v2/filesTreeCache.ts` and are bounded: trees are node/byte-accounted
-  with LRU eviction over budget, mounted workbenches pin their rendered
-  tree (eviction can never desync a live explorer), and warm
-  project-surface eviction in `App.tsx` releases the project's Files
-  caches. Evicted trees reload through the normal `refreshRoot` path.
-  The cache holds only tree structure — Monaco models, dirty buffers,
-  editor groups, and open tabs are never touched by its policy.
-- Monaco models are reused per path and disposed on tab close,
-  rename/delete cleanup, workspace switch, or unmount. Do not dispose
-  them on ordinary tab switches, theme changes, read-only toggles, or
-  v2 group moves.
-- `writeTextAtomic` creates a temp file in the target's directory. If
-  the directory has no write permission, the operation throws, which
-  surfaces as an IPC rejection at the editor tab.
-- Runtime-bound file calls are strict: a timeout or connection failure
-  from a bound local/remote runtime surfaces to the tab instead of
-  retrying against the desktop main process, which could point at a
-  different host or workspace. A pinned call is stricter still: it names one
-  machine and has no local IPC fallback at all.
-- Files are freely editable. There is no "Enable editing" step and no
-  per-workspace edit-protection gate: every resolved workspace — including the
-  primary repo root and lanes whose `is_edit_protected = 1` — opens Monaco in
-  read/write mode with create / rename / delete controls enabled on desktop and
-  mobile. The `is_edit_protected` flag still exists but only governs lane
-  lifecycle (lane deletion exclusion), not file editing;
-  `FilesWorkspace.isReadOnlyByDefault` is now derived as constant `false`.
-- Workspace switching is navigation, not a discard action. Dirty tabs remain
-  open and published to the dirty-buffer map under their own workspace root
-  until the user saves, closes, renames, deletes, or unloads the tab.
-- `listWorkspaces` failures are retried with a capped backoff
-  (`1s → 2s → 5s → 10s`, then steady) rather than swallowed, so a Files tab
-  opened before a remote runtime finishes connecting fills in its workspace
-  list once the host answers instead of staying empty. Individual file
-  reads/writes are still strict (a bound-runtime failure surfaces to the tab).
-- File watcher subscriptions are per sender (BrowserWindow /
-  webContents). Closing a window calls `stopAllForSender` to tear
-  down every subscription for that window.
-- Lane worktrees are resolved through `laneService`, not directly from
-  `.ade/worktrees/`. A lane deleted out-of-band will make its
-  workspace disappear from the list on next refresh.
-- **Remote Open in is SSH URLs, not local paths.** Do not spawn `code`
-  against a remote worktree path on the laptop. Paired remotes
-  (`transport: "paired"`) have no hostname ADE can mint into
-  `vscode://` / `zed://`, so `canOfferOpenIn` is false. Do not widen
-  `openExternalUrl` to those schemes — they go through
-  `openEditorExternalUrl` only.
+- The tree lists with `includeIgnored: true`, so dotfiles show, but volatile
+  `.ade` paths (worktrees, cache, transcripts, secrets, the database) are
+  filtered. Watcher refcounts are per mode: pair each start with its stop in
+  the same mode. Search defaults to `includeIgnored: false`.
+- While a machine pin is active, the workbench publishes **nothing** to the
+  dirty-buffer map. The map is keyed by absolute path with no machine, and one
+  person's two computers often share a path, so a local agent would read (and
+  write back) the remote machine's unsaved text. After the pin clears,
+  publishing waits until the roster is listed again for the tab's own machine.
+- HTML preview is inert: `srcDoc` in an empty-sandbox iframe with a strict CSP
+  and no referrer. Scripts, forms, navigation, downloads and remote fetches
+  stay off; large HTML streams as large text.
+- `listTree` and `listTreeChildren` must share filtering and order: skip
+  `.git` and volatile `.ade` paths, honor `includeIgnored`, folders first, and
+  page with `nextOffset`.
+- Expanding a folder fetches one `TREE_PAGE_SIZE` (2,000) page and shows
+  "Load more…" for the rest. Watcher refreshes re-list only the loaded window
+  (`loadedDirectoryChildrenCount`). Path reveals page up to
+  `REVEAL_MAX_CHILDREN`.
+- The roster and tree caches (`v2/filesTreeCache.ts`) are bounded LRUs.
+  Mounted workbenches pin their tree, and warm project eviction in `App.tsx`
+  releases a project's caches. The cache holds tree structure only, never
+  Monaco models, dirty buffers or tabs.
+- Monaco models are reused per path and disposed on tab close, rename or
+  delete, workspace switch or unmount. Do not dispose them on tab switches,
+  theme changes, read-only toggles or group moves.
+- `writeTextAtomic` needs write permission on the target's directory; without
+  it the editor tab gets the error.
+- Runtime-bound file calls are strict: a timeout or connection failure shows
+  in the tab and never retries against the main process. A pinned call has no
+  fallback at all.
+- Files are freely editable on a computer: no "Enable editing" step and no
+  edit-protection gate. `is_edit_protected` only governs lane deletion.
+  `FilesWorkspace.isReadOnlyByDefault` is `false` on a computer and `true` only
+  for an account-answered lane.
+- Switching workspace is navigation, not a discard. Dirty tabs stay open and
+  published under their own root.
+- `listWorkspaces` failures retry with backoff (1 s, 2 s, 5 s, 10 s, then
+  steady), so a Files tab opened before a remote runtime connects fills in.
+  `WORKSPACE_LIST_RETRY_DELAYS_MS` holds the steps.
+- Watcher subscriptions are per sender; closing a window calls
+  `stopAllForSender`.
+- Lane worktrees resolve through `laneService`, never straight from
+  `.ade/worktrees/`. A lane deleted out of band leaves the list on the next
+  refresh.
+- Remote **Open in** uses SSH URLs. Do not spawn `code` on a remote path, and
+  do not widen `openExternalUrl` to editor schemes.
+- On an account-answered lane, do not enable New file or New folder and do not
+  add "Report…" to the read-failure banner: the reader's sentences are the
+  expected states, not bugs.
 
 ## Cross-links
 
-- Lane worktrees feed the workspace list: [../lanes/](../lanes/)
-- Lane and session **Open in** menus:
-  [../lanes/](../lanes/) and
-  [../terminals-and-sessions/](../terminals-and-sessions/)
-- Processes and tests can monitor the workspace for changes via the
-  watcher — see [../terminals-and-sessions/](../terminals-and-sessions/)
-  for the transcript and log story.
-
-## Opening a file from elsewhere
-
-A path clicked in a chat, tool-call or diff row, or printed in a terminal opens
-through `useWorkspacePathOpener` (`chatWorkspacePaths.tsx`). An absolute path
-resolves to the deepest workspace root that holds it, so a file in another lane's
-worktree opens in that lane. A relative path that is not at the workspace root
-resolves by its ending: one match opens, several open the search panel, and none
-says so in a toast after a real read (the file index can be stale). Navigating to
-Files carries the file in router state; `App.tsx` passes page routes the real
-location for this reason, because a route given to `<Routes>` as a string loses
-its state.
-
-Terminal paths become links only under the pointer: `terminalPathLinks.ts` scans
-the hovered row (and the rows it wraps onto) in one forward pass with capped
-lengths, checks the file exists after a short rest on the row, and offers a link
-only for real files. A network path never becomes a link.
+- Lanes feed the workspace list: [../lanes/](../lanes/).
+- **Open in** menus: [../lanes/](../lanes/) and
+  [../terminals-and-sessions/](../terminals-and-sessions/).
+- History on a lane with no computer awake: [../history/](../history/).

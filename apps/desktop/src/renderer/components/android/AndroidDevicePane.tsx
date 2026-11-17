@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import type { IosElementContextItem, OpenProjectBinding } from "../../../shared/types";
 import type {
   AndroidDeviceInventory,
@@ -169,7 +170,8 @@ function AndroidDevicePaneOnMachine({
   const remoteMachine = runtimePin.kind === "remote";
   // The tab's own copy on another machine comes with no name from the
   // caller: the pin names the machine.
-  const remoteMachineName = machineName ?? (runtimePin.kind === "remote" ? runtimePin.runtimeName : null);
+  // An ADE Cloud computer reads "ADE Cloud", never its own name.
+  const remoteMachineName = machineName ?? (runtimePin.kind === "remote" ? machineLabelForBinding(runtimePin) : null);
   // An ADE Cloud computer gets its own notice in place of the KVM one or a
   // start refused for disk. Found by the same pin as every Android call.
   const { box: cloudBox, account: cloudAccount, refresh: refreshCloud } = useCloudComputer(runtimePin);

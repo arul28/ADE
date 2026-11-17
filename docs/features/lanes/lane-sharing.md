@@ -399,8 +399,8 @@ refresh. `laneShareGuestGates.ts` applies the policy to each envelope.
   reason (watch only, paused, no messages left, not connected). Without the
   send right but with drafts, a message becomes a draft for the owner.
 - **Home** (`LaneShareHomeRows.tsx`): "Shared with you" in the Projects
-  card lists invites and shared lanes; each opens the lane. A web account
-  with no computer and no project sees "Shared lanes need no computer".
+  card lists invites and shared lanes; each opens the lane. These rows need
+  no computer of the guest's own.
 - The "Access changed" notice shows only when the rights or the lane state
   differ after the host let the guest back in.
 

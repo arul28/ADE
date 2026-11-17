@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { ChartBar, GitMerge, GitPullRequest, Gauge, Pulse, type Icon } from "@phosphor-icons/react";
 import { Banner } from "../ui/notice";
 import type {
@@ -349,9 +351,15 @@ export function useMachineRows(
   remoteSnapshot: RemoteRuntimeConnectionSnapshot | null,
   webMachines: readonly WebMachineEntry[],
 ): MachineRow[] {
+  // ADE Cloud is one machine every account has; its computers never show by name.
+  const cloudShown = useAdeCloudEnabled();
+  const cloudIndex = useAdeCloudLaneComputers();
   return useMemo(
-    () => (webMode ? webMachineRows(webMachines) : desktopMachineRows(remoteSnapshot)),
-    [remoteSnapshot, webMachines, webMode],
+    () => {
+      const cloud = { shown: cloudShown, index: cloudIndex };
+      return webMode ? webMachineRows(webMachines, cloud) : desktopMachineRows(remoteSnapshot, cloud);
+    },
+    [cloudIndex, cloudShown, remoteSnapshot, webMachines, webMode],
   );
 }
 

@@ -269,8 +269,9 @@ function ProjectMachineStack({
   if (locations.length === 0) return null;
   // An account project shows its computers whenever it has a copy anywhere,
   // one computer included: the chip is the way to its copies.
+  // Only reachable computers count: an offline own computer is hidden, as in every tab.
   if (computers) {
-    if (computers.count === 0) return null;
+    if (computers.reachableCount === 0) return null;
   } else if (locations.length === 1 && (namedByGroup || locations[0]!.summary.kind !== "remote" || isAccountNoCopyLocation(locations[0]!.summary))) {
     return null;
   }
@@ -278,15 +279,18 @@ function ProjectMachineStack({
     ...locations.filter((location) => location.summary.kind !== "remote"),
     ...locations.filter((location) => location.summary.kind === "remote"),
   ];
-  const entries = ordered.map((location) => {
+  const entries = ordered.flatMap((location) => {
     const name = welcomeProjectMachineName(location);
     const dot = locationDotState(location, location === primary, web);
-    return { location, name, dot };
+    // An offline computer is hidden; a missing folder on a reachable one still shows.
+    if (dot === "offline" && location.summary.exists !== false) return [];
+    return [{ location, name, dot }];
   });
+  if (!computers && entries.length === 0) return null;
   const online = entries.filter((entry) => entry.dot === "online").length;
   const summary = entries.map((entry) => `${entry.name} · ${DOT_LABEL[entry.dot]}`).join("\n");
-  // One count rule on every surface: distinct computers, online or offline.
-  const count = computers?.count ?? entries.length;
+  // Reachable computers only: an offline own computer is hidden.
+  const count = computers?.reachableCount ?? entries.length;
   const reachable = computers ? computers.reachable : online > 0;
   return (
     <div className="ade-welcome-machines" data-ade-project-machines="true">

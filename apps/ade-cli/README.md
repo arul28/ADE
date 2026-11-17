@@ -1,21 +1,22 @@
 # ADE CLI
 
-`apps/ade-cli` owns the `ade` command, the ADE brain, manual runtime entry points. The **brain** is the always-on, machine-owned ADE process for one channel; it is the source of truth for lanes, agent chats, work sessions, PR state, sync, proof artifacts, and the project catalog on a machine. Desktop ADE, the web client, the iOS app, and SSH-attached desktops all attach to it. A **manual runtime** is an explicit foreground execution process you start for dev/test work instead of using the automated brain service.
+`apps/ade-cli` owns the `ade` command, the ADE brain and the manual runtime entry points.
+
+- The **brain** is the always-on, machine-owned ADE process for one channel. It is the source of truth on a machine for lanes, agent chats, work sessions, PR state, sync, proof and the project catalog. Desktop ADE, the web client, the iOS app and SSH-attached desktops attach to it.
+- A **manual runtime** is a foreground process you start for dev and test work instead of the brain service.
 
 ## Modes
 
-The `ade` binary has three operating modes:
+- **Attached brain.** The brain listens on `$ADE_HOME/sock/ade.sock` (POSIX) or `\\.\pipe\ade-runtime` (Windows). Other commands and clients open that endpoint and speak ADE JSON-RPC.
+- **Manual runtime** (`ade runtime run`). A foreground process on an explicit endpoint, with sync always off. `--profile embedded` runs it as a guest of an external embedder (`@ade-dev/sdk`); see [Internal process command](#internal-process-command).
+- **Headless** (`--headless`). The CLI builds an in-process `AdeRuntime` for one project and answers the same JSON-RPC directly: for one-shot commands, and as a fallback when no brain is available.
+- **`ade rpc --stdio`.** Attaches to the local brain and bridges its JSON-RPC over stdio; the desktop's remote runtime runs it over SSH.
 
-- **Attached brain** — the ADE brain listens on `$ADE_HOME/sock/ade.sock` (POSIX) or `\\.\pipe\ade-runtime` (Windows). All other CLI commands and clients open that local endpoint and speak ADE JSON-RPC.
-- **Manual runtime** (`ade runtime run`) — a foreground execution process on an explicit endpoint. Sync is always off; use this for dev/test work when you do not want to use the automated stable/beta/alpha brain service. Add `--profile embedded` to run it as a guest of an external embedder (`@ade-dev/sdk`) — see [Internal process command](#internal-process-command).
-- **Headless** (`--headless`) — the CLI builds an in-process `AdeRuntime` for one project and answers the same JSON-RPC surface directly. Used for one-shot commands and as a fallback when no machine brain is available.
-- **`ade rpc --stdio`** — attaches to the local machine brain and bridges its JSON-RPC over stdio. This is the transport the desktop's remote runtime feature spawns over SSH.
-
-Default routing for typed commands: prefer the machine brain endpoint if reachable; auto-start the brain when the endpoint does not exist; fall back to headless for commands that don't need shared live state. Add `--socket` to require a specific endpoint, or `--headless` to force in-process execution.
+Default routing: use the brain endpoint when it answers, start the brain when the endpoint does not exist, and fall back to headless for commands that need no shared live state. `--socket` requires one endpoint and fails fast when it is missing; `--headless` forces in-process execution.
 
 ## Machine layout
 
-`resolveMachineAdeLayout()` (in `src/services/projects/machineLayout.ts`) is the single source for per-machine paths. Override the root with `ADE_HOME`.
+`resolveMachineAdeLayout()` (`src/services/projects/machineLayout.ts`) is the one source for per-machine paths. `ADE_HOME` overrides the root.
 
 | Path | Purpose |
 | --- | --- |
@@ -33,9 +34,9 @@ Default routing for typed commands: prefer the machine brain endpoint if reachab
 | `~/.ade/cache/desktop/` | Partially downloaded desktop installer, kept between `ade setup` runs so an interrupted 1 GB download resumes. Deleted once the install succeeds. |
 | `~/.ade/runtime/launchd.{out,err}.log` | Runtime stdout/stderr when running as a login service on macOS. |
 
-Per-project state stays under `<project>/.ade/` and is governed by `projectConfigService` (see `docs/features/onboarding-and-settings/configuration-schema.md`). A project's secrets live in Passwords & Secrets (the account's vault, plus "this computer only" secrets in the machine's encrypted cache): those for every project, then the project's own. `ade secrets` / the `project_secret` action domain is the project's view of them. A project's old `.ade/secrets/project-secrets.v1.enc` moves in on its own the first time it opens.
+Per-project state stays under `<project>/.ade/` (`projectConfigService`; see `docs/features/onboarding-and-settings/configuration-schema.md`). A project's secrets live in Passwords & Secrets (the account vault, plus "this computer only" secrets in the machine's encrypted cache): those for every project, then the project's own. `ade secrets` and the `project_secret` action domain are the project's view. An old `.ade/secrets/project-secrets.v1.enc` moves in the first time the project opens.
 
-Channel builds use parallel state roots and binary names so Stable, Beta, and Alpha can coexist:
+Channels use parallel state roots and binary names, so Stable, Beta and Alpha can coexist:
 
 ```text
 ADE.app        -> ade        -> ~/.ade        -> ade-desktop
@@ -43,70 +44,41 @@ ADE Beta.app   -> ade-beta   -> ~/.ade-beta   -> ade-desktop-beta
 ADE Alpha.app  -> ade-alpha  -> ~/.ade-alpha  -> ade-desktop-alpha
 ```
 
-Source dev launches use the temp dev endpoint and `ade-desktop-dev` Electron profile instead of the installed app profile.
+Source dev launches use the temp dev endpoint and the `ade-desktop-dev` Electron profile.
 
 ## Install paths
 
-Three ways to put `ade` on a machine:
-
-1. **Standalone runtime install** — single static binary plus its native dependency archive, fetched from a GitHub release. Suitable for headless macOS/Linux servers and Windows x64 machines.
+1. **Standalone runtime install**: one static binary plus its native archive from a GitHub release, for headless macOS/Linux servers and Windows x64.
 
    ```bash
    curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh
    ```
 
-   Windows PowerShell:
-
    ```powershell
    irm https://github.com/arul28/ADE/releases/latest/download/install.ps1 | iex
    ```
 
-   Environment overrides accepted by `install.sh`:
+   `install.sh` accepts `ADE_VERSION=vX.Y.Z` (default `latest`), `ADE_INSTALL_DIR` (default `$ADE_HOME/bin`), `ADE_RELEASE_REPO=owner/repo`, `ADE_HOME`, `ADE_INSTALL_NO_PROMPT=1` (no sign-in or desktop offers) and `ADE_INSTALL_NO_PATH=1` (write `$ADE_HOME/env`, edit no profile). For an unpublished Windows proof bundle, run `install.ps1 -AssetDirectory <dir>` (or `ADE_RELEASE_ASSET_DIR`).
 
-   - `ADE_VERSION=vX.Y.Z` — install a specific release tag (default `latest`).
-   - `ADE_INSTALL_DIR=/custom/bin` — destination directory for the binary (default `$ADE_HOME/bin`).
-   - `ADE_RELEASE_REPO=owner/repo` — fetch from a fork.
-   - `ADE_HOME=/custom/.ade` — change the per-machine state root.
-   - `ADE_INSTALL_NO_PROMPT=1` — skip the interactive sign-in and desktop-app offers.
-   - `ADE_INSTALL_NO_PATH=1` — write `$ADE_HOME/env` but never touch a shell profile (the POSIX equivalent of `-NoPath`).
+   - Both scripts download the binary (`ade-<platform-arch>` → `$ADE_INSTALL_DIR/ade`, `ade-win32-x64.exe` → `ade.exe`), verify it and its `.native.tar.gz` against `SHA256SUMS`, extract native deps under `$ADE_HOME/runtime/<platform-arch>/`, run `ade --version`, and register the login service with `ade brain start`.
+   - Register with `ade brain start`, never `ade serve --install-service`: only `ade brain start` pins the default role to `cto`, which `ade connect` and the desktop need. `serve --install-service` lands on `agent`, and sign-in fails.
+   - PATH: the PowerShell script adds the folder to the user `PATH` (idempotent, then `WM_SETTINGCHANGE`). The POSIX script writes `$ADE_HOME/env` (a guarded prepend) and, with consent on a tty, one marker block (`# >>> ade >>>` … `# <<< ade <<<`) in `~/.zshrc` (`~/.zprofile` only when no `~/.zshrc`), `~/.bash_profile` (bash on macOS) or `~/.bashrc` (Linux). It checks the marker first, so a re-run (also the update path) never duplicates it. fish and unknown shells are never edited; the script prints the line to add. `-NoPath` / `ADE_INSTALL_NO_PATH=1` skip PATH, `-NoService` skips the service.
+   - Then both hand off to `ade setup --continue …` with what they did, so one TypeScript flow finishes on both platforms.
 
-   After a successful install both scripts hand off to `ade setup`, passing what they already did (`--continue --runtime-path … --native-path … --elapsed-ms … --downloaded-bytes …`) so the closing summary can recap all five steps. The shell owns only the two steps that must happen before the `ade` binary exists; everything after is one TypeScript implementation shared by both platforms, which is what stops Windows and macOS drifting apart the way they had.
+   `ade setup`:
 
-   `ade setup` downloads ADE's pinned agent CLIs that this machine shows signs of using (the same demand rule as the brain: a login file, a token, or the vendor's CLI on the PATH) into the shared machine cache, so the first agent run is not a surprise multi-hundred-megabyte download — non-fatal, since the brain retries it on every `ade serve` and every other pin downloads the first time ADE needs it. ADE always runs its own pinned copies, never a CLI on the PATH. It then handles the account: an already-linked machine is offered keep / switch / skip instead of being asked to sign in blind. Finally the desktop app (macOS `.zip` via `ditto`, Windows NSIS installer via a silent per-user `/S` run), verified against the base64 SHA-512 in the electron-updater manifest (`latest-mac.yml` / `latest.yml`) — the published `SHA256SUMS` covers only the standalone runtime assets. That download resumes from a partial file via a Range request, is skipped entirely when the same version is already installed, and the installed app is launched detached so a Windows GUI child never inherits the console.
+   - Downloads the pinned agent CLIs this machine shows signs of using (a login file, a token, or the vendor CLI on the PATH) into the machine cache. This is not fatal: the brain retries on every `ade serve`, and other pins download on first use. ADE always runs its own pinned copies, never a CLI on the PATH.
+   - Handles the account: a linked machine gets keep / switch / skip.
+   - Installs the desktop app (macOS `.zip` via `ditto`, Windows NSIS `/S` per-user), verified against the base64 SHA-512 in `latest-mac.yml` / `latest.yml` (`SHA256SUMS` covers only the runtime assets). The download resumes with a Range request, is skipped when that version is installed, and the app starts detached.
+   - Ends with a check (brain reachable, machine linked) and a summary. A failed step prints its fix inline and under "What's left". Prompts read `/dev/tty` on POSIX; with no terminal both scripts pass `--no-prompt` and print the follow-up commands (`install.ps1 -NoPrompt` too). Re-run `ade setup` at any time.
 
-   The run ends with an end-to-end verification (brain reachable, machine linked) and a summary. A failed step reports the command that fixes it inline and again under "What's left"; a clean run prints neither, so the installer never claims success it did not achieve. Prompts are read from `/dev/tty` on POSIX because `curl | sh` occupies stdin; when no terminal is attached (CI, automation) both scripts pass `--no-prompt` and `ade setup` prints the follow-up commands instead. `install.ps1` also accepts `-NoPrompt`. Re-run `ade setup` at any time to redo the flow.
+2. **Desktop bundle**: every packaged app ships the CLI at `/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade`. Run `…/ade-cli/install-path.sh` once to put `ade` (or `ade-beta` / `ade-alpha`) on `PATH`; the wrapper runs the CLI under the packaged Electron, so no separate Node is needed. Settings › General has Install / Repair (`AdeCliSection`, `window.ade.adeCli.installForUser()`).
 
-   For an unpublished Windows proof bundle, run `install.ps1 -AssetDirectory <bundle-directory>` (or set `ADE_RELEASE_ASSET_DIR`) to install the local checksum, executable, and native archive without creating a GitHub Release.
-
-   The POSIX script downloads `ade-<platform-arch>` to `$ADE_INSTALL_DIR/ade`; the PowerShell script downloads `ade-win32-x64.exe` to `$ADE_INSTALL_DIR\ade.exe`. Both verify the binary and matching `.native.tar.gz` against `SHA256SUMS`, extract native dependencies under `$ADE_HOME/runtime/<platform-arch>/`, run `ade --version`, and register the per-user login service via `ade brain start`. That command — not `ade serve --install-service` — is the one that pins the runtime's default role to `cto`, which is what `ade connect` and the desktop app both require; registering through `serve --install-service` inherits an unset `ADE_DEFAULT_ROLE`, lands on `agent`, and makes sign-in fail on every clean install. Both put `ade` on `PATH`. The PowerShell installer adds the install directory to the current user's `PATH` (idempotently, then broadcasts `WM_SETTINGCHANGE`) and tells you to open a new terminal. The POSIX installer writes `$ADE_HOME/env` — a guarded `case ":${PATH}:" in ... esac` prepend that is safe to source repeatedly — and, with consent on a tty, appends one marker-commented block (`# >>> ade >>>` / `. "$HOME/.ade/env"` / `# <<< ade <<<`) to `~/.zshrc` (zsh; `~/.zprofile` only when no `~/.zshrc` exists), `~/.bash_profile` (bash on macOS) or `~/.bashrc` (bash on Linux). It greps for the marker first, so re-running the installer — which is also the update path — never duplicates the block. fish and unrecognized shells are never edited: the installer prints `fish_add_path "<dir>"` or the source line instead, as it does with no tty or with `ADE_INSTALL_NO_PATH=1`. After a profile edit the closing output tells you to run `. "$HOME/.ade/env"` or open a new terminal. Both accept `-NoPath` / `ADE_INSTALL_NO_PATH=1`; use `-NoService` to skip startup registration.
-
-2. **Desktop bundle** — every packaged ADE.app ships the CLI. macOS path:
-
-   ```bash
-   /Applications/ADE.app/Contents/Resources/ade-cli/bin/ade
-   ```
-
-   Add it to `PATH` once with the channel-specific helper:
-
-   ```bash
-   /Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh
-   ```
-
-   The `install-path.sh` wrapper exposes `ade` (or `ade-beta` / `ade-alpha` from the matching `.app`). The wrapper runs the CLI under the packaged Electron runtime, so users do not need a separate Node install. The desktop General settings tab also exposes Install / Repair via `AdeCliSection` (`window.ade.adeCli.installForUser()`).
-
-3. **Source build** — for repository development:
-
-   ```bash
-   cd apps/ade-cli
-   npm run build
-   npm link            # or: npm pack && npm install -g ./ade-cli-*.tgz
-   ```
-
-   Requires Node.js 22.19 or newer to build the headless runtime (it embeds the Node version used by Pi's SDK worker).
+3. **Source build**: `cd apps/ade-cli && npm run build && npm link` (or `npm pack` and a global install). It needs Node.js 22.19 or newer (the headless runtime embeds the Node that Pi's SDK worker uses).
 
 ## Service manager
 
-The ADE brain runs as a per-user login service. The implementations live in `src/serviceManager/`.
+The brain runs as a per-user login service (`src/serviceManager/`).
 
 | Platform | Backend | Service path |
 | --- | --- | --- |
@@ -114,90 +86,40 @@ The ADE brain runs as a per-user login service. The implementations live in `src
 | Linux | `systemctl --user` | `~/.config/systemd/user/<ADE_RUNTIME_SERVICE_NAME>.service` |
 | Windows | HKCU `Run` entry + PowerShell supervisor | `HKCU\...\CurrentVersion\Run` value `ADE Runtime (<channel>-<hash>)` |
 
-The default service label is `com.ade.runtime`; channel builds override it via `ADE_PACKAGE_CHANNEL=alpha|beta` (`com.ade.runtime.alpha`, `com.ade.runtime.beta`). `ADE_RUNTIME_SERVICE_NAME` overrides the label outright. On Windows the label and current-user identity produce a channel/user-qualified Run-value name, launcher, advisory supervisor/runtime PID record, and named pipe. The Run value starts a hidden PowerShell supervisor; a successful initialized IPC response is the separate readiness record. Scheduled Tasks are legacy state that install/uninstall clean up, never the current service registration. macOS writes `launchd.{out,err}.log` under `ADE_HOME/runtime/`.
+- The label is `com.ade.runtime`; `ADE_PACKAGE_CHANNEL=alpha|beta` gives `com.ade.runtime.alpha` / `.beta`, and `ADE_RUNTIME_SERVICE_NAME` overrides it.
+- On Windows the label and user give a qualified Run-value name, launcher, PID record and named pipe. The Run value starts a hidden PowerShell supervisor; an initialized IPC response is the readiness record. Scheduled Tasks are legacy state that install and uninstall clean up.
+- macOS writes `launchd.{out,err}.log` under `ADE_HOME/runtime/`.
 
 ### Windows: how the always-on guarantee is actually obtained
 
-launchd and systemd own the process they start, so on macOS and Linux "installed" and
-"survives this session" are the same fact. Windows has no unelevated equivalent, and the two
-halves have to be built separately.
+Windows has no unelevated service that both starts at login and survives the session that started it, so ADE builds the two halves apart.
 
-**Login persistence** is the HKCU `Run` key. An ONLOGON scheduled task would be the closer
-analogue but requires elevation — both `schtasks /Create /SC ONLOGON` and
-`Register-ScheduledTask -AtLogOn` fail with *Access is denied* for a standard user.
+- **Login persistence** is the HKCU `Run` key. An ONLOGON scheduled task needs elevation (`schtasks /Create /SC ONLOGON` and `Register-ScheduledTask -AtLogOn` give *Access is denied*).
+- **Session survival.** A child process joins its parent's [job object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects), and the `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` jobs of terminals, editors, CI agents and Electron do not allow breakaway. So a supervisor started as a plain child of `ade brain start` dies with that session. Something else must create it, in this order:
+  1. **A transient one-shot scheduled task** (no elevation). Task Scheduler starts the supervisor under `svchost.exe`, outside our jobs; the task is removed once it starts.
+  2. **`Win32_Process.Create` over WMI** when task registration is refused. `WmiPrvSE.exe` creates the process in no job. It is second because endpoint protection blocks WMI process creation more often.
+  3. **An in-session launch** when both are refused: the brain runs, but only for that session.
+- At sign-in `explorer.exe` (job-free) runs the `Run` entry, so none of this is needed.
 
-**Session survival** is the harder half. [Job
-objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects): "by default
-any child processes it creates using `CreateProcess` are also associated with the job", job
-membership cannot be broken once assigned, and `CREATE_BREAKAWAY_FROM_JOB` fails with
-`ERROR_ACCESS_DENIED` unless the job opted in with `JOB_OBJECT_LIMIT_BREAKAWAY_OK` — which the
-`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` jobs used by terminals, editors, CI agents and Electron do
-not. So a supervisor started as an ordinary child of `ade brain start` is terminated with the
-session that started it. The fix is to have something else create the process:
+**The limitation.** When a machine refuses both handovers, the brain dies when the terminal, editor or agent that started it exits, and returns at the next sign-in. The supervisor probes its own job on startup (`QueryInformationJobObject`, checking `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and writes `sessionBound` in its PID record; `ade brain start` and `ade brain status` say so. It describes the running supervisor, so it clears once `explorer.exe` starts it at the next sign-in. `null` means the probe could not run.
 
-1. **A transient one-shot scheduled task.** The Task Scheduler service spawns the action itself,
-   so the supervisor is parented to `svchost.exe` and belongs to none of our jobs. Registering a
-   one-shot task does not require elevation. The task is unregistered as soon as it has started.
-2. **`Win32_Process.Create` over WMI**, if task registration is unavailable or denied by policy.
-   The same Microsoft page states it explicitly: "Child processes created using
-   `Win32_Process.Create` are not associated with the job." The process is created by the WMI
-   provider host `WmiPrvSE.exe` and ends up in no job at all. This is second rather than first
-   because WMI process creation is the more commonly blocked of the two — it is a known
-   lateral-movement technique and endpoint-protection rules disable it. The two failure modes are
-   largely independent, which is why both are worth having.
-3. **An in-session launch**, if a machine refuses both. The brain still comes up, but it is bound
-   to the lifetime of the session that started it.
+`ade brain update` follows the machine's update track (`~/.ade/update-track.json`): on Beta, "latest" is the Beta feed's build, never Stable (and the reverse). A `--version` is used as given. When the saved track and the running build's track differ (an unfinished switch), "latest" is refused; finish the switch in Settings › About or pass `--version`.
 
-At sign-in none of this is needed: `explorer.exe` runs the `Run` entry and is itself job-free.
+The service runs the `ade` binary that installed it, so it stays on that channel. Release installs use `$ADE_HOME/bin/ade` (`ade.exe`), so `ade brain update` can stage the next release under `$ADE_HOME/runtime/updates/`, verify it against `SHA256SUMS`, promote the binary and native deps atomically, and restart the service with the desktop closed.
 
-**The limitation, stated plainly.** On a machine that denies both handovers, ADE's always-on
-guarantee does not hold — the brain dies when your terminal, editor or agent exits, and returns
-only at your next sign-in. ADE does not hide this. The supervisor probes its own job on startup
-(`QueryInformationJobObject(NULL, JobObjectExtendedLimitInformation)`, checking for
-`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and publishes the answer as `sessionBound` in its PID
-record; `ade brain start` and `ade brain status` both say so in full. That is measured about the
-running supervisor rather than inferred from which launch route the installer used, so a brain
-that was session-bound today stops being reported that way once `explorer.exe` starts it
-job-free at the next sign-in. `null` means the probe could not run and is never reported as a
-guarantee either way.
-
-Manage the service from the CLI:
-
-```bash
-ade brain start                   # enable/load the login service
-ade brain stop                    # disable/unload the login service
-ade brain status --text           # endpoint state, service state, sync state, project-host readiness
-ade brain update --text           # stage/apply the latest standalone brain release and restart the service (on macOS the installed ADE app moves to the same version)
-ade brain update status --text    # last headless update state
-ade brain restart                 # re-exec after an app update
-
-# Compatibility wrappers (same backend):
-ade runtime install-service
-ade runtime uninstall-service
-ade runtime service-status --text
-ade runtime status --text
-ade runtime watchdog-check --text  # external liveness check: read the heartbeat, stop a wedged brain
-
-# Phone pairing:
-ade brain pin generate
-ade brain pin set 123456
-ade brain pin clear
-```
-
-`ade brain update` follows the machine's update track (`~/.ade/update-track.json`): on Beta, "latest" is the build the Beta feed names, and it never falls back to Stable (or the reverse). A pinned `--version` is used as given. When the saved track and the running build's track differ (a switch that did not finish), "latest" is refused; finish the switch in ADE › Settings › About, or pass `--version`.
-
-The service manager builds the launch command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install. Release installs use `$ADE_HOME/bin/ade` (`ade.exe` on Windows), which lets `ade brain update` stage the next release under `$ADE_HOME/runtime/updates/`, verify downloaded assets against `SHA256SUMS`, atomically promote the binary/native deps, and restart the login service without the desktop app being open. On Windows, update stops the existing process before replacing the executable, restores the previous executable, native tree, and service if promotion fails, and delegates staging cleanup until the running helper exits so Windows file locks do not retain update payloads. Failed compensation reports and preserves the exact recovery files instead of silently discarding the rollback error. After a packaged desktop update, ADE also refreshes this service so the brain re-execs the updated bundled CLI instead of leaving clients attached to an older build hash.
+- On Windows, update stops the process before it replaces the executable, restores the old executable, native tree and service when promotion fails, and leaves staging cleanup until the helper exits (file locks). A failed rollback keeps the recovery files and reports them.
+- After a packaged desktop update, ADE refreshes the service, so the brain re-execs the updated bundled CLI.
 
 ## Internal process command
 
-To make your own runtime, run `ade runtime run` on an explicit endpoint. Sync is always off so the manual runtime cannot claim brain authority; use a separate `ADE_HOME` when you also want full machine-state isolation.
+`ade runtime run` starts your own runtime on an explicit endpoint. Sync is always off, so it cannot claim brain authority; use a separate `ADE_HOME` for full isolation.
 
 ```bash
 ADE_HOME=/tmp/ade-dev-runtime ade runtime run --socket /tmp/ade-dev-runtime.sock
 ade --socket /tmp/ade-dev-runtime.sock projects list --text
 ```
 
-`--profile embedded` marks the runtime a guest inside an external embedder's process — it is what `@ade-dev/sdk` spawns. `embedded` is the only profile the flag accepts; anything else is a usage error rather than a silent fall back to the full runtime. The profile reshapes the machine chat scope (personal chats only, no automations, sync off) and withholds machine-update/power controls, because a guest must never restart the machine's ADE out from under its host. Project scopes still build on demand, so an embedder that registers a project keeps a working project surface. Set `ADE_EMBEDDED_PARENT_PID` to the host's pid and the runtime shuts itself down if that process dies without unwinding (`SIGKILL`, a crashed host); without it the runtime logs `runtime.embedded_parent_watchdog_absent` and runs on.
+`--profile embedded` (the only value; anything else is a usage error) makes the runtime a guest in an external embedder's process, which is what `@ade-dev/sdk` starts. The machine chat scope is personal chats only, with no automations and sync off, and machine update and power controls are withheld: a guest must never restart its host's ADE. Project scopes still build on demand. With `ADE_EMBEDDED_PARENT_PID` set to the host pid, the runtime stops when that process dies without unwinding; without it, it logs `runtime.embedded_parent_watchdog_absent` and runs on.
 
 ```bash
 ADE_HOME=/tmp/ade-embedded ADE_EMBEDDED_PARENT_PID=$$ \
@@ -206,56 +128,28 @@ ADE_HOME=/tmp/ade-embedded ADE_EMBEDDED_PARENT_PID=$$ \
 
 ## Brain lifecycle
 
-Prefer `ade brain start`, `ade brain stop`, `ade brain status`, and `ade brain restart` for user-facing lifecycle control. Use `ade brain pin ...` for phone pairing:
-
 ```bash
-ade brain status --text            # endpoint state, service state, sync state, project-host readiness
-ade brain status --scan-listeners  # same, plus a native port scan for an orphaned sync listener
-ade brain restart                  # refresh the login service after an update
+ade brain start                    # enable/load the login service
+ade brain stop                     # disable/unload the login service
+ade brain status --text            # endpoint, service, sync, project-host readiness
+ade brain status --scan-listeners  # plus a native port scan for an orphaned sync listener
+ade brain restart                  # re-exec after an app update
+ade brain update --text            # stage/apply the latest standalone brain and restart (macOS also moves the ADE app to that version)
+ade brain update status --text     # last headless update state
 ade brain repair-credentials       # fix a credential store the brain cannot read
-ade brain pin generate             # generate a phone pairing PIN
-ade brain pin set 123456
-ade brain pin clear
+ade brain pin generate | set 123456 | clear   # phone pairing PIN
 ```
 
-`ade brain status` also reports `projectHost` — the readiness snapshot the
-phone's "Fix connection" card reads from `sync.diagnoseHost`, so a terminal on
-the machine and a phone across the room name the same blocking runtime with the
-same words. `state` is `ready`, `starting`, `conflict`, or `unavailable`; a
-`conflict` carries the owner label, the lane it belongs to, whether a paired
-device may stop it, and the pid/port/socket/command line under `Project host` in
-`--text`. It is answered from the machine-wide sync-host lock, which is a file
-read, so it costs nothing on a healthy machine and needs no running brain. The
-`listener` fallback — an ADE that was hard-killed and left a bound port without
-a lock — is behind `--scan-listeners`, because that scan shells out to `lsof`
-(POSIX) or a full-machine `Get-NetTCPConnection` query (Windows).
+The `ade runtime install-service`, `uninstall-service`, `service-status` and `status` aliases stay for scripts. `ade runtime watchdog-check --text` is the external liveness check: it reads the heartbeat and stops a wedged brain.
 
-There is deliberately no `ade` command that stops the blocking runtime: `ade
-brain restart` already re-execs this machine's brain, and a conflict's own
-`quitCommand` is printed by `ade serve` / `ade brain start` when they refuse to
-start. The one-tap stop exists only for a remote device that cannot reach its
-machine, where no terminal is available.
-
-`ade brain status` and `ade runtime status` report `starting: true` when the
-brain is not answering yet but its registered service and brain process say it
-is coming up. Treat that as "wait", not "restart": `ade brain restart` on a
-booting brain only starts its startup clock over. `ade brain restart` likewise
-reports the installer's own `starting` message instead of claiming "restarted."
-when the replacement is alive but has not bound the socket yet.
-
-`ade brain repair-credentials` runs entirely locally and never contacts the
-brain — the state it repairs is the one that keeps the brain from starting, so a
-repair that needed a running brain would be unavailable exactly when it matters.
-`ade doctor` reports the same credential-store state from disk for the same
-reason.
-
-Older `ade runtime ...` command aliases remain available for scripts, but docs and examples use the brain vocabulary.
+- **`projectHost`** in `ade brain status` is the readiness snapshot the phone's "Fix connection" card reads (`sync.diagnoseHost`), so both name the same blocking runtime in the same words. `state` is `ready`, `starting`, `conflict` or `unavailable`; a `conflict` names the owner, its lane, whether a paired device may stop it, and the pid, port, socket and command line. It is a file read of the sync-host lock, so it needs no brain. The `listener` fallback (a hard-killed ADE that left a port bound) needs `--scan-listeners`, because it runs `lsof` (POSIX) or `Get-NetTCPConnection` (Windows).
+- No `ade` command stops the blocking runtime: `ade brain restart` re-execs this machine's brain, and `ade serve` / `ade brain start` print the conflict's `quitCommand` when they refuse to start. The one-tap stop is only for a remote device with no terminal.
+- **`starting: true`** in `ade brain status` / `ade runtime status` means the service and process say the brain is coming up. Wait; a restart only starts its clock over. `ade brain restart` reports that `starting` message instead of "restarted." until the socket is bound.
+- `ade brain repair-credentials` never contacts the brain, because the state it repairs is the one that stops the brain from starting. `ade doctor` reads the same state from disk.
 
 ## Project registry
 
-The ADE brain owns a per-machine project catalog at `$ADE_HOME/projects.json` (`ProjectRegistry` in `src/services/projects/projectRegistry.ts`). A project record carries a stable `projectId` (`project_<sha256(rootPath)[..24]>`), root path, display name, `addedAt`, `lastOpenedAt`, and the resolved git origin URL. Each record also has a `catalogVisibility` (`recent` vs `system`) and a `registrationSource`: explicit commands (`ade projects add`, `ade init`) register as `recent`/`cli-explicit`, while runtime auto-registration (an agent attaching to run a project-scoped command) registers as `system`/`runtime-auto` so it does not surface as a recent project. `ade projects list --text` shows a `visibility` column so all rows, including `system` ones, are visible to the operator.
-
-Manage the registry through typed CLI commands:
+The brain owns the machine's project catalog at `$ADE_HOME/projects.json` (`ProjectRegistry`, `src/services/projects/projectRegistry.ts`). A record has a stable `projectId` (`project_<sha256(rootPath)[..24]>`), root path, display name, `addedAt`, `lastOpenedAt`, the git origin URL, a `catalogVisibility` and a `registrationSource`. `ade projects add` and `ade init` register `recent`/`cli-explicit`; a runtime auto-registration (an agent running a project command) registers `system`/`runtime-auto`, which is not a recent project. `ade projects list --text` shows a `visibility` column.
 
 ```bash
 ade projects list --text           # hides projects whose folder is gone; --include-missing shows them
@@ -270,23 +164,10 @@ ade init                           # adds the cwd as a project
 ade init /path/to/project          # adds an explicit path
 ```
 
-A folder on a drive that is not connected (an unplugged `/Volumes/…`
-disk, a missing drive letter or share, an unmounted `/mnt` mount point) counts
-as unknown, never gone, so `prune` keeps it. `projects clone` without `--path`
-clones beside the other projects; a `--path` sent to another computer must be
-absolute there (a leading `~` means that computer's home).
-
-`ade projects remove` removes only the registry entry; the folder stays.
-Deleting a project's folder is the person's act: the desktop's **Remove
-project** dialog calls `projects.inspectRemoval` (a fresh read of changed
-files, unpushed commits, stashes and what runs) and then `projects.removeCopy`
-with `deleteFolder` and the `stateToken` it saw. `projects.removeCopy` refuses
-an agent caller and any caller below the cto role, so no `ade` command wraps
-it. A project with a git origin shows the account's shared name and icon
-(`project.name` / `project.icon` rows under `repo:<origin>` in the account
-settings store, or `.ade/project-record.json` with sync off) on every machine.
-
-…or call the same JSON-RPC methods directly:
+- A folder on a drive that is not connected (an unplugged `/Volumes/…` disk, a missing drive letter or share, an unmounted `/mnt` point) is unknown, never gone, so `prune` keeps it.
+- `projects clone` without `--path` clones beside the other projects; a `--path` for another computer must be absolute there (a leading `~` is that computer's home).
+- `ade projects remove` removes only the entry. Deleting the folder is the person's act: the desktop **Remove project** dialog calls `projects.inspectRemoval` (changed files, unpushed commits, stashes, what runs), then `projects.removeCopy` with `deleteFolder` and the `stateToken` it saw. `projects.removeCopy` refuses agents and any role below cto, so no `ade` command wraps it.
+- A project with a git origin shows the account's shared name and icon (`project.name` / `project.icon` under `repo:<origin>` in account settings, or `.ade/project-record.json` with sync off) on every machine.
 
 ```text
 projects.list   { } -> ProjectRecord[]   # each record also carries a host-resolved icon
@@ -297,17 +178,17 @@ projects.retryOpen { projectId | rootPath } -> { projectId, displayName, rootPat
 projects.checkOpen { projectId | rootPath } -> { ok: true }   # or the project_folder_too_slow error
 ```
 
-A project whose open froze the brain until the freeze guard killed it (a folder on a drive too slow for its database) gets a strike in `$ADE_HOME/runtime/project-open-strikes.json`; the guard's breadcrumb names the projects that were opening (`openingProjects`). Two strikes inside 15 minutes and every open of that project, from any caller, fails at once with `project_folder_too_slow` instead of freezing the brain again, so the rest of the machine keeps working. The refusal lasts 15 minutes, doubling each time the project is refused again (up to 24 hours); a successful open or `ade projects retry` (`projects.retryOpen`) resets it. `projects.checkOpen { projectId | rootPath }` (a moved id is followed; the desktop sends the path) throws the same refusal, for a client about to read the folder itself. The brain log has `project.open_freeze_killed`, `project.open_blocked` and `brain.project_open_stalled` (see `docs/logging.md`).
+**Too-slow folders.** A project whose open froze the brain until the freeze guard killed it (a folder on a drive too slow for its database) gets a strike in `$ADE_HOME/runtime/project-open-strikes.json`; the guard's breadcrumb names the projects that were opening (`openingProjects`). Two strikes within 15 minutes and every open of that project fails at once with `project_folder_too_slow`. The refusal lasts 15 minutes and doubles on each new refusal (up to 24 hours); a successful open or `ade projects retry` resets it. `projects.checkOpen` (follows a moved id; the desktop sends the path) throws the same refusal for a client about to read the folder. Log events: `project.open_freeze_killed`, `project.open_blocked`, `brain.project_open_stalled`.
 
-`projects.list` stamps each returned record with an `icon: { dataUrl, sourcePath, mimeType }` resolved on the host (`resolveRemoteProjectIcon` in `src/services/projects/projectIconResolver.ts`) — a best-effort, electron-free icon lookup (`.ade/local.yaml` override, conventional icon/logo files, `index.html` `<link rel="icon">`, capped at 2 MB) so a desktop connected over the remote runtime can show the real project logo in its tab instead of a blank folder. A per-project resolution failure degrades to a null icon and never breaks the list. A failed icon lookup is remembered as "no icon" for 60 s, so later lists answer at once instead of waiting out the 750 ms icon budget again.
+**Icons.** `projects.list` adds `icon: { dataUrl, sourcePath, mimeType }` resolved on the host (`resolveRemoteProjectIcon`, `src/services/projects/projectIconResolver.ts`): a `.ade/local.yaml` override, conventional icon/logo files, or the `index.html` icon link, capped at 2 MB. A failure gives a null icon and is remembered for 60 s, so later lists skip the 750 ms icon budget.
 
-Adding a project creates `<rootPath>/.ade/` if needed but does not run any heavy onboarding. The first project-scoped JSON-RPC call lazily builds an `AdeRuntime` for that root via `ProjectScopeRegistry`.
+Adding a project creates `<rootPath>/.ade/` and runs no onboarding. The first project-scoped call builds its `AdeRuntime` through `ProjectScopeRegistry`.
 
 ## RPC surface
 
-The runtime exposes two layers of JSON-RPC methods (`src/multiProjectRpcServer.ts`):
+The runtime has two layers of JSON-RPC methods (`src/multiProjectRpcServer.ts`).
 
-**Runtime-scoped** — no `projectId` required:
+**Runtime-scoped** (no `projectId`):
 
 ```text
 ade/initialize   ade/initialized   ping   shutdown   exit
@@ -337,186 +218,71 @@ sync.getRequireDpop       sync.setRequireDpop
 sync.authorizeSshPairing
 ```
 
-`account.call` owns machine-scoped account status, login, token, and machine
-directory operations (`listMachines`, `pairMachine`, `renameMachine`,
-`deleteMachine`, `repairMachinePairing`). Prefer the typed `ade login`,
-`ade auth status`, `ade account token create`, `ade machines list`,
-`ade machines remove`, `ade machines reconnect`, and `ade machines connect`
-commands; they select the CTO role where credential-bearing operations require
-it and keep account-machine pairing on the DPoP-bound runtime path. Every
-machine-directory action is CTO-only, including `renameMachine` and
-`repairMachinePairing`, which the shared ADE action registry does not list.
+- **`account.call`**: account status, login, token and the machine directory (`listMachines`, `pairMachine`, `renameMachine`, `deleteMachine`, `repairMachinePairing`). Prefer the typed `ade login`, `ade auth status`, `ade account token create` and `ade machines …` commands; they pick the CTO role where needed and keep pairing on the DPoP-bound path. Every machine-directory action is CTO-only. `deleteMachine` is for people only: it refuses an agent identity and needs `confirmation: "REMOVE"` (`ade machines remove --confirm REMOVE`).
+- **`runtime.updateImpact`**: what a restart would stop: the chats mid-turn (name and project) and counts of open agent CLI sessions and terminals, across every booted project and the personal runtime. It never boots a project. CTO-gated, because it names every running chat; clients show it before an update.
+- **`machine.updateAndRestart`**: the host half of "Update & restart". With this machine's desktop open, it asks that app to install its update (`app_update.install`), because an open app owns the brain. Otherwise it applies a newer build for this channel and restarts the service. It reports each step and its route, is CTO-gated and always user-started. On the machine, `ade brain update` is the typed equivalent; the RPC is for a remote client (the desktop's remote-machine card).
+- The pairing and PIN methods answer on a machine with no project: `ade sync status`, `ade brain pin …`, `ade sync devices`, `ade sync refresh` and `ade sync security …` work there. `sync.listDevices` is empty and the runtime name null, because both are per-project.
+- **`attention.call`**: the CTO-gated account-wide Activity surface behind `ade code`'s `/activity` (`getSnapshot`, `getMachineSnapshot`, `acknowledge`, `reportPresence`, `getPreferences`, `putPreferences`). `attention` is the frozen wire name; agents use `ade actions run attention.<action>`.
+- **`runtimeEvents.subscribe`** returns `eventEpoch`, `nextCursor`, `hasMore`, `gap` and `oldestCursor`. With `gap: true` the cursor is older than the buffer: refresh state, then resume. Every drain (`stream_events`, `personalChats.streamEvents`, both subscribe replays) stops at `limit` events or about 1 MiB and returns at least one event; `hasMore: true` means drain again from `nextCursor`. `category` takes `REMOTE_RUNTIME_EVENT_CATEGORIES` (`orchestrator`, `dag_mutation`, `runtime`, `pty`).
+- **`personalChats.subscribeEvents` / `unsubscribeEvents`** are machine RPC methods, not `personalChats.call` actions, so `ade chat action --personal` refuses them. They push `runtime/event` (`scope: "personal"`, `projectId: null`) to a held connection; the CLI polls instead. `capabilities.personalChats` advertises `pushEvents` and `mcpServers` (absent on older runtimes).
+- **`personalChats.call`** dispatches the machine action registry (`capabilities.personalChats`): chats outside every project, with lifecycle, model, input, approval, attachment and terminal actions. Use `ade chat … --personal`, `ade chat actions --personal` and `ade chat action --personal <action> --input-json '{...}'`. They need the brain (or `ade rpc --stdio`); `--headless` is not supported because its runtime exits with the command. `create` takes caller `mcpServers` and a tristate `strictMcpConfig` through `--arg-json mcpServers=...` / `--arg strictMcpConfig=<bool>` (no typed flags). Branch on the session's `mcpCapability.level` (only `"enforced"` means the caller's servers are the whole tool surface), never on its presence.
 
-`deleteMachine` is for people only. It refuses a caller that carries an agent
-identity (a chat, run, step or attempt), and it refuses without
-`confirmation: "REMOVE"`, the token `ade machines remove --confirm REMOVE`
-sends.
+**Project-scoped**: every other request carries `params.projectId`. `ade/actions/call` goes to the `ProjectScope` from `ProjectScopeRegistry.get(projectId)`.
 
-`runtime.updateImpact` answers what restarting this machine's ADE would stop:
-the chats mid-turn (by name, with their project) and counts of agent CLI
-sessions and terminals that are open (a restart closes each one, quiet or not), across every booted project and the
-personal-chat runtime. It never boots a project to answer. It is CTO-gated,
-because it names every running chat on the machine; clients show it before an
-update restarts anything.
-
-`machine.updateAndRestart` is the host half of "Update & restart". When this
-machine's desktop app is open it asks that app to install its own update over
-the desktop bridge (`app_update.install`), since an open app owns the brain and
-replaces a standalone runtime installed under it. Otherwise it checks for a
-newer build for this machine's channel, applies it, and asks the login service
-to restart the brain. Either way it reports one step at a time and names the
-route it took. It is CTO-gated and always
-user-initiated. On the machine itself, `ade brain update` is the typed
-equivalent and does not need a running brain; the RPC exists for a client that
-is not on the machine (the desktop's remote-machine card), which the CLI has no
-transport for today.
-
-The pairing and PIN methods above answer on a machine with no registered
-project. A brain that has never opened one still hosts phone sync, so
-`ade sync status`, `ade brain pin generate|set|clear`, `ade sync devices`,
-`ade sync refresh`, and `ade sync security …` all work there and report the
-machine's own state; `sync.listDevices` returns an empty list and the runtime
-name is null, because both are per-project settings.
-
-`attention.call` is the CTO-gated account-wide Activity surface backing `ade
-code`'s `/activity` pane (`getSnapshot`, `getMachineSnapshot`, `acknowledge`,
-`reportPresence`, `getPreferences`, `putPreferences`). `attention` stays as the
-frozen wire identifier for the method, the action domain, and the item ids even
-though the product surface is now called Activity. Agents on a desktop endpoint
-reach the same operations through `ade actions run attention.<action>`.
-
-`runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`. Every drain of the event buffer (`stream_events`, `personalChats.streamEvents`, and the replay of both subscribe methods) stops at `limit` events or about 1 MiB of events, whichever comes first, and always returns at least one event. `hasMore: true` means more events are waiting: drain again from `nextCursor`. A remote client reads each drain as one RPC reply over the sync socket, so this cap keeps one reply from filling the host's send budget. `category` accepts the categories in `REMOTE_RUNTIME_EVENT_CATEGORIES` (`orchestrator`, `dag_mutation`, `runtime`, `pty`) — one tuple that the buffer, this schema enum, and every client guard derive from.
-
-`personalChats.subscribeEvents` / `personalChats.unsubscribeEvents` are machine-scoped RPC methods, not entries in the `personalChats.call` action registry, so they are absent from `ade chat actions --personal` and `ade chat action --personal <action>` rejects them by design. They push `runtime/event` notifications (`scope: "personal"`, `projectId: null`) to a client holding the connection open; the CLI does not use them, because every `ade chat` command is a one-shot plan that polls. `capabilities.personalChats` advertises `pushEvents` and `mcpServers` so a client can tell a runtime that supports these from an older one that would ignore them — both optional, both absent on older runtimes. `personalChats.streamEvents` cursor draining is unchanged and stays the path for clients that cannot hold a socket.
-
-`personalChats.call create` accepts caller-injected `mcpServers` and a tristate `strictMcpConfig`, reached from the CLI through `--arg-json mcpServers=...` / `--arg strictMcpConfig=<bool>` (see the chat examples below). There are deliberately no typed `--mcp-server` / `--strict-mcp` flags in v1: an MCP server config is nested JSON, which is exactly what the existing `--arg-json` escape hatch carries, and a second spelling for it would add no capability. The created session carries `mcpCapability`; branch on its `level` (only `"enforced"` means the caller's servers are the whole tool surface), never on the object's presence.
-
-`personalChats.call` dispatches the machine action registry advertised as
-`capabilities.personalChats` during initialization. It owns chats outside every
-project and includes lifecycle, model, input/approval, attachment, and personal
-terminal actions. Typed CLI commands use `ade chat … --personal`; use
-`ade chat actions --personal` and `ade chat action --personal <action>
---input-json '{...}'` for the complete low-level registry. These commands require
-the machine brain (which can run headlessly without desktop UI) and also work
-through the `ade rpc --stdio` transport used by remote desktops. The one-shot
-global `--headless` mode is not supported because its in-process runtime exits
-with the command.
-
-**Project-scoped** — every other request must carry `params.projectId`. `ade/actions/call` (and the legacy ADE action / tool catalog underneath it) is dispatched into the per-project `ProjectScope` returned by `ProjectScopeRegistry.get(projectId)`.
-
-`ade/initialize` advertises `runtimeInfo.multiProject: true` and `capabilities.projects: true`. Clients use that to switch between sending `projectId` per request (multi-project runtime) and the legacy per-process binding (embedded runtime). Sync is owned by the sync service for the most-recently-opened registered project; `ProjectScopeRegistry.ensureSyncHost` refreshes the active sync project when projects are added or removed.
-
-The `sync.connectToBrain`, `sync.disconnectFromBrain`, and `sync.transferBrainToLocal` RPC names are legacy wire identifiers. New prose should call this runtime connection, disconnection, and sync authority transfer.
-
-`sync.disconnectFromBrain` is refused unless the request names its project, with `params.projectId` or the `params.projectRoot` of a registered project. It disconnects only that project, and it never falls back to the active or most recently failing project. A named project that is not loaded is refused rather than booted.
+- `ade/initialize` advertises `runtimeInfo.multiProject: true` and `capabilities.projects: true`, so clients send `projectId` per request instead of the per-process binding (embedded runtime).
+- The sync service serves the most recently opened project; `ProjectScopeRegistry.ensureSyncHost` updates it when projects change.
+- `sync.connectToBrain`, `sync.disconnectFromBrain` and `sync.transferBrainToLocal` are legacy wire names; prose says runtime connection, disconnection and sync authority transfer.
+- `sync.disconnectFromBrain` needs the project (`params.projectId`, or the `params.projectRoot` of a registered project), disconnects only that one, never falls back to another, and refuses a project that is not loaded.
 
 ## Credentials
 
-`src/services/credentials/credentialStore.ts` owns the machine-scoped credential store under `~/.ade/secrets/`:
+`src/services/credentials/credentialStore.ts` owns the store under `~/.ade/secrets/`:
 
-- Desktop uses `ElectronSafeStorageCredentialStore`, which encrypts `credentials.safe.enc` with Electron `safeStorage` and migrates legacy file-encrypted stores on first read.
-- Headless CLI fallback uses `EncryptedFileCredentialStore`, which keeps `credentials.json.enc` encrypted with AES-256-GCM and serializes read-modify-write access with `credentials.json.enc.lock`.
-- Secret directories are created with mode `0700`; credential blobs, lock files, and legacy machine keys are written with mode `0600`.
-- Account-machine adoption uses a long-lived Ed25519 identity in `machine-identity-signing.json`. The file is created atomically with mode `0600`; only its raw 32-byte public key is published to the account directory.
+- Desktop: `ElectronSafeStorageCredentialStore` encrypts `credentials.safe.enc` with Electron `safeStorage` and migrates legacy file stores on first read.
+- Headless fallback: `EncryptedFileCredentialStore` keeps `credentials.json.enc` (AES-256-GCM) and serializes writes with `credentials.json.enc.lock`.
+- Folders are mode `0700`; blobs, locks and legacy machine keys `0600`.
+- Account-machine adoption uses a long-lived Ed25519 identity, `machine-identity-signing.json` (atomic, `0600`); only its raw 32-byte public key is published.
 
-`ade login`, `ade logout`, and `ade auth status` operate on the daemon-owned ADE
-account session in that store. Installed ADE uses the production Clerk
-application and production account directory without project configuration;
-the ADE repository's development Clerk secrets select the isolated development
-tenant during source work. With the production Clerk application, the browser
-half of `ade login` opens ADE Web's sign-in page
-(`https://app.ade-app.dev/sign-in?continue=<authorize URL>`), which signs the
-person in and goes on to the loopback callback; other configurations open
-Clerk's page. After `ade logout` (or "Sign out of this computer"), the next
-sign-in asks for an account instead of reusing the browser's Clerk session.
-`ade machines list` reads the matching authenticated
-account directory; signed-out users get a local-first message and existing
-local, PIN, explicit-address, and saved SSH paths remain available. Machine keys
-and device IDs are stable selectors. A display name is accepted only when it is
-unambiguous; otherwise the command prints the matching stable machine keys.
-The directory leaves a removed machine out of `ade machines list`. On the
-removed computer itself, `ade auth status` still says "Signed in" and adds a
-line with the removal date and `ade machines reconnect`, the same facts as the
-desktop banner. Its JSON carries them as `thisComputerRefusal` (`code`,
-`revokedAt`, `recoveryGaveUpAt`), which is null when the directory accepts this
-computer or the sync read failed. `ade sync status --text` shows them as the
-`this computer`, `auto repair stopped` and `reconnect with` rows, and the
-`ade doctor` **Publish health** row names the same date and command.
-`ade machines reconnect --text` prints one sentence that says what happened,
-in the words of the desktop's Reconnect button.
-Directory presence is a short-lived hint: a machine with a directory-verified
-relay endpoint remains connectable after its most recent heartbeat expires.
-Machines without a verified route remain listed but unavailable.
-When a directory row contains `pubkey: "ed25519:<raw-base64>"`, account
-adoption verifies the host signature and seals the bearer, DPoP proof, and
-returned paired secret over verified LAN, tailnet, or relay routes. Rows
-without a published key retain the legacy WSS-relay-only account path.
-Targets and paired credentials created through `ade machines connect` belong to
-that account and are removed on sign-out or account switch. Direct PIN, SSH, and
-explicit-address pairings remain local and are not converted into account-owned
-records when the user later signs in.
+**Sign-in.** `ade login`, `ade logout` and `ade auth status` act on the daemon-owned account session. Installed ADE uses the production Clerk app and account directory; the repo's development Clerk secrets select the development tenant. With production Clerk, `ade login` opens ADE Web's sign-in (`https://app.ade-app.dev/sign-in?continue=<authorize URL>`), which goes on to the loopback callback. After `ade logout` the next sign-in asks for an account.
+
+**Machines.**
+
+- `ade machines list` reads the account directory. Signed out, local, PIN, explicit-address and saved SSH paths still work. Machine keys and device ids are stable selectors; a display name works only when it is unambiguous (otherwise the command prints the matching machine keys).
+- A removed machine is left out of the list. On the removed computer, `ade auth status` still says "Signed in" plus the removal date and `ade machines reconnect` (JSON `thisComputerRefusal`: `code`, `revokedAt`, `recoveryGaveUpAt`; null when accepted or unreadable). `ade sync status --text` shows the `this computer`, `auto repair stopped` and `reconnect with` rows, and `ade doctor` **Publish health** names the same. `ade machines reconnect --text` prints one sentence, as the desktop Reconnect button does.
+- Presence is a short-lived hint: a machine with a verified relay endpoint stays connectable after its heartbeat expires; one with no verified route is listed but unavailable.
+- A row with `pubkey: "ed25519:<raw-base64>"` makes adoption verify the host signature and seal the bearer, DPoP proof and paired secret over verified LAN, tailnet or relay routes. Rows without a key keep the WSS-relay-only path.
+- Targets and credentials made by `ade machines connect` belong to the account and leave on sign-out or switch. PIN, SSH and explicit-address pairings stay local.
 
 ## `ade machines connect`
 
 ```bash
 ade login                          # sign in to the shared ADE account
-ade machines list --text           # list account machines: dial status, plus a
-                                   # presence column (Connected/Online/Asleep/
-                                   # Offline and battery or wall power)
-ade machines rename <machine-key> "Build Mac"
-                                   # set the account-wide display name
-ade machines rename <machine-key> --clear
-                                   # clear it and use the reported hostname
-ade machines remove <machine-key> --confirm REMOVE
-                                   # take a machine off the account: revokes it and
-                                   # clears the Activity it published
-ade machines reconnect             # re-pair THIS machine after it was removed
-                                   # from the account, and lift the push gate
-ade machines connect <machine-key|device-id|name>
-                                   # pair and save the account machine on this install
+ade machines list --text           # dial status, presence (Connected/Online/Asleep/Offline) and battery or wall power
+ade machines rename <machine-key> "Build Mac"   # account-wide name; --clear falls back to the hostname
+ade machines remove <machine-key> --confirm REMOVE   # revoke a machine and clear the Activity it published
+ade machines reconnect             # re-pair THIS machine after it was removed, and lift the push gate
+ade machines connect <machine-key|device-id|name>   # pair and save the account machine on this install
 ```
 
-`ade machines connect` pairs the machine if needed, saves it on this install so
-ADE desktop and the web client can open it, and prints the result. It does not
-open a terminal UI.
+`ade machines connect` pairs the machine when needed, saves it so ADE desktop and the web client can open it, and prints the result. It opens no terminal UI.
 
-Paired targets connect through the DPoP-bound sync runtime bridge; SSH targets
-start `ade rpc --stdio` over a validated SSH route. Relay routes are available
-only while both machines are signed into the same ADE account; direct LAN and
-tailnet routes remain usable signed out. Paired targets use LAN → Tailscale →
-Relay failover by default. Account-created targets are paired-only, are removed
-when their account signs out or switches, and fail closed instead of falling
-back to SSH or a plaintext address. Legacy account machines that desktop ADE
-saved as uncredentialed SSH targets are adopted into the same paired store; if
-the account directory cannot verify that legacy shape, ADE fails closed instead
-of attempting SSH. Explicit SSH targets keep their saved host alias so OpenSSH
-can apply its `Host`-scoped user, identity, agent, and proxy settings while ADE
-changes only the concrete route. Route/runtime probing shares one bounded,
-cancellable connection deadline and reports the attempted failures.
-After a true SSH connection initializes, desktop ADE runs the internal
-`ade sync pair-device --json-stdin` command on that exact selected channel home
-to exchange the controller's DPoP identity for a normal paired-machine secret.
-The JSON request is bounded and never appears in argv. A packaged Beta runtime
-that uploads successfully but cannot initialize does not end the attempt: ADE
-probes Stable and the other channel homes, retains the first compatible home,
-and uses that same home for `pair-device` and all follow-up commands.
+- Paired targets use the DPoP-bound sync bridge with LAN → Tailscale → Relay failover. Relay needs both machines signed into the same account; LAN and tailnet work signed out.
+- Account-created targets are paired-only, leave on sign-out or switch, and fail closed: no fall back to SSH or a plaintext address. Legacy account machines saved as uncredentialed SSH targets are adopted into the paired store; one the directory cannot verify fails closed.
+- SSH targets start `ade rpc --stdio` over a validated route and keep their host alias, so OpenSSH applies its `Host` settings. Route and runtime probes share one cancellable deadline and report each failure.
+- After an SSH connection initializes, the desktop runs `ade sync pair-device --json-stdin` on that channel home to trade the controller's DPoP identity for a paired-machine secret (bounded JSON, never in argv). If an uploaded Beta runtime cannot initialize, ADE probes Stable and the other homes and keeps the first compatible one for `pair-device` and later commands.
 
 ## `ade rpc --stdio`
 
-`ade rpc --stdio` attaches to the local machine brain (auto-spawning it if needed) and bridges its JSON-RPC over stdio. The remote-runtime path on the desktop runs `ade rpc --stdio` over an SSH `exec` channel; see `docs/features/remote-runtime/internal-architecture.md` for the protocol shape and bootstrap sequence.
+`ade rpc --stdio` attaches to the local brain (starting it when needed) and bridges its JSON-RPC over stdio. The desktop's remote runtime runs it over an SSH `exec` channel; see `docs/features/remote-runtime/internal-architecture.md`.
 
 ## `ade desktop`
 
-`ade desktop` opens the installed ADE app from the terminal. On macOS it runs `open -a "ADE"` (or `ADE Beta` / `ADE Alpha` based on `ADE_PACKAGE_CHANNEL` / `ADE_DESKTOP_APP_NAME`). The desktop attaches to the same machine brain; if the brain is not running, the desktop spawns and waits for it via `LocalRuntimeConnectionPool`.
+`ade desktop` opens the installed app (`open -a "ADE"`, or `ADE Beta` / `ADE Alpha` from `ADE_PACKAGE_CHANNEL` / `ADE_DESKTOP_APP_NAME`). The desktop attaches to the same brain and starts it when needed (`LocalRuntimeConnectionPool`).
 
 ## CLI surface (selected)
 
 ```bash
 ade desktop
-ade brain status --text
-ade brain start
-ade brain stop
-ade brain restart
 ade brain update --text                   # update this machine's brain and restart it (same action as the desktop "Update & restart")
 ade runtime watchdog-check --text         # what the watchdog agent runs on a timer: stop a brain that stopped responding
 ade sync status --text                    # works with no registered project: this machine's own pairing and route state
@@ -541,11 +307,6 @@ ade mcp activity --text                   # what connected apps ran here
 ade mcp servers --text                    # the MCP servers your agents get, where each is on, which values are set
 ade mcp servers add notion --reason "…"   # MCP server card in the chat; the person approves it, then presses Refresh chat
 ade mcp servers remove stripe             # a card asks the person; on yes the server and its saved values leave the account
-ade machines list --text                           # includes presence: asleep/online + battery or wall power
-ade machines rename <machine-key> "Build Mac"      # or --clear to fall back to the hostname
-ade machines remove <machine-key> --confirm REMOVE # revoke a machine and clear its Activity
-ade machines reconnect                             # re-pair THIS machine after it was removed
-ade machines connect <machine-key|device-id|name>
 ade doctor --json
 ade doctor --online --text                        # also check the latest desktop release over the network
 ade report-issue --text                           # print a redacted diagnostic report (local files only; no brain needed)
@@ -568,9 +329,7 @@ ade providers opencode accounts remove --id <id> --text
 ade scene preview /tmp/chart.html --text         # render a scene the way a chat will: screenshot path, timings, problems
 cat draft.md | ade scene preview - --theme light  # a fence or a bare body on stdin; --width sets the frame width (default 720)
 
-ade projects list --text
 ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
-ade init
 ade lanes list --text                             # every git worktree of the project is a lane: this reconciles against git on each call, adopting worktrees made outside ADE and dropping lanes whose worktree is gone from git and disk. There is no attach/adopt step
 ade lanes create --name fix-login --text            # branch from the project's pattern (ade/fix-login by default)
 ade lanes create --name fix-login --branch-name JIRA-123-fix-login   # name the branch yourself; a taken name (any case) is refused
@@ -767,146 +526,19 @@ ade proof recover artifact-id                       # re-import when the origina
 ade proof prune                                      # preview broken records; does not delete
 ade proof prune --broken                             # delete every broken proof record
 ade proof actions --text                             # full computer_use_artifacts action inventory
-ade ios-sim devices --text
-ade --socket ios-sim status --text
-ade --socket ios-sim apps --text
-ade --socket ios-sim launch --target target-id --text
-ade --socket ios-sim screenshot --out .ade/tmp/sim.png --text
-ade --socket ios-sim proof --caption "Settings row renders" --text
-ade --socket ios-sim shutdown --text
-ade --socket ios-sim preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
-ade --socket ios-sim preview-ensure --source apps/ios/ADE/Views/Home.swift --line 42 --text
-ade --socket ios-sim preview-current --text
-ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
-ade --socket ios-sim actions --text                               # full ios_simulator action inventory
-# Device hub: a booted simulator with no app of its own. `status` also reports the device session.
-ade --socket ios-sim open-device --text                           # boot a device; --no-window keeps it headless
-ade --socket ios-sim device-session --text                        # who owns the device session, and did ADE boot it (alias: session)
-ade --socket ios-sim close-device --text                          # release it; --shutdown powers the device down, but never under another chat's app unless --force
-ade --socket ios-sim settings --text                              # read appearance, Dynamic Type, accessibility
-ade --socket ios-sim appearance dark --text                       # also: content-size, accessibility <option> on|off
-ade --socket ios-sim location 37.7749 -122.4194 --text            # --clear drops the simulated location
-ade --socket ios-sim permission grant photos --bundle-id com.example.app --text
-ade --socket ios-sim push --bundle-id com.example.app --title Hi --body "You have mail" --text
-ade --socket ios-sim open-url myapp://settings --text              # also: relaunch, terminate, uninstall, app-state
-ade --socket ios-sim status-bar --time 9:41 --wifi-bars 3 --text   # --clear drops the override
-# Live view: the vendored Swift helper encodes H.264 next to the simulator, so a remote client still sees it.
-ade --socket apple stream-start --fps 60 --text                    # live-start and --backend are gone: one encoder
-ade --socket ios-sim stream-status --text                          # live view plus input state; stream-stop ends it
-# Per-lane device: one simulator per lane. `start` attaches or clones, boots, and streams.
-ade --socket apple start --text                                    # --udid <id> attaches, --create <sourceUdid> clones
-ade --socket apple stop --text                                     # power the lane's device off; `shutdown` only ends the chat's session
-ade --socket apple device-list --installed --text                  # also: device-create --from <id>, device-attach --simulator <id>
-ade --socket apple device-detach --text                            # give up the lane's device; the simulator stays installed
-ade --socket apple device-promote --device <udid|name> --text       # make one of the lane's extra devices the lane's own (the old one becomes an extra)
-ade --socket apple device-delete --text                            # delete a clone; --force detaches an attached device instead
-                                                                   # all three refuse another chat's device; --ignore-ownership passes (stop and device-detach also take --force)
-ade --socket apple type "reddit" --submit --text                   # --submit presses Return after the text
-ade --socket apple key return --text                               # one real key press: named keys, arrows, or a letter; --cmd/--shift/--alt/--ctrl
-ade --socket apple record-start --text                             # record-stop --keep|--discard, record-list, record-delete --id <id>
-ade apple show --text                                              # put the device on the user's screen; --floating for the floating player
-# iPhone Duo and runtimes.
-ade apple fold closed --text                                       # closed|open|laptop|book|tent, --angle 120, --sequence closed,open,tent
-ade apple posture --text                                           # hinge angle, orientation and the live panel (1 cover, 3 inner)
-ade apple runtimes --text                                          # list; `runtimes install [--version 27.1]`, `runtimes cancel`
-ade apple render --poses closed,open --angles front --text         # 3D renders by the open Apple pane, filed as proof
-ade apple app-store-shots --text                                   # both Duo panels at App Store Connect's sizes
-ade apple duo-skill --text                                         # Apple's app-resizability skill into the lane's .agents/skills
-# Device event log: the app's own log rows interleaved with what ADE did.
-ade --socket ios-sim log-start --bundle-id com.example.app --text   # --bundle-id is required; only the chat that started the log can stop it
-ade --socket ios-sim log --since 412 --limit 100 --text            # log-stop ends the capture; --force takes a log another chat started
-# Semantic actions: name an element instead of guessing a pixel. Read refs from `snapshot` first.
-ade --socket ios-sim snapshot --text
-ade --socket ios-sim find-element --label Continue --text
-ade --socket ios-sim tap-element --identifier signup-submit --text
-ade --socket ios-sim fill-element --identifier email-field --value ada@example.com --text
-ade --socket ios-sim wait-for-element --label Welcome --timeout-ms 8000 --text   # --gone waits for it to leave
-ade --socket ios-sim assert-visible --label "Order confirmed" --text
-ade --socket ios-sim proof-bundle --caption "Signup succeeds" --text  # screenshot, elements, and log rows as proof
-ade mac-desktop status --text                         # host support, this lane's display, windows, and lease
-ade mac-desktop start --text                          # create the lane's virtual display (on a Windows host this is Windows Desktop; see ade screen)
-ade mac-desktop stop --text                           # quit the apps it opened; prints which quit and which stayed on your screen
-ade mac-desktop show --text                           # reveal it in the tools pane; --floating for the card over the chat
-ade mac-desktop release --window <id> --text          # give a window back; omit --window to release the lane's windows
-ade mac-desktop open <app|path|url> --text            # launch onto the display; args after -- belong to the app
-ade mac-desktop observe --text                        # screenshot + numbered elements
-ade mac-desktop click <handle> --text                 # also: type, press, scroll, drag, wait
-ade mac-desktop click --x 900 --y 420 --right --text  # a point: delivered to the app alone, no pointer moves; --real only for hover or a drop onto another app
-ade mac-desktop type "reddit" --submit --text         # --submit presses Return after the text
-ade mac-desktop press return --cmd --text             # modifiers: --cmd --shift --alt --control
-ade mac-desktop record start --caption "flow" --keep-idle --max-seconds 1200 --text
-ade mac-desktop record stop --text                    # duration, real time, and idle cut
-ade mac-desktop proof --caption "Login works" --text  # capture, re-observe, and file proof
-ade mac-desktop actions --text                        # full mac_desktop action inventory
-ade screen status --text                              # host-neutral name: Mac Desktop on macOS, Windows Desktop on Windows (aliases mac-desktop, windows-desktop); product, seat, holder, next step
-ade screen start --text                               # Windows: the private seat (a separate session of the user's account)
-ade screen start --shared --reason "<why>" --text     # Windows: ask the user in this chat for their main desktop; their Allow is the consent
-ade screen focus --window <id> --text                 # Windows: raise one of this lane's windows; also: minimize, close
-ade screen setup --allow-prompt --text                # Windows: the user's one-time admin step; also: takeover (user only)
-# Android emulator: one per lane, on the machine that runs the lane's brain.
-ade android status --text                             # SDK, tools, acceleration, and this lane's emulator
-ade android devices --profiles --text                 # AVDs (and the lane holding each), system images, hardware profiles
-ade android device-create --profile medium_phone --text  # make an AVD for this lane and boot it; --image <pkg>, --no-start
-ade android device-create --catalog galaxy-s25 --color navy --text  # a brand device (stock Android): Pixel, Galaxy, OnePlus, Nothing
-ade android device-attach --avd <name> --text         # hold an AVD no other lane holds, and boot it
-ade android start --text                              # also: stop; device-detach [--keep] (an ADE-made AVD is deleted unless --keep)
-                                                      # start refuses ANDROID_LOW_MEMORY when the machine is short of memory or swapping, or its emulators would pass half of its memory; --force boots anyway (ask the user first)
-ade android keep-running on --text                    # ADE stops an emulator nobody used for 20 min, and one whose brain is gone; "on" keeps the lane's running one up
-ade android screenshot --out shot.png --text          # PNG on the emulator's machine
-ade android tap 540 1200 --text                       # device pixels; also: swipe x1 y1 x2 y2 --duration-ms 300, button back, type "hi"
-ade android rotate landscape --text                   # lock the screen to portrait or landscape; apps that fix their orientation keep it
-ade android render --angles front,back --sheet --text  # 3D stills of the device with its live screen, filed as proof (ADE open on the lane's Android tool)
-ade android device-create --profile medium_phone --machine windows --text  # on another machine, for this chat's work copy there (no new lane); --lane <id> for a lane there
-ade android fold half --text                          # fold a foldable AVD (open, half, closed, or --angle 0-180); waits for the screen to swap
-ade android posture --text                            # the hinge: angle, fold state, the screen in front
-ade android preview list --module app --text          # the module's Compose @Preview functions (Android CLI, no emulator)
-ade android preview --module app --text               # render them to PNG, filed as proof (--fqn <name> for each one; --no-proof); exits 1 when one fails
-ade android test --class com.example.LoginTest --text  # instrumentation tests on the lane's emulator (--module, --variant, --method); exits 1 on a failure
-ade android sdk images --text                         # installed system images (size, AVDs) and the ones to add; install/remove --image are the user's, in the device picker
-ade --socket app-control launch --command "npm run dev" --text
-ade --socket app-control connect --cdp-port 9222 --text           # attach to an already-running app
-ade --socket app-control focus --text
-ade --socket app-control minimize --text
-ade --socket app-control observe --map --text                     # screenshot + numbered element map + handles
-ade --socket app-control click --handle obs-...:e:7                # click by handle, text-match, test-id, selector or coords
-ade --socket app-control fill --selector "#name" --value "Ada"     # also: hover, clear, type, press, scroll, wait
-ade --socket app-control windows --text                            # debuggable windows for the active session
-ade --socket app-control switch-window --target target-id          # drive a different window
-ade --socket app-control drivers --text                            # driver availability (cdp, computer_use)
-ade --socket app-control trace --limit 20 --text                   # recent actions for this session
-ade --socket app-control logs --text                               # read the App Control launch terminal
-ade --socket app-control terminal write --data "y\n"               # answer a prompt in that terminal
-ade --socket app-control proof --caption "Settings saved"          # observe and file a proof artifact
-ade --socket app-control actions --text                            # full app_control action inventory
-ade --socket browser open http://localhost:5173 --new-tab --text  # ADE-launched chat/terminal capability required
-ade --socket browser open http://localhost:3000/login --profile viewer --text  # own throwaway sign-in, not the user's
-ade --socket browser authorize --text                             # ask the user to let this chat use the ADE browser (only when the setting asks)
-ade --socket browser status --text                                # every tab on every machine with its owner, each browser's cap, and the route; "free" tabs need `browser claim`
-ade --socket browser close --tab tab-id --text                    # any agent may close any tab (check the owner first); prints whose tab it was
-ade --socket browser claim --tab tab-id --lane lane-id --text     # attribute an already-open tab to this agent's lane
-ade --socket browser panel --text                                 # reveal the Work sidebar Browser panel
-ade --socket browser dev-servers --text                           # dev servers running in this chat's lane (terminals, agent shells, listening ports); no desktop needed
-ade --socket browser handoff --tab tab-id --reason "sign in to staging" --text
-                                                                  # blocks until a person presses Hand back; raises the Work row's hand and pushes to their phone
-ade --socket browser session start --tab tab-id --text            # then: session <id> click|fill|wait|trace|proof|end
-ade --socket browser observe --tab tab-id --map --text            # screenshot + DOM + numbered element map
-ade --socket browser click --tab tab-id --handle obs-...:e:1      # also: type, key, fill, clear-field, hover, drag, select-option, upload, scroll, wait
-ade --socket browser emulate --tab tab-id --device iphone-17-pro  # --width/--height/--scale, or --off
-ade --socket browser zoom --tab tab-id --factor 1.25              # --reset to clear
-ade --socket browser find --tab tab-id "checkout"                 # find-stop clears the highlight
-ade --socket browser devtools --tab tab-id --mode bottom          # right | bottom | detach; --close
-ade --socket browser network on --tab tab-id                      # then `network --failed --limit 20 --text`, `network off`
-ade --socket browser har --tab tab-id                             # export the tab's HAR (needs network logging on)
-ade --socket browser record start --tab tab-id --fps 60 --caption "Checkout flow"   # `record stop` files the video
-ade --socket browser proof --tab tab-id --har --caption "Checkout 500s"
-ade --socket browser trace --tab tab-id --text                    # recent browser actions for this tab
-ade --socket browser screenshot --tab tab-id --text
-ade --socket browser actions --text                               # full built_in_browser action inventory
-ade --socket browser attach --tab "Stripe" --text                # only when the user asks: drive a tab of their own Chromium browser (needs remote debugging on)
-ade --socket browser detach --text                               # back to ADE's browser
-ade work-tools state --text                                       # read-only mirror of the desktop Work tools pane for this agent's lane
-ade work-tools state --lane lane-id --text                        # another lane; chat-bound agents always read their own
-ade work-tools actions --text                                     # full work_tools action inventory (setActiveTool is desktop-only)
+```
+
+The device and app commands have their own docs; `ade help <command>` lists every flag:
+
+| Commands | Doc |
+| --- | --- |
+| `ade ios-sim …`, `ade apple …` (simulators, live view, per-lane device, iPhone Duo, device log, semantic actions) | [Apple device](../../docs/features/apple-device/README.md) |
+| `ade android …` (one emulator per lane, previews, instrumentation tests, SDK images) | [Android device](../../docs/features/android-device/README.md) |
+| `ade mac-desktop …`, `ade screen …` (the lane's own desktop) | [Mac desktop](../../docs/features/mac-desktop/README.md), [Windows desktop](../../docs/features/windows-desktop/README.md) |
+| `ade app-control …` | [App Control](../../docs/features/computer-use/app-control.md) |
+| `ade browser …`, `ade work-tools …` | [Chat](../../docs/features/chat/README.md), [Computer use](../../docs/features/computer-use/README.md) |
+
+```bash
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text
@@ -935,6 +567,9 @@ ade cloud push-work --check --json                # the same check; without --ch
 ade cloud resize --request --size large --reason "…"  # ask the person to change this computer's size: a card in the chat, nothing changes; an agent with nobody there cannot resize
 ade cloud resize --free 8 --reason "…"            # grow the disk of the ADE Cloud computer this runs on to fit 8 GB more free (or --disk <GB>): inside the plan with no card; paid extra disk asks a watched chat, or follows the agent limits; restarts the computer, and the chat continues after it
 ade cloud limits --extra-disk 10                  # the paid extra disk agents nobody watches may use a month ($10; none; limit = up to your extra-disk limit)
+ade cloud prepare-stop --json                     # ADE Cloud, run by the server before a stop: interrupts running turns and CLIs, saves the chats, then copies and Git summaries; prints interruptedChats, interruptedClis, stillRunning, chatsUploaded, chatsNotUploaded, sessionsSaved, gitSaved, timedOut
+ade cloud save-for-rest --capsules --json         # ADE Cloud, run by the server's idle cleanup: saves shell and CLI copies, Git summaries, subagent copies and event wakes; --capsules adds the fork capsules a continue needs; prints ok, capsules, sessions, git, skipped, and error when the time ran out
+ade cloud messages drain --json                   # ADE Cloud, run by the server after a wake: sends the messages queued for this computer's chats and CLIs, in order, each once
 ade usage snapshot --text                          # live quota headroom per window, the account it belongs to, and the provider limits link
 ade usage stats --range 7d --text                  # tokens, cost, and activity for a range
 ade usage stats --scope account --text             # merged across every machine on the account
@@ -1022,191 +657,58 @@ ade skill show ade-browser --text
 ade help --json                                     # the command catalog as JSON (only this scope's commands under ADE MCP)
 ```
 
-`github app-auth status` answers "re-authorize, or wait?" from `credentialState`
-alone — never from `expiresAt`. An access token lives 8 hours and renews on use,
-so a lapsed `expiresAt` with `credentialState: "authorized"` is healthy.
-`"blocked"` means ADE paused its own refresh retries until `refreshBlockedUntil`
-after a transient failure (`lastRefreshError` carries the reason): wait, do not
-re-authorize. Only `"needs_reauth"` and `"missing"` call for `app-auth login`.
+### GitHub
 
-GitHub reads try credentials in environment → ADE GitHub App → GitHub CLI →
-stored PAT order. Writes skip the read-only GitHub App. `github.getStatus`
-reports the active read/write sources, per-credential failure/cooldown state,
-fallback details, and any background-refresh pause without exposing tokens.
+- `github app-auth status` answers "re-authorize, or wait?" from `credentialState` alone, never `expiresAt` (a token lives 8 hours and renews on use). `"blocked"` means ADE paused its refresh retries until `refreshBlockedUntil` after a transient failure (`lastRefreshError`): wait. Only `"needs_reauth"` and `"missing"` need `app-auth login`.
+- Reads try environment → ADE GitHub App → GitHub CLI → stored PAT. Writes skip the read-only GitHub App. `github.getStatus` reports the read and write sources, failures, cooldowns, fallbacks and any refresh pause, never a token.
+- `authFailure.kind: "service_unavailable"` means GitHub returned 5xx: do not re-auth or rotate a token. Then (and for an unclassified failure) `github.getStatus` asks githubstatus.com and adds `serviceHealth` (`indicator`, `affected`, `incidentUrl`) when a surface ADE uses is confirmed down. Its absence never means the failure is local; do not branch on it.
 
-When GitHub itself is failing rather than rejecting the credential,
-`authFailure.kind` is `service_unavailable` (GitHub returned 5xx) — scripts must
-not treat that as a reason to re-auth or rotate a token. In that case, and for
-an unclassifiable failure, `github.getStatus` also consults githubstatus.com and
-attaches `serviceHealth` (`indicator`, `affected` components, `incidentUrl`)
-when a GitHub surface ADE depends on is confirmed down. `serviceHealth` is
-present only as positive corroboration: its absence never means the failure is
-local, so do not branch on it being missing.
+### Commands with no typed form
 
-Pi sign-in has no typed command, the same way OpenCode's `ai.opencodeOAuth*`
-actions do not. `ai.piLoginStart` blocks until a human finishes Pi's own browser
-or device-code flow, and any prompt it raises is answered by a *second* call
-(`ai.piLoginSubmit`) carrying a `requestId` that only appears on the
-`piAuthStatus` runtime event — so the workflow is two processes plus an event
-drain, not one command.
+- **Pi sign-in** (like OpenCode's `ai.opencodeOAuth*`). `ai.piLoginStart` blocks until a person finishes Pi's browser or device-code flow; a prompt it raises is answered by a second call, `ai.piLoginSubmit`, with the `requestId` from the `piAuthStatus` runtime event. So it needs two processes plus an event drain, against a running brain or desktop socket (a headless second process cannot see the first's sign-in).
+  - Start, submit and cancel are CTO-only (`--role cto`); `ai.piLoginProviders` is not.
+  - `ai.piLoginStart` has its own 11-minute transport floor (the desktop's budget); a larger `--timeout-ms` still applies.
+  - `ai.piLoginSubmit`'s `value` can be an API key: build `--input-json` from an environment variable, and never echo the result.
+- **Provider keys** are not project secrets, so `ade secrets` does not cover them. `ai.storeApiKey` / `ai.deleteApiKey` / `ai.listApiKeys` act on the project's store (`<project>/.ade/secrets`). The writers are CTO-only; the list is not (it names providers, never keys). Build `--input-json` from an environment variable and never log the result.
+- **`computer_use_artifacts.ingestSceneSnapshot`** is not a second `ade proof attach`. It is CTO-only, takes no bytes, and accepts only a path inside the project's `.ade/artifacts/computer-use`: it lets the desktop's Proof button file bytes it already wrote when the broker runs in the runtime. Agents use `ade proof attach` and `ingest_computer_use_artifacts`, which check owner claims and the import root.
+- **CTO state.** There is no `ade cto`; use `ade actions run`.
+  - `cto_state.refreshContext` (CTO-only) gives the CTO a fresh provider thread: the chat stays, and the thread gets the doctrine, notes, open work, live project state and last 40 messages. A CTO mid-turn refreshes when the turn ends.
+  - `cto_memory.updateNotes` replaces one notes file (`project`: `.ade/cto/MEMORY.md`, 4096 bytes; `user`: notes about the person for every project on this machine, 2048 bytes) and refuses text over the cap. `cto_memory.updateOpenWork` adds, completes, reopens or removes one item. `getSnapshot` and `recordDiscovery` are open to every role; writes are CTO-only.
+  - `cto_state.dismissOnboarding` and `resetOnboarding` do not exist (an unknown-action error); `getOnboardingState` and `completeOnboardingStep` do.
+- **`ade tools`** is not a service action: the pinned-tool cache belongs to the machine's file system, so the command calls `src/services/tools/` in-process and works with no desktop or brain. The desktop's `agentToolsCacheService` is the same module behind an IPC feed for onboarding.
 
-Three details when driving it through `ade actions run` anyway. The `piLogin`
-start/submit/cancel actions are CTO-only, so they need `--role cto`;
-`ai.piLoginProviders` is not. The two-process shape only works against a running
-brain or desktop socket — a headless invocation builds its own runtime, so a
-second `ade` process cannot see the first's in-flight sign-in. And
-`ai.piLoginStart` carries its own transport floor (11 minutes, the same budget
-the desktop client uses) so the CLI does not report a timeout while the daemon
-is still waiting on the user; `--timeout-ms` still applies when it asks for
-more. `ai.piLoginSubmit`'s `value` can be a raw API key: pass it through
-`--input-json` built from an environment variable rather than typing it inline,
-and never echo the result.
+### Browser, App Control and Work tools scoping
 
-Provider keys have no typed command, for the same reason `ade secrets` is not
-one of them: a provider key is not a project secret. `ai.storeApiKey` /
-`ai.deleteApiKey` / `ai.listApiKeys` write and list the PROJECT's store
-(`<project>/.ade/secrets`). The writers are CTO-only; the list is not, because
-it names providers and never returns a key. Build the `--input-json` from an
-environment variable rather than typing the key inline, and never echo the
-result into a log.
+- **`ade browser`** needs no token: any process on this machine may use it, like `ade mac-desktop`. From a chat, the runtime tags each call with the chat and its lane (or the personal tab collection), so the chat owns the tabs it opens and a `--lane` is dropped. From a plain terminal, `--lane` is kept and the call owns no tab. `--force` is reserved and refused, and calls from another machine's brain are refused. With no ADE window here, `open` / `new-tab` / `panel` go to a desktop that has the lane pinned.
+- **The browser where the user sits.** When the user drives the chat from another computer, page commands (`open`, `observe`, `click`, `fill`, `text`, `claim`, …) run in the ADE browser of the desktop that sent the chat its last message, and the first `--text` line says so (`browser: on <machine>, the computer the user sits at`). If that desktop does not take the command within 4 s, it runs here and says so. `--here` picks this machine; `upload`, `har` and `record` need it, because their file is here. See `docs/features/remote-runtime/README.md`.
+- **`ade browser attach` / `detach`** and the page commands of a chat attached to the user's own browser never reach ADE's browser, so the runtime checks them itself: the caller must be a live chat of this project and may name only its own chat (`docs/features/computer-use/README.md`, "Attach to the user's own browser").
+- **`ade app-control`** has no special scoping branch. A machine has one active App Control session; `--lane` / `--chat-session` (or `ade app-control claim`) attribute it to the caller so the Work row, trace and proof land on the right lane. `--force` replaces the session and is open to agents.
+- Browser profile diagnostics, saved site permissions and login import (cookies from Chrome, Safari or Firefox) have no CLI by design: they stay in the trusted renderer with a person present, and the daemon and the desktop bridge refuse them.
+- **`ade work-tools`** reads the pane; it does not drive it. `work_tools.setActiveTool` is for user clients only (the renderer publishing what it has open for phones and the web client). An agent that wants a pane opens the tool (`ade browser panel`).
 
-`computer_use_artifacts.ingestSceneSnapshot` is not a second `ade proof attach`.
-It is CTO-only, takes no bytes, and accepts only a path already inside this
-project's `.ade/artifacts/computer-use` — it exists so the desktop's Proof
-button on a generated view can file bytes the desktop already wrote when the
-broker lives in the runtime rather than in-process. Agents create proof through
-`ade proof attach` and the validated `ingest_computer_use_artifacts` tool, which
-is the path that checks owner claims and the caller's import root.
+### Conventions
 
-There is no `ade cto` command; `cto_state` and `cto_memory` are reached through `ade actions
-run` only.
-
-`cto_state.refreshContext` gives the CTO a fresh provider thread: the ADE chat
-stays, and the new thread is told the doctrine, the notes, the open work, the
-live project state and the last 40 messages. It is CTO-only, because when the
-CTO starts over is the operator's call. A CTO that is mid-turn is refreshed when
-the turn ends. `cto_memory.updateNotes` replaces one notes file (`project`:
-`.ade/cto/MEMORY.md`, 4096 bytes; `user`: notes about the person for every
-project on this machine, 2048 bytes) and refuses text over the cap;
-`cto_memory.updateOpenWork` adds, completes, reopens or removes one open-work
-item. `getSnapshot`
-and `recordDiscovery` stay open to every role; the writes are CTO-only.
-`cto_state.dismissOnboarding` and `cto_state.resetOnboarding` were removed
-with the surface they drove, so a script that still calls either now fails with
-an unknown-action error rather than a silent no-op; `getOnboardingState` and
-`completeOnboardingStep` remain.
-
-`ade tools` is deliberately not backed by a service action. The pinned-tool cache
-is a property of the machine's filesystem, not of a project runtime, so the
-command calls `src/services/tools/` in-process and works on a headless box with
-no desktop and no brain running. The desktop's `agentToolsCacheService` is the
-same module behind an IPC snapshot feed for onboarding; there is nothing for
-`ade actions run` to reach that `ade tools status|ensure|gc` does not already
-cover.
-
-`ade browser` needs no token: any process on this machine may use it, like
-`ade mac-desktop`. From a chat, the runtime tags each call with that chat and
-its lane (or the personal tab collection), so the chat owns the tabs it opens;
-a caller-supplied `--lane` is dropped there. From a plain terminal with no chat,
-`--lane` is kept and the call owns no tab. `--force` is a reserved takeover
-flag and the runtime rejects it, and calls from another machine's brain are
-refused. On a machine with no ADE window, `open`/`new-tab`/`panel` are
-forwarded to a desktop that has this lane pinned.
-
-When the user drives the chat from another computer, the chat's browser is the
-one on that computer: `open`, `observe`, `click`, `fill`, `text`, `claim` and
-the other page commands run in the ADE browser of the desktop that sent the
-chat its last message, and the first line of `--text` output says so
-(`browser: on <machine>, the computer the user sits at`). If that desktop does
-not take a command within 4 s, the command runs in this machine's browser and
-says that instead. `--here` picks this machine's browser on purpose, and
-`upload`, `har` and `record` need it, because their file is on this machine.
-See "The browser where the user sits" in `docs/features/remote-runtime/README.md`.
-
-`ade browser attach` / `detach`, and the page commands of a chat attached to
-the user's own browser, never reach ADE's browser or the desktop, so the
-runtime checks them itself: the caller must be a live chat of this project and
-may name only its own chat. See `docs/features/computer-use/README.md`
-("Attach to the user's own browser").
-
-`ade app-control` has no app_control-specific scoping branch the way the daemon
-has for `built_in_browser` and `work_tools`. A machine has
-one active App Control session at a time, and `--lane`/`--chat-session` (or
-`ade app-control claim`) attribute that session to the caller so the Work row,
-the trace and proof artifacts land on the right lane. `--force` here means
-"replace the existing session" and is available to agents.
-
-Browser profile diagnostics, saved site-permission administration, and login
-import (reading cookies out of Chrome, Safari or Firefox) have no CLI surface
-by design: they stay in the trusted ADE renderer where a human is present, and
-are refused on both the daemon and the desktop bridge rather than merely left
-unwrapped.
-
-`ade work-tools` is a read of that same pane, not a second way to drive it.
-`work_tools.setActiveTool` is limited to user clients because it is the desktop
-renderer publishing what it has open for phones and the hosted web client to
-mirror; an agent that wants a pane open should open the tool it needs
-(`ade browser panel`) rather than claim one is open.
-
-Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. User-only domains, such as `lane_share` (sharing a lane with another account), are left out of `ade actions list` and refused by `ade actions run`: only the ADE desktop app, with no agent identity, reaches them. For stored project credentials, prefer `ade secrets`; account-linked projects default to account storage, `--storage account|device` chooses the scope explicitly, `list` is metadata-only and includes each secret's location, and `get --text` prints the secret value. Agents should read only the named secret the user asked for and avoid logging it.
-
-Output modes are explicit: `--text` for human-readable summaries, `--json` (default for piped output) for stable JSON, and `--pretty` for pretty-printed JSON.
-
-`--socket` requires a specific ADE local endpoint and fails fast when it is missing. Without `--socket`, the CLI auto-attaches to the brain when reachable and falls back to headless for commands that can run that way.
+- Use typed commands first; they validate arguments and give stable JSON or readable text. `ade help <command> <subcommand>` gives exact flags, `ade actions list --text` the action catalog, and `ade actions run <domain.action>` the escape hatch.
+- User-only domains, such as `lane_share` (sharing a lane with another account), are left out of `ade actions list` and refused by `ade actions run`: only the desktop app with no agent identity reaches them.
+- For stored project credentials, use `ade secrets`. Account-linked projects default to account storage; `--storage account|device` chooses. `list` is metadata only (with each secret's location); `get --text` prints the value. Agents read only the secret the user named and never log it.
+- Output: `--text` for people, `--json` (default when piped) for stable JSON, `--pretty` for indented JSON.
 
 ## ADE account auth and `ade doctor`
 
-`ade connect` is the one command that puts a machine on an account. It runs
-three idempotent steps and reports each as a checklist line on stderr, keeping
-stdout the structured payload (JSON by default, a one-line summary under
-`--text`):
+`ade connect` is the one command that puts a machine on an account. It runs three idempotent steps, prints each as a checklist line on stderr, and keeps stdout for the payload (JSON, or one line with `--text`):
 
-1. **account** — reuse a valid session, else delegate to the same `ade login`
-   implementation, so the loopback-vs-device decision lives in exactly one place.
-2. **service** — install and start this platform's login service when it is not
-   already running (launchd / systemd user service / Windows per-user startup
-   entry). A refusal caused by running inside the very brain it would replace is
-   not treated as a failure.
-3. **machine** — wait for this machine's row to reach the account directory.
+1. **account**: reuse a valid session, else run the `ade login` code, so the loopback-or-device choice lives in one place.
+2. **service**: install and start the login service when it is not running. A refusal because it runs inside the brain it would replace is not a failure.
+3. **machine**: wait for this machine's row in the account directory.
 
-Step 3 is a wait rather than a write, and that distinction matters: the row is
-created by the brain's account-machine publisher, which POSTs to
-`/account/machines/register` on sign-in and then every 30s, gated on the brain
-holding the machine's sync-host lease and having an active host snapshot. No
-one-shot CLI publish exists, so `ade connect` makes the preconditions true and
-then polls `listMachines` for its own `machineKey` (from
-`~/.ade/secrets/sync-cloud-relay.json`) until a bounded deadline. Because the
-publisher lives in the brain, **the brain must keep running for the machine to
-stay reachable** — which is what the service step guarantees. The directory
-also marks a machine `online` only within a 90s `last_seen_at` window.
+Step 3 waits, it does not write. The brain's account-machine publisher posts to `/account/machines/register` on sign-in and every 30 s, while the brain holds the sync-host lease and has an active host snapshot. So `ade connect` makes those conditions true and polls `listMachines` for its own `machineKey` (from `~/.ade/secrets/sync-cloud-relay.json`) until a deadline. **The brain must keep running for the machine to stay reachable**, which the service step gives. The directory marks a machine `online` only within 90 s of `last_seen_at`.
 
-An ADE account is required for shared account features; local `ade` CLI, project,
-lane, and PIN workflows already on this machine remain available while signed
-out. `ade login` uses Clerk OAuth with a local
-loopback callback when a browser is available. `--headless`, SSH sessions, and
-display-less Linux hosts use the account-directory device bridge instead: the
-CLI prints a verification URL and short code that can be completed in any
-browser. If opening the loopback URL fails, the CLI falls back to the same
-device flow.
+- An account is needed only for shared account features; local CLI, project, lane and PIN work stays available signed out.
+- `ade login` uses Clerk OAuth with a loopback callback when a browser is available. `--headless`, SSH sessions and display-less Linux use the device bridge (a URL and short code for any browser); a failed loopback open falls back to it.
+- **Agents and CI**: run `ade account token create` once on an interactive machine, keep the result in a secret manager, and give it to the brain as `ADE_ACCOUNT_TOKEN`. New tokens carry the refresh credential plus the OAuth issuer and client id, so the host needs no Clerk configuration. Raw access tokens work until their JWT expiry. Old opaque refresh tokens need local `CLERK_ISSUER` and `CLERK_OAUTH_CLIENT_ID`; recreate them to drop that. ADE never logs the value.
+- Provider API keys and Linear OAuth credentials can follow the account through the encrypted account vault, and secrets through Passwords & Secrets; device-only values stay in the machine stores. GitHub tokens and computer-use policy stay in their own stores.
 
-For non-interactive agents and CI, create a durable credential once on
-an interactive machine with `ade account token create`, store it in a secret
-manager, and expose it as `ADE_ACCOUNT_TOKEN` to the ADE brain/runtime. Newly
-provisioned tokens carry the refresh credential plus its public OAuth issuer and
-client id in a versioned secret envelope, so the agent/CI host needs no local
-Clerk configuration. Raw access tokens are used until their reported JWT expiry.
-Legacy opaque refresh tokens still work when local `CLERK_ISSUER` and
-`CLERK_OAUTH_CLIENT_ID` are configured; recreate them with the command above to
-remove that dependency. ADE never logs this environment value.
-
-Provider API keys and Linear OAuth credentials can follow the signed-in account
-through the encrypted account vault, and secrets through Passwords & Secrets;
-device-only values remain in the machine's encrypted stores. GitHub tokens and computer-use policy remain
-separate and are read from their existing secure stores.
-
-`ade doctor` inspects the installed app and machine-brain health and prints one
-status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
-`fail`. The rows are:
+`ade doctor` prints one row (`ok` / `warn` / `fail`) per check and exits non-zero when any row is `fail`:
 
 - **App** — the installed ADE desktop version (read from the `.app` bundle on disk) against the latest build on its track. With `--online` (short timeout, best-effort), latest comes from the Beta feed for a Beta install and from the latest GitHub release otherwise. Without it, or when that read fails, the on-disk `update-status.json` (the last `ade brain update`) counts only while it is newer than the installed app and on the same track. `warn` when the install is behind or missing.
 - **Brain** — whether the machine brain responds on its socket, plus its version, pid, and uptime. `fail` when it is not responding or when its build identity does not match the expected runtime for this CLI/role. A brain that is not answering *yet* is reported as `warn` (`starting`) rather than `fail`: when the login service is registered and the brain process behind it is alive and younger than the young-brain window (`RUNTIME_SERVICE_YOUNG_BRAIN_MS`, 2 min), it is still coming up — first launch, cold disk, large project database — and restarting it would only reset its clock. This is the CLI's read of the same `brain_starting` state the desktop recovery screen shows; `ade runtime status` and `ade brain status` report it as a `starting: true` field with the same wording. Nothing to repair: keep waiting for the endpoint.
@@ -1220,93 +722,37 @@ status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
 - **Storage** — where this machine's ADE home and its most recently opened project actually live, and whether their bytes are on the disk. `fail` when a root cannot be read at all, or when sampled files are not downloaded *and* this computer's background service is not allowed to download them; `warn` when files are not downloaded but the service may fetch them, or when a root sits on cloud storage that the service may not download from. Both facts come from a bounded `fs` walk (at most 120 files, 24 directories, and 250 ms per root) plus one read of the installed launch agent, so this row — like **Credentials** — works on the machine where the brain will not start. That is the point of it: an evicted iCloud Drive project read by a background service macOS will not let hydrate returns `EDEADLK` ("Unknown system error -11") and leaves every other row green. The remedy the row names, `ade runtime install-service`, rewrites the launch agent with the `MaterializeDatalessFiles` key. The row reports locations and counts only, never a path or a file name. `ade report-issue` prints the same facts in full under "Storage environment".
 - **Diagnostics sharing** — whether ADE may send a redacted diagnostic report by itself when something fails, and how much of today's ceiling has been spent (`on · 1 of 3 automatic reports sent today` / `off`). Read straight from the ledger both senders account against (`$ADE_HOME/secrets/diagnostics-autosend.json`), which is why the count covers the whole computer rather than one process. Always `ok`: it is a preference, not a health check. An absent or unreadable ledger reports the default the next auto-send would act on — on, nothing spent. The setting itself is toggled in the desktop app; there is no CLI flag for it.
 
-When a row fails and the checks above do not explain it, `ade doctor --text`
-points at `ade report-issue`. That command is the headless counterpart to the
-desktop's "Report this error to ADE…" dialog: it reads only local files — it never starts or
-contacts the brain — so it still works on the machine where ADE itself will not
-come up, and on Windows where there is no desktop error screen to press. It
-prints a redacted diagnostic report. Do not post the report on a public page;
-send it with `--send`. `--json` returns `{ installId, report, reportPath?, sent?,
-issueUrl?, opened? }`: `issueUrl` is the public GitHub issue link, present only
-after a successful `--send`, and holds only the reference, the version and
-channel and the OS family; `opened` says whether `--open` opened it.
+Default doctor calls no provider, GitHub or Linear network. **Brain**, **Sync port**, **Publish health**, **Relay** and **Account** come from the brain's socket. **App**, **Wedge history**, **Credentials**, **Storage** and **Diagnostics sharing** read local files, so they answer while the brain is down (Wedge history reads the on-disk breadcrumb first). No row prints a secret or a project path. `--online` is the one network read.
 
-`--send` is the one part of this command that leaves the machine, and it is
-opt-in: it uploads the same redacted report to ADE over HTTPS and prints the
-reference id support quotes back. It is the headless counterpart to Send in the
-desktop's report dialog, and it reads everything it needs — the account session,
-the directory origin — from local files, so it still works on a machine whose
-brain will not start. A signed-in machine attaches its account token; a
-signed-out one uploads anonymously against the install id already in the report.
-A failed or rate-limited send never changes the printed report or the exit code:
-it prints one line saying so and leaves the user holding everything they need to
-file the issue by hand. With `--json`, `sent` is present only when `--send` was
-asked for, as `{ ok: true, reference }` or `{ ok: false, reason }`, so a script
-can tell "not requested" from "requested and failed".
+### `ade report-issue`
 
-`ade triage` is the third step after those two: `doctor` says which check
-failed, `report-issue` produces a report to send, and `triage` hands the repair
-to a coding agent. It runs the same doctor checks and the same
-redacted diagnostic collection, writes them as a single `context.md` into a
-fresh temp directory (`ade-triage-<timestamp>-<random>/`) alongside a repair
-playbook, and then launches the first agent whose ADE-pinned copy is already
-on disk — `claude`, `codex`, `cursor-agent`, `opencode`, `droid`, `muse`, in
-that order. It never looks on the PATH and never starts a download: each runs by
-absolute path with its leading args (Cursor: its bundled Node + `index.js` +
-`--disable-auto-update`; Muse: `--contributor-mode off`) and self-update env. The agent inherits
-stdio, so the user talks to it directly; `ade triage` exits with the agent's
-exit code and prints nothing on stdout in that mode (both paths are printed on
-stderr before the launch). `--provider <name>` picks one; a provider without a copy on disk prints its
-pinned state ("ADE is downloading …", "ADE has not downloaded … for this machine
-yet.", "Couldn't download …", "… is not available on this machine") instead. OpenCode is launched
-bare because its positional argument is a project directory rather than a
-prompt, and the prompt is printed for pasting instead.
+When a row fails and the checks do not explain it, `ade doctor --text` points at `ade report-issue`, the headless form of the desktop's "Report this error to ADE…" dialog. It reads only local files and never contacts the brain, so it works where ADE will not start and on Windows. It prints a redacted report. Do not post the report on a public page; send it with `--send`.
 
-The playbook is `docs/triage/PLAYBOOK.md` in this repository — safety rules
-first (read-only diagnosis before mutation, never delete anything under `.ade/`
-or `$ADE_HOME`, never kill by name or pattern, ask before destructive steps),
-then a failure class per doctor row with the exact read-only command to run.
-It is fetched from `main` on each run with a 3s timeout so a fix does not have
-to wait for an ADE release, falling back to the copy on this machine and finally
-to a reduced built-in one; `playbookSource` (`remote` / `local`) and
-`playbookOrigin` say which won. `ADE_TRIAGE_NO_FETCH=1` skips the fetch,
-`ADE_TRIAGE_PLAYBOOK=<path>` overrides the local copy.
+- `--json` returns `{ installId, report, reportPath?, sent?, issueUrl?, opened? }`. `issueUrl` (only after a successful `--send`) is a public GitHub issue with only the reference, version, channel and OS family; `opened` says whether `--open` opened it.
+- `--send` is the only part that leaves the machine, and it is opt-in. It uploads the same redacted report over HTTPS and prints the reference id. It reads the account session and directory origin from local files; a signed-in machine attaches its token, a signed-out one uploads anonymously with the install id.
+- A failed or rate-limited send changes neither the report nor the exit code; it prints one line. With `--json`, `sent` is present only when asked: `{ ok: true, reference }` or `{ ok: false, reason }`.
 
-`ade triage --agent` launches nothing: it prints `mode`, `contextPath`,
-`playbookPath`, `playbookSource`, `playbookOrigin`, `suggestedPrompt`, the
-detected agent CLIs and a `message`, and exits 0. That is the mode for an agent
-that is already running — an ADE Work chat triaging its own machine — and a
-machine where ADE has downloaded no agent yet gets the same payload unasked,
-with a message saying so, rather than a failure. Branch on `mode`, not on the exit
-code: `agent` was asked for, `no-provider` means no pinned copy was on disk to
-launch, and `launch` means an agent ran — that last one prints nothing on
-stdout and exits with the agent's own code. The context file is redacted with
-the same rules as `ade report-issue`: it never contains credentials, and it is
-written to a temp directory rather than into the project.
+### `ade triage`
 
-There is no `ade recovery diagnose` / `ade recovery repair`: those are
-Electron-main IPC (`ade.recovery.diagnose` / `ade.recovery.repair`) backed by
-the desktop's local-runtime connection pool, which does not exist in a headless
-CLI. The CLI equivalents are `ade doctor` for the diagnosis, `ade brain restart`
-for the repair, and `ade brain repair-credentials` for the credential half.
+`doctor` names the failed check, `report-issue` makes a report, and `triage` hands the repair to a coding agent.
 
-Default doctor does not call provider, GitHub, or Linear networks. **Brain**,
-**Sync port**, **Publish health**, **Relay**, and **Account** come from the local
-brain over its socket. **App**, **Wedge history**, **Credentials**, **Storage**,
-and **Diagnostics sharing** are read-only inspections of files this machine
-already has, so they still answer while the brain is down (Wedge history reads
-the on-disk breadcrumb first and asks the brain only as a fallback). None of them prints a
-secret value or a project path. The one optional network touch is the `--online`
-desktop-release lookup above.
+- It runs the doctor checks and the redacted collection, writes them as `context.md` in a fresh temp folder (`ade-triage-<timestamp>-<random>/`) with a repair playbook, and launches the first agent whose ADE-pinned copy is on disk: `claude`, `codex`, `cursor-agent`, `opencode`, `droid`, `muse`, in that order.
+- It never uses the PATH and never starts a download. Each agent runs by absolute path with its leading args (Cursor: bundled Node + `index.js` + `--disable-auto-update`; Muse: `--contributor-mode off`) and self-update env, and inherits stdio. Triage prints both paths on stderr, prints nothing on stdout, and exits with the agent's code.
+- `--provider <name>` picks one; a provider with no copy prints its pinned state ("ADE is downloading …", "ADE has not downloaded … for this machine yet.", "Couldn't download …", "… is not available on this machine"). OpenCode starts bare (its positional argument is a folder) and the prompt is printed to paste.
+- The playbook is `docs/triage/PLAYBOOK.md`: safety rules first (read-only diagnosis before changes, never delete under `.ade/` or `$ADE_HOME`, never kill by name or pattern, ask before destructive steps), then a failure class per doctor row with the read-only command to run. It is fetched from `main` each run (3 s timeout), else the local copy, else a built-in one; `playbookSource` (`remote` / `local`) and `playbookOrigin` say which. `ADE_TRIAGE_NO_FETCH=1` skips the fetch; `ADE_TRIAGE_PLAYBOOK=<path>` overrides the local copy.
+- `ade triage --agent` launches nothing: it prints `mode`, `contextPath`, `playbookPath`, `playbookSource`, `playbookOrigin`, `suggestedPrompt`, the detected agents and a `message`, and exits 0. It is for an agent already running (a Work chat triaging its own machine); a machine with no downloaded agent gets the same payload. Branch on `mode`, not the exit code: `agent`, `no-provider`, or `launch` (an agent ran; nothing on stdout, the agent's exit code).
+- The context file uses the redaction of `ade report-issue`, holds no credentials, and is written to a temp folder, not the project.
 
-Agents starting an unfamiliar ADE session should begin with:
+There is no `ade recovery diagnose` / `repair`: those are Electron-main IPC (`ade.recovery.*`) on the desktop's connection pool. Use `ade doctor`, `ade brain restart` and `ade brain repair-credentials`.
+
+Agents in an unfamiliar ADE session start with:
 
 ```bash
 ade doctor --json
 ade actions list --text
 ```
 
-…then prefer typed commands such as `ade lanes list --text`, `ade files read <path> --text`, `ade prs checks <pr> --text`, or `ade tests runs --json`. Use `ade actions run …` as the broad escape hatch.
+Then prefer typed commands (`ade lanes list --text`, `ade files read <path> --text`, `ade prs checks <pr> --text`, `ade tests runs --json`), with `ade actions run …` as the escape hatch.
 
 ## Repo development
 

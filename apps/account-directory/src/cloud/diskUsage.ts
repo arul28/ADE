@@ -101,7 +101,7 @@ export async function recordDiskUsage(env: CloudEnv, computer: ComputerRow, repo
   if (statements.length) await env.DB.batch(statements);
 }
 
-type UseRow = Pick<ComputerRow, "disk_usage_json" | "disk_measured_at" | "last_active_at" | "lane_work_json" | "last_awake_at" | "awake_since">;
+type UseRow = Pick<ComputerRow, "disk_usage_json" | "disk_measured_at" | "last_active_at" | "lane_work_json" | "last_awake_at" | "awake_since" | "idle_claimed_at">;
 
 /** The saved measure, or null before the first one (or a row the code can't read). */
 export function diskUsageOf(computer: UseRow): CloudDiskUsage | null {
@@ -135,7 +135,14 @@ export function lastActiveAtOf(computer: UseRow): number | null {
 /** The instance as the list shows it, with its use facts. */
 export function withUseFacts(instance: CloudInstance, computer: UseRow | null | undefined): CloudInstance {
   if (!computer) return instance;
-  return { ...instance, lastActiveAt: lastActiveAtOf(computer), diskUsage: diskUsageOf(computer), laneWork: laneWorkOfRow(computer) };
+  return {
+    ...instance,
+    lastActiveAt: lastActiveAtOf(computer),
+    diskUsage: diskUsageOf(computer),
+    laneWork: laneWorkOfRow(computer),
+    // An idle cleanup's save holds it: it reads running, and a use must still call `/start` (CONTRACTS 3.2).
+    idleSaving: computer.idle_claimed_at != null,
+  };
 }
 
 /** Days of settled hours the forecast reads. */

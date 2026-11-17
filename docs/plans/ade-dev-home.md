@@ -1,10 +1,9 @@
 # ADE as the dev home: one chat system, a top-level browser, Apple Music, a widget home
 
-Status (2026-10-08): being built, in review as PR #1544; each section's own
-status line says what is done. The browser tab (§2) and the widget home (§4)
-are built; the Music tab (§3) is built on Windows, with signed-in playback
-still to verify. Scope: desktop app first. Web
-client, iOS and TUI keep working, and are not redesigned here.
+Status: built. The Browser top tab (§2), the Music tab (§3; see
+`docs/features/music/README.md`) and the widget home page (§4) ship. This file
+keeps their design; code and the feature docs hold the details. Scope: desktop
+app first; web client, iOS and TUI keep working.
 
 ## Goal
 
@@ -26,47 +25,6 @@ Four pieces, in build order:
 ---
 
 ## 1. One chat system
-
-### What is true today (audited 2026-10-07)
-
-Project-less ("personal") chats run in a hidden personal runtime with a hidden
-internal lane (`docs/features/personal-chats/README.md`). They were built as a
-*general assistant* surface, and the same surface backs the embeddable SDK
-(`ade runtime run --profile embedded`). That design is why they feel weak in ADE.
-
-**Agent side** (`apps/desktop/src/main/services/chat/agentChatService.ts`,
-`personalSession.ts`):
-
-- **System prompt:** `PERSONAL_CHAT_SYSTEM_PROMPT` tells the agent not to assume
-  coding work, not to inspect files, and to stay inside its scratch directory.
-- **ADE skills:** stripped for every provider. That covers Claude plugin paths,
-  the Codex skill roots and slash commands, OpenCode skill paths, the Cursor
-  workspace dirs, Qwen and the Pi extensions. So the agent is never taught
-  `ade browser`, `ade screen`, `ade app-control`, Linear or scenes, even
-  though `ADE_CLI_PATH` and a browser actor token *are* in its environment.
-- **User settings:** Claude `settingSources` defaults to `"none"`, so there is
-  no user CLAUDE.md, no user MCP servers and no user skills.
-- **ADE guidance:** none. Lane guidance and lane memory are skipped.
-- **Work-row status reporting:** off (`resolveSessionActivityReporting`).
-- **Planning mode:** off. This is **intended and stays**: project-less chats
-  are ask mode or full permission only.
-
-**Backend actions:** `PERSONAL_CHAT_ACTIONS`
-(`apps/desktop/src/shared/types/personalChats.ts`) already covers send, the
-whole steer and queue family, interrupt, recoverTurn, approve and respondToInput,
-scheduled work, usage-limit continue, updateSession, rerunLastTurn, archive and
-delete, history paging, terminals and attachments. Missing compared with work
-chats: fork from turn, rewind, compact, goals, handoff and import, title
-generation, and anything lane-based.
-
-**UI:** `PersonalChatsPage` renders `AgentChatMessageList` plus its own
-160-line `ProjectlessComposer`. That composer offers only the model, reasoning
-effort, permission mode, fast mode, send and interrupt. The real
-`AgentChatComposer` is about 7,700 lines and `AgentChatPane` about 17,000.
-Missing from the project-less UI: attachments, paste and drop, slash commands,
-@mentions, queue and steer editing, fork, rewind, compact, goals, retry after
-a provider failure, and import. `ProjectlessSidebar` offers only select,
-archive and delete: no rename, pin, auto-title, or move to project.
 
 ### Design
 
@@ -186,17 +144,6 @@ the pane's size while parked, however narrow (it used to park at 960x600 under
 640 wide and resize the page on every close and open); an agent that needs a
 desktop layout is told how to ask for one (`narrowPageHint`).
 
-### What is true today
-
-- **Profile:** one global persistent partition, `persist:ade-browser`, so
-  logins and cookies are already shared everywhere.
-- **Collections:** tabs are grouped per collection: project, `personal` and
-  `window` (`collectionForProjectRoot`, `builtInBrowserService.ts`).
-- **Where it appears:** inside Work's tool panel and as a split on the Chats page.
-- **Non-project top tabs** (New Tab, Chats, Account, Settings) are each
-  hand-wired: a store flag, a route, a `ShellNavTab` in `TopBar.tsx`, and a
-  branch in `App.tsx`.
-
 ### Design
 
 - **New Browser top tab.** Add `browserTabOpen` to `appStore`, a `/browser`
@@ -246,111 +193,6 @@ _Playback architecture: filled in from the research pass. See the
   MusicKit authorization and is stored in the Music service's own
   safeStorage-encrypted file (`musicTokenStore.ts`, in the app's user data),
   never in the player's WebView2 profile.
-
-### Apple Music research (2026-10-07)
-
-- **Stock Electron cannot play Apple Music.** It has no Widevine CDM. Sign-in,
-  search and `setQueue` work, but `play()` stalls at 0 seconds
-  (developer.apple.com/forums/thread/825925). Plain HTTP origins fall back to
-  30-second previews.
-- **castLabs Electron for Content Security (ECS)** is a Chromium fork of Electron
-  with Widevine. It is free, tracks upstream closely (v44.x), and supports about
-  the three latest majors. Older builds can lose CDM downloads without notice.
-  - Production Widevine needs **VMP signing through castLabs EVS** (free account)
-    on macOS and Windows. Sidra, an Apple Music desktop app on ECS, confirms full
-    and lossless playback this way.
-  - Signing order: on macOS, VMP before codesign and notarize; on Windows,
-    codesign before VMP. This means electron-builder hooks.
-- **The native macOS MusicKit (Swift) player APIs are not available on macOS.**
-  A helper app gets catalog and auth only, with no playback.
-- **The Windows Apple Music app has no scripting, URI or SDK.** The only route on
-  Windows is MusicKit JS with Widevine.
-- **Music.app AppleScript (macOS)** gives reliable transport control of what is
-  already playing. Catalog playback needs library IDs, so it is a fallback only.
-- **Developer token:** an ES256 JWT that lasts at most 6 months. The token is
-  public by design; the `.p8` key is not. Mint it in a Worker with a short TTL.
-  Per-token rate limits exist, so cache results and back off on errors.
-- **Terms:** third-party players are allowed for subscribers when the user starts
-  playback with standard controls. Apple's attribution guidelines apply. No
-  downloading and no monetizing.
-
-### Playback architecture: decision needed
-
-| Option | How | Pros | Cons |
-|---|---|---|---|
-| **A. Switch ADE to ECS** | ADE's `electron` dependency becomes castLabs ECS. A hidden player view loads MusicKit JS from a secure `app://` origin, and the React UI drives it over IPC. | One runtime and the smallest install. Drop-in, since ECS keeps the same Electron API. | The whole app follows castLabs' release schedule. A castLabs/EVS outage or lag blocks every ADE release. VMP signing is added to every build. |
-| **B. Separate ECS player helper** | A small bundled ECS app, launched on demand, runs MusicKit JS headless. ADE talks to it over a local pipe. | ADE stays on stock Electron. Music problems can never block an ADE release or break the IDE. | A second Chromium (about 100 MB more install, or a download on first use). Two processes and two signing flows. |
-| **C. Control only** | Now Playing from the OS (macOS MediaRemote adapter, Windows SMTC), plus Music.app AppleScript on macOS for library playlists. | No DRM or forked Electron. Works for any player. | Not a real Music tab: on Windows you can't start music from ADE. |
-
-### OS web engines: spike result (2026-10-07)
-
-The table above was superseded by a lighter option: host the music page in
-the web engine the OS already ships, not in Chromium.
-
-- **ADE's browser today:** stock Electron 41 reports `com.widevine.alpha`,
-  PlayReady and FairPlay as all `null`; only clearkey works. The user confirmed
-  that previews play and library tracks don't.
-- **Windows WebView2 (runtime 154): PASS.**
-  - **Spike:** `tmp/spike-webview2-music/`, a C# WinForms host built with the
-    in-box `csc.exe` and the Microsoft.Web.WebView2 NuGet package.
-  - **DRM:** Widevine (SW_SECURE_CRYPTO) and PlayReady both work in the default
-    configuration.
-  - **Playback:** the user signed in and a **library track played for about
-    15 minutes without a fault**.
-  - **Startup:** first paint about 0.8 s after launch.
-  - **Memory:** about 660 MB working set with the full music.apple.com site
-    open. Most of that is Apple's web app, not WebView2.
-  - **Now playing:** `navigator.mediaSession.metadata` gives title, artist,
-    album and artwork. Play state must come from MusicKit, because
-    `playbackState` stays `"none"`.
-  - **Fragility:**
-    - Never pass `--disable-component-update`; it removes the Widevine CDM.
-    - PlayReady rides on the undocumented `msPlayReadyWin10` feature.
-    - The Evergreen runtime updates on Edge's schedule.
-    - Apple's sign-in dialog has a dark-mode contrast bug that makes its buttons
-      nearly invisible. Our UI should front it, or force a light color scheme
-      for the auth step.
-- **macOS WKWebView (FairPlay): not yet tested.** It needs a run on the
-  user's Mac Studio.
-
-**Decision:**
-- **Windows:** a WebView2 player host. ADE stays on stock Electron, and castLabs
-  is not needed on Windows.
-- **macOS:** a WKWebView player host, pending the spike.
-- **Both platforms:** the host loads only MusicKit JS on a minimal page from a
-  secure origin, not the full music.apple.com site. The Music tab, widget and
-  mini-player are ADE's own React UI that drives the host over IPC. This should
-  cut the memory and the slowness of Apple's web app.
-- **Fallback:** castLabs ECS (option B), only if a platform spike fails.
-- **Also:** ship C's Now Playing widget early.
-
-Next spike: the Windows host loads a blank secure-origin page with only MusicKit
-JS. It authorizes and plays a library track while driven from a test
-controller. Measure memory against the 150 MB target.
-
-### Status (2026-10-08): Music tab built on Windows
-
-See [docs/features/music/README.md](../features/music/README.md).
-
-- **Built:** the WebView2 player host (`ade-music-host.exe`, built by
-  `build:music-host:win` with the in-box csc and a hash-pinned WebView2 NuGet
-  package, shipped through `extraResources`); the main-process music service
-  (on-demand start, 5-minute idle unload, resume at the same song and second);
-  the `/music` top tab, the top-bar mini player, `Mod+Shift+M`; the Worker route
-  `GET /music/developer-token`; the renderer store the Now Playing widget reads.
-- **Verified:** catalog search, artwork and album pages with a locally minted
-  developer token; Connect opens Apple's sign-in popup, light and legible;
-  closing it cancels cleanly; the idle unload ends the whole host tree. The
-  Worker's token signing was checked against Apple (HTTP 200).
-- **Not yet verified (needs a signed-in person):** playback, library, queue,
-  unload/resume of a playing queue, likes.
-- **Memory:** the host tree idles at about 370 MB working set (190 MB private)
-  with MusicKit loaded, against the 150 MB target; Apple's sign-in popup adds
-  about 180 MB while open. The tree is gone 5 minutes after playback stops.
-- **macOS:** not started; the tab says Music on Mac is coming.
-- **Not deployed:** the Worker route needs `MUSICKIT_PRIVATE_KEY` set and a deploy.
-
----
 
 ## 4. Widget home page
 

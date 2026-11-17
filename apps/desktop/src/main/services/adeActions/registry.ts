@@ -341,6 +341,7 @@ import { accountAppConnection, cloudGitPreflight } from "../adeCloud/cloudGitCre
 import { approveSignInLink, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
 import { createCloudMachines } from "../adeCloud/cloudMachines";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
+import { createCloudApiClient } from "../../../shared/cloudApiClient";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { getSharedAccountAttestationConfig, getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
@@ -4454,7 +4455,7 @@ function cloudMachineStore(): EncryptedFileCredentialStore {
 function cloudSignInVaults(runtime: AccountDomainRuntime): CloudSignInVaults | null {
   const store = runtime.accountVaultStore;
   if (!store || runtime.accountAuthService?.getStatus().signedIn !== true) return null;
-  return (vaultKey) => cloudVaultFromStore(store, vaultKey);
+  return (vaultKey, kind) => cloudVaultFromStore(store, vaultKey, kind);
 }
 
 function cloudAccessDeps(runtime: AccountDomainRuntime): CloudAccessDeps {
@@ -4610,6 +4611,16 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   const agentLimits = createCloudAgentLimitsStore({
     vault: () => (signedIn() && runtime.accountVaultStore ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_AGENT_LIMITS_VAULT_KEY) : null),
     machineStore: () => cloudMachineStore(),
+    // `PUT /cloud/limits`: only the changed fields, with the revision they replace.
+    accountApi: () => {
+      const baseUrl = signedIn() ? getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }) : null;
+      return baseUrl
+        ? createCloudApiClient({
+            baseUrl,
+            accessToken: async () => (signedIn() ? await runtime.accountAuthService!.getAccessToken().catch(() => null) : null),
+          })
+        : null;
+    },
     logger: runtime.logger,
   });
   // A good list or a finished make also tells the sign-in renewal that the

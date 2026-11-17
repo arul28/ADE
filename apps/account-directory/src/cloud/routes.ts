@@ -1,5 +1,6 @@
 import { authenticate } from "../callerToken";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
+import { readBoundedJson } from "../sinkUtils";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
 import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours, webReturnUrl, type BillingReturnUrlFor } from "./billing";
 import { parseSustainedCpuReport, recordSustainedCpu } from "./abuseSignals";
@@ -9,10 +10,20 @@ import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
 import { trustedHttpsOrigin } from "../trustedOrigin";
-import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, routeLaunches } from "./launches";
+import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, routeLaunches, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
 import { serverGitCheck } from "./accountVault";
 import { routeAccountSignIns } from "./accountSignIns";
+import { routeAccountSecrets } from "./accountSecrets";
+import { routeCtoCopy } from "./ctoCopy";
+import { handleInternalEventWake, isInternalEventWakeRequest, routeEventWakeSubscription, type EventWakeOutcome } from "./eventWakes";
+import { routeJiraIssue, routeJiraSearch, routeLinearQuery } from "./integrations";
+import { routeCloudLimits } from "./limits";
+import { routeChatMessages, routeComputerMessages, type ChatWake } from "./chatMessages";
+import { routeSessionCopies } from "./sessionCopies";
+import { routeGitSummaries } from "./gitSummaries";
+import { routeForkCapsules } from "./forkCapsules";
+import { handleProjectOverview } from "./projectOverview";
 import { handleCloudModels } from "./models";
 import { handleAutomationDelivery, isAutomationDeliveryRequest, noteAutomationLaunchProgress, routeAutomations } from "./automations";
 import { routeProjectComputersDelete } from "./projectComputers";
@@ -31,14 +42,29 @@ import {
 } from "./lanesWithoutComputer";
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
 import { ignoredFilesStatement, keepIdleComputer, parseIgnoredFiles, recordIdleUse } from "./idleCleanup";
-import { CLOUD_PATHS, cloudAutoSizeRefusalSentence, formatCloudCents, overPlanLimitsSentence, type CloudDiskLimitLane, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
+import {
+  CLOUD_BLOCKED_READ_ROUTES,
+  CLOUD_COMPUTER_FEATURES,
+  CLOUD_COMPUTER_COMMANDS,
+  CLOUD_EDGE_PATHS,
+  CLOUD_PATHS,
+  CLOUD_PLAN_PAST_DUE_SENTENCE,
+  cloudAutoSizeRefusalSentence,
+  formatCloudCents,
+  overPlanLimitsSentence,
+  type CloudAccess,
+  type CloudDiskLimitLane,
+  type CloudDiskRefusalReason,
+  type CloudInstance,
+  type CloudPlanId,
+} from "./contract";
 import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
 import { freeCapRefuses } from "./costReport";
-import { accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
+import { ACCOUNT_BLOCKED_MESSAGE, accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
 import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
 import { INSTANCE_LIST_TTL_S, listInstancesCached } from "./instanceListCache";
 import { boundedDisplayText } from "../displayText";
-import { UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson } from "./http";
+import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson, tooManyRequests } from "./http";
 import {
   AWAKE_COMPUTER_CAP,
   DISK_ON_CREATE_GB,
@@ -87,8 +113,10 @@ import {
   settleStatements,
   statusChangeStatements,
   statusGuard,
+  takeRequest,
   type AccountRow,
   type CloudEnv,
+  type CloudRequestBucket,
   type ComputerRow,
 } from "./store";
 import {
@@ -393,6 +421,23 @@ const WAKING_ACTIONS: ReadonlySet<string> = new Set(["POST start", "POST update"
 async function recordStatus(env: CloudEnv, computer: ComputerRow, status: string, now: number, reason: string): Promise<void> {
   const statements = statusChangeStatements(env, computer, status, now, reason);
   if (statements.length) await env.DB.batch(statements);
+}
+
+/**
+ * One event wake (`eventWakes.ts`): the checks a person's wake makes, without
+ * waiting at the awake cap. It is use like any other wake: its time bills
+ * hours and it restarts the idle cleanup's clock.
+ */
+async function eventWakeComputer(env: CloudEnv, computer: ComputerRow, now: number): Promise<EventWakeOutcome> {
+  const provider = providerFor(env);
+  if (!provider) return "failed";
+  if (await isCloudBlocked(env, computer.user_id)) return "refused:account_blocked";
+  const { blocked } = await wakeBlocker(env, computer.user_id, now);
+  if (blocked) return `refused:${blocked.refusal}`;
+  if (await awakeRoom(env, computer, now)) return "refused:too_many_awake";
+  const status = await provider.startInstance(computer.instance_id);
+  await recordStatus(env, computer, status, now, "event_wake");
+  return "woken";
 }
 
 async function markGone(env: CloudEnv, computer: ComputerRow, now: number): Promise<void> {
@@ -959,7 +1004,14 @@ async function handleStart(request: Request, env: CloudEnv, computer: ComputerRo
     const refused = await idleUseRefusal(env, computer, now);
     if (refused) return refused;
   }
-  const status = await provider.startInstance(computer.instance_id);
+  let status: string;
+  try {
+    status = await provider.startInstance(computer.instance_id);
+  } catch (error) {
+    // The provider holds a computer whose plan payment failed: the server's sentence (CONTRACTS 5), not the provider's.
+    if (error instanceof CloudProviderError && error.code === "instance_suspended") return fail("plan_past_due", CLOUD_PLAN_PAST_DUE_SENTENCE, 402);
+    throw error;
+  }
   if (freeWake) {
     // A stretch already open is charged up to here, then it starts over after the free window.
     const closing = computer.awake_since != null && computer.awake_since <= now
@@ -1183,7 +1235,11 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   "POST booted": async (request, env, computer, _provider, { now }) => {
     const body = await readJson(request);
     if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-    const { sleepWhenIdle } = await recordBootReport(env, computer, shortText(body.adeVersion, 64), now);
+    const adeVersion = shortText(body.adeVersion, 64);
+    const { sleepWhenIdle } = await recordBootReport(env, computer, adeVersion, now);
+    // The message queue reads the features (`chatWakeFor`). Every report replaces them: an older image sends none.
+    await env.DB.prepare("update cloud_computers set ade_version = coalesce(?, ade_version), ade_version_at = ?, ade_features = ? where instance_id = ?")
+      .bind(adeVersion, now, featuresOf(body.features), computer.instance_id).run();
     return json({ ok: true, sleepWhenIdle });
   },
   // The computer's own measure of its disk and its last work, sent at its idle step.
@@ -1292,8 +1348,7 @@ async function routeInstance(request: Request, env: CloudEnv, provider: CloudPro
 }
 
 /** A timed wake must name the caller's own computer and that computer's own wake address. */
-async function refuseForeignWake(request: { text(): Promise<string> }, env: CloudEnv, userId: string): Promise<Response | null> {
-  const body = await readJson(request);
+async function refuseForeignWake(body: Record<string, unknown> | null, env: CloudEnv, userId: string): Promise<Response | null> {
   // A malformed body is the wake route's to answer.
   if (typeof body?.instanceId !== "string" || typeof body.url !== "string") return null;
   const instanceId = body.instanceId.trim();
@@ -1438,6 +1493,120 @@ function withCors(response: Response, origin: string): Response {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+/** A blocked account's GET of a route it may still read (CONTRACTS 4). */
+function blockedMayRead(method: string, path: string): boolean {
+  if (method !== "GET") return false;
+  return CLOUD_BLOCKED_READ_ROUTES.some((route) => path === route || path.startsWith(`${route}/`));
+}
+
+const EVENT_WAKES_ROUTE = /^\/cloud\/instances\/([^/]+)\/event-wakes$/;
+
+/** The minute budget a write to these rows counts against (`takeRequest`); null for a read or another route. */
+function writeBucketOf(path: string, method: string): CloudRequestBucket | null {
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
+  if ([CLOUD_PATHS.sessions, CLOUD_PATHS.git, CLOUD_PATHS.capsules].some((route) => path.startsWith(`${route}/`))) return "uploads";
+  if (path === CLOUD_EDGE_PATHS.limits || EVENT_WAKES_ROUTE.test(path)) return "settings";
+  return null;
+}
+
+/** `/cloud/chats/:m/:c/messages[/:msg]`. */
+function chatMessagesRouteOf(path: string): { machineKey: string; chatId: string; rest: string[] } | null {
+  if (!path.startsWith(`${CLOUD_PATHS.chats}/`)) return null;
+  const segments = path.slice(CLOUD_PATHS.chats.length + 1).split("/").map((segment) => {
+    try {
+      return decodeURIComponent(segment);
+    } catch {
+      return "";
+    }
+  });
+  const [machineKey, chatId, action, ...rest] = segments;
+  if (action !== "messages" || !machineKey || !chatId || !ROW_ID.test(machineKey) || !ROW_ID.test(chatId)) return null;
+  return { machineKey, chatId, rest };
+}
+
+/** What a start of a server launch needs, for `POST /cloud/launches` and the queue's continue launch alike. */
+function launchDepsFor(request: Request, env: CloudEnv, userId: string, provider: CloudProvider | null, ctx: CloudRequestContext): LaunchRouteDeps {
+  const authorization = request.headers.get("authorization");
+  return {
+    provider,
+    now: ctx.now,
+    createComputer: (launchUserId, launchProvider, extras) => createComputer(env, launchUserId, launchProvider, extras, ctx),
+    gitCheck: (origin) => serverGitCheck(env, authorization, origin, userId),
+    // A new launch makes a computer: the owner's kill switch and the hourly limit (never a replay of one).
+    refuseNewLaunch: () => newWorkRefusal(env, userId, "launch", ctx.now, ctx.waitUntil),
+    onProgress: (record) => noteAutomationLaunchProgress(env, record, { now: ctx.now }),
+  };
+}
+
+/**
+ * `POST /cloud/instances/:id/use`, from the computer: real work on it (a
+ * message drained, a person at its terminal). Moves `last_active_at`, which
+ * calls an idle cleanup's delete off (`cameBack`, `claimDelete`), and marks
+ * the use during a save like a person's start (`recordIdleUse`).
+ */
+async function handleComputerUse(env: CloudEnv, computer: ComputerRow, now: number): Promise<Response> {
+  await env.DB.prepare("update cloud_computers set last_active_at = max(coalesce(last_active_at, 0), ?) where instance_id = ? and deleted_at is null")
+    .bind(now, computer.instance_id).run();
+  const refused = await idleUseRefusal(env, computer, now);
+  return refused ?? json({ ok: true });
+}
+
+/** The known features of a boot report, as the stored comma list; null when it sent none. */
+function featuresOf(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  const known = CLOUD_COMPUTER_FEATURES.filter((feature) => value.includes(feature));
+  return known.length ? known.join(",") : null;
+}
+
+const UPDATE_NEEDED_MESSAGE = "This computer runs an older ADE that can't take messages while it sleeps. Open the lane and update the computer, then send again.";
+/** Long enough for a woken computer's ADE to start and send what waits; a drain that runs longer goes on by itself. */
+const DRAIN_EXEC_TIMEOUT_MS = 120_000;
+
+/**
+ * The queue's wake (CONTRACTS 3.1): every check `/start` makes, before the
+ * message is stored, then the wake and the drain after the answer.
+ */
+function chatWakeFor(env: CloudEnv, userId: string, provider: CloudProvider | null, ctx: CloudRequestContext, launchDeps: LaunchRouteDeps): ChatWake {
+  const { now } = ctx;
+  return {
+    check: async (computer) => {
+      const accountBlock = await blockedNow(env, computer.user_id);
+      if (accountBlock) return accountBlock;
+      const { blocked } = await wakeBlocker(env, computer.user_id, now);
+      if (blocked) return blocked.response;
+      if (computer.update_state === "updating") return fail("update_in_progress", new CloudUpdateInProgressError().message, 409);
+      // A computer that never reported `chat_queue` can't drain, and the image a
+      // wake would update it to may have no drain either: the client wakes it and sends.
+      if (!computer.ade_features?.split(",").includes("chat_queue")) {
+        return fail("update_needed", UPDATE_NEEDED_MESSAGE, 409);
+      }
+      const awake = isMeteredStatus(computer.status);
+      if (!awake && provider) {
+        // The provider suspends a computer whose plan payment failed: the server's own sentence, before anything is stored.
+        const listed = (await listInstancesCached(provider, false)).find((instance) => instance.id === computer.instance_id);
+        if (listed?.pastDue) return fail("plan_past_due", CLOUD_PLAN_PAST_DUE_SENTENCE, 402);
+      }
+      const capped = await awakeRoom(env, computer, now, AWAKE_CAP_WAIT_MS);
+      if (capped) return capped.response;
+      const refused = await idleUseRefusal(env, computer, now);
+      if (refused) return refused;
+      return { state: awake && computer.idle_claimed_at == null ? "awake" : "waking" };
+    },
+    wakeAndDrain: async (computer) => {
+      if (!provider) {
+        reportCloudFailure("cloud.no_provider_key");
+        return;
+      }
+      if (!isMeteredStatus(computer.status) || computer.idle_claimed_at != null) {
+        await recordStatus(env, computer, await provider.startInstance(computer.instance_id), now, "chat_message");
+      }
+      // The exec wakes it too; a failure is harmless: its ADE drains the queue when it starts.
+      await provider.exec(computer.instance_id, CLOUD_COMPUTER_COMMANDS.drainMessages, DRAIN_EXEC_TIMEOUT_MS);
+    },
+    startLaunch: (parsed) => startServerLaunch(env, userId, parsed, launchDeps),
+  };
+}
+
 /**
  * `/cloud/*` straight from a browser and a phone (C7). CORS is the
  * directory's rule (`handleRequest`): only the hosted web client's exact
@@ -1492,6 +1661,10 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
       createComputer: (userId, launchProvider, extras) => createComputerSettled(env, userId, launchProvider, extras, { now, waitUntil }),
     }));
   }
+  // The webhook relay's event wake: its shared secret is the proof, no account token.
+  if (isInternalEventWakeRequest(path)) {
+    return providerCall(() => handleInternalEventWake(request, env, (computer, now) => eventWakeComputer(env, computer, now), Date.now()));
+  }
   const caller = await authenticate(request, env);
   if (!caller.ok) {
     return caller.reason === "authentication unavailable"
@@ -1501,11 +1674,15 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   // Every account may use ADE Cloud, except one the owner blocked (`safety.ts`).
   const blocked = await isCloudBlockedForRequest(env, caller.userId);
   if (path === CLOUD_PATHS.access) {
-    // Older apps still ask before they show ADE Cloud.
+    // Older apps still ask before they show ADE Cloud. A blocked account still reads what it has.
     if (request.method !== "GET") return fail("not_found", NOT_FOUND_MESSAGE, 404);
-    return json({ enabled: !blocked });
+    return json((blocked ? { enabled: false, readOnly: true, reason: ACCOUNT_BLOCKED_MESSAGE } : { enabled: true }) satisfies CloudAccess);
   }
-  if (blocked) return accountBlocked();
+  // A blocked account reads what ADE Cloud keeps for it (GET only, `CLOUD_BLOCKED_READ_ROUTES`) and does nothing.
+  if (blocked && !blockedMayRead(request.method, path)) return accountBlocked();
+  if (blocked && path === CLOUD_PATHS.account) {
+    return json({ ...(await buildAccountState(env, caller.userId, Date.now())), blocked: true });
+  }
   if (isCloudWakeRequest(url)) {
     // Scheduled work is refused at 0 hours; a timed wake would break the stop.
     if (request.method === "PUT") {
@@ -1513,8 +1690,12 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
       if (accountBlock) return accountBlock;
       const { blocked } = await wakeBlocker(env, caller.userId, Date.now());
       if (blocked) return blocked.response;
-      const refused = await refuseForeignWake(request.clone(), env, caller.userId);
+      // Read once: the ownership check and the wake handler share this body.
+      // Reading a clone with the bounded reader can wait on the other branch.
+      const body = await readBoundedJson(request, 4096);
+      const refused = await refuseForeignWake(body, env, caller.userId);
       if (refused) return refused;
+      return handleCloudWakeRequest(request, env, Date.now(), body);
     }
     return handleCloudWakeRequest(request, env);
   }
@@ -1536,6 +1717,32 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (referrals) return referrals;
   const billing = await routeBilling(request, url, path, env, caller.userId, ctx);
   if (billing) return billing;
+  // ADE without a computer: rows and R2 only; a send wakes or launches through the provider.
+  const writeBucket = writeBucketOf(path, request.method);
+  if (writeBucket && !await takeRequest(env, caller.userId, writeBucket, now)) return tooManyRequests();
+  if (path === CLOUD_PATHS.projectsOverview) {
+    return request.method === "GET" ? handleProjectOverview(url, env, caller.userId, now) : notFound();
+  }
+  if (path === CLOUD_PATHS.sessions || path.startsWith(`${CLOUD_PATHS.sessions}/`)) return routeSessionCopies(request, url, path, env, caller.userId, now);
+  if (path === CLOUD_PATHS.git || path.startsWith(`${CLOUD_PATHS.git}/`)) return routeGitSummaries(request, url, path, env, caller.userId, now);
+  if (path.startsWith(`${CLOUD_PATHS.capsules}/`)) return routeForkCapsules(request, path, env, caller.userId, now);
+  const chatMessages = chatMessagesRouteOf(path);
+  if (chatMessages) {
+    return providerCall(() => routeChatMessages(request, env, caller.userId, chatMessages.machineKey, chatMessages.chatId, chatMessages.rest, {
+      now,
+      waitUntil,
+      wake: chatWakeFor(env, caller.userId, provider, ctx, launchDepsFor(request, env, caller.userId, provider, ctx)),
+    }));
+  }
+  const computerRoute = instanceRouteOf(path);
+  if (computerRoute && (computerRoute.action === "messages" || computerRoute.action === "use")) {
+    if (!INSTANCE_ID.test(computerRoute.instanceId)) return notFound();
+    const computer = await ownedComputer(env, caller.userId, computerRoute.instanceId);
+    if (!computer) return notFound();
+    if (computerRoute.action === "messages") return routeComputerMessages(request, env, computer, computerRoute.rest, now);
+    if (computerRoute.rest.length || request.method !== "POST") return notFound();
+    return handleComputerUse(env, computer, now);
+  }
   // Saved chats need no provider: they stay readable when the computer can't be.
   if (path === CLOUD_PATHS.chats || path.startsWith(`${CLOUD_PATHS.chats}/`)) {
     return routeSavedChats(request, url, path, env, caller.userId, now, waitUntil);
@@ -1546,19 +1753,19 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   }
   // The account vault's ADE Cloud sign-ins, for the web (status only), and the model list: no provider needed.
   if (path === CLOUD_PATHS.signIns || path.startsWith(`${CLOUD_PATHS.signIns}/`)) return routeAccountSignIns(request, path, env, now);
+  // Account data and integrations with no computer; no provider needed.
+  if (path === CLOUD_EDGE_PATHS.limits) return routeCloudLimits(request, env);
+  if (path === CLOUD_EDGE_PATHS.accountSecrets) return routeAccountSecrets(request, url, env);
+  if (path === CLOUD_EDGE_PATHS.cto) return routeCtoCopy(request, url, env);
+  if (path === CLOUD_EDGE_PATHS.linearQuery) return routeLinearQuery(request, env, caller.userId, now, waitUntil);
+  if (path === CLOUD_EDGE_PATHS.jiraSearch) return routeJiraSearch(request, env, caller.userId, now);
+  if (path === CLOUD_EDGE_PATHS.jiraIssue) return routeJiraIssue(request, env, caller.userId, now);
+  const eventWakes = EVENT_WAKES_ROUTE.exec(path);
+  if (eventWakes) return INSTANCE_ID.test(eventWakes[1]!) ? routeEventWakeSubscription(request, env, caller.userId, eventWakes[1]!, now) : notFound();
   if (path === CLOUD_PATHS.models) return handleCloudModels(request);
   // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.
   if (path === CLOUD_PATHS.launches || path.startsWith(`${CLOUD_PATHS.launches}/`)) {
-    const authorization = request.headers.get("authorization");
-    return providerCall(() => routeLaunches(request, path, env, caller.userId, {
-      provider,
-      now,
-      createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, ctx),
-      gitCheck: (origin) => serverGitCheck(env, authorization, origin, caller.userId),
-      // A new launch makes a computer: the owner's kill switch and the hourly limit (never a replay of one).
-      refuseNewLaunch: () => newWorkRefusal(env, caller.userId, "launch", now, waitUntil),
-      onProgress: (record) => noteAutomationLaunchProgress(env, record, { now }),
-    }));
+    return providerCall(() => routeLaunches(request, path, env, caller.userId, launchDepsFor(request, env, caller.userId, provider, ctx)));
   }
   // Automations on ADE Cloud: rows only, except a run's start (Run now), which makes a computer.
   if (path === CLOUD_PATHS.automations || path.startsWith(`${CLOUD_PATHS.automations}/`)) {

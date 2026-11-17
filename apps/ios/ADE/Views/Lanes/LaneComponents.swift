@@ -590,6 +590,8 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
   let onManage: () -> Void
   let onCopyLaneLink: () -> Void
   let onCopyBranchLink: () -> Void
+  /// "Move to…": the lane moves to another of the person's computers. Nil hides it.
+  var onMove: (() -> Void)? = nil
   /// Set when something in the lane asks for Git (a diff opening).
   var forcesGit = false
   @ViewBuilder let dashboard: () -> Dashboard
@@ -786,6 +788,9 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
   @ViewBuilder
   private var overflowItems: some View {
     Button("Refresh", systemImage: "arrow.clockwise", action: onRefresh)
+    if let onMove {
+      Button("Move to…", systemImage: "arrow.right.circle", action: onMove)
+    }
     Divider()
     Button("Copy ADE lane link", systemImage: "link", action: onCopyLaneLink)
     Button("Copy branch link", systemImage: "arrow.triangle.branch", action: onCopyBranchLink)

@@ -72,7 +72,6 @@ struct HubScreen: View {
   @State var accountOnlyProjects: [String: AccountProject] = [:]
   /// The live account projects by id, for each card's computer chip.
   @State var accountProjectById: [String: AccountProject] = [:]
-  @State private var accountHomeTarget: HubAccountHomeTarget?
   /// The saved order came from the per-machine layout and still names that
   /// machine's ids; the next rebuild maps them to account project ids.
   @State private var legacyOrderPending = false
@@ -134,12 +133,7 @@ struct HubScreen: View {
     .sheet(isPresented: $addProjectSheetPresented) {
       RemoteProjectAddSheet().environmentObject(syncService)
     }
-    .hubAccountProjectSheets(
-      home: $accountHomeTarget,
-      location: $locationTarget,
-      onConnectComputer: { syncService.settingsPresented = true },
-      onNotice: { text in projectOpenFailureToast = ADEToastMessage(text: text) }
-    )
+    .hubAccountProjectSheets(location: $locationTarget)
     .sheet(item: $removalTarget) { target in
       HubRemoveProjectsSheet(items: target.items, fleet: machineFleet, onFinished: handleRemovalFinish)
         .hubAccountPageDetents()
@@ -610,7 +604,9 @@ struct HubScreen: View {
         if selecting {
           toggleSelection(project.id)
         } else if let accountOnly {
-          accountHomeTarget = HubAccountHomeTarget(id: accountOnly.id)
+          // No computer shows this project: its tabs open with ADE Cloud
+          // and GitHub, the same tabs as with a computer.
+          syncService.openAccountProjectScope(accountOnly.id)
         } else {
           openHubProject(project)
         }
@@ -728,9 +724,9 @@ struct HubScreen: View {
     var ownChat = chat
     if let ownLane = owner.lane { ownChat.laneId = ownLane.id }
     let state = machineFleet.machine(for: owner.machineKey)?.state
-    // An ADE Cloud computer opens its chat at once, also while it is asleep:
-    // the chat wakes the computer and shows the wake until it answers.
-    if state == .live || state == .connecting || syncService.cloudMachineFleetKeys.contains(owner.machineKey) {
+    // An ADE Cloud chat opens at once, also while its computer is asleep or
+    // deleted: it reads its saved copy, and reading never wakes the computer.
+    if state == .live || state == .connecting || syncService.isCloudFleetKey(owner.machineKey) {
       openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat, machineKey: owner.machineKey)
       return
     }

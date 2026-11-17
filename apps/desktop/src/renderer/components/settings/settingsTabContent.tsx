@@ -44,8 +44,9 @@ import { ResetAdeSection } from "./ResetAdeSection";
 import { DatabaseCopiesSection } from "./DatabaseCopiesSection";
 import { ProvidersSection } from "./ProvidersSection";
 import { AccountCloudProvidersPanel } from "./providers/cloud/AccountCloudProvidersPanel";
+import { WebMcpServersCard, WebSignInSharingCard } from "./WebAccountCloudCards";
 import { accountCloudLaunchesAvailable } from "../../state/accountCloudLaunches";
-import { useHasOwnComputer } from "../../state/ownComputers";
+import { useOwnWebComputers } from "../../state/ownComputers";
 import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPanel";
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
 import { SettingsSection } from "./primitives/SettingsRows";
@@ -124,9 +125,14 @@ function providerIdFromHash(hash: string): string | null {
   return raw.slice(PROVIDER_ANCHOR_PREFIX.length) || null;
 }
 
-/** ADE Web with no computer of the person's own: the providers' ADE Cloud sign-ins live in Settings. */
+/**
+ * ADE Web with no computer of the person's own connected (none, or all
+ * offline): the providers' ADE Cloud sign-ins live in Settings, read from the
+ * account. An offline computer can't answer for them.
+ */
 function useAccountProvidersInSettings(): boolean {
-  return !useHasOwnComputer() && isWebClientMode() && accountCloudLaunchesAvailable();
+  const ownOn = useOwnWebComputers().some((machine) => machine.status === "live");
+  return !ownOn && isWebClientMode() && accountCloudLaunchesAvailable();
 }
 
 /**
@@ -140,6 +146,12 @@ function AdeCloudSettingsPage() {
     <SettingsColumn wide>
       <CloudSection />
       {accountProviders ? <div className="mt-8"><AccountCloudProvidersPanel /></div> : null}
+      {accountProviders ? (
+        <div className="mt-8 adecd-pair">
+          <WebSignInSharingCard />
+          <WebMcpServersCard />
+        </div>
+      ) : null}
     </SettingsColumn>
   );
 }

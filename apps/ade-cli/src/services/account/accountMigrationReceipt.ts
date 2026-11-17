@@ -50,7 +50,9 @@ export type MigrationSource =
   /** `ai.api_key.*` — provider API keys from the Electron-only store. */
   | "provider_api_keys"
   /** `linear.token.v1` and friends — the Linear OAuth credential. */
-  | "linear_credentials";
+  | "linear_credentials"
+  /** ADE Cloud's `integration/cloud-key-<id>` keys, copied into the one API key store (`provider_api_key`). */
+  | "cloud_keys_api_store";
 
 export const MIGRATION_SOURCES: readonly MigrationSource[] = [
   "shared_project_config",
@@ -59,6 +61,7 @@ export const MIGRATION_SOURCES: readonly MigrationSource[] = [
   "repo_scope_alias",
   "provider_api_keys",
   "linear_credentials",
+  "cloud_keys_api_store",
 ] as const;
 
 /** Sources recorded for each project root rather than once for the machine. */

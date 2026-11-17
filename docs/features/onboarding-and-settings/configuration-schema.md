@@ -342,9 +342,8 @@ after 14 days. See
 `docs/features/storage-and-recovery/README.md` ("Build output in idle lanes").
 
 Policy enforced by the lane cleanup service. UI lives in
-`StorageSection.tsx` (Project → Storage & cleanup → Rules), not
-`LaneBehaviorSection.tsx` — that section owns lane *behavior*
-(start defaults and templates), not storage rules.
+`settings/health/HealthCleanups.tsx` (Project → Storage & cleanup), not
+`NewLaneSettingsSection.tsx`, which owns start defaults and templates.
 
 ## Port allocation and proxy
 
@@ -355,9 +354,7 @@ Port allocation is runtime-only, not stored in YAML. The
 Proxy is similar — runtime, with `proxyPort` and `hostnameSuffix`
 fields, read and written through dedicated IPC.
 
-> There is no Proxy & Preview settings surface. `ProxyAndPreviewSection.tsx`
-> was imported by nothing and was deleted in the settings IA rewrite; the
-> proxy IPC has no UI today.
+> There is no Proxy & Preview settings surface. The proxy IPC has no UI.
 
 OAuth redirect handling (runtime again):
 

@@ -28,6 +28,13 @@ A remote Mac runtime supports control, screenshots, recording, and Preview
 Lab. Its live view is the same helper H.264 path; a Windows desktop bound to
 that Mac watches and drives over the stream.
 
+**ADE Cloud.** An ADE Cloud computer is Linux, so it runs no simulator. The
+Apple tool is never hidden for a chat on ADE Cloud. It says "Apple simulators
+stream here from a Mac" and offers the person's own Macs in its **Runs on**
+row (`useToolMachines`, `workToolStartState.tsx`). The chat's cloud computer
+shows as "ADE Cloud", never by its own name, and no other cloud computer is
+listed.
+
 When a desktop simulator request is interrupted by a project switch, the error
 names the requested action and explains that the active project changed or is
 still loading. Wait for loading to finish, return to the simulator's project,

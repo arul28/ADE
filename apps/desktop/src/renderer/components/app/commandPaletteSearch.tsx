@@ -34,6 +34,9 @@ import { parseWorkSearchQuery } from "../../../shared/workSearch";
 import { cn } from "../ui/cn";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { callEachMachine, pinKeys, useOnlineCopyPins, useTabCopyPin } from "../../state/repositoryScope";
+import { useAppStore } from "../../state/appStore";
+import { originUrlForBinding } from "../lanes/laneMachines";
+import { laneMentionLabel, useLaneMentions, type LaneMention } from "../prs/state/accountLaneMentions";
 
 // Debounce before hitting the universal search backend as the user types.
 const SEARCH_DEBOUNCE_MS = 150;
@@ -327,6 +330,26 @@ export type UseUniversalSearchResult = {
  * is the already-trimmed needle; `enabled` gates the fetch (false in project-*
  * modes or with no active project). Returns empty sections when disabled.
  */
+/**
+ * A result the searching machine left without a lane name, named from the
+ * account lane index: its own lane id first, else the lanes of its PR (which
+ * may be on another machine, so the label names the machine).
+ */
+function withIndexedLaneName(
+  item: SearchResultItem,
+  mentions: readonly LaneMention[],
+  byPr: ReadonlyMap<number, readonly LaneMention[]>,
+): SearchResultItem {
+  if (item.laneName || mentions.length === 0) return item;
+  const own = item.laneId ? mentions.find((mention) => mention.laneId === item.laneId) : undefined;
+  if (own) return { ...item, laneName: own.laneName };
+  if (item.kind !== "pr") return item;
+  const parsed = parseDeeplink(item.deepLink);
+  const prNumber = parsed.ok && parsed.target.kind === "pr" ? parsed.target.prNumber : null;
+  const lane = prNumber != null ? byPr.get(prNumber)?.[0] : undefined;
+  return lane ? { ...item, laneName: laneMentionLabel(lane) } : item;
+}
+
 export function useUniversalSearch(
   query: string,
   enabled: boolean,
@@ -354,6 +377,10 @@ export function useUniversalSearch(
   const tabPinKey = useTabCopyPin()?.key ?? null;
   const tabPinKeyRef = useRef(tabPinKey);
   tabPinKeyRef.current = tabPinKey;
+  // One read of the account lane index each time the palette opens: a result
+  // with no lane name gets it from there (a PR's lane, on any machine).
+  const projectBinding = useAppStore((s) => s.projectBinding);
+  const laneMentions = useLaneMentions(originUrlForBinding(projectBinding), copiesActive);
 
   // Collapse every section whenever the query changes (including on close, when
   // the caller resets the query to ""), matching a fresh search.
@@ -457,7 +484,8 @@ export function useUniversalSearch(
   const sections = useMemo<EntitySection[]>(() => {
     if (!results || results.length === 0) return [];
     const byKind = new Map<SearchDocKind, SearchResultItem[]>();
-    for (const item of results) {
+    for (const found of results) {
+      const item = withIndexedLaneName(found, laneMentions.mentions, laneMentions.byPr);
       // Work owns chat/terminal result presentation. Keeping these rows in the
       // generic entity sections made content hits appear below commands and
       // created a second copy of a cached Work row.
@@ -479,7 +507,7 @@ export function useUniversalSearch(
       });
     }
     return next;
-  }, [results, totalByKind]);
+  }, [laneMentions.byPr, laneMentions.mentions, results, totalByKind]);
 
   // Flattened, keyboard-navigable sequence of entity rows + show-more rows,
   // continuing after the command items in the shared flat index.

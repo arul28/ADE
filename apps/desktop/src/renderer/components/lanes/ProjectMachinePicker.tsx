@@ -138,7 +138,7 @@ function ProjectMachinePickerDialog({
   const adeCloud = useAdeCloudLaneTarget(offerCloud, request.adeCloudOriginUrl ?? null);
   const cloudPicked = offerCloud && selectedMachineId === ADE_CLOUD_MACHINE_ID;
   const cloudProblem = cloudPicked ? cloudLaneStartBlock(adeCloud.account, { newLane: true })?.message ?? null : null;
-  // An ADE Cloud lane's computer reads "Cloud · <lane>".
+  // An ADE Cloud computer reads "ADE Cloud".
   const labelOf = useMachineLabelForMachine();
   const options = useMemo(
     () => request.machines.map((machine) => ({

@@ -36,7 +36,7 @@ export function MachinesPage({ machine }: { machine: SettingsMachinePage | null 
 }
 
 /**
- * This computer by its device name; a cloud lane computer as "Cloud · <lane>";
+ * This computer by its device name; an ADE Cloud computer as "ADE Cloud";
  * any other machine by its name; two that share a name told apart (`names`).
  */
 function machineDisplayName(

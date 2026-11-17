@@ -8,6 +8,10 @@ ADE's engine is the **brain** — an always-on, machine-owned process that holds
 
 That split is what makes this possible: install the brain on a machine, connect it to your account, and drive it from anywhere. A Linux build server with 64 cores can be the machine that runs your agents while you review diffs from your phone.
 
+<Note>
+You don't need to connect a machine to use ADE. Every account has [ADE Cloud](/cloud/overview), which runs each cloud lane on its own computer. Your own machines show next to it.
+</Note>
+
 ## `ade connect`
 
 `ade connect` is the one command that puts a machine on your account. It runs three idempotent steps and reports each one:
@@ -40,7 +44,7 @@ Output is JSON by default so scripts and agents can consume it. Add `--text` for
 </Note>
 
 <Warning>
-The brain is what publishes the machine and keeps it reachable — it re-registers every 30 seconds while running. If you skip the service step with `--no-service`, or stop the brain, the machine goes offline in the directory. The account directory marks a machine `online` only within a 90-second window of its last heartbeat.
+The brain is what publishes the machine and keeps it reachable — it re-registers every 60 seconds while running. If you skip the service step with `--no-service`, or stop the brain, the machine goes offline in the directory. The account directory marks a machine `online` only within a 150-second window of its last heartbeat. An ADE Cloud computer that sleeps reads as asleep, not offline.
 </Warning>
 
 ## The brain on a Linux server

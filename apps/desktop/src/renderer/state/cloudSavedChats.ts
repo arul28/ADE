@@ -8,7 +8,14 @@
  */
 
 import { parseAgentChatTranscript } from "../../shared/chatTranscript";
-import type { AgentChatEventEnvelope, AgentChatEventHistoryPage, AgentChatEventHistorySnapshot, AgentChatSessionSummary } from "../../shared/types/chat";
+import type {
+  AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
+  AgentChatEventHistorySnapshot,
+  AgentChatSession,
+  AgentChatSessionSummary,
+  AgentChatUpdateSessionArgs,
+} from "../../shared/types/chat";
 import { savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import { REMOTE_TARGET_NOT_FOUND_MESSAGE } from "../../shared/types/remoteRuntime";
 import type { LaneSummary } from "../../shared/types/lanes";
@@ -53,6 +60,15 @@ let cloudConnectionKeys: ReadonlyMap<string, string> = new Map();
 /** Each cloud computer's connection target id, with that computer's account key. */
 export function replaceCloudConnectionTargets(targets: Iterable<readonly [targetId: string, machineKey: string]>): void {
   cloudConnectionKeys = new Map(targets);
+  for (const listener of cloudConnectionListeners) listener();
+}
+
+const cloudConnectionListeners = new Set<() => void>();
+
+/** Calls the listener after each change of the cloud connections list. */
+export function subscribeCloudConnectionTargets(listener: () => void): () => void {
+  cloudConnectionListeners.add(listener);
+  return () => cloudConnectionListeners.delete(listener);
 }
 
 export function isCloudConnectionTarget(machineId: string): boolean {
@@ -138,6 +154,9 @@ export function savedChatSession(row: CloudSavedChatRow): TerminalSessionSummary
     resumeCommand: null,
     runtimeState: "idle",
     cloudSavedCopy: true,
+    // A chat another chat started nests under it in Work, as it does live.
+    ...(row.parentChatId && row.parentChatId !== row.chatId ? { orchestrationParentSessionId: row.parentChatId } : {}),
+    ...(row.spawnKind === "subagent" || row.spawnKind === "peer" ? { spawnKind: row.spawnKind } : {}),
   };
 }
 
@@ -207,6 +226,86 @@ export function savedChatSummary(location: SavedChatLocation): AgentChatSessionS
   };
 }
 
+/** The settings a person picked for a resting ADE Cloud chat; each key only when picked. */
+export type QueuedChatPicks = Pick<AgentChatUpdateSessionArgs, "modelId" | "presetId" | "reasoningEffort" | "fastMode" | "fastTier">;
+
+/**
+ * The settings a person picked for a resting ADE Cloud chat, by chat id,
+ * until its next send. A queued send carries them to the computer, which
+ * applies them before the message (`peekQueuedChatPicks`, then
+ * `clearQueuedChatPicks`). A direct send applies them first
+ * (`takeQueuedChatPicks`). So a pick never wakes the computer on its own.
+ */
+const queuedChatPicks = new Map<string, QueuedChatPicks>();
+
+/** This chat's picks since its last send, or null. They stay until a send carries them. */
+export function peekQueuedChatPicks(chatId: string): QueuedChatPicks | null {
+  return queuedChatPicks.get(chatId) ?? null;
+}
+
+/** A send carried the picks: drop them. */
+export function clearQueuedChatPicks(chatId: string): void {
+  queuedChatPicks.delete(chatId);
+}
+
+/** This chat's picks, once (a direct send applies them); null when none. */
+export function takeQueuedChatPicks(chatId: string): QueuedChatPicks | null {
+  const picks = peekQueuedChatPicks(chatId);
+  clearQueuedChatPicks(chatId);
+  return picks;
+}
+
+/** A send's settings that the account's queue carries, and nothing a computer must store now. */
+const QUEUE_CARRIED_UPDATE_KEYS = new Set(["sessionId", "modelId", "presetId", "reasoningEffort", "fastMode", "fastTier"]);
+
+function updateCarriedByQueue(args: AgentChatUpdateSessionArgs): boolean {
+  return Object.entries(args).every(([key, value]) => QUEUE_CARRIED_UPDATE_KEYS.has(key) || value === undefined);
+}
+
+/** An update that goes to the computer now: the waiting picks of the same keys are older, so they go. */
+function dropPicksSetBy(chatId: string, args: AgentChatUpdateSessionArgs): void {
+  const picks = queuedChatPicks.get(chatId);
+  if (!picks) return;
+  const next: QueuedChatPicks = { ...picks };
+  for (const key of Object.keys(next) as Array<keyof QueuedChatPicks>) {
+    if (args[key] !== undefined) delete next[key];
+  }
+  if (Object.keys(next).length > 0) queuedChatPicks.set(chatId, next);
+  else queuedChatPicks.delete(chatId);
+}
+
+/** Adds the picked keys of one update to the chat's picks. */
+function notePicks(chatId: string, args: AgentChatUpdateSessionArgs): QueuedChatPicks {
+  const next: QueuedChatPicks = { ...queuedChatPicks.get(chatId) };
+  const modelId = typeof args.modelId === "string" ? args.modelId.trim() : "";
+  if (modelId) next.modelId = modelId;
+  if (args.presetId !== undefined) next.presetId = args.presetId;
+  if (args.reasoningEffort !== undefined) next.reasoningEffort = args.reasoningEffort;
+  if (args.fastMode !== undefined) next.fastMode = args.fastMode;
+  if (args.fastTier !== undefined) next.fastTier = args.fastTier;
+  if (Object.keys(next).length > 0) queuedChatPicks.set(chatId, next);
+  return next;
+}
+
+/** The chat as its saved copy knows it, with the picks the next send carries. */
+function savedChatSessionAfterPick(location: SavedChatLocation, picks: QueuedChatPicks): AgentChatSession {
+  const summary = savedChatSummary(location);
+  return {
+    id: summary.sessionId,
+    laneId: summary.laneId,
+    provider: summary.provider,
+    model: picks.modelId ?? summary.model,
+    ...(picks.modelId ? { modelId: picks.modelId } : {}),
+    ...(typeof picks.presetId === "string" ? { presetId: picks.presetId } : {}),
+    ...(picks.reasoningEffort !== undefined ? { reasoningEffort: picks.reasoningEffort } : {}),
+    ...(picks.fastMode !== undefined ? { fastMode: picks.fastMode } : {}),
+    ...(picks.fastTier !== undefined ? { fastTier: picks.fastTier } : {}),
+    status: "idle",
+    createdAt: summary.startedAt,
+    lastActivityAt: summary.lastActivityAt,
+  };
+}
+
 /** The chat shows as unavailable; this says why. */
 function logSavedChatReadFailure(error: unknown): null {
   console.warn("[cloud] saved chat read failed", error instanceof Error ? error.message : String(error));
@@ -230,6 +329,12 @@ export type SavedChatReach = {
    * not such a computer.
    */
   wakeForSend?: (pin: Extract<OpenProjectBinding, { kind: "remote" }>, sessionId: string) => Promise<OpenProjectBinding | null>;
+  /**
+   * Sends to a chat whose cloud computer is asleep through the account's
+   * queue, which wakes it: the send returns at once (`sent`). `unsupported`
+   * (an older server, files with the message): wake, then send, as before.
+   */
+  queueSend?: (location: SavedChatLocation, args: Parameters<AgentChatApi["send"]>[0]) => Promise<"sent" | "unsupported">;
 };
 
 /**
@@ -291,6 +396,10 @@ export function withSavedChatReads(
       return run(wokenPin as P);
     }
   };
+  /** A failed apply of the waiting picks does not stop the message: the send goes on. */
+  const picksNotApplied = (error: unknown): void => {
+    console.warn("[cloud] the picked chat settings were not applied", error instanceof Error ? error.message : String(error));
+  };
   const savedReads: Pick<AgentChatApi, "getEventHistory" | "getEventHistoryPage" | "getSummary" | "send" | "steer" | "updateSession" | "delete"> = {
     getEventHistory: async (args, pin) => {
       const saved = async (location: SavedChatLocation) => {
@@ -325,9 +434,23 @@ export function withSavedChatReads(
       // to sleep: a plain send through the connection only dials, which an
       // asleep computer does not answer.
       if (!location || !reach || !(isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
+        // Picks made while the chat rested reach it before this send.
+        const picks = takeQueuedChatPicks(args.sessionId);
+        if (picks) {
+          await wakeOnRefusal(pin, args.sessionId, (callPin) => api.updateSession({ sessionId: args.sessionId, ...picks }, callPin))
+            .catch(picksNotApplied);
+        }
         return wakeOnRefusal(pin, args.sessionId, (callPin) => api.send(args, callPin));
       }
+      // The account's queue keeps the message and wakes the computer; the
+      // send never waits for the computer to come up.
+      if (reach.queueSend && await reach.queueSend(location, args) === "sent") return;
+      // A direct send (files, an older server): the picks the queue would
+      // have carried reach the chat first.
       const reachedPin = await reach.pinFor(location);
+      const sendPin = reachedPin ?? pin;
+      const picks = takeQueuedChatPicks(location.chatId);
+      if (picks) await api.updateSession({ sessionId: args.sessionId, ...picks }, sendPin).catch(picksNotApplied);
       if (!reachedPin) return api.send(args, pin);
       const result = await api.send(args, reachedPin);
       reach.reached(location);
@@ -340,6 +463,16 @@ export function withSavedChatReads(
     updateSession: async (args, pin) => {
       const location = locate(args.sessionId, pin);
       if (location?.computerGone) throw new Error(SAVED_CHAT_COMPUTER_GONE_MESSAGE);
+      // Settings that go with a send to a resting ADE Cloud chat (the model,
+      // the effort, Fast, a preset): the next send carries them, so this call
+      // never wakes the computer and the send never waits for it. Other
+      // changes still reach the computer.
+      if (location && reach?.queueSend && updateCarriedByQueue(args)
+        && (isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
+        return savedChatSessionAfterPick(location, notePicks(location.chatId, args));
+      }
+      // This change reaches the computer now: older waiting picks of the same keys must not follow it.
+      dropPicksSetBy(args.sessionId, args);
       if (location && reach && isSavedChatsMachineId(location.machineId)) {
         const reachedPin = await reach.pinFor(location);
         if (reachedPin) return api.updateSession(args, reachedPin);

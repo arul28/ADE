@@ -140,7 +140,7 @@ export function useChatRuntimeScopeForPin(
   const lanes = useChatMachineLanes(pin);
   const boundProjectRoot = useAppStore(selectActiveProjectRoot);
   const boundBinding = useAppStore((state) => state.projectBinding);
-  // A cloud lane computer reads "Cloud · <lane>", never its generated name.
+  // An ADE Cloud computer reads "ADE Cloud", never its generated name.
   const { computers: cloudComputers } = useAdeCloudLaneComputers();
 
   return useMemo<ChatMachineScope>(() => {

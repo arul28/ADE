@@ -10,6 +10,7 @@ import { confirmDialog } from "../ui/dialog/confirm";
 import { applyShellHeaderInset } from "../../lib/zoom";
 import { resetAppZoomCacheForTests } from "../../lib/appZoom";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
+import { ADE_CLOUD_MACHINE_ID, isAdeCloudBinding } from "../../../shared/adeCloud/binding";
 import { useAppStore } from "../../state/appStore";
 import {
   activityStore,
@@ -2152,8 +2153,6 @@ describe("TopBar", () => {
         projectBinding: appOnStudio,
         openRemoteProjectTabs: [appOnStudio, soloOnStudio],
         openProjectTabRoots: [],
-        noMachineTabs: [],
-        activeNoMachineTabId: null,
         switchRemoteProject,
       } as any);
 
@@ -2193,9 +2192,12 @@ describe("TopBar", () => {
       }
 
       await waitFor(() => expect(switchRemoteProject).toHaveBeenCalledWith("laptop", "app-l", { carryWorkView: true }));
-      const keys = useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key);
+      // The tab with no other copy stays open, bound to ADE Cloud.
+      await waitFor(() =>
+        expect(useAppStore.getState().openRemoteProjectTabs.filter(isAdeCloudBinding).map((tab) => tab.displayName)).toEqual(["solo"]),
+      );
+      const keys = useAppStore.getState().openRemoteProjectTabs.filter((entry) => !isAdeCloudBinding(entry)).map((entry) => entry.key);
       expect(keys).toEqual(["remote:laptop:app-l"]);
-      expect(useAppStore.getState().noMachineTabs.map((tab) => tab.displayName)).toEqual(["solo"]);
 
       if (exit === "stopped") {
         // Back: the tab that waited opens its copy again; the moved tab stays where it went.
@@ -2205,7 +2207,6 @@ describe("TopBar", () => {
         await waitFor(() =>
           expect(useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key)).toEqual(["remote:laptop:app-l", soloOnStudio.key]),
         );
-        await waitFor(() => expect(useAppStore.getState().noMachineTabs).toEqual([]));
       }
     } finally {
       vi.useRealTimers();
@@ -2213,7 +2214,7 @@ describe("TopBar", () => {
     }
   });
 
-  it("ADE Web: a stopped computer's tab in front comes forward when the open that held the front fails, and a failed reopen tries again on the next return", async () => {
+  it("ADE Web: a stopped computer's tab in front moves to ADE Cloud only when the open that held the front fails", async () => {
     (window as unknown as { __adeWebClient?: boolean }).__adeWebClient = true;
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
@@ -2254,8 +2255,6 @@ describe("TopBar", () => {
         projectBinding: soloOnStudio,
         openRemoteProjectTabs: [soloOnStudio],
         openProjectTabRoots: [],
-        noMachineTabs: [],
-        activeNoMachineTabId: null,
         switchRemoteProject,
       } as any);
 
@@ -2273,45 +2272,19 @@ describe("TopBar", () => {
       await act(async () => {
         vi.advanceTimersByTime(3_500);
       });
-      await waitFor(() => expect(useAppStore.getState().noMachineTabs.map((tab) => tab.displayName)).toEqual(["solo"]));
-      expect(useAppStore.getState().activeNoMachineTabId).toBeNull();
+      // The open in flight holds the front: the tab does not move yet.
+      expect(switchRemoteProject).not.toHaveBeenCalled();
 
-      // That open fails: the project in front is still the stopped one, so its waiting page comes forward.
+      // That open fails: the project in front is still the stopped one, so it comes forward on ADE Cloud.
       act(() => {
         useAppStore.setState({ projectTransition: null } as any);
       });
-      const waitingId = useAppStore.getState().noMachineTabs[0]!.id;
-      await waitFor(() => expect(useAppStore.getState().activeNoMachineTabId).toBe(waitingId));
-
-      // Another project is under the waiting page now.
-      act(() => {
-        useAppStore.setState({
-          projectBinding: { ...soloOnStudio, key: "remote:studio:other-s", projectId: "other-s", rootPath: "/srv/other", displayName: "other", gitOriginUrl: "https://github.com/acme/other" },
-        } as any);
-      });
-      // Back, but its copy fails to open: the waiting page stays.
-      switchRemoteProject.mockRejectedValueOnce(new Error("open failed"));
-      await act(async () => {
-        emit!({ connections: [studio], connectedCount: 1, updatedAt: 1_700_000_002 });
-      });
-      await waitFor(() => expect(switchRemoteProject).toHaveBeenCalledTimes(1));
-      await act(async () => {
-        emit!({ connections: [studio], connectedCount: 1, updatedAt: 1_700_000_003 });
-      });
-      expect(switchRemoteProject).toHaveBeenCalledTimes(1);
-      expect(useAppStore.getState().activeNoMachineTabId).toBe(waitingId);
-
-      // The next return opens it.
-      await act(async () => {
-        emit!({ connections: [studioAway], connectedCount: 0, updatedAt: 1_700_000_004 });
-      });
-      await act(async () => {
-        emit!({ connections: [studio], connectedCount: 1, updatedAt: 1_700_000_005 });
-      });
-      await waitFor(() => expect(switchRemoteProject).toHaveBeenCalledTimes(2));
-      expect(switchRemoteProject).toHaveBeenLastCalledWith("studio", "solo-s", { keepNoMachineTab: true });
       await waitFor(() =>
-        expect(useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key)).toContain(soloOnStudio.key),
+        expect(switchRemoteProject).toHaveBeenCalledWith(
+          ADE_CLOUD_MACHINE_ID,
+          expect.any(String),
+          { adeCloudProject: expect.objectContaining({ displayName: "solo", gitOriginUrl: "https://github.com/acme/solo" }) },
+        ),
       );
     } finally {
       vi.useRealTimers();

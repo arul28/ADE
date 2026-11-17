@@ -1,798 +1,383 @@
 # Terminal and Session UI Surfaces
 
-The renderer surfaces that expose session data to the user. All paths
-are under `apps/desktop/src/renderer/components/terminals/` unless
-noted otherwise.
+The renderer surfaces that show session data. Paths are under
+`apps/desktop/src/renderer/components/terminals/` unless noted.
 
 ## Entry page: `TerminalsPage.tsx`
 
-Top-level page for the Work tab. Wraps two panes with `PaneTilingLayout`:
+The Work tab. `PaneTilingLayout` holds two panes: `sessions` (default 24%,
+min 15%) with `SessionListPane`, and `view` (default 76%, min 40%) with
+`WorkViewArea` and, when `workSidebarOpen`, the right-edge `WorkSidebar`
+(width `workSidebarWidthPct`, 26–55%). All state comes from
+`useWorkSessions()`. It renders `SessionContextMenu` and `SessionInfoPopover`.
 
-- `sessions` pane (default 24%, min 15%) → `SessionListPane`
-- `view` pane (default 76%, min 40%) → `WorkViewArea` plus the right-edge
-  `WorkSidebar` when `workSidebarOpen` is true.
-  The view + sidebar share the row via a flex container with a draggable
-  column separator; the sidebar width is persisted as
-  `workSidebarWidthPct` (clamped 26–55%).
-  The pane includes the Terminal tool, which renders the same
-  attached-terminal surface for chat sessions and running tracked agent CLI
-  sessions.
-
-Pulls all session state through `useWorkSessions()` and renders two
-globally-positioned overlays:
-
-- `SessionContextMenu` — right-click actions on session cards and tabs.
-- `SessionInfoPopover` — hover/click info panel showing tool type,
-  lane, transcript path, exit code, and management actions.
-
-The page handles session navigation (selection, tab open, "go to lane")
-and invalidates the shared session list cache before pushing a
-freshly-opened chat into the Work tab. It also computes a
-`draftContextTargetId` (formatted as `work:draft:<laneId>:<draftKind>`)
-and a `contextTarget` that includes a `"draft"` kind when no active
-Work session is selected but a draft composer is mounted, so the Work
-sidebar can insert context (attachments, iOS/App Control/browser
-selections) into the draft composer before a chat session exists.
-Context insertion is enabled for draft targets — the "no session open"
-disabled message no longer appears when a draft is active. The page
-also determines PTY context insertability through
-`isPtyContextInsertableToolType` (exported from
-`apps/desktop/src/renderer/lib/sessions.ts`), which covers all tracked agent
-CLI tool types: `claude`, `codex`, `cursor-cli`, `droid`, and `opencode`.
-The Terminal tab does **not** key off `contextTarget`: terminal ownership is
-an identity question, so it resolves the owner from the active session
-itself — a chat session, or a running CLI session with a `ptyId` and an
-insertable tool type — and falls back to the `contextTarget` sessionId only
-when no session is active.
-
-The same page is the subscriber for `ade:work:select-session`, the
-renderer event dispatched by lineage navigation. The
-handler accepts `{ sessionId, laneId? }`; when the caller omits `laneId`, it
-resolves the target lane from the loaded session list. It then selects that
-lane, focuses the target session, opens its Work tab, and stores it as the
-active selected session. This lets a spawned-chat row or parent-lineage glyph
-jump across lanes without already knowing the target lane.
-
-`useWorkLaneDeleteProgress` also makes this page the Work-owned consumer of
-lane deletion state. While Work is active it subscribes to streamed delete
-progress and lane lifecycle events, and it hydrates `lanes.listDeleteProgress`
-so a delete started on another tab remains visible after returning to Work.
-When teardown finishes, it invalidates the session-list cache and refreshes
-both Work sessions and lightweight lane metadata. The active lane's content
-and tools are covered by a blocking status overlay until refresh succeeds;
-refresh failures retry twice with bounded backoff, then clear the stale
-progress and surface a sticky error toast rather than leaving Work disabled.
-
-It also owns the sidebar's multi-select state:
-
-- `selectedSessionIds: Set<string>` with a `selectionAnchorId` tracker.
-- `handleSelectSession(id, event, visibleSessionIds, binding?)` — plain click
-  clears the multi-selection and opens the tab; shift-click selects the
-  range from the anchor, in on-screen order across every machine's rows
-  (`SessionListPane` reads the rendered `data-session-row` order; board cards
-  keep the board's column order); meta/ctrl-click toggles the id in/out of the
-  set; any of the three refresh the active single-selected item. The optional
-  binding is the per-session runtime pin carried into the opened view.
-  A plain open runs on the **press** of the mouse button, not on its release
-  (`lib/pressActivation.ts`; `SessionCard` takes `selectOnPress`): the release
-  of a normal click comes 60 to 120 ms later, and that was most of what a chat
-  switch cost. Only the primary button with no modifier key acts on the press.
-  A modified click (range, toggle), touch, pen, the keyboard, and a press on a
-  control inside the row or in a menu of it (settle, snooze, a link) open
-  nothing on the press and keep their click. The same press can start a drag
-  of the row, onto the open chat for a grid or a mention. For that case a press
-  hands back an undo, and the native `dragstart` runs it: `selectionRestorer`
-  in `useWorkSessions` puts back the active and the selected item, the lane,
-  the open list, and the seen stamps of the two rows, so a drag opens nothing
-  and marks nothing as visited. A woken session is acknowledged
-  on the release of the press, so a dragged row keeps its marker. Three cases
-  keep the click: the board and the Focus grid, which have more than a
-  selection to restore, and a row that is a member of a grid, whose tile takes
-  the keyboard focus when it becomes active.
-- `handleSelectForeignRuntimeSession(session, binding, event, visibleSessionIds)`
-  — the CLI/shell row of another machine, forwarded from `SessionListPane`.
-  When the owning binding is still open (`machineRouter.isLivePin`), the page
-  remembers it as the session's runtime pin and opens the row **in place**
-  through the normal selection path; the project tab is not touched, so Lanes,
-  PRs, and Files stay where the user put them. Only when that binding is not
-  open in this window does it fall back to switching the tab to the owning
-  project, since there is then nothing to pin to; a failed switch leaves the
-  session closed rather than opening a foreign session id against the tab's
-  current runtime.
-- `handleBulkStopSelected` runs on selected running PTY sessions,
-  confirming before calling `stopRuntime(ptyId, sessionId)`; failures
-  are counted and surfaced through `sessionActionError`. Chat rows stay
-  durable and are continued by sending a message instead of exposing a
-  separate lifecycle action.
-- `handleBulkDeleteSelected` runs on selected non-running sessions
-  with a similar confirm + promise-all-settled loop, wired to
-  `ade.agentChat.delete` for chat rows and `ade.sessions.delete` for
-  PTY rows. Succeeded ids are removed from the cache and the open-tabs
-  list.
-- Bulk settle is owned by `SessionListPane`: it sends only visible selected
-  at-rest, non-settled, non-`Needs you` ids through
-  `ade.sessions.settleMany`, one call per machine (each with that machine's
-  pin; the tab's own rows unpinned), retains only the ids each machine actually
-  changed, and offers an eight-second Unsettle undo that goes back to the same
-  machines. A machine that fails does not stop the others, and the toast names
-  it. The web client runs the same pane: the federated adapter hands each pinned
-  batch to that machine's adapter, whose `settleMany`/`unsettleMany` refuse a pin
-  that names another machine. Bulk settle does not dismiss
-  pending input, stop a runtime, delete a transcript, or archive a chat.
-- `handleBulkStopAndDeleteSelected` stops selected running runtimes, then
-  permanently deletes every selected session once the user confirms.
-
-Right-clicking a row that is part of a multi-selection opens
-`SessionBulkContextMenu` instead of the single-row `SessionContextMenu`; a row
-outside the selection keeps its own menu. It renders through the shared
-`ui/ContextMenu` primitive and offers only actions that apply to every
-selected row: open in a grid (up to `MAX_WORK_GRID_TILES`, this tab's
-sessions only), remove from grid, pin/unpin, stop runtimes, snooze, wake,
-settle, unsettle, copy IDs, clear selection, and delete or stop & delete.
-Stop, delete and stop & delete reuse the header's `handleBulk*` handlers. Rows that apply to
-part of the selection show "k of N". Lifecycle writes go through the batch
-helpers in `sessionLifecycleActions.ts`, each row pinned to its own machine,
-with one failure toast and one Undo per batch. Bulk settle follows the
-header's rule and skips `Needs you` rows, so it never dismisses pending input.
-The Lanes submenu sends the selection's lanes to the Lanes tab, from any
-machine: a local lane by its id, a lane on another machine by the Lanes tab's
-row key `machineId:laneId` (`buildForeignSessionLanes` in
-`state/laneMachineRouting.ts`, built from the same live union the Lanes tab
-lists). `/lanes?action=select&laneIds=…` multi-selects them, and
-`action=batch` (optionally `manageTab=archive|delete`) also opens the batch
-manage dialog, which archives or deletes each lane on its own machine. Both
-leave the lanes multi-selected in the Lanes sidebar, and the Work lane menu's
-"Manage N Open Lanes" shares the same `batch` link. A lane that can't be acted
-on (its machine is offline or unavailable, or no machine lists it) is left out
-and the menu says so ("2 skipped · Studio is offline"); the Lanes tab's own
-multi-select menu does the same, and warns when a requested lane isn't listed.
-
-Any selection-entry that is no longer present in the rendered session
-list is pruned from `selectedSessionIds` automatically so stale ids
-don't leak across filter changes.
+- **Context targets.** With no session selected but a draft composer mounted,
+  `contextTarget` has kind `"draft"` (`work:draft:<laneId>:<draftKind>`), so
+  the tools pane can insert context before a chat exists.
+  `isPtyContextInsertableToolType` (`lib/sessions.ts`) decides which CLIs take
+  PTY context. The Terminal tool resolves its owner from the active session
+  (a chat, or a running CLI with a `ptyId`), not from `contextTarget`.
+- **`ade:work:select-session`** (`{ sessionId, laneId? }`, from lineage
+  links) selects the lane, focuses the session and opens its tab; a missing
+  lane comes from the loaded list.
+- **Lane deletes** (`useWorkLaneDeleteProgress`): Work hydrates
+  `lanes.listDeleteProgress`, follows progress events, and covers the active
+  lane with an overlay until the refresh succeeds (two retries, then a sticky
+  toast).
+- **Selection.** `handleSelectSession(id, event, visibleSessionIds,
+  binding?)`: a plain click opens the row, shift selects the on-screen range
+  across every machine's rows, meta or ctrl toggles. A plain primary-button
+  open runs on the **press**, not the release (`lib/pressActivation.ts`,
+  `selectOnPress`); modified clicks, touch, pen, keyboard and presses on a
+  control in the row keep their click. A drag that starts from that press
+  undoes it (`selectionRestorer` puts back the active and selected items, the
+  lane, the open list and the seen stamps). A woken row is acknowledged on
+  release. The board, the Focus grid and grid members keep the click.
+  Selections that leave the rendered list are pruned.
+- **Foreign CLI and shell rows**
+  (`handleSelectForeignRuntimeSession`): with the owning binding still open
+  (`machineRouter.isLivePin`) the row opens in place with that pin and the tab
+  stays; otherwise the tab switches, and a failed switch opens nothing.
+- **Bulk actions.** Stop (running PTYs, after a confirm), Delete (ended rows:
+  `ade.agentChat.delete` for chats, `ade.sessions.delete` for PTYs) and Stop
+  & delete. Bulk settle lives in `SessionListPane`: visible at-rest,
+  non-settled, non-`Needs you` rows go through `ade.sessions.settleMany`, one
+  call per machine with its pin, with an 8 s undo to the same machines; one
+  failing machine does not stop the others. On the web client the federated
+  adapter sends each pinned batch to its machine's adapter. Bulk settle never
+  dismisses input, stops a runtime or archives.
+- **Bulk menu.** Right-clicking a selected row opens `SessionBulkContextMenu`
+  (`ui/ContextMenu`): grid open (up to `MAX_WORK_GRID_TILES`, this tab's rows),
+  remove from grid, pin, stop, snooze, wake, settle, unsettle, copy ids, clear,
+  delete, stop & delete. Partial actions show "k of N". Lifecycle writes go per
+  machine with one failure toast and one undo. The Lanes submenu sends the
+  selection's lanes to the Lanes tab (`/lanes?action=select|batch&laneIds=…`;
+  a foreign lane as `machineId:laneId` from `buildForeignSessionLanes`); a
+  lane that cannot be acted on is left out and named ("2 skipped · Studio is
+  offline").
 
 ## Keyboard shortcuts
 
-The page is driven with a small set of ⌘-chords, declared in
-`shared/keybindings.ts` and dispatched by `useWorkShortcuts`
-(`components/work/workShortcuts.ts`), which `TerminalsPage` mounts:
+`useWorkShortcuts` (`components/work/workShortcuts.ts`, ids in
+`shared/keybindings.ts`):
 
-- `⌘↑` / `⌘↓` move the session selection through the visible rows and keep the
-  row on screen. The move **presses the row's control** rather than re-running
-  the selection callback, so it goes through exactly what a click does: the
-  range/toggle modifiers, and — for a session whose machine is not this tab's —
-  the runtime pin that keeps later commands on the owning machine.
-- `⌘I` puts the caret in the prompt box — the chat's own, or the terminal's
-  input for a CLI session — and pressing it again leaves the box (the page gets
-  the keyboard back). `⌘⇧A` opens the chat's actions and progress drawer
-  through its own `ade:chat:open-info` event; `⌘⇧N` starts a new chat draft.
-- `⌘T` opens the tools pane and puts the keyboard inside it, and closes it when
-  it is already open; `Esc` is the same "back out" when focus is elsewhere.
-  `?` opens the shortcut sheet and closes it again (it only fires when the
-  keyboard is not in a typable field, so it is a character everywhere else).
-- `⌃⇥` / `⇧⌃⇥` cycle the project tabs from any page
-  (`components/app/useProjectTabShortcuts.ts`): the cycle follows the tab strip
-  on screen (`aria-current` marks the active tab, DOM order is the visual order,
-  remote tabs sit in the same strip as local ones) and the switch **presses the
-  tab element**, so the busy guard, leaving a machine route, the local-vs-remote
-  dispatch and the error handling are the tab's own, not a second copy. With
-  only one project open there is nothing to cycle, so the key opens the
-  palette's project picker instead of doing nothing.
+- `⌘↑` / `⌘↓` move the selection by pressing the row's control, so modifiers
+  and a foreign row's pin behave as a click does.
+- `⌘I` enters and leaves the prompt box (the chat's, or a CLI's input). `⌘⇧A`
+  opens the chat's actions drawer (`ade:chat:open-info`); `⌘⇧N` starts a draft.
+- `⌘T` opens or closes the tools pane with the keyboard inside; `Esc` backs
+  out. `?` toggles the shortcut sheet outside text fields.
+- `⌃⇥` / `⇧⌃⇥` cycle project tabs in strip order by pressing the tab
+  (`components/app/useProjectTabShortcuts.ts`); with one project, the palette's
+  project picker opens.
+- On the web client the browser keeps `⌘T` and `⌘⇧N`; the palette's
+  `Tools: …` rows and a lane's "New chat" cover them.
 
-  On the hosted web client the browser keeps `⌘T` (new tab) and `⌘⇧N` (new
-  private window), so those two chords never reach the page there. Both actions
-  stay reachable: the tools pane from the palette's `Tools: …` rows, and a new
-  chat from a lane entry's own "New chat" action.
-
-Chords fire while a text field has focus — that is what makes them fast — except
-`⌘↑`/`⌘↓`, which a text field or a terminal keeps for caret movement. The full
-contract, including the mnemonic rules and repeat behaviour, is in
-`docs/design/keyboard.md`.
+Chords fire inside text fields, except `⌘↑`/`⌘↓`, which a field or terminal
+keeps. The contract is in `docs/design/keyboard.md`.
 
 ## Session sidebar: `SessionListPane.tsx`
 
-The pane renders one of two views, chosen by `workViewMode` (`"list"` or
-`"board"`) — an axis independent of grouping, so switching to the board and back
-returns to the grouping you left. In board mode the pane's body is
-`WorkKanbanBoard` and `TerminalsPage` gives it the whole Work content area
-rather than driving the splitter, because moving the splitter would overwrite
-the user's list-mode layout. The columns include the same cross-machine chats
-the sidebar lists. New chat switches back to the list and opens the draft.
-See
-[The Work board](README.md#the-work-board) for the columns and the move
-contract.
+`workViewMode` picks the list or the board, separately from grouping. In board
+mode the body is `WorkKanbanBoard` with the whole content area (moving the
+splitter would overwrite the list layout); it includes other machines' chats,
+and New chat goes back to the list. See
+[The Work board](README.md#the-work-board).
 
-In list mode it lists sessions grouped by one of three modes (controlled by
-`sessionListOrganization` in the work view state):
+In list mode, `sessionListOrganization` groups by lane, by status (Running /
+Your move / Ended / Snoozed / Settled) or by time (today / yesterday / older).
 
-- `by-lane` — one group per active lane
-- `all-lanes-by-status` — Running / Your move / Ended / Snoozed / Settled
-- `by-time` — today / yesterday / older
+- **Disclosures.** `StickyGroupHeader` keeps collapse state
+  (`workCollapsedLaneIds`, `workCollapsedSectionIds`). The label and the
+  chevron both toggle; the label is the only keyboard stop. A collapsed header
+  shows its count (`Settled (12)`). Headers have `role="heading"`.
+- **Two quiet tiers.** Settled is a phase; Snoozed (above it) is a visibility
+  overlay. Status and time views end with one section each; lane view puts
+  both tails in each lane. All start collapsed; collapsed tails are out of
+  shift-range selection. `shelf-open:*` / `lane-open:*` mark an explicit open;
+  a notification deep link adds it. The Working, Snoozed and Settled shelves
+  count chats (top-level rows plus pending handoffs), not lanes.
+- **Filing** comes from `effectiveSessionFilingBuckets` (over
+  `sessionFilingBucket`): lifecycle plus snooze, and `needs_you` always stays
+  in its section. Settled rows sort by `settledAt`, snoozed by `snoozedUntil`.
 
-Each group uses a `StickyGroupHeader` with collapsed-state persistence
-via `workCollapsedLaneIds` / `workCollapsedSectionIds`. There are **two** quiet
-tiers, not one. Settled is a lifecycle phase; Snoozed sits one tier above it and
-is a visibility overlay — a snoozed row keeps its canonical status and is simply
-filed elsewhere. Status and time views render one final section per tier, while
-lane view renders collapsible snoozed and settled tails inside each lane. Rows
-in either tail are always reachable; there is no separate visibility filter
-because Status grouping already exposes the complete lifecycle. Every global
-section and per-lane tail starts collapsed. User-expanded state is persisted,
-and collapsed tails do not contribute ids to shift-range selection.
+### Focus: the Working shelf
 
-Every disclosure has one visual shape and one toggle contract: clicking either
-the label or far-right chevron toggles it, while the label remains the only
-keyboard/assistive-technology stop. A collapsed header folds its count into the
-label (`Lane name (3)`, `Settled (12)`); an expanded header drops the count
-because its rows are visible. Fully quiet lanes and the global Snoozed/Settled
-shelves are closed-by-default three-state disclosures. The Working, Snoozed
-and Settled shelf headers count chats, not lanes: the visible top-level rows of
-the lanes on the shelf (nested subagents and attached shells ride on their
-parent's card) plus pending handoffs. No marker means never
-touched and closed, `shelf-open:*` / `lane-open:*` means explicitly opened, and
-removing the marker closes them again. Notification deep links add the open
-marker so a Settled destination cannot remain hidden.
+The **Focus** pill (`workFoldBusyLanes`, on by default) folds each lane with
+live work and nothing waiting on the user onto a collapsed **Working** shelf,
+the first shelf of the quiet zone. Only the user opens it; the open chat's
+lane folds too. `summarizeLaneFocus` (`workLaneFocus.ts`) is the one rule for
+the shelf, the headers and the board.
 
-In by-lane list mode the toolbar's **Focus** pill
-(persisted as `workFoldBusyLanes`, on by default; work-view state v7 turned it
-on once for every older saved view, and turning it off afterwards sticks) moves
-every lane that has live work and
-nothing waiting on the user onto a collapsed **Working** shelf, the first shelf
-inside the quiet zone (above Snoozed and Settled, still drawn in the working
-colour with the working glyph). Only the user opens or closes it: the open
-chat's lane folds like any other, so its card is hidden until the user unfolds
-the shelf. The rule lives in `workLaneFocus.ts` (`summarizeLaneFocus`) so the
-shelf and the lane headers cannot disagree with the board's columns. A lane
-folds only when at least one live agent row (a chat or a tracked agent CLI) is
-actually busy. A plain shell never counts as busy: a dev server or App Control
-shell runs indefinitely, so it cannot keep a lane folded once its chat is done.
-A raised hand (`needs_you`), a stale run, a stalled turn, a scheduled wake that
-came due and never started, or a failure the user has not left holds the whole
-lane out with its rows visible. A **clean finish is not a request**: a Done row
-never holds its lane open and never claims a Focus tile, so an unopened chat
-cannot block a lane that has live work. A lane with nothing live (only finished
-rows) never folds either — it is not working, it waits to be settled — so its
-rows stay visible in the inbox. Snoozed and settled rows take no part. A
-finished nested row (attached shell, subagent) can never hold its lane out —
-nobody opens a helper to mark it seen — though a nested raised hand still can. A
-finished helper an agent launched (a peer, or a `--no-parent` chat recorded as
-`launchedBySessionId`) is the launcher's business while that agent is busy in the
-same lane: its finish, and a failure it hits, do not hold the lane out. A raised
-hand or a missed wake from a helper still does; a chat the user started has no
-launcher and is unaffected; a launcher in another lane does not count. Pinned
-lanes never fold; the primary lane folds like any other.
+- A lane folds only when a live agent row (chat or tracked agent CLI) is
+  busy. A plain shell never counts.
+- These hold a lane out with its rows visible: a raised hand, a stale run, a
+  stalled turn, a scheduled wake that came due and never started, or a failure
+  the user has not left. A clean finish never holds a lane, and a lane with
+  only finished rows never folds. Snoozed and settled rows take no part.
+- A finished nested row never holds its lane out (a nested raised hand
+  does). A finished helper that a busy agent in the same lane launched (a peer
+  or a `--no-parent` chat with `launchedBySessionId`) does not hold it either.
+  Pinned lanes never fold; the main checkout folds like any lane.
+- **Stalled turn:** a live turn silent for `TURN_STALL_AFTER_MS` (5 min) with
+  no open work. The host counts open work per turn (`trackTurnInFlight`:
+  commands, tool calls, foreground subagents, approvals) as
+  `turnOpenWorkCount`. `sessionTurnStallMs` is the rule; the slot shows **No
+  output** and re-evaluates at `nextTurnStallDeadlineMs`. A resting chat is
+  never stale or stalled (`canonicalSessionState` checks idle first).
+- **Scheduled wake:** a resting chat with a wake still to come is Waiting
+  (`scheduledWakeState`). A wake overdue by more than
+  `SCHEDULED_WAKE_GRACE_MS` (2 min) is Done and holds its lane out. A chat
+  whose nested subagent is mid-turn or waiting on a wake is Waiting too
+  (`subagentKeepsParentBusy`, `parentsWithBusySubagents`); archived and
+  snoozed subagents and attached shells do not count.
+- **Background work** reported by the provider already reads as running
+  (`liveness: "background"`). A finished chat whose last reply said it waits
+  on its own work (`awaitingOwnWorkAt`, see
+  [Chat › turn-end check](../chat/README.md)) is Waiting only while a chat it
+  launched is busy in the same lane; the verdict is in brain memory only. iOS
+  reads it in `WorkLaneFocus.swift`.
+- Every surface reads the same rule: the row label, the lane rollup and Focus
+  grid (`busySubagentParentIds`), the board chips ("Wake scheduled",
+  "Subagent working"), the host's `deriveWorkBoardColumn`, the Lanes
+  overview, the palette and iOS. Each re-evaluates at
+  `nextScheduledWakeDeadlineMs`; nothing polls.
+- Turning Focus off forgets the return state.
+- Each lane header has one rolled-up dot (`LaneFocusStatusDot`: Needs you >
+  Working > Waiting > Done). A failure is acknowledged only once the user
+  **leaves** it (`workSeenAtBySessionId`, at most `WORK_SEEN_AT_LIMIT`). A lane
+  back from the shelf floats to the front of its tier, except in Manual sort.
 
-A **stalled turn** is a live chat turn that has been silent for
-`TURN_STALL_AFTER_MS` (five minutes) and owns no open work. The host folds
-every emitted chat event into the turn's open work (`trackTurnInFlight`:
-running commands, tool calls, foreground subagents, pending approvals) and
-reports the count on the summary as `turnOpenWorkCount`, so a turn waiting on a
-long test run is never called stalled. `sessionTurnStallMs` is the one rule;
-the row's status slot shows **No output** with the time since the last output
-(`sessionStalledPresentation`), and the slot and the sidebar each re-evaluate
-exactly at the next stall deadline (`nextTurnStallDeadlineMs`) instead of
-polling. A resting chat is never stale or stalled: `canonicalSessionState`
-checks idle before silence, because a chat row keeps status `running` between
-turns and the old order filed every reply older than three hours as busy.
+### Lane groups, subagents and shells
 
-A resting chat with a **scheduled wake** still to come (a subagent polling CI,
-a `/loop`) is Waiting, not Done. `scheduledWakeState` is the one rule. A wake
-past due by more than `SCHEDULED_WAKE_GRACE_MS` (two minutes) that never started
-a turn is Done again and holds its lane out, even when nested or seen, so a
-paused or dead scheduler cannot leave a lane folded. A finished chat whose
-nested subagent is mid-turn or parked on such a wake is Waiting too, because the
-subagent wakes it when its turn ends: `subagentKeepsParentBusy` and
-`parentsWithBusySubagents` are the one rule. Archived and snoozed subagents do
-not count, and attached shells are never subagents, so a dev server left running
-cannot keep a lane busy.
+- A lane with two or more sessions has a header (lane name in the lane accent,
+  PR marker) and an indented rail. A one-session lane has no header; its card
+  carries the lane and PR and inherits the lane menu. Only top-level units
+  count: shells and same-lane subagents file under their parent.
+- **Shells** are not Work rows. They live in the chat's actions pane
+  (**Shells**): click to open, right-click or `⋯` for the row menu. A shell
+  whose chat is gone is archived with it.
+- **Subagents** of a parent chat are not Work rows either. They live in the
+  parent's **Subagents** section. The parent row has one mark
+  (`nestedSubagentMark`: a people icon, the count and the worst state, labelled
+  like "2 subagents, 1 needs you") that opens the actions pane
+  (`requestChatActionsPane`). The pane lists the transcript's children, then
+  every filed subagent it lacks (`filedSubagentsOf`, `useChatChildRoster`). A
+  subagent of a CLI or shell stays top-level.
+- Filing rules: a peer stays top-level; grandchildren count for the root; a
+  quiet parent pulls not-done children up; a child with a hidden or deleted
+  parent stays top-level; status, time and board stay flat; foreign rows file
+  the same way. **Stop reports to <parent>** un-nests and **Report back to
+  <parent>** files again. A cross-lane child stays in its own lane with its
+  **Subagent** chip, and its hover card says **Started by <parent>**.
+  `ade chat list` stays flat.
 
-A resting chat with provider-reported **background work** still running (Claude's
-background agents, which are not ADE rows) needs no extra rule: the canonical
-state already promotes it to running (`liveness: "background"`), so it counts as
-busy for the fold. A finished chat whose last reply said it waits on its own work
-(`awaitingOwnWorkAt`, see [Chat › turn-end check](../chat/README.md)) is Waiting
-in the fold only while a chat it launched (nested or `--no-parent`) is still busy
-in the same lane (`laneFocusRows`); the verdict alone never folds a lane, and it
-lives only in the brain's memory, so a restart falls back to the rules above. The
-desktop fold reads it on every machine's rows (`session.list` carries it); iOS's
-`WorkLaneFocus.swift` reads it from the chat summary (`workLaneCountedFocus`),
-and a host that omits it leaves the iOS fold on the rules above.
+### Order, filters and lane actions
 
-Every surface reads the same rule: the row label (`sessionStatusDisplay`'s
-`subagentBusy`), the lane rollup and Focus grid (`busySubagentParentIds`), the
-board (reason chips "Wake scheduled" and "Subagent working"), the host's
-`deriveWorkBoardColumn` (which reads the chat's wake and applies the same
-nesting rule to the lane's chats and tracked CLI rows, so a drag starts from the
-column the board shows), the Lanes
-overview, the command palette, and iOS. The card, the
-sidebar and the board each re-evaluate at the instant a wake turns overdue
-(`nextScheduledWakeDeadlineMs`) rather than polling; the card owns that clock
-because it computes the label.
+- Lane order: the main checkout first, then pinned, active and quiet tiers. A
+  Work pin is not a Lanes pin. Activity, Name, Created or Manual sort inside a
+  tier. Dragging a header (not the main checkout) inside its tier switches to
+  Manual.
+- Filters: Status, Tool and Machine OR within an axis; Has PR and Dirty AND
+  across. Machine is empty (all) by default; a chip for a machine that left
+  stays so it can be cleared. A remote lane has no local PR snapshot, so Has
+  PR fails closed. The empty state names the chips and clears them; foreign
+  matches count.
+- Lane headers use `useWorkLaneContextMenu` (inline color, copy, reveal;
+  **Manage lane** in a portal over Work).
+- A deleting lane (`laneDeleteProgressByLaneId`) has a spinner header
+  (`Deleting`, `Deleted`, `Deleted with warnings`), and its cards get a
+  `disabledReason` in every grouping.
+- Orphaned sessions (a `laneId` not in the lane list) group under their
+  `laneName` (`missingLaneSessionGroups`) with a warning icon, a note that the
+  chat history is kept, and a lane refresh. ADE never deletes anything from
+  this row.
 
-Turning the option off forgets the return state, so turning it back on
-takes a fresh baseline instead of floating every lane at once.
+### Rows from other machines
 
-Each by-lane header carries one rolled-up status dot
-(`LaneFocusStatusDot`, Needs you > Working > Waiting > Done) read from the same
-focus derivation as the shelf. A **failure** counts as acknowledged only after
-the user **leaves** it: `useWorkSessions` stamps `workSeenAtBySessionId` on
-selection change, bounded to `WORK_SEEN_AT_LIMIT` entries, so opening a failed
-row in the inbox does not fold its lane out from under the cursor. A clean
-finish does not read the stamp — it never holds a lane out in the first place. A
-lane that just came back out of the Working shelf floats to the front of the
-active tier, newest return first, except in Manual sort where the user's own
-order wins.
+- Foreign lanes file through the same `partitionQuietSessions` and quiet
+  tails; a fully quiet foreign lane uses `lane-open:<machineId>:<laneId>`.
+  Cards and actions carry the owning binding; **Manage lane** is pinned to
+  that machine.
+- Rows never name their machine: no chip, glyph or lane-header mark (a Devin
+  or Cursor Cloud lane shows a cloud mark). The hover card, an open chat's
+  composer and the Start on picker name it.
+- A machine that drops keeps its rows for the reconnect window
+  (`applyReachability`, 45 s to 2 min), then its rows leave until it
+  reconnects. The open chat stays on screen while its machine is unreachable
+  (`WorkViewArea` holds it, and `AgentChatPane` keeps it selected through a
+  list read). A machine that stopped redialing because only the person can fix
+  it (a rejected pairing or identity, or a sign-in the account refused) shows
+  that failure and its action (`Pair again`, or the machine's row) in place of
+  "Reconnecting to …". An asleep ADE Cloud computer stays listed
+  (`machineIsCloudResting` in `cloudRestingRows.ts`); opening a row wakes it
+  (`wakeRestingCloudMachine` in `lib/cloudMachineWake.ts`), and the chat shows
+  "Waking <machine>…" (`ChatMachineWakeBanner`) while the Lanes tab shows
+  `RestingCloudLaneDetail`. Only a reachable machine with no project binding
+  yet has a disabled row.
+- In-flight handoffs (`HandoffLaunchJob`) show as placeholder cards that
+  follow the filters, cannot be selected, and leave when the chat exists or
+  the handoff fails.
 
-Lane groups with two or more sessions render an accent-coloured lane name,
-optional machine/PR markers, then indent the cards beside a lane-tinted rail.
-A lane with exactly one session suppresses the redundant divider and rail; the
-full-width card carries lane identity and PR state instead, and its context
-menu inherits the lane actions. For a foreign singleton, that card also carries
-the same amber machine glyph the omitted header would have shown. The marker is
-present exactly when the lane is not on the physical Mac, not when it differs
-from the project tab's binding; a grouped header owns the glyph so its child
-cards do not repeat it. The singleton/header transition participates in the
-same layout animation as lane reordering. Headerless counting is top-level
-units only: attached shells and same-lane `spawnKind: "subagent"` chats (plus
-tracked CLI `--type subagent` sessions) are filed under their parent and do not
-summon a lane header of their own.
+### Chrome
 
-Attached shells are not drawn in the Work list at all: a shell is a tool of the
-chat that ran it, so it lives in that chat's actions pane (**Shells**, above
-Background) — click a row to open the shell, right-click it (or use its `⋯`) for
-the Work list's own menu, owner-archive and stop included. The list still
-*excludes* shells from top-level rows, so the pane is their one home; a shell
-whose chat is gone is archived with it (`sessionService`). The old `chat:<id>`
-shell drawer and its collapse key are gone.
-
-In by-lane list mode, subagent chats of a parent CHAT work the same way as
-shells. They are not rows of the Work list. They live in the parent chat's actions pane
-(**Subagents**), next to the provider's own subagents. The parent row carries
-one small mark instead: a people icon, the child count, and the worst child
-state (failed, then needs you, then running), from `nestedSubagentMark`. Its
-label reads like "2 subagents, 1 needs you". Pressing the mark opens the
-parent chat on its actions pane (`requestChatActionsPane`).
-
-The pane lists the children it learns from the transcript (`chat:<id>` rows),
-then appends every subagent the list files under this chat that the transcript
-has no row for (`filedSubagentsOf`: a peer promoted to subagent, a grandchild,
-an old or windowed transcript), read from the sessions of the chat's own
-machine (`useChatChildRoster`). Any child-chat row whose chat is waiting on you
-reads **needs you**. A row opens its child chat on the parent's machine (the
-chat's pin). A subagent of a tracked CLI or a shell is never filed: a terminal
-has no subagent list, so that child stays a top-level row.
-
-Filing has not changed. A chat that does not report back (`spawnKind: "peer"`) stays top-level. Grandchildren count toward the
-root parent. A quiet parent (snoozed or settled) pulls not-done children
-(working, needs you, failed, stale, starting) up to full top-level cards. A
-child whose parent is hidden (by search, or deleted) stays top-level. Status,
-time, and Kanban stay flat. Foreign by-lane rows file the same way.
-**Stop reports to <parent>** un-nests; **Report back to <parent>** files again. Cross-lane children stay
-top-level in their own lane; a subagent keeps its **Subagent** chip, and a chat that does not report
-back has no chip. Its hover card says **Started by <parent>**, which opens the parent. The old drawer
-keys (`chat-subagents:<parentId>`, `drawer-open:`) do nothing now. `ade chat list` stays a flat table.
-
-Filing comes from `effectiveSessionFilingBuckets` (wrapping the base
-`sessionFilingBucket` rule), which combines canonical lifecycle
-with the snooze visibility overlay in one shared answer. Snooze still yields to
-a `needs_you` phase, so a snoozed row that is blocked on the user stays in its
-normal section. Ordering inside the quiet tiers
-diverges from the default `startedAt` sort: settled rows rank by `settledAt`
-(so a session settled just now sits at the top rather than under sessions
-settled long ago) and snoozed rows rank by `snoozedUntil` ascending, because the
-group answers "what comes back first". Group headers carry an explicit
-`role="heading"` and a `"<label> (<count>)"` accessible name.
-
-The Lane organization has its own Work-scoped lane order. The primary lane is
-always first; all other rows file as pinned, active, then quiet. A pin is not a
-Lanes-tab pin: it keeps the Work row above active work and suppresses its
-compact/dimmed quiet treatment. The funnel offers Activity, Name, Created, and
-Manual sort modes inside those tiers. Dragging a non-primary lane header onto a
-row in the same tier (before or after its midpoint) switches to Manual and
-persists the displayed order; it cannot move a lane across the primary, pin, or
-quiet boundaries. Native drag-and-drop owns the drop line and rAF edge
-autoscroll, while the list uses the resulting order signature only for its
-layout animation rather than remeasuring on every session tick.
-
-The same funnel also owns the persisted session chips. Status (Your move,
-Running, Ended, Settled, Snoozed), Tool, and Machine choices are ORed within
-their own axis; the Status, Tool, Machine, Has PR, and Dirty-lane axes are ANDed
-together. The status chip uses the same effective filing result as the sidebar,
-Has PR uses the coalesced PR snapshot that powers lane-header badges, and Dirty
-reads the already-loaded lane status. Machine is empty (all machines) by
-default; selecting a subset keeps only that machine's rows, and a chip for a
-machine that has since left stays visible so it can be turned back off. Chips
-apply before all three organization modes. A remote lane has no local PR
-snapshot, so Has PR fails closed there; the filtered empty state names the
-active chips and provides a clear action instead of implying that the sessions
-disappeared. Another machine's matching rows count, so a Machine filter that
-hides every local row shows those rows rather than the empty state.
-
-Lane group headers also wire into `useWorkLaneContextMenu`, so right-click
-actions are available from the session sidebar. Color changes and copy/reveal
-run inline. **Manage lane** opens the shared `ManageLaneDialog` in a portal over
-Work, leaving the route, selected session, and Work layout unchanged when the
-dialog closes; direct adopt, batch, and split actions continue through Lanes-tab
-deeplinks.
-
-The pane reads `laneDeleteProgressByLaneId` from the shared app store. In
-`by-lane` mode the matching lane header becomes non-interactive and shows a
-spinner with `Deleting`, `Deleted`, or `Deleted with warnings`. Every matching
-`SessionCard` receives a `disabledReason`, so the lane's chats and CLI sessions
-are dimmed and blocked in all three organization modes, not only beneath the
-lane-group header.
-
-In `by-lane` mode, any session whose `laneId` is not in the current
-lanes list is still rendered under its own sticky "orphaned sessions" group
-below the active lane groups. The list is built from
-`missingLaneSessionGroups`: every `laneId` from `sessionsGroupedByLane`
-that's absent from the `lanes` set becomes a group, labelled with the
-session's `laneName` (falling back to the raw `laneId`) and sorted by
-most-recent `startedAt`, with ties broken alphabetically. These groups
-reuse the same `workCollapsedLaneIds` persistence, so a user who
-collapses an orphan group sees it stay collapsed on reload. This keeps
-sessions reachable when their lane has been archived, deleted, or not
-yet loaded, instead of quietly dropping them from the sidebar. They use a
-warning icon and neutral tint rather than pretending to be a current lane,
-explain that chat history is still preserved, and offer a non-destructive
-lane refresh. ADE never deletes a session or Git data from this recovery row.
-
-Foreign-machine lane rows follow the same filing contract instead of using a
-parallel card-only renderer. `partitionQuietSessions` splits each row with
-`effectiveSessionFilingBuckets`; active cards render normally, while snoozed and settled
-cards use the same collapsed quiet tails as local lanes. A fully quiet foreign
-lane starts as the same minimal header with inline counts and uses
-`lane-open:<machineId>:<laneId>` for explicit expansion. When active work
-returns, `SessionListPane` clears that marker so the next all-quiet state starts
-collapsed. Card selection and context actions still carry the owning runtime
-binding. **Manage lane** opens the shared dialog with every read and mutation
-pinned to that machine.
-
-Rows never name their machine: no machine chip, glyph or lane-header marker.
-The machine shows in the row's hover card, in the composer of an open chat, and
-in the Start on picker for new work. A machine that drops keeps its rows through
-the short reconnect window (`applyReachability` in `crossMachineLanes.ts`, 45 s
-to 2 min), and the open chat stays on screen while its machine is unreachable
-(`WorkViewArea` holds it, and `AgentChatPane` keeps it selected through a list
-read) instead of the view jumping to another chat. After that its rows are not
-listed at all, and they come back when it reconnects. A machine that stopped
-redialing because only the person can fix it — a rejected pairing or identity,
-or a sign-in the account refused — shows that failure and its action
-(`Pair again`, or the machine's row) in place of "Reconnecting to …". An ADE
-Cloud computer that is asleep is the exception
-(`machineIsCloudResting` in `cloudRestingRows.ts`): its work stays listed as
-normal rows, and opening one wakes the computer (`wakeRestingCloudMachine` in
-`lib/cloudMachineWake.ts`). The opened chat shows "Waking <machine>…"
-(`ChatMachineWakeBanner`), and the opened lane in the Lanes tab shows the same
-progress (`RestingCloudLaneDetail`). The only disabled foreign row left is one
-whose reachable machine has not resolved a project binding yet.
-
-In-flight chat handoffs are rendered as temporary placeholder cards in
-the same sidebar. `TerminalsPage` pulls matching `HandoffLaunchJob`
-rows from the root store and passes them into `SessionListPane`, which
-lets them participate in the current lane, status, time, and search
-filters. Placeholder rows are non-selectable, show the target model and
-current handoff phase, and disappear when the new chat is created or
-the handoff fails.
-
-Also renders:
-
-- a 32 px toolbar with a **Hide sessions** control, then a slightly
-  tighter Search button, then Filters and New chat; Search opens the
-  command palette and displays the configured shortcut. **Hide sessions**
-  is not in the chat/CLI header. When the list is collapsed, a thin left
-  rail in `TerminalsPage` shows the same glyph as **Show sessions**.
-- the one-row toolbar: Search (the word drops below a 360px toolbar, the glyph
-  and shortcut stay), the **Focus** pill with its Focus-grid half, the
-  List/Board toggle (dimmed while the grid is on), the funnel (it shows the
-  number of active filters), and New chat
-- an expandable filter panel (`WorkFilterPanel`) with one control shape: a
-  label and a menu button per setting. **View** holds Group by and Sort by
-  (single-select menus; they never hide a chat). **Show only** holds Status,
-  Agent and Machine (multi-select menus with checkmarks; none picked means
-  Any), the `LaneCombobox` (`dense`), and the Has a PR / Uncommitted changes
-  checkboxes, with Reset when anything is on. Status colours stay out of the
-  panel.
-- pins: **Pin** / **Unpin** on a chat writes the synced
-  `terminal_sessions.pinned` column on the machine that owns the row, so a pin
-  follows the user to every machine and the phone; pinned rows lead their
-  section and show a pin glyph. Desktop pins made before pins synced move
-  into the column once. Lane pins stay in this window's view state
-  (`workPinnedLaneIds`); pinned lanes sort above the primary lane.
-- the actual list of `SessionCard` rows (memoized)
-- a compact selection toolbar beneath the header that appears when
-  `selectedSessionIds` is
-  non-empty: "Stop N" for running PTYs, "Settle N", "Delete N" for
-  deletable ended rows, "Stop & delete N" when the selection includes a
-  running runtime, and a clear-selection X. The footer
-  totals only count sessions that are still visible in the current
-  filter; callers are `TerminalsPage`'s bulk handlers.
-
-`onSelectSession(id, event, visibleSessionIds)` is forwarded verbatim
-from `TerminalsPage`. The pane passes its own ordered id list (derived
-from the active organization mode and uncollapsed groups) as the third
-argument so shift-range selection follows the visual order the user
-sees, not the underlying data order.
-
-The pane derives `liveChildrenByParentId` and `sessionTitleById` from the
-unfiltered session inventory. The latter uses `primarySessionLabel()` and is
-passed to each child card as `parentSessionTitle`, so lineage tooltips can name
-a parent even when search, lane filtering, or a collapsed group hides its row.
+- A 32 px toolbar: **Hide sessions** (a thin left rail shows **Show
+  sessions**), Search (opens the palette; the word drops under 360 px), the
+  **Focus** pill with its grid half, List/Board, the filter funnel with its
+  count, and New chat.
+- `WorkFilterPanel`: **View** (Group by, Sort by) and **Show only** (Status,
+  Agent, Machine menus; the `LaneCombobox`; Has a PR and Uncommitted changes;
+  Reset).
+- Pins: **Pin** writes the synced `terminal_sessions.pinned` column on the
+  owning machine, so it follows the user. Lane pins stay in this window's
+  view state (`workPinnedLaneIds`).
+- A selection bar (Stop N, Settle N, Delete N, Stop & delete N, clear) counts
+  only visible rows.
+- Shift-range selection follows the pane's own ordered id list.
+- `liveChildrenByParentId` and `sessionTitleById` come from the unfiltered
+  list, so a lineage tooltip can name a hidden parent.
 
 ### `SessionCard.tsx`
 
-The full card is one full-bleed row with three lines:
+One full-bleed row, three lines:
 
-1. **Where + status** — an adaptive identity slot on the left and
-   `SessionStatusSlot` on the right. The identity slot can carry a pin, the lane
-   identity for a singleton lane, spawned-chat lineage, a branch only when it
-   differs from the lane's declared branch, and the lane PR for a singleton.
-   A foreign singleton gets one fixed-width amber machine glyph in the right
-   status cluster; the card's hover details name the machine. The same cluster
-   carries `AgentBrowserPresenceBadge` — a pulsing accent globe while this
-   chat's agent is driving the built-in browser, and nothing at all otherwise.
-   It sits beside the machine glyph because it answers the same question:
-   where is this work happening. Compact rows have no line one, so they carry
-   it next to the provider logo stack instead. When none of those
-   apply, session delta or last-activity time is the floor, so the line never
-   renders empty. A grouped lane owns machine identity and PR state in its
-   header; child rows do not repeat them. Lane identity always uses the lane
-   accent and `LaneIcon`; branch identity is always muted and uses `BranchIcon`.
-2. **Title + singleton PR** — `primarySessionLabel()` is the prominent,
-   elastic element. When the card stands in for a one-session lane, the shared
-   `LanePrBadge` sits at the right edge directly beneath the lifecycle status
-   and stays untruncated. A card whose lane lives on this machine deep-links to
-   the PR in ADE; a card on another machine badges from that machine's own PR
-   rows and opens the PR on GitHub, because the PRs tab can only resolve a PR
-   id on the machine the project tab is bound to. When a lane has multiple PRs,
-   the badge represents the newest open/draft PR, or the newest terminal
-   activity when no PR is active, and its `+N` list is rendered in a
-   viewport-clamped portal so the session card cannot clip the details. The portal remains
-   keyboard reachable (ArrowDown opens it, Escape closes it and restores focus) and its own
-   list can scroll without dismissing. While the owning lane is
-   mid background AI naming, every visible lane-label position (singleton row,
-   hover detail, or grouped header) uses the shared animated `Naming lane…`
-   placeholder; the persisted deterministic fallback stays hidden unless
-   naming fails. A resolved title change gets a short lane-accent highlight.
-3. **Preview + quiet metadata** — preview content remains visible during lane
-   naming. It shows an explicit `attentionMessage` first, then `statusNote` (`done: …` in the
-   settled tier), then a sanitized `lastOutputPreview`, then
-   `session.summary`, then `session.goal`. Output fallback is plain text (never
-   linkified), capped at 120 characters, and strips ANSI/control sequences plus
-   repeated whitespace via `sanitizeTerminalInlineText`. The trailing cluster
-   is limited to Claude cache TTL, a non-stop exit code, and `ToolLogo` — or,
-   after a model handoff, a stacked current-over-previous provider mark with
-   the previous logo peeking as a sliver to the right (offset ~28% of the mark,
-   current logo at full opacity). Delta
-   moved to line one so preview text owns the width it needs.
+1. **Where and status.** A pin, a singleton lane's identity, lineage, a branch
+   only when it differs from the lane's, and a singleton's PR, then
+   `SessionStatusSlot`. `AgentBrowserPresenceBadge` sits in the status cluster
+   (by the provider logos on a compact row). With none of these, the delta or
+   last-activity time fills the line. Lane identity uses the lane accent and
+   `LaneIcon`; a branch is muted with `BranchIcon`.
+2. **Title and singleton PR.** `primarySessionLabel()`, with `LanePrBadge` at
+   the right. A local lane's PR opens in ADE; another machine's opens on
+   GitHub. A multi-PR badge picks the newest open PR and lists the rest in a
+   clamped, keyboard-reachable portal. During lane naming every lane label
+   shows `Naming lane…`; a new title flashes the lane accent.
+3. **Preview and quiet facts.** `attentionMessage`, else `statusNote`, else
+   the sanitized `lastOutputPreview` (plain text, 120 characters), else
+   `summary`, else `goal`. Then the Claude cache TTL, a non-stop exit code and
+   `ToolLogo` (after a model handoff, the current logo over a sliver of the
+   previous one).
 
-`SessionStatusSlot` displays one effective status label at a time. It resolves
-words, glyphs, tone, prominence, and elapsed-time behavior through
-`shared/sessionStatusPresentation.ts`. **Needs you** has priority over every
-other label; an active snooze or unacknowledged **Woke** marker also takes the
-slot before activity details. An active ADE chat in its authoritative
-plan interaction mode reads **Planning** in violet; Codex uses the collaboration
-mode accepted by the active `turn/start`. An eligible, current activity report
-replaces the generic **Working** label for a live turn with one fixed short
-label and its matching activity glyph on desktop and iOS; without
-one, the card shows **Planning** or **Working** from the provider mode. Once the
-foreground turn is idle, provider-reported background
-tasks read blue **Background work** (**Background work ×N** when several are
-live), while an armed `nextWakeAt` reads neutral
-**Waiting** with a compact countdown. Naming that state rather than reusing
-**Working** matters because the turn has already ended: a duration-less
-"Working" on a finished turn is indistinguishable from one that has hung.
-These contextual labels do not change the
-canonical lifecycle, filing bucket, filters, or attention count, and CLI output
-is never scraped to infer plan mode. Working, Planning, and activity elapsed
-time use the active chat's immutable `currentTurnStartedAt` when available, so
-streamed activity cannot reset the timer. Desktop and CLI fall back to last
-activity when that anchor is absent. iOS uses an eligible activity report's
-`updatedAt` first, then the row's activity timestamp. Background work counts
-from `backgroundWorkSince` — when the
-session's live background set last went from empty to non-empty — which the
-runtime reports on the session summary. Anchoring it to last activity instead
-made it meaningless: every provider frame refreshes that column, so a job that
-had been running for two hours read "Background work ×2 3s", identical to one
-that started three seconds ago, and the row could not be judged by its own
-duration. It is still a session-level anchor rather than any single job's
-runtime — a second job joining a live set counts from the first one's start —
-and providers with no background-task level (Codex, Cursor) keep the last-activity
-fallback. All three anchors come from one shared helper, `sessionElapsedAnchor`,
-so the Work rows and `ade session show` cannot report different
-durations for the same session. The desktop slot feeds the raw anchor to a
-ticking component; the two text surfaces take the already-formatted string from
-`sessionElapsedLabel`, which wraps the same anchor. Waiting refreshes on a quiet
-30-second cadence. On row hover or
-keyboard focus the status swaps, without reflow, for `SessionSnoozeControl` and
-the context-appropriate Settle or Un-settle action. That button disables itself
-while its settle/un-settle call is in flight: a second click would land inside
-the settling window, and the backend answers a joined settle with a raw
-session id. Settle is hidden on a row whose turn is running (a working chat
-cannot be settled) and offered on a row that only has background work left,
-which keeps running after the settle. An
-open snooze menu pins the action slot visible. A row whose snooze ended early shows the shared Woke
-presentation until it is opened, at which point `TerminalsPage` clears the
-marker — opening is the acknowledgement.
+`SessionStatusSlot` shows one label (from
+`shared/sessionStatusPresentation.ts`).
 
-After one second of uninterrupted hover, `SessionHoverCard` opens over the
-content area to the right of the sidebar. It uses icon-led fact rows rather
-than `Label: value` text and carries details intentionally removed from the hot
-row: lane, machine, branch, provider, PR, parent thread,
-spawn kind, live-child count, import provenance, grid membership, Claude tag,
-next scheduled wake, non-zero exit, and the long-running process cleanup hint.
-PR and parent-thread facts are clickable. Moving directly from a row whose card
-is open to another session row opens the next card immediately; entering from
-blank space, the content pane, or a row whose timer never fired starts a fresh
-one-second delay. Pointer leave before the delay, list scroll, and resize cancel
-the card. The portal is viewport-clamped and fades/slides right from the source
-row, with motion disabled under reduced-motion preferences.
+- Order: **Needs you** first, then an active snooze or an unacknowledged
+  **Woke**, then the activity detail. A chat in plan mode reads **Planning**
+  (violet; Codex after `turn/start` accepts the mode). A current activity
+  report replaces **Working**. After the turn, provider background tasks read
+  **Background work** (×N), and an armed `nextWakeAt` reads **Waiting** with a
+  countdown (30 s refresh). None of these change the phase, filing, filters
+  or counts; CLI output is never read for plan mode.
+- Elapsed time comes from `sessionElapsedAnchor`: `currentTurnStartedAt` for
+  a live turn, `backgroundWorkSince` for background work (Codex and Cursor
+  have none and use last activity), else last activity. iOS uses an activity
+  report's `updatedAt` first. `ade session show` uses the same helper
+  (`sessionElapsedLabel`).
+- On hover or focus the label swaps, with no reflow, for
+  `SessionSnoozeControl` and Settle or Un-settle. The button disables itself
+  while its call runs. Settle is hidden while a turn runs and shown when only
+  background work is left. An open snooze menu keeps the slot visible. A
+  **Woke** row keeps its mark until it is opened.
 
-When `disabledReason` is set, the card disables selection, dragging, and its
-context menu, lowers opacity, and renders a centered spinner/status overlay.
-This is used while the card's owning lane is being deleted.
+`SessionHoverCard` opens after 1 s of hover, to the right of the sidebar: lane,
+machine, branch, provider, PR, parent thread, spawn kind, live children,
+import source, grid membership, Claude tag, next wake, non-zero exit and the
+cleanup hint. PR and parent are links. Row-to-row movement opens the next card
+at once; scroll and resize cancel it. A key press, or a press outside the
+card, cancels or closes it, and cards then stay closed until the pointer moves
+3 px; the row under the pointer then starts its delay again. A list that
+re-sorts under a resting pointer therefore opens no card over the composer.
+A press or a key inside the card keeps it open.
 
-Selected and hovered rows spend the reserved background surface; multi-select
-adds a subtle ring. Every row renders at full opacity; the status label's hue
-tells the states apart. Only canonical `needs_you` contributes to the Work-tab
-highlight, notifications, and Dock badge. `useAppWideSessionAttention` owns
-that count at `AppShell`, so it remains live outside Work.
+A card with `disabledReason` (its lane is being deleted) blocks selection,
+drag and its menu and shows a status overlay. Selection and hover use the row
+background; multi-select adds a ring; rows never fade by state. Only
+`needs_you` counts toward the Work highlight, notifications and the Dock badge
+(`useAppWideSessionAttention`, at `AppShell`).
 
-The same session state feeds the account-wide Activity UI, which groups agents
-by the Work board's four columns — Needs you, Working, Waiting, Done — through
-`activityBoardColumn` (`shared/attention/activityBoardColumn.ts`), so the board,
-Activity, the phone and the Live Activity count the same rows. A failed agent
-files under Needs you with a red **Failed** mark; a Waiting row carries its
-reason (Snoozed, CI running, Review requested, shared with the board through
-`WORK_BOARD_WAITING_REASON_LABEL`). Planning folds into Working and a resting
-session into Done. The top-bar popover and the "Open all" view are one panel in
-two sizes (`activity/ActivityPanel.tsx`); see
+The account-wide Activity UI groups agents by the board's four columns
+through `activityBoardColumn` (`shared/attention/activityBoardColumn.ts`), so
+the board, Activity, the phone and the Live Activity count the same rows. A
+failed agent files under Needs you with a red **Failed** mark; Waiting rows
+carry their reason (`WORK_BOARD_WAITING_REASON_LABEL`). The popover and
+"Open all" are one panel (`activity/ActivityPanel.tsx`); see
 [push-notifications.md](../sync-and-multi-device/push-notifications.md#desktop-activity).
-Activity's Sessions list is agents only; pull requests and checks render in its
-Inbox. The hook and wire-level `attention` vocabulary remain compatibility
-names; user-facing surfaces call the feature Activity.
+Activity's Sessions list is agents only; PRs and checks are in its Inbox.
 
 ## Work view: `WorkViewArea.tsx`
 
-Owns the render target for open sessions. Supports three modes tied to
-`viewMode`:
+The render target for open sessions, by `viewMode`:
 
-`WorkViewArea` also builds a title index for all loaded sessions and threads
-it through `SessionSurface` into locked `AgentChatPane` embeddings. The chat
-pane uses it to label spawned-chat rows in Chat Info with the live child title
-instead of the provider/runtime fallback.
+- `tabs` — a tab strip and one `SessionSurface`, with "New Chat". With
+  `hasGroupedTabs`, lane-grouped chips (with `useWorkLaneContextMenu`).
+- `grid` — `PaneTilingLayout` seeded by
+  `buildWorkSessionTilingTree(visibleSessionIds, tilingPreset)`, each tile a
+  `grid-tile` `SessionSurface`. The arrange menu (Auto / Rows / Columns)
+  rewrites the saved tree (`tilingTree.set`) and resets sizes
+  (`layout.set(gridLayoutId, {})`).
+- `single` — one session, no tab chrome.
 
-- `tabs` — tab-strip + single `SessionSurface` for the active tab, plus
-  a "New Chat" button in the tab strip. A second sub-mode (`hasGroupedTabs`)
-  renders lane-grouped tab chips with per-group collapse. Lane group chips use
-  `useWorkLaneContextMenu` for the same color/manage/split/batch actions as
-  the Lanes tab.
-- `grid` — tiled pane layout. Each session becomes a `PaneConfig` that
-  mounts a `SessionSurface` in `grid-tile` variant. The tiling tree is
-  rendered by `PaneTilingLayout`, seeded by
-  `buildWorkSessionTilingTree(visibleSessionIds, tilingPreset)`. Grid
-  mode renders an inline arrange menu (Auto / Rows / Columns) next to
-  the visible-session count when more than one session is open;
-  switching presets rewrites the persisted tiling tree
-  (`window.ade.tilingTree.set(gridLayoutId, …)`) and resets pane sizes
-  via `window.ade.layout.set(gridLayoutId, {})` so the new preset
-  starts from `defaultSize` rather than inherited percentages.
-- `single` — a single focused session with no tab chrome.
+It also builds a title index that locked `AgentChatPane` embeddings use to
+name spawned-chat rows.
 
 ### `SessionSurface` (internal component)
 
-Branches on `session.toolType`:
-
-- chat tool types → `AgentChatPane` for the matching chat session, mounted with
-  `lockSessionProvider={providerFromChatToolType(session.toolType)}`. The Work
-  row knows the provider synchronously; the pane learns its own only after an
-  IPC summary round trip and is not remounted across a chat switch, so without
-  this the provider-derived accent would paint the *outgoing* chat's colour for
-  a frame. See [Resolving the accent](../chat/composer-and-ui.md#resolving-the-accent-for-the-chat-on-screen).
-- PTY sessions → `TerminalView` wired to the session's `ptyId`
-- lane-scoped terminal tools are opened from the Work sidebar's
-  Terminal tab; tracked agent CLI sessions no longer add a separate
-  Terminal shortcut in their work header
-
-When a tile is suspended (grid layout where the tile is not visible),
-it renders a static preview card instead of mounting the terminal.
-
-Props that matter:
-
-- `isActive` — whether this surface is the focused tab; terminals use
-  this to gate input.
-- `terminalVisible` — whether the surface is currently on screen; false
-  disables xterm fit operations and PTY-resize broadcasts. Used by
-  hidden grid tiles.
-- `layoutVariant` — `"standard"` (single tab) vs `"grid-tile"`
-  (compact chrome, smaller fonts).
-
-Grid mode keeps running PTY sessions mounted so multiple terminals can
-stay live at once; `isActive` only controls focus/input, not whether the
-terminal renderer exists.
-
-For tracked agent CLI sessions that have already exited, `WorkViewArea`
-renders `ClosedCliSessionSurface` instead of `TerminalView`. A session
-wrongly marked `detached` by the ownership reconcile lands here too, showing
-frozen "Ended" copy over a live PTY — which is why every activity write repairs
-a stale detach; see
-[Stale-detached repair](README.md#stale-detached-repair). The surface
-fetches `ade.terminal.preview` and decides between a serialized snapshot
-preview and the plain transcript text via `snapshotLooksLikeTui(rows)`:
-when the snapshot contains TUI frame characters (`╭`, `─`, etc.) or
-enough styled cells to be obviously a TUI redraw, the snapshot wins so
-the user sees the Claude/Codex final screen instead of a flattened
-transcript with the alt-screen escape codes visible. Ended tracked CLI
-surfaces keep the same `WorkSurfaceHeader` controls as live CLI and chat
-surfaces, including the far-right Tools toggle (a mirrored `SidebarSimple`
-glyph so the solid rail sits on the right). The sessions-list collapse
-control lives on the session sidebar search row, not in the chat/CLI
-header; when that sidebar is hidden, a thin left rail with **Show sessions**
-recovers it. They
-also expose two relaunch paths: **Resume** calls
-`ade.pty.resumeSession` and opens the provider TUI without sending a
-prompt, while the continuation composer calls `ade.pty.sendToSession`
-and sends the follow-up as part of the first resume launch when
-structured resume metadata is present.
+- Chat tool types → `AgentChatPane` with
+  `lockSessionProvider={providerFromChatToolType(session.toolType)}`, so the
+  accent is right on the first frame
+  ([Resolving the accent](../chat/composer-and-ui.md#resolving-the-accent-for-the-chat-on-screen)).
+- PTY sessions → `TerminalView` on the session's `ptyId`. Terminal tools open
+  from the tools pane's Terminal tab.
+- A suspended grid tile shows a static preview card.
+- Props: `isActive` (focus and input), `terminalVisible` (false stops fits and
+  resize broadcasts), `layoutVariant` (`"standard"` or `"grid-tile"`). Grid
+  mode keeps running PTYs mounted.
+- An exited tracked agent CLI renders `ClosedCliSessionSurface` (a wrong
+  `detached` lands here too; see
+  [Stale-detached repair](README.md#stale-detached-repair)). It reads
+  `ade.terminal.preview`; `snapshotLooksLikeTui(rows)` picks the snapshot when
+  it holds TUI frames or many styled cells, else the transcript text. It keeps
+  the live header (with the Tools toggle), **Resume**
+  (`ade.pty.resumeSession`, no prompt) and the continuation composer
+  (`ade.pty.sendToSession`, the prompt goes on the first resume launch).
+- Tile minimums: chat 440 × 340, terminal 320 × 220.
 
 ### Input box for a running agent CLI: `WorkCliInputBox.tsx`
 
-A running tracked agent CLI (Claude Code, Codex, OpenCode, Cursor, Droid, Pi,
-...) can take its text from an ADE box docked below the terminal instead of
-being typed into key by key. The header's keyboard button
-(`CliInputModeToggle`) switches between **type in the terminal** (the default,
-so nobody's habits change) and **use the box**; the choice is one per person
-for every CLI session (`ade.work.cliInputMode` in local storage). A dot on the
-button says texts are still waiting while the box is hidden. Plain shells and
-CLIs ADE does not track get no box: only a tracked CLI has a prompt ADE can
-tell is free. The terminal stays fully usable in both modes.
+A running tracked agent CLI can take its text from a box docked under the
+terminal. The header's keyboard button (`CliInputModeToggle`) picks **type in
+the terminal** (default) or **use the box**, one choice per person
+(`ade.work.cliInputMode`); a dot shows texts still waiting while the box is
+hidden. Plain shells and untracked CLIs get no box. The terminal stays usable.
 
-The box:
+- Enter sends; Shift+Enter is a new line. A multi-line message uses the host's
+  CLI typing path (`writeAgentCliInput`: clear the line, paste, submit).
+- `@` opens `ChatCommandMenu`: a file inserts `@path`; models, chats, lanes,
+  terminals, PRs, machines and MCP servers insert the chat token, and the host
+  (`typeIntoAgentCliNow` → `expandChatMentionsForSend`) adds the same
+  `<ade-mention>` block a chat send does (visible in the scrollback). `/`
+  lists the provider's commands.
+- Up arrow on the first line recalls the last 50 sends; the draft is saved per
+  session (`ade.work.cliInputDraft.<id>`).
 
-- Enter sends, Shift+Enter starts a new line. A multi-line message goes through
-  the host's CLI typing path (`writeAgentCliInput`: clear the line, paste,
-  submit), the same path scheduled work and wakes use.
-- `@` opens the chat composer's menu (`ChatCommandMenu`). A file inserts
-  `@path` as text the CLI reads. Models, chats, lanes, terminals, PRs,
-  machines and MCP servers insert the chat's token (`@model:…`, `@chat:…`,
-  a PR's link). On the host, `typeIntoAgentCliNow` runs the chat's
-  `expandChatMentionsForSend`, so the CLI receives the same `<ade-mention>`
-  facts block a chat send appends (exact ids, flags, the command to start a
-  model). Unlike a chat, the block shows in the CLI's scrollback. The model
-  list is read from the CLI's machine (`ai.getStatus`) the first time an `@`
-  menu opens. `/` lists the provider's commands.
-- Up arrow on the first line recalls earlier sends (per session, last 50);
-  down arrow walks back to the draft.
-- The draft is kept per session (`ade.work.cliInputDraft.<id>`), saved 400 ms
-  after typing stops.
-
-Every send goes through a queue (`cliInputBoxState.ts`) that lives outside the
-box, so it keeps going after you switch sessions or tabs, and is kept in local
-storage so a reload or a dropped connection does not lose it. Its runner exists
-only while something is waiting. Each send calls `agentChat.typeIntoCli`
-(runtime action `chat.typeIntoCli`) on the CLI's own machine (the surface's
-`runtimePin`). The host types the text only at a free prompt
-(`agentChatService.typeIntoAgentCliWhenFree`, through `deliverWakeToSession`,
-so a box send never shares a turn with a wake); a busy CLI answers `deferred`
-and nothing is typed. The queue shows each waiting text with its state and
-**Edit** (back into the draft) and **Remove**:
+Every send goes through a queue (`cliInputBoxState.ts`) outside the box, kept
+in local storage, with a runner only while something waits. Each send calls
+`agentChat.typeIntoCli` (`chat.typeIntoCli`) on the CLI's machine
+(`runtimePin`). The host types only at a free prompt
+(`typeIntoAgentCliWhenFree`, through `deliverWakeToSession`); a busy CLI
+answers `deferred`.
 
 | State | What it means | What happens next |
 |---|---|---|
-| Queued | The CLI is mid-turn. | Asked again every 1.5 s, slowing to 4 s after 30 s and 10 s after 5 min, and at once when the CLI's runtime state changes. |
+| Queued | The CLI is mid-turn. | Asked again every 1.5 s, 4 s after 30 s, 10 s after 5 min, and at once on a runtime state change. |
 | Typing it now | Being typed. | Removed when the host confirms. |
-| Sends when *computer* reconnects | The CLI's machine is disconnected (connection snapshot), or the call was refused before it was sent. | Sent when the machine reconnects; nothing is asked while it is gone. |
-| Unconfirmed | The connection dropped mid-send, so it may already have been typed. | ADE sent it once more with the same id after a short reconnect (a brain that announces `agentCliTypeNow` types a repeated id once). Still unconfirmed after that: never retried by itself. **Send again** or **Remove**. |
+| Sends when *computer* reconnects | The machine is disconnected, or the call was refused before it was sent. | Sent on reconnect. |
+| Unconfirmed | The connection dropped mid-send. | Sent once more with the same id after a short reconnect (a brain that announces `agentCliTypeNow` types a repeated id once). Still unconfirmed: never retried by itself; **Send again** or **Remove**. |
 | Failed | The host refused it (archived, not an agent CLI). | **Send again**, **Edit** or **Remove**. |
 
-When the CLI has ended (`ended`, nothing typed and nothing relaunched), the
-waiting texts move into the ended session's continue box
-(`ade.work.cliContinueDraft.<id>`), where sending continues the session.
-Two windows on one session share the queue through local storage; a window
-claims a text before typing it, so the other does not send it too.
-
-Typing into a CLI clears its prompt line first (the same as scheduled work), so
-a half-typed line in the terminal itself is replaced by the box's text.
+When the CLI ends, waiting texts move to the ended session's continue box
+(`ade.work.cliContinueDraft.<id>`). Two windows share the queue and claim a
+text before typing it. Typing clears the CLI's prompt line first.
 
 ### The terminal's local line on a far link
 
@@ -833,1597 +418,770 @@ the same shape as the box's; `agentCliTypeSend.ts` classifies it for both.
   already in it to the CLI as keys. With the line off, a fast link's type-ahead
   (`terminalTypeAhead.ts`) is what a plain shell gets.
 
-Claude CLI surfaces whose recent preview/transcript reports `Please run
-/login` or a 401 invalid-credentials error show the same dismissible
-`Login to Claude` CTA (`ClaudeLoginPromptButton`). It creates a tracked
-shell PTY in the session's lane and runs `claude auth login`; the Work
-tab selects that PTY so the user can finish the interactive login.
+A CLI on an asleep or deleted ADE Cloud computer takes messages through the
+account server's queue, from the web, the iPhone or the desktop. On wake, the
+brain types each one through `typeIntoAgentCliWhenFree`, so the CLI's ready
+signal decides when
+([the turn signal table](pty-and-sessions.md#exact-turn-status-for-agent-clis)).
+A CLI that ended with the computer's restart returns the message as failed,
+with a sentence to open the CLI and send it again. A deleted computer's CLI
+first continues on a new computer; see
+[On an ADE Cloud computer](../remote-runtime/README.md#on-an-ade-cloud-computer).
 
-Constants:
-
-- `CHAT_TILE_MIN_WIDTH = 440`, `CHAT_TILE_MIN_HEIGHT = 340`
-- `TERMINAL_TILE_MIN_WIDTH = 320`, `TERMINAL_TILE_MIN_HEIGHT = 220`
+A Claude CLI whose preview shows `Please run /login` or a 401 gets the
+**Login to Claude** button (`ClaudeLoginPromptButton`): a tracked shell in the
+lane runs `claude auth login`, and Work selects it.
 
 ## Focus grid
 
 The Focus pill's grid half (`workFocusGrid`, only while Focus is on) replaces
-the work area with every chat that needs the user. It is the normal Work
-grid (`WorkGridView` over `PaneTilingLayout`, standard chat surfaces with their
-own headers, chat action panes and floating previews); what differs:
+the work area with every chat that needs the user. It is the normal Work grid
+(`WorkGridView` over `PaneTilingLayout`, with standard chat surfaces). The
+differences:
 
-- **Membership comes from the sidebar, not from drags.** `workFocusQueue` in
-  `workLaneFocus.ts` returns each agent chat that needs the user: a raised hand,
-  a stale or stalled run, a scheduled wake that came due and never started, or a
-  failure the user has not left. That is the same `holdsOut` flag the fold
-  reads, so a clean finish never gets a tile. Plain shells never get a tile; a
-  nested row gets one only while it asks for the user or a wake it promised came
-  due. Chats from other machines are included through their row's binding
-  (remembered with `machineRouter.rememberSessionPin`).
-  `SessionListPane` reports the list (`WorkFocusQueueItem`: session + binding)
-  through `onFocusQueueChange`, so the grid and the list cannot disagree. The
-  project sidebar stays mounted while collapsed, keeping that report live as
-  chats enter or leave the grid; the roster moves below the grid.
+- **Members come from the sidebar.** `workFocusQueue` (`workLaneFocus.ts`)
+  returns each agent chat that needs the user: a raised hand, a stale or
+  stalled run, a wake that came due and never started, or a failure the user
+  has not left. This is the `holdsOut` flag the fold reads, so a clean finish
+  gets no tile. Plain shells get none; a nested row gets one only while it
+  asks for the user or its wake came due. Other machines' chats come in with
+  their row's binding. `SessionListPane` reports the list
+  (`WorkFocusQueueItem`) through `onFocusQueueChange`, so the grid and the
+  list agree; the sidebar stays mounted while collapsed to keep the report
+  live.
 - **No Tools pane.** Each chat header shows **Open in full view**
-  (`onOpenFullView`, `WorkHeaderOpenFullViewButton`) where the Tools toggle
-  would be. It leaves the grid and opens that chat in the normal view, Tools and
-  all. A sidebar click on a tile focuses it; on a chat with no tile it opens the
-  chat in the normal view. New chat leaves the grid, because the draft draws in
-  the normal view.
-- **Stable layout.** `stableFocusOrder` keeps tiles in place as chats come and
-  go. The layout is saved per SET of chats (`makeGridLayoutId(project,
-  "focus-<hash of the ids>")`): the same chats come back exactly as arranged, and
-  a new set starts from the even auto layout instead of squeezing a newcomer
-  into the largest tile.
-- **Pages.** `focusFit` measures the grid's own box (ResizeObserver) at
-  `FOCUS_TILE_MIN_WIDTH` × `FOCUS_TILE_MIN_HEIGHT`: columns, rows, and a
-  capacity between one and `MAX_WORK_GRID_TILES`. The minimum height is high
-  on purpose. A short tile is mostly composer, so a grid gets a second row
-  only when both rows clear that height, and otherwise pages side-by-side
-  tiles. The box is in CSS pixels, which grow as the app zooms out, so this
-  holds for a zoomed-out laptop too. The per-computer **Chats per page**
-  setting (Settings › Appearance › Focus grid,
-  `interfacePreferences.focusGridMaxChats`, Automatic by default) lowers the
-  capacity; it never puts more on a page than fits. `focusEvenPages` uses
-  as few pages as that capacity allows and spreads the chats evenly (8 with
-  room for 6 → 4 + 4; 7 → 4 + 3). `focusPageColumns` lays a page out side by
-  side first: as few rows as the width allows, tiles spread evenly over them
-  (4 with room for 3 columns → 2 × 2; 3 → one row). The column count goes to
-  `WorkGridView` as its seed and into the saved-layout key. Only the page on
-  screen is mounted.
-- **Roster.** The roster shows where every waiting chat is. Its place depends
-  on the project sidebar:
-  - **Sidebar open.** The sidebar is the roster. `useWorkFocusGrid` builds the
-    marks (page, on screen, unseen) that `TerminalsPage` passes to
-    `SessionListPane`.
-    Only the focused tile's card gets the selected fill (`TerminalsPage`
-    passes it as the selected chat while the grid shows). The other cards on
-    screen get no mark. A card on another page gets a "Page N" tag, with
-    an accent dot when the chat arrived there unseen.
-    `WorkFocusToolbarPager` ("‹ 1–3/6 ›") sits next to the Focus pill and takes
-    the List/Board toggle's place. The grid has no board, and the pill's grid
-    half leaves the grid. The search shows no "⌘K" key while the pager shows,
-    so the row fits a narrow sidebar. The bottom strip does not show.
-  - **Sidebar collapsed.** `WorkFocusRoster` shows under the grid: one chip per
-    waiting chat (agent logo and title only, no status and no tooltip), grouped
-    by page. The page on screen is lit with the accent, and the focused chat is
-    highlighted. A chip goes to its page and focuses that tile. A right-click on
-    a chip opens the same menu as a sidebar card. Chips get wider on wide
-    screens (container queries). The right side reads "Chats 5–7 of 7 / Page 2
-    of 2" (or "N waiting" on one page). The strip has the sidebar footer's
-    height (41px) and top rule. It scrolls sideways, keeps the lit page in
-    view, and fades at its edges.
-
-  A chat that arrived on another page carries an accent dot (on its chip or
-  card, and on the arrow toward it) until the user gets there. A sideways
-  two-finger swipe over the grid flips one page (`wheelScrollsInside` lets a
-  wide code block keep the swipe). The new page slides in once (180 ms, off
-  under reduced motion). A sidebar click on a chat on another page goes there.
-- **PR badge.** With no Tools pane, a tile's PR badge always opens the PRs
-  tab (`prOpensPrsTab` on `ChatGitToolbar`), never GitHub. A lane on another
-  machine has no PR row here, so its PR is routed by number and repo, which the
-  PRs tab resolves without a local row.
-- **Machine.** Each tile gets its chat's binding straight from the Focus list.
-  Relying on the remembered pin sent another machine's chat to this one,
-  because the pin lands one effect after the tile's first render.
+  (`WorkHeaderOpenFullViewButton`). A sidebar click focuses a tile, or opens a
+  chat with no tile in the normal view. New chat leaves the grid.
+- **Stable layout.** `stableFocusOrder` keeps tiles in place. The layout is
+  saved per set of chats (`makeGridLayoutId(project, "focus-<hash>")`); a new
+  set starts from the even auto layout.
+- **Pages.** `focusFit` measures the grid box (ResizeObserver, CSS pixels) at
+  `FOCUS_TILE_MIN_WIDTH` × `FOCUS_TILE_MIN_HEIGHT`, for a capacity between one
+  and `MAX_WORK_GRID_TILES`. The minimum height is high, so a second row comes
+  only when both rows clear it. **Chats per page** (Settings › Appearance ›
+  Focus grid, `interfacePreferences.focusGridMaxChats`, Automatic by default)
+  can lower the capacity, never raise it. `focusEvenPages` uses the fewest
+  pages and spreads chats evenly (8 into room for 6 → 4 + 4).
+  `focusPageColumns` prefers side by side (4 into 3 columns → 2 × 2). Only the
+  page on screen is mounted.
+- **Roster, sidebar open.** The sidebar is the roster: `useWorkFocusGrid`
+  builds the marks for `SessionListPane`. Only the focused tile's card is
+  filled; a card on another page gets "Page N" (an accent dot when it arrived
+  unseen). `WorkFocusToolbarPager` ("‹ 1–3/6 ›") takes the List/Board
+  toggle's place, and the search hides its "⌘K".
+- **Roster, sidebar collapsed.** `WorkFocusRoster` under the grid: one chip
+  per waiting chat (logo and title), grouped by page, the page on screen lit
+  and the focused chat highlighted. A chip goes to its page; a right-click
+  opens the card menu. The right side reads "Chats 5–7 of 7 / Page 2 of 2" (or
+  "N waiting"). The strip is 41 px, scrolls sideways and keeps the lit page in
+  view.
+- A chat that arrived on another page has an accent dot (chip or card, and the
+  arrow toward it) until the user goes there. A sideways two-finger swipe
+  flips a page (`wheelScrollsInside` lets a wide code block keep it); the new
+  page slides in (180 ms, none under reduced motion).
+- **PR badge.** A tile's PR badge opens the PRs tab (`prOpensPrsTab` on
+  `ChatGitToolbar`), by number and repo for another machine's lane.
+- **Machine.** Each tile takes its chat's binding from the Focus list, not
+  from the remembered pin, which arrives one effect late.
 
 ### Grid chrome (all Work grids)
 
-Tiles meet edge to edge with no outer padding. The splitter takes no layout
-width: a 1px line is the resting divider, the hit area overlays both edges, and
-the line turns accent on hover or drag (the same gesture as the tools-pane
-splitter). Tiles are square and borderless; the lane tint stays on the header.
-The centred header reserves the right cluster's measured width on both sides;
-when that leaves under 140px the title moves left and truncates, and labelled
-header links (`.ade-header-collapsible-label`) collapse to their icon below a
-640px header width.
-
-One Tools pane serves the focused tile: only that tile's toggle reads open (an
-accent fill behind the glyph), another tile's toggle moves the pane to that
-chat, and the pane shows **For ● lane · chat** under its header while the
-active chat belongs to a grid (`WorkSidebar showOwner`).
+- Tiles meet edge to edge. The splitter takes no width: a 1 px line, a hit
+  area over both edges, accent on hover or drag. Tiles are square and
+  borderless; the lane tint stays on the header.
+- The centred header reserves the right cluster's width on both sides; under
+  140 px the title moves left and truncates. Labelled header links
+  (`.ade-header-collapsible-label`) collapse to icons under 640 px.
+- One Tools pane serves the focused tile. Only its toggle reads open; another
+  tile's toggle moves the pane to that chat. The pane shows **For ● lane ·
+  chat** while the active chat is in a grid (`WorkSidebar showOwner`).
 
 ## Grid mode: `PaneTilingLayout` + `workSessionTiling.ts`
 
-The Work grid is a standard `PaneTilingLayout` instance with one leaf
-per visible session. Two helpers build the inputs:
-
-- `buildWorkSessionTilingTree(sessionIds, preset = "auto")` (in
-  `workSessionTiling.ts`) returns the seed `PaneSplit` used when
-  nothing has been persisted for the current `gridLayoutId`, and is
-  also called by the arrange menu when the user requests a specific
-  preset. `auto` biases toward near-square layouts:
-  `columnCount = ceil(sqrt(n))`, `rowCount = ceil(n / columnCount)`,
-  then `rowSizes(n, rowCount)` spreads sessions across rows so
-  earlier rows absorb the remainder. `rows` produces one full-width
-  vertical split per session; `columns` produces one full-height
-  horizontal split per session. `minSize: 8%` (MIN_PANE_SIZE) /
-  `12%` (MIN_ROW_SIZE) floors protect against accidentally collapsing
-  a row.
-- `WorkViewArea` builds one `PaneConfig` per visible session (keyed by
-  `session.id`) with title, status dot, close button, mouse/context
-  handlers that forward to `onSelectItem` / `onContextMenu`, and a
-  `SessionSurface` child in `grid-tile` variant.
-
-The actual split tree, resize state, and pane origin are owned by
-`PaneTilingLayout`. See the next section for invariants the layout
-enforces.
+- `buildWorkSessionTilingTree(sessionIds, preset = "auto")` seeds the tree
+  when nothing is saved for `gridLayoutId`, and serves the arrange menu.
+  `auto` is near square (`columnCount = ceil(sqrt(n))`, earlier rows take the
+  remainder); `rows` and `columns` give one split per session. Floors:
+  `MIN_PANE_SIZE` 8%, `MIN_ROW_SIZE` 12%.
+- `WorkViewArea` builds one `PaneConfig` per session (title, status dot,
+  close, mouse and context handlers, a `grid-tile` `SessionSurface`).
 
 ## Pane tiling layout primitives
 
-`PaneTilingLayout` (`apps/desktop/src/renderer/components/ui/PaneTilingLayout.tsx`)
-and its pure operations (`paneTreeOps.ts`) are shared across the Work
-grid, `LanesPage`, `TerminalsPage` itself, and history detail views.
-Reconciliation invariants the layout guarantees:
+`PaneTilingLayout` (`components/ui/PaneTilingLayout.tsx`) and `paneTreeOps.ts`
+serve the Work grid, `LanesPage`, `TerminalsPage` and history views.
 
-- **Seed tree.** Consumers pass a `tree: PaneSplit` prop that describes
-  the default layout for the current set of pane IDs. `collectLeafIds(tree)`
-  is the canonical `expectedPaneIds` list.
-- **Persistence.** On mount the layout reads a persisted tree from
-  `window.ade.tilingTree.get(layoutId)`. Every user-driven change
-  (drop-edge split, swap, reconciliation) is written back with a 300 ms
-  debounce. Panel sizes use a separate `DockLayoutState` store keyed by
-  `layoutId` + positional path; any tree mutation resets that panel-size
-  store so newly-split panels start from their `defaultSize` instead of
-  inheriting a stale saved percentage.
-- **Tree reconciliation.** `reconcilePaneTree(candidate, expectedPaneIds,
-  fallback)` is called both on load (against the persisted tree) and on
-  prop-tree changes. It drops leaves that are no longer expected,
-  flattens any single-child splits produced by that removal, and
-  inserts missing pane IDs by splitting the leaf with the largest
-  computed weight (direction alternates: a missing pane added to a
-  horizontal parent becomes a vertical split, and vice versa).
-  Duplicate leaves or unknown IDs surviving the cleanup pass cause the
-  whole tree to be replaced with the fallback.
-- **Drop-edge detection.** `detectDropEdge(rect, clientX, clientY)`
-  maps a pointer position to `top | bottom | left | right | center`
-  using a 25 % edge threshold. The center zone triggers a swap
-  (`swapPanes`); the four edges trigger `splitPaneAtEdge(tree, targetId,
-  draggedId, edge)`, which prunes the dragged leaf, coerces the
-  remaining tree to a split in the correct orientation, and replaces
-  the target leaf with a two-child split whose child order follows the
-  edge (`right`/`bottom` keep the target first; `left`/`top` put the
-  dragged pane first).
-- **Minimization.** Each leaf can minimize via its `FloatingPane`
-  header. `PaneTilingLayout` runs two compaction passes off the
-  `minimized` map: an individual-leaf pass that shrinks the leaf's
-  containing panel to `LEAF_MINIMIZED_{HEIGHT,WIDTH}_PX`, and a
-  split-level pass that compacts an entire subtree when every
-  descendant leaf is minimized (`COMPACTED_WIDTH_PX` for horizontal
-  parents, `COMPACTED_HEIGHT_PER_LEAF_PX × leafCount` for vertical
-  parents). Both paths restore the previous panel size on un-minimize
-  via `PanelImperativeHandle.resize`.
-
-`FloatingPane` now also accepts `onPaneMouseDown` / `onPaneContextMenu`
-so consumers (like the Work grid) can run selection / context-menu
-logic on the wrapper without subscribing through drag handlers.
-`PaneConfig` exposes a `className` pass-through so callers can apply
-their own tile chrome classes (e.g. `ade-work-glass-tile`) alongside
-the floating-pane defaults.
+- **Seed tree.** The `tree: PaneSplit` prop; `collectLeafIds(tree)` is the
+  expected pane list.
+- **Persistence.** The saved tree comes from `tilingTree.get(layoutId)`;
+  every change is written back after 300 ms. Panel sizes are a separate
+  `DockLayoutState` store, reset on each tree change so new panels start at
+  `defaultSize`.
+- **Reconciliation.** `reconcilePaneTree(candidate, expectedPaneIds,
+  fallback)` drops unexpected leaves, flattens one-child splits and adds
+  missing ids by splitting the heaviest leaf (alternating direction).
+  Duplicates or unknown ids replace the tree with the fallback.
+- **Drops.** `detectDropEdge` uses a 25% edge band. The centre swaps
+  (`swapPanes`); an edge calls `splitPaneAtEdge` (`right`/`bottom` keep the
+  target first).
+- **Minimize.** A leaf shrinks to `LEAF_MINIMIZED_{HEIGHT,WIDTH}_PX`; a split
+  whose leaves are all minimized compacts (`COMPACTED_WIDTH_PX`, or
+  `COMPACTED_HEIGHT_PER_LEAF_PX × leafCount`). Un-minimize restores the size.
+- `FloatingPane` takes `onPaneMouseDown` / `onPaneContextMenu`; `PaneConfig`
+  passes a `className` through (for example `ade-work-glass-tile`).
 
 ## Right-edge Work sidebar: `WorkSidebar.tsx`
 
-A persistent right-edge pane that follows the active lane (and active
-Work session when one is selected). It is rendered next to
-`WorkViewArea` whenever `workSidebarOpen` is true and the view mode is
-not `grid` — the grid layout owns the full row, so the sidebar is
-suppressed there. `TerminalsPage` wraps the view + sidebar in a flex
-container with a 5 px draggable column separator; the sidebar width is
-persisted as `workSidebarWidthPct`.
+The tools pane follows the active lane and session. It shows beside
+`WorkViewArea` when `workSidebarOpen` is true and the view is not `grid`. A
+5 px separator resizes it (`workSidebarWidthPct`).
 
 ### The splitter is clamped in two units
 
-`workSidebarSplitter.ts` owns the whole rule, pure so the arithmetic is
-testable without a layout engine. The percentage clamp
-(`MIN_WORK_SIDEBAR_WIDTH_PCT` 26 – `MAX_WORK_SIDEBAR_WIDTH_PCT` 55,
-mirrored by `normalizeWorkSidebarWidthPct` in the store) is a taste rule
-and says nothing about pixels: 26 % of a 900 px window is 234 px, and at
-234 px the pane's own 32 px header — back button, tool name, activity
-dots, ✕ — has nowhere to go, which is how a drag once left the close
-button off-window. So a drag is clamped in **both** units: never below
-`MIN_WORK_SIDEBAR_PANE_PX` (280) of real pane, and never leaving the chat
-column narrower than `MIN_WORK_CONTENT_PANE_PX` (360). The container
-width is the only thing the pane supplies; omit it (as the store does
-when it has no layout to consult) and only the percentage rule applies.
-`WORK_SIDEBAR_SPLITTER_PX` (5) belongs to neither pane, and arrow keys
-move the separator by `WORK_SIDEBAR_KEYBOARD_STEP_PCT` (2).
+`workSidebarSplitter.ts` holds the rule. The percentage clamp
+(`MIN_WORK_SIDEBAR_WIDTH_PCT` 26 to `MAX_WORK_SIDEBAR_WIDTH_PCT` 55, also in
+`normalizeWorkSidebarWidthPct`) is one unit. A drag also keeps at least
+`MIN_WORK_SIDEBAR_PANE_PX` (280) of pane and `MIN_WORK_CONTENT_PANE_PX` (360)
+of chat column. With no container width, only the percentage applies.
+`WORK_SIDEBAR_SPLITTER_PX` is 5; arrow keys move 2%
+(`WORK_SIDEBAR_KEYBOARD_STEP_PCT`).
 
-The splitter also announces itself: `TerminalsPage` dispatches
-`ade:work-sidebar-browser-resize-start` / `-end`
-(`renderer/lib/workSidebarBrowserResize.ts`) so the browser panel's
-`useNativeBrowserViewBounds` can raise its suppression count for the
-length of the drag and keep pushing bounds every frame for 400 ms after
-it ends. Bounds are measured against the pane's **content box**, not the
-frame's own laid-out rect, which lags a pointer-driven resize by a frame
-or two — without that trim the composited page keeps its old width and
-paints over the chat column and the window edge while you drag.
+During a drag `TerminalsPage` sends `ade:work-sidebar-browser-resize-start` /
+`-end` (`lib/workSidebarBrowserResize.ts`). `useNativeBrowserViewBounds` then
+pushes bounds every frame, and for 400 ms after, measured on the pane's
+content box, so the browser view does not paint over the chat column.
 
 ### A tab strip, and a picker page behind it
 
-The pane is a **tab strip plus one page**: one tab per open tool, one of
-them on screen, and the picker page whenever you press the grid button or
-the `+`. There is no multi-instance — a tool is open once. There are six
-tools and no Pull request tool: PRs live on their own tab, and a seventh
-card that opened a read-only summary was the one card in the grid that did
-not take the pane over.
+The pane is a tab strip and one page: one tab per open tool, and the picker
+when you press the grid button or `+`. A tool is open once. There are six
+tools: Terminal, Browser, Git, Files, Simulator, App Control (catalogue in
+`workTools.ts`). PRs have their own tab.
 
-The picker is one **centred 512 px column** (`COLUMN_MAX_PX`) — no title
-and no subline, just a grid of cards in the order Terminal, Browser, Git,
-Files, Simulator, App Control (`WorkToolPicker.tsx`, catalogue in
-`workTools.ts`). The page does not name itself: the strip above it already
-carries the word "Tools", and six labelled cards do not need introducing.
-The column is vertically centred against the **whole pane** rather than
-against the space left under the 32 px header, which is what the extra
-bottom pad buys; it centres with `m-auto` rather than `justify-center`,
-because a centred flex child in an overflow container has its overflowing
-top clipped and unreachable. The grid is `auto-fit` over a
-`CARD_MIN_TRACK_PX` (188) minimum, so it is **two columns or one, never
-three**: with 24 px of padding either side and an 8 px gutter, two tracks
-need 432 px of pane and three would need 628 px, and the column is capped
-below that. 188 rather than 196 because the pane's default width is
-447 px, which missed the old threshold by a single pixel and gave everyone
-one column down a pane wide enough for two. Cards therefore *grow* with
-the pane (188 → 252 px) instead of multiplying and shrinking. An odd card
-count lets the last card span the full row rather than orphaning it.
+**The picker** (`WorkToolPicker.tsx`) is one centred column, at most 512 px
+(`COLUMN_MAX_PX`), with no title.
 
-Behind the grid is the pane's one decorated surface: a slow violet-to-indigo
-mesh (`WorkToolPickerBackdrop.tsx`, adapted from the 21st.dev Shader Builder
-"Mesh drift") whose gaussians fill the pane without collapsing into one
-wash. Nothing in its GLSL names a colour — `backdropThemeFor`
-hands the shader ADE's own tokens as uniforms, `--color-bg` →
-`--color-accent-deep` → indigo `#6366F1` → `--color-accent` → `--color-accent-bright` in
-dark, and `--color-surface` up the same hues at well under half
-the intensity in light, since on a light canvas the same amount of colour
-reads as a stain. The theme comes from the store (`s.theme`), the same
-value `App.tsx` writes to `data-theme`. Opening the pane paints the same
-gradient as CSS first so the surface is not empty while WebGL compiles;
-the canvas covers it once it has a frame. The picker stays mounted while a
-tool is on screen: `inert` + `aria-hidden`, and `playing={false}` pauses the
-loop without dropping the last frame, so opening Tools is a CSS show rather
-than a shader recompile. Arrow-key card highlight is bound only while
-`playing`. The Work new-chat surface uses the same backdrop and the same
-budget; `AgentChatPane` leaves the chat canvas transparent so the mesh
-shows through.
+- It centres on the whole pane with `m-auto` (a `justify-center` child in a
+  scroller loses its top).
+- The grid is `auto-fit` over `CARD_MIN_TRACK_PX` (188): two columns or one,
+  never three, so cards grow with the pane. An odd last card spans the row.
+- A card: a 16 px glyph, the name and one line. The only mark is a red dot
+  when the tool is broken (`workToolHasError`). Cards are glass
+  (`.ade-tool-card`: 82% fill, a 12% hairline, no `backdrop-filter`).
+- Arrow keys move a highlight and focus; a pointer move drops the keyboard
+  highlight. The last-opened tool has `aria-current` and no fill.
+- `workToolSummary` picks the line: the tool's status (with an error count),
+  else the catalogue `hint`, else the reason it is unavailable. Git shows
+  unpublished, dirty count, ahead/behind or pushed age. Files shows tracked
+  files and changed entries (an entry is counted once; a payload with no
+  entry count says `dirty`). Status comes only from reads the pane already
+  makes, so nothing polls. Lines shimmer for at most 300 ms
+  (`useWorkToolStatuses.ts`). The tooltip shows only when the text clipped.
 
-Its budget is a hard requirement, because this is decoration on a page you
-land on constantly inside a renderer that is also running a terminal, a
-browser view and a chat stream. It draws at **DPR 1**, never more than
-`BACKDROP_PIXEL_BUDGET` (600 k) pixels — past that the canvas keeps its
-CSS size and the drawing buffer is floored down, which a mesh this soft
-cannot show — and never faster than **30 fps**, gated on the rAF
-timestamp rather than a timer so a 240 Hz panel costs seven cheap no-ops
-instead of seven mesh evaluations. It stops entirely while the window is
-blurred, the document hidden, or the canvas out of the intersection
-observer's view; `prefers-reduced-motion` paints exactly one frame and
-never starts the loop; the cursor swirl is wired only on `(hover: hover)`
-and `(pointer: fine)` devices, since a touchscreen "cursor" is a tap that
-would yank the background sideways. Unmount releases the context through a
-deferred `pendingContextReleases` timer, cancelled if the same canvas
-comes straight back — which it does on every picker ↔ tool crossfade. Every
-path that decides not to use a context releases it through the same
-`releaseContext` helper (lose the context, shrink the drawing buffer to
-1×1), refusals included: on the machines that refuse — SwiftShader, a
-blacklisted Windows driver — a merely abandoned context per crossfade walks
-the browser's context cap until it starts evicting other canvases. A
-`webglcontextlost` on the canvas flips the page to the static backdrop and
-stops the loop; it does **not** `preventDefault`, since asking for a
-restore would mean rebuilding the program on a machine that has just proven
-it is short of GPU. Layout measurement is rAF-coalesced to one
-`getBoundingClientRect` per frame — the listener is capture-phase scroll,
-so a wheel gesture over the picker would otherwise force a dozen synchronous
-reflows a frame — and it is wired only when the cursor effect is enabled.
-With no WebGL there is **no canvas at all**: the same box renders
-`.ade-tool-picker-static`, the same corner light as flat CSS, because a
-software-rendered mesh would be the most expensive thing in the window.
-The canvas is `aria-hidden` and `pointer-events: none` — a decoration that
-swallowed a click meant for a card would be breaking the page it
-decorates. It is pinned to a **non-scrolling wrapper** around the picker's
-scroll container rather than inside it: `inset: 0` inside a scroller
-resolves against the scroll origin, so on a pane too short for the column
-the mesh ended at the fold and the rest of the page scrolled onto bare
-chrome. `resolveBackdropSize` owns the whole size/budget policy and is
-unit-tested without a GPU.
+**The backdrop** (`WorkToolPickerBackdrop.tsx`) is a violet-to-indigo WebGL
+mesh. `backdropThemeFor` feeds it ADE's colour tokens (weaker in light). The
+Work new-chat surface uses the same backdrop.
 
-A card is deliberately thin: a monochrome 16 px glyph, the name, and
-exactly one line underneath. No tinted square, no key cap, and **no
-per-card activity dot** — the only mark a card can carry is a red 6 px dot
-when that tool is actually broken (`workToolHasError`), because that is
-the one fact worth interrupting a calm page for. Now that there is
-something behind it the card is glass rather than a flat rectangle
-(`.ade-tool-card`): a measured 82 % translucent fill and one hairline at
-12 % white (a border token in light). The fill carries the mesh through on
-its own — there is deliberately **no `backdrop-filter`**, because six blur
-regions over a 30 fps animating canvas re-blur on every backdrop frame and
-spend back everything the backdrop's own budget saves; 82 % is the point
-where every 12 px line still clears 4:1 over the mesh's brightest
-peak. Nothing is
-highlighted on entry; arrow keys move a highlight and take focus with
-them, so Enter is the browser's own activation, and a pointer move drops
-the keyboard highlight so two cards never look hovered at once.
+- Budget: DPR 1, at most `BACKDROP_PIXEL_BUDGET` (600 k) pixels, at most
+  30 fps gated on the rAF timestamp. It stops while the window is blurred,
+  hidden or out of view. Reduced motion paints one frame. The cursor swirl
+  needs `(hover: hover)` and `(pointer: fine)`.
+- A CSS gradient paints first. While a tool is on screen the picker stays
+  mounted, `inert` and paused (`playing={false}`).
+- Every path that drops a context uses `releaseContext` (lose it, 1×1
+  buffer); unmount defers through `pendingContextReleases`. A
+  `webglcontextlost` switches to the static backdrop with no restore.
+- Layout reads are one `getBoundingClientRect` per frame. With no WebGL there
+  is no canvas: `.ade-tool-picker-static` instead.
+- The canvas is `aria-hidden` and `pointer-events: none`, on a non-scrolling
+  wrapper. `resolveBackdropSize` holds the size rule.
 
-The line under the name is resolved by `workToolSummary` in one priority:
-the tool's measured status (plus an error-count suffix), else the
-catalogue's short `hint` ("Run a shell here", "Drive a real browser",
-"Commit, push, rebase", "Boot a simulator", "Drive a desktop app"), else
-the availability reason. Git shows the lane's unpublished, dirty-count,
-ahead/behind, or pushed/committed-age state; Files shows the cached tracked-file
-total and unique changed-entry count — entries, so a file with both index
-and worktree changes counts once, and a new untracked directory counts as
-one entry rather than as everything inside it. A legacy or remote lane payload
-that carries no changed-entry count says `dirty` rather than a number: the
-per-side staged/unstaged totals count entries on each side, so no arithmetic
-over them recovers how many files are involved. Status comes only from reads the pane
-already makes — the `builtInBrowser` / `iosSimulator` / `appControl`
-status subscriptions, the terminal panel's published shell count, and the
-lane's cached git summary — so nothing here polls. Lines hold a stepped-shimmer
-skeleton for at most 300 ms while those reads settle
-(`useWorkToolStatuses.ts`). A card's tooltip is `"<Tool> — <line>"` and
-appears **only when the card clipped its text** (`onlyWhenClipped`), so a
-tooltip is the rest of a sentence rather than a repeat of one; the
-catalogue owns the hint string so the card and its tooltip can never
-disagree about how much it says.
+**Availability.** A tool that cannot run shows a disabled card with the
+reason. The one reason left is "The runtime for this project is not a Mac"
+(`iosSimulator.getStatus().supported` false on the bound runtime). Every tool
+follows the session's machine, a remote Mac included. The browser is this
+desktop's, so it stays available on remote lanes. On the web client the
+browser and App Control are read-only (`isReadOnlyWorkTool`); the simulator is
+not. `workToolAvailability` decides from capability flags, never
+`process.platform`. A tool that becomes unavailable falls back to the picker.
 
-A tool that cannot run in this context renders as a **disabled card with
-the reason as its status line** rather than disappearing. There is exactly
-one such reason left — "The runtime for this project is not a Mac" (Apple
-when `iosSimulator.getStatus().supported` is false). Every tool follows the **session's** machine, including a remote
-Mac; nothing is hidden just because the pin is remote. Apple additionally
-follows the **bound runtime's** own `supported` flag rather than the
-viewer's OS, so a Windows or Linux desktop pinned to a remote Mac runtime
-can watch and drive it. The browser is hosted by this desktop's main
-process and a remote lane drives that same window, so it stays available on
-remote lanes. In the hosted web
-client the browser and App Control render **read-only** — the tab list,
-attached app, and latest screenshot, with no way to drive them
-(`isReadOnlyWorkTool`); Apple is full-interact — it is absent from
-`WEB_READ_ONLY_TOOL_IDS` because the helper runs on the bound runtime, not
-in the browser tab. Availability is decided by
-capability flags in `workToolAvailability`, never by `process.platform` —
-the web client renders this same component. An active tool that becomes
-unavailable falls back to the **picker**, not to another tool.
+**The header** (`WorkToolHeader.tsx`, 32 px) is the strip on both pages:
 
-The pane's one 32 px header (`WorkToolHeader.tsx`) is the strip, and it is
-the same bar on both pages. Left edge is the `⊞ Tools` button back to the
-picker (Escape does the same, bound as `work.tools.picker` with scope
-`work` so it only fires inside the pane), lit while the picker is up.
-Immediately right of it, one tab per OPEN tool in strip order — glyph,
-name, a `×` on hover — with the tool on screen filled; then a `+` that
-opens the picker, dropped while the picker is already showing, because two
-controls opening one page is one too many. Activity dots for tools with
-**no tab** that are usable here and not idle sit to the right of that, and
-the close ✕ keeps its place at the end. There is no centred title: the lit
-tab is the title. The strip carries no tool-level controls: Float and
-Maximize used to live at its right edge and now sit on each screen tool's
-own chrome row (`WorkToolPreviewControls`), where they act on the tool on
-screen instead of from inside the strip that switches tools.
+- `⊞ Tools` back to the picker (also `Esc`, `work.tools.picker`), lit while
+  the picker shows. Then one tab per open tool (glyph, name, `×` on hover),
+  then `+` (hidden while the picker shows), then dots for live tools with no
+  tab, then the close ✕. The lit tab is the title. Float and Maximize sit on
+  each tool's own row (`WorkToolPreviewControls`).
+- The `×` is a sibling of the tab button, `pointer-events: none` until hover
+  or focus. On a 24 px icon tab it is a top-right badge, which the activity
+  dot yields on hover.
+- The strip is a `tablist` with a roving tabindex, `aria-controls`
+  (`workToolPanelId`) and manual activation (`←`/`→`/`Home`/`End` move focus
+  only).
+- `workToolContextLabel` gives one fact per tool (Git: the branch; Files: the
+  lane; others: the status line) in the active tab's tooltip and name.
+- `workToolTabLayout` measures: under 420 px tabs drop their words, then extra
+  tabs move to a `…` menu. The active tool never overflows.
+- A dot's colour is its state (`workToolDotState` / `workToolDotColor`): red
+  error, amber needs you, the tool's hue for live, none when idle.
+- Motion: picker ↔ tool 180 ms with a 4 px shift, tab ↔ tab 120 ms opacity;
+  card hover lifts 2 px with an accent glow; reduced motion keeps only colour.
 
-The `×` is a sibling of the tab button, never a child — a button inside a
-button is invalid and the browser resolves it by dropping one of the two
-click targets — and it is `pointer-events: none` until the tab is hovered
-or the `×` itself is focused, because `opacity: 0` alone still hit-tests.
-In the labelled strip it holds reserved space on the tab's right edge, so
-pointing at a strip does not shuffle the tabs under the pointer. On a 24 px
-icon-only tab there is no space to reserve, so it becomes a small badge in
-the tab's **top-right corner** rather than a target over its middle: a
-centred close button on a 24 px tab means the obvious click, dead centre on
-the glyph, closes the tool instead of opening it. The tab's activity dot
-shares that corner and yields it on hover.
-
-The strip is a real `tablist`: only tabs are inside it (the `…` overflow
-button is a menu button and sits outside), the selected tab names its pane
-with `aria-controls` (`workToolPanelId`, per tool because the pane
-crossfades and two panels are briefly in the document at once), and the
-strip carries a **roving tabindex** — one Tab stop, landing on the tool you
-are looking at, with `←`/`→`/`Home`/`End` moving focus between tabs.
-Activation is manual: arrowing past a tool must not attach its terminal or
-show its `WebContentsView`, so Enter and Space are the button's own
-activation and there is no second key handler to disagree with the click
-path.
-
-The header's one fact per tool is a rule on the catalogue
-(`workToolContextLabel`), not an `if` cascade at the header: Git shows the
-branch (the dirty count is already its status line), Files shows the lane
-name, and every other tool shows its own status line. It rides in the
-active tab's tooltip and accessible name (`Browser · example.com`), never
-as a header line — an icon-only tab would otherwise have no name at all,
-and a bar that spelled out what the lit tab already says was saying one
-thing twice in 32 px.
-
-The strip is measured, not guessed (`workToolTabLayout`, pure and tested):
-below **420 px** of header the tabs drop their words and become glyphs, a
-pane too narrow to spell every open tool drops the words rather than
-hiding tabs, and only when even the glyphs do not fit do the extras move
-into a `…` menu (Radix, on the pane's shared `MENU_CONTENT_CLASS`). The
-tool on screen is never the one that overflows, and at least one tab is
-always drawn. Six glyphs fit inside the splitter's 280 px minimum, so the
-menu is genuinely the last resort.
-
-A dot's colour is its **state**, not its tool
-(`workToolDotState` / `workToolDotColor`): red for an error, amber for
-"needs you" (`attention` — a login handoff is the whole reason to look
-away from the tool you are in), the tool's own hue for live, and idle
-tools get no dot at all. Colouring dots by tool made every dot the same
-news ("this tool exists"). An erroring or waiting tool earns a dot even
-when nothing of its is running. The dot's tooltip is that tool's status
-line; clicking it switches, and the dot animates into the header icon
-through a shared `layoutId`.
-
-Motion: picker ↔ tool is a 180 ms crossfade with a 4 px y-shift on
-`cubic-bezier(0.4, 0, 0.2, 1)`; tab → tab is the shorter, flatter version
-of it — 120 ms of opacity and no y-shift, because switching tabs is a
-lateral move inside one surface rather than the pane re-opening; dots
-enter on the overshoot curve
-`cubic-bezier(0.34, 1.56, 0.64, 1)`. A card's hover is the one place the
-page spends colour: a 2 px lift, its hairline to 45 % accent, the glyph
-tinted to accent, and one soft accent glow, over 160 ms ease-out; press
-collapses the lift and takes the card to `scale(0.99)`, so it gives under
-the cursor rather than jumping out from under it. The keyboard highlight
-draws exactly the hover state, so the two can never disagree. The
-last-opened tool carries `aria-current` but **no** fill: the picker is a
-page for choosing, and a card pre-tinted in the colour hover uses reads as
-already-hovered. Under `prefers-reduced-motion` the transitions and the
-lift both go; the fill and hairline still answer the cursor.
-
-Only the ACTIVE tab is mounted. Inactive tools **unmount their view and
-keep their service alive**.
-Terminals, browser tabs, App Control sessions, and iOS simulator streams
-all live in the main process and keep running; only the React views go.
-The browser is the one tool with an explicit obligation, since its
-`WebContentsView` is composited above the renderer: `hideBuiltInBrowserView`
-parks it on every switch away, on close, when the pane goes inactive, on
-unmount, and when the Work route deactivates.
-
-Closing a tool's **tab** is the one close that stops the tool for real.
-`closeWorkToolForReal` (beside `useWorkSidebarTool`) dispatches, on the
-tool's own runtime pin: the built-in browser closes every tab it has open
-(`builtInBrowser.closeTab` per tab from `getStatus`), App Control calls
-`appControl.stop`, the simulator `iosSimulator.shutdown` (lane-scoped, so
-`ignoreOwnership`), and mac-desktop the `mac_desktop.stop` action for the
-lane. A failure is logged and never blocks the tab from leaving the strip.
-Closing the **pane** (the ✕ at the row's end) is not a stop: every tool keeps
-running. The corner card can preview the browser and App Control (subject to
-the per-chat “Show preview when minimized” toggle). The Mac Desktop comes back
-in its own floating player, and stays hidden while the pane is already showing
-it.
+**Mounting and close.** Only the active tab is mounted. Inactive tools keep
+their main-process service. `hideBuiltInBrowserView` parks the browser view on
+every switch, close, deactivation and unmount. Closing a **tab** stops the
+tool (`closeWorkToolForReal`, on its runtime pin): the browser closes its
+tabs, App Control calls `appControl.stop`, the simulator
+`iosSimulator.shutdown` (`ignoreOwnership`), the Mac Desktop
+`mac_desktop.stop`. A failure is logged and the tab still closes. Closing the
+**pane** stops nothing.
 
 ### Which tools are open is per lane
 
-`workSidebarTool` (`WorkSidebarTab | null`, null = picker) and
-`workSidebarOpenTools` (the strip, in order, with the active tool among
-it) are stored per lane in `laneWorkViewByScope` under
-`"<projectKey>::<laneId>"`, read and written through
-`useWorkSidebarTool(laneId, runtimePin, chatSessionId)`. Picking a tool
-appends it, or activates the tab it already has without moving it; closing
-one hands the pane to the tab on its **right**, then its left, then the
-picker (`openWorkToolTab` / `closeWorkToolTab`, pure) and stops the tool
-through `closeWorkToolForReal`. The optional pin is the
-focused chat's machine so `work_tools.setActiveTool` publishes there;
-a null pin is the tab's bound runtime. The third argument is the chat the
-pane's tools are attached to, so a tab close can stop the tool with the
-right owner (`chatSessionId` on App Control / iOS / mac-desktop calls). Going back to the picker
-keeps the strip — the tabs are still open, the pane is just showing the
-page you pick from. Persisted state written before the strip existed
-(`WORK_VIEW_STATE_VERSION` 6) normalizes its single tool into a one-tab
-strip, so upgrading lands on the pane you left rather than an empty
-picker. A lane with no stored choice
-falls back to the project-scoped copy of the same fields, which is also
-where a lane-less (projectless / personal) Work surface reads and writes.
-`workSidebarOpen` and `workSidebarWidthPct` stay project-wide: the pane's
-geometry is a workspace preference, its contents are not. Picking any tool
-(including returning to the picker) forces `workSidebarOpen` true, so every
-entry point still acts as a one-click reveal.
-
-Surfaces outside the Work page cannot write this state, because only that
-page resolves the lane the pane is following. They file a request instead
-(`workToolRequests.ts`) and the Work page drains it against the right
-scope — immediately if it is mounted, on mount if the request arrived
-while another tab was open. That is the path used by the app shell's
-`builtInBrowser` open-request handler and by the command palette's
-`Tools: <name>` / `Tools: Show picker` entries
-(`buildWorkToolCommands` in `commandPaletteWork.tsx`).
+- `workSidebarTool` (null = picker) and `workSidebarOpenTools` are stored per
+  lane in `laneWorkViewByScope` (`"<projectKey>::<laneId>"`) through
+  `useWorkSidebarTool(laneId, runtimePin, chatSessionId)`. The pin sends
+  `work_tools.setActiveTool` to the chat's machine; the chat id is the owner
+  for a tab-close stop.
+- A pick appends a tab or activates it. A close hands the pane right, then
+  left, then to the picker (`openWorkToolTab` / `closeWorkToolTab`). The
+  picker keeps the strip. Version 6 state becomes a one-tab strip.
+- A lane with no choice uses the project-scoped copy, as does a lane-less
+  surface. `workSidebarOpen` and the width stay project-wide; any pick opens
+  the pane.
+- Other surfaces file a request (`workToolRequests.ts`) that the Work page
+  runs against the right scope, now or on mount: the browser open-request
+  handler and the palette's `Tools: …` rows (`buildWorkToolCommands`).
 
 ### The pane follows the chat's machine
 
-`WorkSidebar` takes `runtimePin?: OpenProjectBinding | null` — the machine
-the active Work session actually runs on, `null` meaning this tab's bound
-machine. `TerminalsPage` supplies it from `activeWorkSessionRuntimePin`
-(`resolveSessionRuntimePin(activeWorkSession)`). Every tool in the pane
-follows the chat: a chat on another machine gets **that** machine's git,
-terminals, and files, not the tab's.
+`WorkSidebar` takes `runtimePin` (`resolveSessionRuntimePin(activeWorkSession)`;
+null is the tab's machine). Every tool follows the chat.
 
-- **Lane resolution.** A foreign chat's lane is absent from the tab-bound
-  `lanes` array, so the worktree path — and therefore the iOS / App Control
-  project root — resolved to null. The pane resolves the active lane against
-  `useLanesForPin(runtimePin)` (the pinned machine's slice of the
-  cross-machine lane union), falling back to `lanes` only for an unpinned
-  session. Lane-mismatch attribution messages are built from that same
-  scoped list, so a mismatch names lanes that actually exist on the pinned
-  machine.
-- **Machine-keyed remounts.** Every panel is mounted with a machine-keyed
-  React `key` — `work-git:<pinKey>:<laneId>`, `work-terminal:…`,
-  `work-files:…`, `work-ios:…`, `work-appcontrol:…`, `work-browser:…` — so a
-  foreign machine's tabs and panel state can never paint into the machine you
-  just switched to. Diff selection state (`selectedPath` / `selectedMode` /
-  `selectedCommit`) resets on a pin change as well as a lane change.
-- **Offline handling.** Pinned calls have no local fallback, so when the
-  pinned machine is known offline
-  (`useMachineEntryForBinding(runtimePin)?.online === false`) the git and
-  terminal tabs render one plain line naming the machine
-  (`"<machine> is offline."`) instead of a wall of rejected IPC, and the App
-  Control / iOS status probes are skipped entirely. Machine names come from
-  `machineNameForBinding` in `shared/machineIdentity.ts` and are absolute
-  ("This computer", "MacBook Pro (97)") — never "remote".
-- **Pinned calls made from the pane.** `appControl.getStatus(pin)` +
-  `appControl.onEvent(cb, pin)`, `iosSimulator.getStatus(pin)` +
-  `iosSimulator.onEvent(cb, pin)`, and `terminal.write(..., pin)` for context
-  insertion. `runtimePin` is forwarded to `LaneGitActionsPane`,
-  `LaneDiffPane`, `ChatTerminalDrawer`, `ChatIosSimulatorPanel`,
-  `ChatAppControlPanel`, `ChatBuiltInBrowserPanel`, and `FilesTab`.
+- **Lanes.** The active lane resolves through `useLanesForPin(runtimePin)`, so
+  a foreign chat has a worktree path and lane-mismatch messages name real
+  lanes.
+- **Keys.** Each panel has a machine key (`work-git:<pinKey>:<laneId>`,
+  `work-terminal:…`, `work-files:…`, `work-ios:…`, `work-appcontrol:…`,
+  `work-browser:…`). Diff selection resets on a pin or lane change.
+- **Offline.** With the pinned machine offline, Git and Terminal show
+  `"<machine> is offline."` and the App Control and simulator probes are
+  skipped. Names come from `machineNameForBinding` and are never "remote".
+- **Pinned calls.** `appControl.getStatus` / `onEvent`,
+  `iosSimulator.getStatus` / `onEvent` and `terminal.write`. The pin goes to
+  `LaneGitActionsPane`, `LaneDiffPane`, `ChatTerminalDrawer`,
+  `ChatIosSimulatorPanel`, `ChatAppControlPanel`, `ChatBuiltInBrowserPanel`
+  and `FilesTab`.
 
 Tabs:
 
-- `git` — `LaneGitActionsPane` on top, `LaneDiffPane` underneath
-  whenever a file or commit is selected. The two share the row via
-  the same min-height-aware flex layout as the lane detail view.
-- `files` — `FilesTab` mounted with `preferredLaneId={laneId}` and
-  `embedded={true}`. The `embedded` prop drops the desktop title block,
-  the `View lane` button, the editor theme toggle, the `Open In` menu,
-  and the file count, shrinks the workspace selector so the file tree fits
-  a narrow column, paints file glyphs monochrome
-  (`MonochromeFileIconsContext`), and replaces the surviving controls with
-  one `workToolChrome` row that carries the breadcrumb. Below
-  `EMBEDDED_SINGLE_SURFACE_PX` (520) the pane goes **single-surface**: a
-  220 px tree beside an editor is two unreadable columns, so one is shown
-  at a time — the tree until a file opens, then the editor with a "Back to
-  files" crumb. The hidden column stays mounted but `inert`, which is why
-  focus-sensitive claims (the code editor's ⌘F) test
-  `host.closest("[inert]")` before answering.
-- `terminal` — `ChatTerminalDrawer` in `panel` variant, attached to the
-  session that owns terminals (see below). Its chrome row carries the
-  shell pills plus two ghost controls: **Split**, which stacks a second
-  shell under the active one (held as a tab id, not a boolean, so closing
-  that shell retires the split instead of leaving an empty half; clicking
-  the split shell's own pill makes it active and retires the pane, and the
-  next split simply overwrites the stale id), and **Clear**, which wipes
-  the active shell's scrollback through
-  `clearTerminalRuntimeScrollback(sessionId)`. Only a *different* shell can
-  occupy the second pane — the same runtime cannot fill both. The panel
-  publishes how many shells it is rendering through `workTerminalShells.ts`,
-  which is what the pane header and picker report.
-- `ios` — `ChatIosSimulatorPanel` for the active lane (no chat scope),
-  driving the simulator on the pinned machine.
-- `app-control` — `ChatAppControlPanel` for the active lane, driving the
-  controlled app on the pinned machine.
-- `browser` — `ChatBuiltInBrowserPanel` over the built-in browser's
-  `WebContentsView` tabs for the current ADE window. Unlike the other
-  tabs the browser is not lane-scoped; each ADE window owns its own tab
-  set, active tab, bounds, and inspect state while all windows share the
-  same `persist:ade-browser` partition for authentication. Browser
-  selections flow back to the active chat through the same dispatch
-  path. Switching off the tab and closing the sidebar both run
-  `hideBuiltInBrowserView()`, which calls
-  `window.ade.builtInBrowser.stopInspect()` and zeros the bounds with
-  `visible: false` so the underlying `WebContentsView` is detached
-  from the layout (otherwise it would float over neighbouring panes
-  because `WebContentsView` paints above DOM siblings). The pane mounts
-  for a chat pinned to another machine too — the browser is always this
-  window's — but every loopback URL it is asked for is first tunneled to
-  the pinned machine through a port-forward, the URL bar and tab titles
-  keep showing the remote origin behind a machine-name badge, and the
-  first use of a port an agent chose raises an inline "Agent wants to
-  reach port N on <machine>" bar with Allow once / Always for this lane.
-  See `docs/features/remote-runtime/README.md`.
+- `git` — `LaneGitActionsPane`, with `LaneDiffPane` under it when a file or
+  commit is selected.
+- `files` — `FilesTab` with `embedded`: no title block, `View lane`, theme
+  toggle, `Open In` or count; monochrome glyphs; one chrome row with the
+  breadcrumb. Under `EMBEDDED_SINGLE_SURFACE_PX` (520) it shows the tree or
+  the editor, not both; the hidden one is `inert`, so focus claims (⌘F) check
+  `host.closest("[inert]")`.
+- `terminal` — `ChatTerminalDrawer` (`panel`) on the terminal owner. **Split**
+  stacks a second, different shell (kept as a tab id, so closing it ends the
+  split); **Clear** runs `clearTerminalRuntimeScrollback`. The shell count
+  goes out through `workTerminalShells.ts`.
+- `ios` and `app-control` — `ChatIosSimulatorPanel` and `ChatAppControlPanel`
+  for the lane, on the pinned machine.
+- `browser` — `ChatBuiltInBrowserPanel` over this window's `WebContentsView`
+  tabs (per window; one `persist:ade-browser` partition). Leaving the tab or
+  closing the pane runs `hideBuiltInBrowserView()` (`stopInspect`, zero
+  bounds, `visible: false`). For a foreign chat, loopback URLs tunnel to that
+  machine; see
+  [The ADE browser for a remote chat](../remote-runtime/README.md#the-ade-browser-for-a-remote-chat).
 
-  **Lane groups.** Each tab carries a sticky `groupLaneId`: the lane it was
-  opened from, or the lane of the agent that opened it. It is set once and a
-  later navigation does not change it, so a tab keeps its lane after the agent
-  lease ends. `orderBrowserTabsByLane` (`chat/browser/browserTabGroups.ts`)
-  orders the strip: the tabs of the current lane first, then each other lane
-  in the order its first tab opened, then tabs with no lane. Inside a group,
-  tabs stay in the order they opened. `BrowserTabStrip` outlines each tab in
-  its lane's color. The robot mark shows only while a chat holds the tab
-  (`ownerChatSessionId`); a lane group alone is not an agent lease.
+**Browser tabs.**
 
-  Browser leases expire after their idle period. Every agent sees every tab:
-  a scoped read marks a free tab (no owner, or a lapsed lease) `claimable`
-  and another chat's live tab `heldByOtherChat`, and `ade browser status`
-  names the owner by chat title and lane name. Any agent may close any tab;
-  claiming a held tab is still refused. A command with no tab named, from a
-  chat that owns no tab, is refused rather than run in the tab in front. When
-  opening a new tab would exceed the tab limit (20 per collection by
-  default, "Tabs per project" in Settings), the error lists only the caller's
-  agent tabs and free agent tabs nobody kept, and counts the rest; a tab the
-  user opened or kept is never offered. A deleted or archived lane frees its
-  tabs and closes none. At start, a collection restores the user's tabs and
-  the agent tabs a person kept (navigated by hand or handed to a chat), with
-  their ids; other agent tabs and one-time OAuth pages are not restored.
+- Each tab has a fixed `groupLaneId` (where it opened, or its agent's lane).
+  `orderBrowserTabsByLane` (`chat/browser/browserTabGroups.ts`) puts the
+  current lane first, then other lanes by first open, then no lane.
+  `BrowserTabStrip` outlines tabs in their lane colour; the robot mark shows
+  only while a chat holds the tab (`ownerChatSessionId`).
+- Leases expire when idle. Every agent sees every tab: a free tab is
+  `claimable`, another chat's is `heldByOtherChat`, and `ade browser status`
+  names the owner. Any agent may close any tab; claiming a held one is
+  refused. A command with no tab from a chat that owns none is refused.
+- Over the tab limit (20 per collection, "Tabs per project"), the error lists
+  only the caller's and unkept agent tabs. A deleted lane frees its tabs. A
+  restart restores user tabs and kept agent tabs, not OAuth pages.
+- **Zoom-aware inspect.** The overlay sits outside the preview's body zoom and
+  probes the pointer at both scales, keeping the element that contains it.
+- **Login handoff.** `ade browser handoff --tab <id> --reason "..."` runs
+  `startHandoff` (`builtInBrowserService.ts`): it parks the lease in
+  `handoff.previousOwner`, clears the navigation guard, makes the tab
+  human-owned and opens the pane. While `tab.handoff` is set, agent calls on
+  the tab throw `handoff_active`; the pane's own calls pass. The pane shows
+  the reason and **Hand back**, then "Signed in? / Hand back now / Keep
+  control" after the origin changes. Only a person can hand back
+  (`endHandoff` on IPC, and on the runtime bridge for user clients only). Tab
+  close and the timeout (15 min) also end it; each end restores the lease and
+  writes `handoff-end` (`endedBy`, `durationMs`).
+  `builtInBrowserHandoffSession.ts` raises the chat's hand, clears it at the
+  end and adds the card "Handed back to the agent". The CLI also sends a push
+  ("Sign in for me") and waits unless `--no-wait`. iOS shows it read-only
+  (`WorkToolsBrowserTab.handoffReason`).
 
-  **Zoom-aware inspect.** The preview sets a CSS zoom on `<body>`. The inspect
-  overlay attaches to the document element, outside that zoom, and each hit
-  test also probes the pointer divided and multiplied by the zoom. It keeps
-  the element whose box contains the pointer, so the outline stays on the
-  element at any preview zoom.
+**Context insertion.** `WorkSidebarContextTarget` is one of:
 
-  **Login handoff.** An agent that hits a page it cannot get past — a login
-  form, a CAPTCHA, an HTTP-auth or client-certificate prompt — calls
-  `ade browser handoff --tab <id> --reason "..."`. `startHandoff` in
-  `builtInBrowserService.ts` suspends the tab's agent lease into
-  `handoff.previousOwner`, clears the agent navigation guard so the person is
-  not blocked mid-redirect, marks the tab human-owned, and reveals the pane
-  through the usual `open-request` event. While `tab.handoff` is set every
-  agent-identified call on that tab throws
-  `BuiltInBrowserHandoffActiveError` (`handoff_active`); calls with no agent
-  identity — the pane's own toolbar — pass through untouched. The pane shows
-  an amber bar with the reason and a `Hand back` button, and swaps to
-  "Signed in? / Hand back now / Keep control" once the tab leaves the origin
-  it was handed over on; `Keep control` silences that offer until the next
-  origin change. Hand-back is human-only: `endHandoff` is exposed on IPC and,
-  for locally-pinned chats, on the runtime bridge gated to user clients in
-  `adeRpcServer.ts` — there is no agent path to it. The handoff also ends on
-  tab close and on its own timeout (default 15 minutes), and each ending
-  restores the suspended lease with a fresh TTL and writes a `handoff-end`
-  trace entry carrying `endedBy` and `durationMs` next to the `handoff-start`
-  entry carrying the reason, so a trace or recording explains the gap.
-  `builtInBrowserHandoffSession.ts` is the chat-side half, wired from
-  `main.ts`: it raises the requesting session's hand with the same
-  `requestAttention` state `ade chat ask` produces, clears it on every ending
-  (including ones no CLI is waiting on), and emits a terminal `ade_card`
-  reading "Handed back to the agent". The CLI additionally issues
-  `session.requestSessionAttention` so the phone push goes out through the
-  existing hand-raise path, with `alertTitle: "Sign in for me"` and the reason
-  as the body, then blocks on `waitForHandoff` unless `--no-wait` was passed.
-  iOS surfaces the same state read-only in the Tools sheet via
-  `WorkToolsBrowserTab.handoffReason`.
+- `chat` for a chat session, or `draft` (`draftTargetId`, `laneId`,
+  `draftKind`) with no session but a draft composer. These get window events
+  (`ade:agent-chat:add-attachment`, `add-ios-context`,
+  `add-app-control-context`, `add-builtin-browser-context`, `insert-draft`).
+- `pty` (`sessionId`, `ptyId`, `toolType`) for a tracked agent CLI. The
+  selection is formatted by `lib/visualContextFormatting.ts` and written as a
+  bracketed paste through `terminal.write(..., runtimePin)`, then
+  `ADE_WORK_PTY_CONTEXT_INSERTED_EVENT` lets `TerminalView` show a mark.
+- With no target, panels drop the attach controls with no banner.
+- PTY insertion works across machines. Chat insertion is a DOM event, so a
+  foreign chat gets "Tool context insertion is not available for chats on
+  another machine."
+- `isPtyContextInsertableToolType` (`lib/sessions.ts`): claude, codex,
+  cursor-cli, droid, opencode. Shells host terminals but take no context.
+- `terminalOwnerSessionId` comes from the active session (a chat, or a
+  running insertable CLI with a `ptyId`, on any machine), and from
+  `contextTarget` only with no active session.
+- The one banner is **lane attribution**: the pane's own App Control and
+  simulator subscriptions see a tool started from another lane and say so,
+  with the catalogue names (`workToolLabel`). It does not block insertion.
 
-The sidebar picks a single insertion target per active Work session via
-`WorkSidebarContextTarget`: a chat (`kind: "chat"`) when the focused
-Work session is chat-typed, a draft composer (`kind: "draft"`, carrying
-`draftTargetId`, `laneId`, and `draftKind`) when no session is active
-but a draft composer is mounted, or a tracked agent CLI PTY
-(`kind: "pty"`, carrying `sessionId`, `ptyId`, and `toolType`) when the
-focused Work session is Claude / Codex / Cursor / OpenCode / Droid.
-Chat and draft targets receive selections through window events
-(`ade:agent-chat:add-attachment`, `add-ios-context`,
-`add-app-control-context`, `add-builtin-browser-context`,
-`insert-draft`); draft events carry `draftTargetId` instead of
-`sessionId` so the matching `AgentChatPane` can identify the correct
-draft composer. PTY targets get the same
-selections formatted into prompt text by
-`apps/desktop/src/renderer/lib/visualContextFormatting.ts`
-(`formatIosElementContextForPrompt`,
-`formatAppControlContextForPrompt`,
-`formatBuiltInBrowserContextForPrompt`) and written into the PTY as a
-bracketed-paste payload (`\x1b[200~…\x1b[201~`) through
-`window.ade.terminal.write(..., runtimePin)` — PTY insertion is
-machine-addressed, so it works against a chat on another machine. After the
-write succeeds the sidebar dispatches
-`ADE_WORK_PTY_CONTEXT_INSERTED_EVENT`
-(`apps/desktop/src/renderer/lib/workPtyContextEvents.ts`) so the active
-`TerminalView` can show a brief "context inserted" affordance. When no
-chat, draft, or tracked agent CLI session is open in the active Work
-lane, the panels simply drop the controls that depend on attachment.
-"This session cannot receive inserted context" is a capability the pane
-does not offer here, not a warning, so it is no longer narrated in a
-banner above controls you can still see.
-
-The one banner that survives is **lane attribution**. The sidebar owns
-its own `AppControlSession` / `IosSimulatorSession` subscriptions so it
-can detect that a tool was launched from a different lane, and says so —
-using the catalogue's own names (`workToolLabel`), because the banner was
-the one place the pane called the simulator something the header and the
-picker did not. It does not block context insertion: controls affect the
-running tool while inserted context goes to the current chat, draft, or
-CLI target.
-
-**Terminal ownership is an identity question, not a permission one.**
-`terminalOwnerSessionId` is derived from the active session directly, not
-from `contextTarget`: any chat session, or any *running* agent-CLI session
-with a `ptyId` whose tool type is context-insertable, can host attached
-terminals — including one on another machine. It falls back to the
-`contextTarget` sessionId only when there is no active session. Deriving it
-from `contextTarget` conflated identity with permission and showed foreign
-chats an "open a chat or running agent CLI session to attach terminals"
-empty state instead of a terminal.
-
-**Context-insertion gating is narrowed to the one path that cannot cross
-machines.** PTY context insertion is machine-addressed (`terminal.write`
-takes the pin), so it is allowed cross-machine. Only **chat** insertion
-fails closed for a foreign machine, because it is a DOM window event
-consumed by the chat pane and that path is not machine-addressed; the
-disabled reason is correspondingly "Tool context insertion is not available
-for chats on another machine." Failing closed for *any* session on another
-machine would take PTY insertion down with it.
-
-`isPtyContextInsertableToolType` lives in
-`apps/desktop/src/renderer/lib/sessions.ts` (shared by `TerminalsPage` and
-`WorkSidebar`): claude / codex / cursor-cli / droid / opencode. Shells are
-excluded — they host terminals but are not a context-insertion target.
-
-Open/closed and width go through `useWorkSessions` setters
-(`setWorkSidebarOpen`, `setWorkSidebarWidthPct`); which tool is open goes
-through `useWorkSidebarTool(laneId).setTool`, which also opens the pane so
-choosing a tool from a closed state acts as a one-click reveal. The
-tools-pane toggle is the
-mirrored `SidebarSimple` glyph on the chat/CLI `WorkSurfaceHeader` (solid
-rail on the right), so it matches the sessions-list collapse control on
-the opposite edge.
-
-Drawers in `AgentChatPane` accept `hideLaneToolDrawers={true}` when the
-pane is mounted as a Work tile (`SessionSurface`), so the chat header
-no longer shows the iOS / App Control toggles inside Work — those
-drawers now live on the lane-scoped `WorkSidebar`. Proof remains
-chat-scoped and stays on the chat header.
+Open state and width go through `setWorkSidebarOpen` /
+`setWorkSidebarWidthPct`; the tool through `useWorkSidebarTool(laneId).setTool`,
+which also opens the pane. The toggle is the mirrored `SidebarSimple` on
+`WorkSurfaceHeader`. A Work tile's `AgentChatPane` gets
+`hideLaneToolDrawers`, so the simulator and App Control toggles live only in
+the pane; Proof stays on the chat header.
 
 ### One chrome vocabulary: `workToolChrome.tsx`
 
-Terminal, Git, Files, the simulator, App Control and the browser each had
-their own answer to the same row — uppercase mono buttons in one, tinted
-`<select>`s in another, three stacked rows in a third. `workToolChrome.tsx`
-is that geometry, spent rather than reinvented:
-
-- **Exactly one chrome row per tool**, 40 px
-  (`WORK_TOOL_CHROME_ROW_HEIGHT`), under the pane header's own 32 px. The
-  row carries `ade-pane-chrome` (which makes it `select-none`, so dragging
-  the pane divider no longer leaves half the labels highlighted in accent
-  blue) and the same `ade-tool-pane-rule` hairline the header draws, so
-  the two read as one piece of furniture.
-- **Controls are ghost**: transparent until hover, and hover/press change
-  fill only — never size, never colour temperature — over 120 ms
-  (`WORK_TOOL_CHROME_MOTION`). Focus is an *inset* accent hairline
-  (`WORK_TOOL_CHROME_FOCUS`), because an outset ring on a 28 px square
-  overlaps its neighbours in a flush row.
-- **Icons are 16 px** in buttons, 12 px inside a chip beside text, and
-  nothing in the row is a sentence — what a control does is a tooltip's
-  job.
-- **Content that is its own surface** (a terminal, a diff, an App Control
-  stage) sits inset 8 px with a 10 px radius and a 1 px inset ring, so the
-  pane frames it instead of letting it bleed into the chrome.
-
-The browser composes its own row (it has an overflow-hidden omnibox to
-fit) and App Control draws a bordered variant; both spend the shared
-height and motion constants rather than re-typing them.
+- One chrome row per tool, 40 px (`WORK_TOOL_CHROME_ROW_HEIGHT`), under the
+  32 px header, with `ade-pane-chrome` (`select-none`) and the
+  `ade-tool-pane-rule` hairline.
+- Ghost controls: hover and press change fill only, over 120 ms
+  (`WORK_TOOL_CHROME_MOTION`). Focus is an inset hairline
+  (`WORK_TOOL_CHROME_FOCUS`).
+- Icons are 16 px (12 px in a chip). Tooltips carry the words.
+- A content surface (terminal, diff, App Control stage) is inset 8 px with a
+  10 px radius and a 1 px inset ring.
+- The browser builds its own row and App Control a bordered one, with the
+  same height and motion constants.
 
 ### One set of tool feeds, shared
 
-The pane's status lines and activity dots and the floating corner card
-all need the same three answers — what the browser, App Control, and the
-simulator are doing. `useNativeToolSessions.ts` is that subscription set
-(browser status + events, App Control session + events, simulator session
-+ events, one capability gate, one definition of "live"), and mounting it
-twice opens two sets of subscriptions. `NativeToolFeedsContext.tsx` is
-the sharing mechanism: `TerminalsPage` mounts the hook once and provides
-it, and the pane and the card both read from the context. Browser error
-badges are a pure fold over pushed `diagnostics` events
-(`workToolErrors.ts`) — the service emits a tally when a tab's count
-moves and resets it to zero on a main-frame navigation, so a reload
-clears the badge and nothing polls.
+`useNativeToolSessions.ts` holds the browser, App Control and simulator
+subscriptions, one capability gate and one meaning of "live". `TerminalsPage`
+mounts it once and shares it through `NativeToolFeedsContext.tsx` with the
+pane and the corner card. Browser error badges fold pushed `diagnostics`
+events (`workToolErrors.ts`); a main-frame navigation resets the count.
 
 ### The floating live-preview card: `WorkLiveCornerCard.tsx`
 
-The Work tab has exactly one pane for a screen tool, so the moment an
-agent starts driving the browser while you read a diff, the thing you
-most want to see is the thing you just navigated away from. The corner
-card is a live thumbnail of the most recently active screen tool that is
-**not** the one on screen, parked in a corner of the chat column and one
-click away from taking the pane back.
+A live thumbnail of the most recent screen tool that is not on screen, in a
+corner of the chat column, one click from taking the pane back.
 
-The box follows the picture, not a fixed per-tool rectangle. The width is
-the user's (default 288 px, 200–560, never more than half the column); the
-height is `width / aspect`, capped at ~340 px, and the width is shrunk to keep
-the aspect when the cap hits. The 200 px width floor beats that soft cap, so a
-tall picture (a phone-size device preset) is a 200 px card taller than 340 px;
-the column's own height beats the floor, so in a short window that card
-narrows below 200 px rather than not fitting and disappearing. The aspect comes
-from the source's own natural size — the browser `<img>`'s
-`naturalWidth/Height`, the App Control frame, the simulator `<video>`'s
-`videoWidth/Height`, the `macDesktopFrame` — for every tool, the browser
-included: a parked tab is laid out at a usable size (see
-[Corner card and parked preview views](../chat/README.md#the-corner-card-and-parked-preview-views)),
-so a tall browser picture is a real page and gets a tall card. It falls back to
-the tool's default (16:10, or 3:4 for the simulator) until the first frame
-arrives. Every tool draws with `object-fit: contain`; nothing is cropped.
-A bottom-right handle resizes the width (the aspect stays locked) and the width
-is persisted project-scoped beside the position. It asks its source for frames
-at the card's width in *device* pixels, so a Retina card is not fed a
-thumbnail-sized image and upscaled into mush, nor a 5K panel a full-width one.
-
-Its chrome follows a mini-player: **nothing but an 8 px status dot at
-rest**, and a 32 px blurred pill — icon, name, last action, ✕ — that takes
-the dot's place on hover and doubles as the drag handle. The picture is
-the whole card, so every pixel of chrome is a pixel of preview you do not
-get. A 2 px scrub strip **overlays** the media's bottom edge rather than
-adding height; the hovered frame is held by trace id, not index, so a new
-action shifting the buffer cannot re-caption the picture the pointer is
-parked on. Browser "activity" is a diff of the parts a human would call
-activity (`browserActivitySignature`), not every status event — closing
-the card stops its preview stream, which itself emits one, and a
-dismissal undone by the event it caused would never stick.
-
-- **Which tool.** `selectWorkLiveCardTool` in `workLiveCard.ts` picks the
-  available, live, non-active tool with the newest activity. Activity is
-  seeded from the settled `getStatus`/session answers as well as from events,
-  so a tool that was already live when the card mounted — a tab opened before
-  the Work page, a display the pane already streamed — still counts instead of
-  being skipped for `lastActivityAt: 0` forever. A floated tool is shown even
-  before it has painted and outranks every non-floated activity, because the
-  “Show preview when minimized” toggle is an explicit ask and a blank card
-  with the tool's name is better feedback than a lit control that does
-  nothing. The corner card's only candidate is `browser`. App Control, the
-  Apple device and the Mac Desktop float in their own players (see below). Git and
-  Files have nothing to look at.
-- **It steps aside for a floating player.** While any floating player is on
-  screen (the Mac Desktop, App Control or an Apple device, read through
-  `useAnyFloatingPlayerShown` in `floatingPlayerSlots.ts`), the card is not
-  shown and its feed is torn down. The card does not take part in the players'
-  placement, so stepping aside is what keeps it off a player. A tool the user
-  floated by hand still shows.
-- **It steps aside while the browser page has failed to load.** Chromium
-  paints a failed main-frame load (a stopped dev server, a bad URL) as plain
-  white, so the card would float a white box. While the tab's status carries
-  `loadError`, the browser is not offered to the card at all, even when the
-  chat floated it by hand; the float is kept, and the card returns as soon as
-  the tab loads again.
-- **It belongs to the chat you are reading.** The card is passed the selected
-  chat session id and shows only sessions that chat owns: a browser tab's
-  `ownerChatSessionId`, an App Control or simulator session's `chatSessionId`.
-  An unowned session (a tab opened by hand, an app attached without a chat)
-  belongs to no chat, so it may float only in a chat whose tools pane has
-  shown it: the card records `workLiveCardSeenByTool` (tool → session key) in
-  the chat's companion state while the pane is open on that tool, and an
-  unowned session is shown only where that marker matches. That is what keeps
-  a hand-opened browser tab from following you into every chat. When a floated tool's
-  session ends (tab closed, app exited, simulator shut down) the float is
-  dropped with it, so closing the tool never leaves a blank named frame.
-- **The ✕ and the toggle mean off until turned back on.** × records the
-  session it was showing — browser active tab id or App Control session id —
-  per chat, in
-  `chatCompanionUiState.ts`; the record is dropped when the chat is deleted.
-  The read is `isWorkLivePreviewEnabled`, which is **presence-based**: any
-  marker means this tool's preview is off for this chat, and a new session
-  does **not** reopen it (that is the change the per-tool toggle brought).
-  Each screen tool's chrome row carries a “Show preview when minimized”
-  toggle (`WorkToolPreviewControls`, default ON, `aria-pressed`); turning it
-  ON clears the marker and re-floats the tool
-  (`setWorkLivePreviewEnabledForChat`), turning it OFF writes the same marker
-  × does, so the two affordances cannot disagree. Frames, status refreshes,
-  open-requests, and remounts never reopen a card. Position and width stay
-  project-scoped (`workLiveCardPosition`, `workLiveCardWidth`) so resizing the
-  column keeps the card in place instead of stranding it off an edge, and a
-  width resize re-clamps and re-persists the position so a right-edge card
-  cannot reopen off-column. In a column narrower than the full-size floor the
-  card shrinks to its minimum width instead of being hidden.
-- **It costs nothing when nobody watches.** It subscribes to feeds that
-  already exist — App Control's screencast, the browser's refcounted
-  preview stream, the Apple-device H.264 stream keyed by device udid —
-  paints frames straight onto an `<img>`/`<canvas>` inside one rAF (so a 12 fps feed
-  causes zero React renders), and tears every feed down the moment the
-  Work route is not active.
-- **Parked, not hidden.** A `WebContentsView` that is detached or
-  `setVisible(false)` has no compositor surface, and with no surface every
-  capture path returns an empty image. So a browser tab with a live
-  preview subscriber is *parked* past the union of every display's bounds
-  instead of being detached — see [Chat › the corner card and parked
-  preview views](../chat/README.md#the-corner-card-and-parked-preview-views).
+- **Size.** Width is the user's (default 288 px, 200–560, at most half the
+  column). Height is `width / aspect`, capped near 340 px; the 200 px floor
+  beats the cap, and the column height beats the floor. The aspect is the
+  source's natural size for every tool (the browser's parked view has a real
+  size; see
+  [Corner card and parked preview views](../chat/README.md#the-corner-card-and-parked-preview-views)),
+  else 16:10 (3:4 for the simulator). Everything is `object-fit: contain`. A
+  corner handle resizes width; frames are asked for at device pixels.
+- **Chrome.** An 8 px status dot at rest; on hover a 32 px pill (icon, name,
+  last action, ✕) that is also the drag handle. A 2 px scrub strip overlays
+  the bottom; the hovered frame is held by trace id. Browser activity is
+  `browserActivitySignature`, so the card's own stream close does not count.
+- **Which tool.** `selectWorkLiveCardTool` (`workLiveCard.ts`) picks the
+  live, non-active tool with the newest activity, seeded from `getStatus` too.
+  A floated tool shows before its first paint and outranks the rest. The
+  card's only candidate is `browser`; App Control, the Apple device and the
+  Mac Desktop have their own players.
+- **It steps aside** while any floating player shows
+  (`useAnyFloatingPlayerShown`, `floatingPlayerSlots.ts`) and tears down its
+  feed; a hand-floated tool still shows. It also steps aside while the tab has
+  a `loadError`, keeping the float.
+- **It belongs to the open chat.** It shows only sessions the chat owns (a tab's
+  `ownerChatSessionId`, a session's `chatSessionId`). An unowned session shows
+  only in a chat whose pane showed it (`workLiveCardSeenByTool` in the chat's
+  companion state). A floated tool's float ends with its session.
+- **Off stays off.** ✕ records the session per chat
+  (`chatCompanionUiState.ts`). `isWorkLivePreviewEnabled` is presence-based,
+  so a new session does not reopen it. Each tool row's “Show preview when
+  minimized” toggle (`WorkToolPreviewControls`, on by default) clears or
+  writes the same marker (`setWorkLivePreviewEnabledForChat`). Frames and
+  remounts never reopen it.
+- Position and width are project-scoped (`workLiveCardPosition`,
+  `workLiveCardWidth`); a resize re-clamps the position. A narrow column
+  shrinks the card to its minimum.
+- **Cost.** It uses existing feeds (App Control's screencast, the browser's
+  refcounted preview stream, the H.264 device stream), paints inside one rAF
+  with no React renders, and drops every feed when Work is not active.
+- **Parked, not hidden.** A browser tab with a preview subscriber is moved
+  past every display instead of detached, because a hidden view captures
+  nothing.
 
 ### The shared floating player
 
-The floating Apple device and the floating Mac Desktop share one shell,
-`components/shared/FloatingPlayer.tsx`. The shell owns the box over the chat
-column: drag, resize from any edge, an 8 px status dot at rest, and a hover
-bar that takes the dot's place (Open in pane, picture in picture, Close).
-The picture inside is each tool's own. While picture in picture is up, the
-box stays composited at an opacity no eye can see and takes no pointer input,
-because a canvas the compositor treats as hidden can hand PiP a black surface.
+`components/shared/FloatingPlayer.tsx` is the shell for the floating Apple
+device and Mac Desktop: drag, resize from any edge, a status dot at rest, and
+a hover bar (Open in pane, picture in picture, Close). During picture in
+picture the box stays composited at near-zero opacity with no pointer input.
 
-`MacDesktopMiniPlayer.tsx` is the Mac Desktop's player. `WorkLiveCornerCard`
-mounts it beside the corner card, because that is the Work page's host over
-the chat column. `macDesktopFloatState` shows it for the chat in front when
-that chat may see the lane's desktop (a stream viewer, the lease holder, or a
-grant from its agent), the preview is not dismissed, and there is a picture,
-the Off state, an explicit float, or a decoder the player already holds. It
-is not visible while the tools pane is showing Mac Desktop. Closing it records
-the display's identity (`display:<displayId>:<createdAt>`) per chat, so a
-destroyed-and-recreated display can show again. Place and width are one
-window-level choice (`ade.macDesktop.floatingPlayer.v1`), clamped into the
-column on every pass.
+`MacDesktopMiniPlayer.tsx` mounts beside the corner card.
+`macDesktopFloatState` shows it for the open chat when that chat may see the
+lane's desktop (viewer, lease holder or a grant), the preview is not
+dismissed, and there is a picture, the Off state, a float or a held decoder.
+It hides while the pane shows Mac Desktop. Close records
+`display:<displayId>:<createdAt>` per chat. Place and width are one window
+choice (`ade.macDesktop.floatingPlayer.v1`).
 
-The pane and the player share one decoder per lane through
-`macDesktopLiveViewLease.ts`. The first holder starts the stream, the last
-release stops it, and the pane outranks the player. While the pane is open the
-player keeps the stream up without decoding; when the pane switches tools the
-player is promoted. Hiding the pane is not an unsubscribe, and one lane never
-has two decoders.
+`macDesktopLiveViewLease.ts` shares one decoder per lane. The first holder
+starts the stream and the last stops it; the pane outranks the player. One
+lane never has two decoders.
 
 ### Tooltips and menus in the pane
 
-`ui/PaneTooltip.tsx` over the pure `ui/tooltipPosition.ts` places the
-pane's tooltips: **flip before shift** (a tooltip that would leave the
-window flips to the opposite side if that side fits, and is only then
-shifted along its cross axis — shifting first is what produced the
-clipped "Clos"), and **never over the trigger**, so a tooltip cannot
-cover the control it describes. `ui/paneMenuTokens.ts` is the one menu
-surface both pane dropdowns paint with: the browser toolbar's Radix
-`DropdownMenu` and App Control's hand-rolled menu, which stays
-hand-rolled because it hosts inline forms a Radix menu's typeahead and
-focus management would fight. The tokens carry paint and width only —
-each menu keeps its own positioning, and App Control's is absolutely
-positioned inside the pane so it cannot escape the stacking context and
-float over another tool's live frame. Max height is viewport-aware
-rather than a fixed 320 px, because on a short window a constant cut the
-last item ("Stop") in half.
+- `ui/PaneTooltip.tsx` over `ui/tooltipPosition.ts`: flip before shift, and
+  never over the trigger.
+- `ui/paneMenuTokens.ts` paints both pane menus (the browser's Radix
+  `DropdownMenu` and App Control's own menu, which hosts inline forms). The
+  tokens hold paint and width only. App Control's menu stays inside the pane.
+  Max height follows the viewport.
 
 ## Terminal renderer: `TerminalView.tsx`
 
-Thin wrapper over xterm.js + `FitAddon`. Caches `Terminal` instances in
-a module-level map keyed by `(runtimePin, projectRoot, sessionId, ptyId)`
-(via `terminalRuntimeKey`) so a remount does not rebuild the emulator and so
-two different project tabs can each cache their own runtime against the
-same chat session id without colliding. An unpinned view produces exactly the
-old `(projectRoot, sessionId, ptyId)` key; a pin adds a `pin:<kind>:<key>::`
-prefix, so a session opened against another machine can never share a cache
-entry with a same-id view of the tab's own project. Each cached entry also records
-the `(projectRoot, projectRevision)` it was created under; on mount,
-`disposeStaleRuntimes(activeProjectRoot, activeProjectRevision)` clears
-out-of-date entries. With multi-project tab hosting in `App.tsx`,
-project switching no longer evicts another project's terminals: an
-entry is only torn down (or scheduled for keepalive teardown) when its
-own project context has aged out, **not** when a different project
-becomes active. The `projectRevision` counter lives in `useAppStore`
-and is bumped on every real project change.
+xterm.js with `FitAddon`.
 
-Renderer strategy: WebGL-first, fall back to the DOM renderer on any
-init failure or context loss. Canvas renderer is intentionally skipped
-(simplified from the earlier three-tier approach). At most
-`MAX_WEBGL_TERMINALS = 8` terminals hold a WebGL context at once:
-Chromium keeps 16 per page and drops the oldest past that, which can
-blank another terminal or the Work picker's backdrop. A terminal holds
-its slot while the addon loads, and later terminals use the DOM
-renderer. A DOM-renderer terminal blinks its cursor through
-`lib/xtermCursorBlink.ts`: the CSS animation stays paused on one of
-its two keyframes, and a 500 ms timer flips between them, so the blink
-does not restyle on every display frame.
+- **Cache.** `Terminal` instances live in a module map keyed by
+  `terminalRuntimeKey` (`runtimePin`, `projectRoot`, `sessionId`, `ptyId`); a
+  pin adds a `pin:<kind>:<key>::` prefix. Each entry records its
+  `(projectRoot, projectRevision)`; `disposeStaleRuntimes` clears entries
+  whose own project aged out, not when another project tab is active.
+  `projectRevision` is in `useAppStore`.
+- **Renderer.** WebGL first, the DOM renderer on any failure or context loss.
+  At most `MAX_WEBGL_TERMINALS` (8) hold a context (Chromium keeps 16 per
+  page). A DOM cursor blinks through `lib/xtermCursorBlink.ts` (a 500 ms
+  flip, no per-frame restyle).
+- `TerminalHealthCounters`: `fitFailures`, `zeroDimFits`,
+  `rendererFallbacks`, `droppedChunks`, `fitRecoveries`.
+- **Fit recovery.** Invalid dims (`cols < 20`, `rows < 6`, host under
+  `MIN_HOST_WIDTH_PX` 120 / `MIN_HOST_HEIGHT_PX` 48) restore the last good
+  dims and retry after `INVALID_FIT_RETRY_MS` (90 ms). The host size is the
+  max of the three DOM measures.
+- `isActive` gates input; `isVisible` gates fit and resize.
+- `terminalPreferences` changes apply live (font, size, line height,
+  scrollback) and clear the WebGL atlas.
+- **Frame writes** coalesce on rAF while visible and foreground, else on a
+  16 ms timer (`flushPendingFrameWrites` / `clearFrameWriteSchedule`).
+- **Reveal.** `WORK_SURFACE_REVEALED_EVENT` (from `PersistentWorkSurface`)
+  clears the atlas, flushes writes, refits on the next frame, refreshes, and
+  focuses and scrolls the active tile. Hidden surfaces get no resize events,
+  so this is the one signal.
+- **Runtime pin.** `runtimePin` (null on the hot path) is stored on the cached
+  runtime and goes on `pty.write` / `pty.resize`, `terminal.preview`,
+  `sessions.get`, `sessions.readTranscriptTail`,
+  `agentChat.saveTempAttachment`, `pty.setDataSubscriptions` and
+  `pty.onData` / `pty.onExit`. Listeners and the main-side id filter are
+  grouped per pin. A pin that resolves late moves the key;
+  `teardownRelocatedRuntimes` disposes the old runtime.
+- **Hydration.** `ade.terminal.preview` first.
+  `serializeSnapshotForHydration`: an alternate-buffer snapshot repaints the
+  visible rows (`serializeSnapshotVisibleRows`); a main-buffer snapshot writes
+  the `serialized` scrollback (else the visible rows). With no snapshot, the
+  transcript tail.
+- **Replay.** For a disposed session (`sessions.get`),
+  `sessions.readTranscriptTail({ raw: true })` (up to
+  `REPLAY_TRANSCRIPT_MAX_BYTES`, 8 MB) goes through
+  `stripFullScreenRedrawSequences()` (alt-screen switches, `\x1bc`, full
+  erases), with `REPLAY_SCROLLBACK_LINES` (100 000) and no
+  `trimToLikelyTerminalFrameBoundary`. A session that ended while mounting
+  has its live output replaced (`canReplayOverLiveData`) unless the replay is
+  shorter or the alternate screen is up.
+- **Backfill.** With nothing renderable but live data on screen,
+  `scheduleHydrationBackfill` retries the preview every ~100 ms (120 tries);
+  it re-arms when a visible tile has empty rows.
+- **Stream recovery.** The hosted web adapter marks a full snapshot as
+  `PtyDataEvent.replace`. The view bumps its hydration generation, cancels
+  timers, drops queued writes, resets xterm and writes the snapshot. Async
+  hydration steps check the generation. Deltas stay append-only.
+- **Mouse.** `updateTerminalInputModes` tracks DECSET 1000/1002/1003. On
+  macOS, `terminalMacShiftSelection.ts` turns Shift+drag into xterm's force
+  selection only while mouse tracking is on.
+- **Scroll hint (web only).** A wheel over a mouse-tracking session shows a
+  pill with the provider's scroll keys (`terminalScrollHint.ts`): Claude and
+  OpenCode `PgUp`/`PgDn`, Codex `Ctrl+T` first, `Fn+↑`/`Fn+↓` on Apple
+  keyboards. Droid and cursor-agent get none. Dismissal is per provider.
+- **⌘C** with no selection sends `\x03` on macOS.
 
-Exposes `TerminalHealthCounters`:
-
-- `fitFailures`, `zeroDimFits`, `rendererFallbacks`, `droppedChunks`,
-  `fitRecoveries`
-
-Key behaviors:
-
-- **Fit recovery** — if a fit computes invalid dims (`cols < 20`,
-  `rows < 6`, or host width/height below `MIN_HOST_WIDTH_PX = 120` /
-  `MIN_HOST_HEIGHT_PX = 48`), the last valid dims are restored, a retry
-  is scheduled (`INVALID_FIT_RETRY_MS = 90 ms`), and the terminal
-  content is refreshed. Successful recoveries bump `fitRecoveries`.
-- **Measure host** — uses the max of `getBoundingClientRect`,
-  `client*`, and `offset*` to handle zero-reported measurements during
-  layout transitions.
-- **Visibility gating** — `isActive` controls input; `isVisible`
-  controls whether fit/resize runs (hidden tiles skip layout work).
-- **Preferences reactivity** — watches `useAppStore` for
-  `terminalPreferences` changes and applies font family, font size,
-  line height, and scrollback to the live terminal, clearing the
-  texture atlas to force glyph re-rasterization for WebGL.
-- **Frame-write scheduling** — pending frame writes are coalesced on
-  `requestAnimationFrame` when the runtime is visible and the page is
-  foregrounded; a 16 ms `setTimeout` fallback takes over whenever the
-  runtime is parked (no refs), hidden, or the document is
-  backgrounded, so background terminals don't stall on `rAF` ticks
-  that the browser suppresses. `flushPendingFrameWrites` / `clearFrameWriteSchedule`
-  own both code paths.
-- **Work-surface reveal redraw** — `TerminalView` listens for the
-  `WORK_SURFACE_REVEALED_EVENT` window event (dispatched from
-  `PersistentWorkSurface` whenever it returns to the foreground). On
-  reveal, the view clears the WebGL texture atlas, flushes any
-  pending frame writes, schedules a forced refit on the next animation
-  frame, and re-runs `term.refresh(0, rows-1)` plus a focus +
-  `scrollToBottom()` when the tile is the active one. This is the only
-  reliable signal that "the surface is back on screen at its new
-  size" since hidden surfaces no longer fire layout/resize events;
-  without it, terminals come back blank after a tab swap.
-- **Runtime pin** — the optional `runtimePin` prop is the per-session runtime
-  route for a session that lives on another open binding; `null` (the hot path)
-  means the tab's own machine and every call keeps its original one-argument
-  shape. The pin is stored on the cached runtime rather than read from the
-  window, so two simultaneously parked terminals from different machines cannot
-  borrow whichever project the window opened last. It is carried by
-  `pty.write` / `pty.resize`, `terminal.preview`, `sessions.get`,
-  `sessions.readTranscriptTail`, `agentChat.saveTempAttachment`,
-  `pty.setDataSubscriptions`, and the `pty.onData` / `pty.onExit`
-  subscriptions. Data/exit listeners and the main-side PTY id filter are grouped
-  per pin — events are dispatched only to runtimes whose pin matches the
-  subscription they arrived on — and the unpinned group keeps one shared
-  listener and one signature exactly as before. Because the pin is part of the
-  cache key, a session whose pin resolves late (`null` on first render, a real
-  binding once the cross-machine lane index loads) moves to a new key;
-  `teardownRelocatedRuntimes` disposes the unreferenced runtime left at the old
-  key so its subscriptions and pumps do not leak and the same PTY does not end
-  up with two emulators. Re-hydrating through the new binding is the point: a
-  buffer filled through the old transport may describe the wrong machine.
-- **Hydration backfill** — initial hydration prefers
-  `ade.terminal.preview`. `serializeSnapshotForHydration` picks which half of
-  the snapshot to write: an **alternate-buffer** snapshot (a full-screen TUI
-  such as Claude or Codex) repaints the structured visible rows first
-  (`serializeSnapshotVisibleRows`, SGR-bracketed ANSI) because replaying an
-  older serialized main buffer would corrupt its full-screen state, while a
-  **main-buffer** snapshot prefers the persisted `serialized` scrollback so
-  attaching to a running shell starts with scrollable history, falling back to
-  the visible rows for legacy or empty serialized snapshots. Only when no
-  snapshot is available does hydration use the transcript tail. Before either path
-  runs, the runtime calls `sessions.get(sessionId)` to find out whether
-  the session is disposed; for any disposed session, hydration first
-  tries **replay mode** via
-  `sessions.readTranscriptTail({ raw: true })` (capped at
-  `REPLAY_TRANSCRIPT_MAX_BYTES = 8 MB`) and feeds the result through
-  `stripFullScreenRedrawSequences()` before writing. The strip removes
-  alt-screen enter/leave (`?1049h/l`, `?47h/l`), hard resets (`\x1bc`),
-  and full-screen erases (`\x1b[2J`, `\x1b[3J`, `\x1b[H\x1b[2J`) so each
-  TUI redraw appends to the main buffer's scrollback instead of
-  clobbering it. Replay-mode runtimes set `replayMode: true`, get
-  `REPLAY_SCROLLBACK_LINES = 100_000` scrollback regardless of user
-  preference. A session that ended while its view was mounting (a quick
-  command) may already have drawn live output; the replay resets the
-  terminal first and replaces it (`canReplayOverLiveData`), since an ended
-  session prints nothing more. A replay shorter than the live output drawn
-  (read before the transcript stream finished writing) leaves the live
-  output in place. On the alternate screen it keeps the old path, where an
-  erase would not remove what was drawn. Replay-mode runtimes also skip the usual `trimToLikelyTerminalFrameBoundary`
-  hydration trim so the whole transcript stays scrollable. This is
-  what makes a disposed Claude / Codex chat session render as a
-  scrollable transcript instead of "the last alt-screen frame" or
-  "ANSI escape soup". The runtime tracks `hasAppliedTerminalContent`
-  and `displayedLiveDataBeforeHydration`; if hydration returns nothing
-  renderable while live PTY data is already on screen,
-  `scheduleHydrationBackfill` retries the preview every ~100 ms (up to
-  120 attempts) until the DOM reports renderable text. The backfill
-  also re-arms whenever the tile becomes visible but the xterm rows
-  are empty (e.g. after a webgl→dom fallback).
-- **Authoritative stream recovery** — the hosted-web PTY adapter marks only a
-  non-delta terminal snapshot as `PtyDataEvent.replace`. `TerminalView` then
-  increments its hydration generation, cancels hydration/backfill timers,
-  discards queued frame and hydration writes, resets xterm/input-mode state,
-  and writes the replacement before refitting. Every async preview/transcript
-  continuation captures the generation and no-ops if recovery changed it, so a
-  slow initial hydration cannot overwrite a newer gap-repair snapshot. Delta
-  snapshots and overlap-trimmed live chunks stay append-only.
-- **Mouse tracking and forced selection** — `TerminalView` tracks DECSET 1000 /
-  1002 / 1003 mouse modes by scanning every PTY data chunk via
-  `updateTerminalInputModes`, alongside xterm's own mouse-tracking state.
-  xterm continues to forward ordinary mouse input to the embedded TUI. On
-  macOS, `terminalMacShiftSelection.ts` converts left-button Shift+mousedown
-  to xterm's Option-based force-selection gesture only while mouse tracking is
-  active, so local text selection and copy remain available without sending
-  that gesture to the CLI.
-- **Keyboard-scroll hint (hosted web only)** — every agent CLI runs on the
-  alternate screen with mouse reporting on, so the wheel is forwarded to the app
-  as mouse reports rather than scrolling xterm's scrollback. Over sync each of
-  those reports costs a full ACK-gated round trip (the terminal input queue in
-  `webclient/sync/client.ts` sends one input and waits for its ack), so a wheel
-  spin advances a few lines per round trip while `PgUp` moves half a screen for
-  the same single trip. When a web user wheel-scrolls a mouse-tracking session,
-  `TerminalView` shows a dismissible pill naming that session's scroll keys.
-  Copy is per provider and vendor-documented (`terminalScrollHint.ts`): Claude
-  and OpenCode take `PgUp`/`PgDn`, Codex needs `Ctrl+T` to open its transcript
-  overlay first, and Apple keyboards are told `Fn+↑`/`Fn+↓` because they have no
-  dedicated PgUp/PgDn keys. Droid and cursor-agent get no hint — their binaries
-  carry pageup handling but neither vendor documents it, and a wrong key hint is
-  worse than none. Dismissal is remembered per provider, since the keys differ.
-- **Cmd+C → SIGINT on macOS** — when the terminal is focused on macOS,
-  ⌘C with no current selection sends `\x03` to the PTY (matches the
-  Terminal.app behaviour TUI users expect). Selection-aware copy is
-  handled by xterm's own selection plus the runtime's clipboard hook.
-
-Font stack defaults: `ui-monospace`, `SFMono-Regular`, `Menlo`,
-`Monaco`, `Cascadia Mono`, `JetBrains Mono`, `Geist Mono`, `monospace`.
+Font stack: `ui-monospace`, `SFMono-Regular`, `Menlo`, `Monaco`,
+`Cascadia Mono`, `JetBrains Mono`, `Geist Mono`, `monospace`.
 
 ## Empty state: `WorkStartSurface.tsx`
 
-Rendered when the Work view has no open sessions. Accepts a
-`draftContextTargetId` prop that is forwarded to the embedded
-`AgentChatPane` so the Work sidebar can target the draft composer
-for context insertions. Contains:
+With no open session, Work shows `WorkStartSurface`: an `AgentChatPane` in
+draft mode (`forceDraftMode`, `embeddedWorkLayout`, `hideLaneToolDrawers`)
+with `workDraftKind`. `draftContextTargetId` lets the tools pane insert
+context into the draft.
 
-- A three-mode liquid-glass pill (`ModeSwitcherPills` in
-  `WorkViewArea.tsx`) toggling `draftKind` between **Chat** (compose a
-  new ADE chat in the lane), **CLI** (spawn a tracked agent CLI
-  session), and **Shell** (plain shell terminal in the lane's
-  worktree). `draftKind` is `WorkDraftKind = "chat" | "cli" | "shell"`
-  in `appStore`.
-- When the sessions list is collapsed, a thin left rail still offers
-  **Show sessions**. The empty draft does not put that control in the
-  chat header.
-- lane selector (`LaneCombobox`) on the launch shelf under the composer,
-  synced to the global `selectedLaneId`
-- for chat drafts: `AgentChatPane` in draft mode with provider-specific
-  permission controls (`getPermissionOptions`). The
-  ADE wordmark and optically lifted composer stay in the original
-  stack; the chat canvas is transparent so the mesh behind
-  `WorkViewArea` shows through. The usage card sits below the launch
-  shelf (`mt-11`), width-capped to the shelf, with an opaque fill that
-  matches the machine/lane submenu.
-- for cli drafts: a five-tile provider grid (Claude Code, Codex CLI,
-  Cursor Agent CLI, Factory Droid CLI, OpenCode CLI) with logos sourced
-  from `ToolLogos.tsx` / `ProviderLogos.tsx`. Selecting a provider
-  resets the permission picker to that provider's documented default
-  (`getPermissionOptions` keyed by `family`); Droid and OpenCode default
-  to `edit`, the rest default to `default`. The "Launch" button calls
-  `onLaunchPtySession` (typed as `(args: WorkPtyLaunchArgs) =>
-  Promise<WorkPtyLaunchResult>`) with the payload from
-  `buildTrackedCliLaunchCommand` (`{ command?, args, startupCommand,
-  env? }`). `onLaunchPtySession` forwards `command` + `args` for direct
-  argv spawn (Claude / Codex), passes `env` through to the PTY when set
-  (OpenCode's `ADE_OPENCODE_LAUNCH` intent), and ships `startupCommand` as
-  the shell fallback the multi-line Cursor / Droid / OpenCode preambles
-  always rely on. The recorded `toolType` and tab title come from the
-  shared `LAUNCH_PROFILE_TOOL_TYPE` / `LAUNCH_PROFILE_TITLE` maps in
-  `apps/desktop/src/shared/cliLaunch.ts` (the renderer
-  `components/terminals/cliLaunch.ts` is now a thin re-export), so
-  adding a new provider only requires extending the shared registry
-  plus the `WorkStartSurface` option list — the same module also
-  powers the iOS `work.startCliSession` mobile launcher.
-- for shell drafts: a "Launch" button that opens an untracked shell PTY
-  in the lane's worktree (`profile = "shell"`).
+- `ModeSwitcherPills` (`WorkViewArea.tsx`) picks `draftKind`
+  (`WorkDraftKind = "chat" | "cli" | "shell"`): **Chat** composes an ADE chat,
+  **CLI** starts a tracked agent CLI, **Shell** opens a plain shell in the
+  lane's worktree.
+- The lane picker (`LaneCombobox`) sits on the launch shelf. The draft machine
+  and lane come from the Start on picker.
+- A chat draft keeps the ADE wordmark and a transparent canvas, so the picker
+  backdrop shows through. The usage card sits under the launch shelf.
+- A CLI draft uses the same composer: the model picker lists CLI-capable
+  models (`allowCliOnlyModels`), a prompt or context is required, and the
+  launch passes `runtimeCliLaunch` (provider, permission mode, model, effort,
+  fast mode, the initial prompt, and a credential or account) with
+  `startupDelayMs` (`workCliStartupDelayMs`, 180 ms) to `onLaunchPtySession`.
+  The host builds the command. The tab title comes from the prompt or
+  `LAUNCH_PROFILE_TITLE`.
+- A shell draft opens an untracked shell PTY (`profile = "shell"`).
+- With the sessions list collapsed, a thin left rail offers **Show sessions**.
 
-Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
+`apps/desktop/src/shared/cliLaunch.ts` holds the launch registry for every
+CLI provider (`CliProvider`, `LAUNCH_PROFILE_TOOL_TYPE`,
+`LAUNCH_PROFILE_TITLE`); `components/terminals/cliLaunch.ts` re-exports it and
+defines `WorkPtyLaunchArgs`. iOS `work.startCliSession` uses the same module.
 
-- `buildTrackedCliLaunchCommand({ provider, permissionMode, ... })`
-  returns the canonical `{ command?, args, startupCommand, env? }`
-  shape used for fresh launches and internal provider continuation.
-  Permission mode
-  choices map onto provider-native flags / configs:
-  - **Claude** → `--permission-mode` flag (CLI default plus
-    plan/acceptEdits/bypassPermissions).
-  - **Codex** → `--ask-for-approval` + `--sandbox` pair. `default`
-    maps to `--sandbox workspace-write --ask-for-approval on-request`
-    (Codex's documented Guarded Edit semantics; the older `--full-auto`
-    alias caused the TUI to drop straight into auto-approval and was
-    surprising in the Work tab). `full-auto` keeps the explicit
-    `--dangerously-bypass-approvals-and-sandbox` flag, and `config-toml`
-    mode defers to `.codex/config.toml`. Fast adds `-c
-    service_tier="fast"` (or `"ultrafast"` when Fast is set to Codex
-    Ultrafast) plus `-c features.fast_mode=true`; Fast off writes
-    `service_tier="default"`. A resume that overrides Fast itself means plain
-    Fast, so it does not inherit the launch's `ultrafast` tier. ADE does not
-    rewrite
-    `mcp_servers` for Codex CLI launches; Codex config remains
-    host-owned so ADE does not synthesize partial MCP tables that the
-    CLI rejects during config validation.
-  - **Cursor** → `--mode plan|ask` for read-only modes and `--force`
-    for full-auto. Fresh launches start interactive `cursor-agent`
-    directly; initial user prompts are submitted through PTY input after
-    Cursor readiness, and empty launches do not submit ADE guidance as a
-    first turn.
-  - **Droid** → an autonomy-tiered settings JSON written to a temp file
-    that `droid --settings $ADE_DROID_SETTINGS` consumes; `spec`
-    autonomy is the plan/read-only fallback.
-  - **OpenCode** → permission mode, model, and effort ride as JSON in the
-    `ADE_OPENCODE_LAUNCH` env var (`config-toml` mode omits it, so ADE sets
-    no agent and OpenCode's own configuration decides). The 2.0 TUI takes
-    only a session selector and `--prompt`; `attachOpenCodeTerminal`
-    (`services/opencode/openCodeTerminal.ts`) reads the intent, creates the
-    session with the matching ADE agent and model on ADE's shared server,
-    and rewrites the launch to `opencode --server <lease url> --session <id>`.
-    There is deliberately no reasoning/fast `--variant` flag: the TUI takes
-    no such flag, so variants remain a chat-runtime feature and tracked launches
-    set the model and permission agent on the session instead.
-  Every provider also receives ADE CLI guidance — Claude through
-  `--append-system-prompt`, Codex/Droid/OpenCode as a leading prompt
-  argument, and Cursor through PTY `initialInput` only when there is an
-  initial user prompt.
-- `buildTrackedCliStartupCommand({ provider, permissionMode, ... })`
-  thin wrapper that returns just the shell-typed `startupCommand`.
-- `resolveTrackedCliResumeCommand(session)` — internal runtime helper
-  for rebuilding the command used behind the continuation composer.
-  It calls `buildTrackedCliResumeCommand(metadata, overrides)`, which knows how
-  to format Claude (`claude --resume <uuid>`), Codex (`codex resume
-  <thread>`), Cursor (`cursor-agent --resume <chatId>` / `--continue`),
-  Droid (the same `--settings` preamble plus `droid --resume <id>`),
-  and OpenCode (`opencode --session <id>` / `--continue`). The
-  `prompt` override is used by `sendToSession` for the first
-  ended-session follow-up; `resumeSession` rebuilds the same command
-  without a prompt.
-- `buildOpenCodeReplayResumeLaunchCommand` — OpenCode continuations that
-  carry the first follow-up prompt use this shape when the installed CLI
-  supports replay resume: root `--mini` mode replays the newest messages on
-  resume by default, and `--replay-limit <N>` (`OPENCODE_RESUME_REPLAY_LIMIT`,
-  40) caps how far back the freeze-frame reaches; the prompt travels via
-  `--prompt`. An explicit `--replay` flag is an upstream error on current
-  OpenCode, so nothing sends one. The support gate probes root
-  `opencode --help` (not `run --help`) for both `--mini` and
-  `--replay-limit`, with an env override
-  (`ADE_OPENCODE_REPLAY_RESUME=1|0`) forcing either way; without support ADE
-  falls back to the plain root-TUI resume above.
+- `buildTrackedCliLaunchCommand` returns `{ command?, args, startupCommand,
+  env? }`. Each provider maps the permission mode to its own flags
+  (`permissionModeTo*Flags`):
+  - Claude: `--permission-mode`.
+  - Codex: `default` and `edit` are `--sandbox workspace-write
+    --ask-for-approval on-request`; `plan` is read-only; `full-auto` is
+    `--dangerously-bypass-approvals-and-sandbox`; `config-toml` defers to
+    `.codex/config.toml`. Fast adds `service_tier` (`ultrafast` for Codex
+    Ultrafast); a resume that sets Fast itself uses plain Fast. ADE does not
+    rewrite Codex `mcp_servers`.
+  - Cursor: `--mode plan|ask` or `--force`; an initial prompt goes in after
+    readiness.
+  - Droid: a settings JSON written before `droid --settings
+    $ADE_DROID_SETTINGS`.
+  - OpenCode: the intent rides in `ADE_OPENCODE_LAUNCH` (none for
+    `config-toml`). `attachOpenCodeTerminal`
+    (`services/opencode/openCodeTerminal.ts`) creates the session with the ADE
+    agent and model on ADE's shared server and runs `opencode --server <lease
+    url> --session <id>`. It strips flags the 2.0 TUI rejects (`--agent`,
+    `--model`, `--variant`, `--mini`, `--replay*`) from old resume commands.
+  - The other providers have their own `permissionModeTo*Flags` and model
+    helpers in the same file.
+- Every provider gets ADE CLI guidance: Claude through
+  `--append-system-prompt` (dropped on the shell fallback), the others as a
+  leading prompt or initial input.
+- `resolveTrackedCliResumeCommand(session)` and
+  `buildTrackedCliResumeCommand(metadata, overrides)` build the resume line
+  for the continuation composer. `sendToSession` passes the first follow-up as
+  the `prompt` override; `resumeSession` passes none.
 
 ## Context menu: `SessionContextMenu.tsx`
 
-The right-click menu uses one grouped, liquid-glass menu vocabulary. Every row
-carries a 13px duotone Phosphor glyph so the list is scannable:
+One grouped menu; every row has a 13 px duotone glyph.
 
-- Chat rows put **Rename…**, **Generate chat title**, **Generate lane name**,
-  **Generate status line**, and **Generate all three** in a **Name & status**
-  submenu. Non-chat rows keep Rename in the unlabelled identity block (inline
-  text input, `manuallyNamed: true`), alongside optional Set tag, pin, and grid
-  removal.
-- **Lifecycle** carries runtime stop, Snooze/Wake, and Settle/Un-settle.
-- **Go to** carries lane and optional web navigation. A child chat also gets
-  **Open <parent>**. A chat child gets **Stop reports to <parent>** (a subagent)
-  or **Report back to <parent>** (a chat that does not report back); the toast
-  repeats the same words.
-- Keyboard: Shift+F10 or the Menu key on a focused row opens the menu. The menu
-  takes focus; the arrow keys, Home and End move between rows, Enter runs one,
-  and Escape closes it and gives focus back (`ContextMenuSurface`).
-- **Copy** is a hover/keyboard submenu for the session ID and deep link.
-- Destructive Stop & delete / Delete chat / Delete session actions are fenced
-  into the final red block.
-- Chat: Set tag… (running Claude only), **Change status** (see the lifecycle
-  block below), and Delete chat. A settle clears the row's attention hand as
-  part of the same transaction, so there is no separate "Dismiss & settle"
-  entry any more: the hand and the settle are one write.
-- Chat rows also carry a **Hand off…** submenu with **Local handoff** and
-  **Another machine** — both select the row and route the intent to the chat
-  pane through `lib/chatHandoffIntent.ts`, which opens the local handoff dialog
-  or the cross-machine modal (see
-  [Chat Actions and Sources](../chat/composer-and-ui.md#chat-actions-and-sources)) — plus **Auto
-  handoff…** (or **Edit auto handoff…** once rules exist for the chat) and
-  **Remove auto handoff**, which open `AutoHandoffModal` — the chat menu's way
-  of arming "when this chat hits its limit / fails / ends with no PR, continue
-  it on another model". The modal is hosted at the `SessionContextMenu` level
-  rather than inside the panel, because opening it closes the menu and a modal
-  mounted in the panel would unmount in the same tick. The existing-rule list is
-  fetched asynchronously; `null` (a failed or unavailable read) keeps the item
-  disabled rather than opening the editor on defaults that would delete rules
-  the read never saw, because a context menu that waits on IPC before it appears
-  is a broken context menu.
-- Chat metadata generation makes one structured request for all three visible
-  fields and applies only the selected fields. A status-only refresh sends the
-  lane name, chat title, worktree folder, and last assistant paragraphs — not
-  the full transcript, sibling threads, or git dump. Title refresh still carries
-  this thread's full transcript; lane-name refresh still carries every other
-  thread in the lane plus the git work that differs from the remote/base. While
-  those fields generate, the session card and work-surface header mask them in
-  place with the same shimmering "Naming …" animation auto-created lanes use.
-  It may intentionally replace a
-  manual title because the menu action is explicit user intent; edits made while
-  the request is running win per field. Generate lane name is disabled for the
-  primary lane, and a busy session disables duplicate generation.
+- **Name & status** (chat rows): **Rename…**, **Generate chat title**,
+  **Generate lane name**, **Generate status line**, **Generate all three**.
+  Other rows keep Rename (inline, `manuallyNamed: true`) beside Set tag, pin
+  and grid removal.
+- **Lifecycle**: runtime stop, Snooze/Wake, Settle/Un-settle.
+- **Go to**: the lane and web links. A child chat gets **Open <parent>**, and
+  **Stop reports to <parent>** or **Report back to <parent>**.
+- **Copy**: the session id and deep link.
+- The red block at the end: Stop & delete, Delete chat, Delete session.
+- Keyboard: Shift+F10 or the Menu key opens it; arrows, Home and End move;
+  Enter runs; Escape closes and returns focus (`ContextMenuSurface`).
+- Chat: Set tag… (running Claude only) and **Change status**. A settle clears
+  the hand in the same write.
+- **Hand off…**: **Local handoff** and **Another machine** select the row and
+  send the intent through `lib/chatHandoffIntent.ts` (see
+  [Chat Actions and Sources](../chat/composer-and-ui.md#chat-actions-and-sources)).
+  **Auto handoff…** / **Edit auto handoff…** / **Remove auto handoff** open
+  `AutoHandoffModal`, hosted at the menu level. A failed rule read keeps the
+  item disabled.
+- Metadata generation makes one structured request and applies only the
+  chosen fields. A status refresh sends the lane name, title, worktree folder
+  and the last assistant paragraphs; a title refresh sends the transcript; a
+  lane-name refresh sends the lane's other threads and the git diff from the
+  base. Fields show `Naming …` while they generate. An edit made meanwhile
+  wins for its field. Generate lane name is off for the main checkout.
 - PTY: Stop runtime / Stop & delete while running, Delete session after exit,
-  and **Change status** (see the lifecycle block below). A tracked CLI waiting
-  at its own prompt with no recorded hand keeps **Done** disabled — "Resolve the
-  prompt in the terminal first" — because the terminal owns that question. A
-  hand ADE recorded for an idle prompt (`cli_prompt`) can be dismissed with
-  **Done**, since that guess can be a false alarm.
+  **Change status**. A tracked CLI at its own prompt with no recorded hand
+  keeps **Done** off ("Resolve the prompt in the terminal first"); a
+  `cli_prompt` hand can be dismissed.
 
-Every row also carries one exhaustive lifecycle block holding each action that
-changes where the sidebar files it: **Stop runtime** where the row owns one, and
-**Change status**, whose hint states the column the row is in right now. Its
-entries are **Working**, **Needs you**, **Done**, then the snooze durations (or
-**Wake now**), then **Unsettle** / **Keep active** once the row is declared
-settled.
+**Change status** (its hint names the current column) lists **Working**,
+**Needs you**, **Done**, the snooze times (or **Wake now**), then
+**Unsettle** / **Keep active** for a settled row. The three columns call
+`session.moveOnBoard`, as a board drag does, through `moveSessionOnBoard`
+(`sessionBoardMoveUi.ts`, a 5 s undo); a foreign row is read again after a
+move or undo. `lib/sessionStatusChange.ts` decides what is offered, and each
+disabled entry names its reason:
 
-The three column entries are `session.moveOnBoard` — the same action a board
-drag uses — so the menu and the board cannot disagree about what a column means,
-and a refusal ("Answer the question first", or "Still working" for a working
-chat dropped on Done, since a working chat cannot be settled) reads the same
-in both. Both go
-through `moveSessionOnBoard` (`sessionBoardMoveUi.ts`) for the toast and its
-5-second Undo; a row on another machine is re-read after the move and after
-any undo answer, refused or not.
-`renderer/lib/sessionStatusChange.ts` is the one model for what may be offered,
-and every disabled entry names its reason:
+- **Working** only when the session is live (running, or live background
+  work): "Nothing is running — send a message to start it". It is refused over
+  a provider card, on an at-rest failure, on an ended or detached row, and
+  while a derived wait would file it back to Waiting.
+- **Needs you** is always offered. A running chat gets "The user set this
+  chat's status to Needs you. Ask them what they need before you continue." A
+  tracked CLI gets a session-worded copy at a free prompt.
+- **Done** clears the hand and settles. It is refused over a provider card
+  and on a tracked CLI in Needs you with no recorded hand.
+- **Snooze** expands into `resolveSnoozePresets` (`In 1 hour`, `This
+  evening` until an hour before 18:00, `Tomorrow`, `Next week`, `Until I'm
+  asked`). A snoozed row shows **Wake now**. **Unsettle** clears `settledAt`;
+  **Keep active** and `settleOverride` pin a state.
+- **Waiting** is never a target; only its snooze is the person's to set.
+- The block is exhaustive, so every hidden row can come back. Snooze and
+  settle go through `sessionLifecycleActions.ts`, columns through
+  `sessionBoardMoveUi.ts`, so the menu, board, `SessionSnoozeControl` and chat
+  header chips agree.
 
-- **Working** is offered only when the session is already live
-  (`runtimeState === "running"`, or live background work). A status change
-  cannot start a model, so an idle row shows "Nothing is running — send a
-  message to start it" instead of moving somewhere it cannot stay. It is also
-  refused over a live provider card, on an at-rest failure (failure outranks
-  running, so the row would keep its Failed badge), on an ended or detached row,
-  and while a derived wait (CI running, review requested, wake scheduled,
-  subagent working) would file it straight back to Waiting.
-- **Needs you** is always offered: the write is a person parking the row for
-  themselves. On a running chat it steers the live turn with "The user set this
-  chat's status to Needs you. Ask them what they need before you continue."
-  A tracked agent CLI gets the same message typed at its prompt, worded for a
-  session ("The user set this session's status to Needs you on the ADE
-  board..."), and only when its prompt is free.
-- **Done** clears the attention hand and settles in one write. It is refused
-  over a live provider card, and on a tracked CLI in Needs you with no recorded
-  hand, where the terminal owns the question.
-- **Snooze** expands in place into the durations resolved by
-  `resolveSnoozePresets` (`In 1 hour`, `This evening`, `Tomorrow`, `Next
-  week`, `Until I'm asked` — each with a time column beside it, and `This
-  evening` dropped once 18:00 is within an hour or past, so the row count varies
-  with the time of day); an already-snoozed row instead shows **Wake now** with
-  its wake label. A declared settle has `settledAt` for **Unsettle** to clear
-  and can additionally be pinned with **Keep active**, while `settleOverride`
-  explicitly pins either state.
+A singleton lane's menu adds a **Lane** submenu (`LaneActionsSubmenu`) built
+from the same `buildLaneMenuGroups()` model as `LaneContextMenu`. A foreign
+card passes its `lane`, `binding` and `machineId`: **Start chat in lane**
+writes `draftMachineId`, colour and manage go to that runtime, and tab or
+split actions are left out. **Open lane menu…** shows only when the lane
+cannot be resolved. Submenus share `MenuSubmenu` (180 ms open, 300 ms close
+grace, clamping, keys).
 
-**Waiting** is deliberately absent as a target: a row sits there because it is
-snoozed, its PR is mid-CI, a review is outstanding, a wake is armed, or a
-subagent is still working. Only the snooze is the person's to set.
-
-The block is kept exhaustive on purpose: a row that reaches the end of it with
-nothing rendered is a row the user cannot un-hide. Snooze and settle writes go
-through `components/terminals/sessionLifecycleActions.ts` and the column writes
-through `sessionBoardMoveUi.ts`, which owns the five-second undo toast, so the
-row menu, the board, the hover `SessionSnoozeControl`, and the chat header chips
-can never disagree about what an action does.
-
-A singleton lane has no divider to right-click, so its session menu adds a
-**Lane** hover submenu. `LaneActionsSubmenu` renders the exact
-`buildLaneMenuGroups()` model used by `LaneContextMenu`; it does not transcribe
-the actions. A headerless foreign card passes its `lane`, `binding`, and
-`machineId` into that submenu so it is the same menu as a local singleton —
-**Start chat in lane** writes `draftMachineId` for the owning machine, colour
-and manage pin to that runtime, and tab/split actions (which navigate the local
-Lanes tab) stay omitted. The old **Open lane menu…** stub remains only when the
-lane cannot be resolved at all. Menu subpanels share `MenuSubmenu`'s 180 ms open
-delay, 300 ms pointer-safe close grace, viewport clamping, and keyboard
-navigation.
-
-The rename input uses local state. Chat rows submit through
-`agentChat.updateSession({ title, manuallyNamed: true })`; PTY rows submit
-through `sessions.updateMeta({ title, manuallyNamed: true })`. Errors bubble up
-to `renameError` in `TerminalsPage`.
-
-`Set tag…` is a second inline editor that reuses the same input chrome.
-It appears only for running `claude-chat` sessions (writing a tag needs a
-live Claude SDK runtime — `updateSession` throws for ended sessions),
-submits `agentChat.updateSession({ sessionId, tag })` where an empty
-value clears the tag, and the resolved `claudeTag` renders as a small
-mono pill on the session card.
+Rename submits `agentChat.updateSession({ title, manuallyNamed: true })` for
+chats and `sessions.updateMeta(...)` for PTYs; errors go to `renameError`.
+`Set tag…` (running `claude-chat` only) submits
+`agentChat.updateSession({ sessionId, tag })`; empty clears it, and
+`claudeTag` shows as a pill on the card.
 
 ## Work view hook: `useWorkSessions.ts`
 
-A single hook that owns a lot of state:
-
-- session lists, deduped via `listSessionsCached()` with project-root +
-  lane + status keying. When the IPC refresh returns a persisted row
-  that already has a pending optimistic session for the same id, the
-  hook calls `mergePendingOptimisticSession(persisted, optimistic)` to
-  keep the optimistic `ptyId` on the row until the persisted view
-  reflects it. The helper only merges when the persisted row is still
-  `running`, the optimistic session carries a non-empty `ptyId`, and
-  the persisted `ptyId` does not already match — that case returns the
-  persisted row untouched and drops the pending entry. When merged,
-  the row keeps the persisted fields but inherits the optimistic
-  `ptyId` (plus `toolType` / `runtimeState` as gap-fillers when the
-  persisted row hasn't backfilled them yet), and `keepPending: true`
-  leaves the pending entry in place so the next refresh can re-merge
-  if the persisted row still hasn't caught up. This closes a race
-  where the persisted row landed before its `ptyId` was written and
-  would otherwise clobber the optimistic attachment, leaving the new
-  `TerminalView` unable to subscribe to live PTY data
-- per-project work view state (open items, active/selected, view mode,
-  draft kind, text/lane filters, chip filters, lane ordering and pins,
-  organization, collapsed IDs,
-  focus-hidden flag)
-- lane-scoped work view state keyed as `projectRoot::laneId`
-- persistence to `localStorage` under `ade.workViewState.v1`, written on
-  every mutation
-- `refresh({ showLoading, force })` — forces a cache bust and reloads
-- project-switch hydration guards: cached destination rows can render
-  immediately, but they are not treated as authoritative until the
-  active project's refresh applies. While that guard is set,
-  `useWorkSessions` does not mirror the current `sessions` array back
-  into `sessionsCacheByProject` and does not prune persisted open tabs,
-  because React can briefly render the previous project's session list
-  after `projectRoot` changes.
-- the draft lane and draft machine of the Work start surface.
-  `setDraftLaneId` writes **only** `draftLaneId` in the project view state; it
-  deliberately does not call `selectLane`. The draft can target a machine the
-  project tab is not bound to, and lane ids are per-machine, so writing a
-  foreign lane id into the global selection points Lanes/PRs/Files at a lane
-  the bound project has never heard of — and the next lane refresh silently
-  rewrites that selection to the bound project's first lane. `WorkStartSurface`
-  owns the global sync instead and performs it only when the draft machine is
-  the bound one.
-- the Work tab's per-session runtime routing, through the single
-  `useWorkMachineRouter()` instance it owns. It is re-exported as
-  `machineRouter` and `resolveSessionRuntimePin` (which `TerminalsPage` passes
-  down to `WorkViewArea`, which hands it to each `SessionSurface` as
-  `runtimePin`). `canMutatePinnedProjectUi` is `machineRouter.isLivePin`, launch
-  and resume paths remember their pin through the router, and `stopRuntime` /
-  `stopAll` resolve theirs from the combined cross-machine union so a foreign
-  PTY is disposed on its owning machine.
-
-`useWorkSessions({ active })` accepts an optional `active` flag (default
-`true`). When `active` is false, the hook stops scheduling background
-refreshes, defers the initial `refresh` until the route flips back to
-`/work`, and cancels any pending refresh timer on transition. Callers
-that mount the hook on tabs other than Work pass `active: false` to
-avoid scanning sessions while the user can't see them.
-
-The hook exposes `openSessionTab`, `focusSession`, `selectLane`,
-`upsertOptimisticChatSession` (so new chats appear in the tab strip
-before the IPC round-trip completes), `refresh`, and the right-sidebar
-setters `setWorkSidebarOpen` and `setWorkSidebarWidthPct` (clamped
-26–55%). Which tool the pane shows is not here — it is per lane, and lives
-in `useWorkSidebarTool`.
-`chatSessionEvents.ts` uses that optimistic path for durable chats created by
-headless/batch launch, then schedules a short background refresh.
-
-It also exposes `setWorkSessionFilters`, `toggleWorkLanePinned`,
-`setWorkLaneSortMode`, and `reorderWorkLanes`. Each takes over any transient
-deeplink framing before persisting the user's view choice. A reorder starts
-from the lanes currently rendered on screen, prunes dead ids only on write, and
-sets Manual even for a no-op drop from another mode so the control truthfully
-describes the current ordering. `useLanePrsByLaneId` supplies one coalesced PR
-read plus `prs-updated` pushes for the bound machine, folded together with each
-other machine's PR rows from the cross-machine union, and serves both the lane
-badges (machine-scoped keys) and the Has PR filter (the union key);
-with no active chips the filtered session list is returned by reference so the
-new controls do not add avoidable downstream re-renders.
-
-`launchPtySession` accepts `WorkPtyLaunchArgs` and returns
-`Promise<WorkPtyLaunchResult>`. The args carry `disposition?:
-WorkPtyLaunchDisposition` (`"foreground" | "background"`). When
-disposition is `"background"`, the hook inserts the optimistic session
-and invalidates the cache but skips `selectLane`, `focusSession`, and
-`openSessionTab` so the launch happens without stealing the user's
-current focus. When disposition is `"foreground"` (or unset), the hook
-opens the tab off the synchronous `ptyCreate` result before kicking off
-the background refresh: it focuses the session, calls `openSessionTab`,
-and only then fires `refresh({ showLoading: false, force: true })`.
-This is what makes the Work tab's optimistic terminal visible the
-moment the PTY exists, which is the window in which the new
-`TerminalView` runtime needs to attach so it can subscribe to live PTY
-data before fast TUIs like Codex or Claude paint their first frame.
-Waiting on the refresh round-trip first used to lose the initial paint
-and leave the terminal blank. The `WorkPtyLaunchArgs` type (defined in
-`apps/desktop/src/renderer/components/terminals/cliLaunch.ts`) carries
-`laneId`, `profile`, and optional `command`, `args`, `startupCommand`,
-`startupDelayMs`, `env`, `title`, `tracked`, and `disposition`. The
-helper builds a
-default launch payload with `buildTrackedCliLaunchCommand` when the
-caller didn't override `command`/`args`/`env`, so every entry point —
-chat composer launch button, TopBar work controls —
-produces the same argv-based spawn with ADE CLI guidance baked in.
-`profile` is a `LaunchProfile` (`"claude" | "codex" | "cursor" |
-"droid" | "opencode" | "shell"`); the matching tab title and recorded
-`TerminalToolType` come from the shared `LAUNCH_PROFILE_TITLE` /
-`LAUNCH_PROFILE_TOOL_TYPE` maps in
-`apps/desktop/src/shared/cliLaunch.ts`.
-The runtime strips leading `ENV=value` assignments before sniffing the
-provider, so continuation commands the OpenCode preamble emits
-(`ADE_OPENCODE_LAUNCH=… opencode --session …`) round-trip
-correctly. `startupDelayMs` is forwarded into the `ade.pty.create`
-payload only when the caller passes it (so non-Work callers don't
-inherit a non-zero default); the Work CLI launch path in
-`AgentChatPane` passes `workCliStartupDelayMs = 180` and
-intentionally omits `command` / `args` so every Work CLI launch
-goes through the shell + `startupCommand` path (see
-[pty-and-sessions.md](./pty-and-sessions.md#create-flow-createargs)
-for how the PTY service consumes the delay).
+- **Lists** come from `listSessionsCached()` keyed by project, lane and
+  status. `mergePendingOptimisticSession(persisted, optimistic)` keeps the
+  optimistic `ptyId` on a running persisted row that lacks it (and fills
+  `toolType` / `runtimeState`), with `keepPending: true` until the row catches
+  up; a matching `ptyId` drops the pending entry.
+- **View state** per project (open items, active and selected, view mode,
+  draft kind, filters, lane order and pins, organization, collapsed ids) and
+  per lane (`projectRoot::laneId`), saved to `ade.workViewState.v1` on each
+  change.
+- `refresh({ showLoading, force })` busts the cache.
+- **Project switch.** Cached rows render at once but are not authoritative
+  until the project's refresh applies; until then the hook does not write
+  `sessionsCacheByProject` or prune open tabs.
+- **Draft lane.** `setDraftLaneId` writes only `draftLaneId`, never
+  `selectLane`, because the draft can target another machine whose lane ids
+  the bound project does not know. `WorkStartSurface` syncs the global lane
+  only when the draft machine is the bound one.
+- **Routing.** One `useWorkMachineRouter()` gives `machineRouter` and
+  `resolveSessionRuntimePin` (down to each `SessionSurface` as `runtimePin`).
+  `canMutatePinnedProjectUi` is `machineRouter.isLivePin`. Launch and resume
+  remember their pin; `stopRuntime` / `stopAll` resolve the pin from the
+  cross-machine union.
+- `useWorkSessions({ active })`: with `active: false` the hook schedules no
+  refresh and defers the first one until Work is shown.
+- Exposes `openSessionTab`, `focusSession`, `selectLane`,
+  `upsertOptimisticChatSession` (also used by `chatSessionEvents.ts` for
+  headless chats), `refresh`, `setWorkSidebarOpen`,
+  `setWorkSidebarWidthPct` (26–55%), `setWorkSessionFilters`,
+  `toggleWorkLanePinned`, `setWorkLaneSortMode` and `reorderWorkLanes`. Each
+  view setter replaces a deep link's framing. A reorder starts from the
+  lanes on screen and sets Manual. The tools pane tool is in
+  `useWorkSidebarTool`.
+- `useLanePrsByLaneId` gives one coalesced PR read plus `prs-updated` for the
+  bound machine, joined with other machines' PR rows. With no active chips
+  the filtered list is the same reference.
+- **`launchPtySession(WorkPtyLaunchArgs)`** returns `WorkPtyLaunchResult`.
+  The args carry `laneId`, `profile` (`LaunchProfile`), `title`,
+  `permissionMode`, `command`, `args`, `startupCommand`, `startupDelayMs`,
+  `env`, `initialInput`, `runtimeCliLaunch`, `tracked`, `disposition`, `pin`
+  and `linearIssues`. With no `runtimeCliLaunch` and no `command`, the
+  helper builds one with `buildTrackedCliLaunchCommand`. `startupDelayMs`
+  goes to `ade.pty.create` only when passed (see
+  [pty-and-sessions.md](./pty-and-sessions.md#create-flow-createargs)).
+  `"background"` inserts the optimistic row without moving focus;
+  `"foreground"` focuses and opens the tab from the synchronous `ptyCreate`
+  result before the forced refresh, so `TerminalView` subscribes before a
+  fast TUI paints. The runtime skips leading `ENV=value` words before it
+  reads the provider.
 
 ## Session delta hook: `useSessionDelta.ts`
 
-Lightweight fetcher for `SessionDeltaSummary` keyed by session ID.
-Called by `SessionCard` with `{ enabled: true }` and returns the
-delta with `filesChanged`, `insertions`, `deletions`, `touchedFiles`,
-`failureLines`, `computedAt`. Failures return null; the card renders
-nothing when no delta is available.
+Reads `SessionDeltaSummary` by session id for `SessionCard`
+(`filesChanged`, `insertions`, `deletions`, `touchedFiles`, `failureLines`,
+`computedAt`). A failure returns null and the card shows nothing.
 
 ## Shared helpers
 
 - `apps/desktop/src/renderer/lib/sessions.ts` — `primarySessionLabel`,
-  `preferredSessionLabel`, `shortToolTypeLabel`, a re-export of
-  `isChatToolType` from `sessionSpawnNesting.ts`,
-  `isPtyContextInsertableToolType`, `buildOptimisticChatSessionSummary`.
+  `preferredSessionLabel`, `shortToolTypeLabel`, `isChatToolType` (from
+  `sessionSpawnNesting.ts`), `isPtyContextInsertableToolType`,
+  `buildOptimisticChatSessionSummary`.
 - `apps/desktop/src/renderer/lib/terminalAttention.ts` —
   `canonicalInputFromSummary`, `sessionCanonicalUiState`,
   `sessionStatusBucket`, `sessionFilingBucket`, `sessionStatusDot`,
-  `sessionCapsuleBadge`, `sessionIsMidFlight` (the shared Settle-affordance
-  predicate — see the context-menu section),
-  `sessionNeedsYou`, `summarizeTerminalAttention`,
-  `sessionInlineStatusLabel`, `sanitizeTerminalInlineText`.
-- `apps/desktop/src/renderer/lib/sessionListCache.ts` —
-  `listSessionsCached`, `invalidateSessionListCache`. Normal reads coalesce;
-  forced reads and mutation invalidation bypass stale in-flight snapshots,
-  with promise identity preventing late responses from replacing fresh cache.
+  `sessionCapsuleBadge`, `sessionIsMidFlight`, `sessionNeedsYou`,
+  `summarizeTerminalAttention`, `sessionInlineStatusLabel`,
+  `sanitizeTerminalInlineText`.
+- `apps/desktop/src/renderer/lib/sessionListCache.ts` — `listSessionsCached`,
+  `invalidateSessionListCache`. Normal reads coalesce; forced reads and
+  invalidation skip stale in-flight reads, and promise identity stops a late
+  reply from replacing a newer cache.
 - `apps/desktop/src/renderer/lib/chatSessionEvents.ts` —
-  `announceWorkChatSessionCreated` invalidates both renderer list caches and
-  publishes a durable chat session for optimistic Work/Lanes insertion;
-  `shouldRefreshSessionListForChatEvent` gates refreshes on streamed chat IPC
-  events so the session list does not thrash on every message.
+  `announceWorkChatSessionCreated` clears both list caches and publishes a
+  new chat for optimistic insertion; `shouldRefreshSessionListForChatEvent`
+  limits refreshes on streamed chat events.
 
 ## Gotchas
 
-- Mount stability matters. Do not unmount a `SessionSurface` just
-  because a tab is hidden; use `terminalVisible={false}` instead so the
-  PTY stays attached. The cached runtime has a 400 ms dispose timer
-  that fires only when refs hit zero and stay there.
-- The session list cache keys normalized `ListSessionsArgs` by
-  `projectRoot + laneId + status + toolTypes`; Work requests the full inventory
-  and derives its Status grouping locally.
-  Events that should update all views (e.g. a new chat session) should
-  call `invalidateSessionListCache()` before the first `refresh()`.
-- Do not infer “loud” from the Your move bucket. That bucket deliberately mixes
-  deterministic `needs_you` with quiet `ready`/`idle`; use
-  `sessionNeedsYou()` or `summarizeTerminalAttention()` for badges,
-  notifications, or interruption.
-- Do not clear `settledAt` on assistant output from a chat that just declared
-  itself done. Chat settle is cleared at the next user turn; only PTY output
-  clears settle on activity. Scheduled/background chat wakes temporarily render
-  Running and return to Settled when idle.
-- Do not derive anything from the snooze columns except *where a row is filed*.
-  Snooze is a visibility overlay: `canonicalSessionState()` never reads it, the
-  status dot never changes, and the counts, badges, and Dock badge stay
-  truthful. Use `effectiveSessionFilingBuckets` for renderer grouping (and
-  `sessionFilingBucket` for the base single-row rule) and the raw
+- Do not unmount a hidden `SessionSurface`. Pass `terminalVisible={false}`
+  so the PTY stays attached. The cached runtime disposes 400 ms after its
+  refs reach zero.
+- The list cache keys `ListSessionsArgs` by `projectRoot + laneId + status +
+  toolTypes`. Work reads the full list and groups by status locally. Call
+  `invalidateSessionListCache()` before the first `refresh()` for an event
+  that must reach every view.
+- Do not read "loud" from the Your move bucket: it mixes `needs_you` with
+  quiet `ready`/`idle`. Use `sessionNeedsYou()` or
+  `summarizeTerminalAttention()` for badges and notifications.
+- Do not clear `settledAt` on output from a chat that declared itself done.
+  The next user turn clears a chat settle; only PTY output clears a settle on
+  activity. A scheduled or background wake shows Running, then Settled again.
+- Use the snooze columns only for filing. `canonicalSessionState()` never
+  reads them, and counts and badges do not change. Use
+  `effectiveSessionFilingBuckets` (or `sessionFilingBucket` for one row) and
   `isSessionSnoozed` for row chrome.
-- Do not schedule lifecycle writes for snooze expiry. Expiry is derived by
-  comparing `snoozedUntil` to now. Render-only deadline timers may bump a
-  counter to repaint an open surface: the Work hook covers the full roster,
-  while an open chat, the command palette, and the standalone foreign-row pane
-  arm their own bounded timer when they need one. None mutates session state, so
-  there is still one source of truth rather than a watchdog that can diverge
-  from surfaces not currently mounted.
-- Nothing *derives* a settle. A clean process exit leaves a row `ended`, never
-  `settled` (`sessionCanonicalState.ts`), so every settled row has either a
-  `settledAt` or a `"settled"` override and plain Unsettle clears both. The
-  `"active"` keep-active pin exists to hold a row out of the quiet tier when
-  something later declares a settle on it (the PR-merge policy), not to rescue
-  an inferred one.
-- Refresh ordering for launches — use the synchronous `ptyCreate` /
-  chat-create result to `openSessionTab` before the background forced
-  refresh, then merge any stale persisted row with the optimistic row.
-  Do not prune open tabs until an authoritative refresh for the current
-  project has applied.
-- The Work tab and the Lanes tab share the hook; changes to
-  `useWorkSessions` ripple. Keep lane-scoped persistence keyed by
-  `projectRoot::laneId` or the Lanes tab state leaks across projects.
-- **Spawn nesting is one shared rule.** Same-lane `spawnKind: "subagent"`
-  filing lives in `sessionSpawnNesting.ts`. Desktop and iOS consult
-  that index (`WorkSpawnNesting.swift` on the phone). Do not re-derive nest /
-  quiet-parent pull-up / grandchild flatten in a list renderer. Status, time,
-  and Kanban stay flat; `ade chat list` stays a flat table.
-- The Work grid is `PaneTilingLayout` — every visible session has a
-  leaf and stays mounted. Grid tiles pass `terminalVisible={true}`;
-  `isActive` controls input but not mount state, so multiple PTYs can
-  stay live at once. The gridLayoutId is namespaced
-  (`work:grid:tiling:v1:<projectRoot>[::<laneId>]`) so a persisted
-  layout travels with the project/lane pair.
-- Because every tile stays mounted, grid-set membership is a direct
-  multiplier on renderer heap, and it is capped at
-  `MAX_WORK_GRID_TILES` = 6 (`renderer/lib/workGrid.ts`). An uncapped set
-  can OOM the ~4 GB renderer. The cap is enforced in three places that
-  must agree: `addSessionBesideTarget` refuses a new member once the
-  target set is full; `WorkGridView` withholds
-  `acceptExternalDropMime` at that point so a full grid stops
-  advertising the drop target and no drop indicator appears (measured
-  against persisted `gridSet.sessionIds`, the same thing
-  `addSessionBesideTarget` counts — measuring the resolved tiles instead
-  would advertise a drop that then silently no-ops); and
-  `normalizeWorkGridSets` in `appStore.ts` trims a set persisted by an
-  older uncapped build on load. Trimmed members are left **unclaimed**
-  (not marked seen) so they remain openable as ordinary single sessions
-  rather than disappearing.
+- Do not write lifecycle state when a snooze expires. Expiry compares
+  `snoozedUntil` to now. A render-only timer may repaint an open surface (the
+  Work hook for the roster; an open chat, the palette and the foreign-row pane
+  for themselves); none writes state.
+- Nothing derives a settle. A clean exit is `ended`, never `settled`
+  (`sessionCanonicalState.ts`), so a settled row has `settledAt` or a
+  `"settled"` override, and Unsettle clears both. The `"active"` pin holds a
+  row out of the quiet tier against a later declared settle (the PR-merge
+  policy).
+- On a launch, open the tab from the synchronous create result before the
+  forced refresh, then merge the stale persisted row. Do not prune open tabs
+  before an authoritative refresh for the current project.
+- Work and Lanes share `useWorkSessions`. Keep lane state keyed by
+  `projectRoot::laneId`.
+- Spawn nesting is one rule in `sessionSpawnNesting.ts` (iOS:
+  `WorkSpawnNesting.swift`). Do not derive nesting in a list renderer. Status,
+  time and board stay flat; `ade chat list` is a flat table.
+- Every grid tile stays mounted (`terminalVisible={true}`; `isActive` gates
+  input). `gridLayoutId` is `work:grid:tiling:v1:<projectRoot>[::<laneId>]`.
+- Each grid member costs renderer heap, so a set holds at most
+  `MAX_WORK_GRID_TILES` (6, `lib/workGrid.ts`). Three places enforce it:
+  `addSessionBesideTarget` refuses a seventh; `WorkGridView` stops offering
+  `acceptExternalDropMime` (counting saved `gridSet.sessionIds`, as
+  `addSessionBesideTarget` does); `normalizeWorkGridSets` (`appStore.ts`)
+  trims an oversized saved set. Trimmed members stay unclaimed, so they open
+  as single sessions.
 
 ## Cross-links
 
-- Main-process services feeding these surfaces:
-  [pty-and-sessions.md](./pty-and-sessions.md)
+- Main-process services: [pty-and-sessions.md](./pty-and-sessions.md).
 - Lane gating and worktree isolation:
-  [runtime-isolation.md](./runtime-isolation.md)
-- Agent chat pane lives under
-  `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` and is
-  shared with this feature when the session is chat-typed.
+  [runtime-isolation.md](./runtime-isolation.md).
+- The chat pane: `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx`.

@@ -24,6 +24,12 @@ protocol LinearPaneSyncing: AnyObject {
   func fetchLinearQuickView() async throws -> LinearQuickView
   func fetchLinearIssuePickerData() async throws -> LinearIssuePickerData
   func searchLinearIssues(_ args: LinearIssueSearchArgs) async throws -> LinearIssueSearchResult
+  /// Issue pages one load reads at most.
+  var linearMaxPagesPerLoad: Int { get }
+}
+
+extension LinearPaneSyncing {
+  var linearMaxPagesPerLoad: Int { 10 }
 }
 
 extension SyncService: LinearPaneSyncing {}
@@ -223,7 +229,7 @@ final class LinearPaneStore: ObservableObject {
     var seenCursors = Set<String>()
     var pagesLoaded = 0
 
-    while pageInfo.hasNextPage && pagesLoaded < maxPagesPerRequest {
+    while pageInfo.hasNextPage && pagesLoaded < min(maxPagesPerRequest, sync.linearMaxPagesPerLoad) {
       try Task.checkCancellation()
       if let cursor {
         guard seenCursors.insert(cursor).inserted else {

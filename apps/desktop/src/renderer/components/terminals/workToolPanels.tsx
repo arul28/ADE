@@ -244,6 +244,11 @@ function chosenRemoteTarget(
   return { machine, use: workCopyUseOn(props.activeSession?.remoteWork, machine.key) };
 }
 
+/** Whether the chat runs on ADE Cloud (`useToolMachines` names its machine "ADE Cloud"). */
+function chatOnAdeCloud(machines: readonly ToolMachine[]): boolean {
+  return machines.some((machine) => machine.isChat && machine.adeCloud === true);
+}
+
 /** The machines other than the chat's that can run `kind`, offline ones too, one press each. */
 function PickMachine({ kind, deviceChoice }: WorkToolPanelProps & { kind: DeviceKind }) {
   const { choose } = deviceChoice;
@@ -251,6 +256,7 @@ function PickMachine({ kind, deviceChoice }: WorkToolPanelProps & { kind: Device
   return (
     <WorkToolPickMachineState
       kind={kind}
+      onAdeCloud={chatOnAdeCloud(deviceChoice.machines)}
       machines={able}
       read={deviceChoice.read}
       viewOnly={deviceChoice.viewOnly}
@@ -682,7 +688,8 @@ function WorkAndroidTool(props: WorkToolPanelProps) {
   useAndroidStatusWatch();
   const target = chosenRemoteTarget(props, "android");
   if (target && !target.use) return <StartOn {...props} kind="android" machine={target.machine} />;
-  if (!target && toolContext.supportsAndroidEmulator === false) {
+  // ADE Cloud runs no Android emulator yet: the pane says so and offers the person's own machines.
+  if (!target && (toolContext.supportsAndroidEmulator === false || chatOnAdeCloud(props.deviceChoice.machines))) {
     return <PickMachine kind="android" {...props} />;
   }
   // Not padded, for the Apple pane's reason: the device fills its host.

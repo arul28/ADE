@@ -142,8 +142,11 @@ struct WorkImportSessionScreen: View {
   // MARK: - Machine
 
   private var machineOptions: [WorkNewChatMachineOption] {
+    // A CLI session to import lives on a computer: ADE Cloud's chats are
+    // chats already, so ADE Cloud is no import source.
     if let fleet = syncService.machineFleet {
-      return workNewChatMachineOptions(syncService: syncService, fleet: fleet)
+      let options = workNewChatMachineOptions(syncService: syncService, fleet: fleet).filter { !$0.isCloud }
+      if !options.isEmpty { return options }
     }
     let name = syncService.focusedMachineDisplayName
     return [WorkNewChatMachineOption(
