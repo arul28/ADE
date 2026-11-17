@@ -48,10 +48,11 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
   const menuItemRef = useRef<HTMLButtonElement>(null);
   const keepPlanningRef = useRef<HTMLButtonElement>(null);
   const showMenu = menuOpen && Boolean(onImplementInNewChat) && !disabled;
+  // Focus the item in the same commit the menu appears in. A `requestAnimationFrame`
+  // here put focus one frame behind the menu, and a keyboard Escape inside that
+  // frame left focus on the document instead of back on the caret.
   useEffect(() => {
-    if (!showMenu) return;
-    const frame = requestAnimationFrame(() => menuItemRef.current?.focus());
-    return () => cancelAnimationFrame(frame);
+    if (showMenu) menuItemRef.current?.focus();
   }, [showMenu]);
 
   const implementInNewChat = () => {
