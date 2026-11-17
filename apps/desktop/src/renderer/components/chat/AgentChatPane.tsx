@@ -12778,14 +12778,20 @@ export function AgentChatPane({
     // its words; anything the person added since does not match and stays.
     const restores = delivered.map((send) => send.restore).filter((restore): restore is UnconfirmedSendRestore => restore != null);
     if (!texts.size && !restores.length) return;
-    if (texts.has(draftStore.get())) setDraft("");
-    for (const restore of restores) {
-      if (restore.attachments.length && JSON.stringify(attachmentsRef.current) === JSON.stringify(restore.attachments)) {
-        setAttachmentsWithIds([], []);
-      }
-      const contextAttachments = JSON.stringify(restore.contextAttachments);
-      if (restore.contextAttachments.length) {
-        setContextAttachments((current) => (current.length && JSON.stringify(current) === contextAttachments ? keepEmptyArray(current) : current));
+    const clearComposer = texts.has(draftStore.get());
+    if (clearComposer) setDraft("");
+    // The files and context a put-back restored go with its words, and only
+    // while the composer still holds exactly that put-back: a new message's
+    // own selections are never touched, even when it names the same file.
+    if (clearComposer) {
+      for (const restore of restores) {
+        if (restore.attachments.length && JSON.stringify(attachmentsRef.current) === JSON.stringify(restore.attachments)) {
+          setAttachmentsWithIds([], []);
+        }
+        const contextAttachments = JSON.stringify(restore.contextAttachments);
+        if (restore.contextAttachments.length) {
+          setContextAttachments((current) => (current.length && JSON.stringify(current) === contextAttachments ? keepEmptyArray(current) : current));
+        }
       }
     }
     flushPendingComposerDraftWrite();
@@ -12793,8 +12799,11 @@ export function AgentChatPane({
       const saved = readComposerDraftSnapshot(storageKey, initialNativeControls);
       if (!saved) continue;
       let next = saved;
-      if (texts.has(saved.text)) next = { ...next, text: "", updatedAt: new Date().toISOString() };
-      for (const restore of restores) {
+      // A draft the person edited since the put-back is theirs: only the
+      // put-back's own content is taken back.
+      const clearDraft = texts.has(saved.text);
+      if (clearDraft) next = { ...next, text: "", updatedAt: new Date().toISOString() };
+      for (const restore of clearDraft ? restores : []) {
         if (restore.attachments.length && JSON.stringify(saved.attachments) === JSON.stringify(restore.attachments)) {
           next = { ...next, attachments: [], attachmentDraftIds: [], updatedAt: new Date().toISOString() };
         }
