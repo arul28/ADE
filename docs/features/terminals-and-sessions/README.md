@@ -576,10 +576,11 @@ Renderer surfaces:
   - A "Couldn't load chats from <machine>" banner shows only for an online
     machine that returned an error and no chats.
   - The list is the cross-machine union (`useCrossMachineLaneUnion`). It gets
-    the **unfiltered** local roster, so a session never shows twice. A lane not
-    on this Mac has an amber `DesktopTower` mark. Foreign lanes show only
-    with sessions, after the same filters; their keys are
-    `<machineId>:<laneId>`.
+    the **unfiltered** local roster, so a session never shows twice. Rows
+    never name their machine; the hover card, the open chat's composer and
+    the Start on picker do. A Devin or Cursor Cloud lane shows a cloud mark
+    (`LaneCloudMarker`). Foreign lanes show only with sessions, after the
+    same filters; their keys are `<machineId>:<laneId>`.
   - Every foreign row carries its `OpenProjectBinding` and opens in place
     through a per-session pin; the tab switches only when this window does
     not hold that binding. Context actions pass the same binding.
@@ -592,9 +593,11 @@ Renderer surfaces:
     Activity, Name, Created or Manual sort inside a tier; drag only inside a
     tier. Filters: Status, Tool, Machine (OR in a row), Has PR and Dirty (AND
     across rows). Foreign matches count against the empty state.
-- `apps/desktop/src/renderer/components/terminals/LaneMachineMarker.tsx` — the
-  amber tower on a lane not on this Mac, with a dimmed
-  `<machine>, offline` form.
+- `apps/desktop/src/renderer/components/terminals/LaneMachineMarker.tsx` —
+  `LaneMachineMarker` (a tower for an offline machine's lane, or the machine
+  name with `named` or `mode: "name"`, used by Files and the command palette)
+  and `LaneCloudMarker` (the Devin Cloud or Cursor Cloud mark the Work list
+  shows).
 - `apps/desktop/src/renderer/components/terminals/ForeignLaneContextMenu.tsx` —
   the menu of another machine's lane. Its `online` prop is live, so a drop
   disables every action. An SSH target adds the **Open in** submenu.
@@ -1095,8 +1098,8 @@ looked yet) while `failing` is the agent's problem rather than a wait. The hook'
 cannot park a local row in Waiting. The board the pane paints is the sidebar's
 union: those bound-machine columns, then every other connected machine's chats,
 each filed with that machine's own PR wait. A foreign card carries the same
-machine glyph and runtime pin as its sidebar row, and a drag moves it on that
-machine. The reason surfaces as the card's chip. New chat leaves the board and
+runtime pin as its sidebar row, and a drag moves it on that machine. The
+reason shows as the card's chip. New chat leaves the board and
 opens the list-mode draft, because the board occupies the surface the draft
 draws on.
 
@@ -1961,7 +1964,7 @@ section; the Work row only carries a mark with their count and worst state.
 Work's Status and Time organizations show each session's lane name and lane
 color using the same compact identity as a singleton in the Lane view.
 They include already-loaded sessions from other machines, with their owner
-binding, machine marker, offline state, and lane identity intact. Duplicate
+binding and lane identity intact. Duplicate
 session ids are shown once, preferring the bound machine. Foreign attached
 shells follow the same filing rules as local ones; Status and Time keep
 subagents flat. Pending handoffs also name their lane.
