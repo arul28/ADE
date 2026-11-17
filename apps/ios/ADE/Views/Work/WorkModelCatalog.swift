@@ -611,26 +611,6 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             serviceTiers: ["fast"]
           ),
           WorkModelOption(
-            id: "gpt-6.1-sol",
-            displayName: "GPT-6.1 Sol",
-            tier: .flagship,
-            tagline: "Near-Astra · 1.05M context",
-            provider: "codex",
-            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
-            defaultReasoningEffort: "low",
-            serviceTiers: ["fast"]
-          ),
-          WorkModelOption(
-            id: "gpt-6-astra",
-            displayName: "GPT-6 Astra",
-            tier: .flagship,
-            tagline: "Flagship · 1.05M context",
-            provider: "codex",
-            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
-            defaultReasoningEffort: "low",
-            serviceTiers: ["fast"]
-          ),
-          WorkModelOption(
             id: "gpt-6.1-terra",
             displayName: "GPT-6.1 Terra",
             tier: .balanced,
@@ -681,6 +661,26 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             serviceTiers: ["fast"]
           ),
           WorkModelOption(id: "gpt-5.5", displayName: "GPT-5.5", tier: .flagship, tagline: "Flagship · 1M context", provider: "codex", serviceTiers: ["fast"]),
+          WorkModelOption(
+            id: "gpt-6.1-sol",
+            displayName: "GPT-6.1 Sol",
+            tier: .flagship,
+            tagline: "Near-Astra · 1.05M context",
+            provider: "codex",
+            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
+            defaultReasoningEffort: "low",
+            serviceTiers: ["fast"]
+          ),
+          WorkModelOption(
+            id: "gpt-6-astra",
+            displayName: "GPT-6 Astra",
+            tier: .flagship,
+            tagline: "Flagship · 1.05M context",
+            provider: "codex",
+            reasoningEfforts: workCodex56ReasoningEfforts(includeUltra: true),
+            defaultReasoningEffort: "low",
+            serviceTiers: ["fast"]
+          ),
         ]
       )
     ]
@@ -1337,15 +1337,15 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
   }
 }
 
-/// Sorts after every named Codex model, so a new family member never ties with an older model.
-private let workCodexUnrankedSortPriority = Int.max
+/// Unranked models follow preferred families and precede the previous Sol/Astra generation.
+private let workCodexUnrankedSortPriority = Int.max - 2
 
 private func workCodexFamilySortPriority(_ canonicalId: String?) -> Int? {
   switch canonicalId {
   case "openai/gpt-6.2-sol": return 0
   case "openai/gpt-6.2-astra": return 1
-  case "openai/gpt-6.1-sol": return 2
-  case "openai/gpt-6-astra": return 3
+  case "openai/gpt-6.1-sol": return Int.max - 1
+  case "openai/gpt-6-astra": return Int.max
   case "openai/gpt-6.1-terra": return 4
   case "openai/gpt-6-sol": return 5
   case "openai/gpt-6-luna": return 6

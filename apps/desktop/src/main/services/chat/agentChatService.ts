@@ -51190,12 +51190,22 @@ export function createAgentChatService(args: {
 
         const preferredIds = new Set(ordered.map((entry) => entry.id));
         const dedupedExtras = extras.filter((entry) => !preferredIds.has(entry.id));
-        const result = [...ordered, ...dedupedExtras];
+        // Keep the previous latest generation below runtime-discovered extras too.
+        const previousGeneration = (entry: AgentChatModelInfo): boolean =>
+          entry.modelId === "openai/gpt-6.1-sol" || entry.modelId === "openai/gpt-6-astra";
+        const result = [
+          ...ordered.filter((entry) => !previousGeneration(entry)),
+          ...dedupedExtras,
+          ...ordered.filter(previousGeneration),
+        ];
         if (result.length) {
-          const hasRegistryDefault = result.some((entry) => entry.modelId === defaultCodexDescriptor()?.id);
-          return result.map((entry, index) => ({
+          const registryDefaultId = defaultCodexDescriptor()?.id;
+          const selectedDefault = result.find((entry) => entry.modelId === registryDefaultId)
+            ?? result.find((entry) => entry.isDefault)
+            ?? result[0];
+          return result.map((entry) => ({
             ...entry,
-            isDefault: entry.modelId === defaultCodexDescriptor()?.id || (!hasRegistryDefault && (entry.isDefault || index === 0)),
+            isDefault: entry === selectedDefault,
           }));
         }
       }
