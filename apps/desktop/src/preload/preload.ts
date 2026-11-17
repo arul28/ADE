@@ -5223,6 +5223,17 @@ const runtimeStatusFanout = createIpcEventFanout<LocalRuntimeStatus>(IPC.appRunt
 const remoteConnectionSnapshotFanout = createIpcEventFanout<RemoteRuntimeConnectionSnapshot>(
   IPC.remoteRuntimeConnectionSnapshotChanged,
 );
+// This computer's network came back or switched (Wi-Fi rejoined, a new
+// network): main redials dropped machines at once instead of at their next
+// backoff. Chromium tells each window; main merges the calls. No timer here.
+if (typeof window !== "undefined") {
+  const noteNetworkChanged = () => {
+    void ipcRenderer.invoke(IPC.remoteRuntimeNetworkChanged).catch(() => {});
+  };
+  window.addEventListener("online", noteNetworkChanged);
+  const connection = (navigator as Navigator & { connection?: EventTarget }).connection;
+  connection?.addEventListener?.("change", noteNetworkChanged);
+}
 const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
 // One IPC listener per window for each, however many tabs subscribe: every
 // project tab adds a subscriber, and a listener per subscriber outgrows

@@ -111,7 +111,7 @@ import {
 import { moveSessionOnBoard } from "./sessionBoardMoveUi";
 import { showToast } from "../app/toast/toastStore";
 import { Banner } from "../ui/notice";
-import { useSlowLinkActive } from "../../state/projectMachines";
+import { useRemoteTargetReconnecting, useSlowLinkActive } from "../../state/projectMachines";
 import { findGridSetForSession } from "../../lib/workGrid";
 import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -1323,6 +1323,12 @@ export const SessionListPane = React.memo(function SessionListPane({
   useCloudViewOnScreen(foreignRows.some((row) => isCloudConnectionTarget(row.machineId) || isSavedChatsMachineId(row.machineId)));
   // No copy of the repository online: the list reads nothing and says so.
   const tabCopyPin = useTabCopyPin();
+  // The tab's machine dropped and ADE is dialing it again: say so, not "no computer".
+  const tabBinding = useAppStore((state) => state.projectBinding);
+  const tabReconnecting = useRemoteTargetReconnecting(tabBinding?.kind === "remote" ? tabBinding.targetId : null);
+  const reconnectingMachineName = !tabCopyPin && tabReconnecting && tabBinding?.kind === "remote"
+    ? tabBinding.runtimeName || "the machine"
+    : null;
   // Standalone callers can omit the hook's full-roster filing map, so keep the
   // foreign slice fresh here as well. The normal Work path supplies the map and
   // its own timer; this fallback timer prevents a foreign snooze from staying
@@ -4452,16 +4458,20 @@ export const SessionListPane = React.memo(function SessionListPane({
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Terminal size={16} weight="regular" className="text-muted-fg/45 mb-2" />
             <div className="text-[12px] font-medium text-fg/70">
-              {!tabCopyPin
+              {reconnectingMachineName
+                ? `Reconnecting to ${reconnectingMachineName}…`
+                : !tabCopyPin
                 ? "No computer connected"
                 : firstLoadRetrying ? "Waiting for this machine to answer" : "No chats yet"}
             </div>
             <div className="mt-1 text-[11px] text-muted-fg/60">
-              {!tabCopyPin
+              {reconnectingMachineName
+                ? "Your chats show again as soon as it answers"
+                : !tabCopyPin
                 ? "Connect a computer to see this project's chats"
                 : firstLoadRetrying ? "Your chats will show up as soon as it does" : "Start one from the prompt box"}
             </div>
-            {!tabCopyPin ? (
+            {!tabCopyPin && !reconnectingMachineName ? (
               <button
                 type="button"
                 className="mt-2.5 rounded-md px-2 py-1 text-[10px] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg"

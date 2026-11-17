@@ -1058,6 +1058,11 @@ export class RemoteConnectionPool {
       {
         retryOnConnectionError: (entry) => shouldRetryRemoteRuntimeAction(request)
           || isDedupedSend(request, entry.result.capabilities),
+        // A send may have arrived before the link dropped. If the redial
+        // fails too, that is an unknown outcome, not "can't reach": the
+        // caller waits for the message instead of handing it back.
+        sentWriteOnLostLink: (entry) => !shouldRetryRemoteRuntimeAction(request)
+          && isDedupedSend(request, entry.result.capabilities),
       },
     );
   }
@@ -1836,6 +1841,11 @@ export class RemoteConnectionPool {
     options: {
       /** May the call go out again on a new connection? A function decides per connection (its brain's capabilities). */
       retryOnConnectionError: boolean | ((entry: PoolEntry) => boolean);
+      /**
+       * A write that may have gone out on the lost link: a failed redial ends
+       * it as `RemoteActionOutcomeUnknownError`, not as the dial's error.
+       */
+      sentWriteOnLostLink?: (entry: PoolEntry) => boolean;
       isRetryableError?: (error: unknown) => boolean;
       /** Told which step the call is waiting on, so a caller's own deadline can name it. */
       phases?: {
@@ -1856,6 +1866,7 @@ export class RemoteConnectionPool {
       ? options.retryOnConnectionError(connection)
       : options.retryOnConnectionError);
     const retryOnConnectionError = mayRetryOn(entry);
+    const sentWrite = options.sentWriteOnLostLink?.(entry) === true;
     const disconnectGeneration =
       this.disconnectGenerationByTargetId.get(target.id) ?? 0;
     const droppedElsewhere = () =>
@@ -1884,9 +1895,11 @@ export class RemoteConnectionPool {
         // instead of failing with the timeout. With no dial to join (the
         // person disconnected), it fails as before: it never dials itself.
         const redial = this.entries.get(target.id);
-        if (!redial) throw error;
+        if (!redial) throw sentWrite ? new RemoteActionOutcomeUnknownError(false) : error;
         notePhase("reconnect");
-        const nextEntry = await redial;
+        const nextEntry = await redial.catch((redialError: unknown) => {
+          throw sentWrite ? new RemoteActionOutcomeUnknownError(false) : redialError;
+        });
         if (nextEntry === entry) throw error;
         if (!mayRetryOn(nextEntry)) throw new RemoteActionOutcomeUnknownError(null);
         if (options.phases) notePhase(options.phases.operation);
@@ -1899,7 +1912,7 @@ export class RemoteConnectionPool {
       try {
         nextEntry = await this.connectEntry(reconnectTarget, { initiatedBy: "background" });
       } catch (reconnectError) {
-        if (retryOnConnectionError) throw reconnectError;
+        if (retryOnConnectionError && !sentWrite) throw reconnectError;
         throw new RemoteActionOutcomeUnknownError(false);
       }
       if (mayRetryOn(nextEntry) && retryOnConnectionError) {

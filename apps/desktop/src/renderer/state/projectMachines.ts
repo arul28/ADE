@@ -164,6 +164,27 @@ export function useRemoteTargetState(targetId: string | null): "online" | "offli
 }
 
 /**
+ * Whether ADE is bringing a dropped link to this machine back on its own
+ * ("reconnecting"), as opposed to waiting for the person. Same shared feed;
+ * null target: false, no feed.
+ */
+export function useRemoteTargetReconnecting(targetId: string | null): boolean {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return false;
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      return connection?.state === "error" && connection.recovery === "reconnecting";
+    },
+    () => false,
+  );
+}
+
+/**
  * A mark for the target's current connection: its `connectedAt` while it is
  * connected (not held after a drop), else "". A new connection, such as an
  * ADE Cloud computer's new brain after a wake, gives a new mark. Same shared

@@ -1331,6 +1331,11 @@ export function registerRuntimeBridge({
     },
   );
 
+  // This computer's network, so no pin: every dropped machine redials now.
+  handle(IPC.remoteRuntimeNetworkChanged, async (): Promise<void> => {
+    remoteConnectionService.noteNetworkChanged();
+  });
+
   handle(
     IPC.remoteRuntimeListDiscoveredMachines,
     async (): Promise<RemoteRuntimeDiscoveryResult> => {
