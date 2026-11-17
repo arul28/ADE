@@ -17116,7 +17116,13 @@ export function AgentChatPane({
             }
             setError((current) => (current === waitingMessage ? null : current));
             if (selectedSessionIdRef.current !== pending.sessionId || draftValueRef.current.trim().length) {
-              // Another chat is open, or a new draft took the composer: say so instead.
+              // Another chat is open, or a new draft took the composer: the
+              // note is a toast, so the submission itself goes back in its own
+              // chat's saved draft (files and context included) before this
+              // entry is forgotten.
+              if (selectedSessionIdRef.current !== pending.sessionId) {
+                putUnsentSendInSavedDraft(draftStorageKeyAtSend, unsentRestoreAtSend);
+              }
               const lostText = pending.texts[0] ?? "";
               showToast({
                 tone: "warning",
