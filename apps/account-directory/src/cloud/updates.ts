@@ -3,6 +3,7 @@ import type { CloudInstance, CloudUpdateChannel, CloudUpdateCheck, CloudUpdateRe
 import { isMeteredStatus } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import {
+  clearBackupRestStatement,
   countedDiskGb,
   freePlanOverDisk,
   freeWakeStatements,
@@ -26,8 +27,9 @@ import {
  * The server keeps one image setting per channel (`template_version_stable`,
  * `template_version_beta`; `template_version` is the older single setting and
  * the fallback). A computer updates only when nothing runs on it: when its own
- * brain says it is idle (`reason: "idle"`), or after it has slept for a while
- * (`reason: "asleep"`, the minute cron). The brain reports in after it boots
+ * brain says it is idle (`reason: "idle"`). A resting computer is never woken
+ * to update (every wake is use): it updates at the idle step after its next
+ * real wake. Older rows may still name `asleep`. The brain reports in after it boots
  * (`POST .../booted`); an update with no report is rolled back once.
  *
  * Automatic updates go only to an image a passed template check named in
@@ -44,16 +46,12 @@ import {
 export const UPDATE_BOOT_REPORT_MS = 15 * 60_000;
 /** How long an automatic update's minutes stay free: the provider's update (up to 3 minutes), then the boot report's wait. */
 const UPDATE_FREE_WINDOW_MS = UPDATE_BOOT_REPORT_MS + 5 * 60_000;
-/** A computer must have slept this long before the cron updates it. */
-const ASLEEP_BEFORE_UPDATE_MS = 10 * 60_000;
-const AUTO_UPDATES_PER_TICK = 3;
-/** Most computers one tick looks at for an automatic update (each may read its account); the rest wait a minute. */
-const AUTO_UPDATE_TRIES_PER_TICK = 10;
 /** Most timed-out updates one tick fails or rolls back (each may call the provider); the rest wait a minute. */
 const UPDATE_TIMEOUTS_PER_TICK = 10;
 /** An automatic update the provider refused is tried again after this long. */
 const AUTO_RETRY_AFTER_MS = 60 * 60_000;
 
+/** `asleep` stays for rows an older server wrote. */
 const AUTOMATIC_REASONS = new Set<CloudUpdateReason>(["idle", "asleep", "rollback"]);
 
 const ROLLED_BACK = "It didn't start on the new version, so ADE put it back on the version before.";
@@ -211,6 +209,8 @@ function freeWindowStatements(env: CloudEnv, computer: ComputerRow, status: stri
         free_wake_started_at = ?, free_wake_until = ?, cold_storage = 0
       where instance_id = ?
     `).bind(status, now, freeUntil, lastAwakeAt, freeStart, freeUntil, computer.instance_id),
+    // The update boots it: its lanes may change after, so its rest backups are not current.
+    clearBackupRestStatement(env, computer.instance_id),
   ];
 }
 
@@ -418,8 +418,7 @@ function reportClockStart(computer: ComputerRow): number {
  * statuses; `blockedUsers` are accounts whose computers may not wake.
  * 1. An update awake 15 minutes with no boot report fails and rolls back once;
  *    a rollback with no report is left failed and never looped on.
- * 2. Up to three computers asleep for 10 minutes and behind their channel's
- *    allowed image update, unless their account can't wake them.
+ * A resting computer is not updated here: that would wake it for free.
  */
 export async function runCloudAutoUpdates(
   env: CloudEnv,
@@ -448,31 +447,7 @@ export async function runCloudAutoUpdates(
       reportCloudFailure("cloud.update_check_failed", { instanceId: computer.instance_id, message: error instanceof Error ? error.message : "unknown" });
     }
   }
+  // No update while it rests: an update would wake it for free. It updates at its own idle
+  // step after its next real wake (`reason: "idle"`).
 
-  if (!targets.autoStable && !targets.autoBeta) return;
-  // A move's source and its new computer are left alone until the move ends.
-  const moving = new Set(computers.flatMap((computer) => (computer.moving_from ? [computer.moving_from, computer.instance_id] : [])));
-  const due = computers.filter((computer) =>
-    computer.status === "sleeping"
-    && now - computer.status_changed_at >= ASLEEP_BEFORE_UPDATE_MS
-    && computer.cold_storage !== 1
-    && !moving.has(computer.instance_id)
-    && !blockedUsers.has(computer.user_id)
-    && !(computer.free_wake_until != null && computer.free_wake_until > now)
-    && isBehindAutomatic(computer, targets, now));
-  let started = 0;
-  for (const computer of due.slice(0, AUTO_UPDATE_TRIES_PER_TICK)) {
-    if (started >= AUTO_UPDATES_PER_TICK) break;
-    const target = automaticTemplate(targets, channelOfComputer(computer));
-    if (!target) continue;
-    try {
-      if (await updateBlocked(env, computer.user_id, now)) continue;
-      started += 1;
-      await startCloudUpdate(env, provider, computer, { reason: "asleep", target, expectsReport: true, now });
-    } catch (error) {
-      if (error instanceof CloudUpdateInProgressError) continue;
-      // Reported inside, and retried after `AUTO_RETRY_AFTER_MS`.
-      logCloud("cloud.auto_update_skipped", { instanceId: computer.instance_id, message: error instanceof Error ? error.message : "unknown" });
-    }
-  }
 }

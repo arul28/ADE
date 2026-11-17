@@ -9,7 +9,11 @@
  *    whose terminal wrote nothing since the last save is not sent again.
  * 3. A Git summary per lane (`PUT /cloud/git/:m/:lane`), sent only when it
  *    changed.
- * 4. With `capsules` (the delete path only, after the work was pushed): a
+ * 0. A backup of each lane's work that is not on GitHub yet
+ *    (`cloudLaneBackup.ts`), then a report of every lane's state, which a
+ *    cleanup reads to delete the computer with no wake. Before the copies:
+ *    code is what a person needs back most.
+ * 4. With `capsules` (the delete path only): a
  *    fork capsule per chat and agent CLI whose provider has its own history
  *    (Claude, Codex, OpenCode chats; Claude Code and Codex CLIs). A new
  *    computer restores the chat from it with the same chat id. Every other
@@ -51,6 +55,7 @@ import { readGitOriginUrl } from "../../../../desktop/src/main/services/projects
 import { redactSecrets } from "../../../../desktop/src/main/services/shared/utils";
 import type { AdeRuntime } from "../../bootstrap";
 import type { CloudChatUploadPendingResult } from "./cloudChatUploader";
+import { runLaneBackups, type BackupLane } from "./cloudLaneBackup";
 
 type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
@@ -99,6 +104,8 @@ export type CloudRestSaveDeps = {
    * (`uploadSubagentCloudCopy`). Left out, no subagent is saved.
    */
   uploadSubagentCopy?: (parentSessionId: string, copy: { chatId: string; text: string; title: string | null; lastActivityAt: string | null }) => Promise<boolean>;
+  /** Every lane on the computer for its backup (`cloudLaneBackup.ts`). Left out, no backup is made. */
+  backupLanes?: () => Promise<{ complete: boolean; lanes: BackupLane[] }>;
 };
 
 export type CloudRestSave = {
@@ -478,6 +485,21 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
     await deps.flushChats(flushMs).catch((error: unknown) => {
       logger.warn("cloud.rest_save_chats_failed", { error: errorText(error) });
     });
+
+    // 0. Each lane's work not on GitHub, and the report a cleanup reads. A lane the time or a use cuts off counts as not saved.
+    if (deps.backupLanes) {
+      report.backups = await runLaneBackups({
+        api,
+        instanceId,
+        machineKey,
+        logger,
+        lanes: deps.backupLanes,
+        mayGoOn: () => idle() && Date.now() < deadline,
+      }).catch((error: unknown) => {
+        logger.warn("cloud.rest_save_backups_failed", { error: errorText(error) });
+        return null;
+      });
+    }
 
     const projectKeyOf = new Map<AdeRuntime, string | null>();
     const projectKey = (runtime: AdeRuntime): string | null => {

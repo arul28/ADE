@@ -30835,18 +30835,16 @@ async function runServe(
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
         readBusy: readCloudBusy,
-        requestIdleSleep: async (instanceId) => {
+        requestIdleSleep: async (instanceId, extras) => {
           const client = await (await getCloudBrainAccess()).client();
           if (!client) throw new Error("no ADE Cloud access");
-          await client.requestIdleSleep(instanceId);
+          await client.requestIdleSleep(instanceId, { backupReportId: extras?.backupReportId ?? null });
         },
         growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
         diskGrowDueNow: () => cloudDiskGrower?.growDueNow() ?? false,
         reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
         // Copies and Git summaries before the sleep: the lane reads the same with no computer awake.
-        saveForRest: async (stillIdle) => {
-          await cloudRest?.saveAtIdle(stillIdle);
-        },
+        saveForRest: async (stillIdle: () => boolean): Promise<string | null> => (cloudRest ? await cloudRest.saveAtIdle(stillIdle) : null),
         // Messages queued for its chats while it slept go now.
         onWoke: () => cloudRest?.drain("woke"),
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
@@ -32513,11 +32511,40 @@ async function runServe(
 
   // ADE Cloud computer: the rest save and the queue of messages for its chats.
   if (!embedded && cloudInstanceId && cloudRest && cloudKeepAwake) {
-    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }] = await Promise.all([
+    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }, laneBackup, { normalizeGitRemoteIdentity }, { readGitOriginUrl }, { installCloudLaneRestore }] = await Promise.all([
       import("./services/cloudChats/cloudRestSave"),
       import("./services/cloudChats/cloudChatMessageQueue"),
       import("./services/cloudChats/cloudChatUploader"),
+      import("./services/cloudChats/cloudLaneBackup"),
+      import("../../desktop/src/shared/crossMachineHandoff"),
+      import("../../desktop/src/main/services/projects/recentProjectSummary"),
+      import("../../desktop/src/main/services/lanes/cloudLaneRestoreHook"),
     ]);
+    const projectKeyOf = (root: string): string | null => {
+      try {
+        return normalizeGitRemoteIdentity(readGitOriginUrl(root)) || null;
+      } catch {
+        return null;
+      }
+    };
+    // A lane that starts here gets its saved work from the computer it had before (fork-continue, a new computer).
+    installCloudLaneRestore({
+      prepareBranch: async ({ laneId, branchRef, projectRoot }) => {
+        const api = await accountCloudApi();
+        const machineKey = thisMachineKey();
+        if (!api || !machineKey) return { created: false };
+        return await laneBackup.prepareLaneBranchFromBackup({ api, machineKey, laneId, branchRef, projectRoot, logger: headlessProjectLogger });
+      },
+      restore: async ({ laneId, worktreePath, projectRoot }) => {
+        const api = await accountCloudApi();
+        const machineKey = thisMachineKey();
+        if (!api || !machineKey) return null;
+        const outcome = await laneBackup.restoreLaneBackupIfNeeded({ api, instanceId: cloudInstanceId, machineKey, laneId, worktreePath, projectRoot, logger: headlessProjectLogger });
+        return outcome === "kept_newer_local_work" || outcome === "kept_branch_differs"
+          ? "This lane has other work than its saved work on ADE Cloud, so ADE left the lane as it is. Download the saved work from the lane to compare."
+          : outcome === "applied" ? "ADE put back this lane's work that wasn't on GitHub." : null;
+      },
+    });
     const restSave = createCloudRestSave({
       adeHome: layout.adeDir,
       instanceId: cloudInstanceId,
@@ -32535,6 +32562,16 @@ async function runServe(
       flushChats: (timeoutMs) => uploadPendingCloudChats(timeoutMs),
       accountUserId: () => brainAccountAuthService.getStatus().userId ?? null,
       uploadSubagentCopy: uploadSubagentCloudCopy,
+      backupLanes: laneBackup.createBackupLaneLister({
+        cachePath: path.join(layout.adeDir, "cloud", "backup-lanes.json"),
+        projects: () => projectRegistry.list().map((record) => ({
+          projectId: record.projectId,
+          booted: async () => (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null,
+          open: async () => (await scopeRegistry.get(record.projectId)).runtime,
+        })),
+        projectKey: projectKeyOf,
+        logger: headlessProjectLogger,
+      }),
     });
     const chatQueue = createCloudChatMessageQueue({
       instanceId: cloudInstanceId,

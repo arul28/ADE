@@ -59,6 +59,7 @@ import {
   type CloudPlanId,
 } from "./contract";
 import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
+import { deleteBackupsForLane, deleteBackupsForMachines, markRestedWithBackups, routeLaneBackups } from "./laneBackups";
 import { freeCapRefuses } from "./costReport";
 import { ACCOUNT_BLOCKED_MESSAGE, accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
 import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
@@ -156,9 +157,6 @@ const CLIENT_ENV = { ADE_MIN_VERSION: /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/ } as 
 const MAX_STRING = 4096;
 const MAX_COMMAND = 100_000;
 const MAX_EXEC_TIMEOUT_MS = 15 * 60_000;
-/** A push-work wake runs this long, once a day per computer. */
-const FREE_WAKE_MS = 15 * 60_000;
-const FREE_WAKE_COOLDOWN_MS = 24 * 60 * 60_000;
 
 const NOT_FOUND_MESSAGE = "ADE Cloud has no such computer.";
 const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
@@ -967,12 +965,14 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
   return await finish;
 }
 
-async function handleSleepLike(env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number, reason: string): Promise<Response> {
+async function handleSleepLike(env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number, reason: string, backupReportId: string | null = null): Promise<Response> {
   const { blocked } = await wakeBlocker(env, computer.user_id, now);
   try {
     // While wakes are refused a sleeping computer would still wake on any request, so it stops instead.
     const status = blocked ? await provider.stopInstance(computer.instance_id) : await provider.sleepInstance(computer.instance_id);
     await recordStatus(env, computer, status, now, reason);
+    // After the status write: a cleanup may delete it with no wake only once it rests with current backups.
+    if (backupReportId) await markRestedWithBackups(env, computer.instance_id, backupReportId, now);
     return json({ status });
   } catch (error) {
     if (error instanceof CloudProviderError && error.status === 400) return json({ status: computer.status });
@@ -984,13 +984,10 @@ async function handleStart(request: Request, env: CloudEnv, computer: ComputerRo
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const { account, blocked } = await wakeBlocker(env, computer.user_id, now);
-  let freeWake = false;
   if (blocked) {
-    // Only the short push-work wake gets through, once a day per computer.
+    // Every wake is use, so none goes through at 0 hours. The lanes' work reads from their backups with no wake.
     const { refuse } = cloudActionTracker({ env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: "person", key: computer.instance_id, refusedAction: "wake", now });
-    if (body.reason !== "push_work") return refuse(blocked);
-    if (computer.free_wake_used_at != null && now - computer.free_wake_used_at < FREE_WAKE_COOLDOWN_MS) return refuse(blocked);
-    freeWake = true;
+    return refuse(blocked);
   }
   // At the awake cap, a wake waits a few seconds for another computer to sleep before it says so.
   const capped = await awakeRoom(env, computer, now, AWAKE_CAP_WAIT_MS);
@@ -998,12 +995,9 @@ async function handleStart(request: Request, env: CloudEnv, computer: ComputerRo
     const { refuse } = cloudActionTracker({ env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: "person", key: computer.instance_id, refusedAction: "wake", now });
     return refuse(capped);
   }
-  // Before the provider is asked: an idle cleanup's save in flight sees this start before its
-  // delete (the status alone can't say it: the save's own wake has it running already).
-  if (!freeWake) {
-    const refused = await idleUseRefusal(env, computer, now);
-    if (refused) return refused;
-  }
+  // Before the provider is asked: an idle cleanup in flight sees this start before its delete.
+  const refused = await idleUseRefusal(env, computer, now);
+  if (refused) return refused;
   let status: string;
   try {
     status = await provider.startInstance(computer.instance_id);
@@ -1011,28 +1005,6 @@ async function handleStart(request: Request, env: CloudEnv, computer: ComputerRo
     // The provider holds a computer whose plan payment failed: the server's sentence (CONTRACTS 5), not the provider's.
     if (error instanceof CloudProviderError && error.code === "instance_suspended") return fail("plan_past_due", CLOUD_PLAN_PAST_DUE_SENTENCE, 402);
     throw error;
-  }
-  if (freeWake) {
-    // A stretch already open is charged up to here, then it starts over after the free window.
-    const closing = computer.awake_since != null && computer.awake_since <= now
-      ? settleStatements(env, computer, now, statusGuard(computer))
-      : [];
-    // Metering starts when the free window ends; the stretch before it costs nothing.
-    computer.awake_since = now + FREE_WAKE_MS;
-    computer.free_wake_started_at = now;
-    computer.free_wake_until = now + FREE_WAKE_MS;
-    computer.free_wake_used_at = now;
-    // Over the plan's disk, this wake doesn't count as use: the 30-day delete clock keeps
-    // running (`last_awake_at` stays older than `free_wake_started_at`, which the close keeps).
-    const lastAwakeAt = blocked?.refusal === "over_plan_disk" ? computer.last_awake_at : now;
-    await env.DB.batch([
-      ...closing,
-      // `cold_storage` clears too: it's awake now, so the stop at the end of the window has to apply.
-      env.DB.prepare("update cloud_computers set status = ?, status_changed_at = ?, awake_since = ?, last_awake_at = ?, free_wake_started_at = ?, free_wake_until = ?, free_wake_used_at = ?, zero_stop_started_at = null, cold_storage = 0 where instance_id = ?")
-        .bind(status, now, computer.awake_since, lastAwakeAt, now, computer.free_wake_until, now, computer.instance_id),
-      powerLogStatement(env, computer, "start", "push_work", now),
-    ]);
-    return json({ status });
   }
   await recordStatus(env, computer, status, now, "user");
   return json({ status });
@@ -1141,6 +1113,11 @@ async function handleDelete(request: Request, env: CloudEnv, computer: ComputerR
     if (keepLane) await unmarkKeepLaneStatement(env, computer.instance_id).run();
     throw error;
   }
+  // A delete that keeps no lane takes the lane's backups with it: the person deleted the lane.
+  if (!keepLane) {
+    await deleteBackupsForMachines(env, computer.user_id, [computer.machine_key]);
+    if (computer.lane_id) await deleteBackupsForLane(env, computer.user_id, computer.lane_id);
+  }
   const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
   // An agent's delete names its chat; a person's desktop leaves `who` unset.
   captureCloudAction(env, waitUntil, computer.user_id, { action: "delete", plan: await planIdFor(env, computer.user_id), origin: who ? "agent" : "person", tier: tierOf(size) }, computer.instance_id, now);
@@ -1226,7 +1203,12 @@ async function handleList(env: CloudEnv, userId: string, provider: CloudProvider
 
 const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, ctx: CloudRequestContext) => Promise<Response>> = {
   "POST sleep": (_request, env, computer, provider, { now }) => handleSleepLike(env, computer, provider, now, "user"),
-  "POST idle": (_request, env, computer, provider, { now }) => handleSleepLike(env, computer, provider, now, "idle_request"),
+  // The computer's own sleep. `backupReportId` names the backup report it made just before: it rests with those backups.
+  "POST idle": async (request, env, computer, provider, { now }) => {
+    const body = await readJson(request).catch(() => null);
+    const reportId = typeof body?.backupReportId === "string" ? body.backupReportId : null;
+    return handleSleepLike(env, computer, provider, now, "idle_request", reportId);
+  },
   "POST start": handleStart,
   "POST stop": (_request, env, computer, provider, { now }) => handleStop(env, computer, provider, now),
   "POST update": handleUpdate,
@@ -1504,7 +1486,7 @@ const EVENT_WAKES_ROUTE = /^\/cloud\/instances\/([^/]+)\/event-wakes$/;
 /** The minute budget a write to these rows counts against (`takeRequest`); null for a read or another route. */
 function writeBucketOf(path: string, method: string): CloudRequestBucket | null {
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
-  if ([CLOUD_PATHS.sessions, CLOUD_PATHS.git, CLOUD_PATHS.capsules].some((route) => path.startsWith(`${route}/`))) return "uploads";
+  if ([CLOUD_PATHS.sessions, CLOUD_PATHS.git, CLOUD_PATHS.capsules, CLOUD_PATHS.backups].some((route) => path.startsWith(`${route}/`))) return "uploads";
   if (path === CLOUD_EDGE_PATHS.limits || EVENT_WAKES_ROUTE.test(path)) return "settings";
   return null;
 }
@@ -1726,6 +1708,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (path === CLOUD_PATHS.sessions || path.startsWith(`${CLOUD_PATHS.sessions}/`)) return routeSessionCopies(request, url, path, env, caller.userId, now);
   if (path === CLOUD_PATHS.git || path.startsWith(`${CLOUD_PATHS.git}/`)) return routeGitSummaries(request, url, path, env, caller.userId, now);
   if (path.startsWith(`${CLOUD_PATHS.capsules}/`)) return routeForkCapsules(request, path, env, caller.userId, now);
+  // Lane backups: rows and R2 only, so a person gets their work back with no wake and no hours.
+  if (path === CLOUD_PATHS.backups || path.startsWith(`${CLOUD_PATHS.backups}/`)) return routeLaneBackups(request, url, path, env, caller.userId, now);
   const chatMessages = chatMessagesRouteOf(path);
   if (chatMessages) {
     return providerCall(() => routeChatMessages(request, env, caller.userId, chatMessages.machineKey, chatMessages.chatId, chatMessages.rest, {
@@ -1749,7 +1733,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   }
   // Lanes without a computer are rows only: readable with no provider, like saved chats.
   if (path === CLOUD_PATHS.lanesWithoutComputer || path.startsWith(`${CLOUD_PATHS.lanesWithoutComputer}/`)) {
-    return routeLanesWithoutComputer(request, path, env, caller.userId);
+    return routeLanesWithoutComputer(request, path, env, caller.userId, (laneId) => deleteBackupsForLane(env, caller.userId, laneId));
   }
   // The account vault's ADE Cloud sign-ins, for the web (status only), and the model list: no provider needed.
   if (path === CLOUD_PATHS.signIns || path.startsWith(`${CLOUD_PATHS.signIns}/`)) return routeAccountSignIns(request, path, env, now);

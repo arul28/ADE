@@ -16,7 +16,7 @@
  * registries and the sign-in runners), and `attach` hands them in.
  */
 
-import type { CloudSaveForRestReport } from "../../../../account-directory/src/cloud/contract";
+import type { CloudBackupSaveSummary, CloudSaveForRestReport } from "../../../../account-directory/src/cloud/contract";
 import { CloudApiError, type CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
 import type { CloudChatMessageQueue, CloudChatQueueDrainResult } from "./cloudChatMessageQueue";
 import type { CloudRestSave } from "./cloudRestSave";
@@ -36,8 +36,11 @@ const USE_REPORT_EVERY_MS = 30_000;
 const USE_REPORT_WAIT_MS = 5_000;
 /** The server's drain exec gets its answer by then; the drain goes on after it. */
 const DRAIN_ANSWER_MS = 25_000;
-/** The idle step's save. */
-const IDLE_SAVE_BUDGET_MS = 60_000;
+/**
+ * The idle step's save, lane backups first. Three idle minutes plus this stay
+ * under the provider's own 5-minute sleep; a save it cuts short is not current.
+ */
+const IDLE_SAVE_BUDGET_MS = 90_000;
 /** The cleanup's save: inside the server's 4-minute exec, with room for the brain's start. */
 const CLEANUP_SAVE_BUDGET_MS = 200_000;
 const CLEANUP_SAVE_HOLD_MS = 5 * 60_000;
@@ -57,10 +60,14 @@ export type CloudComputerRestDeps = {
 
 export type CloudComputerRest = {
   attach: (parts: { save: CloudRestSave | null; queue: CloudChatMessageQueue | null }) => void;
-  /** The idle step's save (no capsules); stops early once someone uses the computer. */
-  saveAtIdle: (stillIdle: () => boolean) => Promise<void>;
+  /**
+   * The idle step's save (no capsules); stops early once someone uses the
+   * computer. Answers the backup report id when every lane is saved: the
+   * computer's sleep request names it, so it rests with those backups.
+   */
+  saveAtIdle: (stillIdle: () => boolean) => Promise<string | null>;
   /** The save in `prepare-stop`, in the time left after the chats. */
-  saveBeforeStop: ((budgetMs: number) => Promise<{ sessions: number; git: number }>) | null;
+  saveBeforeStop: ((budgetMs: number) => Promise<{ sessions: number; git: number; backups: CloudBackupSaveSummary | null }>) | null;
   /** `ade cloud save-for-rest [--capsules]`: the server's idle cleanup. */
   saveForCleanup: (capsules: boolean) => Promise<CloudSaveForRestReport>;
   /** One drain round, started and left to run (start, wake). */
@@ -121,14 +128,15 @@ export function createCloudComputerRest(deps: CloudComputerRestDeps): CloudCompu
       queue = parts.queue;
     },
     async saveAtIdle(stillIdle) {
-      await save?.save({ capsules: false, budgetMs: IDLE_SAVE_BUDGET_MS, reason: "idle", stillIdle });
+      const saved = await save?.save({ capsules: false, budgetMs: IDLE_SAVE_BUDGET_MS, reason: "idle", stillIdle });
+      return saved?.backups?.state === "current" ? saved.backups.reportId : null;
     },
     get saveBeforeStop() {
       const current = save;
       if (!current) return null;
       return async (budgetMs: number) => {
         const saved = await current.save({ capsules: false, budgetMs, reason: "prepare_stop" });
-        return { sessions: saved.sessions, git: saved.git };
+        return { sessions: saved.sessions, git: saved.git, backups: saved.backups ?? null };
       };
     },
     async saveForCleanup(capsules) {

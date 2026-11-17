@@ -10,7 +10,7 @@ import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, fail, json, readJson } from "
 import { githubOriginOf } from "./launches";
 import { laneWorkOfRow } from "./diskUsage";
 import { laneFactsOfRow } from "./lanesWithoutComputer";
-import { pushAllWork, putBackToRest, type WakeRecord } from "./planCleanup";
+import { saveBeforeDelete, stillRestsWithBackups } from "./planCleanup";
 import { cloudSizeFor, isMeteredStatus, tierOf } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { deleteComputer, listComputers, logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
@@ -18,24 +18,24 @@ import { deleteComputer, listComputers, logCloud, ownedComputer, reportCloudFail
 /**
  * Delete the cloud computers of one project (C10, plan-final decision 5):
  * Lane L's Delete project window calls it. Every computer of this account
- * whose lane facts name the origin. Each is woken for free when asleep (the
- * push-work wake), its own ADE stops its agents, saves its chats and pushes
- * every lane's work (the same commands the plan cleanup runs), and it is
- * deleted only when nothing is left: a computer whose push failed stays, with
- * why, and the caller offers "Delete anyway".
+ * whose lane facts name the origin. Each goes only when every lane's work is
+ * saved as a lane backup (`saveBeforeDelete`, as the plan cleanup): a
+ * resting computer is never woken for it and nothing is pushed. A computer
+ * whose lanes are not all saved stays, with why, and the caller offers
+ * "Delete anyway".
  *
  * The preview (`dryRun`) lists them; the delete names the ones it saw
  * (`instanceIds`) and acts only on those that still belong to the origin, so
  * a computer made after the preview (a server launch still joining) is left
  * alone. A computer already in another job's `pending` or `working` row is
- * skipped, checked inside each row's own insert, so two jobs never push one
+ * skipped, checked inside each row's own insert, so two jobs never save one
  * computer at once even when they start together. At most 50 a job;
  * `truncated` says when there were more, and `accepted`/`skipped` say which
  * named computers this job took.
  *
  * Bounded: the route only writes the job's rows and answers `{ jobId }`; the
  * minute cron moves each row on, a few computers a tick, so no request waits
- * on a push and a closed window doesn't stop the job.
+ * on a save and a closed window doesn't stop the job.
  */
 
 const JOB_ID = UUID_PATTERN;
@@ -130,27 +130,24 @@ async function settle(env: CloudEnv, row: JobRow, state: CloudProjectComputerDel
     .bind(state, reason, Date.now(), row.job_id, row.instance_id).run();
 }
 
-/** One computer: wake, push, check, delete. Anything short of "everything is on GitHub" keeps it. */
-async function runOne(env: CloudEnv, provider: CloudProvider, row: JobRow, now: number): Promise<void> {
+/** One computer: its lanes saved (no wake), then deleted. Anything short of "every lane saved" keeps it. */
+async function runOne(env: CloudEnv, provider: CloudProvider, row: JobRow): Promise<void> {
   const computer = await ownedComputer(env, row.user_id, row.instance_id);
   if (!computer) return settle(env, row, "gone", null);
-  const wake: WakeRecord = { woke: false, from: computer.status };
-  const keep = async (reason: string): Promise<void> => {
-    if (wake.woke) await putBackToRest(env, provider, computer.instance_id, wake.from);
-    await settle(env, row, "kept", reason);
-  };
   try {
-    const work = await pushAllWork(env, provider, computer, now, wake, "project_delete");
+    const work = await saveBeforeDelete(env, provider, computer, "project_delete");
     if (!work.ok) {
       logCloud("cloud.project_delete_computer_kept", { instanceId: computer.instance_id, code: work.code });
-      return keep(work.reason);
+      return settle(env, row, "kept", work.reason);
     }
+    // A start since the check takes it out of rest: its lanes may have changed.
+    if (work.resting && !(await stillRestsWithBackups(env, computer.instance_id))) return settle(env, row, "kept", "Someone started this computer while ADE saved it.");
     await deleteComputer(env, provider, computer, { who: "project_delete", reason: "project_delete" }, Date.now());
     logCloud("cloud.project_delete_computer_deleted", { instanceId: computer.instance_id });
     return settle(env, row, "deleted", null);
   } catch (error) {
     reportCloudFailure("cloud.project_delete_computer_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-    return keep("ADE Cloud couldn't reach the computer to push its work.");
+    return settle(env, row, "kept", "ADE Cloud couldn't reach the computer to save its work.");
   }
 }
 
@@ -172,7 +169,7 @@ export async function runProjectComputerDeletes(env: CloudEnv, provider: CloudPr
       update cloud_project_deletes set state = 'working', claimed_at = ?, updated_at = ?
       where job_id = ? and instance_id = ? and (state = 'pending' or (state = 'working' and claimed_at < ?))
     `).bind(now, now, row.job_id, row.instance_id, now - CLAIM_STALE_MS).run();
-    if ((claimed.meta?.changes ?? 0) === 1) runs.push(runOne(env, provider, row, now));
+    if ((claimed.meta?.changes ?? 0) === 1) runs.push(runOne(env, provider, row));
   }
   await Promise.all(runs);
   await env.DB.prepare("delete from cloud_project_deletes where created_at < ?").bind(now - JOB_KEPT_MS).run();

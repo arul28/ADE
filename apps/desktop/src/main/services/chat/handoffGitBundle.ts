@@ -166,7 +166,7 @@ export async function readHandoffWorkingTreeSha(args: { worktreePath: string }):
 }
 
 /** Refuses before hashing when untracked files are clearly too big to carry. */
-async function precheckUntrackedSize(cwd: string): Promise<void> {
+export async function precheckUntrackedSize(cwd: string): Promise<void> {
   const listed = await runGit(["ls-files", "--others", "--exclude-standard", "-z"], {
     cwd,
     timeoutMs: 30_000,
@@ -217,7 +217,7 @@ function rawChangedPaths(raw: string): string[] {
  * they sit in the uncommitted snapshot or in a commit origin doesn't have yet.
  * Returns the snapshot's changed paths.
  */
-async function refuseUnportablePaths(cwd: string, tip: string, snapshot: string | null): Promise<string[]> {
+export async function refuseUnportablePaths(cwd: string, tip: string, snapshot: string | null): Promise<string[]> {
   const snapshotPaths = snapshot
     ? rawChangedPaths(await gitOut(cwd, ["diff", "--raw", "--no-renames", "-z", tip, snapshot]))
     : [];

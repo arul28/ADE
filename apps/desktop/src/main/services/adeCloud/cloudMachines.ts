@@ -452,7 +452,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       const client = await deps.client();
       if (!client) return { tally: null, error: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
       try {
-        await wakeThroughTransition(client, instanceId, now, { reason: "push_work" });
+        await wakeThroughTransition(client, instanceId, now);
         const ran = await client.exec(instanceId, options.check ? PUSH_WORK_CHECK_COMMAND : PUSH_ALL_WORK_COMMAND, { timeoutMs: PUSH_ALL_WORK_TIMEOUT_MS });
         const tally = ran.exitCode === 0 ? readPushAllTally(ran.stdout) : null;
         logger.info?.("cloud.push_work_ran", { instanceId, check: options.check, exitCode: ran.exitCode, pushed: tally?.pushed, failed: tally?.failed });
@@ -468,7 +468,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       const client = await deps.client();
       if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
       try {
-        await wakeThroughTransition(client, instanceId, now, { reason: "push_work" });
+        await wakeThroughTransition(client, instanceId, now);
         const ran = await client.exec(instanceId, PUSH_ALL_WORK_COMMAND, { timeoutMs: PUSH_ALL_WORK_TIMEOUT_MS });
         const tally = readPushAllTally(ran.stdout);
         logger.info?.("cloud.push_all_work", { instanceId, exitCode: ran.exitCode, ...(tally ?? {}) });

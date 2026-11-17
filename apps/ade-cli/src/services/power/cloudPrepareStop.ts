@@ -1,9 +1,11 @@
 /**
  * The step before a computer stops at 0 hours (`ade cloud prepare-stop`):
- * interrupt running chat turns and agent CLIs, then write the saved chat copy,
- * so the stop that follows loses nothing a save could keep.
+ * interrupt running chat turns and agent CLIs, then write the saved chat copy
+ * and each lane's backup, so the stop that follows loses nothing a save could
+ * keep. Nothing is committed or pushed.
  */
 
+import type { CloudBackupSaveSummary } from "../../../../account-directory/src/cloud/contract";
 import type { AdeRuntime } from "../../bootstrap";
 import { uploadPendingCloudChats } from "../cloudChats/cloudChatUploader";
 
@@ -21,6 +23,8 @@ export type CloudPrepareStopResult = {
   /** Shell and CLI copies and Git summaries saved after the chats (`cloudRestSave.ts`); 0 when no time was left. */
   sessionsSaved: number;
   gitSaved: number;
+  /** The lane backups of the save (`cloudLaneBackup.ts`): the server's 0-hours stop rests the computer with them when `current`. */
+  backups: CloudBackupSaveSummary | null;
   timedOut: boolean;
 };
 
@@ -35,7 +39,7 @@ export async function prepareCloudComputerToStop(args: {
   /** A disk grow's restart: the turns keep running (they continue after it), only the chat copy is written. */
   keepTurns?: boolean;
   /** The rest save without capsules, in the time left after the chats (`cloudRestSave.ts`). */
-  saveForRest?: (budgetMs: number) => Promise<{ sessions: number; git: number }>;
+  saveForRest?: (budgetMs: number) => Promise<{ sessions: number; git: number; backups?: CloudBackupSaveSummary | null }>;
 }): Promise<CloudPrepareStopResult> {
   const deadline = Date.now() + Math.max(1_000, args.timeoutMs);
   const counts: Array<{ chats: number; clis: number }> = args.keepTurns ? [] : await Promise.all(args.runtimes.map(async (runtime) => {
@@ -61,14 +65,14 @@ export async function prepareCloudComputerToStop(args: {
     args.logger?.warn("cloud.prepare_stop_flush_failed", { error: error instanceof Error ? error.message : String(error) });
     return { uploaded: 0, remaining: -1, timedOut: true };
   });
-  // Copies and Git summaries only with real time left: the chats come first.
+  // Lane backups, copies and Git summaries only with real time left: the chats come first.
   const restMs = deadline - Date.now();
-  const rest = args.saveForRest && restMs > 3_000
+  const rest: { sessions: number; git: number; backups?: CloudBackupSaveSummary | null } = args.saveForRest && restMs > 3_000
     ? await args.saveForRest(restMs - 1_000).catch((error: unknown) => {
         args.logger?.warn("cloud.prepare_stop_rest_save_failed", { error: error instanceof Error ? error.message : String(error) });
-        return { sessions: 0, git: 0 };
+        return { sessions: 0, git: 0, backups: null };
       })
-    : { sessions: 0, git: 0 };
+    : { sessions: 0, git: 0, backups: null };
   const result: CloudPrepareStopResult = {
     interruptedChats,
     interruptedClis,
@@ -77,6 +81,7 @@ export async function prepareCloudComputerToStop(args: {
     chatsNotUploaded: flush.remaining < 0 ? 0 : flush.remaining,
     sessionsSaved: rest.sessions,
     gitSaved: rest.git,
+    backups: rest.backups ?? null,
     timedOut: remaining > 0 || flush.timedOut || Date.now() >= deadline,
   };
   args.logger?.info("cloud.prepare_stop", result);

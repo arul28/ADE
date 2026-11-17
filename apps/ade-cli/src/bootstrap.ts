@@ -3602,6 +3602,7 @@ export async function createAdeRuntime(args: {
         launchesDir: path.join(paths.cacheDir, "chat-launches"),
         logger,
         laneService,
+        projectRoot,
         agentChatService,
         // An ADE Cloud lane from a PR's branch is linked to the PR here, on its own computer.
         linkPullRequest: async ({ laneId, prUrlOrNumber }) => {

@@ -50,6 +50,7 @@ import type { LaneCreateRuntimeOptions } from "../lanes/laneService";
 import type { ChatLaunchEnvironmentPlan } from "../lanes/laneEnvironmentSetup";
 import { createChatLaunchRecordStore, type ChatLaunchRecord as LaunchRecord } from "./chatLaunchRecords";
 import { createQueuedMessageDelivery, type QueuedDeliveryState } from "./chatLaunchDelivery";
+import { cloudLaneRestoreInstalled, prepareCloudLaneBranch, restoreCloudLaneWork } from "../lanes/cloudLaneRestoreHook";
 import { createLaneSetupTranscriptCard, type LaneSetupCardState } from "./chatLaunchTranscriptCard";
 import { isDiskFullText, isLaneSetupOutOfMemoryText, LANE_SETUP_NO_ROOM_TO_SAVE_ERROR } from "../../../shared/types/storage";
 import { cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
@@ -86,7 +87,7 @@ type LaneServiceLike = {
   getNewLaneDefaults?: () => NewLaneDefaultsSnapshot;
   /** existing-branch launches work on that branch instead of cutting a new one. */
   importBranch?: (
-    args: { branchRef: string; name: string },
+    args: { branchRef: string; name: string; publishUpstream?: boolean },
     options?: { laneId?: string },
   ) => Promise<LaneSummary>;
   /** Accent color applied once the lane row exists. */
@@ -193,6 +194,8 @@ export type ChatLaunchServiceDeps = {
   launchesDir: string;
   logger: Logger;
   laneService: LaneServiceLike;
+  /** The project checkout: on an ADE Cloud computer a lane gets its saved work there (`cloudLaneRestoreHook.ts`). */
+  projectRoot?: string;
   agentChatService: AgentChatServiceLike;
   /**
    * Links a lane to its pull request (`prService.linkToLane`), for an
@@ -720,10 +723,18 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     if (config?.mode === "existing") {
       if (!config.branchRef) throw new Error("Importing a branch needs a branch ref.");
       if (!deps.laneService.importBranch) throw new Error("This runtime cannot import an existing branch.");
+      // ADE Cloud: a branch never pushed comes from the lane's backup, and is then not published.
+      const madeFromBackup = deps.projectRoot && cloudLaneRestoreInstalled()
+        ? await prepareCloudLaneBranch({ laneId: record.snapshot.laneId, branchRef: config.branchRef, projectRoot: deps.projectRoot }).catch((error: unknown) => {
+            logger.warn("chat_launch.cloud_branch_prepare_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+            return false;
+          })
+        : false;
       lane = await deps.laneService.importBranch(
         {
           branchRef: config.branchRef,
           name: record.snapshot.laneName,
+          ...(madeFromBackup ? { publishUpstream: false } : {}),
         },
         // Keep the launch's reserved lane id so the chat the client already
         // opened, restart recovery, and cleanup all address the same lane.
@@ -752,6 +763,14 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     }
     adoptLane(record, lane);
     if (lane.createdFrom?.startRef) record.snapshot.baseRef = lane.createdFrom.startRef;
+    // ADE Cloud: the lane's work that wasn't on GitHub comes back before its chat starts. Never fails the launch.
+    let restoreNote: string | null = null;
+    if (deps.projectRoot && cloudLaneRestoreInstalled()) {
+      restoreNote = await restoreCloudLaneWork({ laneId: lane.id, worktreePath: lane.worktreePath, projectRoot: deps.projectRoot }).catch((error: unknown) => {
+        logger.warn("chat_launch.cloud_restore_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+        return `ADE couldn't put back this lane's saved work (${getErrorMessage(error).replace(/[.\s]+$/, "")}). It stays on ADE Cloud: download it from the lane.`;
+      });
+    }
     // Appearance is a nicety; a color collision must never fail the launch.
     if (config?.color && deps.laneService.updateAppearance) {
       try {
@@ -777,7 +796,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     }
     // The start's fallbacks (no local branch, nothing to copy, a copy that
     // failed) finished the checkout another way than asked: say so.
-    const notes = [...(lane.createdFrom?.notes ?? []), ...linkNotes];
+    const notes = [...(lane.createdFrom?.notes ?? []), ...linkNotes, ...(restoreNote ? [restoreNote] : [])];
     setStage(record, "checkout", notes.length ? "warning" : "done", {
       percent: 100,
       detail: totalFiles > 0 ? `${totalFiles.toLocaleString("en-US")} files` : null,

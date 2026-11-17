@@ -13,7 +13,7 @@ import { sendCloudEmail } from "./email";
 import { isCloudBlocked, notBlockedSql } from "./blocks";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import { cloudSizeFor, isRestingStatus, tierOf } from "./plans";
-import { pushAllWork, putBackToRest, type WakeRecord } from "./planCleanup";
+import { BACKUP_STATE_CODES, saveBeforeDelete } from "./planCleanup";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import {
   deleteComputer,
@@ -53,14 +53,16 @@ import {
  * time; a downgrade keeps the announced one). The first warning always gives
  * the plan's full lead (1 day free, 3 days paid), even if it goes out late.
  *
- * Before the delete the computer saves its work, from the computer itself in
- * a free wake that bills no hours (`pushAllWork`): its ADE stops its agents,
- * saves its chats, commits uncommitted work ("saved by ADE before cleanup";
- * `git add -A` never adds ignored files) and does a normal push of each lane
- * to its own branch (no force, no extra branch), then reads it all again.
- * Anything short of "everything is on GitHub" keeps the computer: the person
- * is told why (in-app and by email) and ADE tries again later, waiting twice
- * as long after each failed try (1, 2, 4 ... days, at most 14). A run that
+ * The computer is deleted without a wake, and only when it rested with every
+ * lane's work saved (`saveBeforeDelete`, `laneBackups.ts`): before each rest
+ * its own ADE saves a backup of each lane's work that is not on GitHub
+ * (commits and uncommitted files; ignored files stay out). Nothing is
+ * committed to a branch or pushed. A computer whose lanes are not all saved
+ * is kept: the person is told why (in-app and by email,
+ * `CLOUD_BACKUP_NOT_SAVED_SENTENCE`), and ADE never wakes it to try again.
+ * Its next real use saves it at its next rest. ADE reads again later,
+ * waiting twice as long after each read that found it not saved (1, 2, 4
+ * ... days, at most 14). A run that
  * fails after the save (a refused delete) waits 1, 2, 4 ... hours (at most a
  * day) before it tries again. Each email is claimed with a conditional write
  * before it is sent, so overlapping ticks send it once; a send that fails
@@ -95,8 +97,6 @@ export const IDLE_CLEANUP: Readonly<Record<"free" | "paid", IdleRule>> = {
   paid: { afterMs: CLOUD_IDLE_CLEANUP_DAYS.paid * DAY, leadMs: 3 * DAY, lastEmailMs: DAY, afterLastEmailMs: 20 * HOUR, days: CLOUD_IDLE_CLEANUP_DAYS.paid },
 };
 
-/** The commit message for work the computer hadn't committed. */
-export const IDLE_CLEANUP_COMMIT_MESSAGE = "saved by ADE before cleanup";
 /** A tick a little early still counts for an email due now. */
 const EMAIL_SLACK_MS = 30 * MINUTE;
 /** A computer kept because its save failed is tried again after this long, doubled after each failed try, at most `HELD_RETRY_MAX_MS`. */
@@ -113,8 +113,6 @@ const NOT_DELETING_SQL = "(idle_deleting_at is null or idle_deleting_at < ?)";
 const SAVES_PER_TICK = 3;
 /** The youngest idle a computer can have and still need a warning (the free plan's). */
 const MIN_IDLE_TO_WARN_MS = Math.min(...Object.values(IDLE_CLEANUP).map((rule) => rule.afterMs - rule.leadMs));
-/** Codes for work the person has to deal with (a refused push), not an ADE failure. */
-const USER_STATE_CODES = new Set(["push_left_work", "check_left_work"]);
 
 type IdleColumns = Pick<ComputerRow,
   | "last_awake_at" | "created_at" | "awake_since" | "status" | "instance_id"
@@ -301,7 +299,7 @@ export function idleHeldEmail(computer: ComputerRow, reason: string, retryAt: nu
   return {
     subject: `ADE Cloud didn't delete ${computer.lane_name ?? computer.name ?? "your computer"}: its work couldn't be saved`,
     text: [
-      `${label} was due to be deleted because it hasn't been used, but ADE couldn't commit and push its work to GitHub first, so it kept the computer.`,
+      `${label} was due to be deleted because it hasn't been used, but ADE couldn't save each lane's work first, so it kept the computer. ADE doesn't start the computer to save it.`,
       `Why: ${reason}`,
       idleCleanupHeldNext(retryAt, now),
     ].join("\n"),
@@ -313,7 +311,7 @@ function idleDeletedEmail(computer: ComputerRow, branch: string | null, laneKept
   return {
     subject: `${label} was deleted after ${daysText(idleMs)} unused`,
     text: [
-      `ADE Cloud deleted ${label.charAt(0).toLowerCase()}${label.slice(1)} after ${daysText(idleMs)} without use. Its work was committed and pushed to ${branch ? `the branch ${branch}` : "its branch"} on GitHub first.`,
+      `ADE Cloud deleted ${label.charAt(0).toLowerCase()}${label.slice(1)} after ${daysText(idleMs)} without use. ADE saved its work that wasn't on GitHub first (nothing was pushed)${branch ? `; the lane's branch is ${branch}` : ""}. A new computer for the lane gets that work back, and you can download it in ADE.`,
       laneKept ? "The lane and its chats stay. Your next message to the lane makes a new computer from the branch." : "",
     ].filter(Boolean).join("\n"),
   };
@@ -425,11 +423,10 @@ export async function keepIdleComputer(env: CloudEnv, waitUntil: CloudWaitUntil,
 
 /**
  * Real use while a save-and-delete runs (`idle_claimed_at`): the person
- * started the computer, ran a command on it, or signed in on it. During the
- * save's free wake the computer is already running, so a start changes no
- * status and writes nothing else; this moves `last_awake_at`, which calls
- * the delete off (`cameBack`), keeps the computer awake for them, and makes
- * the free wake count as use when it closes. Outside a run it writes nothing:
+ * started the computer, ran a command on it, or signed in on it. This moves
+ * `last_awake_at`, which calls the delete off (`cameBack`); a start also
+ * clears the backups it rested with (`backup_rest_at`), so the delete claim
+ * fails too. Outside a run it writes nothing:
  * the status change of a wake already counts. Called before the person's
  * request runs. `deleting`: the run already claimed the delete, so the
  * request must not go on. `unrecorded`: the write failed while a run holds
@@ -599,10 +596,9 @@ async function claimSave(env: CloudEnv, instanceId: string, now: number): Promis
 type CameBack = "used" | "kept" | "hours_back" | "scheduled" | "deleted";
 
 /**
- * Whether the person came back while the save ran, and how: used it (a wake
- * that counts, or a start, command or sign-in during the save's free wake,
- * moves `last_awake_at`), pressed Keep it, got hours back, booked a timed
- * wake-up, or deleted it. The free wake of the save itself changes none of these.
+ * Whether the person came back while the run read the computer, and how:
+ * used it (a start, command or sign-in moves `last_awake_at`), pressed Keep
+ * it, got hours back, booked a timed wake-up, or deleted it.
  */
 async function cameBack(env: CloudEnv, fresh: Fresh): Promise<CameBack | null> {
   const [row, account, scheduled] = await Promise.all([
@@ -635,6 +631,7 @@ async function claimDelete(env: CloudEnv, fresh: Fresh, now: number): Promise<bo
     where instance_id = ? and deleted_at is null and idle_claimed_at = ? and ${NOT_DELETING_SQL}
       and last_awake_at is ? and idle_kept_at is ?
       and (last_active_at is null or last_active_at <= idle_claimed_at)
+      and backup_rest_at is not null
       and not exists (select 1 from cloud_wakes w where w.user_id = cloud_computers.user_id and w.instance_id = cloud_computers.instance_id)
       and exists (select 1 from cloud_accounts a where a.user_id = cloud_computers.user_id and a.deleted_at is null and a.hours_restored_at is ?)
   `).bind(now, computer.instance_id, now, now - CLAIM_STALE_MS, computer.last_awake_at ?? null, computer.idle_kept_at ?? null, account.hours_restored_at ?? null).run();
@@ -645,25 +642,6 @@ async function claimDelete(env: CloudEnv, fresh: Fresh, now: number): Promise<bo
 const unclaimDelete = (env: CloudEnv, instanceId: string, now: number): Promise<unknown> =>
   env.DB.prepare("update cloud_computers set idle_deleting_at = null where instance_id = ? and idle_deleting_at = ?").bind(instanceId, now).run()
     .catch((error: unknown) => reportCloudFailure("cloud.idle_cleanup_undelete_claim_failed", { instanceId, message: error instanceof Error ? error.message : "unknown" }));
-
-/**
- * A computer this run woke goes back to rest, unless the person started using
- * it meanwhile (`last_awake_at` moved): then it stays awake for them.
- */
-async function restIfUnused(env: CloudEnv, provider: CloudProvider, fresh: Fresh, wake: WakeRecord): Promise<void> {
-  if (!wake.woke) return;
-  const row = await env.DB.prepare("select last_awake_at from cloud_computers where instance_id = ?").bind(fresh.computer.instance_id)
-    .first<Pick<ComputerRow, "last_awake_at">>()
-    .catch((error: unknown) => {
-      reportCloudFailure("cloud.idle_cleanup_use_read_failed", { instanceId: fresh.computer.instance_id, message: error instanceof Error ? error.message : "unknown" });
-      return null;
-    });
-  if (row && (row.last_awake_at ?? null) !== (fresh.computer.last_awake_at ?? null)) {
-    logCloud("cloud.idle_cleanup_left_awake", { instanceId: fresh.computer.instance_id });
-    return;
-  }
-  await putBackToRest(env, provider, fresh.computer.instance_id, wake.from, "idle_cleanup");
-}
 
 /**
  * A run that failed outside the save (a refused delete, a throw): marked, so
@@ -685,41 +663,35 @@ async function markFailed(env: CloudEnv, waitUntil: CloudWaitUntil, fresh: Fresh
   captureCloudIdleCleanup(env, waitUntil, account.user_id, { step: "failed", plan: planIdOf(account), reason: code }, computer.instance_id, now);
 }
 
-/** One computer, already claimed: its work saved from the computer itself, then deleted with its lane kept; or kept with the reason. */
+/** One computer, already claimed: deleted with its lane kept when it rests with every lane saved, else kept with the reason. Never woken. */
 async function saveAndDelete(env: CloudEnv, provider: CloudProvider, waitUntil: CloudWaitUntil, fresh: Fresh, now: number): Promise<void> {
   const { computer, account } = fresh;
-  const wake: WakeRecord = { woke: false, from: computer.status };
   try {
     const plan = planIdOf(account);
-    let work: Awaited<ReturnType<typeof pushAllWork>>;
+    let work: Awaited<ReturnType<typeof saveBeforeDelete>>;
     try {
-      work = await pushAllWork(env, provider, computer, now, wake, "idle_cleanup", { commitMessage: IDLE_CLEANUP_COMMIT_MESSAGE });
+      work = await saveBeforeDelete(env, provider, computer, "idle_cleanup");
     } catch (error) {
-      work = { ok: false, reason: "ADE Cloud couldn't reach the computer to save its work.", code: error instanceof CloudProviderError ? error.code : "unknown" };
+      work = { ok: false, reason: "ADE Cloud couldn't reach the computer to check its saved work.", code: error instanceof CloudProviderError ? error.code : "unknown" };
     }
     if (!work.ok) {
-      await hold(env, provider, waitUntil, fresh, work.reason, work.code, wake, now);
+      await hold(env, waitUntil, fresh, work.reason, work.code, now);
       return;
     }
     await logStep(env, computer, "saved", null, now);
     captureCloudIdleCleanup(env, waitUntil, account.user_id, { step: "saved", plan }, computer.instance_id, now);
-    // The push took minutes: the person may have come back meanwhile.
     const back = await cameBack(env, fresh);
     if (back) {
-      await restIfUnused(env, provider, fresh, wake);
       logCloud("cloud.idle_cleanup_came_back", { instanceId: computer.instance_id, how: back });
       return;
     }
-    // The delete is claimed in one write, only while nobody came back: a Keep it or a use after
-    // this is refused (`keepIdleComputer`, `recordIdleUse`), one before it calls the delete off.
+    // The delete is claimed in one write, only while nobody came back and it still rests with
+    // its backups: a Keep it or a use after this is refused, one before it calls the delete off.
     if (!(await claimDelete(env, fresh, now))) {
-      await restIfUnused(env, provider, fresh, wake);
       logCloud("cloud.idle_cleanup_came_back", { instanceId: computer.instance_id, how: "at_delete" });
       return;
     }
     const lane = mergeLaneFacts(laneFactsOfRow(computer), laneFactsOf(work.metadata));
-    const own = work.pushed.lanes?.find((entry) => entry.laneId === lane.laneId) ?? null;
-    if (own?.branchRef) lane.branch = own.branchRef;
     const laneKept = namesLane(lane);
     if (laneKept) await markKeepLaneStatement(env, computer, lane, "idle_cleanup").run();
     try {
@@ -727,13 +699,12 @@ async function saveAndDelete(env: CloudEnv, provider: CloudProvider, waitUntil: 
     } catch (error) {
       await unclaimDelete(env, computer.instance_id, now);
       if (laneKept) await unmarkKeepLaneStatement(env, computer.instance_id).run();
-      await restIfUnused(env, provider, fresh, wake);
       // Its work is saved; the delete is tried again after a wait, never every minute.
       reportCloudFailure("cloud.idle_cleanup_delete_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
       await markFailed(env, waitUntil, fresh, "delete_failed", now);
       return;
     }
-    logCloud("cloud.idle_cleanup_deleted", { instanceId: computer.instance_id, keptLane: laneKept });
+    logCloud("cloud.idle_cleanup_deleted", { instanceId: computer.instance_id, keptLane: laneKept, resting: work.resting });
     await logStep(env, computer, "deleted", laneKept ? "lane_kept" : null, now);
     captureCloudIdleCleanup(env, waitUntil, account.user_id, { step: "deleted", plan }, computer.instance_id, now);
     const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
@@ -742,7 +713,6 @@ async function saveAndDelete(env: CloudEnv, provider: CloudProvider, waitUntil: 
   } catch (error) {
     reportCloudFailure("cloud.idle_cleanup_run_failed", { instanceId: computer.instance_id, message: error instanceof Error ? error.message : "unknown" });
     await unclaimDelete(env, computer.instance_id, now);
-    await restIfUnused(env, provider, fresh, wake);
     await markFailed(env, waitUntil, fresh, "run_failed", now);
   } finally {
     await unclaimSave(env, computer.instance_id, now);
@@ -750,15 +720,13 @@ async function saveAndDelete(env: CloudEnv, provider: CloudProvider, waitUntil: 
 }
 
 /**
- * The save didn't go through: the computer stays, goes back to rest if this
- * run woke it (and nobody started using it meanwhile), and the person is told
- * why and what to do. Each failure in a row doubles the wait before the next
- * try (1, 2, 4 ... days, at most 14). The email goes on the first failure
+ * A lane's work isn't saved: the computer stays as it is (never woken), and
+ * the person is told why and what to do. Each read in a row that finds it not
+ * saved doubles the wait before the next (1, 2, 4 ... days, at most 14). The email goes on the first failure
  * only; a retry that fails again just updates the reason and the next try.
  */
-async function hold(env: CloudEnv, provider: CloudProvider, waitUntil: CloudWaitUntil, fresh: Fresh, reason: string, code: string, wake: WakeRecord, now: number): Promise<void> {
+async function hold(env: CloudEnv, waitUntil: CloudWaitUntil, fresh: Fresh, reason: string, code: string, now: number): Promise<void> {
   const { computer, account, state } = fresh;
-  await restIfUnused(env, provider, fresh, wake);
   const first = state.held == null;
   const count = (state.held?.count ?? 0) + 1;
   await env.DB.prepare(`
@@ -766,9 +734,9 @@ async function hold(env: CloudEnv, provider: CloudProvider, waitUntil: CloudWait
     where instance_id = ? and deleted_at is null
   `).bind(now, reason.slice(0, 300), count, computer.instance_id).run();
   const retryAt = now + backoffMs(HELD_RETRY_MS, HELD_RETRY_MAX_MS, count);
-  if (USER_STATE_CODES.has(code)) logCloud("cloud.idle_cleanup_held", { instanceId: computer.instance_id, code, first, count });
+  if (BACKUP_STATE_CODES.has(code)) logCloud("cloud.idle_cleanup_held", { instanceId: computer.instance_id, code, first, count });
   // Every hold is worth a look: a delete that should have happened didn't.
-  reportCloudFailure(USER_STATE_CODES.has(code) ? "cloud.idle_cleanup_push_refused" : "cloud.idle_cleanup_save_failed", { instanceId: computer.instance_id, code, first, count });
+  reportCloudFailure(BACKUP_STATE_CODES.has(code) ? "cloud.idle_cleanup_not_saved" : "cloud.idle_cleanup_save_failed", { instanceId: computer.instance_id, code, first, count });
   await logStep(env, computer, "push_refused", code, now);
   captureCloudIdleCleanup(env, waitUntil, account.user_id, { step: "push_refused", plan: planIdOf(account), reason: code }, computer.instance_id, now);
   if (first) await sendStepEmail(env, waitUntil, account, computer, "held", idleHeldEmail(computer, reason, retryAt, now), now);

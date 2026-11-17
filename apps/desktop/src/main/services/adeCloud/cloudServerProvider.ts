@@ -275,15 +275,13 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       await request("POST", instancePath(id, "keep"), { body: {} });
     },
 
-    async requestIdleSleep(id: string): Promise<string> {
-      return statusOf(await request("POST", instancePath(id, "idle"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
+    async requestIdleSleep(id: string, options?: { backupReportId?: string | null }): Promise<string> {
+      const body = options?.backupReportId ? { backupReportId: options.backupReportId } : {};
+      return statusOf(await request("POST", instancePath(id, "idle"), { body, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
     },
 
-    async startInstance(id: string, options?: { reason?: "push_work" }): Promise<string> {
-      return statusOf(await request("POST", instancePath(id, "start"), {
-        body: options?.reason ? { reason: options.reason } : {},
-        timeoutMs: LIFECYCLE_TIMEOUT_MS,
-      }), "running");
+    async startInstance(id: string): Promise<string> {
+      return statusOf(await request("POST", instancePath(id, "start"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "running");
     },
 
     async stopInstance(id: string): Promise<string> {

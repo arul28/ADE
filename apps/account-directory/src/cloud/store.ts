@@ -183,6 +183,13 @@ export type ComputerRow = {
   ade_version_at?: number | null;
   /** Comma list of `CLOUD_COMPUTER_FEATURES` from the last boot report; null: an older image. */
   ade_features?: string | null;
+  /** The computer's last lane backup report (migration 0044, `laneBackups.ts`). */
+  backup_report_id?: string | null;
+  backup_report_state?: string | null;
+  backup_report_at?: number | null;
+  backup_problems_json?: string | null;
+  /** It went to rest right after a report that saved every lane; any wake clears it. */
+  backup_rest_at?: number | null;
 };
 
 export type AccountRow = {
@@ -509,6 +516,8 @@ export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, sta
     computer.last_awake_at = now;
     computer.delete_warned_7d_at = null;
     computer.delete_warned_1d_at = null;
+    // Awake, its lanes can change: the backups it rested with are not current any more.
+    statements.push(clearBackupRestStatement(env, computer.instance_id));
   }
   computer.status = status;
   computer.status_changed_at = now;
@@ -529,6 +538,15 @@ export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, sta
     computer.instance_id, previous,
   ));
   return statements;
+}
+
+/**
+ * A computer that wakes may change its lanes, so the backup report it rested
+ * with is no longer current (`laneBackups.ts`). Every path that starts a
+ * computer runs this with its status write.
+ */
+export function clearBackupRestStatement(env: CloudDb, instanceId: string): D1PreparedStatement {
+  return env.DB.prepare("update cloud_computers set backup_rest_at = null, backup_report_state = null, backup_report_id = null where instance_id = ?").bind(instanceId);
 }
 
 export function deleteLogStatement(

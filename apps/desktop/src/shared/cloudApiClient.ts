@@ -16,6 +16,7 @@
 import {
   CLOUD_INSTANCE_HEADER,
   CLOUD_PATHS,
+  cloudBackupPath,
   cloudCapsulePath,
   cloudChatMessagesPath,
   cloudChatMovePath,
@@ -27,6 +28,13 @@ import {
   type AccountLaneIndexPutResult,
   type AccountLaneIndexRow,
   type CloudAccess,
+  type CloudBackupKind,
+  type CloudBackupReport,
+  type CloudBackupReportState,
+  type CloudBackupUploadCommit,
+  type CloudBackupUploadStart,
+  type CloudBackupUploadStarted,
+  type CloudLaneBackup,
   type CloudCapsuleCommit,
   type CloudCapsuleManifest,
   type CloudChatMessageAddResult,
@@ -232,8 +240,9 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** At most one every 15 minutes (`rate_limited`). */
     backup: (instanceId: string) =>
       request<{ id?: string | null; created?: number | null; sizeBytes?: number | null }>("POST", `${instancePath(instanceId)}/backups`, { body: {}, timeoutMs: BACKUP_TIMEOUT_MS }),
-    wake: (instanceId: string, args: { reason?: "push_work" } = {}) =>
-      request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
+    /** Every wake is use: it bills hours, and none is allowed at 0 hours. */
+    wake: (instanceId: string) =>
+      request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     /** The server wakes a sleeping computer first. `computerIdle` is needed to grow the disk of a running one. */
     resize: (instanceId: string, args: { cpu?: number; memory?: number; disk?: number; computerIdle?: boolean }) =>
       request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
@@ -431,6 +440,37 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       const response = await request<Response>("GET", cloudCapsulePath(machineKey, chatId, { part }), { rawResponse: true, timeoutMs: timeoutMs * 2 });
       return await response.arrayBuffer();
     },
+    /* ---- Lane backups at rest (`laneBackups.ts`) ---- */
+    /** The account's lane backups (of one lane with `laneId`), newest first; empty from an older server. */
+    laneBackups: async (laneId?: string | null): Promise<CloudLaneBackup[]> =>
+      (await orNullOn404(() => request<{ backups: CloudLaneBackup[] }>("GET", `${CLOUD_PATHS.backups}${laneId ? `?laneId=${encodeURIComponent(laneId)}` : ""}`)))?.backups ?? [],
+    laneBackup: (machineKey: string, laneId: string) =>
+      orNullOn404(() => request<CloudLaneBackup>("GET", cloudBackupPath(machineKey, laneId))),
+    /** One part (1-based) of a backup's bundle or patch. A browser gets the patch only. */
+    readLaneBackupPart: async (machineKey: string, laneId: string, kind: CloudBackupKind, part: number): Promise<ArrayBuffer> => {
+      const response = await request<Response>("GET", cloudBackupPath(machineKey, laneId, `${kind}/${part}`), { rawResponse: true, timeoutMs: timeoutMs * 4 });
+      return await response.arrayBuffer();
+    },
+    /** From a cloud computer: an upload for one lane; 413 `backup_too_large` or `backup_account_full` past the caps. */
+    startLaneBackup: (machineKey: string, laneId: string, start: CloudBackupUploadStart) =>
+      request<CloudBackupUploadStarted>("POST", cloudBackupPath(machineKey, laneId, "uploads"), { body: start }),
+    putLaneBackupPart: (machineKey: string, laneId: string, uploadId: string, kind: CloudBackupKind, part: number, instanceId: string, bytes: Uint8Array | ArrayBuffer | Blob) =>
+      request<{ ok: true; bytes: number }>("PUT", cloudBackupPath(machineKey, laneId, `uploads/${encodeURIComponent(uploadId)}/${kind}/${part}`), {
+        raw: { bytes: bytes as BodyInit, contentType: "application/octet-stream" },
+        headers: { [CLOUD_INSTANCE_HEADER]: instanceId },
+        timeoutMs: timeoutMs * 4,
+      }),
+    commitLaneBackup: (machineKey: string, laneId: string, uploadId: string, commit: CloudBackupUploadCommit) =>
+      request<CloudLaneBackup>("POST", cloudBackupPath(machineKey, laneId, `uploads/${encodeURIComponent(uploadId)}/commit`), { body: commit, timeoutMs: timeoutMs * 2 }),
+    /** From a cloud computer: the lane's work is on GitHub, so its backup (and the ones it restored) go. */
+    deleteLaneBackup: (machineKey: string, laneId: string, instanceId: string) =>
+      request<{ deleted: number }>("DELETE", cloudBackupPath(machineKey, laneId), { body: { instanceId } }),
+    /** From a cloud computer: it applied this backup to its own lane. */
+    markLaneBackupRestored: (machineKey: string, laneId: string, instanceId: string) =>
+      request<{ ok: true }>("POST", cloudBackupPath(machineKey, laneId, "restored"), { body: { instanceId } }),
+    /** From a cloud computer: the state of every lane after a save. Null from an older server. */
+    reportLaneBackups: (report: CloudBackupReport) =>
+      orNullOn404(() => request<{ state: CloudBackupReportState }>("POST", `${CLOUD_PATHS.backups}/report`, { body: report })),
     /** Moves a restored chat's saved copy to this computer's machine key, with its full history. */
     moveSavedChat: (fromMachineKey: string, chatId: string, move: CloudChatMoveRequest) =>
       request<CloudChatMoveResult>("POST", cloudChatMovePath(fromMachineKey, chatId), { body: move }),
