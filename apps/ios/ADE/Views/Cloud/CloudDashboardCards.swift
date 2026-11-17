@@ -904,7 +904,7 @@ struct CloudAgentsCard: View {
       } label: {
         ADESettingsRow(
           title: store.limits.map(cloudLimitsPresetName) ?? "…",
-          hint: store.limits.map(cloudLimitsSummary) ?? "Reading…"
+          hint: store.limits.map(cloudLimitsSummary) ?? store.limitsError ?? "Reading…"
         ) {
           ADESettingsChevron()
         }

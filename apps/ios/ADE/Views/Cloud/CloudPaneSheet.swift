@@ -153,7 +153,12 @@ final class CloudPaneStore: ObservableObject {
   @Published private(set) var phase: Phase = .loading
   @Published private(set) var machines: [CloudPhoneMachine] = []
   @Published private(set) var account: CloudPhoneAccount?
-  @Published private(set) var limits: CloudPhoneLimits?
+  @Published private(set) var limits: CloudPhoneLimits? {
+    didSet { if limits != nil { limitsError = nil } }
+  }
+  /// Why the account's limits could not be read; the card shows it in
+  /// place of "Reading…". Nil once limits are read.
+  @Published private(set) var limitsError: String?
   /// The account's sign-ins (`providerLogins.status`); nil before the read,
   /// on an older machine, or when it can't be read.
   @Published private(set) var signIns: ProviderLoginsPhoneStatus?
@@ -286,8 +291,10 @@ final class CloudPaneStore: ObservableObject {
       limits = state.phoneLimits
       limitsRevision = state.revision
     } catch CloudServerClient.Failure.noAccess {
-      // An older server has no limits route: the card says "Reading…" as before.
+      // An older server has no limits route.
+      limitsError = "This ADE Cloud server can't show agent limits yet."
     } catch {
+      limitsError = cloudServerFailureMessage(error)
       cloudPaneLog.notice("cloud_pane read=limits failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }
     signIns = nil
