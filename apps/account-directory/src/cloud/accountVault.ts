@@ -122,19 +122,26 @@ async function relayGet(env: RelayEnv, authorization: string, path: string, even
       logCloud(`${event}_refused`, { status: response.status });
       return { ok: false, reason: "failed" };
     }
-    return { ok: true, value: await response.json() as Record<string, unknown> };
+    const value = await response.json() as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      logCloud(`${event}_refused`, { status: response.status });
+      return { ok: false, reason: "failed" };
+    }
+    return { ok: true, value: value as Record<string, unknown> };
   } catch (error) {
     logCloud(`${event}_failed`, { error: error instanceof Error ? error.name : "unknown" });
     return { ok: false, reason: "failed" };
   }
 }
 
-function vaultRecordOf(raw: unknown): VaultRecord | null {
+/** `scope`: the scope that was read, for a row that does not name it (the older readers never needed it). */
+function vaultRecordOf(raw: unknown, scope?: string): VaultRecord | null {
   if (!raw || typeof raw !== "object") return null;
   const item = raw as Record<string, unknown>;
-  if (typeof item.scope !== "string" || typeof item.kind !== "string" || typeof item.key !== "string") return null;
+  const rowScope = typeof item.scope === "string" ? item.scope : scope;
+  if (rowScope === undefined || typeof item.kind !== "string" || typeof item.key !== "string") return null;
   return {
-    scope: item.scope,
+    scope: rowScope,
     kind: item.kind,
     key: item.key,
     value: typeof item.value === "string" ? item.value : null,
@@ -151,7 +158,7 @@ export async function readVaultScope(env: RelayEnv, authorization: string, scope
     const read = await relayGet(env, authorization, `/attention/account/vault?scope=${encodeURIComponent(scope)}${since ? `&since=${encodeURIComponent(since)}` : ""}`, "cloud.vault_read");
     if (!read.ok) return null;
     for (const raw of Array.isArray(read.value.items) ? read.value.items : []) {
-      const row = vaultRecordOf(raw);
+      const row = vaultRecordOf(raw, scope);
       if (row) rows.push(row);
     }
     if (read.value.truncated !== true || typeof read.value.cursor !== "string") return rows;
@@ -171,6 +178,8 @@ export async function readVaultItem(env: RelayEnv, authorization: string, item: 
   const query = new URLSearchParams({ scope: item.scope, kind: item.kind, key: item.key });
   const read = await relayGet(env, authorization, `/attention/account/vault/item?${query.toString()}`, "cloud.vault_item_read");
   if (!read.ok) return read;
+  // A relay that knows the route always names `item` (null when absent); any other answer is not that route.
+  if (!("item" in read.value)) return { ok: false, reason: "no_route" };
   const row = vaultRecordOf(read.value.item);
   return { ok: true, value: row && !row.deleted ? row : null };
 }
@@ -193,8 +202,9 @@ export async function readVaultKeyList(env: RelayEnv, authorization: string, sco
   const query = new URLSearchParams({ scope, ...(kind ? { kind } : {}) });
   const read = await relayGet(env, authorization, `/attention/account/vault/keys?${query.toString()}`, "cloud.vault_keys_read");
   if (!read.ok) return read;
+  if (!Array.isArray(read.value.items)) return { ok: false, reason: "no_route" };
   const keys: VaultKeyRecord[] = [];
-  for (const raw of Array.isArray(read.value.items) ? read.value.items : []) {
+  for (const raw of read.value.items) {
     const row = vaultRecordOf(raw);
     if (row) keys.push({ scope: row.scope, kind: row.kind, key: row.key, updatedAt: row.updatedAt });
   }
