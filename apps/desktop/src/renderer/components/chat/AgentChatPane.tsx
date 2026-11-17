@@ -6312,8 +6312,16 @@ export function AgentChatPane({
     if (cloudQueue.messages.length === 0 || renderedSessionId !== selectedSessionId) return;
     const sentIds = new Set<string>();
     const counts = new Map<string, number>();
+    // A steer writes its row twice (queued, then delivered); only the first
+    // carries the id, so each steer counts once.
+    const seenSteers = new Set<string>();
     for (const envelope of selectedEvents) {
       if (envelope.event.type !== "user_message") continue;
+      const steerId = envelope.event.steerId;
+      if (steerId) {
+        if (seenSteers.has(steerId)) continue;
+        seenSteers.add(steerId);
+      }
       if (envelope.event.clientSendId) {
         sentIds.add(envelope.event.clientSendId);
         continue;
