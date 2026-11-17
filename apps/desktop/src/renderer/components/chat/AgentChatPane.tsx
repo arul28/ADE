@@ -5923,12 +5923,19 @@ export function AgentChatPane({
   }, [noticeConnectionMark]);
   const unsentNoticeEvents = chatNotice?.unsent && noticeSessionId ? eventsBySession[noticeSessionId] : undefined;
   useEffect(() => {
-    if (!unsentNoticeEvents) return;
-    setError({
-      clearIf: (notice) => notice.unsent != null && notice.sessionId != null
-        && countSentMessages(notice.sessionId, notice.unsent.texts, notice.unsent.submittedAt) > notice.unsent.alreadyThere,
-    });
-  }, [countSentMessages, unsentNoticeEvents]);
+    const notice = chatNotice;
+    if (!unsentNoticeEvents || !notice?.unsent || notice.sessionId == null) return;
+    const { unsent } = notice;
+    if (countSentMessages(notice.sessionId, unsent.texts, unsent.submittedAt) <= unsent.alreadyThere) return;
+    setError({ clearIf: (current) => current === notice });
+    // What went back in the composer for it is not unsent either. Anything
+    // the person changed since stays as it is.
+    const putBack = unsent.putBack;
+    if (!putBack) return;
+    setDraft((current) => (current === putBack.text ? "" : current));
+    setAttachments((current) => (current === putBack.attachments ? keepEmptyArray(current) : current));
+    setContextAttachments((current) => (current === putBack.contextAttachments ? keepEmptyArray(current) : current));
+  }, [chatNotice, countSentMessages, setAttachments, setDraft, unsentNoticeEvents]);
   // Another machine's chat: pinned there, or on the machine this project tab
   // itself is bound to.
   const shownNotice = shownChatNotice(
@@ -17061,7 +17068,12 @@ export function AgentChatPane({
               message: "Message not sent. It is back in the composer.",
               kind: "failure",
               sessionId: pending.sessionId,
-              unsent: { texts: pending.texts, submittedAt: pending.submittedAt, alreadyThere: pending.alreadyThere },
+              unsent: {
+                texts: pending.texts,
+                submittedAt: pending.submittedAt,
+                alreadyThere: pending.alreadyThere,
+                putBack: { text: draftSnapshot, attachments: attachmentsSnapshot, contextAttachments: contextAttachmentsSnapshot },
+              },
             });
           }, checkDelays[index]);
           sendRecoveryTimersRef.current.add(timer);
@@ -17086,7 +17098,12 @@ export function AgentChatPane({
           kind: "failure",
           sessionId: unsentRecord?.sessionId ?? selectedSessionId,
           unsent: unsentRecord
-            ? { texts: unsentRecord.texts, submittedAt: unsentRecord.submittedAt, alreadyThere: unsentRecord.alreadyThere }
+            ? {
+              texts: unsentRecord.texts,
+              submittedAt: unsentRecord.submittedAt,
+              alreadyThere: unsentRecord.alreadyThere,
+              putBack: { text: draftSnapshot, attachments: attachmentsSnapshot, contextAttachments: contextAttachmentsSnapshot },
+            }
             // Refused before the send was put together: nothing to find in the chat, but a reconnect still clears it.
             : { texts: [], submittedAt: new Date().toISOString(), alreadyThere: 0 },
         }

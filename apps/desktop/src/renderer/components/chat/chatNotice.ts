@@ -14,9 +14,16 @@ export type ChatNotice = {
   /**
    * The words a send put back in the composer: the note clears when the
    * chat's machine connects again, or when the message shows in the chat
-   * after all (`alreadyThere` copies were there when it was sent).
+   * after all (`alreadyThere` copies were there when it was sent). `putBack`
+   * is what went back in the composer: if the message shows up and the
+   * composer still holds exactly that, it is cleared too.
    */
-  unsent?: { texts: string[]; submittedAt: string; alreadyThere: number };
+  unsent?: {
+    texts: string[];
+    submittedAt: string;
+    alreadyThere: number;
+    putBack?: { text: string; attachments: readonly unknown[]; contextAttachments: readonly unknown[] };
+  };
 };
 
 /**
