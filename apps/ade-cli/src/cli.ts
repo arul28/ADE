@@ -32853,6 +32853,28 @@ async function runServe(
     if (restartCause) headlessProjectLogger.info("brain.restart_cause", restartCauseLogFields(restartCause));
     if (writesBrainRun) enableLiveTurnProjectsRecord({ runtimeDir, socketPath: serveSocketPath });
   }
+  // A signal means launchd/systemd or an installer wants this brain gone.
+  // Graceful disposal can wedge on live agent/PTY children; a wedged brain
+  // outlives its service registration and squats on the channel socket and
+  // sync singleton, so force the exit if disposal does not finish in time.
+  const finishFromSignal = () => {
+    finish({ requested: true });
+    const timer = setTimeout(() => process.exit(0), 10_000);
+    timer.unref();
+  };
+  let stopSignalsHandled = false;
+  const handleStopSignals = () => {
+    if (stopSignalsHandled) return;
+    stopSignalsHandled = true;
+    process.once("SIGINT", finishFromSignal);
+    process.once("SIGTERM", finishFromSignal);
+  };
+  // A brain that writes its own run record takes the signals from now on: a
+  // stop during the rest of the start would otherwise end it with the default
+  // action, leave the record unmarked, and the next start would show the
+  // restart banner for a stop ADE asked for. The start code already handles a
+  // stop under way (`done`); the wait below then disposes at once.
+  if (writesBrainRun) handleStopSignals();
 
   let tcpUrl: string | null = null;
   if (port != null) {
@@ -33311,6 +33333,10 @@ async function runServe(
             opened,
             durationMs: Date.now() - startedMs,
           });
+          if (opened > 0) {
+            const { noteProjectsOpenedWithoutClient } = await import("./services/runtime/brainIdleMemory");
+            noteProjectsOpenedWithoutClient({ listRuntimes: () => scopeRegistry.listReady().map((scope) => scope.runtime) });
+          }
         })();
       }
     }
@@ -33583,17 +33609,7 @@ async function runServe(
         return;
       }
       resolveDone = resolve;
-      // A signal means launchd/systemd or an installer wants this brain gone.
-      // Graceful disposal can wedge on live agent/PTY children; a wedged brain
-      // outlives its service registration and squats on the channel socket and
-      // sync singleton, so force the exit if disposal does not finish in time.
-      const finishFromSignal = () => {
-        finish({ requested: true });
-        const timer = setTimeout(() => process.exit(0), 10_000);
-        timer.unref();
-      };
-      process.once("SIGINT", finishFromSignal);
-      process.once("SIGTERM", finishFromSignal);
+      handleStopSignals();
     });
   } finally {
     stopParentMonitor();

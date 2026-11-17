@@ -1,6 +1,6 @@
 ---
 name: ade-app-control
-description: Use this skill when you need to run or drive a local Electron/desktop app and capture what it does — launch it or attach to a running renderer, read its logs or answer its terminal prompts, click and type in it, record a video or file proof of it, show it to the user, or pull screenshot-backed DOM/source context into the chat — through `ade app-control`.
+description: "Run or drive a local Electron/desktop app via `ade app-control`: launch or attach to its renderer, read its logs, answer its terminal prompts, click and type, record video, file proof, show it to the user, pull screenshot-backed DOM/source context."
 ---
 
 # ADE App Control

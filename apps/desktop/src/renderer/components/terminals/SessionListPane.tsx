@@ -144,6 +144,7 @@ import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachin
 import { groupByMachine, useTabCopyPin } from "../../state/repositoryScope";
 import { withChatPin } from "../chat/chatMachinePin";
 import { CloudLanesWithoutComputerBlock } from "../cloudLane/CloudLanesWithoutComputerBlock";
+import { openDraftAndFocusWorkInput } from "../work/workShortcuts";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -4287,9 +4288,13 @@ export const SessionListPane = React.memo(function SessionListPane({
               onClick={() => {
                 // The board and the Focus grid own the main area, so a draft
                 // opened in place has nowhere to draw. Leave them first.
-                if (isBoard) setWorkViewMode?.("list");
-                if (workFocusGrid) setWorkFocusGrid?.(false);
-                onShowDraftKind("chat");
+                // As ⌘⇧N does: the new prompt box takes the keyboard as soon as
+                // it mounts, however the button was pressed.
+                openDraftAndFocusWorkInput(() => {
+                  if (isBoard) setWorkViewMode?.("list");
+                  if (workFocusGrid) setWorkFocusGrid?.(false);
+                  onShowDraftKind("chat");
+                });
               }}
               aria-label="Start a new chat"
               data-tour="work.newSession"

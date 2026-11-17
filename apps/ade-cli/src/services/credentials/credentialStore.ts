@@ -822,6 +822,8 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private lastReadSettled = false;
   /** See {@link readSettledCache}. */
   private settledRead: SettledCredentialRead | null = null;
+  /** Whether a settled read is kept for reuse; see the constructor option. */
+  private readonly cacheSettledReads: boolean;
   /** See {@link recheckExpiredInBackground}. */
   private expiryRecheck: Promise<void> | null = null;
 
@@ -834,7 +836,15 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     keyMaterial?: CredentialKeyMaterialSource;
     /** Set to null when tests drive checkForChangesNow() explicitly. */
     credentialChangePollIntervalMs?: number | null;
+    /**
+     * Keep the decrypted values of the last settled read for reuse (default
+     * true). Turn it off for a store that is read once and parsed by its
+     * caller, such as the account vault cache: there the copy is never read
+     * again and only keeps a second decrypted copy of the payload in memory.
+     */
+    cacheSettledReads?: boolean;
   } = {}) {
+    this.cacheSettledReads = args.cacheSettledReads !== false;
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
     this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
     this.machineKeyPath = args.machineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
@@ -1071,6 +1081,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       this.lastReadState = "available";
       this.lastReadFailureReason = null;
       this.lastReadSettled = true;
+      if (!this.cacheSettledReads) return attempt.values;
       this.settledRead = {
         stat: after,
         state: "available",
@@ -1086,7 +1097,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   private rememberSettledRead(values: Record<string, string>): void {
     this.settledRead = null;
-    if (!this.lastReadSettled) return;
+    if (!this.lastReadSettled || !this.cacheSettledReads) return;
     if (this.lastReadState !== "available" && this.lastReadState !== "missing") return;
     // A missing file is cached too: a signed-out store is read several times a
     // second, and without this every one of those reads took the write lock

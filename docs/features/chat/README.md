@@ -3773,14 +3773,15 @@ stops calling the session live, and the user is told in the chat.
 `teardownRuntime` distinguishes **terminal** close reasons
 (`handle_close`, `ended_session`, `model_switch`) from **non-terminal**
 ones (`idle_ttl`, `budget_eviction`, `pool_compaction`, `paused_run`,
-`project_close`, `shutdown`). For Claude, Cursor, Pi, ACP and OpenCode
-runtimes, a non-terminal teardown preserves resume state: the service
+`project_close`, `shutdown`). For Claude, Cursor, Pi, Copilot, Muse, ACP,
+OpenCode and Droid runtimes, a non-terminal teardown preserves resume state: the service
 persists chat state immediately (Claude additionally pins
 `runtime.sdkSessionId` to the last known Claude SDK session id before
 releasing the session; Cursor persists with its SDK agent id intact;
 OpenCode persists `providerSessionId` from the live handle before the
 lease closes, because OpenCode keeps sessions in its own store and
-`session.get` re-opens one by id on any later server) and skips the usual
+`session.get` re-opens one by id on any later server; Droid persists the
+`resumeSessionId` its next worker is started with) and skips the usual
 `runtimeInvalidated = true` + `clearLaneDirectiveKey` cleanup. The next
 turn on that chat can therefore rehydrate the same provider SDK session
 instead of creating a fresh one (until 2026-09-21 OpenCode was missing
@@ -3796,6 +3797,26 @@ model switches are deferred while a turn is busy: the session model
 updates immediately, the active turn keeps reporting the model it
 started with, and runtime teardown waits until the turn finishes so
 approvals and stream callbacks are not orphaned mid-run.
+
+**Unattended release.** The three-minute window above is for a brain
+someone is using. While *nobody* is connected — no desktop window, no
+remote client, and no device on a project's sync host — a finished chat
+should not hold a provider process either, so the brain asks every open
+project to release its quiet chats after 30 seconds
+(`releaseUnattendedRuntimes`, called from `brainIdleMemory.ts`, which
+keeps looking every 15 seconds while a project is open and stops as soon
+as a client connects). It runs the same `idle_ttl` teardown as the sweep,
+so the next send resumes the same conversation from a cold start, and its
+guards are the sweep's, stricter: a running turn, a send that has started
+but whose turn has not (the send's own arrival moves the activity clock,
+because its pre-steps await while the chat still reads idle), a pending
+question or approval, and claimed background work all keep their process.
+Draft warmups go, since no window is left to send them, and the shared
+provider processes those chats held (an OpenCode server, an ACP agent) are
+closed in the same pass once nothing holds them. A chat a scheduled wake,
+an automation or a webhook starts later gets the same treatment, because
+the pass keeps a project's chats watched rather than stopping after the
+first empty round.
 
 Cursor resume is best-effort on the SDK side: acquiring the pooled
 worker can come back with a **different** agent id than the one ADE

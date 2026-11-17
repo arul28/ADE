@@ -1,6 +1,6 @@
 ---
 name: ade-lanes-git
-description: Use this skill when creating, inspecting, syncing, committing, pushing, archiving, or rebasing ADE lanes and lane worktrees through `ade lanes` and `ade git`.
+description: "Create, inspect, sync, commit, push, archive or rebase ADE lanes and lane worktrees (`ade lanes`, `ade git`)."
 ---
 
 # ADE lanes and git

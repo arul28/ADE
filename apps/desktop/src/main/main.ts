@@ -2623,9 +2623,15 @@ app.whenReady().then(async () => {
     if (shutdownRequested || autoUpdateService.isInstallQuitArmed()) return;
     const tabs = windowRepositoryTabs.get(windowId);
     if (!tabs) return;
+    const current = readGlobalState(globalStatePath);
+    const saved = current.lastRepositoryTabs;
+    // The same strip keeps its time, so an unchanged strip writes nothing.
+    const unchanged = saved != null
+      && saved.activeId === tabs.activeId
+      && JSON.stringify(saved.tabs) === JSON.stringify(tabs.tabs);
     writeGlobalState(globalStatePath, {
-      ...readGlobalState(globalStatePath),
-      lastRepositoryTabs: { ...tabs, updatedAt: new Date().toISOString() },
+      ...current,
+      lastRepositoryTabs: { ...tabs, updatedAt: unchanged && saved.updatedAt ? saved.updatedAt : new Date().toISOString() },
     });
   };
   const setWindowRepositoryTabs = (windowId: number | null, value: unknown): void => {

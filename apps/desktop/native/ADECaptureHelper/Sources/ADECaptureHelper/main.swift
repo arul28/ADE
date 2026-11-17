@@ -329,7 +329,13 @@ final class CaptureHelperApp: NSObject {
 
     /// Install the chord monitor, preferring the event tap and falling back to
     /// the old poll only where the poll still carries the left/right bits.
-    private func installChordMonitor() {
+    ///
+    /// `requestAccess` is true only for a person's own action (Try again, or
+    /// turning the gesture on in Settings). A plain launch never asks: the
+    /// system prompt would cover the screen with no action that explains it.
+    /// Without the grant the helper reports `inputMonitoringRequired`, and the
+    /// Settings card offers the button that asks.
+    private func installChordMonitor(requestAccess: Bool = false) {
         // A reinstall can happen while a key is held, and the events that would
         // have released it are gone. Start both detectors from a known state.
         detector.reset()
@@ -343,6 +349,12 @@ final class CaptureHelperApp: NSObject {
             return
         }
         if !CGPreflightListenEventAccess() {
+            guard requestAccess else {
+                // Do not create the tap either: a keyboard event tap with no
+                // grant makes macOS show the same prompt by itself.
+                writer.emit(.inputMonitoringRequired)
+                return
+            }
             // The prompt names ADE (the responsible app), not this helper.
             _ = CGRequestListenEventAccess()
         }
@@ -462,7 +474,7 @@ final class CaptureHelperApp: NSObject {
             detector.reset()
             pollDetector.reset()
         case .retry:
-            installChordMonitor()
+            installChordMonitor(requestAccess: true)
         case .capture:
             performCapture()
         }

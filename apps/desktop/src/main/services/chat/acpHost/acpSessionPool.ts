@@ -125,9 +125,10 @@ export type AcpSessionPool = {
   /**
    * End this provider's unused connections now instead of after the idle
    * window: its login changed, so a warm process holds the old one. A
-   * connection a chat still holds is left alone.
+   * connection a chat still holds is left alone. `null` ends the unused
+   * connections of every provider (the brain with nobody connected).
    */
-  disposeIdle(providerId: string, reason: string): number;
+  disposeIdle(providerId: string | null, reason: string): number;
 };
 
 export type AcquireAcpConnectionArgs = {
@@ -277,10 +278,10 @@ export function createAcpSessionPool(): AcpSessionPool {
       }
       entries.clear();
     },
-    disposeIdle: (providerId: string, reason: string) => {
+    disposeIdle: (providerId: string | null, reason: string) => {
       let ended = 0;
       for (const [poolKey, entry] of [...entries.entries()]) {
-        if (entry.providerId !== providerId || entry.refCount > 0) continue;
+        if ((providerId !== null && entry.providerId !== providerId) || entry.refCount > 0) continue;
         dropEntry(poolKey, entry, reason);
         ended += 1;
       }

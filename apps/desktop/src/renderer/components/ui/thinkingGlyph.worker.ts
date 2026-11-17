@@ -158,7 +158,16 @@ scope.onmessage = (event) => {
     const entry = entries.get(message.id);
     if (entry) entry.state = message.state;
   } else {
+    const entry = entries.get(message.id);
     entries.delete(message.id);
+    // Free the canvas's GPU buffers now. A dropped OffscreenCanvas keeps two
+    // IOSurfaces in the GPU process until this worker's next major GC, which
+    // can be minutes away: one pair for each turn's indicator. A size of zero
+    // releases them at once.
+    if (entry) {
+      entry.canvas.width = 0;
+      entry.canvas.height = 0;
+    }
   }
   reschedule();
 };

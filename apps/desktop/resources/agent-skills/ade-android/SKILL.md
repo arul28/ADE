@@ -1,6 +1,6 @@
 ---
 name: ade-android
-description: Use this skill when you need to see an Android app actually running on an emulator — finding or creating the lane's Android emulator, booting it, building and installing the app with Gradle or an APK, driving it by element query, reading logcat, screenshotting, recording, capturing proof, folding a foldable, rendering Compose previews, running instrumentation tests, or setting up the Android SDK — via `ade android`.
+description: "Android app on an emulator via `ade android`: find or create the lane's emulator, boot it, build and install (Gradle or APK), drive by element query, logcat, screenshots, recordings, proof, foldables, Compose previews, instrumentation tests, Android SDK setup."
 ---
 
 # ADE Android Development

@@ -137,17 +137,41 @@ export function programNameFromCommandLine(command: string | null | undefined): 
   return base.length > 0 && base.length <= 64 ? base : null;
 }
 
+/**
+ * Who answered a loopback probe that failed:
+ * - `foreign`: a program that is not ADE answered (any HTTP status other than
+ *   ADE's 426 with an identity, e.g. a dev server's 404).
+ * - `other-ade`: a 426 Upgrade Required, which is what ADE listeners send: a
+ *   stale brain, or another channel's brain next to this one. A 426 without
+ *   an identity counts too, because older ADE builds send none.
+ * - null: nothing usable was read (a timeout, a refused or reset connection).
+ */
+export type LoopbackShadowAnswer = "foreign" | "other-ade" | null;
+
 export class LoopbackShadowedError extends Error {
   readonly code = "ELOOPBACKSHADOWED";
   readonly port: number;
   readonly failedAt: string;
+  readonly answeredBy: LoopbackShadowAnswer;
 
-  constructor(port: number, reason: string, failedAt = new Date().toISOString()) {
+  constructor(
+    port: number,
+    reason: string,
+    failedAt = new Date().toISOString(),
+    answeredBy: LoopbackShadowAnswer = null,
+  ) {
     super(reason);
     this.name = "LoopbackShadowedError";
     this.port = port;
     this.failedAt = failedAt;
+    this.answeredBy = answeredBy;
   }
+}
+
+/** Who answered a failed probe (see {@link LoopbackShadowAnswer}). */
+export function loopbackShadowAnswerOf(result: SyncLoopbackProbeResult): LoopbackShadowAnswer {
+  if (result.ok || result.timedOut === true || result.statusCode == null) return null;
+  return result.statusCode === 426 ? "other-ade" : "foreign";
 }
 
 export function isLoopbackShadowedError(error: unknown): error is LoopbackShadowedError {
@@ -267,6 +291,7 @@ export async function assertAdeLoopbackListener(
       port,
       result.reason ?? `The listener on 127.0.0.1:${port} is not ADE.`,
       result.checkedAt,
+      loopbackShadowAnswerOf(result),
     );
   }
   return result;

@@ -1,6 +1,6 @@
 ---
 name: ade-browser
-description: Use this skill for any browser behavior at all — opening a URL, checking a localhost page, clicking or filling a form, logging in, screenshotting, inspecting the DOM, or verifying a page renders — before reaching for an external browser or tool. ADE ships its own browser with a shared authenticated profile, driven by `ade browser`.
+description: "Any browser work, before any outside browser or tool: open a URL or localhost page, click, fill forms, log in, screenshots, inspect the DOM, check a page renders. ADE's own browser with a shared signed-in profile (`ade browser`)."
 ---
 
 # ADE browser

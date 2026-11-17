@@ -1,6 +1,6 @@
 ---
 name: ade-deeplinks
-description: Use this skill when an agent needs to mint, share, or open ADE deeplinks (lane, chat or CLI session, file, commit, artifact, branch, PR, Linear issue) so users — or the agent itself — can jump straight to a specific ADE surface from anywhere (GitHub PR description, Linear issue, Slack, email, terminal, mobile).
+description: "Make, share or open ADE deeplinks (lane, chat or CLI session, file, commit, artifact, branch, PR, Linear issue) to paste in GitHub, Linear, Slack, email, a terminal or the phone (`ade link`)."
 ---
 
 # ADE deeplinks
