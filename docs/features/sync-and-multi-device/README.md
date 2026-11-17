@@ -296,17 +296,9 @@ compatibility tests in the same branch.
 
 The **optional** list (`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`) holds
 additive commands that newer phones feature-detect, so a host without them is
-not `limited`:
-
-- the Linear connection commands (`cto.startLinearMobileOAuth`,
-  `cto.completeLinearMobileOAuth`, `cto.setLinearToken`,
-  `cto.clearLinearToken`); without them the iOS Linear pane hides them;
-- `cto.getAttention` (the CTO tab badge);
-- the session lifecycle commands (`session.settleSessions`,
-  `session.unsettleSessions`, `session.setSettleOverride`,
-  `session.snoozeSession`, `session.wakeSession`, `session.clearWokeMarker`);
-- `chat.regenerateSessionMetadata` and `chat.resumeUsageLimitNow`.
-
+not `limited`. Each entry has a comment with what the phone does without it
+(for example: the Linear connection commands, `cto.getAttention`, the
+session lifecycle commands, the new-lane launch commands).
 See `remote-commands.md` and `../linear-integration/README.md`.
 
 ## What syncs, what does not
