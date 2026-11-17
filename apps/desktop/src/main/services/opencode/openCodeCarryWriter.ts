@@ -31,11 +31,10 @@ import type { OpenCodeClient } from "@opencode/client";
 import type { Logger } from "../logging/logger";
 import { resolveAdeOpenCodeRuntimeRoot } from "../../../shared/opencodeDataHome";
 import type { OpenCodeCredentialWriter } from "../providerLogins/providerLoginApply";
-import { forgetRouteSecretsForSource } from "../chat/harnessPresetConfigHomes";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 import { SHARED_OPENCODE_PROFILE } from "./openCodeConfig";
-import { bumpOpenCodeCredentialsGeneration, readOpenCodeCredentials, resolveAdeOpenCodeDbPath } from "./openCodeCredentials";
-import { clearOpenCodeInventoryCache } from "./openCodeInventory";
+import { credentialsChanged } from "./openCodeAccounts";
+import { readOpenCodeCredentials, resolveAdeOpenCodeDbPath } from "./openCodeCredentials";
 import { acquireOpenCodeServer } from "./openCodeServer";
 
 const CARRY_OWNER_ID = "provider-login-carry";
@@ -58,13 +57,6 @@ async function withSharedClient<T>(logger: Logger | null, fn: (client: OpenCodeC
   } finally {
     lease.release();
   }
-}
-
-/** The opencode.ai login changed in the store: drop every copy of "who pays" and every route's copied token. */
-function openCodeLoginChanged(): void {
-  bumpOpenCodeCredentialsGeneration();
-  clearOpenCodeInventoryCache();
-  for (const sourceKey of ["opencode", "opencode-go"]) forgetRouteSecretsForSource(sourceKey);
 }
 
 /** The row is in the store now (read with SQL, read-only; no server needed). */
@@ -95,7 +87,7 @@ export function createOpenCodeCarryWriter(logger: Logger | null): OpenCodeCreden
         return true;
       });
       if (!done) return "not_installed";
-      openCodeLoginChanged();
+      credentialsChanged("opencode");
       return "ok";
     },
     async remove(dbPath, id) {
@@ -106,7 +98,7 @@ export function createOpenCodeCarryWriter(logger: Logger | null): OpenCodeCreden
         return true;
       });
       if (!done) return "not_installed";
-      openCodeLoginChanged();
+      credentialsChanged("opencode");
       return "ok";
     },
   };
@@ -133,10 +125,15 @@ export async function renewOpenCodeLogin(logger: Logger | null): Promise<boolean
       await client.integration.list({ location: { directory: folder! } });
       return true;
     });
-    if (answered) openCodeLoginChanged();
+    if (answered) credentialsChanged("opencode");
     return Boolean(answered);
   } finally {
-    fs.rmSync(folder, { recursive: true, force: true });
+    try {
+      // The server may still watch the folder (Windows refuses to remove it then); a leftover empty folder is harmless.
+      fs.rmSync(folder, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    } catch (error) {
+      logger?.warn("opencode.carry_renew_folder_left", { code: (error as NodeJS.ErrnoException)?.code ?? null });
+    }
   }
 }
 

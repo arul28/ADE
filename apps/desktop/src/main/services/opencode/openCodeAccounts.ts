@@ -58,7 +58,8 @@ function errorMessage(error: unknown): string {
 }
 
 /** After a credential change: every cache of "which login is in use" starts over. */
-function credentialsChanged(providerId: string): void {
+/** Which OpenCode credential is in use changed: drop every cached "who pays" and every route's copied token. */
+export function credentialsChanged(providerId: string): void {
   bumpOpenCodeCredentialsGeneration();
   clearOpenCodeInventoryCache();
   // Routes into other harnesses copied the in-use login's token; the next

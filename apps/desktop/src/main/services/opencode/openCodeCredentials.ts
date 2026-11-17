@@ -212,6 +212,16 @@ export type OpenCodeCarryCredential = {
 
 const CARRY_INTEGRATION = "opencode";
 
+/** A row's `value` column as an object; "unreadable" when it is not one. */
+function credentialValueOf(raw: unknown): Record<string, unknown> | "unreadable" {
+  try {
+    const value = typeof raw === "string" ? JSON.parse(raw) as unknown : null;
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : "unreadable";
+  } catch {
+    return "unreadable";
+  }
+}
+
 export function readOpenCodeCarryCredential(
   dbPath: string,
 ): OpenCodeCarryCredential | null | "unreadable" {
@@ -226,14 +236,9 @@ export function readOpenCodeCarryCredential(
     `).get(CARRY_INTEGRATION) as Record<string, unknown> | undefined;
     if (!row) return null;
     const id = textOrNull(row.id);
-    let value: unknown = null;
-    try {
-      value = typeof row.value === "string" ? JSON.parse(row.value) : null;
-    } catch {
-      value = null;
-    }
-    if (!id || !value || typeof value !== "object" || Array.isArray(value)) return "unreadable";
-    return { id, label: textOrNull(row.label) ?? "default", value: value as Record<string, unknown> };
+    const value = credentialValueOf(row.value);
+    if (!id || value === "unreadable") return "unreadable";
+    return { id, label: textOrNull(row.label) ?? "default", value };
   });
 }
 
@@ -268,13 +273,7 @@ export function readOpenCodeCredentialValue(dbPath: string, id: string): Record<
   if (!fs.existsSync(dbPath)) return null;
   return readOpenCodeDb<Record<string, unknown> | null | "unreadable">(dbPath, "unreadable", (db) => {
     const row = db.prepare("SELECT value AS value FROM credential WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-    if (!row) return null;
-    try {
-      const value = typeof row.value === "string" ? JSON.parse(row.value) as unknown : null;
-      return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : "unreadable";
-    } catch {
-      return "unreadable";
-    }
+    return row ? credentialValueOf(row.value) : null;
   });
 }
 
