@@ -34,7 +34,7 @@ export type CloudAccessIpcAnswer = {
   enabled: boolean;
   state?: AdeCloudAccessState;
   reason?: string | null;
-  /** The account the answer is for, so a window keeps the last answer per account. */
+  /** The account the answer is for. */
   account?: string | null;
   signInEnd?: import("./cloudSignIns").CloudSignInEnd | null;
 };

@@ -21,7 +21,7 @@ import {
  *
  * The last answer is kept in this computer's storage, so a new window starts
  * with it (a blocked account starts read-only, not on). It holds no secret:
- * the state, the server's sentence and the account key.
+ * the state and the server's sentence. A sign-out deletes it.
  */
 
 export type AdeCloudAccess = {
@@ -32,7 +32,7 @@ export type AdeCloudAccess = {
 
 const STORAGE_KEY = "ade.cloudAccess.v1";
 
-function readSaved(): AdeCloudAccess & { account: string | null } {
+function readSaved(): AdeCloudAccess {
   try {
     const raw = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
     const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
@@ -41,19 +41,18 @@ function readSaved(): AdeCloudAccess & { account: string | null } {
       return {
         state: parsed.state,
         reason: parsed.state === "blocked" && typeof parsed.reason === "string" ? parsed.reason : null,
-        account: typeof parsed.account === "string" ? parsed.account : null,
       };
     }
   } catch {
     // This computer's copy is a convenience; the next read fills it again.
   }
-  return { state: "unknown", reason: null, account: null };
+  return { state: "unknown", reason: null };
 }
 
-function save(next: AdeCloudAccess, account: string | null): void {
+function save(next: AdeCloudAccess): void {
   try {
     if (next.state === "on" || next.state === "blocked") {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ state: next.state, reason: next.reason, account }));
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ state: next.state, reason: next.reason }));
     } else if (next.state === "signed_out") {
       window.localStorage.removeItem(STORAGE_KEY);
     }
@@ -62,8 +61,7 @@ function save(next: AdeCloudAccess, account: string | null): void {
   }
 }
 
-const saved = readSaved();
-let access: AdeCloudAccess = { state: saved.state, reason: saved.reason };
+let access: AdeCloudAccess = readSaved();
 /** The end warning's pass, from the same read (desktop main fills it only while ADE Cloud is on). */
 let signInEnd: CloudSignInEnd | null = null;
 let reading = false;
@@ -100,11 +98,10 @@ function read(): void {
   void bridge.read().then(
     (answer) => ({
       access: accessOf(answer),
-      account: answer?.account ?? null,
       end: answer?.enabled === true ? answer.signInEnd ?? null : null,
     }),
     // A failed read is no answer: keep what this window knows.
-    () => ({ access, account: null, end: signInEnd }),
+    () => ({ access, end: signInEnd }),
   ).then((next) => {
     reading = false;
     const accessChanged = next.access.state !== access.state || next.access.reason !== access.reason;
@@ -112,7 +109,7 @@ function read(): void {
       || (next.end?.endsInDays ?? null) !== (signInEnd?.endsInDays ?? null);
     if (accessChanged) {
       access = next.access;
-      save(access, next.account);
+      save(access);
     }
     // The same pass state keeps its object, so the warning does not render again for nothing.
     if (endChanged) signInEnd = next.end;
