@@ -473,7 +473,8 @@ export function createFederatedWebAdapter({
       binding,
       reader: adeCloudReader,
       scope: {
-        origin: binding.gitOriginUrl ?? null,
+        // A lane pin with no repository address reads for the tab's repository (as the desktop preload does).
+        origin: binding.gitOriginUrl ?? activeBinding?.gitOriginUrl ?? null,
         machineKey: isAdeCloudBinding(binding) ? null : savedChatsMachineKey(binding.targetId),
       },
     });

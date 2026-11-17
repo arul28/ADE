@@ -124,6 +124,8 @@ const savedBinding = (machineId: string, row: CloudSavedChatRow, runtimeName: st
   projectId: row.projectId ?? row.projectKey ?? row.machineKey,
   rootPath: row.projectRoot ?? "",
   displayName: savedProjectName(row.projectRoot, row.projectKey),
+  // The repository address: an account read of this pin (files, History) needs it.
+  ...(row.projectKey ? { gitOriginUrl: row.projectKey } : {}),
 });
 
 const realBinding = (
@@ -414,6 +416,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         projectId: computer.projectOrigin,
         rootPath: "",
         displayName: savedProjectName(null, computer.projectOrigin),
+        gitOriginUrl: computer.projectOrigin,
       };
       store.mergeCrossMachineLanes({
         machineId,
@@ -459,6 +462,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         projectId: context.projectKey!,
         rootPath: "",
         displayName: savedProjectName(null, context.projectKey!),
+        gitOriginUrl: context.projectKey,
       };
       const others = (previous?.lanes ?? []).filter((entry) => entry.id !== lane.laneId);
       const row = laneComputerLane({ laneId: lane.laneId, laneName: lane.laneName ?? lane.laneId }, previous?.lanes.find((entry) => entry.id === lane.laneId));
@@ -503,6 +507,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         projectId: context.projectKey!,
         rootPath: "",
         displayName: savedProjectName(null, context.projectKey!),
+        gitOriginUrl: context.projectKey,
       };
       const lanes = [...(previous?.lanes ?? [])];
       const known = new Set(lanes.map((lane) => lane.id));
