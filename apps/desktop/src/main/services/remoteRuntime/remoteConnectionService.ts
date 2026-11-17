@@ -1374,9 +1374,21 @@ export class RemoteConnectionService {
       const lastError = explicit
         ? errorMessage(error)
         : this.recordImplicitFailure(target.id, error);
+      let statusError = errorStatusPatch(error, this.withRetryNotice(target.id, lastError));
+      // While a dropped link is redialed, the headline stays "Lost the link …
+      // reconnects on its own" (hostReturnAttemptFailed). Writing the dial's
+      // own text first flipped it twice per redial, and each flip re-rendered
+      // every window.
+      if (
+        !explicit
+        && this.hostReturnWatches.has(target.id)
+        && this.hostReturnCanContinue(target.id, error, statusError.lastErrorInfo?.failure)
+      ) {
+        statusError = errorStatusPatch(error, describeHostWentAway(target.name, "reconnecting"));
+      }
       this.mergeStatus(target.id, {
         state: "error",
-        ...errorStatusPatch(error, this.withRetryNotice(target.id, lastError)),
+        ...statusError,
         lastAttemptedAt: Date.now(),
         recovery: this.recoveryAfterFailure(target.id),
       });
@@ -2651,11 +2663,14 @@ export class RemoteConnectionService {
   }
 
   /** A failure the machine coming back can fix, as opposed to one only the person can. */
-  private hostReturnCanContinue(targetId: string, error: unknown): boolean {
+  private hostReturnCanContinue(
+    targetId: string,
+    error: unknown,
+    failure = this.statusById.get(targetId)?.lastErrorInfo?.failure,
+  ): boolean {
     if (isConnectionBackoffThrottle(error)) return !this.pool.needsUserAction(targetId);
     if (error instanceof PairedRuntimeRelayAuthRequiredError) return false;
     if (!this.isConnectionFailure(targetId, error) || this.pool.needsUserAction(targetId)) return false;
-    const failure = this.statusById.get(targetId)?.lastErrorInfo?.failure;
     return failure !== "pairing" && failure !== "authentication" && failure !== "identity";
   }
 
