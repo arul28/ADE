@@ -112,7 +112,7 @@ const DEV_DIRECTORY_PROXY_TARGET =
  * the web client's own router, so proxying it would send sign-in returns to
  * the Worker.
  */
-const DEV_DIRECTORY_PROXY_ROUTE = "^/(?:account/(?:machines|projects)|cloud|github)(?:[/?]|$)";
+const DEV_DIRECTORY_PROXY_ROUTE = "^/(?:account/(?:machines|projects|lanes)|cloud|github)(?:[/?]|$)";
 
 /**
  * Same treatment for the push relay, which the Activity surface calls straight
