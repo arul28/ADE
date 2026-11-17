@@ -29693,7 +29693,11 @@ export function createAgentChatService(args: {
    */
   const assertExpectedTurn = (managed: ManagedChatSession, expected: string | null | undefined): void => {
     if (expected === undefined) return;
-    const current = activeTurnIdForManaged(managed);
+    // A turn shown before its runtime exists (`showTurnBeforeRuntime`) has no
+    // active runtime turn yet: a Stop that names it must still match.
+    const current = activeTurnIdForManaged(managed)
+      ?? turnsShownBeforeRuntime.get(managed.session.id)?.turnId
+      ?? null;
     const running = current != null || runtimeMidTurn(managed) || managed.session.status === "active";
     if (expected === null ? !running : current === expected) return;
     throw markExpected(codedError(
@@ -77258,10 +77262,12 @@ export function createAgentChatService(args: {
       throw new Error("Chat session id is required.");
     }
     warmIdleCompaction.clear(trimmedSessionId);
-    // A turn that was shown before its process answered has no process to end
-    // it: the delete is its end, and a later send under this id (a restore of
-    // the same chat) starts clean instead of reading as already showing one.
-    turnsShownBeforeRuntime.delete(trimmedSessionId);
+    // A turn shown before its process answered ends with this chat: mark it
+    // stopped so an in-flight start sends nothing, and leave the record for
+    // that start's settle to remove. Removing it here would turn the Stop into
+    // a send when the start resolves.
+    const shownBeforeDelete = turnsShownBeforeRuntime.get(trimmedSessionId);
+    if (shownBeforeDelete) shownBeforeDelete.stopped = true;
     const deletedManaged = managedSessions.get(trimmedSessionId);
     if (deletedManaged) settlePendingClaudeKeychainRetry(deletedManaged, { silent: true });
     automaticContinuityRecoveryAt.delete(trimmedSessionId);

@@ -166,7 +166,9 @@ export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashC
   // process lifetime.
   sweepExpiredDiscovery(now);
   const value = discoverClaudeSlashCommandsUncached(cwd);
-  storeDiscovery(key, value);
+  // The root walk reads the withheld-skill state as it goes; if that changed
+  // during the walk, its result belongs to no single state. Do not keep it.
+  if (discoveryKey(cwd) === key) storeDiscovery(key, value);
   // Callers mutate the array (filter/map chains are fine, but nothing stops a
   // sort in place), so never hand out the cached instance itself.
   return value.slice();
@@ -194,7 +196,11 @@ export async function discoverClaudeSlashCommandsAsync(cwd: string): Promise<Dis
         // sync walk, say), and its own listing may be the older one. Keep the newer entry.
         const stored = discoveryCache.get(key);
         const storedSinceStart = stored !== undefined && stored.stamp > startedStamp;
-        if (generation === discoveryGeneration && !storedSinceStart) storeDiscovery(key, value);
+        // A withheld-skill change during the walk leaves a result that belongs
+        // to no single state, as in the synchronous path.
+        if (generation === discoveryGeneration && !storedSinceStart && discoveryKey(cwd) === key) {
+          storeDiscovery(key, value);
+        }
         return value;
       })
       .finally(() => {

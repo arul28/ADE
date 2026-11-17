@@ -118,9 +118,11 @@ class SegmentWriter {
   private pending: { sample: Uint8Array; keyframe: boolean; timeUs: number; wallMs: number } | null = null;
 
   constructor(readonly filePath: string, readonly sets: ParameterSets) {
+    // Loaded before the file is opened: a throw here must not leave the
+    // descriptor open on a writer the caller never receives.
+    const mp4 = loadMp4Muxer();
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     this.fd = fs.openSync(filePath, "w");
-    const mp4 = loadMp4Muxer();
     this.muxer = new mp4.Muxer({
       target: new mp4.StreamTarget({
         onData: (data, position) => {

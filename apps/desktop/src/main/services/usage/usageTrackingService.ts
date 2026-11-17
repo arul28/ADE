@@ -6099,7 +6099,10 @@ export function createUsageTrackingService({
     demandLeaseUntilMs = nowMs + QUOTA_DEMAND_LEASE_MS;
     if (pollTimer) scheduleNextPoll();
     const snapshot = getUsageSnapshot();
-    if (nowMs - Date.parse(snapshot.lastPolledAt) > ACTIVE_POLL_INTERVAL_MS) {
+    // No windows means no completed poll (a fresh launch, or the first poll
+    // still waiting out the launch quiet period): the person is looking at an
+    // empty panel, so poll now whatever `lastPolledAt` says.
+    if (snapshot.windows.length === 0 || nowMs - Date.parse(snapshot.lastPolledAt) > ACTIVE_POLL_INTERVAL_MS) {
       void poll({ reason: "automatic" }).catch(() => {});
     }
     // Someone is looking at limits: pull the other machines' readings too, so a

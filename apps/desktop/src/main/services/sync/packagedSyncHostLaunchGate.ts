@@ -157,12 +157,17 @@ export async function blockPackagedLaunchForCrossChannelSyncConflict(
 
   // See `detectCrossChannelSyncHostConflict` for why Windows answers from the
   // lock file on this path and awaits its identity probe off the main thread.
+  const pending = deps.detectConflict ? null : deps.pendingConflict;
   const conflict = deps.detectConflict
     ? resolveCrossChannelSyncHostConflict(deps.detectConflict(env) ?? null, env)
-    : deps.pendingConflict
-      ? await deps.pendingConflict
+    : pending
+      ? await pending
       : await detectCrossChannelSyncHostConflict(env, deps.platform);
   if (!conflict) return false;
+  // The early check runs while Chromium starts, so the other channel can exit
+  // before ready. Only a positive answer is re-read (a fast lock-file probe):
+  // its stale "already running" would quit this launch for nothing.
+  if (pending && !(await detectCrossChannelSyncHostConflict(env, deps.platform))) return false;
 
   const content = buildPackagedSyncHostConflictDialogContent({
     launchingAppName: resolveLaunchingDesktopAppName(deps.channel, env),

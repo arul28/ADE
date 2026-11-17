@@ -61,11 +61,14 @@ export function rememberedCloudAccess(key: string): boolean | null {
   return readAnswers()[key]?.enabled ?? null;
 }
 
+/** Whether the last write reached the disk; until it does, an unchanged answer is written again. */
+let lastWriteFailed = false;
+
 /** Keeps the server's answer for the account. Writes only when the answer changed. */
 export function rememberCloudAccess(key: string, enabled: boolean): void {
   if (!memoryFile || key.endsWith("|")) return;
   const answers = readAnswers();
-  if (answers[key]?.enabled === enabled) return;
+  if (!lastWriteFailed && answers[key]?.enabled === enabled) return;
   answers[key] = { enabled, at: Date.now() };
   const kept = Object.entries(answers)
     .sort(([, a], [, b]) => b.at - a.at)
@@ -76,8 +79,11 @@ export function rememberCloudAccess(key: string, enabled: boolean): void {
     fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
     fs.writeFileSync(tmp, `${JSON.stringify({ version: 1, answers: remembered })}\n`, { mode: 0o600 });
     fs.renameSync(tmp, memoryFile);
+    lastWriteFailed = false;
   } catch {
-    // The answer stays in memory; the next change tries the write again.
+    // The answer stays in memory and the next answer tries the write again,
+    // unchanged or not: a restart must not lose a confirmed answer.
+    lastWriteFailed = true;
     try {
       fs.rmSync(tmp, { force: true });
     } catch {

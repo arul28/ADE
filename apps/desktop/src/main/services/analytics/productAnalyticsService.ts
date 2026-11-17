@@ -545,8 +545,9 @@ function rollQuotaDay(state: ProductAnalyticsState, nowMs: number): ProductAnaly
   };
 }
 
-function makePostHogClient(token: string, host: string): ProductAnalyticsClient {
+function makePostHogClient(token: string, host: string, options: { stillEnabled?: () => boolean } = {}): ProductAnalyticsClient {
   type Message = Parameters<ProductAnalyticsClient["capture"]>[0];
+  const stillEnabled = options.stillEnabled ?? (() => true);
   const captureUrl = `${host}/i/v0/e/`;
   const queue: Message[] = [];
   const activeControllers = new Set<AbortController>();
@@ -594,6 +595,13 @@ function makePostHogClient(token: string, host: string): ProductAnalyticsClient 
   };
 
   const drain = async (): Promise<void> => {
+    // The marker is re-read here, not only where the client was created: this
+    // runs from the flush timer and the retry loop, so a withdrawal made while
+    // events waited must drop them rather than send them.
+    if (!stillEnabled()) {
+      queue.splice(0, queue.length);
+      return;
+    }
     const batch = queue.splice(0, 50);
     const results = await Promise.allSettled(batch.map(send));
     const failed = results.find((result) => result.status === "rejected");
@@ -810,7 +818,11 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   const ensureClient = (currentState: ProductAnalyticsState): ProductAnalyticsClient | null => {
     if (!effective(currentState) || !host) return null;
     if (!client) {
-      client = (args.makeClient ?? makePostHogClient)(token, host);
+      client = (args.makeClient ?? makePostHogClient)(token, host, {
+        // Checked again by each drain: the opt-out marker can change while
+        // events wait in the client's queue.
+        stillEnabled: () => !isLocallyOptedOut() && !isRuntimeDisabled(),
+      });
       startOptOutWatcher();
       if (isLocallyOptedOut()) {
         cancelClientForOptOut();

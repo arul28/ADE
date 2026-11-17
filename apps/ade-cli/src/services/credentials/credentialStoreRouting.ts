@@ -50,7 +50,9 @@ export function createRoutedCredentialStore(args: {
     getWithReadState: async (key) => {
       const store = storeFor(key);
       if (store.getWithReadState) return await store.getWithReadState(key);
-      const value = await store.get(key);
+      // Read and state in one synchronous turn: `get()` would let another read
+      // change the store's last-read state before this one asks for it.
+      const value = store.getSync(key);
       return { value, state: store.getLastReadState?.() ?? "missing" };
     },
     set: async (key, value) => storeFor(key).set(key, value),
@@ -161,7 +163,9 @@ export function createLazyCredentialStore(build: () => SyncCredentialStore): Syn
       const target = resolveForRead();
       if (!target) return { value: null, state: "unreadable" };
       if (target.getWithReadState) return await target.getWithReadState(key);
-      const value = await target.get(key);
+      // Read and state in one synchronous turn: `get()` would let another read
+      // change the store's last-read state before this one asks for it.
+      const value = target.getSync(key);
       return { value, state: target.getLastReadState?.() ?? "missing" };
     },
     set: async (key, value) => resolve().set(key, value),

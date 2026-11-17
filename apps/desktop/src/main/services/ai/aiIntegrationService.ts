@@ -157,6 +157,7 @@ import {
 import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
 import { pinnedToolInstallGeneration, retryPinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
+import { isSecureStorageCheckPending } from "../shared/secureStorage";
 import {
   openCursorCloudCredentialStore,
   readCursorCloudLaneSecretNames,
@@ -2350,6 +2351,9 @@ export function createAiIntegrationService(args: {
       const request = (async (): Promise<AiIntegrationStatus> => {
         const requestId = randomUUID();
         const totalStartedAt = Date.now();
+        // Read before any key read: an answer that arrives during this read
+        // must not let the pre-answer key view become the cache.
+        const secureStoragePendingAtStart = isSecureStorageCheckPending();
         const toolInstallGeneration = pinnedToolInstallGeneration();
         const loginGeneration = providerLoginGeneration();
         const phases: AiStatusPhaseTiming[] = [];
@@ -2619,6 +2623,7 @@ export function createAiIntegrationService(args: {
           if (
             requestGeneration === providerReadinessCacheGeneration
             && loginGeneration === providerLoginGeneration()
+            && !secureStoragePendingAtStart
             && !result.apiKeyStore?.secureStorageChecking
           ) {
             statusCache = {

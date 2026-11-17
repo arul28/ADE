@@ -7764,7 +7764,9 @@ function AgentChatMessageListMain({
           if (swallowing) {
             const nextKeys = new Set(groupedRowKeys);
             const staying = readVisibleChatRows(container, CHAT_FOLD_ANCHOR_SCAN_ROWS)
-              .find((row) => row.top < container.clientHeight && nextKeys.has(row.key));
+              // The task-list row keeps its key as it moves to its latest
+              // update's turn, so holding it would shift the answer instead.
+              .find((row) => row.top < container.clientHeight && nextKeys.has(row.key) && !isTaskListRowKey(row.key));
             anchor = staying
               ? { key: staying.key, top: staying.top, placeKey: staying.key }
               : { key: swallowing.foldId, top: first.top, placeKey: first.key };

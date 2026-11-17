@@ -325,7 +325,10 @@ export function subscribeCredentialFileChanges(
     watcher.start();
   }
   const shared = watcher;
-  shared.addListener(listener);
+  // One registration per subscriber, even when two pass the same callback: a
+  // Set would keep one, and the first dispose would stop the other's watcher.
+  const entry = (): void => listener();
+  shared.addListener(entry);
   let disposed = false;
   return {
     checkNow: () => {
@@ -334,7 +337,7 @@ export function subscribeCredentialFileChanges(
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      if (!shared.removeListener(listener)) return;
+      if (!shared.removeListener(entry)) return;
       shared.dispose();
       if (sharedCredentialFileWatchers.get(key) === shared) sharedCredentialFileWatchers.delete(key);
     },

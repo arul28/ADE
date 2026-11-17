@@ -246,6 +246,10 @@ export function createProjectSecretService(projectRoot: string, options: Project
 
   /** One name out of the old store: moved in, deleted before it moved, or another account's copy. */
   const removeLegacyName = (name: string): boolean => {
+    // A delete must not trust the "no old store" window: an older ADE could
+    // have written the file during it, and the delete would leave that value
+    // behind to be read again later. Look again, once.
+    legacyAbsentUntil = 0;
     let removed = false;
     openLegacyStore()?.updateSync((values) => {
       const index = JSON.parse(values[LEGACY_INDEX_KEY] ?? "null") as { entries?: Record<string, unknown> } | null;

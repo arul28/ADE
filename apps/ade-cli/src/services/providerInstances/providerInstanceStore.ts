@@ -447,6 +447,10 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
   function writeFile(file: RegistryFile): void {
     fs.mkdirSync(options.adeDir, { recursive: true });
     writeFileAtomic(registryPath, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    // This store's own write may keep the inode (the copy-over fallback in
+    // `writeFileAtomic`) and land in the same timestamp tick, which the stat
+    // cache cannot tell from the old file. Drop it: the next read is one read.
+    cachedText = null;
   }
 
   /** The persisted record for the base identity, or a synthesized one. */

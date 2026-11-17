@@ -91,14 +91,24 @@ function readDiskModels(droidPath: string): DroidExecHelpModelRow[] | null {
   }
 }
 
-function writeDiskModels(droidPath: string, models: DroidExecHelpModelRow[]): void {
-  const binary = fileStamp(droidPath);
+function writeDiskModels(
+  droidPath: string,
+  models: DroidExecHelpModelRow[],
+  stamps: { binary: FileStamp | null; settings: FileStamp | null } = {
+    binary: fileStamp(droidPath),
+    settings: fileStamp(factorySettingsPath()),
+  },
+): void {
+  const binary = stamps.binary;
   if (!binary || !models.length) return;
+  // The files the answer came from must still be the ones it described.
+  if (!sameStamp(stamps.binary, fileStamp(droidPath))) return;
+  if (!sameStamp(stamps.settings, fileStamp(factorySettingsPath()))) return;
   const entry: DroidModelsDiskEntry = {
     version: DISK_CACHE_VERSION,
     droidPath,
     binary,
-    settings: fileStamp(factorySettingsPath()),
+    settings: stamps.settings,
     savedAt: Date.now(),
     models,
   };
@@ -184,6 +194,10 @@ async function listDroidModelsFromCli(droidPath: string): Promise<DroidExecHelpM
 async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExecHelpModelRow[]> {
   const now = Date.now();
   try {
+    // Stamped before the probe: the answer describes these files, and a change
+    // during it must not be recorded as if they still matched.
+    const binaryBefore = fileStamp(droidPath);
+    const settingsBefore = fileStamp(factorySettingsPath());
     const helpResult = await spawnAsync(droidPath, ["exec", "--help"], {
       timeout: 8_000,
       maxOutputBytes: 64_000,
@@ -193,7 +207,7 @@ async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExec
       const rows = parseDroidExecHelpModels(helpResult.stdout ?? "");
       if (rows.length) {
         cached = { at: now, models: rows };
-        writeDiskModels(droidPath, rows);
+        writeDiskModels(droidPath, rows, { binary: binaryBefore, settings: settingsBefore });
         return rows;
       }
     }

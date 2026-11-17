@@ -410,7 +410,7 @@ function AnnouncementsModal({
               <button
                 type="button"
                 className="kit-btn kit-btn-primary"
-                autoFocus
+                autoFocus={!unasked}
                 onClick={() => (last ? onClose() : setIndex(index + 1))}
               >
                 {last ? "Done" : "Next"}
