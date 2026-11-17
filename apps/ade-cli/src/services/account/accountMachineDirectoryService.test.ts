@@ -558,12 +558,31 @@ describe("AccountMachineDirectoryService", () => {
     }));
   });
 
+  // A prior pairing goes back only when it holds the secret the host kept. A
+  // host that minted a new secret no longer accepts the prior one, and saving
+  // it back would mean "pair it again" on every connect.
   it.each([
-    { name: "sign-out", nextUserId: null, nextToken: null },
-    { name: "account switch", nextUserId: "user-b", nextToken: "token-b" },
+    { name: "sign-out", nextUserId: null, nextToken: null, priorSecret: null, savedSecret: null },
+    { name: "account switch", nextUserId: "user-b", nextToken: "token-b", priorSecret: null, savedSecret: null },
+    {
+      name: "account switch after the host replaced the prior secret",
+      nextUserId: "user-b",
+      nextToken: "token-b",
+      priorSecret: "prior-secret",
+      savedSecret: null,
+    },
+    {
+      name: "account switch after the host kept the prior secret",
+      nextUserId: "user-b",
+      nextToken: "token-b",
+      priorSecret: "paired-secret",
+      savedSecret: "paired-secret",
+    },
   ])("does not save a machine when $name wins a deferred account hello", async ({
     nextUserId,
     nextToken,
+    priorSecret,
+    savedSecret,
   }) => {
     let userId: string | null = "user-a";
     let token: string | null = "token-a";
@@ -572,7 +591,31 @@ describe("AccountMachineDirectoryService", () => {
     const pairingStarted = new Promise<void>((resolve) => {
       markPairingStarted = resolve;
     });
-    let stored: DesktopPairedMachineCredentials | null = null;
+    let stored: DesktopPairedMachineCredentials | null = priorSecret
+      ? {
+        version: 1,
+        hostIdentity: {
+          deviceId: "device-studio",
+          siteId: "host-site",
+          name: "Studio",
+          platform: "macOS",
+          deviceType: "desktop",
+        },
+        machineKey: "mk-studio",
+        accountOwnerUserId: null,
+        deviceId: "client-a",
+        siteId: "client-site-a",
+        deviceName: "ADE CLI",
+        secret: priorSecret,
+        dpopPrivateKey: "private-key",
+        dpopPublicKey: "public-key",
+        endpoints: ["ws://studio.local:8787"],
+        relayUrl: null,
+        endpointStates: [],
+        createdAt: "2026-07-01T00:00:00.000Z",
+        updatedAt: "2026-07-01T00:00:00.000Z",
+      }
+      : null;
     const pairWithAccountMachine = vi.fn(async () => {
       markPairingStarted?.();
       const credentials = await new Promise<DesktopPairedMachineCredentials>((resolve) => {
@@ -640,7 +683,7 @@ describe("AccountMachineDirectoryService", () => {
     });
 
     await expect(pairing).rejects.toThrow(/account changed/i);
-    expect(stored).toBeNull();
+    expect((stored as DesktopPairedMachineCredentials | null)?.secret ?? null).toBe(savedSecret);
     expect(saveTarget).not.toHaveBeenCalled();
   });
 });

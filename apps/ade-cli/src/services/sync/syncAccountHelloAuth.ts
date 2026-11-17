@@ -58,10 +58,13 @@ export const SYNC_ACCOUNT_VERIFY_FAILED_MESSAGE = "The computer you're connectin
   + " its ADE account session. Open ADE there and check that it is signed in to the same ADE account,"
   + " then try again.";
 
+/** A paired secret is 48 hex characters; anything far longer is not one. */
+const MAX_PRESENTED_PAIRED_SECRET_CHARS = 4_096;
+
 export type SyncAccountHelloAuth = Extract<SyncHelloPayload["auth"], { kind: "account" }>;
 
 export type SyncAccountHelloResult =
-  /** Authentication succeeded. `accountPairing` is set only on a fresh adoption. */
+  /** Authentication succeeded. `accountPairing` is null when the device keeps the secret it holds. */
   | {
       kind: "authenticated";
       pairingRecord: SyncPairingRecord;
@@ -85,7 +88,7 @@ export type SyncAccountHelloAuthOptions = {
   logPrefix: string;
   pairingStore: Pick<
     SyncPairingStore,
-    "getPairingRecord" | "hasPendingRotation" | "pairPeerViaAccount" | "verifySecret"
+    "getPairingRecord" | "hasPendingPinRotation" | "pairPeerViaAccount" | "verifySecret"
   >;
   dpopNonceCache: SyncDpopNonceCache;
   /** Re-read on every gate: the account can change mid-handshake. */
@@ -256,14 +259,14 @@ export async function authenticateSyncAccountHello(
       // verified and re-captured under the commit lock.
       const upgradingLegacyPairing = Boolean(existingPairingRecord) && !existingAccountOwner;
       // A PIN re-pair the device has not acknowledged yet is staged on this
-      // record. Adoption writes through, which would drop that staged secret
-      // and leave the device's `pairing_commit` with nothing to promote. The
+      // record. Adoption would replace that staged secret and leave the
+      // device's `pairing_commit` with nothing to promote. The
       // staging window exists to make a re-pair survive a lost reply, so it
       // wins — the device keeps the secret it already holds.
       if (
         upgradingLegacyPairing
         && existingPairingRecord
-        && pairingStore.hasPendingRotation(auth.deviceId)
+        && pairingStore.hasPendingPinRotation(auth.deviceId)
       ) {
         logger.info(`${logPrefix}.account_adoption_deferred_pending_rotation`, {
           deviceId: auth.deviceId,
@@ -276,17 +279,23 @@ export async function authenticateSyncAccountHello(
           connectionAttemptReserved,
         };
       }
-      // Written through rather than staged. Staging exists to protect a
-      // credential the device is still holding across two more round trips, and
-      // only PIN pairing has that shape. An account hello has no
-      // acknowledgement to arm, and staging deliberately withholds elevations,
-      // so a staged adoption would leave the record local for exactly as long
-      // as the bug it fixes.
+      // For a record that already exists, the store never replaces the secret
+      // the device holds before the device proves the new one: it keeps the
+      // secret the device presents, or stages the new one behind the
+      // committed secret (see `writeNewPairingRecord`). A reply lost after
+      // this point then leaves both ends on a secret the other accepts.
+      // Advisory: a value that is not a plausible secret is ignored, never a
+      // reason to refuse the hello. The store compares it in constant time.
+      const presentedSecret = typeof auth.pairedSecret === "string"
+        && auth.pairedSecret.trim().length <= MAX_PRESENTED_PAIRED_SECRET_CHARS
+        ? auth.pairedSecret.trim()
+        : "";
       let paired: ReturnType<SyncPairingStore["pairPeerViaAccount"]>;
       try {
         paired = pairingStore.pairPeerViaAccount(peer, attestation, {
           dpopPublicKey: existingPairingRecord ? null : auth.dpop?.publicKey ?? null,
           runtimeHostGrant: auth.runtimeHostGrant ?? null,
+          presentedSecret: presentedSecret || null,
         });
       } catch (error) {
         logger.warn(`${logPrefix}.account_pairing_write_failed`, {
@@ -307,13 +316,23 @@ export async function authenticateSyncAccountHello(
       if (!pairingRecord) {
         return reject(SYNC_ACCOUNT_PAIRING_WRITE_FAILED_MESSAGE);
       }
+      // Which secret the device leaves with, so a later "pair it again" can be
+      // traced to the adoption that preceded it. Never the secret itself.
+      logger.info(`${logPrefix}.account_pairing_secret`, {
+        deviceId: paired.deviceId,
+        outcome: paired.keptExistingSecret ? "kept" : existingPairingRecord ? "staged" : "minted",
+      });
       if (upgradingLegacyPairing && options.allowLegacyUpgrade) {
         logger.info(`${logPrefix}.account_legacy_pairing_upgraded`, { deviceId: auth.deviceId });
       }
       return {
         kind: "authenticated",
         pairingRecord,
-        accountPairing: { deviceId: paired.deviceId, secret: paired.secret },
+        // A kept secret is not sent back: the device holds it, and every
+        // client reads an omitted `accountPairing` as "keep yours".
+        accountPairing: paired.keptExistingSecret
+          ? null
+          : { deviceId: paired.deviceId, secret: paired.secret },
         attestation,
         connectionAttemptReserved,
       };

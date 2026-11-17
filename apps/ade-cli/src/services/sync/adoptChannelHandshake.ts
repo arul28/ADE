@@ -96,12 +96,15 @@ export function parseUnsealedAccountAuth(value: unknown): UnsealedAccountAuth | 
     ? null
     : toOptionalString(account.runtimeHostGrant);
   if (account.runtimeHostGrant != null && !runtimeHostGrant) return null;
+  // Optional and advisory; `authenticateSyncAccountHello` bounds it.
+  const pairedSecret = toOptionalString(account.pairedSecret);
   return {
     kind: "account",
     deviceId,
     accountToken,
     dpop: account.dpop as SyncDpopProof | null | undefined,
     ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
+    ...(pairedSecret ? { pairedSecret } : {}),
   };
 }
 

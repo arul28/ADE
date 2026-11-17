@@ -39,6 +39,7 @@ import {
 import type { RuntimeRpcTransport, RuntimeRpcTransportCloseInfo } from "./runtimeRpcClient";
 import {
   PairedRuntimeHelloRejectedError,
+  PairedRuntimeHostMismatchError,
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeRpcOverBudgetError,
 } from "./pairedRuntimeErrors";
@@ -508,6 +509,15 @@ export async function waitForSyncEnvelope(
  * error so callers classify structurally — the message is prose for a human and
  * changes whenever the copy does.
  */
+/** The machine a hello_error names as the one that refused, if it names one. */
+function helloErrorHost(payload: unknown): { deviceId: string; name?: string } | null {
+  const host = (payload as Partial<SyncHelloErrorPayload> | null)?.host;
+  const deviceId = typeof host?.deviceId === "string" ? host.deviceId.trim() : "";
+  if (!deviceId) return null;
+  const name = typeof host?.name === "string" ? host.name.trim() : "";
+  return { deviceId, ...(name ? { name } : {}) };
+}
+
 function helloError(payload: unknown): Error {
   const value = payload as Partial<SyncHelloErrorPayload> | null;
   const message = typeof value?.message === "string" && value.message.trim()
@@ -516,12 +526,7 @@ function helloError(payload: unknown): Error {
   if (value?.code === "relay_account_required") {
     return new PairedRuntimeRelayAuthRequiredError(message);
   }
-  const rejectingHost = value?.host?.deviceId?.trim()
-    ? {
-        deviceId: value.host.deviceId.trim(),
-        ...(value.host.name?.trim() ? { name: value.host.name.trim() } : {}),
-      }
-    : null;
+  const rejectingHost = helloErrorHost(payload);
   return new PairedRuntimeHelloRejectedError(
     message,
     typeof value?.code === "string" ? value.code : null,
@@ -554,14 +559,23 @@ export async function openPairedSyncConnection(
       requestId,
     );
     const envelope = await response;
-    if (envelope.type === "hello_error") throw helloError(envelope.payload);
+    const expectedHostId = options.credentials.hostIdentity.deviceId.trim();
+    if (envelope.type === "hello_error") {
+      // A host names itself in hello_error. When that is not the paired host,
+      // a different machine now answers at this address, and its rejection
+      // (any code, a relay sign-in request included) says nothing about this
+      // pairing. A host too old to name itself keeps the old reading: its
+      // rejection is taken as the paired host's.
+      const rejectingHostId = helloErrorHost(envelope.payload)?.deviceId ?? null;
+      if (rejectingHostId && rejectingHostId !== expectedHostId) {
+        throw new PairedRuntimeHostMismatchError(expectedHostId, rejectingHostId);
+      }
+      throw helloError(envelope.payload);
+    }
     const hello = envelope.payload as PairedRuntimeHelloOkPayload;
     const actualHostId = hello?.brain?.deviceId?.trim();
-    const expectedHostId = options.credentials.hostIdentity.deviceId.trim();
     if (!actualHostId || actualHostId !== expectedHostId) {
-      throw new Error(
-        `Sync endpoint identity mismatch (expected ${expectedHostId || "unknown"}, received ${actualHostId || "unknown"}).`,
-      );
+      throw new PairedRuntimeHostMismatchError(expectedHostId, actualHostId ?? "");
     }
     return Object.assign(connection, {
       hello,
