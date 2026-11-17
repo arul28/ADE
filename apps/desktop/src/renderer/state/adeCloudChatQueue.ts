@@ -19,7 +19,7 @@
  */
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import type { CloudChatQueuedMessage, CloudWakeOutcome } from "../../../../account-directory/src/cloud/contract";
+import { CLOUD_CHAT_MESSAGE_MAX_CHARS, type CloudChatQueuedMessage, type CloudWakeOutcome } from "../../../../account-directory/src/cloud/contract";
 import { newClientSendId, queuedMessageOpen } from "../../shared/adeCloud/chatQueue";
 import type { CloudChatSendAnswer } from "../../shared/adeCloudMachine";
 import type { AgentChatSendArgs } from "../../shared/types/chat";
@@ -200,7 +200,8 @@ export type SavedChatQueueSend = (location: SavedChatLocation, args: AgentChatSe
 
 /**
  * Sends through the account's queue. `unsupported` (an older server or
- * computer, files with the message, no queue in this ADE): the caller wakes
+ * computer, files with the message, a message longer than the queue takes,
+ * no queue in this ADE): the caller wakes
  * the computer and sends, as before. A refusal throws the server's sentence.
  */
 export const sendThroughAdeCloudQueue: SavedChatQueueSend = async (location, args) => {
@@ -210,6 +211,8 @@ export const sendThroughAdeCloudQueue: SavedChatQueueSend = async (location, arg
   if ((args.attachments?.length ?? 0) > 0 || (args.contextAttachments?.length ?? 0) > 0) return "unsupported";
   const text = args.text;
   if (!text.trim()) return "unsupported";
+  // Longer than the queue takes: the direct send carries it.
+  if (text.length > CLOUD_CHAT_MESSAGE_MAX_CHARS) return "unsupported";
   const messageId = args.clientSendId && /^[A-Za-z0-9_-]{1,64}$/.test(args.clientSendId) ? args.clientSendId : newClientSendId();
   const provider = location.row.provider ?? null;
   // A model picked just before this send (`updateSession` kept it for the queue).
