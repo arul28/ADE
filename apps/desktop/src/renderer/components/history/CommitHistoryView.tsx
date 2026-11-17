@@ -278,15 +278,15 @@ export function CommitHistoryView({
     } catch (err) {
       if (loadSeq.current !== seq) return;
       notify(formatTimelineError(err), true);
-      // The list stops here (a resting ADE Cloud lane's older commits need its
-      // computer). Else the search and fold auto-reads ask again at once and
-      // show the same notice in a loop. A reload or another lane starts over.
-      // Every failure, not only a marked one: the mark does not cross the bridge.
-      setHasMore(false);
+      // A resting ADE Cloud lane's older commits need its computer: the list
+      // stops, else the search and fold auto-reads ask again at once and show
+      // the same notice in a loop. A reload or another lane starts over. Any
+      // other lane keeps "Load older", so a failure for a moment can be tried again.
+      if (pin && isAccountAnsweredPin(pin)) setHasMore(false);
     } finally {
       if (loadSeq.current === seq) setLoadingMore(false);
     }
-  }, [hasMore, laneId, loading, loadingMore, notify, readPage]);
+  }, [hasMore, laneId, loading, loadingMore, notify, pin, readPage]);
 
   // A new lane or scope starts over from the top.
   useEffect(() => {
