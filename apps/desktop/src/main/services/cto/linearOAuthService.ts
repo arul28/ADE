@@ -363,7 +363,8 @@ export function createLinearOAuthService(args: {
       await agentTokenHandler(token);
       return;
     }
-    args.credentials.setOAuthToken(token);
+    // The code exchange with this client went through: the grant is proven to be its.
+    args.credentials.setOAuthToken({ ...token, clientId: oauthClient.clientId });
   };
 
   const startSessionOnce = async (purpose: LinearOAuthPurpose): Promise<CtoStartLinearOAuthResult> => {

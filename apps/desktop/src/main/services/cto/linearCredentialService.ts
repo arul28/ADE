@@ -41,6 +41,8 @@ const MACHINE_TOKEN_KEY = "linear.token.v1";
 const MACHINE_AUTH_MODE_KEY = "linear.authMode.v1";
 const MACHINE_TOKEN_EXPIRES_AT_KEY = "linear.tokenExpiresAt.v1";
 const MACHINE_REFRESH_TOKEN_KEY = "linear.refreshToken.v1";
+/** The OAuth client the stored grant is proven to belong to (`LinearAccountCredential.clientId`). */
+const MACHINE_TOKEN_CLIENT_ID_KEY = "linear.tokenClientId.v1";
 const MACHINE_OAUTH_CLIENT_KEY = "linear.oauthClient.v1";
 const MACHINE_PROVENANCE_KEY = "linear.credentialProvenance.v1";
 const MACHINE_LEGACY_PROJECTS_MIGRATED_KEY = "linear.legacy_projects_migrated.v1";
@@ -68,6 +70,8 @@ type StoredLinearToken = {
   authMode?: "manual" | "oauth" | null;
   refreshToken?: string | null;
   expiresAt?: string | null;
+  /** See `LinearAccountCredential.clientId`: set only when proven. */
+  clientId?: string | null;
 };
 
 type LinearOAuthClientCredentials = {
@@ -137,6 +141,10 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
         typeof value.expiresAt === "string" && value.expiresAt.trim().length > 0
           ? value.expiresAt.trim()
           : null,
+      clientId:
+        typeof value.clientId === "string" && value.clientId.trim().length > 0
+          ? value.clientId.trim()
+          : null,
     };
   };
 
@@ -149,6 +157,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       authMode,
       refreshToken: authMode === "oauth" ? record?.refreshToken?.trim() || null : null,
       expiresAt: authMode === "oauth" ? record?.expiresAt?.trim() || null : null,
+      clientId: authMode === "oauth" ? record?.clientId?.trim() || null : null,
     };
   };
 
@@ -281,6 +290,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       authMode: authMode === "oauth" ? "oauth" : "manual",
       refreshToken: readMachineCredential(MACHINE_REFRESH_TOKEN_KEY),
       expiresAt: readMachineCredential(MACHINE_TOKEN_EXPIRES_AT_KEY),
+      clientId: authMode === "oauth" ? readMachineCredential(MACHINE_TOKEN_CLIENT_ID_KEY) : null,
     };
   };
 
@@ -357,6 +367,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     writeMachineCredential(MACHINE_AUTH_MODE_KEY, record?.authMode ?? null);
     writeMachineCredential(MACHINE_REFRESH_TOKEN_KEY, record?.refreshToken ?? null);
     writeMachineCredential(MACHINE_TOKEN_EXPIRES_AT_KEY, record?.expiresAt ?? null);
+    writeMachineCredential(MACHINE_TOKEN_CLIENT_ID_KEY, record?.authMode === "oauth" ? record.clientId?.trim() || null : null);
     if (hasToken) {
       if (source.source !== "account") setCredentialProvenance(MACHINE_TOKEN_KEY, source);
     } else {
@@ -477,6 +488,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       authMode: record?.authMode ?? null,
       refreshToken: record?.refreshToken ?? null,
       expiresAt: record?.expiresAt ?? null,
+      clientId: record?.authMode === "oauth" ? record.clientId?.trim() || null : null,
     } satisfies StoredLinearToken));
     fs.writeFileSync(tokenPath, encrypted);
     try {
@@ -731,6 +743,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
             authMode: "oauth",
             refreshToken: result.refreshToken ?? tokenToRefresh,
             expiresAt: result.expiresAt,
+            // The exchange with this client went through: the grant is proven to be its.
+            clientId: client.clientId,
           };
           persistToken(renewed, undefined, undefined, { publish: false });
           invalidateCache();
@@ -843,6 +857,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       accessToken: string;
       refreshToken?: string | null;
       expiresAt?: string | null;
+      /** The client whose code exchange returned this token. */
+      clientId?: string | null;
     }): void {
       persistToken(
         {
@@ -850,6 +866,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
           authMode: "oauth",
           refreshToken: args.refreshToken ?? null,
           expiresAt: args.expiresAt ?? null,
+          clientId: args.clientId?.trim() || null,
         },
         deviceCredentialProvenance(),
         deviceCredentialProvenance(),
