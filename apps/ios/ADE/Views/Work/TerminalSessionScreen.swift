@@ -719,26 +719,36 @@ enum TerminalMessageSendResult {
 /// notice.
 @MainActor
 final class TerminalMessageDraft: ObservableObject {
-  @Published var text = ""
+  /// Every write counts as an edit, including one that leaves the same words:
+  /// a draft cleared and retyped with the same text is still a new draft.
+  @Published var text = "" { didSet { editRevision += 1 } }
   @Published var sending = false
   @Published var notice: String?
+  private var editRevision = 0
   private var messageId = UUID().uuidString
   private var messageIdText: String?
+  /// The edit this id was minted for. A send whose text was edited afterwards
+  /// is a new message, even when it reads the same.
+  private var messageIdRevision: Int?
 
   /// One id for one message: a send of the same text after a lost answer reuses
-  /// it, so the computer types the message once. Changed text is a new message.
+  /// it, so the computer types the message once. Changed text is a new message,
+  /// and so is the same text typed again.
   func clientMessageId(for text: String) -> String {
-    if text != messageIdText {
+    if text != messageIdText || editRevision != messageIdRevision {
       messageIdText = text
+      messageIdRevision = editRevision
       messageId = UUID().uuidString
     }
     return messageId
   }
 
-  func markSent(_ sentText: String, notice: String?) {
-    // Text typed while the send was in flight stays.
-    if text.trimmingCharacters(in: .whitespacesAndNewlines) == sentText { text = "" }
+  func markSent(notice: String?) {
+    // Text typed while the send was in flight stays, even when it reads the
+    // same as what was sent.
+    if editRevision == messageIdRevision { text = "" }
     messageIdText = nil
+    messageIdRevision = nil
     self.notice = notice
   }
 }
@@ -833,7 +843,7 @@ struct TerminalMessageBar: View, Equatable {
     defer { draft.sending = false }
     switch await send(text, clientMessageId) {
     case .sent(let notice):
-      draft.markSent(text, notice: notice)
+      draft.markSent(notice: notice)
     case .kept(let notice):
       draft.notice = notice
     }

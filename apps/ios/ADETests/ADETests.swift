@@ -27303,32 +27303,43 @@ final class TerminalSessionInputStatusTests: XCTestCase {
 final class TerminalMessageDraftTests: XCTestCase {
   /// A resend of the same text after a lost answer keeps its id, so the host
   /// types the message once; changed text is a new message with a new id, and
-  /// so is the same words after the host already has them.
+  /// so is the same words typed again or already held by the host.
   func testResendKeepsItsIdAndChangedTextGetsANewOne() {
     let draft = TerminalMessageDraft()
 
     let firstId = draft.clientMessageId(for: "run the tests")
     XCTAssertEqual(draft.clientMessageId(for: "run the tests"), firstId)
+
+    // The same words, typed again while the answer is out, are a new message.
+    draft.text = "run the tests"
+    XCTAssertNotEqual(draft.clientMessageId(for: "run the tests"), firstId)
     XCTAssertNotEqual(draft.clientMessageId(for: "run the tests twice"), firstId)
 
-    let sentId = draft.clientMessageId(for: "run the tests twice")
-    draft.markSent("run the tests twice", notice: nil)
-    XCTAssertNotEqual(draft.clientMessageId(for: "run the tests twice"), sentId)
+    // Once the host has it, the same words are a new message again.
+    draft.markSent(notice: nil)
+    XCTAssertNotEqual(draft.clientMessageId(for: "run the tests twice"), firstId)
   }
 
-  /// An answer that lands after the user kept typing must not wipe the new
-  /// draft, and the one that was sent clears only itself.
-  func testAnAnswerDoesNotClearTextTypedWhileSending() {
+  /// An answer must not wipe a draft the user changed while the send was out,
+  /// including when the new text reads exactly the same.
+  func testAnAnswerKeepsADraftEditedWhileItWasOut() {
     let draft = TerminalMessageDraft()
-    draft.text = "and then the next one"
+    draft.text = "yes"
+    _ = draft.clientMessageId(for: "yes")
 
-    draft.markSent("the one in flight", notice: "Queued.")
-    XCTAssertEqual(draft.text, "and then the next one")
-    XCTAssertEqual(draft.notice, "Queued.")
+    // Replaced with the same words while the answer is out: still a draft.
+    draft.text = ""
+    draft.text = "yes"
+    draft.markSent(notice: nil)
+    XCTAssertEqual(draft.text, "yes")
 
-    draft.markSent("and then the next one", notice: nil)
-    XCTAssertEqual(draft.text, "")
-    XCTAssertNil(draft.notice)
+    // A draft nobody touched is cleared, and the answer's notice is shown.
+    let untouched = TerminalMessageDraft()
+    untouched.text = "yes"
+    _ = untouched.clientMessageId(for: "yes")
+    untouched.markSent(notice: "Queued.")
+    XCTAssertEqual(untouched.text, "")
+    XCTAssertEqual(untouched.notice, "Queued.")
   }
 }
 
