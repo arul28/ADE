@@ -17727,7 +17727,12 @@ final class SyncService: ObservableObject {
     planAction: String? = nil
   ) async throws -> AgentChatRespondToInputResult {
     let scope = chatCommandScope(for: sessionId)
-    let result = try await sendDecodableChatCommand(
+    // A personal chat answers through `personalChats.respondToInput`, which
+    // returns only `{ action, result }`; an older host returns `{ ok: true }`.
+    // The plan handoff's id is the only field worth reading and it is absent in
+    // both, so the decode is best effort: a body that does not match must never
+    // turn a delivered answer into a reported failure.
+    let raw = try await sendChatCommand(
       action: chatActionName("chat.respondToInput", sessionId: sessionId),
       payload: AgentChatRespondToInputRequest(
         sessionId: sessionId,
@@ -17738,9 +17743,9 @@ final class SyncService: ObservableObject {
         planAction: planAction
       ),
       targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath,
-      as: AgentChatRespondToInputResult.self
+      targetProjectRootPath: scope.rootPath
     )
+    let result = (try? decode(raw, as: AgentChatRespondToInputResult.self)) ?? AgentChatRespondToInputResult()
     // A chat created on this phone's behalf belongs to the same project (and
     // machine) as the planning chat. Carrying that routing across now is what
     // lets the next screen read it; the row itself arrives with the next

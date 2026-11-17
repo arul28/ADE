@@ -76344,16 +76344,23 @@ export function createAgentChatService(args: {
       return implementCodexPlanInNewChat(args);
     }
     const managed = ensureManagedSession(args.sessionId);
-    const pendingPlan = managed.runtime?.kind === "codex"
-      ? managed.runtime.approvals.get(args.itemId)
-      : undefined;
-    // A plan card takes one answer, whoever sends it. "Implement here" and
-    // "Implement in a new chat" are two different answers to the same card, so
-    // the second one waits instead of implementing the plan twice.
-    const releasePlanAnswer = pendingPlan?.kind === "plan_approval"
-      ? planDecisions.beginAnswer(args.sessionId, args.itemId)
+    // Every Codex answer counts, not only a plan one: a plan approval restored
+    // after a restart has no live waiter, so the handoff cannot tell it from an
+    // ordinary answer and must be blocked by this count alone.
+    const releaseChatAnswer = managed.session.provider === "codex"
+      ? planDecisions.beginChatAnswer(args.sessionId)
       : null;
+    let releasePlanAnswer: (() => void) | null = null;
     try {
+      const pendingPlan = managed.runtime?.kind === "codex"
+        ? managed.runtime.approvals.get(args.itemId)
+        : undefined;
+      // A plan card takes one answer, whoever sends it. "Implement here" and
+      // "Implement in a new chat" are two different answers to the same card, so
+      // the second one waits instead of implementing the plan twice.
+      releasePlanAnswer = pendingPlan?.kind === "plan_approval"
+        ? planDecisions.beginAnswer(args.sessionId, args.itemId)
+        : null;
       if (planDecisions.isHandoffStarting(args.sessionId)) {
         throw new Error("An implementation chat is starting for this plan. Wait for it to finish.");
       }
@@ -76373,6 +76380,7 @@ export function createAgentChatService(args: {
       resetSessionActivity(args.sessionId);
     } finally {
       releasePlanAnswer?.();
+      releaseChatAnswer?.();
     }
   };
 

@@ -12396,7 +12396,10 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
     label: "chat respond",
     shapeResult: (values) => {
       const { itemId, decision, kind, title } = resolve(values);
-      return { answered: true, sessionId, itemId, decision, ...(isRecord(values.result) && typeof values.result.implementationSessionId === "string" ? { implementationSessionId: values.result.implementationSessionId } : {}), ...(kind ? { kind } : {}), ...(title ? { title } : {}) };
+      // The step's value is the action envelope (`{ domain, action, result }`);
+      // the handoff's id lives one level in, beside `ok`.
+      const actionResult = unwrapActionEnvelope(values.result);
+      return { answered: true, sessionId, itemId, decision, ...(isRecord(actionResult) && typeof actionResult.implementationSessionId === "string" ? { implementationSessionId: actionResult.implementationSessionId } : {}), ...(kind ? { kind } : {}), ...(title ? { title } : {}) };
     },
     steps: [
       {

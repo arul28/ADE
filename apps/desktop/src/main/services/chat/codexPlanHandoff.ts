@@ -64,6 +64,16 @@ type HandoffEntry = {
  */
 export function createCodexPlanDecisions() {
   const inFlight = new Map<string, HandoffEntry | { itemId: string; kind: "answer" }>();
+  /**
+   * Answers running for a chat, plan or not, counted.
+   *
+   * A plan approval restored after a restart has no live runtime waiter, so
+   * `beginAnswer` cannot recognise it and takes no claim. Without this
+   * counter a handoff arriving while that answer was starting would see an
+   * idle chat and implement the plan a second time. The counter is what the
+   * handoff checks instead: any answer in flight blocks it.
+   */
+  const answering = new Map<string, number>();
 
   return {
     /** Room is taken before the first await; release it in a `finally`. */
@@ -82,6 +92,23 @@ export function createCodexPlanDecisions() {
 
     isHandoffStarting(sessionId: string): boolean {
       return inFlight.get(sessionId)?.kind === "handoff";
+    },
+
+    /** Room is taken before the first await; release it in a `finally`. */
+    beginChatAnswer(sessionId: string): () => void {
+      answering.set(sessionId, (answering.get(sessionId) ?? 0) + 1);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        const left = (answering.get(sessionId) ?? 1) - 1;
+        if (left > 0) answering.set(sessionId, left);
+        else answering.delete(sessionId);
+      };
+    },
+
+    isAnsweringChat(sessionId: string): boolean {
+      return (answering.get(sessionId) ?? 0) > 0;
     },
 
     handoff(args: {
@@ -104,6 +131,9 @@ export function createCodexPlanDecisions() {
       discard: (sessionId: string) => Promise<void>;
       complete: (record: CodexPlanHandoffRecord) => Promise<void>;
     }): Promise<{ implementationSessionId: string }> {
+      if ((answering.get(args.sessionId) ?? 0) > 0) {
+        throw new Error("This plan is being answered. Wait before starting an implementation chat.");
+      }
       const current = inFlight.get(args.sessionId);
       if (current) {
         if (current.kind === "answer") {

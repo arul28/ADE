@@ -131,6 +131,15 @@ describe("codexPlanHandoff", () => {
     expect(() => decisions.beginAnswer("source-chat", "item-1")).toThrow("implementation chat is starting");
     expect(decisions.isHandoffStarting("source-chat")).toBe(true);
 
+    // A plan approval restored after a restart has no runtime waiter, so the
+    // handoff cannot recognise it as a plan answer: any answer in flight for the
+    // chat must still block it, or the plan is implemented twice.
+    const releaseChatAnswer = decisions.beginChatAnswer("restored-chat");
+    expect(() => decisions.handoff({ ...setup.args, sessionId: "restored-chat" }))
+      .toThrow("being answered");
+    releaseChatAnswer();
+    expect(decisions.isAnsweringChat("restored-chat")).toBe(false);
+
     finishCreate();
     await running;
     expect(decisions.isHandoffStarting("source-chat")).toBe(false);
