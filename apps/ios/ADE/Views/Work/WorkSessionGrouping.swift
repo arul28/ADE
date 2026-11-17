@@ -251,6 +251,9 @@ struct WorkRootSessionPresentation: Equatable {
   /// keeps it in `WorkRootBookkeeping` and hands it to the next build; it is not
   /// render state, so it is outside the render signature.
   let laneReturnState: WorkLaneReturnState
+  /// The archived ids this build used. Rows read it here: worked out per row,
+  /// it rebuilt the whole set once for every row of every list pass.
+  let archivedSessionIds: Set<String>
   private let renderSignature: Int
 
   init(
@@ -266,9 +269,11 @@ struct WorkRootSessionPresentation: Equatable {
     laneById: [String: LaneSummary],
     lanePrTagsByLaneId: [String: LanePrTag],
     laneReturnState: WorkLaneReturnState = .empty,
+    archivedSessionIds: Set<String> = [],
     renderSignature: Int
   ) {
     self.laneReturnState = laneReturnState
+    self.archivedSessionIds = archivedSessionIds
     self.mergedSessions = mergedSessions
     self.displaySessions = displaySessions
     self.displaySessionIds = displaySessionIds
@@ -297,7 +302,7 @@ struct WorkRootSessionPresentation: Equatable {
   )
 
   static func == (lhs: WorkRootSessionPresentation, rhs: WorkRootSessionPresentation) -> Bool {
-    lhs.renderSignature == rhs.renderSignature
+    lhs.renderSignature == rhs.renderSignature && lhs.archivedSessionIds == rhs.archivedSessionIds
   }
 }
 
@@ -467,6 +472,7 @@ func buildWorkRootSessionPresentation(
     laneById: laneById,
     lanePrTagsByLaneId: lanePrTagsByLaneId,
     laneReturnState: nextLaneReturnState,
+    archivedSessionIds: archivedSessionIds,
     renderSignature: workRootSessionPresentationRenderSignature(
       mergedSessions: mergedSessions,
       displaySessions: displaySessions,

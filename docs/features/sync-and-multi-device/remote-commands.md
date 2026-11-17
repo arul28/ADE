@@ -885,7 +885,7 @@ A handful have more logic:
   pick mode); it sends `instanceId` and full `linearIssues` records. Stored
   API keys have no listing that crosses the machine boundary, so the phone
   reaches a key through a preset that names it.
-- `chat.typeIntoCli` (`{ sessionId, text, holdUntilFree? }` →
+- `chat.typeIntoCli` (`{ sessionId, text, holdUntilFree?, clientMessageId? }` →
   `{ ok, outcome }`) types a message into a running tracked agent CLI, only
   at a free prompt (`agentChatService.typeIntoAgentCliWhenFree`, through the
   same per-CLI flight as wakes, so it never lands mid-turn or shares a turn
@@ -895,8 +895,11 @@ A handful have more logic:
   gone; nothing typed, nothing relaunched). The command defaults
   `holdUntilFree` to true, because the phone keeps no queue of its own; the
   desktop's runtime action (`chat.typeIntoCli`) and the web adapter send it
-  false and queue in the Work input box instead. Queueable: an offline phone's
-  send goes out on reconnect. Not offered to lane share guests. Optional in
+  false and queue in the Work input box instead. `clientMessageId` names one
+  message: a repeat with the same id — a resend after a lost answer — gets the
+  first call's answer instead of typing the text again, and a typed or held
+  answer is kept for ten minutes. Queueable: an offline phone's send goes out
+  on reconnect. Not offered to lane share guests. Optional in
   the mobile contract (`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`).
   The result is `SyncStartCliSessionResult` (`{ sessionId, ptyId,
   session: TerminalSessionSummary | null }`) — the controller can

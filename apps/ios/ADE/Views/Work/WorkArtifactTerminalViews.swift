@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import AVKit
@@ -277,6 +278,7 @@ struct WorkTerminalSessionView: View {
   @State private var sendingFeedback = 0
   @State private var lastSentTerminalSize: WorkTerminalViewport?
   @State private var currentTerminalViewport: WorkTerminalViewport?
+  @State private var bufferRevision = 0
   @StateObject private var subscriptionLifecycle = WorkTerminalSubscriptionLifecycle()
 
   private var rawBuffer: String {
@@ -294,7 +296,7 @@ struct WorkTerminalSessionView: View {
       GeometryReader { proxy in
         WorkTerminalEmulatorView(
           rawText: rawBuffer,
-          revision: syncService.terminalBufferRevision,
+          revision: bufferRevision,
           onViewportChange: handleTerminalViewportChange
         )
         .adeReplayMasked()
@@ -307,6 +309,7 @@ struct WorkTerminalSessionView: View {
     }
     .adeScreenBackground()
     .adeNavigationGlass()
+    .onReceive(syncService.terminalBufferRevisionPublisher) { bufferRevision = $0 }
     .sensoryFeedback(.impact(weight: .light), trigger: sendingFeedback)
     .task(id: session.id) {
       subscriptionLifecycle.markVisible()

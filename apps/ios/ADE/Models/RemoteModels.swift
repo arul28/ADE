@@ -1457,99 +1457,105 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var crossMachineBatchApproval: AgentChatCrossMachineBatchMoveApproval? = nil
 
   static func == (lhs: AgentChatSessionSummary, rhs: AgentChatSessionSummary) -> Bool {
-    lhs.sessionId == rhs.sessionId
-      && lhs.compactionIdleMode == rhs.compactionIdleMode
-      && lhs.promptCache == rhs.promptCache
-      && lhs.compactFirstMinTokens == rhs.compactFirstMinTokens
-      && lhs.compactFirstIdleMs == rhs.compactFirstIdleMs
-      && lhs.manualCompactAvailable == rhs.manualCompactAvailable
-      && lhs.laneId == rhs.laneId
-      && lhs.provider == rhs.provider
-      && lhs.model == rhs.model
-      && lhs.modelId == rhs.modelId
-      && lhs.sessionProfile == rhs.sessionProfile
-      && lhs.instanceId == rhs.instanceId
-      && lhs.presetId == rhs.presetId
-      && lhs.credentialId == rhs.credentialId
-      && lhs.piProfileId == rhs.piProfileId
-      && lhs.piProviderId == rhs.piProviderId
-      && lhs.piModelId == rhs.piModelId
-      && lhs.title == rhs.title
-      && lhs.pinned == rhs.pinned
-      && lhs.goal == rhs.goal
-      && lhs.reasoningEffort == rhs.reasoningEffort
-      && lhs.codexFastMode == rhs.codexFastMode
-      && lhs.fastMode == rhs.fastMode
-      && lhs.executionMode == rhs.executionMode
-      && lhs.permissionMode == rhs.permissionMode
-      && lhs.interactionMode == rhs.interactionMode
-      && lhs.claudePermissionMode == rhs.claudePermissionMode
-      && lhs.codexApprovalPolicy == rhs.codexApprovalPolicy
-      && lhs.codexSandbox == rhs.codexSandbox
-      && lhs.codexConfigSource == rhs.codexConfigSource
-      && lhs.codexEffectiveCollaborationMode == rhs.codexEffectiveCollaborationMode
-      && lhs.codexEffectiveCollaborationModeWasCleared == rhs.codexEffectiveCollaborationModeWasCleared
-      && lhs.opencodePermissionMode == rhs.opencodePermissionMode
-      && lhs.droidPermissionMode == rhs.droidPermissionMode
-      && lhs.musePermissionMode == rhs.musePermissionMode
-      && lhs.copilotPermissionMode == rhs.copilotPermissionMode
-      && lhs.copilotContextTier == rhs.copilotContextTier
-      && lhs.copilotAutoTier == rhs.copilotAutoTier
-      && lhs.copilotAutoTierPending == rhs.copilotAutoTierPending
-      && lhs.cursorModeId == rhs.cursorModeId
-      && lhs.cursorModeIdWasCleared == rhs.cursorModeIdWasCleared
-      && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
-      && lhs.cursorConfigValues == rhs.cursorConfigValues
-      && lhs.acpConfigSnapshot == rhs.acpConfigSnapshot
-      && lhs.acpConfigSnapshotWasCleared == rhs.acpConfigSnapshotWasCleared
-      && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
-      && lhs.cursorRuntime == rhs.cursorRuntime
-      && lhs.computerUse == rhs.computerUse
-      && lhs.completion == rhs.completion
-      && lhs.claudeGoal == rhs.claudeGoal
-      && lhs.codexGoal == rhs.codexGoal
-      && lhs.identityKey == rhs.identityKey
-      && lhs.surface == rhs.surface
-      && lhs.automationId == rhs.automationId
-      && lhs.automationRunId == rhs.automationRunId
-      && lhs.capabilityMode == rhs.capabilityMode
-      && lhs.status == rhs.status
-      && lhs.currentTurnStartedAt == rhs.currentTurnStartedAt
-      && lhs.idleSinceAt == rhs.idleSinceAt
-      && lhs.startedAt == rhs.startedAt
-      && lhs.endedAt == rhs.endedAt
-      && lhs.archivedAt == rhs.archivedAt
-      && lhs.lastActivityAt == rhs.lastActivityAt
-      && lhs.lastOutputPreview == rhs.lastOutputPreview
-      && lhs.summary == rhs.summary
-      && lhs.awaitingInput == rhs.awaitingInput
-      && lhs.pendingInputItemId == rhs.pendingInputItemId
-      && lhs.steeringInput == rhs.steeringInput
-      && lhs.scheduledWork == rhs.scheduledWork
-      && lhs.scheduledWorkPaused == rhs.scheduledWorkPaused
-      && lhs.nextWakeAt == rhs.nextWakeAt
-      && lhs.awaitingOwnWorkAt == rhs.awaitingOwnWorkAt
-      && lhs.autoContinueAtUsageLimit == rhs.autoContinueAtUsageLimit
-      && lhs.usageLimitParkedUntil == rhs.usageLimitParkedUntil
-      && lhs.usageLimitResume == rhs.usageLimitResume
-      && lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared
-      && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
-      && lhs.backgroundWork == rhs.backgroundWork
-      && lhs.activePrWatch == rhs.activePrWatch
-      && lhs.pendingSettingsAfterBackground == rhs.pendingSettingsAfterBackground
-      && lhs.reasoningEffortChange == rhs.reasoningEffortChange
-      && lhs.turnOpenWorkCount == rhs.turnOpenWorkCount
-      && lhs.threadId == rhs.threadId
-      && lhs.requestedCwd == rhs.requestedCwd
-      && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
-      && lhs.launchedBySessionId == rhs.launchedBySessionId
-      && lhs.spawnKind == rhs.spawnKind
-      && lhs.subagentTakeoverPromptShownAt == rhs.subagentTakeoverPromptShownAt
-      && lhs.sideChatParentSessionId == rhs.sideChatParentSessionId
-      && lhs.sideChatSessionId == rhs.sideChatSessionId
-      && lhs.crossMachineHandoff == rhs.crossMachineHandoff
-      && lhs.remoteWork == rhs.remoteWork
-      && lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval
+    // One guard, not a chain of `&&`: each `&&` takes its right side as an
+    // autoclosure, and across this many fields the chain copied both
+    // summaries over and over. SwiftUI runs this for every Work row on every
+    // list pass, so the copies made a pass slow.
+    guard lhs.sessionId == rhs.sessionId,
+      lhs.compactionIdleMode == rhs.compactionIdleMode,
+      lhs.promptCache == rhs.promptCache,
+      lhs.compactFirstMinTokens == rhs.compactFirstMinTokens,
+      lhs.compactFirstIdleMs == rhs.compactFirstIdleMs,
+      lhs.manualCompactAvailable == rhs.manualCompactAvailable,
+      lhs.laneId == rhs.laneId,
+      lhs.provider == rhs.provider,
+      lhs.model == rhs.model,
+      lhs.modelId == rhs.modelId,
+      lhs.sessionProfile == rhs.sessionProfile,
+      lhs.instanceId == rhs.instanceId,
+      lhs.presetId == rhs.presetId,
+      lhs.credentialId == rhs.credentialId,
+      lhs.piProfileId == rhs.piProfileId,
+      lhs.piProviderId == rhs.piProviderId,
+      lhs.piModelId == rhs.piModelId,
+      lhs.title == rhs.title,
+      lhs.pinned == rhs.pinned,
+      lhs.goal == rhs.goal,
+      lhs.reasoningEffort == rhs.reasoningEffort,
+      lhs.codexFastMode == rhs.codexFastMode,
+      lhs.fastMode == rhs.fastMode,
+      lhs.executionMode == rhs.executionMode,
+      lhs.permissionMode == rhs.permissionMode,
+      lhs.interactionMode == rhs.interactionMode,
+      lhs.claudePermissionMode == rhs.claudePermissionMode,
+      lhs.codexApprovalPolicy == rhs.codexApprovalPolicy,
+      lhs.codexSandbox == rhs.codexSandbox,
+      lhs.codexConfigSource == rhs.codexConfigSource,
+      lhs.codexEffectiveCollaborationMode == rhs.codexEffectiveCollaborationMode,
+      lhs.codexEffectiveCollaborationModeWasCleared == rhs.codexEffectiveCollaborationModeWasCleared,
+      lhs.opencodePermissionMode == rhs.opencodePermissionMode,
+      lhs.droidPermissionMode == rhs.droidPermissionMode,
+      lhs.musePermissionMode == rhs.musePermissionMode,
+      lhs.copilotPermissionMode == rhs.copilotPermissionMode,
+      lhs.copilotContextTier == rhs.copilotContextTier,
+      lhs.copilotAutoTier == rhs.copilotAutoTier,
+      lhs.copilotAutoTierPending == rhs.copilotAutoTierPending,
+      lhs.cursorModeId == rhs.cursorModeId,
+      lhs.cursorModeIdWasCleared == rhs.cursorModeIdWasCleared,
+      lhs.cursorModeSnapshot == rhs.cursorModeSnapshot,
+      lhs.cursorConfigValues == rhs.cursorConfigValues,
+      lhs.acpConfigSnapshot == rhs.acpConfigSnapshot,
+      lhs.acpConfigSnapshotWasCleared == rhs.acpConfigSnapshotWasCleared,
+      lhs.cursorCloudAgentId == rhs.cursorCloudAgentId,
+      lhs.cursorRuntime == rhs.cursorRuntime,
+      lhs.computerUse == rhs.computerUse,
+      lhs.completion == rhs.completion,
+      lhs.claudeGoal == rhs.claudeGoal,
+      lhs.codexGoal == rhs.codexGoal,
+      lhs.identityKey == rhs.identityKey,
+      lhs.surface == rhs.surface,
+      lhs.automationId == rhs.automationId,
+      lhs.automationRunId == rhs.automationRunId,
+      lhs.capabilityMode == rhs.capabilityMode,
+      lhs.status == rhs.status,
+      lhs.currentTurnStartedAt == rhs.currentTurnStartedAt,
+      lhs.idleSinceAt == rhs.idleSinceAt,
+      lhs.startedAt == rhs.startedAt,
+      lhs.endedAt == rhs.endedAt,
+      lhs.archivedAt == rhs.archivedAt,
+      lhs.lastActivityAt == rhs.lastActivityAt,
+      lhs.lastOutputPreview == rhs.lastOutputPreview,
+      lhs.summary == rhs.summary,
+      lhs.awaitingInput == rhs.awaitingInput,
+      lhs.pendingInputItemId == rhs.pendingInputItemId,
+      lhs.steeringInput == rhs.steeringInput,
+      lhs.scheduledWork == rhs.scheduledWork,
+      lhs.scheduledWorkPaused == rhs.scheduledWorkPaused,
+      lhs.nextWakeAt == rhs.nextWakeAt,
+      lhs.awaitingOwnWorkAt == rhs.awaitingOwnWorkAt,
+      lhs.autoContinueAtUsageLimit == rhs.autoContinueAtUsageLimit,
+      lhs.usageLimitParkedUntil == rhs.usageLimitParkedUntil,
+      lhs.usageLimitResume == rhs.usageLimitResume,
+      lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared,
+      lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount,
+      lhs.backgroundWork == rhs.backgroundWork,
+      lhs.activePrWatch == rhs.activePrWatch,
+      lhs.pendingSettingsAfterBackground == rhs.pendingSettingsAfterBackground,
+      lhs.reasoningEffortChange == rhs.reasoningEffortChange,
+      lhs.turnOpenWorkCount == rhs.turnOpenWorkCount,
+      lhs.threadId == rhs.threadId,
+      lhs.requestedCwd == rhs.requestedCwd,
+      lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId,
+      lhs.launchedBySessionId == rhs.launchedBySessionId,
+      lhs.spawnKind == rhs.spawnKind,
+      lhs.subagentTakeoverPromptShownAt == rhs.subagentTakeoverPromptShownAt,
+      lhs.sideChatParentSessionId == rhs.sideChatParentSessionId,
+      lhs.sideChatSessionId == rhs.sideChatSessionId,
+      lhs.crossMachineHandoff == rhs.crossMachineHandoff,
+      lhs.remoteWork == rhs.remoteWork,
+      lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval
+    else { return false }
+    return true
   }
 }
 
@@ -6177,65 +6183,71 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var isCtoChild: Bool { parentIdentityKey == "cto" }
 
   static func == (lhs: TerminalSessionSummary, rhs: TerminalSessionSummary) -> Bool {
-    lhs.id == rhs.id
-      && lhs.laneId == rhs.laneId
-      && lhs.laneName == rhs.laneName
-      && lhs.ptyId == rhs.ptyId
-      && lhs.tracked == rhs.tracked
-      && lhs.pinned == rhs.pinned
-      && lhs.manuallyNamed == rhs.manuallyNamed
-      && lhs.goal == rhs.goal
-      && lhs.toolType == rhs.toolType
-      && lhs.title == rhs.title
-      && lhs.status == rhs.status
-      && lhs.startedAt == rhs.startedAt
-      && lhs.endedAt == rhs.endedAt
-      && lhs.lastActivityAt == rhs.lastActivityAt
-      && lhs.archivedAt == rhs.archivedAt
-      && lhs.settledAt == rhs.settledAt
-      && lhs.statusNote == rhs.statusNote
-      && lhs.activityStatus == rhs.activityStatus
-      && lhs.activityStatusChangedAt == rhs.activityStatusChangedAt
-      && lhs.attentionRequestedAt == rhs.attentionRequestedAt
-      && lhs.attentionMessage == rhs.attentionMessage
-      && lhs.attentionSource == rhs.attentionSource
-      && lhs.lastTurnFailedAt == rhs.lastTurnFailedAt
-      && lhs.settleOverride == rhs.settleOverride
-      && lhs.settleSource == rhs.settleSource
-      && lhs.snoozedUntil == rhs.snoozedUntil
-      && lhs.snoozedAt == rhs.snoozedAt
-      && lhs.wokeAt == rhs.wokeAt
-      && lhs.wokeReason == rhs.wokeReason
-      && lhs.exitCode == rhs.exitCode
-      && lhs.transcriptPath == rhs.transcriptPath
-      && lhs.headShaStart == rhs.headShaStart
-      && lhs.headShaEnd == rhs.headShaEnd
-      && lhs.lastOutputPreview == rhs.lastOutputPreview
-      && lhs.summary == rhs.summary
-      && lhs.runtimeState == rhs.runtimeState
-      && lhs.resumeCommand == rhs.resumeCommand
-      && lhs.resumeMetadata?.provider == rhs.resumeMetadata?.provider
-      && lhs.resumeMetadata?.targetKind == rhs.resumeMetadata?.targetKind
-      && lhs.resumeMetadata?.targetId == rhs.resumeMetadata?.targetId
-      && lhs.resumeMetadata?.target == rhs.resumeMetadata?.target
-      && lhs.resumeMetadata?.launch == rhs.resumeMetadata?.launch
-      && lhs.resumeMetadata?.permissionMode == rhs.resumeMetadata?.permissionMode
-      && lhs.chatIdleSinceAt == rhs.chatIdleSinceAt
-      && lhs.chatSessionId == rhs.chatSessionId
-      && lhs.pendingInputItemId == rhs.pendingInputItemId
-      && lhs.steeringInput == rhs.steeringInput
-      && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
-      && lhs.cursorRuntime == rhs.cursorRuntime
-      && lhs.parentIdentityKey == rhs.parentIdentityKey
-      && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
-      && lhs.launchedBySessionId == rhs.launchedBySessionId
-      && lhs.spawnKind == rhs.spawnKind
-      && lhs.sideChatSessionId == rhs.sideChatSessionId
-      && lhs.activeGoal == rhs.activeGoal
-      && lhs.claudeTag == rhs.claudeTag
-      && lhs.crossMachineHandoff == rhs.crossMachineHandoff
-      && lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval
-      && lhs.launchRail == rhs.launchRail
+    // One guard, not a chain of `&&`: each `&&` takes its right side as an
+    // autoclosure, and across this many fields the chain copied both
+    // summaries over and over. SwiftUI runs this for every Work row on every
+    // list pass, so the copies made a pass slow.
+    guard lhs.id == rhs.id,
+      lhs.laneId == rhs.laneId,
+      lhs.laneName == rhs.laneName,
+      lhs.ptyId == rhs.ptyId,
+      lhs.tracked == rhs.tracked,
+      lhs.pinned == rhs.pinned,
+      lhs.manuallyNamed == rhs.manuallyNamed,
+      lhs.goal == rhs.goal,
+      lhs.toolType == rhs.toolType,
+      lhs.title == rhs.title,
+      lhs.status == rhs.status,
+      lhs.startedAt == rhs.startedAt,
+      lhs.endedAt == rhs.endedAt,
+      lhs.lastActivityAt == rhs.lastActivityAt,
+      lhs.archivedAt == rhs.archivedAt,
+      lhs.settledAt == rhs.settledAt,
+      lhs.statusNote == rhs.statusNote,
+      lhs.activityStatus == rhs.activityStatus,
+      lhs.activityStatusChangedAt == rhs.activityStatusChangedAt,
+      lhs.attentionRequestedAt == rhs.attentionRequestedAt,
+      lhs.attentionMessage == rhs.attentionMessage,
+      lhs.attentionSource == rhs.attentionSource,
+      lhs.lastTurnFailedAt == rhs.lastTurnFailedAt,
+      lhs.settleOverride == rhs.settleOverride,
+      lhs.settleSource == rhs.settleSource,
+      lhs.snoozedUntil == rhs.snoozedUntil,
+      lhs.snoozedAt == rhs.snoozedAt,
+      lhs.wokeAt == rhs.wokeAt,
+      lhs.wokeReason == rhs.wokeReason,
+      lhs.exitCode == rhs.exitCode,
+      lhs.transcriptPath == rhs.transcriptPath,
+      lhs.headShaStart == rhs.headShaStart,
+      lhs.headShaEnd == rhs.headShaEnd,
+      lhs.lastOutputPreview == rhs.lastOutputPreview,
+      lhs.summary == rhs.summary,
+      lhs.runtimeState == rhs.runtimeState,
+      lhs.resumeCommand == rhs.resumeCommand,
+      lhs.resumeMetadata?.provider == rhs.resumeMetadata?.provider,
+      lhs.resumeMetadata?.targetKind == rhs.resumeMetadata?.targetKind,
+      lhs.resumeMetadata?.targetId == rhs.resumeMetadata?.targetId,
+      lhs.resumeMetadata?.target == rhs.resumeMetadata?.target,
+      lhs.resumeMetadata?.launch == rhs.resumeMetadata?.launch,
+      lhs.resumeMetadata?.permissionMode == rhs.resumeMetadata?.permissionMode,
+      lhs.chatIdleSinceAt == rhs.chatIdleSinceAt,
+      lhs.chatSessionId == rhs.chatSessionId,
+      lhs.pendingInputItemId == rhs.pendingInputItemId,
+      lhs.steeringInput == rhs.steeringInput,
+      lhs.cursorCloudAgentId == rhs.cursorCloudAgentId,
+      lhs.cursorRuntime == rhs.cursorRuntime,
+      lhs.parentIdentityKey == rhs.parentIdentityKey,
+      lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId,
+      lhs.launchedBySessionId == rhs.launchedBySessionId,
+      lhs.spawnKind == rhs.spawnKind,
+      lhs.sideChatSessionId == rhs.sideChatSessionId,
+      lhs.activeGoal == rhs.activeGoal,
+      lhs.claudeTag == rhs.claudeTag,
+      lhs.crossMachineHandoff == rhs.crossMachineHandoff,
+      lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval,
+      lhs.launchRail == rhs.launchRail
+    else { return false }
+    return true
   }
 }
 
@@ -9229,6 +9241,13 @@ enum WorkCliTypeOutcome: Equatable {
   case queuedOffline
   /// The CLI has ended, so nothing was typed. Resume it to continue.
   case ended
+}
+
+/// The `chat.typeIntoCli` arguments. `clientMessageId` names one message: a
+/// send repeated after a lost answer carries the same id, and the computer
+/// types the message once (it keeps typed and queued answers by this id).
+func workCliTypeArgs(sessionId: String, text: String, clientMessageId: String) -> [String: Any] {
+  ["sessionId": sessionId, "text": text, "holdUntilFree": true, "clientMessageId": clientMessageId]
 }
 
 /// Reads the host's `{ outcome }` answer, or the offline queue's `{ queued }`.

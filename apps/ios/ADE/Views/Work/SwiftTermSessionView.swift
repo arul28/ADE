@@ -437,9 +437,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
   private func applyStreamEvent(_ event: TerminalStreamEvent) {
     switch event {
     case .hydrate(let text, let replacing, let startOffset, let endOffset, let paintFromScreen):
-      inputStatusMessage = nil
-      isSubscribed = true
-      subscribeError = nil
+      markStreamLive()
       noteHostOffsetCapability(endOffset != nil)
       if replacing {
         let bytes = Data(text.utf8)
@@ -460,7 +458,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
           historyAtStart = startOffset == 0
         }
         rebuildTerminal(feed: bytes)
-        if !bytes.isEmpty { hasPainted = true }
+        if !bytes.isEmpty { markPainted() }
       } else {
         appendBytes(Data(text.utf8), endOffset: endOffset, countsAsLive: false)
       }
@@ -479,9 +477,21 @@ final class TerminalSessionController: NSObject, ObservableObject {
       isSubscribed = false
       subscribeError = message
     case .resumed:
-      isSubscribed = true
-      subscribeError = nil
+      markStreamLive()
     }
+  }
+
+  // A `@Published` write wakes every observer even when the value is the same,
+  // and the screen and its message bar re-rendered for each chunk. Write only
+  // a change.
+  private func markPainted() {
+    if !hasPainted { hasPainted = true }
+  }
+
+  private func markStreamLive() {
+    if inputStatusMessage != nil { inputStatusMessage = nil }
+    if !isSubscribed { isSubscribed = true }
+    if subscribeError != nil { subscribeError = nil }
   }
 
   private func noteHostOffsetCapability(_ supportsOffsets: Bool) {
@@ -506,7 +516,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
         feedHistory(view, [UInt8](bytes)[...])
       }
     }
-    if !bytes.isEmpty { hasPainted = true }
+    markPainted()
     if countsAsLive, !isPinnedToBottom {
       liveChunksWhileScrolledUp += 1
     }

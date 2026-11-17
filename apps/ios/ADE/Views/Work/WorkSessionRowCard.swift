@@ -34,10 +34,12 @@ func workSessionRowPreviewSource(
 
   func inlineText(_ raw: String?, terminalOutput: Bool = false) -> String? {
     guard let raw else { return nil }
-    let rendered = terminalOutput ? sanitizeTerminalOutputForDisplay(raw) : raw
-    guard let normalized = workSessionPreviewText(rendered) else { return nil }
-    let inline = workSummarizeInlineText(normalized, maxChars: 120)
-    return inline.isEmpty ? nil : inline
+    return WorkInlinePreviewCache.shared.text(raw, terminalOutput: terminalOutput) {
+      let rendered = terminalOutput ? sanitizeTerminalOutputForDisplay(raw) : raw
+      guard let normalized = workSessionPreviewText(rendered) else { return nil }
+      let inline = workSummarizeInlineText(normalized, maxChars: 120)
+      return inline.isEmpty ? nil : inline
+    }
   }
 
   if session.attentionRequestedAt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
@@ -67,6 +69,40 @@ func workSessionRowPreviewSource(
     }
   }
   return nil
+}
+
+/// A row's preview line by its raw text. Every Work row works out its preview
+/// on every list pass, and the cleanup (escape codes, repeated stream text,
+/// the cut to one line) gives the same line for the same text, so a pass looks
+/// it up instead of doing it again for all rows. Kept small: it is emptied
+/// when full.
+private final class WorkInlinePreviewCache: @unchecked Sendable {
+  static let shared = WorkInlinePreviewCache()
+
+  private struct Key: Hashable {
+    let raw: String
+    let terminalOutput: Bool
+  }
+
+  private let lock = NSLock()
+  private var lines: [Key: String?] = [:]
+  private let limit = 1_024
+
+  func text(_ raw: String, terminalOutput: Bool, make: () -> String?) -> String? {
+    let key = Key(raw: raw, terminalOutput: terminalOutput)
+    lock.lock()
+    if let known = lines[key] {
+      lock.unlock()
+      return known
+    }
+    lock.unlock()
+    let line = make()
+    lock.lock()
+    if lines.count >= limit { lines.removeAll(keepingCapacity: true) }
+    lines[key] = .some(line)
+    lock.unlock()
+    return line
+  }
 }
 
 /// The two reference shapes ADE's own prose uses: `#123` is a pull request and

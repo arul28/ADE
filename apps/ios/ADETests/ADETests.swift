@@ -27299,6 +27299,50 @@ final class TerminalSessionInputStatusTests: XCTestCase {
   }
 }
 
+@MainActor
+final class TerminalMessageDraftTests: XCTestCase {
+  /// A resend of the same text after a lost answer keeps its id, so the host
+  /// types the message once; changed text is a new message with a new id, and
+  /// so is the same words typed again or already held by the host.
+  func testResendKeepsItsIdAndChangedTextGetsANewOne() {
+    let draft = TerminalMessageDraft()
+
+    let firstId = draft.clientMessageId(for: "run the tests")
+    XCTAssertEqual(draft.clientMessageId(for: "run the tests"), firstId)
+
+    // The same words, typed again while the answer is out, are a new message.
+    draft.text = "run the tests"
+    XCTAssertNotEqual(draft.clientMessageId(for: "run the tests"), firstId)
+    XCTAssertNotEqual(draft.clientMessageId(for: "run the tests twice"), firstId)
+
+    // Once the host has it, the same words are a new message again.
+    draft.markSent(notice: nil)
+    XCTAssertNotEqual(draft.clientMessageId(for: "run the tests twice"), firstId)
+  }
+
+  /// An answer must not wipe a draft the user changed while the send was out,
+  /// including when the new text reads exactly the same.
+  func testAnAnswerKeepsADraftEditedWhileItWasOut() {
+    let draft = TerminalMessageDraft()
+    draft.text = "yes"
+    _ = draft.clientMessageId(for: "yes")
+
+    // Replaced with the same words while the answer is out: still a draft.
+    draft.text = ""
+    draft.text = "yes"
+    draft.markSent(notice: nil)
+    XCTAssertEqual(draft.text, "yes")
+
+    // A draft nobody touched is cleared, and the answer's notice is shown.
+    let untouched = TerminalMessageDraft()
+    untouched.text = "yes"
+    _ = untouched.clientMessageId(for: "yes")
+    untouched.markSent(notice: "Queued.")
+    XCTAssertEqual(untouched.text, "")
+    XCTAssertEqual(untouched.notice, "Queued.")
+  }
+}
+
 // MARK: - Linear pane
 
 private enum LinearTestError: Error { case launchFailed }
