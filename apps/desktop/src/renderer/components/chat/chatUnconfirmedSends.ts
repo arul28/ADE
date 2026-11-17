@@ -10,7 +10,19 @@
  * when its send is confirmed — by the answer or by the transcript — never on a
  * guess, so a link that drops twice still repeats one id.
  */
+import type { AgentChatContextAttachment, AgentChatFileRef } from "../../../shared/types";
+
 const MAX_UNCONFIRMED_SENDS = 8;
+
+/**
+ * What a put-back restores besides the words: the files and context the send
+ * carried. Delivery takes exactly these back out of the composer and drafts;
+ * anything the person adds afterwards stays.
+ */
+export type UnconfirmedSendRestore = {
+  attachments: AgentChatFileRef[];
+  contextAttachments: AgentChatContextAttachment[];
+};
 
 export type UnconfirmedSend = {
   clientSendId: string;
@@ -27,6 +39,8 @@ export type UnconfirmedSend = {
    * this text must not stay in either.
    */
   draftText?: string;
+  /** The files and context a put-back restores for it, if any. */
+  restore?: UnconfirmedSendRestore;
 };
 
 const unconfirmed = new Map<string, UnconfirmedSend>();
@@ -64,13 +78,20 @@ export function unconfirmedSendsFor(sessionId: string): Array<[identityKey: stri
 /**
  * Sends seen in their chat after their call was lost, by client send id. A
  * put-back or a draft restore that ran before the message showed can still
- * bring the words back for a moment after that; for this long, a pane that
- * shows the chat clears exactly those words from its composer and drafts.
+ * bring the words and files back for a moment after that; for this long, a
+ * pane that shows the chat clears exactly that content from its composer and
+ * drafts.
  */
 const DELIVERED_KEEP_MS = 60_000;
 const MAX_DELIVERED_SENDS = 16;
 
-export type DeliveredSend = { sessionId: string; clientSendId: string; draftText: string; seenAt: number };
+export type DeliveredSend = {
+  sessionId: string;
+  clientSendId: string;
+  draftText: string;
+  restore?: UnconfirmedSendRestore;
+  seenAt: number;
+};
 
 const delivered = new Map<string, DeliveredSend>();
 
@@ -87,6 +108,7 @@ export function markSendDelivered(send: UnconfirmedSend, now = Date.now()): void
       sessionId: send.sessionId,
       clientSendId: send.clientSendId,
       draftText: send.draftText ?? "",
+      ...(send.restore ? { restore: send.restore } : {}),
       seenAt: now,
     });
   }

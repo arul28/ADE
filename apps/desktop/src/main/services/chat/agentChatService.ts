@@ -26356,7 +26356,10 @@ export function createAgentChatService(args: {
     // knows the send arrived, whatever the words.
     if (event.type === "user_message") {
       const clientSendId = clientSends.noteMessageWritten(managed.session.id);
-      if (clientSendId && !event.clientSendId) event = { ...event, clientSendId };
+      // A steer row is the queued message it carries, not the send running
+      // here: a send's own continuation can deliver another client's queued
+      // steer, and that row must not read as this send's message.
+      if (clientSendId && !event.clientSendId && !event.steerId) event = { ...event, clientSendId };
     }
     if (event.type === "user_message" && event.turnId && /^\/compact(?:\s|$)/i.test(event.text.trim())) {
       rememberBoundedEntry(compactOnlyTurns, event.turnId, automaticCompactSessions.delete(managed.session.id) ? "auto" : "manual", 512);
@@ -51806,7 +51809,14 @@ export function createAgentChatService(args: {
    * tracked or not, like keys typed there.
    */
   const typeAgentCliLineNow = async (sessionId: string, text: string, inputOrigin: unknown): Promise<AgentCliTypeResult> => {
-    if (sessionService.get(sessionId)?.archivedAt) {
+    const row = sessionService.get(sessionId);
+    // A plain terminal is not a chat: the line would run in its shell. A
+    // tracked or untracked agent CLI terminal has a CLI tool type. The queued
+    // path refuses the same ids; this immediate one used to skip it.
+    if (row && row.toolType === "shell") {
+      throw new AdeExpectedError(`Session '${sessionId}' is not an agent CLI session.`, "user");
+    }
+    if (row?.archivedAt) {
       throw new AdeExpectedError("This CLI session is archived.", "user");
     }
     if (typeof ptyService?.typeLineIntoAgentCli !== "function") {

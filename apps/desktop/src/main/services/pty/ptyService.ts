@@ -7027,7 +7027,11 @@ export function createPtyService({
     const line = text.replace(/\r\n?/g, "\n").replace(/\x1b/g, "\u241b");
     if (!line.trim()) return false;
     const session = sessionService.get(entry.sessionId);
-    const provider = session?.resumeMetadata?.provider ?? providerFromTool(session?.toolType ?? entry.toolTypeHint);
+    const toolType = session?.toolType ?? entry.toolTypeHint;
+    // A line is a CLI prompt, never a shell command: an ordinary shell would
+    // run the text. A tracked or untracked agent CLI terminal passes.
+    if (!toolType || toolType === "shell") return false;
+    const provider = session?.resumeMetadata?.provider ?? providerFromTool(toolType);
     // A pasted tab is text, not the CLI's completion key, and a line break must
     // stay one message: both go as a bracketed paste.
     const needsPaste = line.includes("\n") || line.includes("\t");

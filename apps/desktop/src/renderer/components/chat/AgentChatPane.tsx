@@ -255,6 +255,7 @@ import {
   unconfirmedSend,
   unconfirmedSendsFor,
   type UnconfirmedSend,
+  type UnconfirmedSendRestore,
 } from "./chatUnconfirmedSends";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ChatMachineWakeBanner, ChatMachineWakeProvider } from "./useChatMachineWake";
@@ -5740,15 +5741,24 @@ export function AgentChatPane({
   /**
    * User messages in a chat with one of these texts, from five minutes before
    * `sentAt` (slack for the chat machine's clock) on. A long chat paged out of
-   * memory keeps its live events aside, so both stores count.
+   * memory keeps its live events aside, so both stores count. With
+   * `withoutClientSendId`, only rows that carry no client send id count: those
+   * are the only copies that can be a send of unknown id (an older brain).
    */
-  const countSentMessages = useCallback((sessionId: string, texts: string[], sentAt: string): number => {
+  const countSentMessages = useCallback((
+    sessionId: string,
+    texts: string[],
+    sentAt: string,
+    options?: { withoutClientSendId?: boolean },
+  ): number => {
     const since = Date.parse(sentAt) - 5 * 60_000;
+    const withoutClientSendId = options?.withoutClientSendId === true;
     return [
       ...(eventsBySessionRef.current[sessionId] ?? []),
       ...(detachedLiveEventsBySessionRef.current[sessionId] ?? []),
     ].filter(({ event, timestamp }) =>
       event.type === "user_message"
+      && !(withoutClientSendId && event.clientSendId)
       && Date.parse(timestamp) >= since
       && texts.some((text) => text === event.text.trim() || text === event.displayText?.trim())).length;
   }, []);
@@ -5757,7 +5767,8 @@ export function AgentChatPane({
    * the send's id on its message, so a message with that id is this send,
    * whatever else the chat holds; another pane may also have seen it already.
    * For a brain that records no id, more copies of its words than were there
-   * when it went out.
+   * when it went out — counting only the id-less rows, since a row that names
+   * another send (same words, other files) is that send, not this one.
    */
   const sendArrived = useCallback((send: {
     sessionId: string;
@@ -5773,7 +5784,9 @@ export function AgentChatPane({
       if ((eventsBySessionRef.current[send.sessionId] ?? []).some(withId)) return true;
       if ((detachedLiveEventsBySessionRef.current[send.sessionId] ?? []).some(withId)) return true;
     }
-    return countSentMessages(send.sessionId, send.texts, send.submittedAt) > send.alreadyThere;
+    return countSentMessages(send.sessionId, send.texts, send.submittedAt, {
+      withoutClientSendId: Boolean(send.clientSendId),
+    }) > send.alreadyThere;
   }, [countSentMessages]);
   // `selectedSessionId` trails a prop-driven chat switch by one render. Resolve
   // the visible session before deriving either its events or its runtime pin so
@@ -6009,10 +6022,11 @@ export function AgentChatPane({
     // never touched, even when it holds the same words.
     const putBack = unsent.putBack;
     if (!putBack || unsentReconcileSessionId !== composerSessionId) return;
-    setDraft((current) => (current === putBack.text ? "" : current));
+    // Words the person typed since are theirs, even when they match.
+    setDraft((current) => (current === putBack.text && current !== lastUserDraftTextRef.current ? "" : current));
     setAttachments((current) => (current === putBack.attachments ? keepEmptyArray(current) : current));
     setContextAttachments((current) => (current === putBack.contextAttachments ? keepEmptyArray(current) : current));
-  }, [composerSessionId, countSentMessages, setAttachments, setDraft, unsentNoticeEvents, unsentReconcile, unsentReconcileSessionId]);
+  }, [composerSessionId, sendArrived, setAttachments, setDraft, unsentNoticeEvents, unsentReconcile, unsentReconcileSessionId]);
   // Another machine's chat: pinned there, or on the machine this project tab
   // itself is bound to.
   const shownNotice = shownChatNotice(
@@ -12746,25 +12760,51 @@ export function AgentChatPane({
   ]);
 
   // A send that showed in its chat after its call was lost is delivered,
-  // whichever pane saw it. Its exact words must not stay in this chat's
+  // whichever pane saw it. What it put back must not stay in this chat's
   // composer or saved drafts: a put-back or a draft restore that ran before
-  // the message showed brings them back, and the next Enter sends them a
-  // second time. Words the person changed since stay as they are.
+  // the message showed brings it back, and the next Enter sends it a second
+  // time. What the person changed since stays as it is.
   const deliveredReconcileEvents = composerSessionId ? eventsBySession[composerSessionId] : undefined;
-  const clearDeliveredSendWords = useCallback((sessionId: string) => {
-    const texts = new Set(deliveredSendsFor(sessionId).map((send) => send.draftText).filter((text) => text.trim().length > 0));
+  const clearDeliveredSendContent = useCallback((sessionId: string) => {
+    const delivered = deliveredSendsFor(sessionId);
+    const texts = new Set(delivered.map((send) => send.draftText).filter((text) => text.trim().length > 0));
     // What the person entered since is theirs, even when it is the same words.
     texts.delete(lastUserDraftTextRef.current);
-    if (!texts.size) return;
+    // A send still waiting to be confirmed owns its words: an identical send
+    // after a delivered one is a message of its own, and clearing its draft
+    // would lose what the person asked to send.
+    for (const [, send] of unconfirmedSendsFor(sessionId)) texts.delete(send.draftText ?? "");
+    // The files and context a put-back restored for a delivered send go with
+    // its words; anything the person added since does not match and stays.
+    const restores = delivered.map((send) => send.restore).filter((restore): restore is UnconfirmedSendRestore => restore != null);
+    if (!texts.size && !restores.length) return;
     if (texts.has(draftStore.get())) setDraft("");
+    for (const restore of restores) {
+      if (restore.attachments.length && JSON.stringify(attachmentsRef.current) === JSON.stringify(restore.attachments)) {
+        setAttachmentsWithIds([], []);
+      }
+      const contextAttachments = JSON.stringify(restore.contextAttachments);
+      if (restore.contextAttachments.length) {
+        setContextAttachments((current) => (current.length && JSON.stringify(current) === contextAttachments ? keepEmptyArray(current) : current));
+      }
+    }
     flushPendingComposerDraftWrite();
     for (const storageKey of composerDraftStorageKeyValues) {
       const saved = readComposerDraftSnapshot(storageKey, initialNativeControls);
-      if (saved && texts.has(saved.text)) {
-        writeComposerDraftSnapshot(storageKey, { ...saved, text: "", updatedAt: new Date().toISOString() });
+      if (!saved) continue;
+      let next = saved;
+      if (texts.has(saved.text)) next = { ...next, text: "", updatedAt: new Date().toISOString() };
+      for (const restore of restores) {
+        if (restore.attachments.length && JSON.stringify(saved.attachments) === JSON.stringify(restore.attachments)) {
+          next = { ...next, attachments: [], attachmentDraftIds: [], updatedAt: new Date().toISOString() };
+        }
+        if (restore.contextAttachments.length && JSON.stringify(saved.contextAttachments) === JSON.stringify(restore.contextAttachments)) {
+          next = { ...next, contextAttachments: [], updatedAt: new Date().toISOString() };
+        }
       }
+      if (next !== saved) writeComposerDraftSnapshot(storageKey, next);
     }
-  }, [composerDraftStorageKeyValues, draftStore, flushPendingComposerDraftWrite, initialNativeControls, setDraft]);
+  }, [composerDraftStorageKeyValues, draftStore, flushPendingComposerDraftWrite, initialNativeControls, setAttachmentsWithIds, setContextAttachments, setDraft]);
   useEffect(() => {
     if (!composerSessionId) return;
     for (const [identityKey, send] of unconfirmedSendsFor(composerSessionId)) {
@@ -12772,8 +12812,8 @@ export function AgentChatPane({
       markSendDelivered(send);
       forgetUnconfirmedSend(identityKey, send.clientSendId);
     }
-    clearDeliveredSendWords(composerSessionId);
-  }, [clearDeliveredSendWords, composerSessionId, deliveredReconcileEvents, hydratedComposerDraftStorageKey, sendArrived]);
+    clearDeliveredSendContent(composerSessionId);
+  }, [clearDeliveredSendContent, composerSessionId, deliveredReconcileEvents, hydratedComposerDraftStorageKey, sendArrived]);
   // The same words written into an empty composer at once (a restore of the
   // saved draft for this same chat, a put-back event) after the send was seen.
   useEffect(() => {
@@ -12785,10 +12825,10 @@ export function AgentChatPane({
       previous = next;
       if (!wasBlank || !next.trim().length || next === lastUserDraftTextRef.current) return;
       if (deliveredSendsFor(composerSessionId).some((send) => send.draftText === next)) {
-        queueMicrotask(() => clearDeliveredSendWords(composerSessionId));
+        queueMicrotask(() => clearDeliveredSendContent(composerSessionId));
       }
     });
-  }, [clearDeliveredSendWords, composerSessionId, draftStore]);
+  }, [clearDeliveredSendContent, composerSessionId, draftStore]);
 
   // A "New chat in this lane" request names its lane; the draft restored above
   // may still target "Auto-create lane", which would hide that lane and create
@@ -16610,6 +16650,10 @@ export function AgentChatPane({
     // the time the send fails. Read before any await: a project or chat switch
     // during a pending native-control update must not change it.
     const draftStorageKeyAtSend = composerDraftStorageKeyRef.current;
+    // The sending chat's machine, read with it: the pane may show another
+    // chat by the time the call fails, and its arrival wait must watch the
+    // machine the message went to.
+    const machineAtSend = noticeMachineRef.current;
     const iosContextSnapshot = [...iosElementContextItems];
     const appControlContextSnapshot = [...appControlContextItems];
     const builtInBrowserContextSnapshot = [...builtInBrowserContextItems];
@@ -17007,8 +17051,10 @@ export function AgentChatPane({
           : null,
       ]);
       const identityKey = `${sessionId}\u0000${sendKey}`;
-      // Identical messages already in the chat, so only a new one counts as arrived.
-      const alreadyThere = countSentMessages(sessionId, sentTexts, submittedAt);
+      // Identical messages already in the chat, so only a new one counts as
+      // arrived. Only id-less rows: this send carries an id, and a row that
+      // names another send is a different message.
+      const alreadyThere = countSentMessages(sessionId, sentTexts, submittedAt, { withoutClientSendId: true });
       // A retry reuses the id only while the earlier send is still in doubt.
       // It may have arrived while this pane was closed, and a message that is
       // already in the chat must not swallow the new one as its repeat.
@@ -17171,16 +17217,33 @@ export function AgentChatPane({
       const message = stripElectronErrorWrapper(submitError instanceof Error ? submitError.message : String(submitError));
       // Not confirmed: the same payload sent again to this chat reuses the id,
       // and the arrival check above keeps this from swallowing a later message.
-      if (sendIdentity) rememberUnconfirmedSend(sendIdentity.identityKey, { ...sendIdentity.record, draftText: draftSnapshot });
+      if (sendIdentity) {
+        rememberUnconfirmedSend(sendIdentity.identityKey, {
+          ...sendIdentity.record,
+          draftText: draftSnapshot,
+          restore: { attachments: attachmentsSnapshot, contextAttachments: contextAttachmentsSnapshot },
+        });
+      }
       // ADE did not even dial (a connect failed a moment ago): nothing left,
       // so the text comes back now with a plain note, not after the checks.
       const notSent = isRemoteCallNotSentError(submitError);
+      // A message the pane already has in its chat is delivered, whatever the
+      // call said. Its words never go back: the ledger makes a repeat safe,
+      // but the person would still see them queued up for a second Enter.
+      const arrivedAnyway = handedOff != null && !notSent && sendArrived(handedOff);
+      if (arrivedAnyway && handedOff) {
+        markSendDelivered({
+          ...handedOff,
+          draftText: draftSnapshot,
+          restore: { attachments: attachmentsSnapshot, contextAttachments: contextAttachmentsSnapshot },
+        });
+        forgetUnconfirmedSend(handedOff.identityKey, handedOff.clientSendId);
+      }
       // The pane closed while the call was out (its Work list went away, say):
       // no pane is left to put the text back or to check for it later, so it
       // goes in its chat's saved draft now, unless it already shows in the
       // chat or a newer draft is there.
       if (!paneMountedRef.current) {
-        const arrivedAnyway = handedOff != null && !notSent && sendArrived(handedOff);
         if (!arrivedAnyway) putUnsentSendInSavedDraft(draftStorageKeyAtSend, unsentRestoreAtSend, handedOff?.clientSendId);
         return null;
       }
@@ -17202,13 +17265,12 @@ export function AgentChatPane({
         });
         // One check pending at a time: 15s, 45s, then the last at 2 minutes.
         const checkDelays = [15_000, 30_000, 75_000];
-        // The chat's machine, read when the call failed. While it cannot be
+        // The chat's machine, read when the send went out. While it cannot be
         // reached, nothing here can tell a delivered send from a lost one: its
         // message (and client send id) shows only once the chat's history
         // comes back. So the last check waits for the machine, and for one
         // more look after it is back, before it puts any words back.
-        const sendMachine = noticeMachineRef.current;
-        const sendMachineTargetId = sendMachine?.kind === "remote" ? sendMachine.targetId : null;
+        const sendMachineTargetId = machineAtSend?.kind === "remote" ? machineAtSend.targetId : null;
         let lastLinkMark = sendMachineTargetId ? remoteConnectionMarkNow(sendMachineTargetId) : "";
         const linkWaitUntil = Date.now() + 10 * 60_000;
         const check = (index: number, delayMs = checkDelays[index]) => {
@@ -17230,7 +17292,11 @@ export function AgentChatPane({
             if (arrived()) {
               // It did arrive after all: an identical message later today is a
               // message of its own, not a repeat of this one.
-              markSendDelivered({ ...pending, draftText: draftSnapshot });
+              markSendDelivered({
+                ...pending,
+                draftText: draftSnapshot,
+                restore: { attachments: attachmentsSnapshot, contextAttachments: contextAttachmentsSnapshot },
+              });
               forgetUnconfirmedSend(pending.identityKey, pending.clientSendId);
               setError((current) => (current === waitingMessage ? null : current));
               return;
@@ -17276,7 +17342,7 @@ export function AgentChatPane({
                 putBack: { text: draftSnapshot, attachments: attachmentsSnapshot, contextAttachments: contextAttachmentsSnapshot },
               },
             });
-          }, checkDelays[index]);
+          }, delayMs);
           sendRecoveryTimersRef.current.add(timer);
         };
         check(0);
@@ -17288,8 +17354,8 @@ export function AgentChatPane({
       // first send that created the chat is that chat, not a switch.
       const submittingChatOpen = draftStorageKeyAtSend === composerDraftStorageKeyRef.current
         || (handedOff != null && selectedSessionIdRef.current === handedOff.sessionId);
-      if (!submittingChatOpen) putUnsentSendInSavedDraft(draftStorageKeyAtSend, unsentRestoreAtSend, handedOff?.clientSendId);
-      if (submittingChatOpen) {
+      if (!submittingChatOpen && !arrivedAnyway) putUnsentSendInSavedDraft(draftStorageKeyAtSend, unsentRestoreAtSend, handedOff?.clientSendId);
+      if (submittingChatOpen && !arrivedAnyway) {
         setDraft((current) => (current.trim().length ? current : draftSnapshot));
         setAttachments((current) => (current.length ? current : attachmentsSnapshot));
         setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
@@ -17300,7 +17366,9 @@ export function AgentChatPane({
       setOptimisticOutgoingMessageSynced(null);
       inPlaceFirstSendHandoffRef.current = null;
       inPlaceSendKeepsKeyboardRef.current = false;
-      const unsentRecord = sendIdentity?.record;
+      // A message already in its chat needs no "unsent" note: the note would
+      // clear itself on sight and take the real failure's line with it.
+      const unsentRecord = arrivedAnyway ? undefined : sendIdentity?.record;
       setError(notSent
         ? {
           message: `Can't reach ${chatMachineNameRef.current || "the chat's machine"}, so the message was not sent. ${submittingChatOpen ? "It is back in the composer." : "It is saved in that chat's draft."}`,

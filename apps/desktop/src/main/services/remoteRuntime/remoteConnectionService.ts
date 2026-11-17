@@ -736,6 +736,7 @@ export class RemoteConnectionService {
       this.pool.clearConnectFailure(targetId);
       this.latencyProbeTargetIds.delete(targetId);
       this.pairedFallbackSshTrustByTargetId.delete(targetId);
+      this.personFixAccountByTargetId.delete(targetId);
     }
     for (const targetId of disconnectedRelayTargetIds) {
       if (removedTargetIds.has(targetId)) continue;
@@ -1130,6 +1131,7 @@ export class RemoteConnectionService {
     this.endDropRecovery(targetId);
     this.pool.clearConnectFailure(targetId);
     this.pairedFallbackSshTrustByTargetId.delete(targetId);
+    this.personFixAccountByTargetId.delete(targetId);
     this.statusById.delete(targetId);
     this.slowLinkMeasures.delete(targetId);
     this.linkSummaries.delete(targetId);
@@ -2442,10 +2444,20 @@ export class RemoteConnectionService {
     targetId: string,
   ): Promise<RemoteRuntimeTarget> {
     const target = this.requireTarget(targetId);
+    // Taken before the first await: a Remove or a cancelled call during the
+    // held-reconnect wait releases the wait, and the resumed call must not
+    // dial the target it captured.
+    const disconnectGeneration = this.getDisconnectGeneration(target.id);
     await this.assertAccountOwnershipAuthorized(target);
     await this.waitForHeldReconnect(target.id);
-    this.assertImplicitReconnectAllowed(target.id);
-    return target;
+    const current = this.requireTarget(target.id);
+    if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
+      throw new Error(
+        "Remote target was disconnected before ADE finished connecting.",
+      );
+    }
+    this.assertImplicitReconnectAllowed(current.id);
+    return current;
   }
 
   /**
