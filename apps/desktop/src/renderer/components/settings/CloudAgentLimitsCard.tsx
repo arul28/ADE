@@ -15,6 +15,7 @@ import { ipcErrorMessage } from "../../lib/format";
 import { adeCloudAccountCallFn, runAccountCall } from "../../lib/adeCloudAccountRead";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { captureError } from "../../../shared/sentry/capture";
+import { parseCodedErrorMessage } from "../../../shared/codedError";
 
 /** A save that named an older revision: another device saved first. */
 const LIMITS_CHANGED_SENTENCE = "Your limits changed on another device. ADE loaded the new ones.";
@@ -25,6 +26,24 @@ class LimitsRefused extends Error {}
 
 /** What the card shows under the limits; `refused` carries no Report. */
 type LimitsNotice = { text: string; refused: boolean };
+
+/** The account's answer that is not a limits answer: its own sentence for a 4xx, else an ADE failure (5xx, no answer). */
+function accountFailure(answer: { status: number; message: string }): Error {
+  if (answer.status === 404) return new LimitsRouteMissing(answer.message);
+  return answer.status >= 400 && answer.status < 500 ? new LimitsRefused(answer.message) : new Error(answer.message);
+}
+
+/**
+ * A failed read or save as the card's notice. The web path throws
+ * `LimitsRefused`; this desktop's main process sends the server's refusal as
+ * a `limits_refused` coded message, since IPC keeps only the message.
+ */
+function noticeOf(error: unknown, fallback: string): LimitsNotice {
+  if (error instanceof LimitsRefused) return { text: error.message || fallback, refused: true };
+  const coded = parseCodedErrorMessage(error);
+  if (coded.code === "limits_refused") return { text: coded.message || fallback, refused: true };
+  return { text: ipcErrorMessage(error) || fallback, refused: false };
+}
 
 /**
  * Settings › ADE Cloud › What agents may do alone: what an agent may
@@ -48,10 +67,7 @@ export function CloudAgentLimitsCard() {
   const readAccount = useCallback(async (): Promise<CloudAgentLimits | null> => {
     const answer = await runAccountCall({ call: "limits" });
     if (!answer) return null;
-    if (!answer.ok) {
-      if (answer.status === 404) throw new LimitsRouteMissing(answer.message);
-      throw new LimitsRefused(answer.message);
-    }
+    if (!answer.ok) throw accountFailure(answer);
     if (!answer.result) return null;
     revisionRef.current = answer.result.revision;
     return answer.result.limits;
@@ -77,7 +93,7 @@ export function CloudAgentLimitsCard() {
         setViaAccount(false);
         return;
       }
-      setError({ text: ipcErrorMessage(loadError) || "Couldn't read what agents may do.", refused: loadError instanceof LimitsRefused });
+      setError(noticeOf(loadError, "Couldn't read what agents may do."));
     }
   }, [bridge, readAccount, viaAccount]);
 
@@ -93,7 +109,7 @@ export function CloudAgentLimitsCard() {
         if (fresh) setLimits(fresh);
         throw new LimitsRefused(LIMITS_CHANGED_SENTENCE);
       }
-      throw new LimitsRefused(answer.message);
+      throw accountFailure(answer);
     }
     if (!answer.result) return null;
     revisionRef.current = answer.result.revision;
@@ -116,7 +132,7 @@ export function CloudAgentLimitsCard() {
       const saved = await write(next);
       if (saved) setLimits(saved);
     } catch (saveError) {
-      setError({ text: ipcErrorMessage(saveError) || "Couldn't save that.", refused: saveError instanceof LimitsRefused });
+      setError(noticeOf(saveError, "Couldn't save that."));
     } finally {
       setBusy(false);
     }
