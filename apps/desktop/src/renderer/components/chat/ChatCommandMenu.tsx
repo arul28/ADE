@@ -53,6 +53,7 @@ import { prStateTone } from "../../../shared/prChatScope";
 import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
 import type { PrChecksStatus, PrSummary } from "../../../shared/types";
 import { fixedFrameOf, fixedPoint, fixedRect, fixedViewport } from "../../lib/webZoom";
+import { ipcErrorMessage } from "../../lib/format";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -174,8 +175,12 @@ const QUERY_CACHE_MAX = 40;
 // ---------------------------------------------------------------------------
 
 type SuggestionSource<T> = ((query: string) => Promise<T[]>) | undefined;
-/** `query` is the query these results belong to — anything else is in flight. */
-type SuggestionState<T> = { search: SuggestionSource<T>; query: string | null; results: T[] };
+/**
+ * `query` is the query these results belong to — anything else is in flight.
+ * `error` is the sentence of a search that failed (a lane at rest says its
+ * computer is needed), so the menu never reads it as "no matches".
+ */
+type SuggestionState<T> = { search: SuggestionSource<T>; query: string | null; results: T[]; error: string | null };
 
 /**
  * One @-menu suggestion source. Cached queries render in the same frame with a
@@ -191,8 +196,8 @@ function useDebouncedSuggestions<T>(
   max: number,
   /** Identity of the open menu; `null` means "closed — drop the cache". */
   cacheKey: string | null,
-): { results: T[]; loading: boolean } {
-  const [state, setState] = useState<SuggestionState<T>>({ search: undefined, query: null, results: [] });
+): { results: T[]; loading: boolean; error: string | null } {
+  const [state, setState] = useState<SuggestionState<T>>({ search: undefined, query: null, results: [], error: null });
   const [loading, setLoading] = useState(false);
   const cacheRef = useRef<{ search: SuggestionSource<T>; map: Map<string, T[]> }>({
     search: undefined,
@@ -211,7 +216,7 @@ function useDebouncedSuggestions<T>(
   useEffect(() => {
     if (!enabled || !search) {
       seqRef.current += 1;
-      setState({ search, query, results: [] });
+      setState({ search, query, results: [], error: null });
       setLoading(false);
       return;
     }
@@ -222,10 +227,10 @@ function useDebouncedSuggestions<T>(
     }
     const cached = cacheRef.current.map.get(query);
     if (cached) {
-      setState({ search, query, results: cached.slice(0, max) });
+      setState({ search, query, results: cached.slice(0, max), error: null });
       setLoading(false);
     } else {
-      setState({ search, query, results: [] });
+      setState({ search, query, results: [], error: null });
       setLoading(true);
     }
 
@@ -242,9 +247,11 @@ function useDebouncedSuggestions<T>(
           const oldest = map.keys().next().value;
           if (oldest !== undefined) map.delete(oldest);
         }
-        setState({ search, query, results: results.slice(0, max) });
-      } catch {
-        if (seqRef.current === seq && !cached) setState({ search, query, results: [] });
+        setState({ search, query, results: results.slice(0, max), error: null });
+      } catch (error) {
+        if (seqRef.current === seq && !cached) {
+          setState({ search, query, results: [], error: ipcErrorMessage(error) || "ADE couldn't search right now. Try again." });
+        }
       } finally {
         if (seqRef.current === seq) setLoading(false);
       }
@@ -260,7 +267,7 @@ function useDebouncedSuggestions<T>(
   // render's effects are not visible to consumers until the next render, so
   // `loading` alone would read "settled" for one frame after every keystroke.
   const stale = state.search !== search || state.query !== query;
-  return { results: stale ? [] : state.results, loading: loading || stale };
+  return { results: stale ? [] : state.results, loading: loading || stale, error: stale ? null : state.error };
 }
 
 
@@ -484,7 +491,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
     const fileQuery = atActive && !atFilter.kind ? composerFileSearchQuery(triggerQuery) : "";
 
     // `triggerType` is null while the menu is closed, which drops both caches.
-    const { results: fileResults, loading: fileLoading } = useDebouncedSuggestions<FileResult>(
+    const { results: fileResults, loading: fileLoading, error: fileError } = useDebouncedSuggestions<FileResult>(
       atActive && !atFilter.kind,
       fileQuery,
       onFileSearch,
@@ -715,17 +722,21 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
         reportedEmptyQueryRef.current = null;
         return;
       }
-      if (!trigger.query.trim() || loading || items.length > 0) return;
+      // A failed file search shows its sentence; it is not a dead query.
+      if (!trigger.query.trim() || loading || items.length > 0 || (trigger.type === "at" && fileError)) return;
       if (reportedEmptyQueryRef.current === trigger.query) return;
       reportedEmptyQueryRef.current = trigger.query;
       onNoMatches?.(trigger);
-    }, [trigger, canSearchAt, loading, items.length, onNoMatches, onPrSearch]);
+    }, [trigger, canSearchAt, loading, items.length, onNoMatches, onPrSearch, fileError]);
 
     // One empty-state message; the branches are mutually exclusive by construction.
     const emptyMessage = !trigger || loading
       ? null
       : isAtTrigger && !canSearchAt
         ? "Search unavailable for this session"
+        // The file search failed with a sentence (a lane at rest needs its computer).
+        : isAtTrigger && fileError && items.length === 0
+          ? fileError
         : !query.length
           ? (isAtTrigger
               // Empty @ is a real browse now; an empty result means the
