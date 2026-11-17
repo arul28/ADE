@@ -728,6 +728,16 @@ you add a poll, a timer, a spawn, a read or a background job.
   60 wakeups a second. `apps/desktop/src/renderer/lib/caretRest.ts` rests the
   caret after 10 s without input, with `caret-animation: manual` in CSS. Apply
   the same rule to any other idle animation or ticker.
+- **No backdrop-filter that stays on the page.** On macOS, one element with a
+  `backdrop-filter` anywhere on the page, even an invisible one, makes
+  Chromium redraw the whole window for every change: a streamed word, a caret,
+  a timer. A long chat had about 100 (one per code block's hidden Copy
+  button), so every frame of a stream or of typing was a full 1600 x 1000
+  redraw instead of the changed strip. Put the blur only on a surface that is
+  open for a short time (a menu, a popover, a hover state), and give the blur
+  the same condition that shows the element. A blur over a solid surface shows
+  nothing; use a solid colour there. Check with the harness dirty rects or
+  Quartz Debug's flash screen updates.
 - **A prewarm starts on intent, not on focus.** Start a provider prewarm on the
   first keystroke. A prewarm on focus holds 150-420 MB for a chat that the user
   never writes in.

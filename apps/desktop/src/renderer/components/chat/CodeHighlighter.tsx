@@ -294,7 +294,7 @@ function CodeCopyButton({ code, position, leading }: { code: string; position: C
       >
         <button
           type="button"
-          className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100`}
+          className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} opacity-0 group-hover:opacity-100 group-hover:backdrop-blur-sm [@media(hover:none)]:opacity-100 [@media(hover:none)]:backdrop-blur-sm`}
           style={CODE_BLOCK_ACTION_BUTTON_STYLE}
           onClick={() => void copy(code)}
           title={copied ? "Copied" : "Copy code"}
@@ -313,7 +313,7 @@ function CodeCopyButton({ code, position, leading }: { code: string; position: C
   const button = (
     <button
       type="button"
-      className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} ${leading ? "" : `absolute right-2 z-10 ${posClass} `}opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100`}
+      className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} ${leading ? "" : `absolute right-2 z-10 ${posClass} `}opacity-0 group-hover:opacity-100 group-hover:backdrop-blur-sm [@media(hover:none)]:opacity-100 [@media(hover:none)]:backdrop-blur-sm`}
       style={CODE_BLOCK_ACTION_BUTTON_STYLE}
       onClick={() => void copy(code)}
       title={copied ? "Copied" : "Copy code"}
