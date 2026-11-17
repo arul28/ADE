@@ -11,7 +11,7 @@ import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
 import { extractError } from "../../lib/format";
 import { openExternalUrl } from "../../lib/openExternal";
-import { openAddedAccountProject } from "./useAddToAccount";
+import { addRepoToAccount, openAddedAccountProject } from "./useAddToAccount";
 
 const DONE_KEY = "ade.getStarted.done.v1";
 const INSTALL_CHIP_DISMISSED_KEY = "ade.getStarted.installChip.dismissed.v1";
@@ -102,14 +102,15 @@ export function GetStartedCard({
   const connecting = github.phase.kind === "starting" || github.phase.kind === "waiting";
 
   const addRepo = async (repo: { fullName: string; htmlUrl: string | null; owner: string; name: string }) => {
-    const add = window.ade?.project?.accountAdd;
-    if (typeof add !== "function") {
+    if (typeof window.ade?.project?.accountAdd !== "function") {
       onAddProject();
       return;
     }
     setAddingRepo(repo.fullName);
     try {
-      const answer = await add(repo.htmlUrl ?? `https://github.com/${repo.owner}/${repo.name}`);
+      const { answer, accountChanged } = await addRepoToAccount(repo.htmlUrl ?? `https://github.com/${repo.owner}/${repo.name}`);
+      // Another account signed in while it ran: the project is not this account's.
+      if (accountChanged) return;
       if (!answer.ok) {
         showToast({ tone: "error", title: `Couldn't add ${repo.name}`, message: answer.message });
         return;

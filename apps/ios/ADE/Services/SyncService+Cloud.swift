@@ -882,8 +882,10 @@ extension SyncService {
     }
     // An account switch while it read: the answer is the old account's.
     guard !Task.isCancelled, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
-    if !cloudServerReadFinished {
-      // Views that tell own computers from cloud ones read again now.
+    if instances != nil, !cloudServerReadFinished {
+      // Views that tell own computers from cloud ones read again now. A
+      // failed read leaves it unset: an unknown computer is not yet the
+      // person's own.
       cloudServerReadFinished = true
       objectWillChange.send()
     }

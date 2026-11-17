@@ -753,7 +753,8 @@ struct AccountProjectHomeScreen: View {
         }
       }
       .task(id: cloudChats) {
-        if cloudChats { await launches.refreshActive(using: syncPublishes.service) }
+        // Cards of launches in progress show either way (see content).
+        await launches.refreshActive(using: syncPublishes.service)
       }
       .sheet(isPresented: $locationPresented) {
         ProjectLocationScreen(projectId: projectId)
@@ -789,8 +790,10 @@ struct AccountProjectHomeScreen: View {
         }
       }
 
-      if cloudChats, project.host == "github.com" {
-        AccountProjectCloudComposer(project: project)
+      if project.host == "github.com" {
+        if cloudChats { AccountProjectCloudComposer(project: project) }
+        // A launch's card stays while it runs, even once its new computer
+        // lists as an account machine: its sign-in may still need the phone.
         ForEach(launches.entries(forOrigin: "\(project.host)/\(project.owner)/\(project.name)")) { entry in
           AccountProjectCloudSetupCard(entry: entry) { openCloudChat(project, instanceId: entry.record?.instanceId) }
         }

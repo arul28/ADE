@@ -10,6 +10,11 @@ struct SettingsCloudAccountProviders: View {
   @ObservedObject private var launches = AccountCloudLaunchStore.shared
   @State private var signIns: CloudAccountSignIns?
   @State private var signInsError: String?
+  /// Saves from several rows at once: only the newest reply lands, and the
+  /// list reads again once every overlapping save has ended.
+  @State private var saveGeneration = 0
+  @State private var savesOut = 0
+  @State private var savesOverlapped = false
 
   var body: some View {
     ADESettingsSection("Providers on ADE Cloud", hint: "What each coding agent needs before it runs a chat on ADE Cloud. Keys save to your account, so every cloud computer can use them.") {
@@ -31,7 +36,8 @@ struct SettingsCloudAccountProviders: View {
               provider: provider,
               signIn: signIns?.signIns.first { $0.providers.contains(provider.provider) },
               vaultUnknown: signIns?.unknown == true,
-              onChanged: { signIns = $0 }
+              beginSave: beginSave,
+              finishSave: finishSave
             )
           }
         }
@@ -46,6 +52,21 @@ struct SettingsCloudAccountProviders: View {
       async let keys: Void = loadSignIns()
       _ = await (catalog, keys)
     }
+  }
+
+  private func beginSave() -> Int {
+    saveGeneration += 1
+    savesOut += 1
+    if savesOut > 1 { savesOverlapped = true }
+    return saveGeneration
+  }
+
+  private func finishSave(_ reply: CloudAccountSignIns?, generation: Int) {
+    savesOut -= 1
+    if let reply, generation == saveGeneration { signIns = reply }
+    guard savesOut == 0, savesOverlapped else { return }
+    savesOverlapped = false
+    Task { await loadSignIns() }
   }
 
   private func loadSignIns() async {
@@ -67,7 +88,8 @@ private struct SettingsCloudProviderRow: View {
   let provider: CloudCatalogProvider
   let signIn: CloudAccountSignIn?
   let vaultUnknown: Bool
-  let onChanged: (CloudAccountSignIns) -> Void
+  let beginSave: () -> Int
+  let finishSave: (CloudAccountSignIns?, _ generation: Int) -> Void
   @Environment(\.openURL) private var openURL
   @State private var editing = false
   @State private var value = ""
@@ -183,14 +205,19 @@ private struct SettingsCloudProviderRow: View {
     busy = true
     error = nil
     fieldFocused = false
+    let generation = beginSave()
     Task {
-      defer { busy = false }
+      var reply: CloudAccountSignIns?
+      defer {
+        busy = false
+        finishSave(reply, generation)
+      }
       guard let client = await syncService.cloudServerClient() else {
         error = "Sign in to ADE again, then try again."
         return
       }
       do {
-        onChanged(try await call(client))
+        reply = try await call(client)
         done()
       } catch {
         self.error = cloudServerFailureMessage(error)

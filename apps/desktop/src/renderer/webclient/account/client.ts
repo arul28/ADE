@@ -1094,8 +1094,11 @@ export class BrowserAccountClient {
     const client = createCloudApiClient({
       baseUrl: config.directoryBaseUrl,
       accessToken: async () => {
+        const startedFor = this.sessionUserId();
         try {
-          return await this.getAccessToken();
+          const token = await this.getAccessToken();
+          // Another account signed in while the token refreshed: this request belongs to the first one.
+          return this.sessionUserId() === startedFor ? token : null;
         } catch (error) {
           // No token: the server answers 401 and the caller says "sign in".
           forwardSignalToSentry("web.cloud_api_token_failed", { message: error instanceof Error ? error.message : String(error) }, "cloud_api_token_failed", "info");
