@@ -1133,7 +1133,10 @@ describe("RemoteConnectionPool", () => {
     expect(firstClient.call.mock.calls.some(([method]) => method === "ping")).toBe(ping !== "unused");
   });
 
-  it("reports an unknown outcome to an action whose connection another call dropped", async () => {
+  it.each([
+    { name: "reports an unknown outcome to a write", domain: "lane", action: "delete", retried: false },
+    { name: "sends a read again on the new connection", domain: "computer_use_artifacts", action: "getOwnerSnapshot", retried: true },
+  ])("when another call dropped the connection, $name", async ({ domain, action, retried }) => {
     const firstClient = createClient();
     let failDelete: (error: Error) => void = () => {};
     firstClient.call.mockImplementation((method: string, params: { name?: string }) => {
@@ -1162,14 +1165,15 @@ describe("RemoteConnectionPool", () => {
     });
     const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
 
-    const deletion = pool.callActionForTarget(target, "project-1", {
-      domain: "lane",
-      action: "delete",
-      args: { laneId: "lane-1" },
-    });
+    const call = pool.callActionForTarget(target, "project-1", { domain, action, args: { laneId: "lane-1" } });
     await pool.streamEventsForTarget(target, "project-1", { cursor: 3 });
 
-    await expect(deletion).rejects.toBeInstanceOf(RemoteActionOutcomeUnknownError);
+    if (retried) {
+      await expect(call).resolves.toMatchObject({ domain, action });
+      expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+    } else {
+      await expect(call).rejects.toBeInstanceOf(RemoteActionOutcomeUnknownError);
+    }
   });
 
   it("retries idempotent reads once when the connection closes during the request", async () => {

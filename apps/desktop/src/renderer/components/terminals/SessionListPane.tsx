@@ -110,6 +110,7 @@ import {
 import { moveSessionOnBoard } from "./sessionBoardMoveUi";
 import { showToast } from "../app/toast/toastStore";
 import { Banner } from "../ui/notice";
+import { useSlowLinkActive } from "../../state/projectMachines";
 import { findGridSetForSession } from "../../lib/workGrid";
 import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -1460,7 +1461,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         && entry.error
         && entry.sessions.length === 0
         && (entry.failedReads ?? 0) >= MACHINE_READ_FAILURE_NOTICE_THRESHOLD
-        ? [{ machineId: entry.machineId, machineName: entry.machineName, error: entry.error }]
+        ? [{ machineId: entry.machineId, machineName: entry.machineName, targetId: entry.targetId, error: entry.error }]
         : []),
     [activeMachineId, crossMachineEntries, crossMachineSyncActive],
   );
@@ -4400,27 +4401,11 @@ export const SessionListPane = React.memo(function SessionListPane({
           from the list, and one fewer boundary before the first chat. */}
 
       {machineReadFailures.map((failure) => (
-        <div key={failure.machineId} className="mx-2 mt-1.5" data-testid="work-machine-read-failure">
-          <Banner
-            layout="inline"
-            model={{
-              id: `work-machine-read-failure:${failure.machineId}`,
-              tone: "warning",
-              icon: <Desktop size={13} weight="bold" />,
-              title: `Couldn't load chats from ${failure.machineName}`,
-              detail: "That machine is connected but didn't send its chats. ADE tries again on its own.",
-              // crossMachineLanes already logged this failure to Sentry with its count.
-              report: {
-                surface: "work_machine_read",
-                code: "machine_session_read_failed",
-                technicalDetail: failure.error,
-              },
-              dismiss: {
-                onDismiss: () => setDismissedMachineReadFailureIds((prev) => new Set(prev).add(failure.machineId)),
-              },
-            }}
-          />
-        </div>
+        <MachineReadFailureNotice
+          key={failure.machineId}
+          failure={failure}
+          onDismiss={() => setDismissedMachineReadFailureIds((prev) => new Set(prev).add(failure.machineId))}
+        />
       ))}
 
       <CloudLanesWithoutComputerBlock className="mx-2 mt-1.5" />
@@ -4532,3 +4517,37 @@ export const SessionListPane = React.memo(function SessionListPane({
     </div>
   );
 });
+
+/**
+ * A machine whose chats did not load. On a slow link the likely cause is the
+ * link, not the machine, so the detail says that instead.
+ */
+function MachineReadFailureNotice({ failure, onDismiss }: {
+  failure: { machineId: string; machineName: string; targetId: string | null; error: string };
+  onDismiss: () => void;
+}) {
+  const slowLink = useSlowLinkActive(failure.targetId);
+  return (
+    <div className="mx-2 mt-1.5" data-testid="work-machine-read-failure">
+      <Banner
+        layout="inline"
+        model={{
+          id: `work-machine-read-failure:${failure.machineId}`,
+          tone: "warning",
+          icon: <Desktop size={13} weight="bold" />,
+          title: `Couldn't load chats from ${failure.machineName}`,
+          detail: slowLink
+            ? "The connection to that machine is slow or dropping. ADE tries again on its own."
+            : "That machine is connected but didn't send its chats. ADE tries again on its own.",
+          // crossMachineLanes already logged this failure to Sentry with its count.
+          report: {
+            surface: "work_machine_read",
+            code: "machine_session_read_failed",
+            technicalDetail: failure.error,
+          },
+          dismiss: { onDismiss },
+        }}
+      />
+    </div>
+  );
+}

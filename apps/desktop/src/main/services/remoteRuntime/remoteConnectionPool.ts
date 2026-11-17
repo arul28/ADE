@@ -1831,10 +1831,21 @@ export class RemoteConnectionPool {
       if (droppedElsewhere()) {
         // Another call dropped this connection, or the person disconnected.
         // An action that was in flight on it may or may not have run.
-        if (!retryOnConnectionError && isRemoteRuntimeConnectionError(error)) {
-          throw new RemoteActionOutcomeUnknownError(null);
+        if (!retryOnConnectionError) {
+          if (isRemoteRuntimeConnectionError(error)) throw new RemoteActionOutcomeUnknownError(null);
+          throw error;
         }
-        throw error;
+        // A dropped link fails every call on it at once, and only the first
+        // one dials again. A call that may go out again joins that dial
+        // instead of failing with the timeout. With no dial to join (the
+        // person disconnected), it fails as before: it never dials itself.
+        const redial = this.entries.get(target.id);
+        if (!redial) throw error;
+        notePhase("reconnect");
+        const nextEntry = await redial;
+        if (nextEntry === entry) throw error;
+        if (options.phases) notePhase(options.phases.operation);
+        return await operation(nextEntry);
       }
       this.disconnect(target.id);
       const reconnectTarget = this.registry.get(target.id) ?? target;
