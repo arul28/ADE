@@ -65,15 +65,18 @@ function replicasBest(hours: number): { price: number; usd: number } {
  */
 const CAPY_OVERAGE_USD_PER_HOUR = 0.2;
 const CAPY_PLANS = [
-  { plan: "$20 Lite plan", price: 20, hours: 250 },
-  { plan: "$100 Pro plan", price: 100, hours: 1_250 },
-  { plan: "$200 Max plan", price: 200, hours: 2_500 },
+  { plan: "$20 Lite plan", price: 20, credits: 20, hours: 250 },
+  { plan: "$100 Pro plan", price: 100, credits: 100, hours: 1_250 },
+  { plan: "$200 Max plan", price: 200, credits: 200, hours: 2_500 },
 ] as const;
 
 function capyBest(hours: number): { plan: string; usd: number } {
   let best = { plan: "Credits only", usd: hours * CAPY_OVERAGE_USD_PER_HOUR };
   for (const plan of CAPY_PLANS) {
-    const usd = plan.price + Math.max(0, hours - plan.hours) * CAPY_OVERAGE_USD_PER_HOUR;
+    // A plan's model-usage allowance arrives as credits, and those credits also
+    // pay for machine time past the included minutes.
+    const overageUsd = Math.max(0, hours - plan.hours) * CAPY_OVERAGE_USD_PER_HOUR;
+    const usd = plan.price + Math.max(0, overageUsd - plan.credits);
     if (usd <= best.usd) best = { plan: plan.plan, usd };
   }
   return best;

@@ -491,7 +491,7 @@ export async function handleCursorWebhook(request: Request, env: RelayEnv): Prom
          and event_id not in (
            select event_id from cursor_events
             where secret_id = ?
-            order by received_at desc, event_id desc
+            order by received_at desc, rowid desc
             limit ?
          )
     `)

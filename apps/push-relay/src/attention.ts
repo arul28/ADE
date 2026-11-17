@@ -1993,6 +1993,42 @@ function attentionDeviceOwnershipDeleteStatements(
   ];
 }
 
+/**
+ * The sweep's guarded cleanup: every delete runs only while the device's lease
+ * is still expired, so a registration that renewed after the candidate read is
+ * left alone. The whole batch is one transaction.
+ */
+function attentionDeviceOwnershipDeleteIfExpiredStatements(
+  env: AttentionRelayEnv,
+  userId: string,
+  deviceId: string,
+  expiredBefore: string,
+): D1PreparedStatement[] {
+  const guard = "and exists (select 1 from attention_devices where user_id = ? and device_id = ? and lease_expires_at <= ?)";
+  const bind = (sql: string) => env.DB.prepare(sql).bind(userId, deviceId, userId, deviceId, expiredBefore);
+  return [
+    bind(`delete from attention_activity_tokens where user_id = ? and device_id = ? ${guard}`),
+    bind(`delete from attention_activity_state where user_id = ? and device_id = ? ${guard}`),
+    bind(`delete from attention_delivery_receipts where user_id = ? and device_id = ? ${guard}`),
+    bind(`delete from attention_presence where user_id = ? and device_id = ? ${guard}`),
+    bind(`
+      update attention_device_ownership
+      set active = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      where user_id = ? and device_id = ? ${guard}
+    `),
+    bind(`delete from attention_devices where user_id = ? and device_id = ? ${guard}`),
+  ];
+}
+
+async function deleteExpiredAttentionDeviceOwnership(
+  env: AttentionRelayEnv,
+  userId: string,
+  deviceId: string,
+  expiredBefore: string,
+): Promise<void> {
+  await env.DB.batch(attentionDeviceOwnershipDeleteIfExpiredStatements(env, userId, deviceId, expiredBefore));
+}
+
 function isAttentionDeviceLimitError(error: unknown): boolean {
   return error instanceof Error
     && error.message.includes("attention account device limit reached");
@@ -4813,7 +4849,7 @@ export async function sweepAttentionState(env: AttentionRelayEnv): Promise<void>
     limit ?
   `).bind(nowIso, MAX_SWEPT_DEVICES_PER_PRUNE).all<{ user_id: string; device_id: string }>();
   for (const device of expiredDevices.results) {
-    await deleteAttentionDeviceOwnership(env, device.user_id, device.device_id);
+    await deleteExpiredAttentionDeviceOwnership(env, device.user_id, device.device_id, nowIso);
   }
 }
 
