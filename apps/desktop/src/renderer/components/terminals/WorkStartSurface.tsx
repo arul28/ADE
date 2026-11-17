@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { isAdeCloudBinding } from "../../../shared/adeCloud/binding";
 import { CircleNotch } from "@phosphor-icons/react";
 import type {
   AgentChatSession,
@@ -91,7 +92,9 @@ export function WorkStartSurface({
       typeof laneId === "string" && Boolean(laneForMachine(runMachineId, laneId)),
     [runMachineId, laneForMachine],
   );
-  const foreignDraft = Boolean(runMachineId && runMachineId !== boundMachineId);
+  // A tab on ADE Cloud has no lanes of its own: its draft starts a new
+  // ADE Cloud lane (or picks one), so it never needs one from `lanes`.
+  const foreignDraft = Boolean(runMachineId && runMachineId !== boundMachineId) || isAdeCloudBinding(projectBinding);
   const fallbackLaneId = defaultLaneId(lanes) ?? "";
   const [selectedLaneId, setSelectedLaneId] = useState<string>(() => {
     if (draftLaneId && (foreignDraft || isKnownLaneId(draftLaneId))) {

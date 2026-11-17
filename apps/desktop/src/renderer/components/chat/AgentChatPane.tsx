@@ -439,6 +439,7 @@ import { describeAutoCreateStart } from "../lanes/laneStartOptions";
 import { autoLaneMachine, originUrlForBinding } from "../lanes/laneMachines";
 import { draftCloneRowTargetId, useDraftMachineSetup } from "./useDraftMachineSetup";
 import { ADE_CLOUD_MACHINE_ID, useAdeCloudComposer, useAdeCloudDraft, type AdeCloudSend } from "./useAdeCloudDraft";
+import { isAdeCloudBinding } from "../../../shared/adeCloud/binding";
 import { WebCloudSetupCards } from "./launch/WebCloudSetupCards";
 import { startAccountCloudChat } from "../../state/accountCloudLaunches";
 import { readAccountProjectList } from "../../state/useRepositoryCopies";
@@ -17876,7 +17877,13 @@ export function AgentChatPane({
   const chooseAdeCloudTier = adeCloud.chooseTier;
   // Every reader (the Run on value, the lane list, the create-lane dialog,
   // the send path) sees the pick only while ADE Cloud is available here.
-  const adeCloudMode = adeCloudPicked && adeCloud.available;
+  // A tab on ADE Cloud has no machine of its own: a draft there runs on
+  // ADE Cloud unless the person picked a computer or another cloud.
+  const adeCloudTabDraft = isAdeCloudBinding(projectBinding)
+    && selectedDraftMachineId === ADE_CLOUD_MACHINE_ID
+    && !cursorCloudMode
+    && !devinCloudMode;
+  const adeCloudMode = (adeCloudPicked || adeCloudTabDraft) && adeCloud.available;
   adeCloudModeRef.current = adeCloudMode;
   adeCloudAccountRef.current = adeCloud.account;
   const adeCloudLaneComputers = adeCloud.computers;
@@ -18194,13 +18201,16 @@ export function AgentChatPane({
           unavailableReason: adeCloudUnavailableReason,
         }]
       : [];
+    // A tab on ADE Cloud is bound to ADE Cloud itself: its stand-in row would
+    // be a second "ADE Cloud" named "This computer".
+    const tabOnAdeCloud = boundLaneMachineId === ADE_CLOUD_MACHINE_ID;
     if (!cursorCloudCanLaunch && !devinCloudCanLaunch) {
       return [
-        ...(machines.length || !adeCloudRow.length ? machines : [withThisComputerName({ id: boundLaneMachineId, name: THIS_MACHINE_NAME })]),
+        ...(machines.length || !adeCloudRow.length || tabOnAdeCloud ? machines : [withThisComputerName({ id: boundLaneMachineId, name: THIS_MACHINE_NAME })]),
         ...adeCloudRow,
       ];
     }
-    const withLocal = machines.length
+    const withLocal = machines.length || tabOnAdeCloud
       ? machines
       : [withThisComputerName({ id: boundLaneMachineId, name: THIS_MACHINE_NAME })];
     // Cursor and Devin Cloud launch from whichever computer the chat is set
@@ -19333,7 +19343,9 @@ export function AgentChatPane({
   );
 
   // A personal pane has no lane by design; everything below handles that.
-  if (!laneId && !chatScope) {
+  // A draft on an ADE Cloud tab needs none either: it starts or picks an ADE
+  // Cloud lane (`adeCloudLaneId`).
+  if (!laneId && !chatScope && !(forceDraftMode && adeCloudTabDraft && adeCloud.available)) {
     return (
       <ChatSurfaceShell
         mode={surfaceMode}
