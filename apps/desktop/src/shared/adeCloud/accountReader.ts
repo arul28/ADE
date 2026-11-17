@@ -36,6 +36,7 @@ import type {
   GithubDirectData,
   GithubDirectError,
   GithubDirectOp,
+  GithubDirectRepoRef,
   GithubDirectRequest,
   GithubDirectRequestOptions,
   GithubDirectResult,
@@ -74,6 +75,8 @@ export const ADE_CLOUD_NEEDS_LANE_SENTENCE =
 
 /** Workspace ids of cloud lanes in the Files tab: never the id of a real worktree. */
 const WORKSPACE_PREFIX = "ade-cloud-lane:";
+/** The workspace id's tail for the repository's default branch; never a lane id (lane ids hold no `~`). */
+const DEFAULT_BRANCH_WORKSPACE = "~default";
 const OVERVIEW_TTL_MS = 15_000;
 const SUMMARY_TTL_MS = 15_000;
 const TREE_PAGE_DEFAULT = 500;
@@ -260,8 +263,16 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
     return { repo, lane, summary, branch };
   };
 
-  const workspaces = async (scope: AdeCloudReadScope): Promise<FilesWorkspace[]> =>
-    (await lanesOf(scope))
+  /** A lane's repository and branch, or the default branch's (no ref: GitHub reads its default). */
+  const refAt = async (scope: AdeCloudReadScope, laneId: string): Promise<{ repo: GithubDirectRepoRef; summary: CloudGitSummary | null; branch: string | undefined }> => {
+    if (laneId !== DEFAULT_BRANCH_WORKSPACE) return await repoAt(scope, laneId);
+    const repo = githubRepoOfOrigin(scope.origin);
+    if (!repo) throw readFailure("ADE reads files with no computer on only for repositories on GitHub.");
+    return { repo, summary: null, branch: undefined };
+  };
+
+  const workspaces = async (scope: AdeCloudReadScope): Promise<FilesWorkspace[]> => {
+    const lanes: FilesWorkspace[] = (await lanesOf(scope))
       .filter((lane) => lane.branch)
       .map((lane) => ({
         id: adeCloudWorkspaceId(lane.laneId),
@@ -273,6 +284,18 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
         isReadOnlyByDefault: true,
         mobileReadOnly: true,
       }));
+    // The repository's default branch, read-only: a new repository with no lane yet still shows its files.
+    if (!githubRepoOfOrigin(scope.origin)) return lanes;
+    return [...lanes, {
+      id: adeCloudWorkspaceId(DEFAULT_BRANCH_WORKSPACE),
+      kind: "primary",
+      laneId: null,
+      name: "Default branch",
+      rootPath: "",
+      isReadOnlyByDefault: true,
+      mobileReadOnly: true,
+    }];
+  };
 
   const changedByPath = (summary: CloudGitSummary | null): Map<string, FileTreeChangeStatus> =>
     new Map((summary?.changed ?? []).map((entry) => [entry.path, changeStatusOf(entry.status)]));
@@ -283,7 +306,7 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
     const offset = typeof args.offset === "number" && args.offset > 0 ? Math.trunc(args.offset) : 0;
     const limit = typeof args.limit === "number" ? Math.min(2000, Math.max(1, Math.trunc(args.limit))) : TREE_PAGE_DEFAULT;
     if (!laneId) return { parentPath, children: [], offset, limit, total: 0, nextOffset: null };
-    const { repo, summary, branch } = await repoAt(scope, laneId);
+    const { repo, summary, branch } = await refAt(scope, laneId);
     const entries = await github({ op: "listContents", params: { ...repo, path: parentPath, ref: branch } });
     const changed = changedByPath(summary);
     const changedDirs = new Set<string>();
@@ -311,7 +334,7 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
     const laneId = laneIdOfAdeCloudWorkspace(args.workspaceId);
     const path = stringField(args, "path");
     if (!laneId || !path) throw readFailure("ADE Cloud can't find this file.");
-    const { repo, branch } = await repoAt(scope, laneId);
+    const { repo, branch } = await refAt(scope, laneId);
     const file = await github({ op: "getFileContent", params: { ...repo, path, ref: branch } });
     const languageId = languageOf(path);
     if (file.tooLarge || file.size > TEXT_PREVIEW_MAX_BYTES) {
@@ -327,7 +350,7 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
   const gitDecorations = async (scope: AdeCloudReadScope, args: Record<string, unknown>): Promise<FilesGitStatusEvent> => {
     const workspaceId = stringField(args, "workspaceId") ?? "";
     const laneId = laneIdOfAdeCloudWorkspace(workspaceId);
-    if (!laneId) return { workspaceId, files: [], directories: [] };
+    if (!laneId || laneId === DEFAULT_BRANCH_WORKSPACE) return { workspaceId, files: [], directories: [] };
     const summary = await summaryOf(await laneFor(scope, laneId)).catch(() => null);
     const files = [...changedByPath(summary)].map(([path, changeStatus]) => ({ path, changeStatus }));
     return { workspaceId, files, directories: [], ...(summary?.truncated ? { truncated: true } : {}) };
