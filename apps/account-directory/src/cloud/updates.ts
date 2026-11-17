@@ -1,3 +1,4 @@
+import { isCloudBlocked } from "./blocks";
 import type { CloudInstance, CloudUpdateChannel, CloudUpdateCheck, CloudUpdateReason, CloudUpdateState } from "./contract";
 import { isMeteredStatus } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
@@ -169,9 +170,11 @@ export function updateCheckOf(computer: ComputerRow, targets: CloudUpdateTargets
 }
 
 /** Why the account's computers may not wake now (0 hours, or disk the free plan doesn't cover). The same test as the routes' `wakeBlocker`. */
-export async function updateBlocked(env: CloudEnv, userId: string, now: number): Promise<"out_of_hours" | "over_plan_disk" | "account_deleted" | null> {
+export async function updateBlocked(env: CloudEnv, userId: string, now: number): Promise<"out_of_hours" | "over_plan_disk" | "account_deleted" | "account_blocked" | null> {
   const account = await loadAccount(env, userId, now);
   if (account.deleted_at != null) return "account_deleted";
+  // The owner's block: an update would boot a computer the block stopped (or is still stopping).
+  if (await isCloudBlocked(env, userId)) return "account_blocked";
   const computers = await listComputers(env, userId);
   if (isOutOfHours(account, liveUsedMilli(account, computers, now))) return "out_of_hours";
   return freePlanOverDisk(account, countedDiskGb(computers)) ? "over_plan_disk" : null;

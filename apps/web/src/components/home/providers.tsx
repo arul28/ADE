@@ -165,6 +165,7 @@ export function ProviderTile({
   className,
 }: {
   provider: Provider;
+  /** Pixel size. */
   size?: number;
   className?: string;
 }) {

@@ -79,6 +79,9 @@ Build and static host:
   for one year as immutable; `/` and `/index.html` remain `no-cache` so a new
   deployment's entry graph is discovered immediately. `img-src` allowlists the Clerk image CDNs and
   Clerk's Google Storage profile-image path used by the account client.
+  `script-src` and `frame-src` allow `https://challenges.cloudflare.com`:
+  Clerk's sign-up bot check (Cloudflare Turnstile) runs inside ADE's own
+  sign-in card.
 - `apps/desktop/src/renderer/webclient/public/_redirects` - SPA fallback:
   `/* /index.html 200`. A static file wins over this rewrite.
 - `apps/desktop/src/renderer/webclient/public/_worker.js` and `_routes.json` -
@@ -105,6 +108,25 @@ Browser sync client:
   OAuth userinfo request. The callback is scrubbed from the address bar before
   directory loading, and account requests use exact trusted origins with omitted
   browser credentials and referrers.
+- `apps/desktop/src/renderer/webclient/account/clerkFrontendApi.ts` - a small
+  client for Clerk's Frontend API: environment, client, sign-in and sign-up
+  with an email code, OAuth start, session list. It follows clerk-js's wire
+  rules (form bodies, `credentials: "include"`, only GET/POST with `_method`,
+  a pinned `__clerk_api_version`) instead of shipping the ~570 KB SDK. A
+  development instance has no cross-site cookies, so it carries a dev-browser
+  id in `__clerk_db_jwt`, also on the authorize navigation
+  (`decorateNavigationUrl`).
+- `apps/desktop/src/renderer/webclient/account/clerkCaptcha.ts` - Clerk's
+  sign-up bot check, Cloudflare Turnstile run the way clerk-js runs it. A
+  "smart" widget renders into the card's captcha slot and shows only when
+  Cloudflare wants a click.
+- `apps/desktop/src/renderer/webclient/account/useClerkSignIn.ts` - the card's
+  sign-in steps (loading, "Continue as", form, code, finishing) and the OAuth
+  return (`/sign-in/return`), which mirrors clerk-js `_handleRedirectCallback`:
+  a complete sign-in, an existing account that came through sign-up, and a new
+  account from Google / GitHub / Apple. `fresh` (the person signed out) ends
+  the browser's Clerk session first and asks Google and GitHub for their
+  account picker.
 - `apps/desktop/src/renderer/webclient/account/sessionStore.ts` - versioned
   IndexedDB session record: the refresh token, and the last access token with
   its expiry (absent in a record saved by an older build).
@@ -635,7 +657,10 @@ Browser `window.ade` adapter:
   `cloudAccess` member) go to a connected computer when the displayed adapter
   is a disconnected fallback, and their subscriptions move with the adapter
   that serves those reads. So the Connections panel keeps the cloud status and
-  Wake while the computer that dropped is still the displayed one.
+  Wake while the computer that dropped is still the displayed one. With no
+  computer connected at all, `cloudAccess` and the ADE Cloud plan and hours
+  are read from the account server instead (`adapter/cloud.ts`), and the top
+  bar's Settings opens Settings on its own, so ADE Cloud needs no machine.
 - `apps/desktop/src/renderer/webclient/adapter/reconnectHold.ts` - keeps a
   machine that was connected reading as connected for up to 30 s of time in
   front while its connection comes back, so Work keeps the open chat after a
@@ -833,8 +858,23 @@ Reused desktop renderer (web-mode adaptation):
   signed in renders the app, signed out renders `WebSignInGate` (the
   `GlassSignInCard`) with no skip button. The hosted shell's own boot path
   renders the same card through `WebSignInScreen` before `LaunchGate` exists
-  (see `WebClientRoot.tsx` above). Sign-in is a full-page OAuth redirect, so
-  there is no polling phase to survive.
+  (see `WebClientRoot.tsx` above). With a Clerk configuration the card runs
+  the whole Clerk sign-in itself (`ClerkSignInPanel`, below) and then a
+  full-page OAuth redirect that Clerk completes at once, so there is no
+  polling phase to survive. The desktop app's gate keeps its one button; that
+  button now opens ADE Web's `/sign-in` page instead of Clerk's.
+- `apps/desktop/src/renderer/components/onboarding/ClerkSignInPanel.tsx` -
+  ADE's own Clerk sign-in inside the glass card: "Continue with" Google,
+  GitHub and Apple, an email code, sign-up for a new email, and "Continue as"
+  when the browser already holds a Clerk session. When Clerk cannot be reached,
+  or the sign-in needs a step the card does not show (a second factor), it
+  hands back to the card's one button, which opens Clerk's hosted page. A
+  fallback that is not a second factor is a Sentry warning
+  (`clerk_sign_in_unavailable`).
+- `apps/desktop/src/renderer/components/onboarding/GateBackdrop.tsx` - the
+  backdrop behind the card. On ADE Web a visitor who never picked a scene sees
+  the shipped "Mountain vista" picture (`useActiveScene({ untouched })`); a
+  picked scene always wins. The desktop gate keeps its shuffle.
 - `apps/desktop/src/renderer/components/projects/ProjectWelcomePage.tsx` - the
   shared welcome surface, adapted for web rather than replaced by a parallel UI.
   It renders the same home dashboard the desktop does (`ProjectWelcomeHome.tsx`:
@@ -1022,6 +1062,15 @@ Tests:
 
 ## Gotchas
 
+- **ADE's sign-in card depends on two Clerk settings.** The Clerk OAuth app's
+  consent screen must stay off: with it on, the authorize step after the card
+  goes to Clerk's hosted consent page (and a development session is lost
+  there). And Clerk's Frontend API shapes are read defensively by
+  `clerkFrontendApi.ts`; a renamed field reads as missing, and the card falls
+  back to its one button (Clerk's hosted page). After a Clerk API version
+  change, run a real sign-in on the development instance (`npm run
+  dev:webclient`, a `+clerk_test@example.com` address, code `424242`).
+
 - **A `window.ade` member the web adapter lacks is a stand-in, not `undefined`.**
   `withFallbackProxy` (`adapter/infra/proxy.ts`) answers it with a callable so
   a direct call never throws synchronously inside an effect. Calling it rejects
@@ -1188,7 +1237,11 @@ agent/chat mutations.
 1. The operator opens `https://app.ade-app.dev`. The boot path renders the
    sign-in card (`WebSignInScreen`) and nothing else - there is no skip,
    because every byte this
-   client can show arrives over account-authorized Relay. Desktop's
+   client can show arrives over account-authorized Relay. The card signs the
+   browser in to Clerk on this page (email code, or Google / GitHub / Apple
+   with a return to `/sign-in/return`), then starts ADE Web's OAuth PKCE
+   sign-in, which Clerk completes at once because the session exists. The
+   consent screen is off on ADE's Clerk OAuth app, so no Clerk page shows. Desktop's
    **Connections > Web** surface points to this account flow; it exposes no QR,
    link, PIN, or manual endpoint entry.
 2. The browser loads the Clerk-scoped account machine directory and lands on the
@@ -1213,7 +1266,34 @@ agent/chat mutations.
 7. Sign-out or account switch closes the Relay socket, removes account-owned
    environments, drops the other account's cached project catalogs, and returns
    the browser to the sign-in gate. Machine-side revocation closes connected
-   browser sockets and makes future paired hellos fail.
+   browser sockets and makes future paired hellos fail. Sign-out also saves a
+   "signed out by the user" marker in localStorage. The next sign-in ends the
+   browser's Clerk session first, so it asks for an account instead of
+   signing the same person straight back in; a completed sign-in clears it.
+
+**Sign-in for a computer (`/sign-in`).** The desktop app and `ade login`
+open `https://app.ade-app.dev/sign-in?continue=<authorize URL>` for ADE's
+production Clerk app (`buildWebClientSignInUrl`; other configurations open
+Clerk's page as before). The page runs the same card and then goes on to that
+authorize URL, which returns to the computer's loopback listener. It accepts
+only this client's issuer, `/oauth/authorize`, its own client id, and an
+`http://127.0.0.1` redirect (the computer's listener binds only that); anything else loads ADE Web as
+usual, so the page never forwards a browser elsewhere. The computer adds
+`prompt=login` after its own sign-out; the page takes it off and treats it as
+`fresh`. When the card falls back, its one button opens that same authorize
+URL, `prompt` included, on Clerk's own page, so the sign-in still returns to
+the computer. This browser's own ADE Web session plays no part. Release order: ADE
+Web must deploy before a desktop build that opens `/sign-in`, or the old web
+build shows its normal gate there.
+
+**The `ade_signed_in` marker.** On sign-in ADE Web sets `ade_signed_in=1` on
+`.ade-app.dev` (Path `/`, Secure, SameSite Lax, 30 days). It carries no token
+and grants nothing. The landing site (`apps/web`) reads it on `/` to send a
+signed-in visitor straight to ADE Web; `?home` skips that, and the account
+panel's "ADE website" link uses it. Sign-out, an expired session, and a boot
+that finds no session delete it, so nobody loops. Only pages served from
+ade-app.dev write it (not localhost or the Pages preview URL). Its name and
+rules are a contract with `apps/web/index.html`.
 
 The hosted `/pair` route and `PairFlow`/`PinInput` UI are removed. Older browser
 environments already paired locally remain listed under **Saved on this
@@ -1528,8 +1608,10 @@ URL contract.
   `webRoutes.ts`, then mapped to the same in-app routes the desktop renderer
   uses (`/lanes`, `/work`, `/prs`).
 - The arriving target is kept in localStorage for 10 minutes
-  (`shell/pendingTarget.ts`), like the sign-in stash, so it survives a sign-in
-  round trip that loses session storage.
+  (`shell/pendingTarget.ts`, on the shared `shell/linkStash.ts`), like the
+  sign-in stash, so it survives a sign-in round trip that loses session
+  storage. The stash also reads the field an older build wrote, so a link
+  saved just before a deploy still restores.
 - **Owned links** (chat, lane or PR links carrying `accountMachineKey` +
   `projectId`) are resolved by `shell/ownedLinkResolution.ts` after sign-in,
   instead of restoring the last project: find the account machine by key,
@@ -1552,6 +1634,25 @@ URL contract.
 - Links reach the web client from the website's `/open` page ("Open in your
   browser", or a remembered browser choice), which forwards the query
   unchanged; see [Deeplinks](../deeplinks/README.md).
+- **ADE Cloud plan links** (`shell/cloudPlanLink.ts`, `WebCloudPlanLink.tsx`,
+  kept with `shell/linkStash.ts`).
+  `https://app.ade-app.dev/?cloudPlan=<free|plus|pro|max>` comes from the
+  website's plan buttons; `/?cloudReturn=<done|cancelled|portal|card|card_cancelled>`
+  is where Stripe sends the person back (the account server builds it from
+  its `WEB_CLIENT_ORIGIN`). The value must be exactly one of those, once;
+  anything else is ignored. On load the request is kept in localStorage for
+  10 minutes (so it survives the sign-in, and the sign-in card says a link
+  is waiting) and both parameters leave the address bar at once. Once
+  signed in, the app opens Settings › ADE Cloud at Plans (on its own, as the
+  top bar's Settings opens it, when no project came back) instead of the
+  restored route; this works with no computer online. A paid plan then starts Stripe's checkout in this tab, but
+  only when `GET /cloud/access` says ADE Cloud lets the account in and `GET
+  /cloud/account` shows no paid plan (a paid account would otherwise change
+  plans with no question; it sees the page and a toast instead). Both reads
+  go to the account server with the browser's own token, so a person with no
+  computer online can still buy. Free only shows the page. A return shows a
+  toast saying how Stripe ended. An owned link in the same boot wins and the
+  plan link is dropped. The link never starts a sign-in itself.
 
 Entry points:
 
@@ -1633,6 +1734,15 @@ Ops checks after deploy:
 - No native directory picker.
 - No local shell process. Terminal creation and IO go through the paired
   machine runtime.
+- Settings › ADE Cloud with none of the account's computers online shows
+  the plan, hours, disk, Plans, Manage billing, extra hours and extra disk
+  (read and paid straight through the account server,
+  `adapter/cloudBilling.ts`), but not the list of cloud lanes and computers:
+  that list comes from a computer's brain, so the page says it shows once
+  one is online (`computersUnread`). What agents may do and the sign-ins
+  card need a computer too. A lane's size, its delete, freeing its computer,
+  Clear caches, Keep it on an idle notice and the invite code box stay in
+  the desktop app.
 - No ADE Browser, computer use, or iOS Simulator surface. App Control is
   watch-only: the Work tool shows the lane's live frames and session state, and
   no driving action runs from the web. Projectless Chats therefore shows its

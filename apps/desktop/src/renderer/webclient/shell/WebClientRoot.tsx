@@ -21,8 +21,18 @@ import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
 import { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
 import { mergeWebMachines, webMachineCatalogKeys } from "../workspace/webWorkspaceModel";
 import { createAccountNamespace } from "../adapter/account";
+import type { ClerkSignInSetup } from "../account/useClerkSignIn";
+import { WEB_CLIENT_SIGN_IN_PATH, WEB_CLIENT_SIGN_IN_RETURN_PATH } from "../../../shared/webClientUrl";
 import { parseOpenTarget, parseWebPath } from "./webRoutes";
 import { readPendingTarget, stashPendingTarget } from "./pendingTarget";
+import {
+  WEB_CLOUD_SETTINGS_PATH,
+  cloudLinkFromSearch,
+  peekCloudLink,
+  stashCloudLink,
+  stripCloudLinkParams,
+  takeCloudLink,
+} from "./cloudPlanLink";
 import {
   isOwnedOrAccountLink,
   matchOwnedProject,
@@ -78,24 +88,32 @@ function loadTargetPaths(): Promise<typeof import("./webTargetPaths")> {
   return import("./webTargetPaths");
 }
 
-async function loadAppRoot(): Promise<React.ComponentType> {
-  const [, { App }, { RendererErrorBoundary }, { useAppStore }, { WebOwnedLinkBanner }] = await Promise.all([
+async function loadAppRoot(
+  accountClient: BrowserAccountClient,
+  options: { standaloneSettings?: boolean } = {},
+): Promise<React.ComponentType> {
+  const [, { App }, { RendererErrorBoundary }, { useAppStore }, { WebOwnedLinkBanner }, { WebCloudPlanLink }] = await Promise.all([
     loadAppStylesheet(),
     import("../../components/app/App"),
     import("../../components/app/RendererErrorBoundary"),
     import("../../state/appStore"),
     import("./WebOwnedLinkBanner"),
+    import("./WebCloudPlanLink"),
   ]);
   try {
     useAppStore.getState().applyAutoSizeChatFontOnLargeScreenIfNotOverridden();
   } catch {
     // The persisted/default font size remains usable in hardened browsers.
   }
+  // With no project open, /settings shows only when Settings is open on its own
+  // (as the top bar's Settings button opens it); otherwise the welcome page stays in front.
+  if (options.standaloneSettings) useAppStore.getState().setStandaloneSettingsOpen(true);
   return function MountedApp() {
     return (
       <RendererErrorBoundary>
         <WebOwnedLinkBanner />
         <App />
+        <WebCloudPlanLink accountClient={accountClient} />
       </RendererErrorBoundary>
     );
   };
@@ -124,6 +142,25 @@ const ACCOUNT_LEASE_CHECK_INTERVAL_MS = 30_000;
  * hosted client has no separate landing route — and no Hub.
  */
 const WELCOME_PATH = "/work";
+/**
+ * ADE's own sign-in card for ADE Web's signed-out page. Undefined when this build
+ * has no Clerk configuration; the card then shows its one button.
+ */
+function webClerkSignInSetup(accountClient: BrowserAccountClient, resumeOAuth: boolean, landingUrl: string): ClerkSignInSetup | undefined {
+  const fapiBase = accountClient.clerkFrontendApiBase();
+  if (!fapiBase) return undefined;
+  return {
+    fapiBase,
+    fresh: accountClient.signedOutByUser(),
+    oauthReturnUrl: `${window.location.origin}${WEB_CLIENT_SIGN_IN_RETURN_PATH}`,
+    resumeOAuth,
+    landingUrl,
+    finish: async (decorate) => {
+      await accountClient.startSignIn({ clerkSessionReady: true, decorateAuthorizeUrl: decorate });
+    },
+  };
+}
+
 /** Retired routes that must not survive a reload. */
 const LEGACY_PATHS = new Set(["/pair", "/hub"]);
 const APP_ROUTE_ROOTS = [
@@ -561,10 +598,62 @@ export function WebClientRoot({
     let disposed = false;
 
     void (async () => {
+      // A plan picked on ADE's website (`?cloudPlan=`) or a return from Stripe
+      // (`?cloudReturn=`): kept through the sign-in, then out of the address bar.
+      const cloudLinkInUrl = cloudLinkFromSearch(window.location.search);
+      if (cloudLinkInUrl) stashCloudLink(cloudLinkInUrl);
+      stripCloudLinkParams();
       if (LEGACY_PATHS.has(window.location.pathname)) {
         window.history.replaceState(null, "", "/");
       }
       const path = window.location.pathname;
+      const landingUrl = window.location.href;
+      const signInRoute = path === WEB_CLIENT_SIGN_IN_PATH || path === WEB_CLIENT_SIGN_IN_RETURN_PATH;
+      // A sign-in started on a computer (the desktop app, `ade login`) opens
+      // this page with its authorize URL in `?continue=`. The card signs the
+      // person in to Clerk and goes on there; this browser's own ADE Web
+      // session, signed in or not, plays no part.
+      const handoff = signInRoute ? accountClient.signInHandoff(window.location.search) : null;
+      const handoffFapiBase = handoff ? accountClient.clerkFrontendApiBase() : null;
+      if (handoff && handoffFapiBase) {
+        const { WebSignInScreen } = await import("../../components/onboarding/WebSignInGate");
+        if (disposed) return;
+        const account = createAccountNamespace(accountClient);
+        Object.assign(window.ade, {
+          account: {
+            ...account,
+            // The card's fallback button (Clerk unreachable) must finish the
+            // computer's sign-in on Clerk's own page, not sign this browser in
+            // to ADE Web.
+            startLogin: async () => {
+              window.location.assign(handoff.hostedUrl);
+              return {
+                sessionId: "browser-redirect",
+                authorizeUrl: handoff.hostedUrl,
+                expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+              };
+            },
+          },
+        });
+        const setup: ClerkSignInSetup = {
+          fapiBase: handoffFapiBase,
+          fresh: handoff.fresh,
+          oauthReturnUrl: `${window.location.origin}${WEB_CLIENT_SIGN_IN_RETURN_PATH}?continue=${encodeURIComponent(handoff.continueUrl)}`,
+          resumeOAuth: path === WEB_CLIENT_SIGN_IN_RETURN_PATH,
+          finish: (decorate) => {
+            window.location.assign(decorate(handoff.continueUrl));
+          },
+        };
+        setPhase({
+          kind: "signed-out",
+          SignIn: function ComputerSignIn() {
+            return <WebSignInScreen clerk={setup} subtitle="Sign in to finish setting up ADE on your computer." />;
+          },
+        });
+        return;
+      }
+      const resumeOAuth = path === WEB_CLIENT_SIGN_IN_RETURN_PATH;
+      if (signInRoute) window.history.replaceState(null, "", WELCOME_PATH);
       const linkInUrl = path === "/open" || isAppRoute(path);
       // A link in this URL replaces any stored one. A stored link keeps its
       // own age, so revisiting ADE Web does not keep an abandoned link alive.
@@ -613,10 +702,13 @@ export function WebClientRoot({
         Object.assign(window.ade, { account: createAccountNamespace(accountClient) });
         window.history.replaceState(null, "", WELCOME_PATH);
         // A link waits for the sign-in; the card says so.
-        const linkWaiting = (pendingTargetRef.current ?? readPendingTarget()) != null;
+        const linkWaiting = (pendingTargetRef.current ?? readPendingTarget()) != null || peekCloudLink() != null;
+        const clerk = webClerkSignInSetup(accountClient, resumeOAuth, landingUrl);
         setPhase({
           kind: "signed-out",
-          SignIn: linkWaiting ? function SignInForLink() { return <WebSignInScreen linkWaiting />; } : WebSignInScreen,
+          SignIn: function SignIn() {
+            return <WebSignInScreen linkWaiting={linkWaiting} clerk={clerk} />;
+          },
         });
         return;
       }
@@ -633,6 +725,9 @@ export function WebClientRoot({
       targetPathRef.current = targetToWebPath;
       let restored = installed.restored;
       let initialPath: string;
+      // A chat, lane or PR link goes first: a plan link waiting beside it would start a checkout away from it.
+      if (ownedLinkTarget) takeCloudLink();
+      const cloudLink = ownedLinkTarget ? null : peekCloudLink();
       if (ownedLinkTarget) {
         // A chat, lane or PR link names its machine and project: go there, not
         // to whatever this browser had open last.
@@ -656,6 +751,11 @@ export function WebClientRoot({
           if (disposed) return;
           initialPath = WELCOME_PATH;
         }
+      } else if (cloudLink) {
+        // ADE's website or Stripe sent the person to ADE Cloud: Settings ›
+        // ADE Cloud, over whatever project came back. `WebCloudPlanLink`
+        // finishes the link once the app is up. A pending link stays pending.
+        initialPath = WEB_CLOUD_SETTINGS_PATH;
       } else {
         const restoredTarget = pendingTargetRef.current ?? readPendingTarget();
         // A lane shared with this account needs no machine of its own.
@@ -670,7 +770,7 @@ export function WebClientRoot({
         if (restored || machineFreeTarget) clearPendingTarget();
       }
       window.history.replaceState(null, "", initialPath);
-      const AppRoot = await loadAppRoot();
+      const AppRoot = await loadAppRoot(accountClient, { standaloneSettings: cloudLink != null && restored !== "project" });
       if (!disposed) setPhase({ kind: "ready", AppRoot });
       // The Sentry session starts with the workspace, not on the signed-out page.
       if (!disposed) void import("../sentry").then((module) => module.startWebClientSentrySession()).catch(() => undefined);

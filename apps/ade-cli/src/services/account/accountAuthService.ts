@@ -11,6 +11,7 @@ import {
   shouldIgnoreDevelopmentClerkConfiguration,
   warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
+import { buildWebClientSignInUrl } from "../../../../desktop/src/shared/webClientUrl";
 import {
   CREDENTIAL_STORE_LOCK_TIMEOUT_MS,
   type CredentialStoreReadFailureReason,
@@ -25,6 +26,13 @@ import { createRotationJournal } from "./accountSessionRotationJournal";
 import { type DeviceLoginStartOptions, readDeviceStartRetryMs, requestDeviceCodeWithRetry } from "./deviceLoginStart";
 
 export const ACCOUNT_SESSION_CREDENTIAL_KEY = "account.session.v1";
+/**
+ * Set when the person signs this machine out, cleared by the next sign-in.
+ * Signing out drops ADE's tokens but not the browser's Clerk session, so
+ * without `prompt=login` the next sign-in finishes on its own as the account
+ * that just signed out. Kept in the credential store so it outlives a restart.
+ */
+const ACCOUNT_SIGNED_OUT_BY_USER_KEY = "account.signed-out-by-user.v1";
 export { ACCOUNT_SESSION_ROTATION_JOURNAL_KEY } from "./accountSessionRotationJournal";
 
 const LOOPBACK_HOST = "127.0.0.1";
@@ -695,6 +703,8 @@ function buildAuthorizeUrl(args: {
   redirectUri: string;
   codeChallenge: string;
   state: string;
+  /** Show Clerk's sign-in form even when the browser holds a Clerk session. */
+  forceLogin?: boolean;
 }): string {
   const query = encodeAuthorizeQuery([
     ["response_type", "code"],
@@ -704,8 +714,22 @@ function buildAuthorizeUrl(args: {
     ["code_challenge_method", "S256"],
     ["state", args.state],
     ["scope", "openid profile email offline_access"],
+    ...(args.forceLogin ? ([["prompt", "login"]] as Array<[string, string]>) : []),
   ]);
   return `${args.config.issuer}/oauth/authorize?${query}`;
+}
+
+/**
+ * The page the browser opens. For ADE's production Clerk app that is ADE
+ * Web's own sign-in card (`/sign-in`), which signs the person in and then goes
+ * on to `authorizeUrl`; ADE Web accepts only that app's client id, so any other
+ * configuration (development Clerk, a custom issuer) opens Clerk's page as
+ * before.
+ */
+function signInPageUrl(config: AccountOAuthConfig, authorizeUrl: string): string {
+  const production = config.issuer.replace(/\/+$/, "") === DEFAULT_ADE_CLERK_ISSUER
+    && config.clientId === DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID;
+  return production ? buildWebClientSignInUrl(authorizeUrl) : authorizeUrl;
 }
 
 function isMatchingState(actual: string | null, expected: string): boolean {
@@ -1380,6 +1404,12 @@ export function createAccountAuthService(args: {
     storedSessionRejected = false;
     if (record) {
       args.credentialStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(record));
+      try {
+        args.credentialStore.deleteSync(ACCOUNT_SIGNED_OUT_BY_USER_KEY);
+      } catch (error) {
+        // Best effort: a marker left behind costs one extra sign-in form.
+        logger.warn("account.signed_out_marker_failed", { op: "clear", error: error instanceof Error ? error.message : String(error) });
+      }
       // A successful sign-in is the definitive end of any prior rotation: the
       // journal describes a refresh token that no longer exists.
       rotationJournal.clear("session_replaced");
@@ -2118,12 +2148,13 @@ export function createAccountAuthService(args: {
 
     return {
       sessionId,
-      authorizeUrl: buildAuthorizeUrl({
+      authorizeUrl: signInPageUrl(config, buildAuthorizeUrl({
         config,
         redirectUri,
         codeChallenge: derivePkceChallenge(codeVerifier),
         state: oauthState,
-      }),
+        forceLogin: readSignedOutByUser(),
+      })),
       expiresAt: new Date(expiresAtMs).toISOString(),
     };
   };
@@ -3034,8 +3065,23 @@ export function createAccountAuthService(args: {
     return held && held.expiresAtMs > now() ? held.value : null;
   };
 
+  const readSignedOutByUser = (): boolean => {
+    try {
+      return args.credentialStore.getSync(ACCOUNT_SIGNED_OUT_BY_USER_KEY) != null;
+    } catch (error) {
+      logger.warn("account.signed_out_marker_failed", { op: "read", error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  };
+
   const signOut = (): AccountAuthStatus => {
     authEpoch += 1;
+    try {
+      args.credentialStore.setSync(ACCOUNT_SIGNED_OUT_BY_USER_KEY, "1");
+    } catch (error) {
+      // Best effort: without it the next sign-in may reuse the browser session.
+      logger.warn("account.signed_out_marker_failed", { op: "set", error: error instanceof Error ? error.message : String(error) });
+    }
     // A grant belongs to the session that earned it. Signing out ends that
     // session, so anything still holding one is holding a stale claim about a
     // user who is no longer here.

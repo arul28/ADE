@@ -79,8 +79,14 @@ const RUNTIME_SOCKET_READY_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 
  * guard failed on a slow or busy machine while the daemon was still starting.
  * Each test's own limit grows by the same allowance. These are ceilings, not
  * sleeps: a healthy daemon answers in a few seconds.
+ *
+ * `ade rpc --stdio` itself gives a daemon it spawned 20s to open its socket
+ * (`SPAWNED_RUNTIME_CONNECT_WINDOW_MS` in cli.ts), after its own cold start.
+ * A 10s allowance timed out the first `ade/initialize` on Linux while the CLI
+ * was still inside that window, so the allowance is never below it.
  */
-const COLD_START_ALLOWANCE_MS = RUNTIME_SOCKET_READY_TIMEOUT_MS;
+const SPAWNED_RUNTIME_CONNECT_WINDOW_MS = 20_000;
+const COLD_START_ALLOWANCE_MS = Math.max(RUNTIME_SOCKET_READY_TIMEOUT_MS, SPAWNED_RUNTIME_CONNECT_WINDOW_MS);
 const REQUEST_TIMEOUT_MS = 15_000 + COLD_START_ALLOWANCE_MS;
 const DAEMON_TEST_TIMEOUT_MS = 45_000 + COLD_START_ALLOWANCE_MS;
 

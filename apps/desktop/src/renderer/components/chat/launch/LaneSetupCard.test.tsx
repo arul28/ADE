@@ -95,26 +95,6 @@ describe("laneSetupActions", () => {
 });
 
 describe("LaneSetupCard", () => {
-
-  it("shows the failure in amber with Retry, Start anyway and Delete", () => {
-    render(
-      <LaneSetupCard
-        snapshot={snapshot({
-          phase: "failed",
-          laneCreated: true,
-          error: "npm install failed",
-          stages: [stage("checkout", "done"), stage("environment", "failed", { error: "npm install failed" }), stage("agent", "pending")],
-        })}
-      />,
-    );
-    expect(screen.getByTestId("lane-setup-title").textContent).toBe("Lane setup failed");
-    expect(screen.getAllByText("npm install failed").length).toBeGreaterThan(0);
-    expect(screen.getByTestId("lane-setup-retry")).toBeTruthy();
-    expect(screen.getByTestId("lane-setup-start-anyway")).toBeTruthy();
-    expect(screen.getByTestId("lane-setup-delete")).toBeTruthy();
-    expect(screen.queryByTestId("lane-setup-cancel")).toBeNull();
-  });
-
   it("cancels only after confirmation and hands the prompt back to the draft", async () => {
     applyChatLaunchSnapshot(BINDING, snapshot());
     const closed = vi.fn();

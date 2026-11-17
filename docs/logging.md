@@ -103,6 +103,7 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 - a recording whose demo every engine failed to make (`demo_video.all_engines_failed`, tagged `platform`, `arch` and on Linux the distribution, with the failed stage but not the engines' errors, which can carry ffmpeg's stderr), once per process per engine set: the user gets the uncut recording, and nothing else says the demo pipeline is broken on that machine;
 - a Copilot chat failure ADE could have caused (`main/services/chat/copilotSentry.ts`), tagged `provider: copilot`, `copilot.kind` and `copilot.model` and grouped per kind and cause: a `session.error` that is not sign-in, rate limit, quota or an outage (`session_error`, titled by its kind alone and grouped by error type and code, because a provider's message can quote the request; the message and both GitHub request ids are in the scrubbed extra), a failed turn that was not interrupted (`turn_failed`), the SDK worker dying under a live chat (`worker_exited`), the runtime refusing to list or run a slash command (`commands_list_failed`, `command_failed`), a refused model or permission change (`setting_failed`), and a permission or question handler that threw (`handler_failed`). Each sent turn leaves a `copilot` breadcrumb with its model, agent mode, permission level, attachment count and the command name, never the prompt. Its other failures (a lost conversation, a model list or MCP sign-in lookup that failed) are `agent_chat.copilot_*` warn lines, so Sentry Logs only;
 - a Work list (`sessions` or `lanes`) whose first load has failed for 30 seconds while the machine it reads is connected, or is this computer (`Work <surface> list could not load`, `renderer/lib/firstLoadRetry.ts`), once per retry run, grouped per surface and binding kind. It carries the attempts, how long it has been failing, a fixed error class and code (never the message, which can name an address), the connection state and the `correlationId` of the failed dial, so the issue links to that machine's `remote.connect_failed`. A machine that really is offline logs `work.first_load_waiting` instead, and a list that recovers logs `work.first_load_recovered`.
+- on the hosted web client, ADE's own sign-in card falling back to Clerk's hosted page (`reportUnavailable` in `renderer/webclient/account/useClerkSignIn.ts`), as a warning tagged `area: web_sign_in` and grouped by reason: `load_failed` (Clerk's environment or client request failed, or answered in a shape the card does not read) or `no_sign_in_methods` (the environment lists no method the card shows). A Clerk API change shows up here before people report it. The card's own form errors (a wrong code, a mistyped email) pass `report: false` and log nothing; a sign-in that needs a second factor hands over to Clerk's page without a report, because that is an expected path;
 - on iOS, a live machine connection (the focused one or a fleet roster link) that dropped without a close frame, code 1006 or none (`area: sync_live_drop`, `SyncLiveDropReport` in `SyncRecoveryPolicy.swift`). It carries the connection kind (`focused`, `fleet`), the route kind (`lan`, `tailnet`, `relay`), the close code, an age bucket (`under_10s` … `over_10m`) and the receive error's domain and code with its underlying domain and code, never an address or machine name, at most once per connection and route kind per 10 minutes. A drop on a connection that lived through a trip to the app's background, or that ends while the app is in the background, leaves a `sync.live_drop` breadcrumb instead of an issue: iOS suspends the app and kills its sockets without a close frame, and the failed receive surfaces on the next wake. A saved-port change leaves a `sync.route` breadcrumb (connection kind and whether the link was live), so the report shows whether the computer's sync port moved just before. A drop with a close code (a host or relay closing on purpose) is not reported;
 - on iOS, a chat that is working but draws no messages (`chat.empty_thread.<kind>`, `runEmptyThreadProbe` in `WorkSessionDestinationView.swift`), at most once per time the chat is opened. It carries the chat stream trace from `ChatStreamTrace` (subscribes, history replies applied or dropped and why, live events, socket closes) and the `chat.stream` breadcrumbs, names and counts only.
 
@@ -833,6 +834,22 @@ client version and for work nobody watches
   `unclaimed_use` (free hours used with no computer seen: phone or MCP only),
   with `platform` (`darwin`, `win32`, `linux`) when known. One per account,
   step and day.
+- **`ade_cloud_safety`** (`blocks.ts`, `safety.ts`, `costReport.ts`,
+  `chats.ts`): `step` is `first_chat` (the account's first saved cloud chat,
+  once), `free_cap_50`, `free_cap_80`, `free_cap_100` (free use passed that
+  share of the owner's cap; owner-wide, distinct id `ade-cloud-server`),
+  `free_cap_refused`, `blocked`, `unblocked`, `card_reused`,
+  `blocked_returned` (a blocked GitHub account or card on a new account),
+  `rate_limited`, `creates_paused` or `signup_burst`. One per account, step,
+  key (hashed into the uuid, never sent) and hour. Server log lines:
+  `cloud.first_chat`, `cloud.free_cap_refused`, `cloud.free_cap_step`,
+  `cloud.block_computer_stopped`, `cloud.account_unblocked`,
+  `cloud.free_unlock_card_refused`, `cloud.stripe_test_event_dropped`. Abuse
+  (`reportCloudAbuse`) is `cloud.abuse.<kind>` in the log, a Sentry error
+  every time (tag `area: cloud-abuse`) and a `cloud_abuse_events` row; kinds:
+  `account_blocked`, `identity_blocked`, `blocked_computer_made`,
+  `card_reused`, `blocked_card_returned`, `blocked_github_returned`,
+  `signup_burst`, `rate_limited`.
 
 Never an instance id, a name, a size in numbers, a price, an amount, a
 message, a Stripe id, an invite code or link, an email, a computer id, or the
@@ -2452,12 +2469,24 @@ fingerprint beyond the attribution above, and fit inside the unchanged 12-CTA / 
 dialog's client-side click is the funnel signal, and a test pins that the
 handlers make no analytics call for any method.
 
-The pricing page (`/pricing`, screen `pricing`) reuses the same events: each
-plan card's button records the CTA event with `choose_plan_free`,
+The pricing page (`/pricing`, screen `pricing`) reuses the same events. The
+navbar, the footer and the download section link to it. A paid plan's button links to the web app with
+`?cloudPlan=<plan>` (it signs in, then opens Stripe's checkout); Free's button
+opens the install dialog. Each records the CTA event with `choose_plan_free`,
 `choose_plan_plus`, `choose_plan_pro` or `choose_plan_max` at position
-`pricing_page` (it opens the install dialog, which records its own feature
-event), and every link to the page (site header, home page masthead and
-ADE Cloud teaser, footer) records the `view_pricing` feature.
+`pricing_page`; the CTA names the plan, which shows which plan people want.
+Every link to the page (site header and its phone menu, the home page's ADE
+Cloud section, footer) records the `view_pricing` feature. The plan finder
+records `use_plan_finder` once per page view, on the visitor's first change to
+one of its controls; the numbers chosen are never sent. Its button under the
+suggested plan records the matching `choose_plan_*` CTA at position
+`plan_finder`, so a finder-led choice is told apart from a plan card's.
+
+On the home page, the hero's ADE Cloud link records `view_ade_cloud`, the ADE
+Cloud section's four plan tiles open the web app at that plan (`?cloudPlan=`)
+and record the matching `choose_plan_*` CTA at position `home_cloud`, and the
+feature wall's "See every feature" button records `view_all_features`. The
+section's price comparison (its hours buttons) records nothing.
 
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 

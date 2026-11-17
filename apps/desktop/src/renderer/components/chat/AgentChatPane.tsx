@@ -4815,6 +4815,10 @@ export function AgentChatPane({
      state beside the launch ref so the sign-in check sees it: that run
      authenticates with the key, not the provider's local login. */
   const [draftCredentialId, setDraftCredentialId] = useState<string | null>(null);
+  /* The provider account a draft launches on, when the composer's ⋯ menu named
+     one (Claude and Codex only). Null = the machine's default, which is also
+     where Smart balance picks. */
+  const [draftAccountId, setDraftAccountId] = useState<string | null>(null);
   /* A running chat's model pick, held until Send applies it. It names the
      preset the pick came from, or none for a plain model. The trigger reads it
      so a pick shows at once instead of the chat's old preset, and Send reads
@@ -12704,6 +12708,12 @@ export function AgentChatPane({
       // the runtime that owns the lane is the one that can read this
       // machine's preset list and key store, so nothing resolved travels.
       ...draftLaunchBrainRef.current,
+      // The account the composer's ⋯ menu named. A saved preset or stored key
+      // carries its own sign-in, so those win.
+      ...(draftAccountId && !draftLaunchBrainRef.current.presetId && !draftLaunchBrainRef.current.credentialId
+        && !parallelChatMode
+        ? { instanceId: draftAccountId }
+        : {}),
       ...nativeControlPayload,
       // A draft ADE configured (the tour's first chat) leaves the machine's
       // remembered model alone; a model the person picks clears this.
@@ -12720,7 +12730,7 @@ export function AgentChatPane({
       launchControls,
       nativeControlPayload,
     };
-  }, [codexDaybreak, currentNativeControls, effectiveReasoningEffort, executionMode, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId]);
+  }, [codexDaybreak, currentNativeControls, draftAccountId, effectiveReasoningEffort, executionMode, fastModeAllowedForComposer, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId, parallelChatMode]);
 
   /**
    * The `agentChat.create` args for a chat on `targetLaneId`, with the id a
@@ -13892,10 +13902,12 @@ export function AgentChatPane({
         initialPrompt: cliPrompt,
         // A row a stored key makes reachable launches on that key.
         ...(brain.credentialId ? { credentialId: brain.credentialId } : {}),
+        // The account the composer's ⋯ menu named, when no key did.
+        ...(!brain.credentialId && draftAccountId ? { instanceId: draftAccountId } : {}),
       },
       tracked: true,
     };
-  }, [fastModeAllowedForComposer, harnessPresets, modelCatalogScopeKey]);
+  }, [draftAccountId, fastModeAllowedForComposer, harnessPresets, modelCatalogScopeKey]);
 
   const startDraftCliLaunch = useCallback(async (
     prepared: PreparedDraftLaunch,
@@ -20405,6 +20417,9 @@ export function AgentChatPane({
             // A chat launched from a saved preset is named by the preset in the
             // model trigger; the model id moves to the trigger's tooltip.
             activeHarnessPresetId={activeHarnessPresetId}
+            launchAccountId={draftAccountId}
+            launchAccountDisabled={Boolean(draftCredentialId)}
+            onLaunchAccountChange={setDraftAccountId}
             // Custom shows in CLI mode too; the picker lists the CLIs that take
             // no endpoint (`shared/harnessPresetCliGate.ts`) as unavailable.
             onOpenHarnessSettings={openHarnessSettings}

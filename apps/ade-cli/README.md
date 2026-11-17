@@ -422,7 +422,13 @@ The `sync.connectToBrain`, `sync.disconnectFromBrain`, and `sync.transferBrainTo
 account session in that store. Installed ADE uses the production Clerk
 application and production account directory without project configuration;
 the ADE repository's development Clerk secrets select the isolated development
-tenant during source work. `ade machines list` reads the matching authenticated
+tenant during source work. With the production Clerk application, the browser
+half of `ade login` opens ADE Web's sign-in page
+(`https://app.ade-app.dev/sign-in?continue=<authorize URL>`), which signs the
+person in and goes on to the loopback callback; other configurations open
+Clerk's page. After `ade logout` (or "Sign out of this computer"), the next
+sign-in asks for an account instead of reusing the browser's Clerk session.
+`ade machines list` reads the matching authenticated
 account directory; signed-out users get a local-first message and existing
 local, PIN, explicit-address, and saved SSH paths remain available. Machine keys
 and device IDs are stable selectors. A display name is accepted only when it is

@@ -179,6 +179,22 @@ export type ChatLaunchCloudState = {
    * signed in to ADE; the card shows Approve. Absent otherwise.
    */
   approvalUrl?: string;
+  /**
+   * While the new computer waits for the chat's provider sign-in (the server
+   * launcher's `waiting_for_sign_in`): the provider, its sign-in link, the
+   * code to enter there, and one sentence on what to do. The card shows it.
+   * Absent otherwise.
+   */
+  signIn?: {
+    label: string;
+    url: string | null;
+    userCode: string | null;
+    reason: string | null;
+    /** The computer's sign-in job, for a pasted code (`providers.remoteSignInCode` on that computer). */
+    jobId?: string | null;
+    /** The provider shows a code after sign-in that goes back to the computer (Claude). */
+    needsPastedCode?: boolean;
+  };
 };
 
 export type ChatLaunchSnapshot = {

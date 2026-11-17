@@ -30,6 +30,13 @@ export const EXTERNAL_SESSION_PROVIDERS: readonly ExternalSessionProvider[] = [
   "antigravity",
 ];
 
+/**
+ * Providers that keep a second, ADE-managed store beside the user's own. The
+ * import dialog reads both for these; every other provider has one store.
+ */
+export const EXTERNAL_SESSION_PROVIDERS_WITH_MANAGED_STORE: ReadonlySet<ExternalSessionProvider> =
+  new Set(["opencode"]);
+
 export const EXTERNAL_SESSION_PROVIDER_LABELS: Record<ExternalSessionProvider, string> = {
   claude: "Claude",
   codex: "Codex",

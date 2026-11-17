@@ -24,43 +24,31 @@ import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import type {
   ClaudePassCheck,
   ClaudePassLabelSource,
+  ClaudePassPayload,
   ClaudePassState,
   ClaudePassUpload,
   CloudClaudeLocalAccount,
   CloudClaudePass,
   CloudClaudePassUnreadable,
 } from "../../../shared/cloudSignIns";
-import { SIGN_IN_END_NOTICE_MS } from "../../../shared/cloudSignIns";
+import {
+  CLAUDE_PASS_LIFETIME_MS,
+  CLAUDE_PASS_VAULT_KIND,
+  CLAUDE_TOKEN_PATTERN,
+  SIGN_IN_END_NOTICE_MS,
+  claudePassPayload,
+  parseCloudSignIn,
+} from "../../../shared/cloudSignIns";
 import { CLAUDE_PASS_KEY_PREFIX, CLAUDE_PASS_LEGACY_KEY, isClaudePassKey } from "../../../shared/types/providerLogins";
-import { CLAUDE_TOKEN_PATTERN } from "./cloudSignInStore";
 
-export const CLAUDE_PASS_VAULT_KIND = "provider_login";
+// The pass's stored form is shared with the account server (shared/cloudSignIns.ts).
+export { CLAUDE_PASS_LIFETIME_MS, CLAUDE_PASS_VAULT_KIND, type ClaudePassPayload };
 
 const DAY_MS = 24 * 60 * 60_000;
-/** A pass lasts about a year; ADE's estimate until Claude Code reports the date. */
-export const CLAUDE_PASS_LIFETIME_MS = 365 * DAY_MS;
 /** The tile line starts here. */
 export const CLAUDE_PASS_ENDING_SOON_MS = 14 * DAY_MS;
 
 type Logger = { warn?(event: string, meta?: Record<string, unknown>): void } | null | undefined;
-
-/** The vault value of one pass. */
-export type ClaudePassPayload = {
-  v: 1;
-  kind: "claude_pass";
-  token: string;
-  account: { email: string | null; check: ClaudePassCheck; labelSource: ClaudePassLabelSource };
-  createdAt: number;
-  renewedAt: number | null;
-  madeOn: { machineKey12: string; label: string } | null;
-  expiresAt: number;
-  expiresAtSource: "estimate" | "claude";
-  /**
-   * When Claude refused this token as no longer valid (claudePassSync.ts
-   * `endPass`). Absent while it works; a Renew writes a new payload without it.
-   */
-  endedAt?: number;
-};
 
 /** The computer an approve ran on, as a pass records it. */
 export type ClaudePassMachineStamp = { machineKey12: string; label: string };
@@ -252,17 +240,13 @@ function buildClaudePass(
     now: number;
   },
 ): ClaudePassPayload {
-  return {
-    v: 1,
-    kind: "claude_pass",
+  return claudePassPayload({
     token: args.token,
     account: { email: trimmedEmail(args.email), check: args.check, labelSource: args.labelSource },
     createdAt: previous?.createdAt ?? args.now,
     renewedAt: previous ? args.now : null,
     madeOn: args.madeOn,
-    expiresAt: args.now + CLAUDE_PASS_LIFETIME_MS,
-    expiresAtSource: "estimate",
-  };
+  });
 }
 
 /**
@@ -328,16 +312,10 @@ export function removeAllClaudePasses(vault: ClaudePassVault, logger?: Logger): 
   return ok;
 }
 
-/** The value of the single item of older versions: `{v:1, token, savedAt}` (cloudSignInStore.ts). */
+/** The value of the single item of older versions: `{v:1, token, savedAt}` (shared/cloudSignIns.ts). */
 function parseLegacyItem(raw: string | null | undefined): { token: string; savedAt: number } | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as { v?: unknown; token?: unknown; savedAt?: unknown };
-    if (parsed?.v !== 1 || typeof parsed.token !== "string" || !CLAUDE_TOKEN_PATTERN.test(parsed.token)) return null;
-    return { token: parsed.token, savedAt: finite(parsed.savedAt) ?? 0 };
-  } catch {
-    return null;
-  }
+  const stored = parseCloudSignIn(raw, (token) => CLAUDE_TOKEN_PATTERN.test(token));
+  return stored ? { token: stored.token, savedAt: stored.savedAt ?? 0 } : null;
 }
 
 /**
@@ -357,17 +335,7 @@ function planLegacyClaudePass(args: {
   if (args.passKeys.some((row) => row.key === CLAUDE_PASS_LEGACY_KEY)) return null;
   if (args.passes.some((entry) => entry.pass.token === legacy.token)) return null;
   const savedAt = legacy.savedAt > 0 ? legacy.savedAt : args.now;
-  return {
-    v: 1,
-    kind: "claude_pass",
-    token: legacy.token,
-    account: { email: null, check: "unchecked", labelSource: "none" },
-    createdAt: savedAt,
-    renewedAt: null,
-    madeOn: null,
-    expiresAt: savedAt + CLAUDE_PASS_LIFETIME_MS,
-    expiresAtSource: "estimate",
-  };
+  return claudePassPayload({ token: legacy.token, createdAt: savedAt });
 }
 
 /**

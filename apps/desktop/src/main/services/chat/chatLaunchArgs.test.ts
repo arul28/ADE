@@ -25,7 +25,15 @@ describe("chatLaunchArgs (desktop action + sync host share this parser)", () => 
 
   it("keeps what the desktop composer sends: harness ids, context-only messages, cursor runtime", () => {
     const parsed = parseChatLaunchArgs(rawLaunch({
-      create: { provider: "cursor", model: "", presetId: " preset-1 ", codexSandbox: "workspace-write", laneId: "ignored", identityKey: "cto" },
+      create: {
+        provider: "cursor",
+        model: "",
+        presetId: " preset-1 ",
+        instanceId: " account-2 ",
+        codexSandbox: "workspace-write",
+        laneId: "ignored",
+        identityKey: "cto",
+      },
       message: {
         text: "",
         displayText: "Selected visual app context",
@@ -34,7 +42,13 @@ describe("chatLaunchArgs (desktop action + sync host share this parser)", () => 
         attachments: [{ path: "/tmp/a.png", type: "image" }, { path: "", type: "file" }],
       },
     }));
-    expect(parsed.chat?.create).toMatchObject({ provider: "cursor", model: "", presetId: "preset-1", codexSandbox: "workspace-write" });
+    expect(parsed.chat?.create).toMatchObject({
+      provider: "cursor",
+      model: "",
+      presetId: "preset-1",
+      instanceId: "account-2",
+      codexSandbox: "workspace-write",
+    });
     // Fields a launch must not set from outside are dropped.
     expect(parsed.chat?.create).not.toHaveProperty("laneId");
     expect(parsed.chat?.create).not.toHaveProperty("identityKey");

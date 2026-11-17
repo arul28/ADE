@@ -16,7 +16,9 @@
  */
 
 import {
+  cleanCloudCloudKey,
   cloudSignInSpec,
+  cloudSignInVaultKey,
   type CloudClaudeLocalAccount,
   type CloudSignInId,
   type CloudSignInStatus,
@@ -37,8 +39,6 @@ import {
   type CloudClaudeSignIn,
 } from "./cloudClaudeSignIn";
 import {
-  cleanCloudCloudKey,
-  cloudSignInVaultKey,
   readCloudSignIns,
   removeCloudSignIn,
   saveCloudSignIn,

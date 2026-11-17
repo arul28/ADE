@@ -489,6 +489,24 @@ extension WorkSessionDestinationView {
     }
   }
 
+  /// Records a GitHub issue the composer's Issue context menu picked on this
+  /// chat, through the same lane link the desktop composer writes.
+  @MainActor
+  func attachGitHubIssueToChat(_ issue: GitHubIssueRow, repo: GitHubRepoRefDTO) async {
+    guard let payload = WorkLaunchIssue
+      .github(issue, owner: repo.owner, repo: repo.name)
+      .githubIssuePayload else { return }
+    do {
+      try await syncService.attachGitHubIssueToChat(chatSessionId: sessionId, issues: [payload])
+      await refreshChatStateAfterAction(forceRemote: true)
+      ADEHaptics.success()
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
   @MainActor
   func stopChatTask(taskId: String) async {
     do {

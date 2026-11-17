@@ -37,7 +37,7 @@ export * from "../../../shared/settingsManifest";
  */
 export function isSettingAvailable(entry: SettingEntry): boolean {
   if (entry.macOnly && !isMacPlatform()) return false;
-  // Not on the access list: ADE Cloud's settings aren't anywhere, on any tab.
+  // ADE Cloud's settings hide until the account server says ADE Cloud is on.
   if (isAdeCloudSettingEntry(entry) && !adeCloudEnabled()) return false;
   if (!isWebClientMode()) {
     // Standalone Settings, opened from the new-project screen with no project:

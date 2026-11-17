@@ -7,6 +7,7 @@ import { acquireBackdropCanvas, returnBackdropCanvas } from "./backdropCanvasPoo
 import { useActiveScene } from "../../scene/useScene";
 import { backdropThemeFromScene, type ScenePalette } from "../../scene/scenePalette";
 import { SceneImageLayer } from "../../scene/SceneImageLayer";
+import type { ScenePreferences } from "../../scene/scenePreferences";
 
 export {
   BACKDROP_FRAME_MS,
@@ -60,6 +61,7 @@ export function WorkToolPickerBackdrop({
   clockOrigin,
   field,
   colors,
+  untouchedScene,
 }: {
   theme: ThemeId;
   /**
@@ -75,6 +77,8 @@ export function WorkToolPickerBackdrop({
   clockOrigin?: number;
   /** `window`: draw this box's part of one window-sized field; see `createBackdropRenderer`. */
   field?: "window";
+  /** The scene for a person who never picked one; see `useActiveScene`. */
+  untouchedScene?: ScenePreferences;
 }) {
   // The canvas comes from the pool (`backdropCanvasPool.ts`) and is placed in
   // this host, so a remount reuses the last backdrop's WebGL context.
@@ -95,7 +99,7 @@ export function WorkToolPickerBackdrop({
   }, [themeId, customThemes]);
   // A scene picture either fills the window field itself or, everywhere else
   // (and when the user asked for colours only), lends the mesh its colours.
-  const scene = useActiveScene();
+  const scene = useActiveScene({ untouched: untouchedScene });
   const showPicture = !colors && field === "window" && scene.kind === "image" && scene.showImage;
   // The `plain` scene: the flat CSS background below, with no mesh and no loop.
   const still = !colors && scene.kind === "plain";

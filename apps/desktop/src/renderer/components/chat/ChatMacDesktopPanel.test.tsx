@@ -448,13 +448,18 @@ describe("ChatMacDesktopPanel captures", () => {
     macDesktop.getStatus.mockResolvedValue(makeStatus({
       recording: { ...RUNNING, startedAt: new Date(Date.now() - 12_000).toISOString() },
     }));
-    macDesktop.stopRecording.mockResolvedValue({
+    const stopped = {
       ...RUNNING,
       running: false,
       filePath: "/Users/me/.ade/artifacts/clip.mp4",
       durationMs: 12_000,
       proofArtifactId: "artifact-1",
       bytes: 3 * 1024 * 1024,
+    };
+    macDesktop.stopRecording.mockImplementation(async () => {
+      // Like the real host: once stopped, a status read says so.
+      macDesktop.getStatus.mockResolvedValue(makeStatus({ recording: stopped }));
+      return stopped;
     });
 
     renderPanel();

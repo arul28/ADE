@@ -70,7 +70,8 @@ function load(): void {
     (result) => {
       if (current !== generation) return;
       // The lane computers outlive this read, for the composer and chat chips.
-      if (result?.state === "ok") noteCloudLaneMachines(result.machines);
+      // An unread list (the web app with no computer online) is not "no computers": keep the last index.
+      if (result?.state === "ok" && !result.computersUnread) noteCloudLaneMachines(result.machines);
       // And the account, for the header, the invite pill and Settings › Account.
       noteCloudAccountRead(result);
       publish({ result, loadError: null });
@@ -144,7 +145,8 @@ export function refreshCloudMachines(): void {
   if (!listMachines) return;
   void listMachines().then(
     (result) => {
-      if (result?.state === "ok") noteCloudLaneMachines(result.machines);
+      // An unread list (the web app with no computer online) is not "no computers": keep the last index.
+      if (result?.state === "ok" && !result.computersUnread) noteCloudLaneMachines(result.machines);
       noteCloudAccountRead(result);
     },
     (error: unknown) => captureError(error, { fingerprint: ["cloud", "machines_refresh"], handled: true }),

@@ -48,9 +48,15 @@
   // invoice.paid and invoice.payment_failed. Set out of band. Without them the
   // billing routes answer 503, the webhook answers 503, and no hours are reported.
   //
-  // CLOUD_ACCESS_ACCOUNTS (ADE Cloud, deliberately absent below)
-  // A comma list of Clerk user ids, or `*`. Unset means nobody: every /cloud
-  // route answers 404. The owner's id is set at rollout, out of band.
+  // CLOUD_CREATES_PAUSED (ADE Cloud kill switch, deliberately absent below)
+  // "1" refuses every new computer, copy and launch with a plain message;
+  // existing computers keep working (wakes, moves, chats). Set it out of band
+  // (`wrangler secret put` or a dashboard var) only while it is needed.
+  //
+  // SECRET — CLOUD_OWNER_TOKEN (ADE Cloud owner routes)
+  // 32 random bytes, base64 (`openssl rand -base64 32`). The bearer of
+  // `POST /cloud/owner/block` and `/cloud/owner/unblock` (src/cloud/safety.ts).
+  // Set out of band. Unset, those routes answer 503.
   //
   // SECRET — CLOUD_CHAT_MASTER_KEY (ADE Cloud, saved chats)
   // 32 random bytes, base64 (`openssl rand -base64 32`). Seals the per-user key

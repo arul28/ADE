@@ -1,7 +1,29 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll } from "vitest";
+import { afterAll, vi } from "vitest";
+import { windowsScaledTimeout } from "../../vitest.timeouts";
+
+// vi.waitFor and vi.waitUntil give up after 1 s unless told otherwise, and
+// nearly every call leaves that default, so a loaded CI runner failed tests
+// that pass (see apps/desktop/src/test/setup.ts, which does the same). A wait
+// returns as soon as its check passes, so a longer ceiling costs a passing
+// test nothing. 4 s stays under this package's 5 s test timeout, so a real
+// failure still reports the wait's own message. An explicit timeout wins.
+const DEFAULT_WAIT_TIMEOUT_MS = windowsScaledTimeout(4_000);
+type WaitOptions = number | { timeout?: number; interval?: number } | undefined;
+function withDefaultWaitTimeout(options: WaitOptions): { timeout?: number; interval?: number } {
+  if (typeof options === "number") return { timeout: options };
+  return { ...options, timeout: options?.timeout ?? DEFAULT_WAIT_TIMEOUT_MS };
+}
+{
+  const originalWaitFor = vi.waitFor.bind(vi);
+  const originalWaitUntil = vi.waitUntil.bind(vi);
+  vi.waitFor = ((callback: Parameters<typeof vi.waitFor>[0], options?: WaitOptions) =>
+    originalWaitFor(callback, withDefaultWaitTimeout(options))) as typeof vi.waitFor;
+  vi.waitUntil = ((callback: Parameters<typeof vi.waitUntil>[0], options?: WaitOptions) =>
+    originalWaitUntil(callback, withDefaultWaitTimeout(options))) as typeof vi.waitUntil;
+}
 
 type TestTempTrackerState = {
   installed: boolean;

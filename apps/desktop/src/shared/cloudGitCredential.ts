@@ -9,7 +9,9 @@ export type AccountGitCredentialSource =
   /** A pasted GitHub token (vault `integration/github`, `githubPatAccountSync.ts`). */
   | "pat"
   /** A `gh` CLI login copied to the account (vault `integration/github-cli`, written once PR #2186 lands). */
-  | "gh";
+  | "gh"
+  /** The ADE account's GitHub App sign-in: a cloud computer's git asks the account for its token (`githubAppGrant.ts`). */
+  | "app";
 
 export type AccountGitCredential =
   | { ok: true; source: AccountGitCredentialSource }

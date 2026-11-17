@@ -51,8 +51,10 @@ carries the provider's own explanation, cleaned: `cloudRefusalMessage` in
 
 `getCloudProvider(deps)` returns ADE Cloud for this account, or null. It needs a
 signed-in ADE account. The bearer is the account token; no provider key exists
-on any desktop or brain. `/cloud/access` is read at most every 10 minutes per
-account (a cached yes survives a failed check). The `signedOut`, `no_access` and
+on any desktop or brain. ADE Cloud is open to every signed-in account: the
+server has no access list, and `/cloud/access` answers `{ enabled: true }` for
+builds that ask, or `{ enabled: false }` for an account on the block list. It is read at most every 10 minutes per account (a cached
+yes survives a failed check). The `signedOut`, `no_access` and
 `unreadable` states keep their sentences (`requireCloudProvider`,
 `readCloudStatus`).
 
@@ -93,6 +95,9 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | The dashboard in Settings › ADE Cloud, and the lane pieces (cities, job card, tier change, lanes without a computer) | `apps/desktop/src/renderer/components/settings/cloudDashboard/*`, `apps/desktop/src/renderer/components/cloudLane/*` |
 | Server: automatic updates, lanes without a computer, the disk usage report (migrations `0020`, `0021`, `0022` in `apps/account-directory/migrations/`) | `apps/account-directory/src/cloud/updates.ts`, `lanesWithoutComputer.ts`, `diskUsage.ts` |
 | A default-size launch moving its computer from Small to Medium when setup runs out of memory, and the repository remembered (migration `0036`) | `apps/ade-cli/src/services/power/cloudSetupUpsize.ts`, `apps/account-directory/src/cloud/launches.ts` (`launchAutoSizeCheck`, `startSizeOf`) |
+| Server safety: block list, card rule, kill switch, hourly limits, owner alerts (migration `0037`) | `apps/account-directory/src/cloud/blocks.ts`, `safety.ts`, `costReport.ts` (free-use cap) |
+| Server launches from the web and the phone: queued messages, sign-in status, models (migration `0038`) | `apps/account-directory/src/cloud/launches.ts`, `launchMessages.ts`, `accountSignIns.ts`, `models.ts` |
+| The cloud computer's side of a launch: sign-in wait, queued messages | `apps/ade-cli/src/services/account/cloudBootLaunch.ts`, `cloudLaunchSignInWait.ts`, `cloudLaunchMessages.ts` |
 
 Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`,
 `cloudSignIns.ts`, `cloudTiers.ts` (the four lane sizes, read from the catalog)
@@ -114,6 +119,23 @@ that stops (see Sleep and busy rules).
   Sizes, Invite friends, Sign-ins and what agents may do alone, with the
   80% / 95% / out-of-hours banners and computers due for deletion. Settings
   entries are `integrations.ade-cloud*`.
+- **The web app:** the same page (`web: "account"` in the manifest), reached
+  from the top bar's Settings with no project or computer, as on the desktop.
+  Whether ADE Cloud is on comes from `GET /cloud/access` (kept a minute). The
+  computers come from a connected computer's brain; with none online the
+  page reads the plan and hours from `GET /cloud/account` and says the
+  computers show once one is online (`CloudMachinesResult.computersUnread`).
+  The plan and billing calls go from the
+  browser to the account server with the browser's own account token
+  (`webclient/adapter/cloudBilling.ts`, `BrowserAccountClient.cloudRequest`,
+  only `GET /cloud/access`, `GET /cloud/account` and the `/cloud/billing/*`
+  routes). Stripe opens in the same tab with `returnTo: "web"`, so it sends
+  the person back to the web app's Settings › ADE Cloud, not the server's
+  "go back to ADE" page. The billing routes ask for no recent sign-in. A
+  browser whose sign-in ended signs in again from the click and comes back
+  to the page (a checkout to its plan's checkout). The website's plan
+  buttons link to `app.ade-app.dev/?cloudPlan=<plan>`; see
+  [Web client deeplinks](../web-client/README.md#deeplinks).
 - **Add a computer:** a new lane on ADE Cloud makes its own computer. The old
   "New ADE Cloud computer" form and the ready machines are gone (Cloud 5);
   `ade cloud create` and the phone still make a bare computer.
@@ -557,26 +579,47 @@ seen on one computer), and the failures `cloud.free_plan.settle_failed`,
 ## Owner cost protection
 
 The Worker estimates what ADE Cloud costs this month (`costReport.ts`, every
-10 minutes, from awake time and disk at the provider's prices) and keeps it in
-`cloud_settings.cost_mtd_micros`. When `cloud_settings.owner_cost_limit_usd`
-is set and reached, creates, copies, moves and grows are refused (`owner_limit`)
-and the owner gets one email a day; waking, sleeping and deleting still work.
-With no limit set nothing is enforced, and the daily run logs that once. The
-daily run also writes `cloud_account_days` (cost and income per account),
-raises alarms (a paid account that costs more than it pays, a free one past
-$3 a month, a day at twice the week's mean) and emails the owner the report.
+10 minutes, from awake time and disk at the provider's prices). It keeps two
+numbers in `cloud_settings`: `cost_mtd_micros` (all use) and
+`free_cost_mtd_micros` (use on free-plan rules only). Each settled
+computer-day and disk-day carries the plan it ran on
+(`cloud_computer_days.free_cost_micros`, `cloud_disk_days.free`).
 
-Below the limit, the owner check also emails the owner once each time this
-calendar month's estimate passes another $50 (`OWNER_COST_STEP_USD`): the step,
-the estimate, the limit and how far away it is, and the three accounts that
-cost the most this month. A jump over several steps sends one email, for the
-highest. The step at or above the limit is left to the limit's own email.
+`cloud_settings.owner_cost_limit_usd` is a cap on free use only. When free use
+reaches it, an account on free-plan rules (a past-due paid account included)
+gets no new computer, copy, move or disk growth (`owner_limit`). A paid
+account is never refused, and waking, sleeping and deleting always work. The
+owner gets an email at 50%, 80% and 100% of the cap, once each a month and
+cap (a raised cap alerts again at its own steps), with the free accounts that
+cost the most and the command that blocks each one. With no cap set, nothing
+is enforced.
+
+Separately, the owner check emails the owner once each time this calendar
+month's estimate of all use passes another $50 (`OWNER_COST_STEP_USD`): the
+step, the estimate, the cap, and the three accounts that cost the most this
+month. A jump over several steps sends one email, for the highest.
 `cloud_settings.owner_cost_step_alert` keeps the month and the last step
-(`2026-11:150`); a new month starts again at $50. The check claims the step
-with a conditional write before it sends, so two checks at once send one
-email, and a send that fails gives the step back for the next check. The
-limit's own email does the same: a failed send is tried at the next check,
-not a day later.
+(`2026-11:150`); a new month starts again at $50. Both kinds of email claim
+their key with a conditional write before they send, so two checks at once
+send one email, and a send that fails gives the key back for the next check.
+
+The daily run writes `cloud_account_days` (cost and income per account),
+raises alarms (a paid account that costs more than it pays, a free one past
+$3 a month, a day at twice the week's mean) and emails the owner the daily
+report: sign-ups, cloud hours, the month's cost (free and paid use), blocks
+and alerts.
+
+## Safety
+
+The block list, the one-card-per-free-account rule, the kill switch
+(`CLOUD_CREATES_PAUSED`), the hourly limits on new computers and launches,
+and the owner alerts are described in `apps/account-directory/README.md`,
+"ADE Cloud safety". In short: the owner blocks an account with
+`POST /cloud/owner/block` and the `CLOUD_OWNER_TOKEN` bearer. The block cuts
+each computer off the internet (`deny-all`), stops it, cancels the
+subscription with no refund, and puts the account's GitHub account and saved
+cards on the block list. Every `/cloud` route then answers
+`403 account_blocked`.
 
 ## Stored data
 
@@ -978,6 +1021,24 @@ launch
   one is refused (`git_credential_missing`) with the "Connect GitHub"
   sentence. A vault or GitHub that doesn't answer goes on, with a log line.
   An automation's run (no token) uses what its rule's registration read.
+- **From the web and the phone.** A caller with no computer starts a launch
+  with `project: { accountProjectId }` and may leave out `lane` and
+  `sizeId` (a new lane named from the first message, Small).
+  `GET /cloud/launches?active=1` lists the launches still in progress, so a
+  reopened tab finds them again.
+- **Sign-in on the computer.** A provider that signs in on a computer (Claude
+  with a pasted code, the device-code providers) reports the stage
+  `waiting_for_sign_in` with a `signIn` payload (code, sign-in page). The
+  caller shows it, and the result goes to the account vault, so later
+  computers start signed in (`cloudLaunchSignInWait.ts`). The computer waits
+  30 minutes; the server fails the launch after 45 (`CLOUD_LAUNCH_SIGN_IN_TIMED_OUT`).
+- **Queued messages.** The first message is kept with the launch. Messages
+  sent before the chat exists queue on the server
+  (`/cloud/launches/:id/messages`, `launchMessages.ts`, migration `0038`), so
+  the person may close the tab. Once the chat exists, the computer claims
+  each one with a claim id, sends it, and reports it. A claim is one
+  conditional write, so each message is sent once
+  (`apps/ade-cli/src/services/account/cloudLaunchMessages.ts`).
 
 ### Automations whose home is ADE Cloud (C9)
 

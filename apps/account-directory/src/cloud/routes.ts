@@ -1,7 +1,7 @@
 import { authenticate } from "../callerToken";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
-import { CloudBillingError, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours } from "./billing";
+import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours, webReturnUrl, type BillingReturnUrlFor } from "./billing";
 import { parseSustainedCpuReport, recordSustainedCpu } from "./abuseSignals";
 import { buildAccountState } from "./accountState";
 import { routeSavedChats } from "./chats";
@@ -12,6 +12,8 @@ import { trustedHttpsOrigin } from "../trustedOrigin";
 import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, routeLaunches } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
 import { serverGitCheck } from "./accountVault";
+import { routeAccountSignIns } from "./accountSignIns";
+import { handleCloudModels } from "./models";
 import { handleAutomationDelivery, isAutomationDeliveryRequest, noteAutomationLaunchProgress, routeAutomations } from "./automations";
 import { routeProjectComputersDelete } from "./projectComputers";
 import { routeSignIns } from "./signIns";
@@ -31,9 +33,12 @@ import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage
 import { ignoredFilesStatement, keepIdleComputer, parseIgnoredFiles, recordIdleUse } from "./idleCleanup";
 import { CLOUD_PATHS, cloudAutoSizeRefusalSentence, formatCloudCents, overPlanLimitsSentence, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
 import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
-import { ownerLimitState } from "./costReport";
+import { freeCapRefuses } from "./costReport";
+import { accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
+import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
+import { INSTANCE_LIST_TTL_S, listInstancesCached } from "./instanceListCache";
 import { boundedDisplayText } from "../displayText";
-import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
+import { UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson } from "./http";
 import {
   AWAKE_COMPUTER_CAP,
   DISK_ON_CREATE_GB,
@@ -129,7 +134,6 @@ const FREE_WAKE_COOLDOWN_MS = 24 * 60 * 60_000;
 
 const NOT_FOUND_MESSAGE = "ADE Cloud has no such computer.";
 const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
-const badRequest = (message: string) => fail("bad_request", message, 400);
 const outOfHours = () => fail("out_of_hours", "You're out of ADE Cloud hours for this period.", 402);
 const badDiskStep = () => badRequest(`Disk grows in steps of ${DISK_STEP_GB} GB.`);
 const noProviderKey = () => fail("unavailable", cloudErrorMessage("no_provider_key", 503), 503);
@@ -137,7 +141,7 @@ const noProviderKey = () => fail("unavailable", cloudErrorMessage("no_provider_k
 const diskChanged = () => fail("disk_limit", "Your computers' disk changed while this ran. Try again.", 409);
 
 const CANT_MAKE_COMPUTER_MESSAGE = "ADE Cloud can't make a computer right now. Try again soon.";
-/** The owner's cost limit is reached: nothing new, no disk growth. Never names why. */
+/** A free account at the owner's free-use cap: nothing new, no disk growth. Never names why. */
 const cantMakeComputer = () => fail("unavailable", CANT_MAKE_COMPUTER_MESSAGE, 503);
 const cantGrowDisk = () => fail("disk_limit", "ADE Cloud can't grow this disk right now. Try again later.", 403, { reason: "unavailable" satisfies CloudDiskRefusalReason });
 
@@ -356,6 +360,17 @@ async function wakeBlocker(env: CloudEnv, userId: string, now: number): Promise<
   return { account, blocked: empty ? { response: outOfHours(), refusal: "out_of_hours" } : overPlanDisk(account, computers) };
 }
 
+/**
+ * A start or wake of an existing computer reads the block fresh: the request
+ * check's answer can be 30 s old (`isCloudBlockedForRequest`).
+ */
+async function blockedNow(env: CloudEnv, userId: string): Promise<Response | null> {
+  return await isCloudBlocked(env, userId) ? accountBlocked() : null;
+}
+
+/** The instance actions that start, restart or wake the computer. */
+const WAKING_ACTIONS: ReadonlySet<string> = new Set(["POST start", "POST update", "POST resize"]);
+
 /** Writes the status from a provider answer, on change only. */
 async function recordStatus(env: CloudEnv, computer: ComputerRow, status: string, now: number, reason: string): Promise<void> {
   const statements = statusChangeStatements(env, computer, status, now, reason);
@@ -568,8 +583,12 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   const action = isMove ? "move" : "create";
   const { metadata, requestId } = withRequestId(clientMetadata);
   const { track, refuse } = cloudActionTracker({ env, waitUntil, userId, plan: planIdOf(account), origin: originOf(clientMetadata), key: requestId, refusedAction: action, now });
+  // The owner's kill switch (a move replaces a computer, so it still runs) and the hourly limit.
+  const newWork = await newWorkRefusal(env, userId, isMove ? "move" : "create", now, waitUntil);
+  if (newWork) return refused(newWork);
   if (empty) return refused(refuse({ response: outOfHours(), refusal: "out_of_hours" }));
-  if ((await ownerLimitState(env)).reached) return refused(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
+  // The owner's cap limits free use only: a paid account is never refused here.
+  if (await freeCapRefuses(env, account, now, waitUntil)) return refused(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
   // A move replaces its computer, so it adds nothing: only a new computer waits for the account to fit.
   const over = isMove ? null : overPlanLimits(env, account, computers);
   if (over) return refused(refuse(over));
@@ -623,6 +642,8 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
       diskDayStatement(env, account, now),
       ...(extras.onMade?.(instance) ?? []),
     ]);
+    // A block that landed while the provider made it (a launch mid-create): stopped now, cut off the internet.
+    await enforceBlockAfterCreate(env, provider, userId, instance.id, Date.now());
     track({ action, tier: tierOf(size) });
     return { kind: "made", instance, answer: withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null }, targets) };
   } catch (error) {
@@ -650,8 +671,10 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
   const { track, refuse } = cloudActionTracker({
     env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: originOf(metadataIn), key: computer.instance_id, refusedAction: "copy", now,
   });
+  const newWork = await newWorkRefusal(env, computer.user_id, "copy", now, waitUntil);
+  if (newWork) return newWork;
   if (empty) return refuse({ response: outOfHours(), refusal: "out_of_hours" });
-  if ((await ownerLimitState(env)).reached) return refuse({ response: cantMakeComputer(), refusal: "owner_limit" });
+  if (await freeCapRefuses(env, account, now, waitUntil)) return refuse({ response: cantMakeComputer(), refusal: "owner_limit" });
   const over = overPlanLimits(env, account, computers);
   if (over) return refuse(over);
 
@@ -698,6 +721,7 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
       ...adoptionStatements(env, { pendingId: reservation.pendingId, instance, machineKey: metadata.ade_machine_key ?? null, now: Date.now(), reason: "copy" }),
       diskDayStatement(env, account, now),
     ]);
+    await enforceBlockAfterCreate(env, provider, computer.user_id, instance.id, Date.now());
     track({ action: "copy", tier: tierOf(size) });
     return json(instance, 201);
   } catch (error) {
@@ -801,7 +825,7 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     // Reserved in one write, so two grows at once can't pass the shared limit together.
     // Already this size on the row: a retry, and its room is already held.
     if (nextDisk !== computer.disk_gb) {
-      if ((await ownerLimitState(env)).reached) return refuse({ response: cantGrowDisk(), refusal: "owner_limit" });
+      if (await freeCapRefuses(env, account, now, waitUntil)) return refuse({ response: cantGrowDisk(), refusal: "owner_limit" });
       // The other computers plus this one at its new size (a move's source too, while its move runs).
       const room = await diskRoom(env, account, await accountDiskGb(env, computer.user_id, computer.instance_id) + nextDisk, now);
       if (!room.ok) return refuse(room);
@@ -1063,6 +1087,8 @@ async function handleExec(request: Request, env: CloudEnv, computer: ComputerRow
     : undefined;
   const asleep = !isMeteredStatus(computer.status);
   if (asleep) {
+    const accountBlock = await blockedNow(env, computer.user_id);
+    if (accountBlock) return accountBlock;
     const { blocked } = await wakeBlocker(env, computer.user_id, now);
     if (blocked) return blocked.response;
     const capped = await awakeRoom(env, computer, now, AWAKE_CAP_WAIT_MS);
@@ -1085,8 +1111,11 @@ async function handleTemplate(env: CloudEnv, provider: CloudProvider): Promise<R
 }
 
 async function handleList(env: CloudEnv, userId: string, provider: CloudProvider): Promise<Response> {
-  const all = await provider.listInstances();
   const [rows, targets] = await Promise.all([listComputers(env, userId), readUpdateTargets(env)]);
+  // The provider list is kept a few seconds (`instanceListCache.ts`), except right after this account's rows changed.
+  const changedSince = Date.now() - INSTANCE_LIST_TTL_S * 1000;
+  const fresh = rows.some((row) => isPendingId(row.instance_id) || row.created_at > changedSince || row.status_changed_at > changedSince);
+  const all = await listInstancesCached(provider, fresh);
   const owned = new Set<string>();
   const pendingRequestIds = new Map<string, string>();
   const rowById = new Map<string, ComputerRow>();
@@ -1234,8 +1263,14 @@ async function routeInstance(request: Request, env: CloudEnv, provider: CloudPro
     if (request.method === "DELETE") return handleDelete(request, env, computer, provider, ctx);
     return notFound();
   }
-  const handler = instanceRoutes[`${request.method} ${action}`];
-  return handler ? handler(request, env, computer, provider, ctx) : notFound();
+  const key = `${request.method} ${action}`;
+  const handler = instanceRoutes[key];
+  if (!handler) return notFound();
+  if (WAKING_ACTIONS.has(key)) {
+    const blocked = await blockedNow(env, userId);
+    if (blocked) return blocked;
+  }
+  return handler(request, env, computer, provider, ctx);
 }
 
 /** A timed wake must name the caller's own computer and that computer's own wake address. */
@@ -1262,6 +1297,48 @@ const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.
 /** The most a person may set as extra disk's monthly limit, in dollars. */
 const EXTRA_DISK_LIMIT_MAX_USD = 1000;
 
+/**
+ * Where Stripe sends the person back: this server's own page, or the hosted
+ * web client when the request asks for it (`returnTo: "web"`). The web
+ * address is this server's own `WEB_CLIENT_ORIGIN`, never one the request
+ * names, so no request can make Stripe send anyone anywhere else. Null for a
+ * `returnTo` this server can't honour (an unknown value, or no web client).
+ */
+function billingReturnOf(env: CloudEnv, url: URL, returnTo: unknown): BillingReturnUrlFor | null {
+  if (returnTo === undefined) return accountReturnUrl(env, url.origin);
+  if (returnTo !== "web") return null;
+  const webOrigin = trustedHttpsOrigin(env.WEB_CLIENT_ORIGIN, { requireExactOrigin: true });
+  return webOrigin ? webReturnUrl(webOrigin) : null;
+}
+
+/** `POST /cloud/billing/checkout`: buy a plan, or change to another one. */
+async function routeCheckout(
+  env: CloudEnv,
+  userId: string,
+  body: Record<string, unknown>,
+  back: BillingReturnUrlFor,
+  offers: ReturnType<typeof cloudOffers>,
+  { now, waitUntil }: CloudRequestContext,
+): Promise<Response> {
+  // Builds that know one paid plan send no body: that's Plus.
+  if (body.plan !== undefined && !(body.plan === "plus" || (body.plan === "pro" && offers.pro) || (body.plan === "max" && offers.max))) {
+    return badRequest("That plan isn't one ADE Cloud offers.");
+  }
+  // A downgrade's pick: the computers ADE frees, and whether their work is pushed first.
+  const cleanup = body.cleanup === undefined ? undefined : readPlanCleanupPick(body.cleanup);
+  if (cleanup === null) return badRequest("Name the computers to free and whether to push their work first.");
+  // A build from before Max reads a Max plan as Plus, so its "Move to Pro" would be a silent downgrade.
+  // Builds that know Max say so (`knowsMax`); an older one changes a Max plan only in the billing portal.
+  if (body.knowsMax !== true) {
+    const bought = await env.DB.prepare("select plan, paid_plan from cloud_accounts where user_id = ?").bind(userId).first<{ plan: string; paid_plan: string | null }>();
+    if (bought?.plan === "paid" && bought.paid_plan === "max") {
+      logCloud("cloud.plan_change_old_build_refused", { userId });
+      return fail("update_needed", "Update ADE to change your Max plan, or change it in Manage billing.", 409);
+    }
+  }
+  return json(await createCheckoutUrl(env, userId, back, now, isPaidPlanId(body.plan) ? body.plan : undefined, waitUntil, cleanup));
+}
+
 /** The billing routes, or null when `path` isn't one of them. */
 async function routeBilling(request: Request, url: URL, path: string, env: CloudEnv, userId: string, { now, waitUntil }: CloudRequestContext): Promise<Response | null> {
   if (!BILLING_PATHS.has(path)) return null;
@@ -1270,29 +1347,16 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
   // Not set up yet: as if it didn't exist.
   if (path === CLOUD_PATHS.billingExtraDisk && !offers.extraDisk) return notFound();
   try {
-    if (path === CLOUD_PATHS.billingPortal) return json(await createPortalUrl(env, userId, url.origin, now));
-    // A card saved with no charge starts the free hours of a GitHub account younger than 30 days.
-    if (path === CLOUD_PATHS.billingFreeUnlock) return json(await createFreeUnlockUrl(env, userId, url.origin, { now, waitUntil }));
+    // The desktop sends the portal no body, which reads as `{}`.
     const body = await readJson(request);
     if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-    if (path === CLOUD_PATHS.billingCheckout) {
-      // Builds that know one paid plan send no body: that's Plus.
-      if (body.plan !== undefined && !(body.plan === "plus" || (body.plan === "pro" && offers.pro) || (body.plan === "max" && offers.max))) {
-        return badRequest("That plan isn't one ADE Cloud offers.");
-      }
-      // A downgrade's pick: the computers ADE frees, and whether their work is pushed first.
-      const cleanup = body.cleanup === undefined ? undefined : readPlanCleanupPick(body.cleanup);
-      if (cleanup === null) return badRequest("Name the computers to free and whether to push their work first.");
-      // A build from before Max reads a Max plan as Plus, so its "Move to Pro" would be a silent downgrade.
-      // Builds that know Max say so (`knowsMax`); an older one changes a Max plan only in the billing portal.
-      if (body.knowsMax !== true) {
-        const bought = await env.DB.prepare("select plan, paid_plan from cloud_accounts where user_id = ?").bind(userId).first<{ plan: string; paid_plan: string | null }>();
-        if (bought?.plan === "paid" && bought.paid_plan === "max") {
-          logCloud("cloud.plan_change_old_build_refused", { userId });
-          return fail("update_needed", "Update ADE to change your Max plan, or change it in Manage billing.", 409);
-        }
-      }
-      return json(await createCheckoutUrl(env, userId, url.origin, now, isPaidPlanId(body.plan) ? body.plan : undefined, waitUntil, cleanup));
+    if (path === CLOUD_PATHS.billingPortal || path === CLOUD_PATHS.billingFreeUnlock || path === CLOUD_PATHS.billingCheckout) {
+      const back = billingReturnOf(env, url, body.returnTo);
+      if (!back) return badRequest("ADE Cloud can't send you back there after billing.");
+      if (path === CLOUD_PATHS.billingPortal) return json(await createPortalUrl(env, userId, back, now));
+      // A card saved with no charge starts the free hours of a GitHub account younger than 30 days.
+      if (path === CLOUD_PATHS.billingFreeUnlock) return json(await createFreeUnlockUrl(env, userId, back, { now, waitUntil }));
+      return await routeCheckout(env, userId, body, back, offers, { now, waitUntil });
     }
     if (path === CLOUD_PATHS.billingPlanCleanup) {
       const pick = readPlanCleanupPick(body);
@@ -1392,6 +1456,10 @@ export async function handleCloudRequest(request: Request, env: CloudEnv, waitUn
 async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: CloudWaitUntil): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, "") || "/";
+  // The owner's block routes: CLOUD_OWNER_TOKEN is the proof, never an account token.
+  if (isCloudOwnerRequest(path)) {
+    return providerCall(() => handleCloudOwnerRequest(request, env, path, { provider: providerFor(env), now: Date.now(), waitUntil }));
+  }
   // The new computer's join has no account token yet: its one-time code is the proof.
   if (isLaunchJoinRequest(path, request.method)) {
     return providerCall(() => handleLaunchJoin(request, env, path, { provider: providerFor(env), now: Date.now() }));
@@ -1412,15 +1480,19 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
       ? fail("unavailable", "ADE Cloud can't check your sign-in right now. Try again soon.", 503)
       : fail("unauthorized", "Sign in to ADE to use ADE Cloud.", 401);
   }
-  const allowed = cloudAccessAllows(env, caller.userId);
+  // Every account may use ADE Cloud, except one the owner blocked (`safety.ts`).
+  const blocked = await isCloudBlockedForRequest(env, caller.userId);
   if (path === CLOUD_PATHS.access) {
+    // Older apps still ask before they show ADE Cloud.
     if (request.method !== "GET") return fail("not_found", NOT_FOUND_MESSAGE, 404);
-    return json({ enabled: allowed });
+    return json({ enabled: !blocked });
   }
-  if (!allowed) return notFound();
+  if (blocked) return accountBlocked();
   if (isCloudWakeRequest(url)) {
     // Scheduled work is refused at 0 hours; a timed wake would break the stop.
     if (request.method === "PUT") {
+      const accountBlock = await blockedNow(env, caller.userId);
+      if (accountBlock) return accountBlock;
       const { blocked } = await wakeBlocker(env, caller.userId, Date.now());
       if (blocked) return blocked.response;
       const refused = await refuseForeignWake(request.clone(), env, caller.userId);
@@ -1448,12 +1520,15 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (billing) return billing;
   // Saved chats need no provider: they stay readable when the computer can't be.
   if (path === CLOUD_PATHS.chats || path.startsWith(`${CLOUD_PATHS.chats}/`)) {
-    return routeSavedChats(request, url, path, env, caller.userId, now);
+    return routeSavedChats(request, url, path, env, caller.userId, now, waitUntil);
   }
   // Lanes without a computer are rows only: readable with no provider, like saved chats.
   if (path === CLOUD_PATHS.lanesWithoutComputer || path.startsWith(`${CLOUD_PATHS.lanesWithoutComputer}/`)) {
     return routeLanesWithoutComputer(request, path, env, caller.userId);
   }
+  // The account vault's ADE Cloud sign-ins, for the web (status only), and the model list: no provider needed.
+  if (path === CLOUD_PATHS.signIns || path.startsWith(`${CLOUD_PATHS.signIns}/`)) return routeAccountSignIns(request, path, env, now);
+  if (path === CLOUD_PATHS.models) return handleCloudModels(request);
   // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.
   if (path === CLOUD_PATHS.launches || path.startsWith(`${CLOUD_PATHS.launches}/`)) {
     const authorization = request.headers.get("authorization");
@@ -1461,7 +1536,9 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
       provider,
       now,
       createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, ctx),
-      gitCheck: (origin) => serverGitCheck(env, authorization, origin),
+      gitCheck: (origin) => serverGitCheck(env, authorization, origin, caller.userId),
+      // A new launch makes a computer: the owner's kill switch and the hourly limit (never a replay of one).
+      refuseNewLaunch: () => newWorkRefusal(env, caller.userId, "launch", now, waitUntil),
       onProgress: (record) => noteAutomationLaunchProgress(env, record, { now }),
     }));
   }
@@ -1502,7 +1579,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
           isAwake: isMeteredStatus(computer.status),
           isStopped: computer.status === "stopped",
           startStopped: async () => recordStatus(env, computer, await provider.startInstance(computer.instance_id), now, "sign_in"),
-          wakeBlocked: async () => (await wakeBlocker(env, caller.userId, now)).blocked?.response
+          wakeBlocked: async () => (await blockedNow(env, caller.userId))
+            ?? (await wakeBlocker(env, caller.userId, now)).blocked?.response
             ?? (await awakeRoom(env, computer, now))?.response ?? null,
         });
       }

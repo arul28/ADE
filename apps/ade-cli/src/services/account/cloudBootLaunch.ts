@@ -23,6 +23,13 @@
  *      per launch). The last one is retried with a backoff, and a later boot
  *      sends it when it still couldn't land.
  *
+ * A chat whose provider isn't signed in here pauses before its start
+ * (`waiting_for_sign_in`): this brain starts the provider's own sign-in for
+ * a person on another screen (or names the key or ADE desktop step), reports
+ * it, and goes on by itself once the provider can run. Messages the person
+ * sent while the chat didn't exist are kept by the server; once the chat
+ * started with the first one, each is claimed, sent once, and reported.
+ *
  * Never a password and never a provider sign-in: the person's own account
  * approves the computer, and their providers come from the account vault.
  * The join code leaves this process's env as soon as it is read, so nothing
@@ -36,9 +43,14 @@ import type {
   CloudLaunchRecord,
   CloudLaunchStage,
   CloudLaunchStagesUpdate,
+  CloudRemoteSignInStatus,
   CloudServerLaunchRequest,
 } from "../../../../account-directory/src/cloud/contract";
-import { CLOUD_AUTOMATION_RUN_STAGE, CLOUD_LAUNCH_ENV, CLOUD_LAUNCH_MAX_STAGES } from "../../../../account-directory/src/cloud/contract";
+import {
+  CLOUD_AUTOMATION_RUN_STAGE,
+  CLOUD_LAUNCH_ENV,
+  CLOUD_LAUNCH_MAX_STAGES,
+} from "../../../../account-directory/src/cloud/contract";
 import type { CloudProvider } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { parseChatLaunchArgs } from "../../../../desktop/src/main/services/chat/chatLaunchArgs";
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
@@ -54,6 +66,8 @@ import { isUuid } from "../../../../desktop/src/shared/uuid";
 import type { ProjectRegistry } from "../projects/projectRegistry";
 import type { AccountAuthService } from "./accountAuthService";
 import type { HeadlessApprovalResult } from "./cloudHeadlessApproval";
+import { deliverQueuedMessagesWithRetry, isFinalRefusal } from "./cloudLaunchMessages";
+import { SIGN_IN_STAGE, SIGN_IN_WAIT_MS, waitForProviderSignIn, type ProviderReady } from "./cloudLaunchSignInWait";
 
 type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
@@ -87,12 +101,29 @@ export type CloudBootLaunchDeps = {
   afterJoin?: () => Promise<void>;
   /** Holds the computer awake from the join to the hand-off (nothing on its busy list sees them). */
   hold?: <T>(run: () => Promise<T>) => Promise<T>;
+  /** Holds the computer awake for one named step, up to `ttlMs` (the provider sign-in wait outlasts `hold`'s limit). */
+  holdFor?: <T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>;
   /**
    * Resolves once the launch's chat ended its run (its turn finished, or it
    * stopped). For an automation's run (C9) the computer then reports the
    * `run` stage, and ADE Cloud saves its chats, pushes its work and frees it.
    */
   waitForChatEnd?: (projectId: string, sessionId: string) => Promise<{ ok: boolean; error?: string | null }>;
+  /**
+   * Whether the chat's provider can run here now: `missing` pauses the launch
+   * for a sign-in; `unknown` goes on (the chat says so if it can't). Left
+   * out, nothing pauses (`createProviderReady` builds it).
+   */
+  providerReady?: ProviderReady;
+  /** The provider's own sign-in for a person on another screen (`ade providers sign-in --remote`). */
+  remoteSignIn?: {
+    start: (provider: string) => Promise<CloudRemoteSignInStatus>;
+    status: (jobId: string) => Promise<CloudRemoteSignInStatus>;
+  };
+  /** Pulls the account vault now, so a key or a pass saved on another screen is read. */
+  refreshVault?: () => Promise<void>;
+  /** Sends one message to the launch's chat; `clientSendId` makes a retry a no-op. */
+  sendChatMessage?: (projectId: string, sessionId: string, message: { text: string; clientSendId: string }) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
 };
 
@@ -109,6 +140,8 @@ type BootState = {
    * doesn't send the same failure again.
    */
   reported?: string | null;
+  /** The chat whose queued messages aren't all sent yet: a later boot sends them. */
+  messagesOwed?: { sessionId: string } | null;
 };
 
 /** A just-booted computer's device sign-in is tried this many times (each one retries the network itself). */
@@ -140,11 +173,9 @@ const REPORTED_STATE: Partial<Record<ChatLaunchPhase, NonNullable<CloudLaunchSta
   cancelled: "failed",
 };
 const STOPPED_ON_COMPUTER = "The launch was stopped on the computer.";
-/** The 4xx answers a stage report is sent again after (a token on its way, a timeout, a busy server). */
-const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([401, 408, 429]);
 
 /** Sends one stage report; true once it is settled (stored, or refused for good), false when it couldn't reach the server. */
-type ReportStages = (update: CloudLaunchStagesUpdate) => Promise<boolean>;
+export type ReportStages = (update: CloudLaunchStagesUpdate) => Promise<boolean>;
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -186,6 +217,10 @@ const doneStage = (id: string, detail: string | null = null): CloudLaunchStage =
 function stagesOf(snapshot: ChatLaunchSnapshot): CloudLaunchStage[] {
   return snapshot.stages.map((stage) => ({ id: stage.id, status: stage.status, detail: stage.detail, error: stage.error }));
 }
+
+/** A delivery round that couldn't reach the server is tried again this much later, at most this many times. */
+const OWED_MESSAGE_ROUND_MS = 2 * 60_000;
+const OWED_MESSAGE_ROUNDS = 15;
 
 /**
  * What a report says, for "has it changed": the phase and each stage's id
@@ -294,10 +329,11 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const state = readState(deps.stateFile, logger);
   const known = state?.launchId === launchId ? state : null;
+  // Messages a chat was still owed when the last boot stopped go first.
+  if (known?.messagesOwed && known.projectId) await deliverOwedMessages(deps, known.projectId, known.messagesOwed.sessionId, sleep);
   if (known?.phase === "ended") {
     // A setup failure whose report never landed: the caller (and an automation's run) still waits for it.
     if (known.unsent) {
-      const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
       if (await reportFinal(stageReporter(deps), known.unsent, sleep)) {
         writeState(deps.stateFile, { launchId, phase: "ended", projectId: known.projectId ?? null });
         logger.info("cloud_boot_launch.final_report_resent", { launchId });
@@ -374,7 +410,32 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
         fs.writeFileSync(target, Buffer.from(await api.readLaunchFile(launchId, file.fileId)));
         attachments.push({ path: target, type: file.contentType.startsWith("image/") ? "image" : "file" });
       }
-      const args = parseChatLaunchArgs(launchPayloadOf(launchId, record, request, attachments, [computerStage, joinStage, cloneStage]));
+      // A chat whose provider isn't signed in here waits for the person's sign-in first.
+      const startStages = [computerStage, joinStage, cloneStage];
+      if (request.chat && deps.providerReady) {
+        const provider = request.chat.provider;
+        // The wait can outlast `hold`'s limit: its own hold keeps the computer awake through it.
+        const holdFor = deps.holdFor ?? (<T>(_reason: string, _ttlMs: number, run: () => Promise<T>) => run());
+        const waited = await holdFor("provider_sign_in", SIGN_IN_WAIT_MS + 10 * 60_000, () => waitForProviderSignIn(deps, provider, report, startStages, sleep));
+        if (waited.kind === "cancelled") {
+          writeState(deps.stateFile, { launchId, phase: "ended", projectId: project.projectId });
+          return;
+        }
+        if (waited.kind === "failed") {
+          // No `agent` row: nothing of the agent ran, so a cancel still deletes the computer.
+          const update: CloudLaunchStagesUpdate = {
+            state: "failed",
+            stages: [...startStages, { id: SIGN_IN_STAGE, status: "failed", error: waited.error }],
+            error: waited.error,
+          };
+          const landed = await reportFinal(report, update, sleep);
+          if (!landed) logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: "sign_in_failed" });
+          writeState(deps.stateFile, { launchId, phase: "ended", projectId: project.projectId, ...(landed ? {} : { unsent: update }) });
+          return;
+        }
+        if (waited.waited) startStages.push(doneStage(SIGN_IN_STAGE, request.chat.provider));
+      }
+      const args = parseChatLaunchArgs(launchPayloadOf(launchId, record, request, attachments, startStages));
       const launches = await deps.launches(project.projectId);
       await launches.start(args);
     } catch (error) {
@@ -399,12 +460,6 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
   }
 }
 
-/**
- * An automation's run (C9): once its chat ends, the computer says so with the
- * `run` stage, one write. Nobody watches an automation's chat, so this is how
- * ADE Cloud knows to save its chats, push its work and free the computer.
- * Any other launch, or a run already reported, writes nothing.
- */
 /** Sends one stage update; true when it landed, or the server refused it for good. */
 function stageReporter(deps: CloudBootLaunchDeps): ReportStages {
   const { launchId, logger } = deps;
@@ -419,13 +474,19 @@ function stageReporter(deps: CloudBootLaunchDeps): ReportStages {
       return true;
     } catch (error) {
       // The server's own no (a closed or finished launch) is final: sending it again changes nothing.
-      const final = error instanceof CloudApiError && error.status >= 400 && error.status < 500 && !RETRYABLE_STATUSES.has(error.status);
+      const final = isFinalRefusal(error);
       logger.warn("cloud_boot_launch.report_failed", { launchId, final, error: errorText(error) });
       return final;
     }
   };
 }
 
+/**
+ * An automation's run (C9): once its chat ends, the computer says so with the
+ * `run` stage, one write. Nobody watches an automation's chat, so this is how
+ * ADE Cloud knows to save its chats, push its work and free the computer.
+ * Any other launch, or a run already reported, writes nothing.
+ */
 async function reportAutomationRunEnd(deps: CloudBootLaunchDeps, projectId: string): Promise<void> {
   const { launchId, logger } = deps;
   const api = deps.api();
@@ -584,6 +645,24 @@ async function reportFinal(report: ReportStages, update: CloudLaunchStagesUpdate
 }
 
 /**
+ * Sends a chat's queued messages, tried again with a backoff; once all are
+ * sent, the state file stops naming them. True when nothing is left.
+ */
+async function deliverOwedMessages(deps: CloudBootLaunchDeps, projectId: string, sessionId: string, sleep: (ms: number) => Promise<void>): Promise<boolean> {
+  const done = await deliverQueuedMessagesWithRetry(deps, projectId, sessionId, sleep).catch((error: unknown) => {
+    deps.logger.warn("cloud_boot_launch.messages_failed", { launchId: deps.launchId, error: errorText(error) });
+    return false;
+  });
+  if (!done) return false;
+  const current = readState(deps.stateFile, deps.logger);
+  if (current?.launchId === deps.launchId && current.messagesOwed) {
+    const { messagesOwed: _sent, ...rest } = current;
+    writeState(deps.stateFile, rest);
+  }
+  return true;
+}
+
+/**
  * Reports the brain's own launch until it ends: a write when a stage's status
  * (or a running stage's detail) changes or the launch ends, never on a timer,
  * one after another so a later write never lands before an earlier one. A
@@ -605,30 +684,63 @@ async function follow(
   // new attempt it's cleared, or a restart that fails the same step again would match it
   // (the shape leaves out errors and times) and never be reported.
   let savedFailure = reported !== "";
+  // The person's queued messages go once the server knows the chat (it then takes no more of them).
+  // Until all are sent the state file names the chat, so a restart sends the rest.
+  let owed = readState(deps.stateFile, logger)?.messagesOwed ?? null;
+  const save = (state: BootState) => writeState(deps.stateFile, owed ? { ...state, messagesOwed: owed } : state);
+  let delivery: Promise<void> | null = null;
+  let messagesSent = false;
+  let deliveryRounds = 0;
+  const sendQueued = (snapshot: ChatLaunchSnapshot): void => {
+    // Only once the launch is done: the chat exists and has its opening message, so a queued one
+    // can't go first (or meet the opening turn still starting).
+    if (messagesSent || delivery || !snapshot.sessionId || !snapshot.sessionCreated || snapshot.phase !== "completed") return;
+    const sessionId = snapshot.sessionId;
+    owed = { sessionId };
+    const current = readState(deps.stateFile, logger);
+    if (current?.launchId === launchId) save(current);
+    delivery = deliverOwedMessages(deps, projectId, sessionId, sleep).then((done) => {
+      delivery = null;
+      if (done) {
+        owed = null;
+        messagesSent = true;
+        return;
+      }
+      // Not all sent: tried again here a while later (also after the launch ended, so a
+      // server that was down doesn't need another event), a few times; a later boot tries too.
+      if (deliveryRounds >= OWED_MESSAGE_ROUNDS) return;
+      deliveryRounds += 1;
+      const timer = setTimeout(() => sendQueued(snapshot), OWED_MESSAGE_ROUND_MS);
+      timer.unref?.();
+    });
+  };
   const send = async (snapshot: ChatLaunchSnapshot): Promise<boolean> => {
     const stages = stagesOf(snapshot);
     const terminal = TERMINAL.has(snapshot.phase);
-    const shape = reportShapeOf(snapshot.phase, stages);
+    // The chat's creation is part of the shape, so the report that names the chat goes even with no stage change.
+    const shape = `${reportShapeOf(snapshot.phase, stages)}${snapshot.sessionCreated ? "|chat" : ""}`;
     if (shape === last) return terminal;
     last = shape;
     const error = snapshot.phase === "cancelled" ? STOPPED_ON_COMPUTER : snapshot.phase === "failed" ? snapshot.error : null;
     const update: CloudLaunchStagesUpdate = {
       state: REPORTED_STATE[snapshot.phase] ?? "running",
       stages,
-      sessionId: snapshot.sessionId,
+      // Named only once the chat exists: the server then marks the first message sent and takes no more.
+      ...(snapshot.sessionCreated && snapshot.sessionId ? { sessionId: snapshot.sessionId } : {}),
       ...(error ? { error } : {}),
     };
     if (!terminal) {
-      await report(update);
+      if (await report(update)) sendQueued(snapshot);
       if (savedFailure) {
-        writeState(deps.stateFile, { launchId, phase: "handed_off", projectId });
+        save({ launchId, phase: "handed_off", projectId });
         savedFailure = false;
       }
       return false;
     }
     if (await reportFinal(report, update, sleep)) {
+      sendQueued(snapshot);
       // Failed: followed on after a restart too, for a Retry (one launch's state file, one write).
-      writeState(deps.stateFile, snapshot.phase === "failed"
+      save(snapshot.phase === "failed"
         ? { launchId, phase: "handed_off", projectId, reported: shape }
         : { launchId, phase: "ended", projectId });
       savedFailure = snapshot.phase === "failed";
@@ -638,7 +750,7 @@ async function follow(
     // launch again and sends it (and a later change here sends it too).
     last = "";
     logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: snapshot.phase });
-    writeState(deps.stateFile, { launchId, phase: "handed_off", projectId });
+    save({ launchId, phase: "handed_off", projectId });
     savedFailure = false;
     return true;
   };
@@ -650,7 +762,8 @@ async function follow(
       if (ended) return;
       ended = true;
       unsubscribe?.();
-      resolve();
+      // Queued messages on their way finish first (the state file still names any left).
+      void Promise.resolve(delivery).then(() => resolve());
     };
     /** The launch is gone here (removed, or expired after it failed): nothing more to follow at a later boot. */
     const gone = () => {
@@ -658,7 +771,7 @@ async function follow(
       queue = queue.then(() => {
         const current = readState(deps.stateFile, logger);
         if (current?.launchId === launchId && current.phase === "handed_off" && !current.unsent) {
-          writeState(deps.stateFile, { launchId, phase: "ended", projectId });
+          save({ launchId, phase: "ended", projectId });
         }
       }).catch((error: unknown) => logger.warn("cloud_boot_launch.state_write_failed", { launchId, error: errorText(error) }));
       void queue.then(end);
@@ -710,6 +823,12 @@ export type CloudBootLaunchHost = {
   holdCloudWork: HoldCloudWork | null;
   /** An automation's run (C9): resolves when the run's chat ends (`CloudBootLaunchDeps.waitForChatEnd`). */
   waitForChatEnd?: CloudBootLaunchDeps["waitForChatEnd"];
+  /** A chat whose provider isn't signed in waits for the person's sign-in (`CloudBootLaunchDeps`). */
+  providerReady?: CloudBootLaunchDeps["providerReady"];
+  remoteSignIn?: CloudBootLaunchDeps["remoteSignIn"];
+  refreshVault?: CloudBootLaunchDeps["refreshVault"];
+  /** The person's queued messages reach the chat through it. */
+  sendChatMessage?: CloudBootLaunchDeps["sendChatMessage"];
 };
 
 /**
@@ -791,6 +910,10 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
       }),
       setUpProject: async (originUrl) => await setUpRepositoryOnThisMachine(host.projectRegistry, originUrl, host.holdCloudWork),
       waitForChatEnd: host.waitForChatEnd,
+      providerReady: host.providerReady,
+      remoteSignIn: host.remoteSignIn,
+      refreshVault: host.refreshVault,
+      sendChatMessage: host.sendChatMessage,
       launches: async (projectId) => {
         const service = await host.chatLaunchService(projectId);
         if (!service) throw new Error("This ADE runtime can't run a lane launch.");
@@ -819,6 +942,7 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
         });
       },
       hold: host.holdCloudWork ? (run) => host.holdCloudWork!("lane_launch", 30 * 60_000, run) : undefined,
+      holdFor: host.holdCloudWork ?? undefined,
     });
   })().catch((error: unknown) => {
     logger.warn("cloud_boot_launch.failed", { error: errorText(error) });

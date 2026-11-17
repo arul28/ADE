@@ -29,7 +29,16 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        latest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)
+        # The newest release, never a beta: an image that added
+        # Xcode_27.3_beta.app (Nov 2026) was picked over 27.2, and that beta
+        # ships without the Metal toolchain SwiftTerm needs, so every build
+        # failed. A beta also has its own build number, so it would miss the
+        # build-folder cache and compile cold. Only an image with no release
+        # of 27 falls back to a beta.
+        latest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | grep -vi beta | sort -V | tail -1 || true)
+        if [[ -z "$latest" ]]; then
+          latest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)
+        fi
         if [[ -n "$latest" ]]; then
           sudo xcode-select -s "$latest/Contents/Developer"
         fi
@@ -236,6 +245,61 @@ runs:
         path: ${{ runner.temp }}/ios-dd
         key: ${{ steps.dd_key.outputs.key }}
 
+    # actions/cache/save only warns when it cannot save. A missed save is not
+    # harmless: every later build restores an older folder and compiles more
+    # (on 2026-11-16 one missed save left main's builds 12 hours behind, and a
+    # 4-file change compiled for 20 minutes). So check that the entry is
+    # listed, and when it is not, wait a minute (a full cache space evicts
+    # old entries) and save once more under a key of this run's own.
+    - name: Check the build folder was saved
+      id: dd_check
+      if: steps.dd_prepare.outcome == 'success'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        KEY: ${{ steps.dd_key.outputs.key }}
+      run: |
+        set -uo pipefail
+        listed() {
+          K="$1" gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$1&ref=$GITHUB_REF" \
+            --jq '[.actions_caches[] | select(.key == env.K)] | length > 0' 2>/dev/null
+        }
+        if [[ -z "$GH_TOKEN" ]]; then
+          echo "kept=$KEY" >> "$GITHUB_OUTPUT"
+          echo "No token to check the save with; assuming it was saved."
+          exit 0
+        fi
+        if [[ "$(listed "$KEY")" == "true" ]]; then
+          echo "kept=$KEY" >> "$GITHUB_OUTPUT"
+          echo "Build folder saved as $KEY."
+          exit 0
+        fi
+        echo "::warning::The build folder was not saved as $KEY; saving it again in a minute under $KEY-retry-$GITHUB_RUN_ID."
+        sleep 60
+        echo "retry=$KEY-retry-$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+        echo "kept=$KEY-retry-$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+
+    - name: Save the build folder again
+      if: steps.dd_check.outputs.retry != ''
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/ios-dd
+        key: ${{ steps.dd_check.outputs.retry }}
+
+    - name: Check the second save
+      if: steps.dd_check.outputs.retry != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        KEY: ${{ steps.dd_check.outputs.retry }}
+      run: |
+        if K="$KEY" gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$KEY&ref=$GITHUB_REF" \
+          --jq '[.actions_caches[] | select(.key == env.K)] | length > 0' 2>/dev/null | grep -qx true; then
+          echo "Build folder saved as $KEY."
+        else
+          echo "::error::The build folder was not saved twice; later iOS builds restore an older folder and compile more. Check the repository's cache space (Settings > Actions > Caches)."
+        fi
+
     # The repository's cache space is 10 GB and these are its biggest
     # entries, so main keeps one of each: the entry it just saved. Older
     # build folders of this Xcode build and older Swift package sets are
@@ -246,7 +310,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         DD_PREFIX: ${{ steps.dd_key.outputs.prefix }}
-        KEEP_DD: ${{ steps.dd_key.outputs.key }}
+        KEEP_DD: ${{ steps.dd_check.outputs.kept || steps.dd_key.outputs.key }}
         KEEP_SPM: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
       run: |
         set -euo pipefail

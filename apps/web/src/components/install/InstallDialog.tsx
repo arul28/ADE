@@ -189,13 +189,13 @@ export function InstallDialog({
           <Eyebrow>Install</Eyebrow>
           <h2
             id={titleId}
-            className="mt-3 font-serif font-normal tracking-[-0.02em] text-[color:var(--color-cream)]"
+            className="mt-3 font-display tracking-[-0.04em] text-[color:var(--color-cream)]"
             style={{ fontSize: "clamp(26px,3.2vw,34px)", lineHeight: 1.1, margin: "12px 0 0" }}
           >
             {target.title}
           </h2>
           {target.subtitle ? (
-            <p className="mt-2 max-w-[46ch] font-serif italic text-[15px] leading-[1.45] text-[color:var(--color-cream-muted)]">
+            <p className="mt-2 max-w-[46ch]  text-[15px] leading-[1.45] text-[color:var(--color-cream-muted)]">
               {target.subtitle}
             </p>
           ) : null}

@@ -168,7 +168,8 @@ them in PostHog and update this list in the same branch.
   PostHog inbox. No report gets `auto-fix`, and the automation rules that
   started an ADE agent from it (`posthog-report-investigate`,
   `linear-auto-fix-labeled`) are off: a person decides what an agent works on.
-  It authenticates with the project secret `LINEAR_POSTHOG_API_KEY`.
+  It authenticates with a Linear API key; the source copy is the project
+  secret `LINEAR_API_KEY`.
   - Scouts on (daily unless noted): General, Anomaly detection, Customer
     analytics, Inbox validation, Product analytics (Mondays), Surveys
     (Mondays), Data pipelines (Mondays), and ADE's own "ADE reliability" and

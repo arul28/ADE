@@ -1294,6 +1294,22 @@ function parseAttachGitHubIssueToSessionArgs(value: Record<string, unknown>): {
   };
 }
 
+function parseAttachLinearIssueToSessionArgs(value: Record<string, unknown>): {
+  chatSessionId: string;
+  issues: LaneLinearIssue[];
+} {
+  if (!Array.isArray(value.issues)) {
+    throw new Error("lanes.attachLinearIssueToSession requires an issues array.");
+  }
+  return {
+    chatSessionId: requireString(
+      value.chatSessionId,
+      "lanes.attachLinearIssueToSession requires chatSessionId.",
+    ),
+    issues: parseCliLinearIssues(value.issues),
+  };
+}
+
 function parseDetachGitHubIssueFromSessionArgs(value: Record<string, unknown>): {
   chatSessionId: string;
   issueId?: string;
@@ -4473,6 +4489,8 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     ));
   register("lanes.attachGitHubIssueToSession", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.attachGitHubIssueToSession(parseAttachGitHubIssueToSessionArgs(payload)));
+  register("lanes.attachLinearIssueToSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.attachLinearIssueToSession(parseAttachLinearIssueToSessionArgs(payload)));
   register("lanes.detachGitHubIssueFromSession", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.detachGitHubIssueFromSession(parseDetachGitHubIssueFromSessionArgs(payload)));
   register("lanes.listGitHubIssuesForSession", { viewerAllowed: true }, async (payload) =>

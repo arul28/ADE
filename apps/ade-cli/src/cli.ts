@@ -15,6 +15,7 @@ import type { AccountResetCreditSpender } from "../../desktop/src/main/services/
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
 import { stripAnsiWithOptions } from "../../desktop/src/shared/ansiStrip";
 import type { RemoteWorkChatEnded, RemoteWorkMachineRef, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
+import type { CloudSignInStatus } from "../../desktop/src/shared/cloudSignIns";
 import {
   LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE,
   laneShareNextDayStart,
@@ -700,8 +701,9 @@ import {
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
 import { getSharedAccountAttestationConfig, getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
-import { createRemoteProviderSignIn } from "./services/account/remoteProviderSignIn";
+import { createRemoteProviderSignIn, type ClaudePassRunner } from "./services/account/remoteProviderSignIn";
 import { startCloudBootLaunch, takeCloudLaunchEnv } from "./services/account/cloudBootLaunch";
+import { createProviderReady } from "./services/account/cloudLaunchSignInWait";
 import {
   deviceSignInInstructions,
   readDeviceSignInPoll,
@@ -31916,6 +31918,7 @@ async function runServe(
   // A provider sign-in a person finishes on another screen (`ade providers
   // sign-in --remote`): the login runners live here, in the brain, so they
   // outlive the short command ADE's server runs over exec.
+  let claudePassRunner: Promise<ClaudePassRunner> | null = null;
   const remoteProviderSignIn = embedded ? null : createRemoteProviderSignIn({
     providerAccounts: async () => (await import("../../desktop/src/main/services/providerAccounts/machineProviderLoginRunner")).getMachineProviderLoginRunner(),
     defaultInstanceId: async (provider) => {
@@ -31929,6 +31932,29 @@ async function runServe(
         status: (loginId) => runner.status(loginId),
         submitCode: (loginId, code) => runner.submitCode(loginId, code),
       };
+    },
+    // Claude's pass (`claude setup-token`) through this machine's own cloud
+    // sign-in actions, which save the pass to the account vault. Built once.
+    claudePass: () => {
+      claudePassRunner ??= (async (): Promise<ClaudePassRunner> => {
+        const cloud = (await machineAccountDomains()).cloud as Record<string, ((args?: unknown) => Promise<unknown>) | undefined>;
+        const call = async (action: string, args?: unknown): Promise<CloudSignInStatus["claude"]> => {
+          const run = cloud[action];
+          if (typeof run !== "function") throw new Error("ADE on this computer can't run Claude's sign-in.");
+          const status = await run(args) as CloudSignInStatus | null;
+          return status?.claude ?? null;
+        };
+        return {
+          start: () => call("cloud_sign_in_start", {}),
+          status: () => call("cloud_sign_in_status"),
+          submitCode: (code: string) => call("cloud_sign_in_code", { code }),
+        };
+      })().catch((error: unknown) => {
+        // A failed build is tried again on the next sign-in.
+        claudePassRunner = null;
+        throw error;
+      });
+      return claudePassRunner;
     },
   });
 
@@ -31971,6 +31997,40 @@ async function runServe(
       chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
       cloudClient: async () => await (await getCloudBrainAccess()).client(),
       holdCloudWork: holdCloudWork ?? null,
+      // A chat whose provider isn't signed in here waits for the person's sign-in.
+      providerReady: createProviderReady(async (options) => (await import("../../desktop/src/main/services/ai/authDetector")).detectAllAuth(undefined, options)),
+      remoteSignIn: remoteProviderSignIn
+        ? { start: (provider) => remoteProviderSignIn.start(provider), status: (jobId) => remoteProviderSignIn.status(jobId) }
+        : undefined,
+      // Pulls the vault, then runs one sign-in pass on it, so a pass or key saved
+      // on another screen is applied here now (the Claude pass reconcile hears the pass).
+      refreshVault: async () => {
+        const runtime = await getMachineAccountRuntime();
+        await runtime.accountVaultStore?.sync();
+        const { providerLoginSync } = await import("../../desktop/src/main/services/providerLogins/providerLoginSync");
+        await providerLoginSync()?.pass(null);
+      },
+      // The person's messages sent before the chat existed (the server keeps them).
+      // A provider that refuses a send while its turn runs (Codex) gets it once
+      // the turn is over: the chat's status is read again every few seconds, for
+      // at most 30 minutes. The same `clientSendId` makes a retry safe.
+      sendChatMessage: async (projectId, sessionId, message) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        if (!chat) throw new Error("This ADE runtime has no chats.");
+        const waitUntil = Date.now() + 30 * 60_000;
+        for (;;) {
+          try {
+            await chat.sendMessage({ sessionId, text: message.text, clientSendId: message.clientSendId });
+            return;
+          } catch (error) {
+            const turnRunning = isRecord(error) && error.code === "turn_in_flight";
+            if (!turnRunning || Date.now() >= waitUntil) throw error;
+          }
+          do {
+            await new Promise((resolve) => setTimeout(resolve, 5_000));
+          } while (Date.now() < waitUntil && (await chat.getSessionSummary(sessionId))?.status === "active");
+        }
+      },
       // An automation's run (C9): its chat's turn ending is the run's end. Nobody
       // watches that chat, so one that stops to ask for input ends the run as
       // failed rather than holding its computer until the server's stop limit.

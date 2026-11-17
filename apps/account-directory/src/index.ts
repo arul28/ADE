@@ -89,17 +89,18 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   if (isJevBonusRequest(url)) return handleJevBonusRequest(request, env);
   // ADE Cloud (src/cloud): account bearer, the directory's exact-origin CORS for
   // the web client (routes.ts). Timed wakes ride the same gate. Everything
-  // under /cloud answers 404 for an account not on the list, except a launch's
-  // join, which a new computer makes with its one-time code.
+  // under /cloud refuses an account the owner blocked (403), except a launch's
+  // join, which a new computer makes with its one-time code, and the owner's
+  // block routes, which take CLOUD_OWNER_TOKEN instead (safety.ts).
   if (isCloudRequest(url)) return handleCloudRequest(request, env, held.waitUntil);
-  // Stripe's webhook (signed, so no bearer and no access list) and the page
+  // Stripe's webhook (signed, so no bearer) and the page
   // Stripe sends a person back to after Checkout or the billing portal.
   if (isCloudBillingPublicRequest(url)) return handleCloudBillingPublicRequest(request, env, held.waitUntil);
   // Clerk's sign-up webhook: Svix-signed, POST only, no CORS (Clerk is the
   // only caller). It records one `ade_signed_up` per account.
   if (isSignupAnalyticsRequest(url)) return handleSignupAnalyticsRequest(request, env);
   // The website's invite page: public and rate-limited, it answers only the
-  // inviter's first name, and only for an inviter with ADE Cloud access.
+  // inviter's first name, and never for an inviter the owner blocked.
   if (isInviteLookupRequest(url)) return handleInviteLookup(request, env);
   // Lane sharing (src/laneShares): account bearer, the directory's exact-origin
   // CORS for the web client, none for the host read (machines only).

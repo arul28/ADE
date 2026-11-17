@@ -815,10 +815,11 @@ The server holds the provider key and owns every ADE Cloud computer
 and optional `RESEND_API_KEY`). `src/cloud/contract.ts` lists the routes and
 their shapes for a client to mirror. Every route takes the account bearer.
 
-- `CLOUD_ACCESS_ACCOUNTS` is a comma list of Clerk user ids, or `*`. Unset means
-  nobody. `GET /cloud/access` answers `{ enabled }` for the bearer; every other
-  `/cloud/*` route, including `/cloud/wake`, answers 404 `not_found` to a caller
-  not on the list.
+- ADE Cloud is open to every signed-in account, except one the owner blocked
+  (see "ADE Cloud safety" below). `GET /cloud/access` still answers
+  `{ enabled }` for older builds: `false` only for a blocked account; every
+  other `/cloud/*` route, including `/cloud/wake`, answers 403
+  `account_blocked` to it.
 - `cloud_computers` records each computer's owner. Every call by instance id
   checks it, and not yours or unknown is 404. Provider errors become one plain
   sentence.
@@ -869,10 +870,17 @@ separate products, so Checkout names each line and shows its one-line
 description (Managed Payments refuses `custom_text`); the customer
 is made with the account's email from Clerk, so Checkout shows it filled in. `POST /cloud/billing/checkout` and `/portal` answer
 a URL for the person's browser, which comes back to `/billing/return`.
+With `returnTo: "web"` (the hosted web client; `/free-unlock` too) Stripe
+sends the person back to `WEB_CLIENT_ORIGIN` at `/?cloudReturn=<outcome>`
+instead, and the web app opens Settings › ADE Cloud. The address comes from
+this server's own `WEB_CLIENT_ORIGIN`, never from the request, so it is not
+an open redirect; any other `returnTo`, or no web client set, is a 400.
 `POST /cloud/billing/extra-hours` takes `{ enabled }`, paid plan only.
 
-`POST /webhooks/stripe` is outside the access list and is checked with the
-signature instead. `cloud_stripe_events` makes each event run once. A handler
+`POST /webhooks/stripe` takes no account bearer and is checked with the
+signature instead. In production (`SENTRY_ENVIRONMENT=production`) an event
+with `livemode: false` is dropped with a 200; other environments keep test
+events. `cloud_stripe_events` makes each event run once. A handler
 uses its event only to find the subscription and re-reads it from Stripe, so
 late or reordered events land in the same place. Checkout completing sets the
 plan, then adds the $5 threshold, which Stripe refuses at Checkout. `invoice.paid`
@@ -884,6 +892,154 @@ Each tick reports every whole extra Small-hour as one meter event (the rest
 waits). The identifier is the hour's place in the billing period, so a retry
 can't count one twice. Only accounts with extra hours on and past their plan's
 hours are reported.
+
+### ADE Cloud safety
+
+Anti-spam and fast owner alerts, not usage limits (`src/cloud/blocks.ts`,
+`src/cloud/safety.ts`, migration `0037_cloud_safety.sql`). The free plan
+stays 100 hours with the GitHub rules (`freePlanGithub.ts`: a GitHub account
+at least 30 days old, one free plan per GitHub account).
+
+- **Kill switch.** `CLOUD_CREATES_PAUSED=1` refuses every new computer, copy
+  and launch start with 503 `creates_paused` and a plain message. Existing
+  computers keep working: wakes, moves, chats. A start sent again for a
+  launch that already exists (a lost answer) is never refused.
+- **Block list** (`cloud_blocks`: `user_id`, `github_user_id`,
+  `card_fingerprint`, `reason`, `created_at`). The owner routes take
+  `Authorization: Bearer <CLOUD_OWNER_TOKEN>` (secret; unset answers 503),
+  never an account bearer:
+  - `POST /cloud/owner/block` `{ "userId": "user_…", "reason": "…" }` sets
+    each of the account's computers to the provider's `deny-all` network
+    policy (no internet, no DNS), then stops it (not sleep), deletes its timed
+    wakes, cancels its Stripe subscription at once (`prorate=false`,
+    `invoice_now=false`: no credit, no refund), and stores its GitHub id and
+    cards (free-unlock cards and the ones saved on its Stripe customer) on the
+    list. `{ "githubUserId": 123 }` or `{ "cardFingerprint": "…" }` blocks an
+    identity alone. Safe to send again.
+  - `POST /cloud/owner/unblock` with the same keys takes them off the list.
+    The computers get `allow-all` back and stay stopped. Unblocking only a
+    `githubUserId` or `cardFingerprint` never unblocks an account that stored
+    it: that account stays blocked until its `userId` is unblocked.
+  A computer made while a block lands (a launch mid-create) is stopped when
+  its row becomes a real computer, and the minute tick stops any computer of
+  a blocked account that isn't stopped, and sets `deny-all` again on any whose
+  policy didn't land (`cloud_computers.network_denied_at` empty): running ones
+  first, stopped ones at most hourly (`network_deny_tried_at`), 10 a tick. A start, update, resize, exec wake, sign-in start or
+  timed wake request (`PUT /cloud/wake`) reads the block fresh, not the
+  routes' 30-second cache. A blocked GitHub account
+  on a new ADE account is held as `github_used` (the person isn't told about
+  the block); a blocked card can't unlock free hours. Both alert the owner.
+- **One card, one free unlock** (`cloud_free_card_claims`, unique on the
+  fingerprint). The free-unlock Checkout takes cards only, asks for 3D Secure
+  whenever the card supports it (`request_three_d_secure=any`), and the
+  webhook reads the card's fingerprint from the SetupIntent. A card that
+  already unlocked another account, or a blocked one, is refused (the person
+  gets an email for a used card) and the owner is alerted. A card already on
+  the Stripe customer goes through the same claim. A refused card is detached
+  from the Stripe customer, so the next try opens Checkout for another card.
+  Paid plans take any card.
+- **Rate limits.** 10 new computers an hour per account (`cloud_computers`
+  rows made in the last hour: creates, moves, copies, a launch's or an
+  automation's) and 15 launch starts an hour (`cloud_launches`). Over it:
+  429 `rate_limited` with a plain message.
+- **The owner's cap counts free use only.** `cloud_settings.owner_cost_limit_usd`
+  is compared with this month's cost of accounts on free-plan rules
+  (`free_cost_mtd_micros`): each stretch stamps the plan it ran on
+  (`cloud_computer_days.free_cost_micros`, `cloud_disk_days.free`; the daily
+  reconcile scales the free share with the correction). A disk-day counts as
+  free only if the account was on free rules at every write that day, so a
+  plan change mid-day leaves that day's disk as paid. At the cap, free
+  accounts get no new computer, copy or disk grow (503, never says why); paid
+  accounts are never refused.
+  Free use made between applying `0037` and deploying the Worker that writes
+  `free_cost_micros` is counted as paid (the Worker before it doesn't stamp
+  it). To count that gap, run the migration's two backfill `update`s again
+  once the Worker is deployed, with
+  `npx wrangler d1 execute DB --remote --env production --command "<update>"`
+  (the two `update cloud_computer_days …` and `update cloud_disk_days …`
+  statements at the end of `migrations/0037_cloud_safety.sql`). They use the
+  same rule as the migration (an account not on paid rules now counts its
+  month as free), so running them again is safe.
+- **Owner alerts, at once** (`sendOwnerAlert`, Resend to `CLOUD_ALERT_EMAIL`).
+  Never throttled; `cloud_owner_alerts` keys each event so one event sends one
+  email (a failed send gives the key back). Each names the account, its plan,
+  ADE account age, GitHub login and age, the reason, counts, and the exact
+  `curl` that blocks it. Alerts: a sign-up burst (sign-ups from one hashed IP
+  in the last 60 minutes reach `SIGNUP_BURST_PER_IP_HOUR`, checked on each
+  Clerk `user.created`; alert only), free use at 50%, 80% and 100% of the
+  cap (once each a month for each cap value, so a raised cap alerts again,
+  with the free accounts that cost the most), a card
+  used again for a free unlock, and a blocked GitHub account or card on a new
+  account. Sustained CPU stays in the daily report only.
+- **Logging.** `reportCloudAbuse` (`store.ts`) logs, sends a Sentry error
+  every time (tag `area: cloud-abuse`, no hourly throttle) and writes a
+  `cloud_abuse_events` row (`user_id`, `kind`, `detail_json`, `created_at`).
+  PostHog `ade_cloud_safety` records `first_chat` (once per account,
+  `cloud_accounts.first_chat_at`), the cap steps and refusals, blocks,
+  rate limits, kill-switch refusals and sign-up bursts.
+- The daily owner report adds the day's sign-ups, cloud hours, this month's
+  cost split into free and paid use, blocks, abuse events and alerts sent.
+- `GET /cloud/instances` reads the provider's list through a 5-second Cache
+  API copy, skipped when the account's rows changed inside those 5 seconds
+  (a create, a reservation in flight, a recorded start or sleep).
+
+## Launches from the web and the phone
+
+A person with no computer of their own starts a chat on ADE Cloud straight
+from the web (`app.ade-app.dev`) or the phone (`src/cloud/launches.ts`,
+migration 0038, shapes in `src/cloud/contract.ts`). Every route takes the
+account token (a Clerk session token or the ADE OAuth token) and the
+`/cloud/*` CORS rule: the web client's exact origin, `GET, POST, PUT, DELETE`,
+headers `authorization, content-type`.
+
+| Route | Who calls it | What it does |
+| --- | --- | --- |
+| `POST /cloud/launches` | web, phone, desktop | Starts a launch (`CloudLaunchStartRequest`). `project` may be `{ accountProjectId }`; `lane` and `sizeId` may be left out (a new lane named from the first message, Small). |
+| `GET /cloud/launches?active=1` | web, phone | The caller's launches still in progress, and the ones that failed in the last day, newest first, at most 50 (`CloudLaunchList`). |
+| `GET /cloud/launches/:id/messages` | web, phone, the computer | The launch's messages in order. Row 1 is the first message. |
+| `POST /cloud/launches/:id/messages` | web, phone | Queues a message while the chat doesn't exist yet (`{ messageId, text }`). The same id answers the same message. 409 `chat_ready` once it exists. |
+| `POST /cloud/launches/:id/messages/:msg/claim` | the computer | Takes one queued message to send (`{ claimId }`). 409 `message_taken` otherwise. |
+| `PUT /cloud/launches/:id/messages/:msg` | the computer | Says the claimed message was sent, or not. |
+| `GET /cloud/sign-ins` | web | What the account vault holds for ADE Cloud: saved or not, never a value. |
+| `PUT /cloud/sign-ins/:id` | web | Saves a key (`{ key }`) to the account vault; for `claude`, a Claude pass (`sk-ant-oat…`). |
+| `DELETE /cloud/sign-ins/:id` | web | Removes it (for `claude`, every pass). |
+| `GET /cloud/models` | web, phone | Models per provider with a default, for a picker before any computer exists. |
+
+The first message (`chat.prompt`, id `chat.messageId` or the launch id) is
+stored with the launch, so the person may close the tab: the new computer
+reads the launch and starts the chat with it, as before. Messages sent while
+the computer is still being made or signed in are rows 2 and on. Once the
+chat exists the computer claims each, sends it to the chat and reports it. A
+claim is one conditional write and only its claim id may finish it; the
+computer writes its claim before it asks, and a message it may have sent but
+can't confirm is reported failed, never sent twice. A launch keeps at most 20
+messages before its chat starts. Message text is plain in D1, like the first
+message in `request_json`, and goes with the launch record.
+
+A launch whose chat provider isn't signed in on the computer pauses at
+`waiting_for_sign_in` with `signIn` (`CloudLaunchSignIn`): a device code and
+link, a link and a pasted code (`url_paste`, sent to
+`POST /cloud/instances/:id/sign-ins/:job/code`), a key to save
+(`api_key`, `PUT /cloud/sign-ins/:id`), or "sign in from ADE desktop"
+(`desktop`). Claude is `url_paste`: `claude setup-token` runs on the computer
+and its pass is saved to the account vault for every later computer. Cursor,
+OpenCode and Pi read keys the account keeps; Antigravity and Qwen sign in
+only in ADE desktop (`CLOUD_REMOTE_SIGN_IN`). The computer goes on by itself
+once the provider can run. The computer gives up after 30 minutes; the minute
+cron ends a launch still waiting after 45 minutes and deletes its computer.
+
+Before a computer is made, the start checks that it can clone the
+repository: a git credential in the account vault, or the account's ADE
+GitHub App sign-in (one `GET /repos/{owner}/{repo}` with the App's token).
+The App connected but not installed where it can see a private repository
+is 403 `github_app_not_installed` with "Give ADE access to <owner>" and
+`installUrl`. A public repository goes on either way.
+
+The sign-ins route is the web's path to the account vault on the push relay
+(which has no browser CORS). It calls the relay through the `ACTIVITY_RELAY`
+binding with the caller's own bearer, so it only ever reaches the caller's
+vault, and the items are the desktop's (`integration/cloud-key-<id>`,
+`provider_login/claude-pass/<hex>`). A value passes through memory only.
 
 ## Saved chats
 
