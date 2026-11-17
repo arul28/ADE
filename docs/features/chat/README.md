@@ -1227,15 +1227,19 @@ pause the durable provider rows for recovery through Settings while cancelling
 local-only work. Reconciliation uses the same quarantine rule for a durable
 provider job whose owning session has ended or disappeared.
 
-Project close and graceful app quit instead end live chat rows as `detached`;
-their schedules remain armed so restart reconciliation can late-fire overdue
-work and cold-resume the chat. The scheduler's `sessionState` contract treats
-`running` and `detached` rows as `active`, any other non-archived terminal row
-as `ended`, archived rows as `archived`, and absent rows as `missing`. A tracked
-provider CLI remains an active durable target after its process ends because
-`sendToSession` can resume it. Ended, archived, and missing chat owners are
-reconciled before delivery: local-only work is cancelled, while durable
-provider-owned work is quarantined as paused.
+Project close and graceful app quit instead end the rows the stopping process
+owns: a chat at rest ends `completed`, and a chat with work in flight (a turn
+running or awaited, a queued or steered message, an open question or approval,
+background work it waits on, an owed wake-up) ends `detached`. Either way its
+schedules remain armed so restart reconciliation can late-fire overdue work and
+cold-resume the chat; a `completed` chat is not loaded at the next start until a
+wake or a send reopens its row. The scheduler's `sessionState` contract treats
+`running`, `detached` and `completed` rows as `active`, any other non-archived
+terminal row as `ended`, archived rows as `archived`, and absent rows as
+`missing`. A tracked provider CLI remains an active durable target after its
+process ends because `sendToSession` can resume it. Ended, archived, and missing
+chat owners are reconciled before delivery: local-only work is cancelled, while
+durable provider-owned work is quarantined as paused.
 
 ADE backstop delivery reuses the session peer-message path with `kind: "wake"`.
 While any managed chat has a foreground turn, the scheduler keeps its row armed

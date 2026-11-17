@@ -4627,8 +4627,12 @@ function scopeBuiltInBrowserAdeActionArgs(
   };
 }
 
-/** Session statuses of a chat that can still act; the rest mean it ended. */
-const LIVE_CHAT_SESSION_STATUSES = new Set(["running", "detached"]);
+/**
+ * Session statuses of a chat that can still act; the rest mean it ended.
+ * `completed` is a chat a clean stop found at rest: a send or a wake reopens
+ * its row, exactly as `detached` does after a crash.
+ */
+const LIVE_CHAT_SESSION_STATUSES = new Set(["running", "detached", "completed"]);
 
 /**
  * Authorize a call that acts in the user's own browser (`attach` / `detach`,
