@@ -517,7 +517,7 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
         let snapshotMark = "";
         let snapshot: string | null = null;
         if (isCli) {
-          const file = path.join(runtime.projectRoot, ".ade", "cache", "terminal-snapshots", `${row.id.replace(/[^a-zA-Z0-9._-]/g, "_")}.json`);
+          const file = runtime.ptyService.terminalSnapshotPath(row.id);
           try {
             snapshotMark = String(fs.statSync(file).mtimeMs);
             const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { serialized?: unknown };
