@@ -424,7 +424,8 @@ async function recordStatus(env: CloudEnv, computer: ComputerRow, status: string
 
 /**
  * One event wake (`eventWakes.ts`): the checks a person's wake makes, without
- * waiting at the awake cap and without counting as use for the idle cleanup.
+ * waiting at the awake cap. It is use like any other wake: its time bills
+ * hours and it restarts the idle cleanup's clock.
  */
 async function eventWakeComputer(env: CloudEnv, computer: ComputerRow, now: number): Promise<EventWakeOutcome> {
   const provider = providerFor(env);

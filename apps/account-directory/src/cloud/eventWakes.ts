@@ -20,8 +20,8 @@ import { logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type Comput
  * A topic is an id (`linear-org:<id>`, `linear-account:<user>`,
  * `hooks-account:<user>`), never event text. An account topic must name the
  * caller's own account, so no computer is woken by another account's events.
- * A subscription is not use: the idle cleanup still counts the computer as
- * unused until something on it runs.
+ * A subscription is not use. A wake from an event is: its time bills hours
+ * and it restarts the idle cleanup's clock, the same as a person's wake.
  */
 
 export type EventWakeEnv = CloudEnv & { CLOUD_EVENT_WAKE_SECRET?: string };

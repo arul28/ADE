@@ -1313,6 +1313,9 @@ directory wakes it (routes in `apps/account-directory/README.md`):
   listed computer under the normal checks, at most once in 5 minutes.
   Repository events wake nothing.
 
+A timed wake and an event wake are use, the same as a person's wake: the time
+awake bills hours, and the wake restarts the idle cleanup's clock.
+
 ## Rules for changes
 
 - A new call to the provider goes through `CloudProvider`, never around it.
