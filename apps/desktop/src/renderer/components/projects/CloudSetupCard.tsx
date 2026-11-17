@@ -332,7 +332,9 @@ function CompactSteps({ rows }: { rows: readonly SetupStep[] }) {
 export type LaunchChatState = "working" | "waiting" | "done";
 
 function readyLine(laneName: string | null | undefined, state: LaunchChatState | null): string {
-  const lane = laneName?.trim() ? `Lane “${laneName.trim()}”` : null;
+  // A lane named like a sentence ("Reply with READY.") keeps its own stop.
+  const name = laneName?.trim().replace(/[.!?…]+$/, "") ?? "";
+  const lane = name ? `Lane “${name}”` : null;
   if (state === "working") return lane ? `${lane} is working.` : "The agent is working.";
   if (state === "waiting") return lane ? `${lane} is waiting for you.` : "The agent is waiting for you.";
   if (state === "done") return lane ? `${lane} is done.` : "The agent is done.";

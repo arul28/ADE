@@ -147,9 +147,20 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   const tried = useRef(new Set<string>());
   // A failed open shows as an error banner, which also reports it.
   const [openFailure, setOpenFailure] = useState<{ copy: RepositoryCopy; detail: string } | null>(null);
+  // "Open chat" on a computer that had to wake first: the copy opens when it is
+  // back (the effect below), then that chat opens, not the new-chat page.
+  const chatToOpenRef = useRef<{ record: CloudLaunchRecord; machineKey: string } | null>(null);
   const openCopyAndReport = useCallback((copy: RepositoryCopy) => {
     setOpenFailure(null);
-    void openCopy(copy).catch((error: unknown) => setOpenFailure({ copy, detail: extractError(error) }));
+    const chat = chatToOpenRef.current;
+    const opensChat = chat != null && chat.record.sessionId != null && copy.machineKey?.toLowerCase() === chat.machineKey;
+    if (opensChat) chatToOpenRef.current = null;
+    void openCopy(copy).then(
+      () => {
+        if (opensChat && chat.record.sessionId) navigateToAppTarget({ kind: "chat", sessionId: chat.record.sessionId, laneId: chat.record.laneId ?? null });
+      },
+      (error: unknown) => setOpenFailure({ copy, detail: extractError(error) }),
+    );
   }, []);
   // The copy the tab showed before its computer left comes back first.
   const defaultAddress = resolveDefaultCopy({ copies, currentKey: tab.lastCopyKey ?? null });
@@ -455,6 +466,8 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     return copyOnComputer(instanceId, computer?.machineKey ?? null);
   };
   const openLaunchChat = (record: CloudLaunchRecord) => {
+    const machineKey = cloudIndex.computers.find((entry) => entry.instanceId === record.instanceId)?.machineKey?.toLowerCase() ?? null;
+    chatToOpenRef.current = machineKey ? { record, machineKey } : null;
     const copy = launchCopy(record.instanceId);
     if (copy) {
       openCloudCopy(copy, record);
