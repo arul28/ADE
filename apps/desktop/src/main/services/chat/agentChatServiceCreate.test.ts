@@ -3809,7 +3809,7 @@ describe("createAgentChatService", () => {
   describe("getAvailableModels", () => {
 
 
-    it("keeps GPT-6 Astra ahead of GPT-5.6 in filtered and provider-omitted catalogs", async () => {
+    it("sorts the previous Sol/Astra generation last in filtered and provider-omitted catalogs", async () => {
       mockState.codexResponseOverrides.set("model/list", {
         data: [
           {
@@ -3883,39 +3883,43 @@ describe("createAgentChatService", () => {
 
       const models = await service.getAvailableModels({ provider: "codex" });
 
-      expect(models.slice(0, 4).map((model) => model.id)).toEqual([
-        "gpt-6-astra",
+      const ids = models.map((model) => model.id);
+      // The previous Sol/Astra generation sorts last on every surface; the live
+      // catalog's rows keep their own order above it, including a model the
+      // curated registry does not carry (5.6 Terra).
+      expect(ids.slice(0, 4)).toEqual([
         "gpt-5.6-sol",
         "gpt-5.6-luna",
         "gpt-5.5",
+        "gpt-5.6-terra",
       ]);
-      expect(models[0]).toMatchObject({
-        isDefault: true,
+      expect(ids.at(-1)).toBe("gpt-6-astra");
+      const astra = models.find((model) => model.id === "gpt-6-astra");
+      expect(astra).toMatchObject({
+        isDefault: false,
         defaultReasoningEffort: "low",
-        reasoningEfforts: [
-          expect.objectContaining({ effort: "low" }),
-          expect.objectContaining({ effort: "medium" }),
-          expect.objectContaining({ effort: "high" }),
-          expect.objectContaining({ effort: "xhigh" }),
-          expect.objectContaining({ effort: "max" }),
-          expect.objectContaining({ effort: "ultra" }),
-        ],
         serviceTiers: ["fast"],
       });
-      expect(models[0]?.reasoningEfforts?.map((entry) => entry.effort)).toContain("ultra");
-      expect(models[1]).toMatchObject({ isDefault: false, defaultReasoningEffort: "low" });
-      expect(models[1]?.reasoningEfforts?.map((entry) => entry.effort)).toEqual([
+      expect(astra?.reasoningEfforts?.map((entry) => entry.effort)).toEqual([
         "low", "medium", "high", "xhigh", "max", "ultra",
       ]);
-      expect(models[2]?.reasoningEfforts?.map((entry) => entry.effort)).toEqual([
+      // The live catalog still decides the default: gpt-5.5 is the only row it
+      // marks isDefault, so nothing else may claim that badge.
+      // Exactly one row wears the default badge, and it is not the generation
+      // that now sorts last.
+      expect(models.filter((model) => model.isDefault).map((model) => model.id)).toEqual([models[0]!.id]);
+      expect(astra?.isDefault).toBe(false);
+      expect(models[0]?.reasoningEfforts?.map((entry) => entry.effort)).toEqual([
+        "low", "medium", "high", "xhigh", "max", "ultra",
+      ]);
+      expect(models[1]?.reasoningEfforts?.map((entry) => entry.effort)).toEqual([
         "low", "medium", "high", "xhigh", "max",
       ]);
-      expect(models[3]?.isDefault).toBe(false);
       const aggregate = await service.getAvailableModels({});
       const codexIds = new Set(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"]);
       const aggregatedCodexModels = aggregate.filter((model) => codexIds.has(model.id));
       expect(aggregate.length).toBeGreaterThan(0);
-      expect(aggregatedCodexModels).toEqual(models.slice(0, 4));
+      expect(aggregatedCodexModels).toEqual(models.filter((model) => codexIds.has(model.id)));
     });
 
     it("uses the Qwen CLI's configured model instead of unrelated curated rows", async () => {

@@ -21144,8 +21144,13 @@ final class ADETests: XCTestCase {
     // Retired Haiku 4.5 ids resolve to Haiku 5.5, which now carries reasoning tiers.
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-haiku-4-5"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-haiku-5-5"), ["low", "medium", "high", "xhigh", "max"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "astra"), ["low", "medium", "high", "xhigh", "max"])
+    // The bare aliases name the current generation, which reaches Ultra.
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "astra"), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-6.2-astra"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-6.2-sol"), ["low", "medium", "high", "xhigh", "max", "ultra"])
+    // An older explicit id keeps the tiers it always had.
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-6-astra"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.6-terra"), ["low", "medium", "high", "xhigh", "max", "ultra"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.6-luna"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.3-codex-spark"), ["low", "medium", "high", "xhigh"])
