@@ -483,7 +483,8 @@ import {
 import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
 import { SAVED_CHAT_COMPUTER_GONE_MESSAGE, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
 import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
-import { noteAdeCloudQueuedSend } from "../../state/adeCloudChatQueue";
+import { markAdeCloudQueuedMessageDelivered, noteAdeCloudQueuedSend, useAdeCloudChatQueue } from "../../state/adeCloudChatQueue";
+import { CloudQueuedMessages } from "./CloudQueuedMessages";
 import { CloudQueueSendCard, type CloudQueueSend } from "./CloudQueueSendCard";
 import { isAdeCloudComputer, useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
@@ -6293,6 +6294,33 @@ export function AgentChatPane({
   /** The model above and the chat it belongs to, for callbacks that read it later. */
   const selectedSessionModelRef = useRef<SessionModelRef>({ sessionId: selectedSessionId, modelId: selectedSessionModelId });
   selectedSessionModelRef.current = { sessionId: selectedSessionId, modelId: selectedSessionModelId };
+  // Messages the account's queue holds for this ADE Cloud chat while its
+  // computer is asleep or a new one is set up. Account level, by the chat's
+  // machine key; read on open and focus only (`useAdeCloudChatQueue`).
+  const cloudQueue = useAdeCloudChatQueue({ pin: chatForeignPin, sessionId: selectedSessionId });
+  // The transcript event carries no send id, so a queued row goes when a user
+  // message with its text arrives after the row showed (counted, so an older
+  // message with the same words does not hide it).
+  const queuedTextBaselineRef = useRef(new Map<string, number>());
+  useEffect(() => {
+    if (cloudQueue.messages.length === 0 || renderedSessionId !== selectedSessionId) return;
+    const counts = new Map<string, number>();
+    for (const envelope of selectedEvents) {
+      if (envelope.event.type !== "user_message") continue;
+      const text = envelope.event.text.trim();
+      counts.set(text, (counts.get(text) ?? 0) + 1);
+    }
+    const baselines = queuedTextBaselineRef.current;
+    for (const message of cloudQueue.messages) {
+      const seen = counts.get(message.text.trim()) ?? 0;
+      const baseline = baselines.get(message.messageId);
+      if (baseline === undefined) baselines.set(message.messageId, seen);
+      else if (seen > baseline) {
+        baselines.delete(message.messageId);
+        markAdeCloudQueuedMessageDelivered(message.messageId);
+      }
+    }
+  }, [cloudQueue.messages, renderedSessionId, selectedEvents, selectedSessionId]);
   // A chat that arrived from another machine carries one durable marker.
   const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
   const compactFirst = useCompactFirst(selectedEvents, renderedSessionId, selectedSession?.promptCache, selectedSession?.provider, selectedSession?.model, selectedSession?.compactFirstIdleMs);
@@ -21581,6 +21609,14 @@ export function AgentChatPane({
             style={RUNTIME_BANNER_STYLE}
             onDone={() => setCloudQueueSend(null)}
             onRestore={(text) => setDraft((current) => (current.trim().length ? current : text))}
+          />
+        ) : null}
+        {renderedSessionId === selectedSessionId ? (
+          <CloudQueuedMessages
+            messages={cloudQueue.messages}
+            waking={cloudQueue.waking && !(cloudQueueSend?.chatId === selectedSessionId && cloudQueueSend.wake === "launching")}
+            style={RUNTIME_BANNER_STYLE}
+            onCancel={cloudQueue.cancel}
           />
         ) : null}
         {!chatScope ? <CloudLaneDeletingSoonBand laneId={selectedSession?.laneId ?? laneId ?? null} style={RUNTIME_BANNER_STYLE} /> : null}
