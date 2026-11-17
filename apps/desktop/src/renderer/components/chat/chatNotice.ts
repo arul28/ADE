@@ -22,6 +22,8 @@ export type ChatNotice = {
    * composer still holds exactly that, it is cleared too.
    */
   unsent?: {
+    /** The send's client id: a message with it in the chat is this send. */
+    clientSendId?: string | null;
     texts: string[];
     submittedAt: string;
     alreadyThere: number;

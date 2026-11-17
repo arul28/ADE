@@ -26351,8 +26351,13 @@ export function createAgentChatService(args: {
       }
     }
     // The send running for this chat (if it carries a client id) has now
-    // written its message, so a retry of it must not write it again.
-    if (event.type === "user_message") clientSends.noteMessageWritten(managed.session.id);
+    // written its message, so a retry of it must not write it again. The
+    // message keeps that id: a client whose call was lost finds it there and
+    // knows the send arrived, whatever the words.
+    if (event.type === "user_message") {
+      const clientSendId = clientSends.noteMessageWritten(managed.session.id);
+      if (clientSendId && !event.clientSendId) event = { ...event, clientSendId };
+    }
     if (event.type === "user_message" && event.turnId && /^\/compact(?:\s|$)/i.test(event.text.trim())) {
       rememberBoundedEntry(compactOnlyTurns, event.turnId, automaticCompactSessions.delete(managed.session.id) ? "auto" : "manual", 512);
     }

@@ -198,16 +198,15 @@ export function useRemoteConnectionMark(targetId: string | null): string {
     () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
     [targetId],
   );
-  return useSyncExternalStore(
-    subscribe,
-    () => {
-      if (!targetId) return "";
-      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
-      if (!connection || connection.state !== "connected" || typeof connection.reconnectingSinceMs === "number") return "";
-      return String(connection.connectedAt ?? "");
-    },
-    () => "",
-  );
+  return useSyncExternalStore(subscribe, () => remoteConnectionMarkNow(targetId), () => "");
+}
+
+/** `useRemoteConnectionMark` read once, for a timer that runs outside render. */
+export function remoteConnectionMarkNow(targetId: string | null): string {
+  if (!targetId) return "";
+  const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+  if (!connection || connection.state !== "connected" || typeof connection.reconnectingSinceMs === "number") return "";
+  return String(connection.connectedAt ?? "");
 }
 
 /**

@@ -1630,6 +1630,13 @@ export type AgentChatEvent =
       displayText?: string;
       metadata?: AgentChatEventMetadata | null | undefined;
       messageId?: string;
+      /**
+       * The id the sending client gave this message
+       * (`AgentChatSendArgs.clientSendId`), when ADE wrote it for that send.
+       * A client whose call was lost looks for its id here before it puts the
+       * words back in a composer.
+       */
+      clientSendId?: string;
       attachments?: AgentChatFileRef[];
       contextAttachments?: AgentChatContextAttachment[];
       turnId?: string;
