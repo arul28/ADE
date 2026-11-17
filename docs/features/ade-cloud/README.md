@@ -245,8 +245,10 @@ chat continues on the new computer in the same chat row.
 - The new computer moves the saved chat to its own machine key
   (`POST /cloud/chats/:m/:c/move`); the queued messages move with it. A CLI's
   saved copy moves the same way (`POST /cloud/sessions/:m/:s/move`), sealed
-  again under the new key, before the CLI starts. A send to the old address
-  finds the moved copy by its session id, so it reaches the new computer.
+  again under the new key, once the CLI runs there. Until then a send joins
+  the continue launch; after it, a send to the old address finds the moved
+  copy by its session id and reaches the new computer. A CLI restored from its
+  capsule alone (its screen copy was pruned) has no copy to move.
 - Messages a person sends while the new CLI starts are typed at the CLI's
   prompt (`typeIntoAgentCliWhenFree`), never sent as a chat's.
 - The first message's `settings` go in `continueChat.settings` (chats only).
