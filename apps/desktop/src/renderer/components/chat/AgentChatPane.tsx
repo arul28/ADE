@@ -5957,13 +5957,14 @@ export function AgentChatPane({
     setError({ clearIf: (current) => current.unsent === unsent && (current.sessionId ?? null) === unsentReconcileSessionId });
     if (unsentReconcileRef.current?.unsent === unsent) unsentReconcileRef.current = null;
     // What went back in the composer for it is not unsent either. Anything
-    // the person changed since stays as it is.
+    // the person changed since stays as it is — and another chat's composer is
+    // never touched, even when it holds the same words.
     const putBack = unsent.putBack;
-    if (!putBack) return;
+    if (!putBack || unsentReconcileSessionId !== composerSessionId) return;
     setDraft((current) => (current === putBack.text ? "" : current));
     setAttachments((current) => (current === putBack.attachments ? keepEmptyArray(current) : current));
     setContextAttachments((current) => (current === putBack.contextAttachments ? keepEmptyArray(current) : current));
-  }, [countSentMessages, setAttachments, setDraft, unsentNoticeEvents, unsentReconcile, unsentReconcileSessionId]);
+  }, [composerSessionId, countSentMessages, setAttachments, setDraft, unsentNoticeEvents, unsentReconcile, unsentReconcileSessionId]);
   // Another machine's chat: pinned there, or on the machine this project tab
   // itself is bound to.
   const shownNotice = shownChatNotice(
@@ -12564,8 +12565,16 @@ export function AgentChatPane({
     const saved = readComposerDraftSnapshot(storageKey, initialNativeControls)
       ?? normalizeStoredComposerDraft({ text: "" }, initialNativeControls);
     if (!saved) return;
-    // A newer draft, by words or by files, stays as it is.
-    if (saved.text.trim().length || saved.attachments.length || saved.contextAttachments.length) return;
+    // A newer draft, by words, files, or a device/browser selection, stays as
+    // it is.
+    if (
+      saved.text.trim().length
+      || saved.attachments.length
+      || saved.contextAttachments.length
+      || saved.iosContextItems.length
+      || saved.appControlContextItems.length
+      || saved.builtInBrowserContextItems.length
+    ) return;
     writeComposerDraftSnapshot(storageKey, {
       ...saved,
       text: restore.text,
