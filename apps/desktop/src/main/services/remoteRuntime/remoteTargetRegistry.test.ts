@@ -100,6 +100,17 @@ describe("RemoteTargetRegistry", () => {
       autoConnect: false,
       manuallyDisconnectedAt: 1_700_000_100,
     });
+
+    // Saving the address again keeps this computer's own setting for the machine.
+    registry.update(target.id, { slowLinkMode: "on" });
+    registry.save({
+      name: "Build Server",
+      hostname: "203.0.113.10",
+      sshUser: "admin",
+      port: 22,
+      sshKeyPath: null,
+    });
+    expect(new RemoteTargetRegistry().get(target.id)?.slowLinkMode).toBe("on");
   });
 
   it("migrates legacy successful targets to auto-connect and leaves new targets off", () => {
