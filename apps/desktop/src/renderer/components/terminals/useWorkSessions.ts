@@ -8,8 +8,8 @@ import { nextScheduledWakeDeadlineMs, scheduledWakeState } from "../../../shared
 import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
-import { ADE_CLOUD_MACHINE_ID, isAdeCloudBinding } from "../../../shared/adeCloud/binding";
-import { isAdeCloudComputer } from "../../state/adeCloudLaneIndex";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { workFilterMachineId } from "../../state/workFilterMachine";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import {
   PROVIDER_TOOL_TYPE,
@@ -2404,17 +2404,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
    * With no chips set this returns `filtered` BY REFERENCE, so every downstream
    * memo stays referentially stable and the feature costs nothing when unused.
    */
+  const adeCloudIndex = useAdeCloudLaneComputers();
   const chipFiltered = useMemo(() => {
     if (isWorkSessionFilterEmpty(workSessionFilters)) return filtered;
-    // Every ADE Cloud computer is one "ADE Cloud" machine choice, as in the
-    // pane's `filterMachineIdOf` (impl-renderer-core).
-    const filterMachineIdOf = (binding: OpenProjectBinding | null | undefined): string => {
-      const machineId = machineIdForBinding(binding ?? null);
-      return isAdeCloudBinding(binding)
-        || isAdeCloudComputer({ machineKey: machineId, hostname: binding?.kind === "remote" ? binding.hostname ?? null : null })
-        ? ADE_CLOUD_MACHINE_ID
-        : machineId;
-    };
+    // Every ADE Cloud computer is one "ADE Cloud" machine choice, as in the pane's filter options.
+    const filterMachineIdOf = (binding: OpenProjectBinding | null | undefined): string =>
+      workFilterMachineId(machineIdForBinding(binding ?? null), binding, adeCloudIndex);
     const activeMachineId = filterMachineIdOf(projectBinding);
     // A pending-launch stand-in for a chat whose lane lives on another machine
     // is listed in this active-binding roster (that machine's slice does not
@@ -2445,6 +2440,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }));
   }, [
     activeChatLaunchBindingKey,
+    adeCloudIndex,
     chatLaunchRowSources,
     effectiveFilingBuckets,
     filtered,

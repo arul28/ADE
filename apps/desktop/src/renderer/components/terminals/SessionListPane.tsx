@@ -25,8 +25,9 @@ import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { isSavedTerminalSession } from "../../state/cloudSavedTerminals";
 import { foreignLaneKey, machineBlockedReason } from "../../state/laneMachineRouting";
 import { machineIdForBinding, machineIdOfSlot } from "../../../shared/machineIdentity";
-import { isAdeCloudComputer, useAdeCloudLaneComputers, useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
-import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME, isAdeCloudBinding } from "../../../shared/adeCloud/binding";
+import { useAdeCloudLaneComputers, useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
+import { workFilterMachineId } from "../../state/workFilterMachine";
+import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME } from "../../../shared/adeCloud/binding";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import { machineShowsConnected, rowShowsConnected } from "../../state/cloudRestingRows";
 import {
@@ -1424,11 +1425,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   // person has no single cloud computers to pick from.
   const adeCloudIndex = useAdeCloudLaneComputers();
   const filterMachineIdOf = useCallback(
-    (machineId: string, binding?: OpenProjectBinding | null): string =>
-      isAdeCloudBinding(binding)
-        || isAdeCloudComputer({ machineKey: machineId, hostname: binding?.kind === "remote" ? binding.hostname ?? null : null }, adeCloudIndex)
-        ? ADE_CLOUD_MACHINE_ID
-        : machineId,
+    (machineId: string, binding?: OpenProjectBinding | null): string => workFilterMachineId(machineId, binding, adeCloudIndex),
     [adeCloudIndex],
   );
   const activeFilterMachineId = filterMachineIdOf(activeMachineId, projectBinding);
