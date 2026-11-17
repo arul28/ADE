@@ -339,8 +339,12 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
     // Older pages need the lane's computer: GitHub's first page is what a resting lane shows.
     if (typeof args.skip === "number" && args.skip > 0) throw readFailure(ADE_CLOUD_OLDER_COMMITS_SENTENCE);
     const { repo, branch } = await repoAt(scope, laneId);
-    const commits = await github({ op: "listCommits", params: { ...repo, ref: branch } });
-    const limit = typeof args.limit === "number" && args.limit > 0 ? Math.trunc(args.limit) : commits.length;
+    const asked = typeof args.limit === "number" && args.limit > 0 ? Math.trunc(args.limit) : null;
+    // GitHub sends 50 a page. Enough pages to fill the request (at most 2), so
+    // a long history reads as "more" and its next page says why it stops.
+    const maxPages = asked ? Math.min(2, Math.ceil(asked / 50)) : 1;
+    const commits = await github({ op: "listCommits", params: { ...repo, ref: branch, maxPages } });
+    const limit = asked ?? commits.length;
     return commits.slice(0, limit).map((commit) => ({
       sha: commit.sha,
       shortSha: commit.sha.slice(0, 7),

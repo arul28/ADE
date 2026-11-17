@@ -276,7 +276,13 @@ export function CommitHistoryView({
       });
       setHasMore(rows.length >= pageSize);
     } catch (err) {
-      if (loadSeq.current === seq) notify(formatTimelineError(err), true);
+      if (loadSeq.current !== seq) return;
+      notify(formatTimelineError(err), true);
+      // The list stops here (a resting ADE Cloud lane's older commits need its
+      // computer). Else the search and fold auto-reads ask again at once and
+      // show the same notice in a loop. A reload or another lane starts over.
+      // Every failure, not only a marked one: the mark does not cross the bridge.
+      setHasMore(false);
     } finally {
       if (loadSeq.current === seq) setLoadingMore(false);
     }
