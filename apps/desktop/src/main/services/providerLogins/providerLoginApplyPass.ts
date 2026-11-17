@@ -174,23 +174,30 @@ export function createApplyPass(s: SyncShared) {
     s.appliedLoginHashes = new Set(Object.values(state.applied).flatMap((entry) => entry.loginHashes ?? []));
   };
 
-  /** Undo every file and env key this computer applied (sign-out, account switch). */
+  /**
+   * Undo every file and env key this computer applied (sign-out, account
+   * switch). An entry whose removal failed (OpenCode's store busy) stays in
+   * `state.applied`, so the next account's first pass tries it again.
+   */
   async function removeAllApplied(state: AppliedStateFile, reason: string): Promise<void> {
     const providers = new Set<string>();
+    const left: AppliedStateFile["applied"] = {};
     for (const [place, entry] of Object.entries(state.applied)) {
+      providers.add(entry.provider);
       try {
         await removeApplied(entry);
       } catch (error) {
+        left[place] = entry;
         deps.logger.warn("provider_login.remove_failed", { place, code: (error as NodeJS.ErrnoException)?.code ?? null });
+        continue;
       }
-      providers.add(entry.provider);
       deps.logger.info("provider_login.removed", { provider: entry.provider, place, reason });
     }
     for (const [name, valueHash] of Object.entries(state.env)) {
       const value = env[name];
       if (value != null && shortHash(value) === valueHash) delete env[name];
     }
-    state.applied = {};
+    state.applied = left;
     state.env = {};
     // Copilot's token lives only in the launch helper (G1).
     setCopilotCarriedToken(null);
@@ -253,7 +260,10 @@ export function createApplyPass(s: SyncShared) {
       // Another account's sign-ins must not stay on this computer.
       await removeAllApplied(onDisk, "account_switch");
     }
-    s.appliedCache = onDisk && onDisk.accountUserId === accountUserId ? onDisk : emptyAppliedState(accountUserId);
+    // What the last account's removal left (it failed) is this account's to remove, as a copy no longer in use.
+    s.appliedCache = onDisk && onDisk.accountUserId === accountUserId
+      ? onDisk
+      : { ...emptyAppliedState(accountUserId), applied: onDisk?.applied ?? {} };
     rememberAppliedHashes(s.appliedCache);
     return s.appliedCache;
   }
@@ -716,7 +726,7 @@ export function createApplyPass(s: SyncShared) {
       void removeAllApplied(onDisk, "signed_out")
         .then(() => {
           try {
-            writeAppliedState(deps.adeDir, emptyAppliedState(null));
+            writeAppliedState(deps.adeDir, { ...emptyAppliedState(null), applied: onDisk.applied });
           } catch (error) {
             // Paths and hashes only; the next account's load starts it over.
             deps.logger.warn("provider_login.applied_write_failed", { code: (error as NodeJS.ErrnoException)?.code ?? null });

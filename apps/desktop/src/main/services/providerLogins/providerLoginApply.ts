@@ -406,6 +406,15 @@ function readAntigravitySettingsFile(file: string): Record<string, unknown> | "m
 // ── the readback that tells capture "this file is the account's" ──────
 
 /** Hash what capture would read back from this provider's files now (one slot for Pi). */
+/** The login hashes capture will read for an OpenCode row, from the row itself. */
+function openCodeLoginHashes(row: OpenCodeCarryCredential, ctx: CarryContext): string[] {
+  const carry = carryRow("opencode");
+  const bundle = carry.locate?.(ctx)[0];
+  if (!bundle || !carry.parse) return [];
+  const parsed = carry.parse(bundle, new Map([[OPENCODE_DB_REL, Buffer.from(JSON.stringify(row))]]), ctx);
+  return "unreadable" in parsed ? [] : parsed.logins.map((login) => loginContentHash(login));
+}
+
 export function readBackLoginHashes(provider: ProviderLoginProvider, slot: string | null, ctx: CarryContext): string[] {
   const row = carryRow(provider);
   if (!row.locate || !row.parse) return [];
@@ -456,6 +465,7 @@ export type ApplyResult =
 export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | null, ctx: CarryContext, now: number): Promise<ApplyResult> {
   const accessOnly = want.class === "renewing" && !want.full;
   let renewalSafe = true;
+  let openCodeSentHashes: string[] | null = null;
   const files: AppliedFile[] = [];
   const entry: AppliedEntry = {
     provider: want.provider,
@@ -550,8 +560,11 @@ export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | nu
       const previousUnchanged = previous?.openCode ? appliedEntryUnchanged({ ...previous, files: [] }) : false;
       if (await openCodeWriter.put(dbPath, { id, label, value: written }) === "not_installed") return { ok: false, reason: "not_installed" };
       const stored = readOpenCodeCredentialValue(dbPath, id);
-      if (!stored || stored === "unreadable") return { ok: false, reason: "write_failed" };
-      entry.openCode = { dbPath, id, valueHash: shortHash(JSON.stringify(stored)) };
+      if (!stored) return { ok: false, reason: "write_failed" };
+      // OpenCode took the row but the store is busy now: it is tracked with what was sent, so capture never
+      // reads ADE's copy as this computer's own sign-in and sign-out still removes it.
+      entry.openCode = { dbPath, id, valueHash: shortHash(JSON.stringify(stored === "unreadable" ? written : stored)) };
+      if (stored === "unreadable") openCodeSentHashes = openCodeLoginHashes({ id, label, value: written }, ctx);
       // Then the copy before goes, while it is still ADE's; a row the person changed stays. The new copy is
       // in use already, so a failed removal only leaves an unused row: reported, never a failed apply.
       if (previous?.openCode && previousUnchanged) {
@@ -573,7 +586,7 @@ export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | nu
     if (!files.some((file) => file.abs === old.abs)) removeIfOurs(old);
   }
   entry.renewalSafe = renewalSafe;
-  entry.loginHashes = readBackLoginHashes(want.provider, want.provider === "pi" ? want.slot : null, ctx);
+  entry.loginHashes = openCodeSentHashes ?? readBackLoginHashes(want.provider, want.provider === "pi" ? want.slot : null, ctx);
   return { ok: true, entry };
 }
 
