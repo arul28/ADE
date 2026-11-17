@@ -18,8 +18,7 @@ desktop, CLI, hosted web client, and iOS gate account-backed
 surfaces on the signed-in account; a lost or unreadable session is reported as
 its actual state rather than being treated as an optional guest account.
 
-The runtime no longer assumes first-run setup must hydrate every
-service. Project open favors a cheap first pass; secondary hydration
+The runtime does not hydrate every service at first run. Project open favors a cheap first pass; secondary hydration
 (full lane status and provider modes) happens after the app is
 interactive.
 
@@ -325,7 +324,16 @@ Main process:
   of its "Show in Finder" button.
 - `apps/desktop/src/renderer/components/settings/providers/keys/` — the stored
   API keys panel, the add-key sheet (only the fields a harness actually has),
-  the OpenCode custom-provider panel, and `useApiCredentials`.
+  the OpenCode custom-provider panel, `useApiCredentials`, and
+  `useAccountProviderKeyNames` (the account's key names for the "This
+  computer only" tag).
+- `apps/desktop/src/renderer/components/settings/CloudAgentLimitsCard.tsx` —
+  Settings › ADE Cloud › What agents may do alone. The desktop asks its main
+  process (`cloud.getAgentLimits` / `setAgentLimits`, server first, a local
+  copy on a 404). The web app reads and saves through the account
+  (`accountCall` `limits` / `saveLimits` with the revision it read). A save
+  over another device's newer limits loads them and says "Your limits changed
+  on another device. ADE loaded the new ones."
 - `apps/ade-cli/src/services/proxy/` — the local subscription proxy behind
   `ade proxy` and the `proxy.*` actions: hash-verified release download,
   install/config management (config written 0600, state carries no secrets),
@@ -540,6 +548,16 @@ Renderer — onboarding:
   button sets the app-store flag `standaloneSettingsOpen` and navigates to
   `/settings`, so a person with no project can still reach the settings that
   need none (see "Settings with no project" below).
+- `apps/desktop/src/renderer/components/projects/ProjectWelcomeSidePanels.tsx`
+  — the welcome page's machine list: this machine, the person's own computers
+  that are connected, then one **ADE Cloud** row ("Wakes when you start
+  work"). An offline own computer is hidden. No ADE Cloud computer shows by
+  its own name. The header's "N of M computers connected" counts the
+  account's computers, offline ones included.
+- Opening a project with no own computer online opens its tab bound to ADE
+  Cloud (`openAdeCloudProject`, `renderer/state/adeCloudTabs.ts`): the normal
+  project pages, with its ADE Cloud lanes. There is no separate no-computer
+  page.
 - `apps/desktop/src/renderer/components/projects/AddProjectForm.tsx` — **Add
   project** from GitHub (the palette's clone flow and the start page). Add
   project opens on this form; **Open a folder…** and **New empty project…** sit
@@ -1008,12 +1026,7 @@ Renderer — settings:
   affects. `SettingsCard`, `SettingsManagerPage`, and
   `SettingsDashboardPage` are the three page templates; section files choose
   one instead of drawing their own page layout.
-- `GeneralSection.tsx` and `EnvironmentSection.tsx` were dissolved in the
-  IA rewrite — General was a flat stack of 11 unrelated sections, and
-  `EnvironmentSection` was App version + ADE CLI (now in General and
-  Integrations), not environment variables. `ProxyAndPreviewSection.tsx`
-  and `DiagnosticsDashboardSection.tsx` were deleted outright: 1,641
-  lines imported by nothing. Legacy deep links:
+- Legacy deep links:
   `#github-connection`, `#linear-connection`, `#voice-input`,
   `#chat-launch-clipboard`, `#agent-completion-sound`,
   `#auto-updates`, `#pr-chat-transcripts`.
@@ -1284,8 +1297,7 @@ Renderer — settings:
   a page has two or more blocks; a CSS container query shows it only at 900px
   or wider. At the end of the page it marks the last block.
   `AdeCliSection.tsx` is rendered in General too, in the ADE block —
-  CLI availability is app basics, not an integration. The
-  `EnvironmentSection.tsx` wrapper that used to pair them is gone.
+  CLI availability is app basics, not an integration.
 - `apps/desktop/src/renderer/components/settings/settingsSectionUi.tsx`
   — shared section headers (`SettingsSectionShell`), toggle styling, and
   `SettingsToggle`: a labelled on/off switch that callers feed the persisted
@@ -1484,8 +1496,8 @@ Renderer — settings:
   (pick names and a project; values shown only as lengths), change value, and
   Reset.
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
-  and `LaneBehaviorSection.tsx` — lane initialization recipes and
-  lifecycle policies. The template editor is written for someone who has
+  and `NewLaneSettingsSection.tsx` — lane initialization recipes and start
+  defaults. The template editor is written for someone who has
   never read the config schema: fields are named for what they do
   ("Files to copy into new lanes", "Env files to fill in", "Install
   command", "Setup script", "Use for new lanes") rather than for the
@@ -1497,9 +1509,9 @@ Renderer — settings:
   lane creation leases a port range and the lease always outranks a
   template's `portRange`, so the field could only mislead. An existing
   `portRange` in YAML is preserved across edits rather than dropped.
-- `apps/desktop/src/renderer/components/settings/StorageSection.tsx` plus
-  `settings/storage/StorageCleanupDialog.tsx`, `StorageDiagnostics.tsx`,
-  `StorageMaintenanceJournal.tsx`, `storageView.ts`, and `storageUiConstants.ts`
+- `apps/desktop/src/renderer/components/settings/health/HealthSpace.tsx` and
+  `HealthCleanups.tsx`, plus `settings/storage/StorageCleanupDialog.tsx`,
+  `ReclaimConfirmDialog.tsx`, `storageView.ts`, and `storageUiConstants.ts`
   — Project → Storage & cleanup. Uses plain language to explain lane cleanup rules,
   automatic safety checks, and the difference between Archive (files stay),
   Archive & Reclaim (lane/branch/chat stay; managed files are removed), and
@@ -1935,11 +1947,6 @@ Renderer — settings:
   Accounts deliberately have no colour of their own — the per-account hash that
   used to tint a chip could draw a Claude account in Gemini's blue, and the
   email on every row is what tells accounts apart.
-Diagnostics are rendered inside `StorageSection.tsx`
-(`storage/StorageDiagnostics.tsx`) under Diagnostics. The
-standalone `ProxyAndPreviewSection.tsx` and
-`DiagnosticsDashboardSection.tsx` files were imported by nothing and have
-been deleted.
 
 Auto-update (General preference, top-bar control, and exceptional recovery
 banner):
@@ -2138,7 +2145,7 @@ banner):
   attempt can reappear. The toast reads "ADE will update in Ns", is driven off
   `autoApplyPending`, and has a **Cancel** action wired to
   `updateCancelAutoApply()`.
-- `apps/desktop/src/renderer/components/app/autoUpdateInstallAction.ts` — the
+- `apps/desktop/src/renderer/components/app/autoUpdateInstallAction.tsx` — the
   shared install-impact confirmation, decision capture, and
   `updateQuitAndInstall()` action used by the top-right control and floating
   ready prompt.
@@ -2435,6 +2442,7 @@ first read.
 | Automations | The same prompt (normalized, 20+ characters, not a slash command) sent three times in a week in this project; only hashes are kept | Automations |
 | ADE on iPhone | A week after first run, still no other machine and no paired phone (paired devices are read once, then) | Connections › Phone |
 | Stacked PRs | A lane built on another lane (not the main checkout) whose pull request is open, per Activity's PR items, while it has none | PRs |
+| Import your .env | The main checkout of the open project has a `.env` file that git ignores, on a connected computer of the person's own; once per set of files (`useEnvImportSuggestion.ts`) | Settings › Passwords & Secrets with the import dialog (see [The `.env` tip](../passwords/README.md#the-env-tip)) |
 
 The send-time checks (`chatSendSignals.ts`, called from `AgentChatPane`'s
 submit) read only the typed text, in one O(text) pass, so they work for a chat
@@ -3179,6 +3187,14 @@ models the key declares.
 - **Environment** and **Project config** rows are read-only and say
   "Managed outside ADE — clear the env/config value to remove." ADE did not
   write them, so it does not offer to delete them.
+- **This computer only.** A Local store key that the account does not hold
+  wears a "This computer only" tag ("That computer only" when Settings shows
+  another computer). Other computers and ADE Cloud can't use it. Saving it
+  again while signed in puts it in the account. The panel reads the account's
+  key names once (`useAccountProviderKeyNames.ts`, `accountSecrets` with kind
+  `provider_api_key`, names only) and again after a save or a delete. When
+  the account can't answer (signed out, or a server without the route), no
+  tag shows.
 - **Verify** appears only on the default key of a provider that has a live
   probe — Claude Code, Codex, Cursor, Grok and Kimi. The verification path reads
   one key per provider, so a second key gets no button rather than a button that
@@ -3210,6 +3226,24 @@ slot, because that is the slot its SDK signs in from.
 
 Pi is the one provider with no endpoint field: it reads its own `models.json`
 for endpoints and model ids, and the sheet says so.
+
+**One key store.** The account vault kind `provider_api_key` holds every
+provider key for every computer and ADE Cloud:
+
+- The vault name is `<provider>` for the default key and
+  `<provider>#<credentialId>` for the others (`credentialStorageKey` in
+  `main/services/ai/apiKeyStore.ts`).
+- A key saved for ADE Cloud goes to the `<provider>` row, or to
+  `<provider>#ade-cloud` when that row already holds a different key. Cloud
+  computers read `<provider>#ade-cloud` first.
+- On ADE Cloud, Qwen Code signs in with a DashScope API key (the `qwen`
+  sign-in in `shared/cloudSignIns.ts`). The cloud computer writes it into
+  Qwen's own settings, never into the brain's environment.
+- Two one-time moves run per computer after sign-in
+  (`main/services/account/accountMigrationRunner.ts`): this computer's device
+  keys into the account (`provider_api_keys`), and ADE Cloud's older saved
+  keys (`integration/cloud-key-<id>`) into `provider_api_key`
+  (`cloud_keys_api_store`). Both are safe to run again and delete nothing.
 
 ### OpenCode custom providers
 
