@@ -39,7 +39,6 @@ import ContributionSkyline, { ContributionSkylineToggle, type ContributionDay } 
 import { DAY_MS, dayMs, toKey } from "../ui/contributionSkylineModel";
 import "./usageSurfaces.css";
 import { fgTint } from "../lanes/laneDesignTokens";
-import { SceneFrost } from "../../scene/SceneFrost";
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -919,7 +918,6 @@ export function ActivityModule({
   showRangeControl = true,
   className = "",
   fillSlot = false,
-  frost = false,
 }: {
   stats: AdeUsageStats | null;
   loading?: boolean;
@@ -930,12 +928,6 @@ export function ActivityModule({
   className?: string;
   /** Stretch the card to the full slot instead of hugging the heatmap. */
   fillSlot?: boolean;
-  /**
-   * The card sits on the page's scene picture (the new-chat page): frost it
-   * from the picture (`SceneFrost`) instead of with a live backdrop blur.
-   * Settings has no picture behind the card, so it leaves this off.
-   */
-  frost?: boolean;
 }) {
   const reduced = usePrefersReducedMotion();
   const palette = SERIES_PALETTE;
@@ -1065,7 +1057,6 @@ export function ActivityModule({
         aria-label={ariaSummary(stats, preset)}
         data-activity-module
       >
-        {frost ? <SceneFrost /> : null}
         <div className="usage-activity-head">
           <TabRow tab={tab} onTabChange={changeTab} />
           {compactMode && insight ? <InsightLine insight={insight} /> : null}
@@ -1192,7 +1183,6 @@ export function WorkActivityModule() {
       onPresetChange={changePreset}
       className="mt-8 w-full"
       fillSlot
-      frost
     />
   );
 }

@@ -216,12 +216,13 @@ dropdowns plus two labelled actions: `DraftMachinePicker`, then a `LaneCombobox`
 (mounted `compact`, so its 28px trigger matches the composer pills above it),
 then Shell and Import. The composer sits above it at `z-10`.
 
-Over a scene picture, the shelf, the activity card and the Chat / CLI switch
-are frosted with `SceneFrost` (`renderer/scene/SceneFrost.tsx`), not with a
+Over a scene picture, the shelf and the Chat / CLI switch are frosted with
+`SceneFrost` (`renderer/scene/SceneFrost.tsx`), not with a
 `backdrop-filter`: each mounts its slice of the window-sized picture under a
 plain `filter` blur, with its own tint on top (`styles/scene.css`). The blur is
 drawn once, so typing the first message redraws only what changed. Without a
-picture they keep a flat tint. The slice follows its box when the box moves
+picture they keep a flat tint. The activity card under the shelf stays an
+opaque plate with no blur at all. The slice follows its box when the box moves
 (the composer above grows a line): `SceneImageLayer` with `variant="frost"`
 also watches the boxes around it for a size change.
 

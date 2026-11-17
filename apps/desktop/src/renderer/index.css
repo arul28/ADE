@@ -3583,6 +3583,10 @@ button, [role="button"] {
 [data-chat-empty-usage] [data-activity-module] {
   background-color: var(--color-bg);
   background-image: linear-gradient(var(--work-popover-bg), var(--work-popover-bg));
+  /* An opaque plate shows nothing through it, so a backdrop blur only makes
+     every change on the page a full-window redraw. */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 /*
