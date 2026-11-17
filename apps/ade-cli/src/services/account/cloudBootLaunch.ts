@@ -465,8 +465,8 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
       if (request.chat && deps.providerReady) {
         const provider = request.chat.provider;
         // The wait can outlast `hold`'s limit: its own hold keeps the computer awake through it.
-        const holdFor = deps.holdFor ?? (<T>(_reason: string, _ttlMs: number, run: () => Promise<T>) => run());
-        const waited = await holdFor("provider_sign_in", SIGN_IN_WAIT_MS + 10 * 60_000, () => waitForProviderSignIn(deps, provider, report, startStages, sleep));
+        const signIn = () => waitForProviderSignIn(deps, provider, report, startStages, sleep);
+        const waited = await (deps.holdFor?.("provider_sign_in", SIGN_IN_WAIT_MS + 10 * 60_000, signIn) ?? signIn());
         if (waited.kind === "cancelled") {
           writeState(deps.stateFile, { launchId, phase: "ended", projectId: project.projectId });
           return;

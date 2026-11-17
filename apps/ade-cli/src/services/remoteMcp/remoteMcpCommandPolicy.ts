@@ -290,9 +290,9 @@ const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
 const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([
   ["action", "actions"], ["machine", "machines"], ["device", "devices"], ["gh", "github"], ["provider", "providers"],
 ]);
-/** `ade machines` subcommands that only read the roster. */
 /** `ade cloud` subcommands only ADE's server runs, over exec on a cloud computer. */
 const SERVER_ONLY_CLOUD_COMMANDS: ReadonlySet<string> = new Set(["prepare-stop", "push-work", "work-state", "save-for-rest", "messages"]);
+/** `ade machines` subcommands that only read the roster. */
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
 /** `chat handoff|move --to <machine>`: the machine a chat moves to. */

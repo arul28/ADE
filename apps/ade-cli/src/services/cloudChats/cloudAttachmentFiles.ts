@@ -31,7 +31,12 @@ export async function saveCloudFiles<F extends { fileId: string; name: string; c
     if (!FILE_ID.test(file.fileId)) throw new Error(`The ${owner} names a file this computer can't keep ("${safeFileName(file.name)}").`);
     fs.mkdirSync(folder, { recursive: true });
     const target = path.join(folder, `${file.fileId}-${safeFileName(file.name)}`);
-    if (!fs.existsSync(target)) fs.writeFileSync(target, Buffer.from(await read(file)));
+    if (!fs.existsSync(target)) {
+      // Written beside it, then renamed: a file that is there is always whole, so a retry never keeps half of one.
+      const partial = `${target}.part`;
+      fs.writeFileSync(partial, Buffer.from(await read(file)));
+      fs.renameSync(partial, target);
+    }
     out.push({ path: target, type: file.contentType.startsWith("image/") ? "image" : "file" });
   }
   return out;
