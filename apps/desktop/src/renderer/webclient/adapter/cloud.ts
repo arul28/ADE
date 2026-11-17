@@ -17,6 +17,7 @@ import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { UnsupportedRemoteCommandError } from "./infra/commandCaller";
 import type { AccountCloudLaunchesBridge } from "../../../shared/accountCloudLaunches";
 import type { BrowserAccountClient } from "../account/client";
+import type { CloudAccessIpcAnswer } from "../../../shared/adeCloudMachine";
 
 /**
  * `window.ade.cloud` for the web app: enough for Settings › ADE Cloud (the
@@ -86,19 +87,31 @@ function machinesResultOf(value: unknown): CloudMachinesResult | null {
 async function readCloudAccess(
   infra: Pick<AdapterInfra, "client" | "commands">,
   billing: ReturnType<typeof createWebCloudBilling>,
-): Promise<{ enabled: boolean }> {
-  const direct = await billing.accessEnabledCached().catch(() => null);
-  if (infra.client.getStatus().readiness !== "ready") return { enabled: direct === true };
+  accountUserId: () => string | null,
+): Promise<CloudAccessIpcAnswer> {
+  const serverAnswer = await billing.accessAnswerCached().catch(() => null);
+  const direct = serverAnswer?.enabled ?? null;
+  // A failed server read is "unknown", never "blocked": the store keeps ADE Cloud shown.
+  const fromServer = (): CloudAccessIpcAnswer => ({
+    enabled: direct === true,
+    state: direct === true ? "on" : direct === false ? "blocked" : "unknown",
+    reason: direct === false ? serverAnswer?.reason ?? null : null,
+    account: accountUserId(),
+  });
+  if (infra.client.getStatus().readiness !== "ready") return fromServer();
   // The computer's answer also carries its sign-in end warning; the server decides `enabled`.
   // A computer that drops mid-read leaves the server's answer standing.
   try {
-    const answer = await infra.commands.call<{ enabled: boolean }>("cloud.read", { action: "access" }, { fallback: { enabled: false }, retainLastRead: false });
-    return { ...answer, enabled: direct ?? answer?.enabled === true };
-  } catch (error) {
-    // Nothing learned from either side: let the page say it couldn't check.
-    if (direct == null) throw error;
-    forwardSignalToSentry("web.cloud_access_read_failed", {}, "cloud_access_read_failed", "info");
-    return { enabled: direct };
+    const answer = await infra.commands.call<CloudAccessIpcAnswer>("cloud.read", { action: "access" }, { fallback: { enabled: false }, retainLastRead: false });
+    if (direct == null) {
+      return { ...answer, enabled: answer?.enabled === true, state: answer?.enabled === true ? "on" : "unknown", reason: null, account: accountUserId() };
+    }
+    return { ...fromServer(), ...(answer?.signInEnd !== undefined ? { signInEnd: answer.signInEnd } : {}) };
+  } catch {
+    if (direct == null) {
+      forwardSignalToSentry("web.cloud_access_read_failed", {}, "cloud_access_read_failed", "info");
+    }
+    return fromServer();
   }
 }
 
@@ -109,7 +122,7 @@ export function createWebCloudAccessNamespace(
 ): NonNullable<Window["ade"]["cloudAccess"]> {
   const billing = createWebCloudBilling(accountClient);
   return {
-    read: () => readCloudAccess(infra, billing),
+    read: () => readCloudAccess(infra, billing, () => accountClient.getSnapshot().userId ?? null),
     // Read again when this tab's connection changes: a computer that comes online adds its sign-in warning.
     onChanged: (cb) => {
       let readiness = infra.client.getStatus().readiness;
@@ -159,7 +172,7 @@ export function createWebCloudNamespace(
   /** A computer of the account answers on this connection. */
   const computerOnline = () => client.getStatus().readiness === "ready";
 
-  const access = async (): Promise<boolean> => (await readCloudAccess(infra, billing)).enabled;
+  const access = async (): Promise<boolean> => (await readCloudAccess(infra, billing, () => accountClient.getSnapshot().userId ?? null)).enabled;
 
   /**
    * No computer online: the plan, hours and the account's ADE Cloud computers

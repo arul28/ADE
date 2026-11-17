@@ -5,6 +5,7 @@ import { cloudConnectionMachineKey, isCloudConnectionTarget } from "../state/clo
 import { readWebAccountMachineKeys } from "../state/webAccountMachineKeys";
 import { showToast } from "../components/app/toast/toastStore";
 import { connectMachine } from "./machineConnect";
+import { ipcErrorMessage } from "./format";
 import type { MachineAddress } from "../../shared/machineAddress";
 
 /**
@@ -117,10 +118,11 @@ export function wakeRestingCloudMachine(
     })
     .catch((error: unknown) => {
       pendingIntents.delete(machineKey);
-      const message = error instanceof Error ? error.message : String(error);
-      // The toast has the details; the opened view offers Try again.
-      failure = { state: "failed", message: `ADE couldn't wake ${machine.machineName}. Try again.` };
-      showToast({ title: `Couldn't wake ${machine.machineName}`, message, tone: "error" });
+      // The server's sentence for a refusal (hours, a block, too many awake); never the computer's name.
+      const reason = ipcErrorMessage(error).trim();
+      const message = reason ? `Can't wake: ${reason}` : "ADE couldn't wake your ADE Cloud computer. Try again.";
+      failure = { state: "failed", message };
+      showToast({ title: "Couldn't wake your ADE Cloud computer", message: reason || message, tone: "error" });
     })
     .finally(() => setListWake(machineKey, failure));
 }

@@ -15,6 +15,7 @@
 import { useCallback, useMemo } from "react";
 import { useOptionalWebWorkspace, useWebMachines } from "./WebWorkspaceContext";
 import type { WebMachineEntry } from "./webWorkspaceModel";
+import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 
 export type WebChatsMachineOption = { id: string; name: string };
 
@@ -42,7 +43,14 @@ function entryTargetIds(machine: WebMachineEntry): string[] {
 export function useWebChatsMachines(): WebChatsMachinePicker | null {
   const workspace = useOptionalWebWorkspace();
 
-  const machines = useWebMachines();
+  const allMachines = useWebMachines();
+  // Personal chats run on the person's own computers only, never on ADE Cloud.
+  const cloudIndex = useAdeCloudLaneComputers();
+  const machines = useMemo(
+    () => allMachines.filter((machine) =>
+      !isAdeCloudComputer({ machineKey: machine.accountMachine?.machineKey ?? null, hostname: machine.accountMachine?.name ?? null }, cloudIndex)),
+    [allMachines, cloudIndex],
+  );
 
   const select = useCallback(async (machineId: string): Promise<string | null> => {
     if (!workspace) return null;
