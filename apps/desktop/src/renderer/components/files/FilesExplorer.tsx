@@ -81,6 +81,13 @@ export type FilesExplorerProps = {
   compact?: boolean;
   /** Paint no surface of its own, e.g. in the project sidebar. */
   flat?: boolean;
+  /**
+   * The root listing's state. An empty tree while it loads, or after it
+   * failed, says so instead of "No files yet" (a false empty folder).
+   */
+  rootStatus?: "loading" | "ready" | "failed";
+  /** Reads the root listing again after a failure. */
+  onRetryRoot?: () => void;
 };
 
 function parentDirOfPath(filePath: string): string {
@@ -189,6 +196,8 @@ export function FilesExplorer({
   onInlineRenameSettled,
   compact = false,
   flat = false,
+  rootStatus = "ready",
+  onRetryRoot,
 }: FilesExplorerProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const fileIconColorFor = useFileIconColor();
@@ -390,7 +399,25 @@ export function FilesExplorer({
         <div className="min-h-0 flex-1" data-tour="files.searchResults">{searchResults}</div>
       ) : (
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto" style={{ paddingTop: 4, paddingBottom: 4 }} data-tour="files.fileTree">
-        {rows.length === 0 ? (
+        {rows.length === 0 && !searchQuery.trim() && rootStatus !== "ready" ? (
+          <div
+            className="flex flex-col items-center gap-2 px-3 py-6 text-center font-sans text-[12px]"
+            style={{ color: COLORS.textMuted }}
+            role={rootStatus === "failed" ? "alert" : undefined}
+            aria-busy={rootStatus === "loading" ? true : undefined}
+          >
+            <span>{rootStatus === "failed" ? "Couldn't load the files" : "Loading files…"}</span>
+            {rootStatus === "failed" && onRetryRoot ? (
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 text-[12px] font-medium text-accent hover:bg-fg/[0.05]"
+                onClick={onRetryRoot}
+              >
+                Retry
+              </button>
+            ) : null}
+          </div>
+        ) : rows.length === 0 ? (
           // The app's one empty-state style: centred, muted sans, no period,
           // with the next step when there is one.
           <div className="flex flex-col items-center gap-2 px-3 py-6 text-center font-sans text-[12px]" style={{ color: COLORS.textMuted }}>

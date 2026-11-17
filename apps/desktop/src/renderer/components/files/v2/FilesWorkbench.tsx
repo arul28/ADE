@@ -87,6 +87,7 @@ import { ArrowLeft, CaretRight, MagnifyingGlass } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
 import { confirmDialog } from "../../ui/dialog/confirm";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../../app/projectSidebar/ProjectSidebarSlot";
+import { isAdeCloudBinding } from "../../../../shared/adeCloud/binding";
 
 /**
  * Below this pane width the embedded workbench shows ONE surface at a time.
@@ -393,6 +394,7 @@ function FilesWorkbenchOnCopy({
 
   const {
     tree,
+    rootStatus,
     treeRef,
     expanded,
     setExpanded,
@@ -681,9 +683,16 @@ function FilesWorkbenchOnCopy({
     const targets = new Map<string, { machineId: string; laneId: string }>();
     const groups: WorkspacePickerMachineGroup[] = [];
     if (embedded || !multiMachine || !currentMachineChip) return { groups, targets };
+    // An ADE Cloud tab lists every ADE Cloud lane in its own workspaces (the
+    // account answers them). Its lane computers must not list them again.
+    const listedLaneIds = isAdeCloudBinding(projectBinding)
+      ? new Set(workspaces.map((workspace) => workspace.laneId).filter((laneId): laneId is string => Boolean(laneId)))
+      : null;
     for (const machine of allMachineLanes.machines) {
       if (machine.machineId === currentMachineChip.machineId) continue;
-      const lanes = allMachineLanes.lanes.filter((row) => row.machineId === machine.machineId);
+      const lanes = allMachineLanes.lanes.filter(
+        (row) => row.machineId === machine.machineId && !listedLaneIds?.has(row.lane.id),
+      );
       if (lanes.length === 0) continue;
       groups.push({
         machine: machineChipFor(machine),
@@ -696,7 +705,7 @@ function FilesWorkbenchOnCopy({
       });
     }
     return { groups, targets };
-  }, [allMachineLanes, currentMachineChip, embedded, multiMachine]);
+  }, [allMachineLanes, currentMachineChip, embedded, multiMachine, projectBinding, workspaces]);
 
   /**
    * Move Files to the picked lane's machine. The pin comes from the machine
@@ -1747,6 +1756,11 @@ function FilesWorkbenchOnCopy({
         <FilesExplorer
           flat={treeInSidebar}
           tree={tree}
+          rootStatus={rootStatus}
+          onRetryRoot={() => {
+            setError(null);
+            void refreshRoot();
+          }}
           expanded={expanded}
           loadingDirectories={loadingDirs}
           selectedNodePath={selectedNodePath}
