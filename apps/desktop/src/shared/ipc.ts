@@ -841,7 +841,6 @@ export const IPC = {
   ptyResumeSession: "ade.pty.resumeSession",
   ptySendToSession: "ade.pty.sendToSession",
   ptyWrite: "ade.pty.write",
-  ptySubmitInput: "ade.pty.submitInput",
   ptyResize: "ade.pty.resize",
   ptyDispose: "ade.pty.dispose",
   ptyShellSettingsGet: "ade.pty.shellSettings.get",

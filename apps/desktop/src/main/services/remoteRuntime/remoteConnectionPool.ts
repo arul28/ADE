@@ -17,6 +17,7 @@ import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeRouteKind,
   RemoteRuntimeTarget,
+  RemoteRuntimeCapabilities,
 } from "../../../shared/types/remoteRuntime";
 import {
   isRemoteRuntimeEventCategory,
@@ -420,22 +421,26 @@ function shouldRetryRemoteRuntimeAction(
 
 /**
  * A send with a client id that the brain answers once: a chat send to a brain
- * that drops a repeat of an id it has seen (`clientSendDedupe`), or a terminal
- * line (`pty.submitInput`, which every brain that has it dedupes). Sending it
- * again is safe: the brain answers a repeat with the first send's result and
- * writes no second copy. So a send whose answer a dropped link lost goes out
- * again after the reconnect, instead of ending as "outcome unknown" and a
- * second copy from the person's retry.
+ * that drops a repeat of an id it has seen (`clientSendDedupe`), or text for an
+ * agent CLI (`chat.typeIntoCli` with a `clientMessageId`) to a brain that
+ * advertises `agentCliTypeNow`, whose one answer ledger covers both the input
+ * box and the local line. Sending it again is safe: the brain answers a repeat
+ * with the first send's result and types or writes no second copy. So a send
+ * whose answer a dropped link lost goes out again after the reconnect, instead
+ * of ending as "outcome unknown" and a second copy from the person's retry.
  */
 export function isDedupedSend(
   request: RemoteRuntimeActionRequest,
-  brainDedupesSends: boolean,
+  capabilities: Pick<RemoteRuntimeCapabilities, "clientSendDedupe" | "agentCliTypeNow"> | null | undefined,
 ): boolean {
-  const deduped = (request.domain === "chat" && request.action === "sendMessage" && brainDedupesSends)
-    || (request.domain === "pty" && request.action === "submitInput");
-  if (!deduped) return false;
-  const args = request.args as { clientSendId?: unknown } | undefined;
-  return typeof args?.clientSendId === "string" && args.clientSendId.trim().length > 0;
+  if (request.domain !== "chat") return false;
+  const args = request.args as { clientSendId?: unknown; clientMessageId?: unknown } | undefined;
+  const id = request.action === "sendMessage" && capabilities?.clientSendDedupe === true
+    ? args?.clientSendId
+    : request.action === "typeIntoCli" && capabilities?.agentCliTypeNow === true
+      ? args?.clientMessageId
+      : null;
+  return typeof id === "string" && id.trim().length > 0;
 }
 
 /**
@@ -1051,7 +1056,7 @@ export class RemoteConnectionPool {
       },
       {
         retryOnConnectionError: (entry) => shouldRetryRemoteRuntimeAction(request)
-          || isDedupedSend(request, entry.result.capabilities?.clientSendDedupe === true),
+          || isDedupedSend(request, entry.result.capabilities),
       },
     );
   }

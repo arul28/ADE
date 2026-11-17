@@ -655,7 +655,6 @@ import type {
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
   PtySendToSessionArgs,
-  PtySubmitInputArgs,
   PtySendToSessionResult,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
@@ -9530,6 +9529,7 @@ export function registerIpc({
       sessionId: arg?.sessionId ?? "",
       text: arg?.text ?? "",
       holdUntilFree: arg?.holdUntilFree === true,
+      ...(arg?.when === "now" ? { when: "now" as const } : {}),
       ...(typeof arg?.clientMessageId === "string" ? { clientMessageId: arg.clientMessageId } : {}),
     });
   });
@@ -11790,10 +11790,6 @@ export function registerIpc({
   handle(IPC.ptyWrite, async (_event, arg: { ptyId: string; data: string }): Promise<void> => {
     requirePtyService().write(arg);
   });
-
-  handle(IPC.ptySubmitInput, async (_event, arg: PtySubmitInputArgs): Promise<{ ok: true }> =>
-    requirePtyService().submitInput(arg),
-  );
 
   handle(IPC.ptyResize, async (_event, arg: { ptyId: string; cols: number; rows: number }): Promise<void> => {
     requirePtyService().resize(arg);

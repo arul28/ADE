@@ -19,7 +19,8 @@ import {
   type TerminalPreferences,
   type ThemeId,
 } from "../../state/appStore";
-import { useSlowLinkActive, useTypeAheadRoundTripMs } from "../../state/projectMachines";
+import { useRemoteTypesLocalLine, useSlowLinkActive, useTypeAheadRoundTripMs } from "../../state/projectMachines";
+import { sendAgentCliText } from "./agentCliTypeSend";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
 import { TERMINAL_BRACKETED_PASTE_END, TERMINAL_BRACKETED_PASTE_START } from "./terminalBracketedPaste";
@@ -103,8 +104,8 @@ export type TerminalLocalLineState = {
   error: TerminalLocalLineError | null;
 };
 
-/** Why the last line was not sent: its terminal stopped, or the link dropped. */
-export type TerminalLocalLineError = "stopped" | "dropped";
+/** Why the last line was not sent: its terminal stopped, the link dropped, or the machine refused it. */
+export type TerminalLocalLineError = "stopped" | "dropped" | "refused";
 
 type TerminalRenderPreferences = Pick<TerminalPreferences, "fontFamily" | "fontSize" | "lineHeight" | "scrollback">;
 
@@ -1411,15 +1412,15 @@ function applyLocalLineActions(runtime: CachedRuntime, actions: TerminalLocalLin
 
 /**
  * Sends the line to the terminal's machine, which types it and presses Enter
- * there. Keys pressed meanwhile wait for it (the paste-write gate), so an Esc
- * after Enter still reaches the CLI after the line. A failed send puts the
- * line back; sent again unchanged it keeps its id, and the machine types a
- * line it already has only once.
+ * there (`chat.typeIntoCli` with `when: "now"`, the input box's send path).
+ * Keys pressed meanwhile wait for it (the paste-write gate), so an Esc after
+ * Enter still reaches the CLI after the line. A failed send puts the line
+ * back; sent again unchanged it keeps its id, and the machine types a line it
+ * already has only once.
  */
 async function submitLocalLine(runtime: CachedRuntime, text: string): Promise<void> {
-  const submit = window.ade.pty.submitInput;
   const pin = runtime.runtimePin;
-  if (!submit || !pin) {
+  if (!pin) {
     runtime.localLine?.restore(text);
     return;
   }
@@ -1433,13 +1434,18 @@ async function submitLocalLine(runtime: CachedRuntime, text: string): Promise<vo
   runtime.pasteWriteInFlight = true;
   notifyRuntime(runtime);
   try {
-    await submit({ ptyId: runtime.ptyId, text, clientSendId }, pin);
-  } catch (error) {
-    if (runtime.disposed) return;
-    runtime.localLine?.restore(text);
-    runtime.localLineFailed = { text, clientSendId };
-    const message = error instanceof Error ? error.message : "";
-    runtime.localLineError = /no longer running/i.test(message) ? "stopped" : "dropped";
+    const sent = await sendAgentCliText({
+      sessionId: runtime.sessionId,
+      text,
+      clientMessageId: clientSendId,
+      when: "now",
+      pin,
+    });
+    if (sent.kind !== "typed" && !runtime.disposed) {
+      runtime.localLine?.restore(text);
+      runtime.localLineFailed = { text, clientSendId };
+      runtime.localLineError = sent.kind === "ended" ? "stopped" : sent.kind === "failed" ? "refused" : "dropped";
+    }
   } finally {
     runtime.localLineSending -= 1;
     if (!runtime.disposed && runtime.localLineSending === 0) {
@@ -3686,6 +3692,7 @@ export function TerminalView({
   isVisible = isActive,
   imagePasteMode = "shell",
   toolType = null,
+  localLineAllowed = true,
 }: {
   ptyId: string;
   sessionId: string;
@@ -3696,6 +3703,11 @@ export function TerminalView({
   imagePasteMode?: TerminalImagePasteMode;
   /** Drives the web keyboard-scroll hint; absent means no hint. */
   toolType?: TerminalToolType | null;
+  /**
+   * False keeps the local line off: the session types through the Work input
+   * box ("box" mode), so keys in the terminal go to the CLI as before.
+   */
+  localLineAllowed?: boolean;
 }) {
   const appTheme = useAppStore((s) => s.theme);
   const themeId = useAppStore(selectEffectiveThemeId);
@@ -3710,12 +3722,17 @@ export function TerminalView({
   const typeAheadRttMs = toolType == null || toolType === "shell" ? linkRttMs : null;
   // On a slow link an agent CLI gets the local line instead: typed text stays
   // here until Enter (`terminalLocalLine.ts`). Per provider (`cliLaunch.ts`),
-  // only where the client can send a line, and off for a session the person
-  // turned it off for.
-  const slowLink = useSlowLinkActive(runtimePin?.kind === "remote" ? runtimePin.targetId : null);
+  // only where the client can send a line and the machine types one, not
+  // while the session types through the input box, and off for a session the
+  // person turned it off for.
+  const remoteTargetId = runtimePin?.kind === "remote" ? runtimePin.targetId : null;
+  const slowLink = useSlowLinkActive(remoteTargetId);
+  const machineTypesLocalLine = useRemoteTypesLocalLine(remoteTargetId);
   const localLineOffered = slowLink
+    && machineTypesLocalLine
+    && localLineAllowed
     && toolTypeTakesLocalLine(toolType)
-    && typeof window.ade?.pty?.submitInput === "function";
+    && typeof window.ade?.agentChat?.typeIntoCli === "function";
   const [localLineOffSessionId, setLocalLineOffSessionId] = useState<string | null>(() => (readLocalLineOff(sessionId) ? sessionId : null));
   const localLineOff = localLineOffSessionId === sessionId;
   const localLineWanted = localLineOffered && !localLineOff;

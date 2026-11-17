@@ -29,6 +29,7 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionRecovery,
   RemoteRuntimeConnectionState,
+  RemoteRuntimeCapabilities,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeConnectErrorInfo,
   RemoteRuntimeConnectResult,
@@ -410,8 +411,11 @@ function sameStatusValue(a: unknown, b: unknown): boolean {
  * when it carries a client id the brain recognizes a retry of (`isDedupedSend`),
  * so a message caught by a sleep is delivered, and never twice.
  */
-function isRetriableAfterSleep(request: RemoteRuntimeActionRequest, brainDedupesSends: boolean): boolean {
-  return isReplaySafeAdeAction(request.domain, request.action) || isDedupedSend(request, brainDedupesSends);
+function isRetriableAfterSleep(
+  request: RemoteRuntimeActionRequest,
+  capabilities: RemoteRuntimeCapabilities | null | undefined,
+): boolean {
+  return isReplaySafeAdeAction(request.domain, request.action) || isDedupedSend(request, capabilities);
 }
 
 export class RemoteConnectionService {
@@ -1958,7 +1962,7 @@ export class RemoteConnectionService {
         this.clearAutomaticReconnectState(targetId);
         wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(target));
         if (error instanceof RemoteActionOutcomeUnknownError
-          && !isRetriableAfterSleep(request, this.statusById.get(targetId)?.capabilities?.clientSendDedupe === true)) throw error;
+          && !isRetriableAfterSleep(request, this.statusById.get(targetId)?.capabilities)) throw error;
         result = await this.pool.callActionForTarget(target, await routedProjectId(target), request);
       }
       this.mergeStatus(targetId, {

@@ -56,6 +56,8 @@ export function TerminalLocalLineBar({
     ? "Not sent: this terminal has stopped."
     : state.error === "dropped"
       ? "Not sent: the connection dropped. Enter sends it again, and it never arrives twice."
+      : state.error === "refused"
+        ? "Not sent: the machine did not take it."
       : state.sending
         ? "Sending"
         : "Not sent yet. Enter sends it, Shift+Enter adds a line.";

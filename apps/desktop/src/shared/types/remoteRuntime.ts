@@ -505,6 +505,12 @@ export type RemoteRuntimeCapabilities = {
   machineProjects: Partial<Record<RemoteRuntimeMachineProjectCapability, boolean>>;
   /** `chat.sendMessage` recognizes a repeat of a `clientSendId`. Absent on an older brain. */
   clientSendDedupe?: boolean;
+  /**
+   * `chat.typeIntoCli` takes `when: "now"` (the terminal's local line) and
+   * recognizes a repeat of a `clientMessageId` in both modes. Absent on an
+   * older brain, which keeps the local line off.
+   */
+  agentCliTypeNow?: boolean;
   /** The brain runs `chat.saveTempAttachmentPart` (a paste in parts). Absent on an older brain. */
   chatAttachmentParts?: boolean;
   /** `ade/actions/call` takes `backgroundJob` (a long action followed by id). Absent on an older brain. */

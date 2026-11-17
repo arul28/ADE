@@ -8,7 +8,8 @@ import { TERMINAL_BRACKETED_PASTE_END, TERMINAL_BRACKETED_PASTE_START } from "./
  * cursor, so type-ahead cannot guess its echo, and on a 700 ms link each key
  * shows most of a second late. With the local line on, plain text stays in
  * ADE and shows at once; Enter sends the whole line to the terminal's machine,
- * which types it into the CLI and presses Enter (`pty.submitInput`).
+ * which types it into the CLI and presses Enter (`chat.typeIntoCli` with
+ * `when: "now"`).
  *
  * The terminal's own replies (focus changes, mouse reports, answers to a
  * CLI's queries) go to the CLI and leave the line as it is.

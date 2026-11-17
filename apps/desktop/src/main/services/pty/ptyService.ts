@@ -90,7 +90,6 @@ import type {
   PtyRestartAgentCliResult,
   AgentCliInterruptResult,
   PtySendToSessionArgs,
-  PtySubmitInputArgs,
   PtySendToSessionResult,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
@@ -415,8 +414,6 @@ const AGENT_CLI_SUBMIT_DELAY_MS = 25;
  * typed text, and an Enter that comes too soon can land in the paste.
  */
 const LOCAL_LINE_PASTE_SUBMIT_DELAY_MS = 100;
-/** Line ids a terminal's brain remembers, so a line sent again is not typed twice. */
-const SUBMITTED_LINE_IDS_KEPT = 200;
 const CODEX_CLI_PASTE_SUBMIT_DELAY_MS = 180;
 const CURSOR_CLI_PASTE_SUBMIT_DELAY_MS = 500;
 const AGENT_CLI_READY_TIMEOUT_MS = 20_000;
@@ -7010,14 +7007,25 @@ export function createPtyService({
     },
   });
 
-  /** Lines sent with an id, by id: a repeat gets the first one's answer (`submitInput`). */
-  const submittedLines = new Map<string, Promise<{ ok: true }>>();
-
-  const submitLine = async ({ ptyId, text, inputOrigin }: PtySubmitInputArgs): Promise<{ ok: true }> => {
-    const entry = ptys.get(ptyId);
-    if (!entry || entry.disposed) throw new Error("This terminal is no longer running.");
-    const line = typeof text === "string" ? text.replace(/\r\n?/g, "\n").replace(/\x1b/g, "\u241b") : "";
-    if (!line.trim()) throw new Error("Nothing to send.");
+  /**
+   * A line the person wrote in a terminal's local line (slow links): its text
+   * into the CLI's input, then Enter after the CLI's settle delay. Both writes
+   * happen here, so the link's jitter cannot put the Enter inside the paste.
+   * No clear keys: the CLI's input may hold text typed before, and the line
+   * adds to it the way typing would. Lines to one terminal go in order. False
+   * when the session has no live terminal. A repeat of one line is dropped by
+   * the caller (`chat.typeIntoCli`'s message ids), not here.
+   */
+  const typeLineIntoAgentCli = async ({ sessionId, text, inputOrigin }: {
+    sessionId: string;
+    text: string;
+    inputOrigin?: unknown;
+  }): Promise<boolean> => {
+    const live = liveEntryBySessionId(sessionId);
+    if (!live) return false;
+    const [ptyId, entry] = live;
+    const line = text.replace(/\r\n?/g, "\n").replace(/\x1b/g, "\u241b");
+    if (!line.trim()) return false;
     const session = sessionService.get(entry.sessionId);
     const provider = session?.resumeMetadata?.provider ?? providerFromTool(session?.toolType ?? entry.toolTypeHint);
     const multiline = line.includes("\n");
@@ -7041,8 +7049,7 @@ export function createPtyService({
       });
     submitInputFlights.set(entry.sessionId, flight);
     try {
-      if (!(await flight)) throw new Error("This terminal is no longer running.");
-      return { ok: true };
+      return await flight;
     } finally {
       if (submitInputFlights.get(entry.sessionId) === flight) submitInputFlights.delete(entry.sessionId);
     }
@@ -9491,31 +9498,7 @@ export function createPtyService({
       }
     },
 
-    /**
-     * A line the person wrote in the terminal's local line (slow links): its
-     * text into the CLI's input, then Enter after the CLI's settle delay. Both
-     * writes happen here, so the link's jitter cannot put the Enter inside the
-     * paste. No clear keys: the CLI's input may hold text typed before, and
-     * the line adds to it the way typing would. Lines to one terminal go in
-     * order. Throws when the terminal is gone, so the caller keeps the text.
-     */
-    async submitInput(args: PtySubmitInputArgs): Promise<{ ok: true }> {
-      const sendId = typeof args.clientSendId === "string" ? args.clientSendId.trim() : "";
-      const earlier = sendId ? submittedLines.get(sendId) : undefined;
-      if (earlier) return await earlier;
-      const submitted = submitLine(args);
-      if (sendId) {
-        submittedLines.set(sendId, submitted);
-        // A failed line may be sent again under its id.
-        submitted.catch(() => submittedLines.delete(sendId));
-        while (submittedLines.size > SUBMITTED_LINE_IDS_KEPT) {
-          const oldest = submittedLines.keys().next().value;
-          if (oldest === undefined) break;
-          submittedLines.delete(oldest);
-        }
-      }
-      return await submitted;
-    },
+    typeLineIntoAgentCli,
 
     markSessionAttentionRequested(sessionId: string): void {
       const live = liveEntryBySessionId(sessionId);

@@ -862,7 +862,6 @@ import type {
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
   PtySendToSessionArgs,
-  PtySubmitInputArgs,
   PtySendToSessionResult,
   PtyDataEvent,
   PtyExitEvent,
@@ -2857,7 +2856,10 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
         send: (args: AgentChatSendArgs, pin: OpenProjectBinding) => Promise<void>;
-        /** Text for a running agent CLI, typed only at a free prompt (`AgentCliTypeArgs`). */
+        /**
+         * Text for a running agent CLI (`AgentCliTypeArgs`): typed only at a
+         * free prompt, or at once with `when: "now"` (the local line).
+         */
         typeIntoCli: (
           args: AgentCliTypeArgs,
           pin: OpenProjectBinding,
@@ -4512,15 +4514,6 @@ declare global {
           args: { ptyId: string; data: string },
           pin: OpenProjectBinding,
         ) => Promise<void>;
-        /**
-         * A line from the terminal's local line: typed into the agent CLI, then
-         * Enter after its settle delay, on the terminal's machine. Absent where
-         * the client cannot send one (ADE Web), which keeps the local line off.
-         */
-        submitInput?: (
-          args: PtySubmitInputArgs,
-          pin: OpenProjectBinding,
-        ) => Promise<{ ok: true }>;
         resize: (
           args: {
             ptyId: string;

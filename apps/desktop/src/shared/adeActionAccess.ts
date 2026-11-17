@@ -542,7 +542,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "list", "getShellSettings",
     ],
     write: [
-      "create", "dispose", "resize", "resumeSession", "sendToSession", "submitInput", "write", "setDefaultShell",
+      "create", "dispose", "resize", "resumeSession", "sendToSession", "write", "setDefaultShell",
     ],
   },
   terminal: {

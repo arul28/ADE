@@ -3075,6 +3075,9 @@ export function createMultiProjectRpcRequestHandler(
           // `chat.sendMessage` drops a repeat of a `clientSendId` it has seen.
           // A client retries a send of unknown outcome only against this.
           clientSendDedupe: true,
+          // `chat.typeIntoCli` takes `when: "now"` (a terminal's local line)
+          // and answers a repeat of a `clientMessageId` once, in both modes.
+          agentCliTypeNow: true,
           // `ade/actions/call` takes `backgroundJob: { id, waitMs }`: a long
           // action runs once per id, and a call sent again joins it.
           backgroundActionJobs: true,

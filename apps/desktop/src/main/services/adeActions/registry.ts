@@ -1376,13 +1376,17 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         text,
       } as never);
     },
-    // A person's text for a running agent CLI (the Work input box): typed at
+    // A person's text for a running agent CLI. The Work input box's: typed at
     // its prompt only while the prompt is free; `deferred` means nothing was
-    // typed and the box keeps it queued.
+    // typed and the box keeps it queued. The terminal's local line's
+    // (`when: "now"`): typed at once, like the person's own keys.
     typeIntoCli: async (args?: unknown) => {
       const { inputOrigin, ...record } = readObjectActionArg(args, "chat.typeIntoCli");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
-      const text = requireNonEmptyString(record.text, "text");
+      // A local line is typed as written, spaces and all.
+      const text = record.when === "now" && typeof record.text === "string" && record.text.trim()
+        ? record.text
+        : requireNonEmptyString(record.text, "text");
       if (typeof agentChatService.typeIntoAgentCliWhenFree !== "function") {
         throw new Error("Typing into a CLI session is not available in this runtime.");
       }
@@ -1391,6 +1395,8 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         sessionId,
         text,
         holdUntilFree: record.holdUntilFree === true,
+        // The terminal's local line: typed at once, with the sender's stamp on its Enter.
+        ...(record.when === "now" ? { when: "now" as const, inputOrigin } : {}),
         ...(typeof record.clientMessageId === "string" && record.clientMessageId.trim()
           ? { clientMessageId: record.clientMessageId.trim().slice(0, 128) }
           : {}),

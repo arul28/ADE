@@ -1,9 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
-import { REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE } from "../../../shared/types/remoteRuntime";
 import { useAppStore } from "../../state/appStore";
-import { requireChatPin } from "../chat/chatMachinePin";
+import { sendAgentCliText } from "./agentCliTypeSend";
 
 /**
  * State behind the Work input box for a running agent CLI: the person's
@@ -17,8 +15,10 @@ import { requireChatPin } from "../chat/chatMachinePin";
  * nothing.
  *
  * Every send goes to the session's own machine (`route.pin`), and the host
- * types it only at a free prompt (`chat.typeIntoCli`). A busy CLI answers
- * `deferred` and nothing is typed; the runner asks again a little later.
+ * types it only at a free prompt (`chat.typeIntoCli` through
+ * `sendAgentCliText`, which the terminal's local line uses too). A busy CLI
+ * answers `deferred` and nothing is typed; the runner asks again a little
+ * later.
  */
 
 // ---------------------------------------------------------------------------
@@ -370,24 +370,6 @@ function busyRetryDelayMs(busySince: number): number {
 
 const OFFLINE_RETRY_MS = 5_000;
 
-const UNREACHABLE_PATTERN = /not connected|disconnected|reconnecting|host_unavailable|unreachable|not reachable|couldn'?t reach|could not reach|offline|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH/i;
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/** Refused before it left this window or reached the machine: safe to send again. */
-function isUnreachableError(error: unknown): boolean {
-  const message = errorText(error);
-  return message.includes(REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE) || UNREACHABLE_PATTERN.test(message);
-}
-
-function friendlyError(error: unknown): string {
-  return errorText(error)
-    .replace(/^Error invoking remote method '[^']+': /, "")
-    .replace(/^Error: /, "");
-}
-
 /**
  * Where this session's texts go, and whether that machine is connected. The
  * box sets it while it is shown; the route stays after the box goes away, so
@@ -464,23 +446,21 @@ async function step(sessionId: string): Promise<void> {
     schedule(sessionId, runner, OFFLINE_RETRY_MS);
     return;
   }
-  const api = typeof window !== "undefined" ? window.ade?.agentChat?.typeIntoCli : undefined;
-  if (typeof api !== "function") {
-    updateItem(sessionId, head.id, { state: "failed", error: "This ADE cannot type into a CLI session." });
-    return;
-  }
   runner.inFlight = true;
   // In flight is always `sending`, even a retry while the machine looked
   // offline: Edit and Remove are off while a send may still reach the CLI.
   updateItem(sessionId, head.id, { state: "sending", error: null, claimedBy: WINDOW_ID, claimedAt: Date.now() });
   try {
-    const { pin } = runner.route;
     // The item's id makes the send idempotent on the host: another window
     // that claimed the same item at the same moment gets this one's answer.
-    const args = { sessionId, text: head.text, clientMessageId: head.id };
-    // No machine known: the item fails here, never on the tab's machine.
-    const result = await api(args, requireChatPin(pin));
-    if (result.outcome === "delivered" || result.outcome === "held") {
+    const sent = await sendAgentCliText({
+      sessionId,
+      text: head.text,
+      clientMessageId: head.id,
+      when: "free",
+      pin: runner.route.pin,
+    });
+    if (sent.kind === "typed") {
       setQueue(sessionId, getQueue(sessionId).filter((item) => item.id !== head.id));
       appendCliInputHistory(sessionId, head.text);
       runner.busySince = null;
@@ -490,46 +470,49 @@ async function step(sessionId: string): Promise<void> {
       if (getQueue(sessionId).length > 0) schedule(sessionId, runner, 1_500);
       return;
     }
-    if (result.outcome === "ended") {
+    if (sent.kind === "ended") {
       updateItem(sessionId, head.id, { state: "queued", claimedBy: null, claimedAt: null });
       moveCliInputQueueToContinueDraft(sessionId);
       runner.busySince = null;
       return;
     }
-    // Busy: nothing was typed. Back in line, ask again shortly.
-    updateItem(sessionId, head.id, { state: "queued", claimedBy: null, claimedAt: null });
-    runner.busySince ??= Date.now();
-    runner.inFlight = false;
-    schedule(sessionId, runner, busyRetryDelayMs(runner.busySince));
-    return;
-  } catch (error) {
-    if (isRemoteOutcomeUnknownError(error)) {
+    if (sent.kind === "busy") {
+      // Nothing was typed. Back in line, ask again shortly.
+      updateItem(sessionId, head.id, { state: "queued", claimedBy: null, claimedAt: null });
+      runner.busySince ??= Date.now();
+      runner.inFlight = false;
+      schedule(sessionId, runner, busyRetryDelayMs(runner.busySince));
+      return;
+    }
+    if (sent.kind === "unconfirmed") {
       updateItem(sessionId, head.id, {
         state: "unconfirmed",
         error: "The connection dropped while this was being typed. Check the terminal before sending it again.",
         claimedBy: null,
         claimedAt: null,
       });
-    } else if (/Project is switching/i.test(error instanceof Error ? error.message : String(error))) {
+      return;
+    }
+    if (sent.kind === "switching") {
       // The window was mid project switch: nothing was typed. Back in line.
       updateItem(sessionId, head.id, { state: "queued", error: null, claimedBy: null, claimedAt: null });
       runner.inFlight = false;
       schedule(sessionId, runner, OFFLINE_RETRY_MS);
       return;
-    } else if (runner.route.offline || isUnreachableError(error)) {
+    }
+    if (sent.kind === "offline" || runner.route.offline) {
       updateItem(sessionId, head.id, { state: "offline", error: null, claimedBy: null, claimedAt: null });
       runner.inFlight = false;
       // The connection snapshot may not say so yet: look again on a timer too.
       schedule(sessionId, runner, OFFLINE_RETRY_MS);
       return;
-    } else {
-      updateItem(sessionId, head.id, {
-        state: "failed",
-        error: friendlyError(error),
-        claimedBy: null,
-        claimedAt: null,
-      });
     }
+    updateItem(sessionId, head.id, {
+      state: "failed",
+      error: sent.error,
+      claimedBy: null,
+      claimedAt: null,
+    });
   } finally {
     runner.inFlight = false;
   }

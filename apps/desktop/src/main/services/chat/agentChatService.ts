@@ -12368,6 +12368,8 @@ export function createAgentChatService(args: {
     & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill" | "ensureResumeTargets" | "dispose" | "isSessionOwnedByLivePeerRuntime" | "resumeSession" | "hasLivePty" | "showSessionNotice">>
     // The `ade chat` commands a tracked agent CLI answers (`agentCliSessionActions.ts`).
     & Partial<Pick<ReturnType<typeof createPtyService>, "interruptAgentCli" | "restartAgentCli" | "regenerateAgentCliTitle">>
+    // A line from a terminal's local line, typed now (`chat.typeIntoCli` with `when: "now"`).
+    & Partial<Pick<ReturnType<typeof createPtyService>, "typeLineIntoAgentCli">>
     // A tracked CLI's turn boundaries: its finished turns report to its parent
     // and settle a waiting automation step.
     & TrackedCliTurnSignals
@@ -51731,8 +51733,10 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Answers to `typeIntoAgentCliWhenFree` by the caller's message id, so one
-   * queued text sent by two windows (or retried) is typed once. A call in
+   * Answers to `typeIntoAgentCliWhenFree` by session and the caller's message
+   * id, so one text sent by two windows, or sent again after a dropped link,
+   * is typed once. Both ways of typing share it: the input box's queued texts
+   * (`when: "free"`) and the terminal's local line (`when: "now"`). A call in
    * flight is shared; a typed or queued answer is kept for a while.
    */
   const agentCliTypeAnswers = new Map<string, { at: number; answer: Promise<AgentCliTypeResult> }>();
@@ -51765,6 +51769,7 @@ export function createAgentChatService(args: {
     const text = typeof args?.text === "string" ? args.text : "";
     if (!sessionId) throw new AdeExpectedError("A session id is required.", "user");
     if (!text.trim()) throw new AdeExpectedError("There is no text to send.", "user");
+    if (args.when === "now") return await typeAgentCliLineNow(sessionId, text, args.inputOrigin);
     if (!isTrackedAgentCliSession(sessionId)) {
       throw new AdeExpectedError(`Session '${sessionId}' is not an agent CLI session.`, "user");
     }
@@ -51787,6 +51792,23 @@ export function createAgentChatService(args: {
       return { outcome: "held" };
     }
     return { outcome: "deferred" };
+  };
+
+  /**
+   * `when: "now"`: the terminal's local line. Typed into the CLI's input at
+   * once, as the person's own keys would be, then Enter; no wait for a free
+   * prompt, no clear keys, no `@` expansion. Any agent CLI terminal takes it,
+   * tracked or not, like keys typed there.
+   */
+  const typeAgentCliLineNow = async (sessionId: string, text: string, inputOrigin: unknown): Promise<AgentCliTypeResult> => {
+    if (sessionService.get(sessionId)?.archivedAt) {
+      throw new AdeExpectedError("This CLI session is archived.", "user");
+    }
+    if (typeof ptyService?.typeLineIntoAgentCli !== "function") {
+      throw new AdeExpectedError("Typing a line into a CLI session is not available in this runtime.", "user");
+    }
+    const typed = await ptyService.typeLineIntoAgentCli({ sessionId, text, inputOrigin });
+    return { outcome: typed ? "delivered" : "ended" };
   };
 
   // The `ade chat` commands a tracked agent CLI answers: each public chat

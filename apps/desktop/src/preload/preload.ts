@@ -919,7 +919,6 @@ import type {
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
   PtySendToSessionArgs,
-  PtySubmitInputArgs,
   PtySendToSessionResult,
   PtyDataEvent,
   PtyExitEvent,
@@ -9216,8 +9215,9 @@ const adeBridge = {
       }
       agentChatSummaryCache.clear();
     },
-    // The Work input box's text for a running agent CLI, on the CLI's own
-    // machine. Typed only at a free prompt; `deferred` means nothing was typed.
+    // Text for a running agent CLI, on the CLI's own machine: the Work input
+    // box's (typed only at a free prompt; `deferred` means nothing was typed)
+    // or the terminal's local line (`when: "now"`).
     typeIntoCli: async (
       args: AgentCliTypeArgs,
       pin?: OpenProjectBinding | null,
@@ -12626,19 +12626,6 @@ const adeBridge = {
         { args: runtimeArg },
       );
       if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyWrite, runtimeArg);
-    },
-    submitInput: async (
-      args: PtySubmitInputArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<{ ok: true }> => {
-      const runtimeArgs = { ...args, inputOrigin: await sessionInputOriginFor(pin) };
-      return callPinnedOrBoundRuntimeActionOr<{ ok: true }>(
-        pin,
-        "pty",
-        "submitInput",
-        { args: runtimeArgs },
-        () => ipcRenderer.invoke(IPC.ptySubmitInput, runtimeArgs),
-      );
     },
     resize: async (
       arg: {
