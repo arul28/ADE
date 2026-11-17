@@ -65,7 +65,12 @@ function useRestingLaneRead(row: RestingLaneRow): ReadState {
           ?? null)
       : Promise.resolve(null);
     const filesRead: Promise<FileChange[] | null> = laneId && pin
-      ? window.ade.diff.getChanges({ laneId }, pin).then((changes) => [...changes.staged, ...changes.unstaged])
+      ? window.ade.diff.getChanges({ laneId }, pin).then((changes) => {
+          // A file both staged and unstaged is one changed file: listed and counted once.
+          const byPath = new Map<string, FileChange>();
+          for (const file of [...changes.staged, ...changes.unstaged]) if (!byPath.has(file.path)) byPath.set(file.path, file);
+          return [...byPath.values()];
+        })
       : Promise.resolve(null);
     void Promise.allSettled([summaryRead, filesRead]).then(([summary, files]) => {
       if (cancelled) return;
@@ -181,7 +186,7 @@ export function RestingCloudLaneDetail({ laneName, machine }: { laneName: string
                     {files.length === 1 ? "1 changed file" : `${files.length} changed files`}
                   </div>
                   {listed.map((file) => (
-                    <div key={`${file.kind}:${file.path}`} className="flex items-center gap-2 py-0.5 text-[12px]">
+                    <div key={file.path} className="flex items-center gap-2 py-0.5 text-[12px]">
                       <span className="w-3 shrink-0 text-center" style={{ color: COLORS.textDim }}>{KIND_LETTER[file.kind]}</span>
                       <span className="min-w-0 flex-1 truncate" style={{ color: COLORS.textPrimary }} title={file.path}>{file.path}</span>
                       {file.additions ? <span style={{ color: COLORS.success }}>+{file.additions}</span> : null}
