@@ -27299,6 +27299,39 @@ final class TerminalSessionInputStatusTests: XCTestCase {
   }
 }
 
+@MainActor
+final class TerminalMessageDraftTests: XCTestCase {
+  /// A resend of the same text after a lost answer keeps its id, so the host
+  /// types the message once; changed text is a new message with a new id, and
+  /// so is the same words after the host already has them.
+  func testResendKeepsItsIdAndChangedTextGetsANewOne() {
+    let draft = TerminalMessageDraft()
+
+    let firstId = draft.clientMessageId(for: "run the tests")
+    XCTAssertEqual(draft.clientMessageId(for: "run the tests"), firstId)
+    XCTAssertNotEqual(draft.clientMessageId(for: "run the tests twice"), firstId)
+
+    let sentId = draft.clientMessageId(for: "run the tests twice")
+    draft.markSent("run the tests twice", notice: nil)
+    XCTAssertNotEqual(draft.clientMessageId(for: "run the tests twice"), sentId)
+  }
+
+  /// An answer that lands after the user kept typing must not wipe the new
+  /// draft, and the one that was sent clears only itself.
+  func testAnAnswerDoesNotClearTextTypedWhileSending() {
+    let draft = TerminalMessageDraft()
+    draft.text = "and then the next one"
+
+    draft.markSent("the one in flight", notice: "Queued.")
+    XCTAssertEqual(draft.text, "and then the next one")
+    XCTAssertEqual(draft.notice, "Queued.")
+
+    draft.markSent("and then the next one", notice: nil)
+    XCTAssertEqual(draft.text, "")
+    XCTAssertNil(draft.notice)
+  }
+}
+
 // MARK: - Linear pane
 
 private enum LinearTestError: Error { case launchFailed }

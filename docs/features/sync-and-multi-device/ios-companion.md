@@ -2983,7 +2983,10 @@ is free. The bar then says what happened: typed, queued until the CLI's turn
 ends (held on the host), queued until the phone reconnects (the offline queue
 replays it), or the CLI has ended (the text stays, Resume continues it). A
 screen whose focused connection now serves another computer refuses the send
-instead of typing into the wrong one.
+instead of typing into the wrong one. A tap anywhere on the bar, including its
+padding, focuses the field; the terminal under the bar never takes the tap.
+Each message carries an id, so a resend after a lost answer is typed once while
+different text is a new message.
 
 When the link is down, the host is older, or the project is not open there,
 the tap falls back to the earlier flow: it focuses that machine, opens the
