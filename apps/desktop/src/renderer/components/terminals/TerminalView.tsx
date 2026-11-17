@@ -1441,11 +1441,13 @@ function schedulePtyInputFlush(runtime: CachedRuntime): void {
 
 function enqueuePtyInput(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
-  runtime.typeAhead?.noteInput(data);
   if (runtime.pasteWriteInFlight) {
+    // Sent when the paste ends, through `writePtyInput`, which notes it then.
+    // Noting it here too would show every key twice until the echo.
     runtime.deferredInputDuringPasteWrite.push({ kind: "input", data });
     return;
   }
+  runtime.typeAhead?.noteInput(data);
   runtime.inputWriteChunks.push(data);
   runtime.inputWriteBytes += data.length;
   if (shouldFlushPtyInputImmediately(data) || runtime.inputWriteBytes >= MAX_PTY_INPUT_BATCH_BYTES) {

@@ -1888,6 +1888,11 @@ export class RemoteConnectionPool {
       if (this.entries.get(targetId) === entryPromise) {
         this.entries.delete(targetId);
       }
+      // The connection's counters go with it; a stale client would keep the
+      // closed transport's buffers alive.
+      if (this.clientByTargetId.get(targetId) === entry.client) {
+        this.clientByTargetId.delete(targetId);
+      }
       this.resolvedEntryPromises.delete(entryPromise);
       this.relayAccountOwnerByTargetId.delete(targetId);
       if (cleanedUp) return;

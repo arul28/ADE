@@ -53,8 +53,6 @@ export type LinkMeter = {
   release: () => void;
   /** The bytes to ask for in the next chunk. */
   chunkBytes: () => number;
-  /** How many chunks may be out at once now. */
-  inFlightLimit: () => number;
   /** Taken just before a piece goes out; `delivered` reads it back. */
   stamp: () => LinkMeterStamp;
   /** A piece of `bytes` arrived; `stamp` was taken when it went out. */
@@ -107,7 +105,6 @@ export function createLinkMeter(config: LinkMeterConfig): LinkMeter {
       wake();
     },
     chunkBytes,
-    inFlightLimit,
     stamp: () => ({ sentAt: now(), deliveriesBefore: deliveries }),
     delivered(bytes, { sentAt, deliveriesBefore }) {
       const at = now();

@@ -92,9 +92,16 @@ export function createAttachmentPartStore(deps: {
       if (!upload.staging && at - upload.touchedAt > keepMs) uploads.delete(id);
     }
     while (uploads.size > OPEN_UPLOADS_MAX) {
-      const oldest = uploads.keys().next().value;
-      if (oldest === undefined) break;
-      uploads.delete(oldest);
+      // The upload quiet longest goes first. Ties keep the older one.
+      let oldestId: string | null = null;
+      let oldestAt = Number.POSITIVE_INFINITY;
+      for (const [id, upload] of uploads) {
+        if (upload.staging || upload.touchedAt >= oldestAt) continue;
+        oldestId = id;
+        oldestAt = upload.touchedAt;
+      }
+      if (oldestId === null) break;
+      uploads.delete(oldestId);
     }
   };
 

@@ -205,7 +205,7 @@ export class RuntimeRpcClient {
       this.pending.set(id, { method, label, resolve, reject, deadline });
       try {
         const line = `${JSON.stringify(payload)}\n`;
-        this.bytesOut += line.length;
+        this.bytesOut += Buffer.byteLength(line);
         this.transport.write(line);
       } catch (error) {
         this.takePending(id);

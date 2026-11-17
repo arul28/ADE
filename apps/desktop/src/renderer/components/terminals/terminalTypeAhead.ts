@@ -39,7 +39,7 @@ export type TerminalTypeAhead = {
 };
 
 /** Plain text of terminal output: escape sequences and control characters removed. */
-export function terminalPrintableText(data: string): string {
+function terminalPrintableText(data: string): string {
   return data.replace(ESCAPE_SEQUENCE, "").replace(/[\x00-\x1f\x7f]/g, "");
 }
 
@@ -233,6 +233,9 @@ export function createTerminalTypeAhead(deps: {
     },
     noteOutput(data) {
       if (disposed) return;
+      // Off, this runs on every output chunk of every terminal: the cursor
+      // scan is only worth it while a guess may be waiting.
+      if (!wanted) return;
       for (const match of data.matchAll(CURSOR_VISIBILITY)) cursorHidden = match[1] === "l";
       if (pending.length === 0) return;
       const text = terminalPrintableText(data);

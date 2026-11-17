@@ -264,7 +264,7 @@ async function readArtifactRangeChunk(args: {
   projectRoot: string;
   artifactsDir: string;
   displayCopies: ArtifactDisplayCopies;
-}): Promise<{ totalSize: number; offset: number; data: string; variant?: "display"; mediaType?: string }> {
+}): Promise<{ totalSize: number; offset: number; data: string; variant?: "display" }> {
   const uri = typeof args.uri === "string" ? args.uri.trim() : "";
   if (!uri) throw new Error("Artifact uri is required.");
   let resolved: string;
@@ -288,7 +288,7 @@ async function readArtifactRangeChunk(args: {
     const displayPath = await args.displayCopies.pathFor(resolved);
     if (displayPath) {
       const range = await readArtifactByteRange(displayPath, args.offset, args.length);
-      return { totalSize: range.totalSize, offset: range.rangeStart, data: range.base64, variant: "display", mediaType: "image/jpeg" };
+      return { totalSize: range.totalSize, offset: range.rangeStart, data: range.base64, variant: "display" };
     }
   }
   // Read through one opened handle (no separate stat first). A proof deleted,

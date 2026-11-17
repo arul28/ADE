@@ -7,6 +7,7 @@ import {
   formatAttachmentSize,
 } from "../../../shared/chatAttachmentLimits";
 import { sniffImageMimeType } from "../../../shared/imageSniff";
+import { captureError } from "../../../shared/sentry/capture";
 import { getImageAttachmentMediaType } from "../../../shared/types/chat";
 import { gifDimensions, imageDimensions, webpDimensions, type ImageDimensions } from "../shared/imageDimensions";
 import type { Logger } from "../logging/logger";
@@ -215,7 +216,11 @@ export async function encodeDisplayImage(
     const data = encodeJpegRgba(scaled, quality);
     if (data.byteLength > bytes.byteLength * 0.8) return null;
     return { data, mediaType: "image/jpeg", width: scaled.width, height: scaled.height };
-  } catch {
+  } catch (error) {
+    // The copy is only a faster way to show the picture; the original is
+    // served instead. Reported, so a codec that fails on real pictures is
+    // visible rather than just quietly slow.
+    captureError(error, { fingerprint: ["artifact-display-copy", "encode"] });
     return null;
   }
 }

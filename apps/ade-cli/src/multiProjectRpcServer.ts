@@ -4962,12 +4962,16 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     const jobParam = actionEnvelope && actionDomain && actionName ? params[BACKGROUND_JOB_PARAM] : null;
-    const jobId = jobParam && typeof jobParam === "object" && !Array.isArray(jobParam)
-      && typeof (jobParam as { id?: unknown }).id === "string"
-      ? (jobParam as { id: string }).id.trim()
-      : "";
-    if (jobId && jobId.length <= 128 && actionDomain && actionName && !childWakeTokenFromCaller) {
-      // Followed by job id: started once for this id, joined by a call sent again.
+    if (jobParam != null && actionDomain && actionName && !childWakeTokenFromCaller) {
+      const jobId = typeof (jobParam as { id?: unknown }).id === "string"
+        ? (jobParam as { id: string }).id.trim()
+        : "";
+      // Followed by job id: started once for this id, joined by a call sent
+      // again. A request that asked to be followed never runs un-followed: a
+      // call sent again would then run the action twice.
+      if (!jobId || jobId.length > 128) {
+        throw new Error("A background job needs an id of 1 to 128 characters.");
+      }
       const { [BACKGROUND_JOB_PARAM]: _job, ...jobless } = forwardedParams as Record<string, unknown>;
       const jobEntry = await handlerFor(projectId);
       const outcome = await backgroundActionJobs.run({
@@ -4979,7 +4983,10 @@ export function createMultiProjectRpcRequestHandler(
       if (outcome.state === "running") {
         return { ok: true, domain: actionDomain, action: actionName, result: null, backgroundJob: { id: jobId, state: "running" } };
       }
-      return outcome.value;
+      // The same answer a caller that asked for a conditional result got before.
+      return actionEnvelope && params[CONDITIONAL_ACTION_PARAM] === true
+        ? conditionalActionResult(outcome.value, params[CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM])
+        : outcome.value;
     }
 
     const entry = await handlerFor(projectId);

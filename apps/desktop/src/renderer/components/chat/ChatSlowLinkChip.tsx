@@ -20,7 +20,7 @@ export function ChatSlowLinkChip() {
       icon={<WifiLow size={10} weight="bold" />}
       label="Slow connection"
       detail={typeof rttMs === "number" ? `${Math.round(rttMs)} ms` : undefined}
-      tooltip={`The link to ${scope.machineName} is slow. Pictures load when you click them, and terminals show what you type before the machine echoes it.`}
+      tooltip={`Pictures load when you click them, and terminals show what you type before the machine echoes it (${scope.machineName}).`}
       testId="chat-slow-link-chip"
     />
   );
