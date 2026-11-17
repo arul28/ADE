@@ -3922,6 +3922,14 @@ function readLatestComposerDraftSnapshot(
   return latest;
 }
 
+/**
+ * A closing pane put a message that never reached its chat back in that
+ * chat's saved draft. A pane already showing the chat read the draft before
+ * that, so it takes the text from this event.
+ */
+const UNSENT_TEXT_RESTORED_EVENT = "ade:chat-unsent-text-restored";
+type UnsentTextRestoredDetail = { storageKey: string; text: string };
+
 function writeComposerDraftSnapshot(storageKey: string, snapshot: ComposerDraftStorageSnapshot): void {
   try {
     window.localStorage.setItem(storageKey, JSON.stringify(stripComposerDraftScreenshots(snapshot)));
@@ -12493,7 +12501,17 @@ export function AgentChatPane({
       ?? normalizeStoredComposerDraft({ text: "" }, initialNativeControls);
     if (!saved || saved.text.trim().length) return;
     writeComposerDraftSnapshot(storageKey, { ...saved, text, updatedAt: new Date().toISOString() });
+    window.dispatchEvent(new CustomEvent<UnsentTextRestoredDetail>(UNSENT_TEXT_RESTORED_EVENT, { detail: { storageKey, text } }));
   }, [initialNativeControls]);
+  useEffect(() => {
+    const onRestored = (event: Event) => {
+      const detail = (event as CustomEvent<UnsentTextRestoredDetail>).detail;
+      if (!paneMountedRef.current || detail?.storageKey !== composerDraftStorageKeyValue) return;
+      setDraft((current) => (current.trim().length ? current : detail.text));
+    };
+    window.addEventListener(UNSENT_TEXT_RESTORED_EVENT, onRestored);
+    return () => window.removeEventListener(UNSENT_TEXT_RESTORED_EVENT, onRestored);
+  }, [composerDraftStorageKeyValue, setDraft]);
   useEffect(() => () => {
     const sendsInDoubt = sendsInDoubtRef.current;
     if (!sendsInDoubt.size) return;
