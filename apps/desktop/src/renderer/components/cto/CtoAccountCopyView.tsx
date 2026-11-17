@@ -4,6 +4,7 @@ import { savedAgoLabel, useAdeCloudAccountRead } from "../../lib/adeCloudAccount
 import { AccountReadFailed } from "../adeCloud/AccountReadFailed";
 import { LaneMentionChip } from "../prs/LaneMentionChip";
 import { lanesNamedInText, useLaneMentions } from "../prs/state/accountLaneMentions";
+import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 
 /**
  * The CTO's account copy (`GET /cloud/cto`), read-only, for a CTO whose home
@@ -12,8 +13,17 @@ import { lanesNamedInText, useLaneMentions } from "../prs/state/accountLaneMenti
  *
  * Renders nothing on an ADE or a server without the copy route, and nothing
  * when the repository has no copy yet (the state card above says what to do).
+ * A home on ADE Cloud reads "ADE Cloud", never its computer's own name.
  */
-export function CtoAccountCopyView({ origin, active }: { origin: string | null; active: boolean }): JSX.Element | null {
+export function CtoAccountCopyView({
+  origin,
+  active,
+  homeOnAdeCloud,
+}: {
+  origin: string | null;
+  active: boolean;
+  homeOnAdeCloud: boolean;
+}): JSX.Element | null {
   const { state, retry } = useAdeCloudAccountRead(active && origin ? { call: "cto" as const, origin } : null);
   if (state.status === "failed" && !state.data) {
     return (
@@ -24,7 +34,7 @@ export function CtoAccountCopyView({ origin, active }: { origin: string | null; 
   }
   const copy = state.data?.available ? state.data.copy : null;
   if (!copy) return null;
-  return <CtoCopyBody copy={copy} origin={origin} active={active} />;
+  return <CtoCopyBody copy={copy} origin={origin} active={active} homeName={homeOnAdeCloud ? ADE_CLOUD_NAME : copy.ownerName} />;
 }
 
 /** The name the copy saved for the CTO, for the page header while no home answers. */
@@ -33,7 +43,17 @@ export function ctoCopyName(copy: CloudCtoCopy | null | undefined): string | nul
   return typeof name === "string" && name.trim() ? name.trim() : null;
 }
 
-function CtoCopyBody({ copy, origin, active }: { copy: CloudCtoCopy; origin: string | null; active: boolean }): JSX.Element {
+function CtoCopyBody({
+  copy,
+  origin,
+  active,
+  homeName,
+}: {
+  copy: CloudCtoCopy;
+  origin: string | null;
+  active: boolean;
+  homeName: string | null | undefined;
+}): JSX.Element {
   const saved = savedAgoLabel(copy.savedAt);
   // The lanes the CTO's open work and last turns name, from one read of the
   // account lane index while this copy shows: each opens on its own machine.
@@ -50,7 +70,7 @@ function CtoCopyBody({ copy, origin, active }: { copy: CloudCtoCopy; origin: str
   return (
     <section className="ade-cto-copy" aria-label="The CTO's saved copy" data-testid="cto-account-copy">
       <p className="ade-cto-copy-note">
-        {saved ? `${saved} from ${copy.ownerName || "its home computer"}.` : "Saved from its home computer."}
+        {saved ? `${saved} from ${homeName || "its home computer"}.` : "Saved from its home computer."}
         {" "}Reading this doesn't wake it.
       </p>
       {copy.story?.summary ? (

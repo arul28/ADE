@@ -694,7 +694,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   // copy (never the home itself, so nothing wakes). Waking or moving it is
   // the state card's action.
   const accountCopy = stage === "cloudAsleep" || stage === "cloudGone" || stage === "away"
-    ? <CtoAccountCopyView origin={ctoHome.origin} active={active} />
+    ? <CtoAccountCopyView origin={ctoHome.origin} active={active} homeOnAdeCloud={stage !== "away"} />
     : null;
 
   const renderStage = (): React.ReactNode => {
