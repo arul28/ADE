@@ -1418,7 +1418,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   // reports this repo contributes union rows. Those are the machine choices.
   const activeMachineId = machineIdForBinding(projectBinding);
   const crossMachineEntries = useRootAppStore((state) => state.crossMachineLanesByMachineId);
-  // An ADE Cloud lane's computer reads "Cloud · <lane>" in the machine filter.
+  // An ADE Cloud computer reads "ADE Cloud" in the machine filter.
   const machineLabelOf = useMachineLabelForMachine();
   const activeMachineLabel = useMachineLabelForBinding(projectBinding);
   // Every ADE Cloud computer is one "ADE Cloud" choice in the filter: the

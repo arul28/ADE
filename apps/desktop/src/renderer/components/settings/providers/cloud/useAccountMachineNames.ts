@@ -37,7 +37,7 @@ export function useAccountMachineNames(): ReadonlyMap<string, string> {
     const next = new Map<string, string>();
     for (const machine of machines) {
       const own = accountMachineDisplayName(machine);
-      // A cloud lane computer reads "Cloud · <lane>", never its generated name.
+      // An ADE Cloud computer reads "ADE Cloud", never its generated name.
       const name = own ? machineLabelForMachine({ machineKey: machine.machineKey, hostname: machine.name, name: own }, computers) : null;
       if (machine.machineKey && name) next.set(machine.machineKey, name);
     }
