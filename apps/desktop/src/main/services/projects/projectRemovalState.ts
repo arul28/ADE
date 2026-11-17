@@ -306,8 +306,9 @@ export async function listIgnoredDotenvFiles(cwd: string): Promise<string[]> {
     const ignored = await runGit(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"], { cwd, timeoutMs: GIT_READ_TIMEOUT_MS });
     if (ignored.exitCode !== 0) return [];
     const lines = ignored.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    return (await findIgnoredEnvFiles(cwd, lines))
-      .filter((file) => DOTENV_FILE.test(file) && !DOTENV_EXAMPLE.test(file));
+    // Git can list one path more than once; each file is named once.
+    return [...new Set((await findIgnoredEnvFiles(cwd, lines))
+      .filter((file) => DOTENV_FILE.test(file) && !DOTENV_EXAMPLE.test(file)))];
   } catch {
     return [];
   }
