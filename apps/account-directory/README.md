@@ -6,1001 +6,555 @@ or changed.
 
 The Worker also hosts ADE's device-authorization bridge for headless sign-in:
 
-- `POST /device/code` creates a short-lived code bound to a daemon-generated secret.
-  The `verification_uri` it returns is this worker's own `/device`, or
-  `<DEVICE_PAGE_ORIGIN>/device` when that var is set. Production sets it to
-  `https://ade-app.dev`: that link opens ADE Mobile as a universal link, and
-  the website redirects a browser to this worker's `/device`. Deploy the
-  website before a worker that sets it: the deploy preflight probes the page
-  and refuses to publish when it does not redirect.
-  An optional `machine_key` names the machine signing in, which is what a pairing
-  grant (below) can later be spent on. An optional `machine_name` (cleaned, at
-  most 80 characters) is display text only.
-- `GET /device` renders a read-only human-code confirmation page. With a
-  `machine_name`, it says "A computer named … asked to sign in to ADE" and tells
-  the reader to continue only if they started it there, because the name is
-  the client's claim. Without one, it says "ADE on your computer".
-- `POST /device` confirms the code and opens Clerk OAuth + PKCE.
-  It accepts only a same-origin form POST: the `Origin` must match, or, when a
-  browser sends no `Origin` or the text `null`, `Sec-Fetch-Site` must be
-  `same-origin`. The page is served with `referrer-policy: same-origin`, because
-  under `no-referrer` a browser sends `Origin: null` for its own form. A
-  confirmed POST answers with a small page that opens the Clerk sign-in (a
-  meta refresh and a link), not a 302: browsers apply the page's
-  `form-action 'self'` to every redirect after a form POST, and Clerk's
-  authorize URL redirects on through more hosts.
+- `POST /device/code` creates a short-lived code bound to a daemon secret
+  (stored as a SHA-256 only). Its `verification_uri` is this Worker's
+  `/device`, or `<DEVICE_PAGE_ORIGIN>/device`. Production sets
+  `https://ade-app.dev`, which opens ADE Mobile as a universal link and
+  redirects a browser here. Deploy the website before a Worker that sets it:
+  the deploy preflight refuses when the page does not redirect. An optional
+  `machine_key` names the machine a pairing grant can be spent on; an optional
+  `machine_name` (cleaned, at most 80 characters) is display text only.
+- `GET /device` renders a read-only confirmation page. With a `machine_name`,
+  it says "A computer named … asked to sign in to ADE" and to continue only if
+  the reader started it there.
+- `POST /device` confirms the code and opens Clerk OAuth + PKCE. It accepts
+  only a same-origin form POST (`Origin`, else `Sec-Fetch-Site: same-origin`
+  when `Origin` is missing or `null`). The page uses
+  `referrer-policy: same-origin`, because `no-referrer` makes `Origin: null`.
+  It answers with a small page (meta refresh and link), not a 302, because
+  `form-action 'self'` applies to every redirect after a form POST.
 - `GET /device/approve?user_code=` and `POST /device/approve` are the approval
-  from a signed-in ADE app (a phone that scanned the sign-in QR code). Both take
-  an account bearer. `GET` answers `{ status, machine_name }`, so the app can
-  ask before anything changes and can tell when the sign-in it opened has
-  finished (`pending`, `started`, `approved`, `failed`); it is not rate
-  limited, like the browser page. `POST` mints a one-time Clerk sign-in ticket for the
-  verified caller (`CLERK_SECRET_KEY`, 120 seconds) and answers `{ url }`: the
-  ticket link with `redirect_url` set to this sign-in's authorize URL. The app
-  opens it in a web sheet, Clerk signs the caller in with no password and shows
-  its consent page, and the sign-in ends at `/device/callback` like any other.
-  The ticket is for the user the bearer was verified as, so the computer gets
-  the approver's own session. Errors are JSON: 401 `unauthorized`, 404
-  `not_found`, 410 `expired`, 409 `already_used`, 429 `rate_limited`, and
-  503/502 `unavailable` (no `CLERK_SECRET_KEY`, or Clerk refused). On
-  `unavailable` the app offers a button that opens the `/device` page.
-- `GET /device/callback` exchanges the Clerk code and holds the token pair briefly.
-- `POST /device/token` lets the initiating daemon redeem the pair once, and returns
-  a `pairing_grant` alongside it when the request declared a `machine_key`.
-
-Device codes and approval-attempt rate limits are stored in D1. The daemon
-secret is stored only as a SHA-256 digest; approved token pairs are cleared by
-the one-time redemption update or when the device code expires.
+  from a signed-in ADE app (a phone that scanned the QR code), with an account
+  bearer. `GET` answers `{ status, machine_name }` (`pending`, `started`,
+  `approved`, `failed`). `POST` mints a 120-second Clerk sign-in ticket for
+  the verified caller (`CLERK_SECRET_KEY`) and answers `{ url }`, whose
+  `redirect_url` is this sign-in's authorize URL. The computer gets the
+  approver's own session. Errors: 401 `unauthorized`, 404 `not_found`, 410
+  `expired`, 409 `already_used`, 429 `rate_limited`, 503/502 `unavailable`
+  (the app then offers the `/device` page).
+- `GET /device/callback` exchanges the Clerk code and holds the token pair
+  until `POST /device/token` redeems it once (with a `pairing_grant` when the
+  request declared a `machine_key`) or the code expires.
 
 ## Which install a machine row is
 
 Stable (`~/.ade`) and Alpha (`~/.ade-alpha`) on one computer are two machines
-in the account, and both report the same hostname. A register call may say
-which install it is: `channel` (`stable`, `beta` or `alpha`; any other value is
-dropped) and `adeHome` (the ADE home as `~/.ade-alpha`, or a folder name, never
-a full path). Migration `0011` stores them in `machines.channel` and
-`machines.ade_home`, and every machine row returns them. A register that omits
-them keeps the stored values, because an older host sends neither.
+with the same hostname. A register call may send `channel` (`stable`, `beta`
+or `alpha`) and `adeHome` (`~/.ade-alpha` or a folder name, never a full
+path), stored by migration `0011` and returned on every row. A register that
+omits them keeps the stored values.
 
-Client-supplied text that a page or a list shows (`adeHome`, and the device
-flow's `machine_name`, which migration `0010` stores on
-`device_authorizations`) goes through `boundedDisplayText` in
-`src/displayText.ts`. It replaces control and format characters (bidi
-overrides, zero-width marks), folds whitespace, and cuts the text to a fixed
-length. It cleans rather than refuses, so an odd name never blocks the request
-that carried it.
+Shown client text (`adeHome`, the device flow's `machine_name`) goes through
+`boundedDisplayText` (`src/displayText.ts`): it replaces control and format
+characters, folds whitespace and cuts the length. It cleans, never refuses.
 
 ## A resting ADE Cloud computer in the machine list
 
-The machine list (`GET /account/machines`), the single machine read and the
-rename answer read each ADE Cloud computer's state from the server's own row
-(`cloudComputerTruth` in `src/directory.ts`). A resting computer reads
-`online: false`, `sleepState: "asleep"` and `cloud: { state, stateAt }`, so a
-client shows it as asleep, not offline. A failed read of those rows logs
+The machine list, the single read and the rename answer read each ADE Cloud
+computer's state from the server's row (`cloudComputerTruth` in
+`src/directory.ts`). A resting computer reads `online: false`,
+`sleepState: "asleep"` and `cloud: { state, stateAt }`. A failed read logs
 `directory.cloud_truth_read_failed` and leaves the fields out.
 
 ## Removing a machine
 
-`DELETE /account/machines/:machineKey` is not just a row delete. The machine's
-Activity lives in the push relay — a different Worker over a different D1 — and
-its idle rows carry no expiry, so a delete that stopped here would leave a
-de-authorized machine's agents on every surface of the account. The handler:
+`DELETE /account/machines/:machineKey` also clears the machine's Activity in
+the push relay (another Worker and D1), whose rows have no expiry.
 
-1. records a `revoked_machines` row (before dropping the machine row, so a
-   half-completed removal fails closed) — `POST /account/machines/register` is
-   refused with `403 machine_revoked` while it stands, which is what stops the
-   removed machine's 60-second heartbeat from re-registering itself;
-2. deletes the machine row;
-3. forwards the removal to `DELETE /attention/account/machines/:machineKey` on
-   the relay (`PUSH_RELAY_URL`, or the optional `ACTIVITY_RELAY` service
-   binding), passing the caller's already-verified bearer token so the relay
-   authenticates the account itself, plus an `x-ade-directory-auth` header
-   carrying `DIRECTORY_AUTH_SECRET` so the relay can tell a directory hand-off
-   from a machine replaying the account token it still holds. Both workers must
-   hold the same secret; unset, every relay hand-off fails closed.
+1. Record a `revoked_machines` row first, so a half-done removal fails closed.
+   While it stands, `POST /account/machines/register` answers
+   `403 machine_revoked`, which stops the heartbeat from re-registering.
+2. Delete the machine row.
+3. Forward to the relay's `DELETE /attention/account/machines/:machineKey`
+   (`PUSH_RELAY_URL` or the `ACTIVITY_RELAY` binding) with the caller's bearer
+   and `x-ade-directory-auth: DIRECTORY_AUTH_SECRET` (the same secret on both
+   Workers; unset fails closed).
 
-A relay failure is retried once and then reported as `502` with
-`code: "activity_purge_failed"` and `machineRemoved: true` — never as a clean
-removal.
+A relay failure is retried once, then answers `502`
+`activity_purge_failed` with `machineRemoved: true`.
 
 ## Re-pairing a removed machine
 
-The revocation clears only on a register request carrying `pairing: true` AND a
-proof that a human just authenticated. `pairing` alone is an unauthenticated
-client boolean on a route the removed machine can still call, so on its own it
-proves nothing; `deviceId` is caller-supplied for the same reason and authorizes
-nothing at all. Two proofs are accepted, either one sufficient:
+The revocation clears only on a register request with `pairing: true` AND a
+proof that a person just signed in. `pairing` and `deviceId` alone are client
+claims and prove nothing. Either proof is enough:
 
-1. **Claim freshness (fast path).** The verified caller token carries an
-   `auth_time` (OIDC) or `fva` (Clerk factor-verification-age) claim placing an
-   interactive sign-in inside `PAIRING_AUTH_FRESHNESS_MS` (10 minutes). A token
-   refresh renews `exp`/`iat` but never these, so a token idling on a removed
-   machine can never qualify.
-2. **A pairing grant (fallback).** 32 random bytes minted at `POST /device/token`
-   — the one interactive sign-in this Worker runs end to end — stored as a
-   SHA-256 digest in `machine_pairing_grants`, bound to the signing-in user and
-   to the `machine_key` declared back at `POST /device/code`, and valid for
-   `PAIRING_GRANT_TTL_MS` (10 minutes). A removed machine holding only an old
-   access token cannot obtain one: minting requires completing the browser half
-   of the device flow.
+1. **Claim freshness.** The verified token carries `auth_time` (OIDC) or `fva`
+   (Clerk) inside `PAIRING_AUTH_FRESHNESS_MS` (10 minutes). A refresh never
+   renews these claims.
+2. **A pairing grant.** 32 random bytes minted at `POST /device/token` (the one
+   interactive sign-in this Worker runs end to end), stored as a SHA-256 in
+   `machine_pairing_grants`, bound to the user and to the `machine_key` sent
+   at `POST /device/code`, valid `PAIRING_GRANT_TTL_MS` (10 minutes). ADE's
+   brain signs in with a Clerk OAuth access token that has neither claim, so
+   the grant is its path.
 
-The fallback exists because path 1 fails closed and ADE's brain authenticates
-with a Clerk **OAuth access token**, whose documented claim set does not include
-either claim. Claim-only freshness would therefore risk making every account
-removal permanent — the same Blocker as an un-revocable machine, inverted.
+A refusal answers 403 `pairing_authentication_required` with a message. An
+accepted re-pair clears the relay's revocation first.
 
-A refusal answers `403` with `code: "pairing_authentication_required"` and an
-actionable message rather than a bare status. An accepted re-pair clears the
-relay's revocation first, so a machine is never back on the roster while still
-unable to publish.
+**A grant is spent in two phases**, so a relay failure does not burn it:
 
-### Spending a grant takes two phases
-
-A grant is spendable exactly once, but a spend is not a single `DELETE`. The
-relay hand-off that follows can fail, and destroying the grant before knowing
-the outcome meant a relay outage burned the only credential a reinstalled
-machine had — the same lockout the grant exists to prevent, moved one step
-later. So redemption is:
-
-1. **Reserve.** One atomic `UPDATE ... SET reserved_at` whose `WHERE` still
-   carries every rule (this user, this machine, inside its TTL, not already
-   held). `changes === 1` is the whole proof, so two concurrent registrations
-   can no more both spend it than they could before.
-2. **Consume** (`DELETE`, scoped to that reservation) once the relay agrees, or
-   **release** (`SET reserved_at = null`) when it does not.
-
-A release restores the row exactly as it was. `expires_at` is never rewritten,
-so an attacker who can force relay failures gains nothing beyond the TTL the
-grant was minted with. A reservation older than `PAIRING_GRANT_RESERVATION_MS`
-(60 s) is ignored, so a Worker that dies mid-hand-off strands the grant for a
-minute rather than until it expires.
+1. **Reserve:** one atomic `UPDATE ... SET reserved_at` with every rule in its
+   `WHERE` (this user, this machine, inside its TTL, not held).
+   `changes === 1` is the proof.
+2. **Consume** (`DELETE` of that reservation) once the relay agrees, or
+   **release** (`reserved_at = null`) when it does not. `expires_at` never
+   changes. A reservation older than `PAIRING_GRANT_RESERVATION_MS` (60 s) is
+   ignored.
 
 ## Superseding a rotated machine key
 
 Machines are keyed `(user_id, machine_key)`, so a client that rotates its
-identity file — a reinstall, a wiped config directory, a restored backup —
-arrives as a **second row for one physical computer**. The user then removes the
-row that looks stale, and half the time that is the live install.
+identity file (a reinstall, a wiped config, a restored backup) arrives as a
+second row for one computer. A register call whose `deviceId` or `hardwareId`
+matches other rows of the account deletes those rows and answers
+`supersededMachineKeys` (omitted when empty).
 
-A register call whose `deviceId` **or** `hardwareId` matches other rows on the
-same account therefore deletes those rows and reports them:
-
-```json
-{ "machineKey": "...", "supersededMachineKeys": ["<older key>"] }
-```
-
-The field is additive and omitted when nothing was superseded, so existing
-clients are unaffected. Three rules bound it:
-
-- **Two identifiers, one union.** `deviceId` catches an in-place reinstall,
-  where `~/.ade/secrets` survived. `hardwareId` — an optional, per-account
-  sha256 of an OS-level machine identifier (`IOPlatformUUID`, `MachineGuid`,
-  `/etc/machine-id`) — catches a full `~/.ade` wipe, where the device id was
-  minted fresh alongside the machine key and matches nothing. It is salted with
-  the account id, so one machine seen by two accounts stores two unrelated
-  values and the column cannot correlate users. Rows with a null `hardware_id`
-  (written before it shipped, or by a host that cannot read one) are matched by
-  `deviceId` only, and nothing back-fills them.
-- **Same trust bar as a re-pair.** `deviceId` and `hardwareId` are both
-  caller-supplied and forgeable, so on a plain token they authorize nothing —
-  otherwise any machine could claim another's identifiers and delete its row.
-  The call must carry proven-fresh interactive authentication or spend a pairing
-  grant, exactly as un-revoking does. A grant is only spendable on
-  `pairing: true`; the claim is honored on any register, because it is a
-  property of a token this Worker verified.
-- **At most 5 rows per call** across both identifiers, oldest-seen first. The
-  rest go on the next proven re-pair.
-
-It **folds**, it does not merely delete: the one thing a superseded row holds
-that the new one cannot rebuild is `custom_name`, the name the user typed. The
-most recently seen superseded name is carried onto the surviving row, and only
-when that row has no name of its own — a name set on the new row is the fresher
-statement of intent. The carry-forward and the deletes go out as a single
-`DB.batch()`, because the pairing grant is already spent by the time they run
-and a half-finished loop would leave phantoms behind with no credential left to
-clear them.
-
-Superseded keys get **no** `revoked_machines` row. The physical device holds the
-new key, and blocking the old one would trapdoor any client that rolls its
-identity file back into a permanent refusal; an absent key simply registers
-again. The relay is not called either — the device never left the account, so
-its Activity is still the user's own.
+- `deviceId` catches an in-place reinstall. `hardwareId` (an optional sha256
+  of the OS machine id, salted with the account id) catches a full `~/.ade`
+  wipe. Rows with no `hardware_id` match by `deviceId` only.
+- Both are client claims, so the call needs the same proof as a re-pair
+  (fresh sign-in or a pairing grant).
+- At most 5 rows per call, oldest-seen first.
+- The newest superseded `custom_name` moves to the surviving row when that
+  row has none, in one `DB.batch()` with the deletes.
+- Superseded keys get no `revoked_machines` row and no relay call: the device
+  never left the account.
 
 ## Refusal logs
 
-Every refusal on this Worker is a user who cannot get their computer back onto
-their account, and by the time they ask for help the request is gone. Each
-refusal path emits exactly one structured line to `console.log`. Workers
-observability keeps 10% of requests (`head_sampling_rate: 0.1`), so the line
-alone is often gone. Most
-refusals are therefore also a Sentry warning (`<event>: <code>`, one issue per
-event and code, tagged `refusal.code` and `correlation_id`, with the prefixes
-below and no account id), within the Worker's Sentry budget (`admitEvent`).
-
-Three cases write the console line only and send no Sentry warning:
-
-- `directory.supersede_refused`: the machine registered and a duplicate stays
-  listed. Registration rides the heartbeat, so a warning per call would be one
-  issue per minute per machine.
-- `directory.register_refused` with `machine_revoked`: a removed machine that
-  keeps registering on its heartbeat. The client shows "sign in again".
-- `directory.register_refused` with `pairing_authentication_required`: a
-  re-pair with no fresh sign-in yet. The client shows "sign in again".
-
-For these three cases the only record is the sampled console line, so about 9
-in 10 of them leave no trace. Ask the user for the `correlationId` from the
-client log, and do not expect a Sentry issue.
-
-A refusal line looks like this:
+Each refusal path writes one structured `console.log` line. Workers keep 10%
+of request logs (`head_sampling_rate: 0.1`), so most refusals are also a
+Sentry warning (`<event>: <code>`, tagged `refusal.code` and
+`correlation_id`, no account id), within `admitEvent`'s budget. Three cases
+write the console line only, because the heartbeat repeats them:
+`directory.supersede_refused`, and `directory.register_refused` with
+`machine_revoked` or `pairing_authentication_required` (the client shows
+"sign in again"). For these, ask the user for the `correlationId`.
 
 ```json
 {"event":"directory.register_refused","userId":"user_…","machineKeyPrefix":"abcdef12",
  "deviceIdPrefix":"01234567","code":"machine_revoked","correlationId":"…"}
 ```
 
-`event` is one of `directory.register_refused`, `directory.remove_refused`, or
-`directory.supersede_refused`; `code` is the wire code the client received
-(`machine_revoked`, `pairing_authentication_required`,
-`activity_relay_unavailable`, `activity_purge_failed`,
-`supersede_authentication_required`), and an optional `reason` carries the finer
-classification support actually needs — `no_proof` versus `grant_rejected`, or
-the relay's own failure text. `correlationId` joins the line to the request the
-client logged.
+- `event`: `directory.register_refused`, `.remove_refused` or
+  `.supersede_refused`. `code`: the wire code (`machine_revoked`,
+  `pairing_authentication_required`, `activity_relay_unavailable`,
+  `activity_purge_failed`, `supersede_authentication_required`). `reason`:
+  the finer cause (`no_proof`, `grant_rejected`, the relay's text).
+- Identifiers appear as 8-character prefixes only. No key, token or grant is
+  logged.
+- There is no admin route to restore a machine. Support runs a D1 statement,
+  usually `delete from revoked_machines where user_id = ? and machine_key = ?`.
 
-Identifiers appear as **8-character prefixes only**. A machine key is
-capability-shaped and a grant is a live credential; no full key, token, or grant
-is ever logged.
-
-There is no admin route for restoring a machine by hand, and this change did not
-add one: the Worker has no secret-gated inbound surface to extend
-(`DIRECTORY_AUTH_SECRET` is outbound provenance for the relay, not an inbound
-credential), and adding one would be a new authentication boundary guarding
-exactly the tables `wrangler d1 execute --env production` already reaches.
-Support recovery is a direct D1 statement — typically
-`delete from revoked_machines where user_id = ? and machine_key = ?` — after the
-refusal logs above identify the row.
-
-Machine registration and list records may carry a `pubkey` string. Current ADE
-hosts publish `ed25519:<raw-32-byte-base64>` so clients can verify and seal
-account adoption on direct or relay routes. The Worker treats the value as
-opaque metadata and rejects values longer than 128 characters.
+Machine rows may carry a `pubkey` (`ed25519:<raw-32-byte-base64>`), opaque
+here and at most 128 characters.
 
 ## Diagnostic report uploads
 
-`POST /diagnostics/upload` is the destination for ADE's "Send to ADE" button and
-`ade report-issue --send`. The report is already built and redacted on the
-user's machine, so a person whose ADE does not start can still send it.
-
-**Contract**
+`POST /diagnostics/upload` receives ADE's "Send to ADE" button and
+`ade report-issue --send`. The client builds and redacts the report, so a
+person whose ADE does not start can still send it.
 
 | | |
 |---|---|
-| Method | `POST` (plus `OPTIONS` preflight; anything else is `405`) |
-| Body | `text/plain` — the report itself; or `application/json` — `{ report, installId?, appVersion?, auto?, failureCode? }` |
-| Metadata on `text/plain` | `?installId=` / `?appVersion=` / `?auto=` / `?failureCode=` query parameters |
-| Automatic sends | `auto` (boolean, or `1`/`true`/`yes` as a string) marks a report the client sent on its own rather than one a human pressed send on. `failureCode` names what broke and is bound to `^[a-z][a-z0-9_-]{0,47}$`. Both are optional; absent means a manual send. A `failureCode` that does not match the shape is **dropped, not refused** — the label is cosmetic and the report is not |
-| Auth | **Optional** `Authorization: Bearer <Clerk token>`, verified exactly as the account routes verify it. Absent, the upload is anonymous. A header that is sent and does not verify — or does not even parse as `Bearer <token>` — is `401`, never silently downgraded. A Worker with no Clerk configuration answers `503`, exactly as the account routes do |
-| Origin | `403` when the browser reports `sec-fetch-site: cross-site` from a real remote origin. ADE's own senders are unaffected: the CLI sends no fetch-metadata header, and the Electron renderer's `null` (packaged `file://`) and loopback (development) origins are exempt |
-| Size | `413` above 512 KB. `content-length` is checked first, then the stream is counted as it arrives, so a missing or dishonest length changes nothing |
-| Per-caller limit | 5 **stored** per UTC day per user (signed in) or per `cf-connecting-ip` (anonymous) → `429 {"error":"rate limited"}` with `retry-after: 86400`. Off Cloudflare there is no trustworthy address, so anonymous callers share one bucket; `x-forwarded-for` is caller-controlled and is never read |
-| Fleet limit | `DIAGNOSTICS_DAILY_GLOBAL_LIMIT` uploads **stored per UTC day across every caller** (default 400) → `429 {"error":"daily diagnostics budget exhausted"}` with `retry-after` counting the seconds to the next UTC midnight. A **distinct body** from the per-caller `429` on purpose: only one of the two is about the caller, and an auto-sender that reads a fleet-wide stop as its own quota retries forever |
-| Budget unavailable | `503 {"error":"diagnostics upload unavailable"}`. The claim **fails closed** — a ceiling that is skipped whenever D1 hiccups is not a ceiling |
-| Success | `200 {"ok": true, "id": "<uuid>"}`. The report is **never** echoed back |
-| Storage | `reports/<utc-date>/<userIdOrAnon>/<uuid>.md` in the `DIAGNOSTICS` R2 bucket, with `userId` / `installId` / `appVersion` / `auto` / `failureCode` as custom metadata (`auto` is written only when true, so a manual upload stores exactly what it always did) |
-| No binding | `503`, and the in-app button says sending is unavailable |
+| Method | `POST` (and `OPTIONS`); else `405` |
+| Body | `text/plain` (the report, metadata as query parameters) or JSON `{ report, installId?, appVersion?, auto?, failureCode? }` |
+| `auto`, `failureCode` | Optional. `auto` marks a send the client made on its own. A `failureCode` that does not match `^[a-z][a-z0-9_-]{0,47}$` is dropped, not refused |
+| Auth | Optional `Bearer <Clerk token>`. A header that does not verify is `401`, never anonymous. No Clerk configuration: `503` |
+| Origin | `403` for `sec-fetch-site: cross-site` from a real remote origin. The CLI, `Origin: null` and loopback are exempt |
+| Size | `413` above 512 KB, counted as the stream arrives |
+| Per-caller limit | 5 stored per UTC day per user or per `cf-connecting-ip` → `429 {"error":"rate limited"}`, `retry-after: 86400`. `x-forwarded-for` is never read |
+| Fleet limit | `DIAGNOSTICS_DAILY_GLOBAL_LIMIT` stored per UTC day (default 400; `0` refuses all; a bad value means 400) → `429 {"error":"daily diagnostics budget exhausted"}`. A different body from the per-caller `429`, so an auto-sender does not retry it as its own quota |
+| Budget unavailable | `503 {"error":"diagnostics upload unavailable"}` (fails closed) |
+| Success | `200 {"ok": true, "id": "<uuid>"}`. The report is never echoed |
+| Storage | `reports/<utc-date>/<u-userId or anon-sha256(ip) prefix>/<uuid>.md` in the `DIAGNOSTICS` R2 bucket, metadata `userId`, `installId`, `appVersion`, `auto` (only when true), `failureCode`. No binding: `503` |
 
-The key's identity segment is `u-<clerk user id>` when signed in and
-`anon-<sha256(ip) prefix>` otherwise — the *same* segment the quota is counted
-on, so one prefix listing answers both "where does this go" and "has this caller
-had enough today".
-
-CORS is `*` on this route only. The desktop button runs in Electron's renderer,
-whose origin is `file://` (`Origin: null`) in a packaged build, so no fixed
-allow-list can name it; `*` is safe here because the route reads no account
-state, returns only an opaque id, and cannot be used with
-`credentials: "include"`. Every `/account/*` route keeps its exact-origin rule.
-
-**Two limits, because they bound different things.**
-
-The *per-caller* quota answers "one person cannot fill the bucket". It is
-enforced by a per-isolate counter (fast, but lost when Cloudflare recycles the
-isolate) backed by an R2 prefix listing on the caller's day (durable and global,
-one class-A operation per upload). The listing is not transactional, so
-genuinely simultaneous requests can land a couple of objects over five — an
-acceptable slop for an abuse bound.
-
-Both halves count **stored objects**, never attempts, and the counter is
-advanced only after the `put` returns. The durable half cannot do otherwise —
-it is a listing of what is in the bucket — and the fast path has to agree with
-it or it is not a cache of it. So a refusal the caller did not cause (a spent
-fleet budget, a bucket error) never counts against the caller.
-
-The *fleet* budget answers a different question, and it is not allowed any slop
-at all, because it is the storage bill. ADE clients send reports
-**automatically on failure**, so a single bug that fires for every install at
-once multiplies "five each" by the install base, and no per-caller limit can see
-that coming. `diagnostics_upload_days` (migration `0009`) holds one row per UTC
-day, and every upload claims a slot from it in a single statement:
-
-```sql
-insert into diagnostics_upload_days (day, count)
-values (?, 1)
-on conflict(day) do update set count = count + 1
-where count < ?
-```
-
-`changes === 1` is the whole proof — the same upsert idiom
-`device_approval_rate_limits` uses, and for the same reason: a read followed by
-a write lets two concurrent uploads both observe the last free slot. No
-`RETURNING`, so nothing depends on a D1 version.
-
-**The cost ceiling is arithmetic, not an estimate.** This Worker is the *only*
-writer the bucket has, so the numbers below are the whole spend:
-
-```
-400 uploads/day        DIAGNOSTICS_DAILY_GLOBAL_LIMIT
-×  512 KB/upload       MAX_DIAGNOSTIC_REPORT_BYTES (413 above it)
-×   30 days            the bucket's expiry lifecycle rule
-≈  6 GB steady-state maximum, against R2's 10 GB free tier
-```
-
-Every term is enforced somewhere a client cannot reach: the first by the claim
-above, the second by the streaming size cap, the third by the bucket lifecycle
-(see the deployment steps — **nothing in the Worker ever deletes a report**).
-Change any one of them and redo the multiplication.
-
-Ordering matters and is deliberate: the fleet slot is claimed **after** the
-per-caller quota and **before** the R2 `put`. After, because one caller
-hammering their own limit must not spend the fleet's budget on requests that
-were never going to be stored. Before, because that ordering is what makes the
-cap unraceable — the day's stored count cannot exceed the day's claimed count. A
-`put` that then fails **refunds** the slot, so an R2 outage does not quietly eat
-the day's ceiling for reports that do not exist.
-
-`0` is a kill switch: it refuses every upload without a code deploy. An unset or
-unparseable value falls back to 400, so a typo can neither uncap the bill nor
-close the route. The cron sweep prunes budget rows older than seven days;
-today's row is never in range, so a sweep can never hand back budget the running
-day has already spent.
+- CORS is `*` on this route only: a packaged renderer sends `Origin: null`,
+  and the route reads no account state. Every `/account/*` route keeps its
+  exact-origin rule.
+- The per-caller quota is a per-isolate counter backed by an R2 listing of
+  the caller's day. Both count stored objects, never attempts, so a refusal
+  the caller did not cause never counts against it.
+- The fleet slot is one upsert on `diagnostics_upload_days` (migration
+  `0009`): `on conflict(day) do update set count = count + 1 where count < ?`,
+  with `changes === 1` as the proof. It is claimed after the per-caller check
+  and before the R2 `put`; a failed `put` refunds it. The cron prunes rows
+  older than seven days.
+- **The cost ceiling:** 400 uploads × 512 KB × 30 days (the bucket's expiry
+  rule) ≈ 6 GB, under R2's 10 GB free tier. The Worker never deletes a report.
+  If you change one term, do the multiplication again.
 
 ## Usage research reports
 
-`POST /usage-research/daily` receives one compact usage report per ADE install
-per local day. The owner collects them to study how to build a model router.
-The reports go into **this Worker's D1 database**, the same one that holds
-machines, device authorizations and pairing grants. A full D1 database refuses
-every write, sign-in included, so this route is built so that research data can
-never fill it.
-
-**Contract** (`src/usageResearch.ts`; the desktop client mirrors it)
+`POST /usage-research/daily` (`src/usageResearch.ts`) receives one compact
+usage report per ADE install per local day, for the model router research.
+The reports share this Worker's D1 database with machines and sign-in. A full
+D1 refuses every write, so the route can never fill it.
 
 | | |
 |---|---|
-| Method | `POST`. Anything else is `405` with `allow: POST`. No `OPTIONS` preflight and no CORS headers: the senders are the desktop main process and the CLI, never a browser, and a web page cannot make a visitor's browser post JSON here |
-| Content type | `application/json` (a `charset` parameter is fine). Anything else is `415 {"error":"usage_research_unsupported_media_type"}` |
-| Body | Exactly `{ schemaVersion, installId, day, appVersion, platform, arch, utcOffsetMinutes, report }`. Any other top-level key is a `400`. `report` is the only place to add fields without bumping `schemaVersion` |
-| Field rules | `schemaVersion` is the number `1`. `installId` matches `^[0-9a-f]{32}$`. `day` is a real `YYYY-MM-DD` inside the accepted window (below). `appVersion` is 1–40, `platform` 1–16 and `arch` 1–16 printable ASCII characters. `utcOffsetMinutes` is an integer in −840…840. `report` is a JSON object, stored re-serialized compactly and never interpreted. Anything else is `400 {"error":"usage_research_invalid"}` |
-| Accepted days | From `utcDate(now − 12 h − 8 days)` to `utcDate(now + 14 h)`, inclusive: any local date on Earth from eight days ago to today. That covers a seven-day backfill from any time zone, and nothing in the future |
-| Size | `413 {"error":"usage_research_too_large"}` above 32 KB for the whole body, counted as the stream arrives. A report that grows past 32 KB when re-serialized (`1e20` becomes 21 digits) is also `413`. A body stream that breaks mid-read (the client went away) is `400` with one log line |
-| Auth | None. The senders post without an account token, and the route reads no `Authorization` header |
-| Per-caller limit | 20 writes per caller address per UTC day → `429 {"error":"usage_research_identity_limit"}`. The address is `cf-connecting-ip` (never `x-forwarded-for`), with an IPv6 address cut to its /64 so one customer's prefix is one caller |
-| Fleet limit | `USAGE_RESEARCH_DAILY_GLOBAL_LIMIT` writes per UTC day across all callers (default 20000; `0` stops all writes) → `429 {"error":"usage_research_daily_limit"}`. A stopped or already spent fleet answers from one read, before any quota is claimed, so a refusal writes nothing |
-| Storage ceiling | `USAGE_RESEARCH_STORAGE_CEILING_MB` of report bytes in total (default 4096, clamped to 6144; `0` stops growth) → `429 {"error":"usage_research_storage_full"}` |
-| `retry-after` | On every `429`: the seconds until the next UTC midnight |
-| Success | `201 {"ok":true,"stored":"inserted"}` for the first report of an install and day. `200 {"ok":true,"stored":"replaced"}` for a re-send |
-| Unavailable | `503 {"error":"usage_research_unavailable"}` when there is no `DB` binding, D1 refuses any statement, or another write to the same install and day won a race. Every limit **fails closed**, and claims already taken are given back |
+| Method | `POST`, else `405`. No CORS: the senders are the desktop main process and the CLI |
+| Content type | `application/json`, else `415 usage_research_unsupported_media_type` |
+| Body | Exactly `{ schemaVersion, installId, day, appVersion, platform, arch, utcOffsetMinutes, report }`. New fields go in `report` |
+| Field rules | `schemaVersion` 1; `installId` `^[0-9a-f]{32}$`; `day` a real date in the window; `appVersion` 1–40, `platform` and `arch` 1–16 printable ASCII; `utcOffsetMinutes` −840…840; `report` an object. Else `400 usage_research_invalid` |
+| Accepted days | `utcDate(now − 12 h − 8 days)` to `utcDate(now + 14 h)`: a seven-day backfill from any time zone, nothing in the future |
+| Size | `413 usage_research_too_large` above 32 KB, also after re-serialization |
+| Auth | None |
+| Per-caller limit | 20 writes per `cf-connecting-ip` (IPv6 cut to /64) per UTC day → `429 usage_research_identity_limit` |
+| Fleet limit | `USAGE_RESEARCH_DAILY_GLOBAL_LIMIT` (default 20000; `0` stops writes) → `429 usage_research_daily_limit` |
+| Storage ceiling | `USAGE_RESEARCH_STORAGE_CEILING_MB` (default 4096, at most 6144; `0` stops growth) → `429 usage_research_storage_full` |
+| `retry-after` | On every `429`: seconds to the next UTC midnight |
+| Success | `201 stored: "inserted"`, or `200 stored: "replaced"` for a re-send |
+| Unavailable | `503 usage_research_unavailable`: no `DB`, a D1 error, or a lost race. Every limit fails closed and gives back its claims |
 
-**No duplicates, by construction.** The primary key is `(install_id, day)`, so
-a re-send replaces the row and never adds a second one. `received_at` keeps the
-first arrival and `updated_at` moves.
+- **No duplicates.** The key is `(install_id, day)`. A byte-identical re-send
+  is answered from one read and claims no budget.
+- **Storage is the real bound.** The write cap alone allows about 116 GB in
+  181 days. `usage_research_totals` keeps a running total of each report's
+  bytes plus 256. Each growing write claims its growth first, then writes with
+  a compare-and-swap on the row's `bytes`; a lost race gives back every claim.
+  A lost refund only makes the total too high. To resync it:
 
-**What the budgets count: writes that change a row.** A re-send whose envelope
-and report are byte-for-byte what the row already holds is answered from a
-single read. It writes nothing and claims no budget, so a client retrying a send
-whose response it lost costs nothing. A changed re-send is a real D1 write and
-counts like an insert.
+  ```sql
+  update usage_research_totals
+  set bytes = (select coalesce(sum(bytes), 0) from usage_research_daily)
+  where id = 1;
+  ```
 
-**Four bounds, and why the write cap alone is not enough.**
+- **Capacity at the defaults** (Workers Paid: 10 GB per database, 5 GB
+  included): 4 GB ÷ (10 KB × 180 days) ≈ 2,300 daily-active installs. Past it,
+  new reports get `storage_full` and each day becomes a sample. To get more
+  room, lower the retention, raise the ceiling (to 6,144) or export the data.
+  An accepted write is about five rows written. On the Free plan, lower all
+  three vars first.
+- **Cleanup.** The minute cron deletes up to 500 reports older than
+  `USAGE_RESEARCH_RETENTION_DAYS` (default 180, never below 9, so a backfill
+  never re-inserts swept days), prunes fleet rows older than seven days, and
+  deletes ended per-caller rows. Each cleanup has its own guard
+  (`scheduled_cleanup_failed`).
+- **Privacy.** Rows hold no user id, IP or token. Per-caller rows hold a
+  SHA-256 of `day + address` and go when the day ends. The log line
+  (`usage_research_upload`) carries the outcome, status, reason and byte count
+  only.
+- **Limits.** Edit a var in `wrangler.jsonc` under both `vars` and
+  `env.production.vars`, then deploy. A dashboard edit is lost on the next
+  deploy. A bad value means the default.
+- **Queries** need `--remote` (and `--env production` with the `DB` name):
 
-```
-body            32 KB hard cap (413 above it); typical reports are 4–12 KB
-rows            one per install per local day; the sweep deletes rows older
-                than USAGE_RESEARCH_RETENTION_DAYS (default 180, never below 9)
-writes          20 per identity per UTC day; 20,000 fleet-wide per UTC day
-storage         4,096 MB of stored bytes in total (clamped to 6,144 MB);
-                each row counts its report plus a fixed 256 bytes
-```
+  ```sh
+  npx wrangler d1 execute DB --remote --env production \
+    --command "SELECT day, count(*) AS reports, sum(bytes) AS bytes FROM usage_research_daily GROUP BY day ORDER BY day"
+  npx wrangler d1 export DB --remote --env production \
+    --table usage_research_daily --output usage-research.sql
+  ```
 
-The write cap does not bound storage on its own:
-
-```
-20,000 new rows/day × 181 days × 32 KB ≈ 116 GB worst case
-```
-
-That is more than ten times D1's 10 GB per-database limit. The storage ceiling
-is the bound that holds the line. `usage_research_totals` keeps a running total
-of `usage_research_daily.bytes`, which is each report's UTF-8 length plus a
-fixed 256 bytes for the key, the envelope columns and the day index, so a flood
-of tiny reports cannot fill pages the total never counted. Every write that
-grows the table claims its growth against the ceiling first, in one statement,
-the same upsert idiom as the budgets. The row write is then a compare-and-swap
-on the size that claim was computed from: a first send inserts with
-`on conflict do nothing`, and a re-send updates only while the row still has
-the `bytes` it read. A write that loses a race to another write of the same
-install and day matches no row, gives back every claim, and answers `503`, so
-the total stays equal to `sum(bytes)`. The sweep subtracts what it deletes in
-the same transaction as the delete. The one way the total drifts is a refund
-lost to a D1 error, and that errs **upward**: the ceiling trips early, never
-late. To resync it:
-
-```sql
-update usage_research_totals
-set bytes = (select coalesce(sum(bytes), 0) from usage_research_daily)
-where id = 1;
-```
-
-**Storage arithmetic.** Assumptions: the account is on **Workers Paid**, since
-the push relay's sizing already relies on the Paid plan's 50 M D1 rows written
-per month. D1 limits and pricing are as Cloudflare documented them when this
-was written; nothing in this repo pins them, so re-check
-<https://developers.cloudflare.com/d1/platform/limits/> and
-<https://developers.cloudflare.com/d1/platform/pricing/> before changing a
-default:
-
-- 10 GB maximum per database on Paid (500 MB on Free).
-- 5 GB of D1 storage included per account on Paid, then $0.75/GB-month.
-- 50 M rows written and 25 B rows read included per month on Paid.
-
-```
-1,000 daily-active installs × 10 KB × 180 days  ≈ 1.8 GB of reports
-+ ~10–15% for keys, the day index and page slack ≈ 2.1 GB on disk
-  (the 256 bytes per row the ceiling counts is ~2.5% of a 10 KB report;
-  it matters for small reports, which it keeps from under-counting)
-
-ceiling  4,096 MB of stored bytes ≈ 4.6 GB on disk
-         inside the 5 GB Paid storage allowance, under half of the 10 GB limit
-max      6,144 MB of reports ≈ 7 GB on disk, leaving ~3 GB for everything else
-
-capacity at the defaults: 4 GB ÷ (10 KB × 180 days) ≈ 2,300 daily-active installs
-```
-
-Past that capacity the table fills and new reports get `429 …_storage_full`.
-Then each daily sweep frees one day of old rows, and each day's earliest
-senders fill it again. Collection degrades to a sample of each day. Machines
-and sign-in are unaffected. When `usage_research_totals.bytes` approaches the
-ceiling, lower the retention (90 days doubles capacity), raise the ceiling (up
-to 6,144), or export and archive the data.
-
-Write cost: an accepted write is about five D1 rows written (identity slot,
-fleet slot, byte total, the row, its day-index entry) and two rows read (the
-report row and today's fleet row). At the full 20,000 a day that is about 3 M
-rows written a month, 6% of the Paid allowance. An identical re-send is one row
-read, and a refusal for a stopped or spent fleet is two rows read and none
-written. On the **Free** plan the defaults do not fit: the database is
-500 MB and the whole account gets 100,000 rows written a day. Lower all three
-vars before deploying there.
-
-**Retention and cleanup.** The existing once-a-minute cron (`scheduled` in
-`src/index.ts`) runs each cleanup on its own guard, so one that throws logs a
-`scheduled_cleanup_failed` line and the others still run. The usage research
-cleanup is one D1 batch per tick:
-
-- it deletes up to 500 reports whose `day` is older than
-  `USAGE_RESEARCH_RETENTION_DAYS`, oldest first, and subtracts their bytes;
-- it prunes fleet-budget rows older than seven days;
-- it deletes per-identity rows once their UTC day is over.
-
-500 rows a minute is 720,000 a day, so shortening retention on a full table
-drains in days. Retention is never shorter than 9 days. A shorter one would
-sweep days the route still accepts, and a backfill would re-insert them every
-minute.
-
-**Privacy.** Report rows hold only the envelope fields above and the report.
-There is no user id, no IP address and no token. Per-caller quota rows hold a
-SHA-256 of `day + address` (an IPv6 /64), so they cannot be joined across days,
-and they are deleted when the day ends. An address hash is pseudonymous, not
-anonymous (IPv4 can be enumerated), so its protection is that one-day lifetime.
-The log line (`kind: "usage_research_upload"`) carries only outcome, status,
-reason and the report's byte count. It never includes the install id or any of
-the report.
-
-**Changing the limits.** Edit the var in `wrangler.jsonc`, under both the
-top-level `vars` and `env.production.vars` (wrangler environments do not
-inherit vars), then deploy. A dashboard edit takes effect at once, but the next
-deploy resets it to the committed value. `USAGE_RESEARCH_DAILY_GLOBAL_LIMIT=0`
-stops every write. `USAGE_RESEARCH_STORAGE_CEILING_MB=0` stops every write that
-would grow the table. An unset or unparseable value falls back to the default,
-so a typo can neither uncap nor close the route.
-
-**Querying.** `--remote` is required. Without it, wrangler queries the local
-development database.
-
-```sh
-# Reports and bytes per day (default environment)
-npx wrangler d1 execute ade-account-directory --remote \
-  --command "SELECT day, count(*) AS reports, sum(bytes) AS bytes FROM usage_research_daily GROUP BY day ORDER BY day"
-
-# The same against production
-npx wrangler d1 execute DB --remote --env production \
-  --command "SELECT day, count(*) AS reports, sum(bytes) AS bytes FROM usage_research_daily GROUP BY day ORDER BY day"
-
-# Headroom under the storage ceiling, and the last week of fleet writes
-npx wrangler d1 execute DB --remote --env production \
-  --command "SELECT bytes FROM usage_research_totals"
-npx wrangler d1 execute DB --remote --env production \
-  --command "SELECT day, writes FROM usage_research_days ORDER BY day DESC"
-
-# `report` is JSON text, so SQLite's JSON functions work on it
-npx wrangler d1 execute DB --remote --env production --json \
-  --command "SELECT day, platform, json_extract(report, '\$.someField') FROM usage_research_daily WHERE day >= '2026-09-01'"
-
-# Full export for offline analysis
-npx wrangler d1 export DB --remote --env production \
-  --table usage_research_daily --output usage-research.sql
-```
-
-**Deploying it** (instructions only; nothing here runs automatically from a
-branch):
-
-1. **Production** is deployed when this merges to `main`.
-   `.github/workflows/deploy-web.yml` runs the two parts of
-   `npm run deploy:production` (`deploy:production:prepare`, then
-   `deploy:production:upload`), which apply `migrations/0012_usage_research.sql` to
-   `ade-account-directory-production` and then deploy. To do it by hand:
-   `npx wrangler d1 migrations apply DB --remote --env production`, then
-   `npx wrangler deploy --env production`.
-2. The **default (development)** environment is not deployed by CI. Run
-   `npm run deploy`, or by hand
-   `npx wrangler d1 migrations apply ade-account-directory --remote`, then
-   `npx wrangler deploy`.
-3. Apply the migration **before** the deploy (both scripts do). If a Worker
-   ships without the tables, this route answers `503` and the sweep fails,
-   until the migration lands. No other route is affected and nothing is lost.
-4. Check that it landed: `npx wrangler d1 migrations list DB --remote --env
-   production` should show nothing pending, and
-   `SELECT bytes FROM usage_research_totals` should return one row, `0` on a
-   fresh table. (A malformed request is refused before D1 is touched, so a
-   `400` from the route proves nothing about the migration.)
+- **Migration** `0012_usage_research.sql` applies before the deploy (see
+  [Cloudflare deployment](#cloudflare-deployment)). Without it this route
+  answers `503` and nothing else breaks.
 
 ## Model registry
 
 `GET /router/registry` serves one snapshot of public model data to signed-in
-ADE machines. ADE's model router reads it to rate every route (harness × model
-× effort) it can run. The Worker builds a new snapshot once a day.
+ADE machines. ADE's model router reads it to rate each route (harness × model
+× effort). The Worker builds a new snapshot once a day.
 
-**Contract** (`src/modelRegistryContract.ts`; the desktop copy is
+The contract is `src/modelRegistryContract.ts`. Its desktop copy is
 `apps/desktop/src/shared/routerRegistry.ts`, and
-`test/modelRegistryContract.test.ts` fails when the two disagree)
+`test/modelRegistryContract.test.ts` fails when the two disagree. The contract
+names each field and its units.
 
 | | |
 |---|---|
-| Method | `GET` or `HEAD`. Anything else is `405` with `allow: GET, HEAD`. No CORS headers and no preflight: only the ADE brain calls it, never a browser |
-| Auth | An account bearer, verified exactly like `/account/machines`. `401 {"error":"<reason>"}` without a valid one; `503` when this Worker has no Clerk configuration |
-| Success | `200` with the newest snapshot (`ModelRegistrySnapshot`), an `ETag`, and `Cache-Control: private, max-age=3600` |
-| Revalidation | `If-None-Match` naming the current ETag (weak or strong) is `304` with no body. A 304 reads only the stored ETag, never the snapshot |
-| Unavailable | `503 {"error":"model_registry_unavailable"}` before the first snapshot exists, with no `DB` binding, or when D1 refuses the read |
+| Method | `GET` or `HEAD`, else `405`. No CORS: only the ADE brain calls it |
+| Auth | An account bearer, as `/account/machines`. `401` without one; `503` with no Clerk configuration |
+| Success | `200` with the newest `ModelRegistrySnapshot`, an `ETag`, `Cache-Control: private, max-age=3600` |
+| Revalidation | A matching `If-None-Match` is `304`, from the stored ETag only |
+| Unavailable | `503 model_registry_unavailable`: no snapshot yet, no `DB`, or a D1 error |
 
-**What a snapshot holds**
+**A snapshot holds:**
 
-- `models`: every Artificial Analysis model variant it lists, one per
-  effort level: Intelligence Index and its main evals,
-  cost and seconds per index task, output tokens per second, time to first
-  token, list prices, and the optional profile below (`evals`, `domains`,
-  `personality`, `modalities`, license, size, knowledge cutoff, answer
-  latency). `profile` says where the variant's data came from: `record` (a
-  full model record), `leaderboard` (a leaderboard row; fields only a record
-  has stay from an earlier record of the same slug), or `carried` (no current
-  page lists it, so the last data seen is kept; these are the deprecated
-  models). `timeToFirstTokenSeconds` is Artificial Analysis's median time to
-  the first streamed chunk on its long-prompt workload, in seconds. For a
-  reasoning model that does not stream its thinking it includes the hidden
-  reasoning, so it reads as "seconds until the user sees output" (Claude Opus
-  5.5 at max effort is about 573 s; Sonnet 5.5 at low is about 1 s).
-- `agents`: every Coding Agent Index row (harness × model), with its score,
-  per-eval scores, cost, minutes, steps, cache hit rate and tokens per task.
-  `modelSlug` names the variant the row ran only when the names match exactly
-  (after dropping `(with fallback)` and the `{'reasoning_effort': ...}` suffix)
-  or the row's own `hostModelSlug` is a variant's slug. Pairs (Devin Fusion's
-  lead + sidekick) and unknown names are `null`, never guessed.
-- `media`: every row of the three speech leaderboards (text to speech, speech
-  to text, speech to speech), one per host + model, with the scores in
-  `MODEL_REGISTRY_MEDIA_SCORES`. Speech models are mostly not LLMs, so a row
-  stands on its own; `modelSlug` names an LLM variant only when its name or
-  short name is exactly the row's model name.
+- `models`: every Artificial Analysis model variant, one per effort level,
+  with its index, evals, cost, speed, prices and an optional profile.
+  `profile` says where the data came from: `record`, `leaderboard`, or
+  `carried` (no current page lists it; the deprecated models).
+  `timeToFirstTokenSeconds` includes hidden reasoning for a model that does
+  not stream it.
+- `agents`: every Coding Agent Index row (harness × model). `modelSlug` names
+  a variant only on an exact name match or the row's `hostModelSlug`; pairs
+  and unknown names are `null`, never guessed.
+- `media`: the three speech leaderboards, scores in
+  `MODEL_REGISTRY_MEDIA_SCORES`. `modelSlug` names an LLM only on an exact
+  name match.
 - `prices`: models.dev per-token prices for each channel in
-  `MODEL_REGISTRY_PRICE_CHANNELS`, keyed by the channel's own model id, with
-  context tiers where models.dev lists them.
-- `sources`: for each source (`artificialAnalysis`, `modelsDev`, `media`),
-  when its data was last read and whether the last read worked.
+  `MODEL_REGISTRY_PRICE_CHANNELS`, with context tiers.
+- `sources`: per source (`artificialAnalysis`, `modelsDev`, `media`), the
+  last read and whether it worked.
 
-**Compatibility.** Every field past the first schema is optional and left out
-when there is no figure, and `schemaVersion` stays 1, so an older desktop
-reads a newer snapshot (it ignores what it does not know) and a newer desktop
-reads an older one. Bump `MODEL_REGISTRY_SCHEMA_VERSION` only for a change an
-older desktop would misread: it refuses any other version.
+**Rules:**
 
-**Fields.** `src/modelRegistryContract.ts` names each field and its units.
-A field comes from a leaderboard row, a model record, the Coding Agent Index
-or a speech leaderboard. The Worker keeps no raw trait Elos, per-eval token
-and cost breakdowns, or speed percentiles. It does not read
-`/leaderboards/providers`, the per-model provider pages, or the image and
-video arenas.
+- **Compatibility.** Every field past the first schema is optional, and
+  `schemaVersion` stays 1. Bump `MODEL_REGISTRY_SCHEMA_VERSION` only for a
+  change an older desktop would misread: it refuses any other version.
+- **Sources.** Artificial Analysis has no API. A refresh reads
+  `/leaderboards/models`, one model page, `/agents/coding-agents` and the three
+  speech leaderboards (six fetches), with the user agent
+  `ADE model registry (+https://ade-app.dev)`. A leaderboard row's effort
+  comes from the previous snapshot's slug, else the name, else none. Prices
+  come from `https://models.dev/api.json`. Anything that shows the data
+  carries `MODEL_REGISTRY_AA_ATTRIBUTION`.
+- **Terms.** Artificial Analysis terms restrict automated collection; the
+  owner accepted this risk. Set `MODEL_REGISTRY_REFRESH=0` to stop collection
+  at once. Serving continues from stored snapshots.
+- **Cadence.** The minute cron refreshes when the newest snapshot is 24 hours
+  old. A one-row claim (`model_registry_refresh_claim`, 15 minutes) stops two
+  refreshes at once. A refresh that stores nothing waits ten minutes, doubling
+  per failure up to 24 hours (`failures`).
+- **Failure isolation.** A source that fails (HTTP error, fewer than 100
+  variants, no agent rows, bad JSON, no channel) keeps its previous data with
+  `ok: false` and the reason. The model page, the agents page and each speech
+  leaderboard fail apart. Nothing is stored when both Artificial Analysis and
+  models.dev fail. Each refresh logs `model_registry_refresh` with counts; a
+  parser break shows as `artificialAnalysisError` or `mediaError`. A partial
+  refresh counts as the day's refresh.
+- **Size.** A snapshot is under 1 MB; the Worker refuses one over 1.9 MB
+  (D1's row cap is 2 MB). Seven are kept. `limits.cpu_ms` stays unset.
+- **Migration** `0013_model_registry.sql`. Until the first refresh (at most a
+  minute after a deploy with `MODEL_REGISTRY_REFRESH` on), the route answers
+  `503`. To look at the store:
 
-**Sources and attribution.** Artificial Analysis
-(`https://artificialanalysis.ai`) has no API for this data. A model page
-embeds only the featured models' full records, so the refresh reads
-`/leaderboards/models` (a row per current variant and the variant → family
-index), one model page (full records), `/agents/coding-agents`, and the three
-speech leaderboards: six page fetches on a successful refresh, retried with a
-bounded backoff only after a failure, with the user agent `ADE model registry
-(+https://ade-app.dev)`. The speech pages are skipped when neither model page
-answered. A leaderboard row names no effort: it comes from the previous
-snapshot's same slug, else from the name (`… (High, Default Fallback)`), else
-none, never a wrong level. Anything that shows the data carries
-`MODEL_REGISTRY_AA_ATTRIBUTION` ("Source: Artificial Analysis
-(artificialanalysis.ai)"). Prices come from `https://models.dev/api.json`.
-
-**Terms.** Artificial Analysis terms restrict automated collection; the owner
-accepted this risk for the router; set `MODEL_REGISTRY_REFRESH=0` to stop
-collection at once. Serving keeps working from the stored snapshots.
-
-**Refresh cadence.** The minute cron checks the newest snapshot's age (one
-indexed read) and refreshes when it is 24 hours old. A one-row claim
-(`model_registry_refresh_claim`) makes sure two ticks never refresh at once:
-the upsert that takes it only overwrites a claim that has run out (15
-minutes). A refresh that stores nothing keeps the claim for a growing retry
-wait — ten minutes, doubling with each consecutive failure up to the 24-hour
-interval — so a source that refuses the Worker is not refetched every ten
-minutes for as long as the failure lasts. A refresh that stores a snapshot
-releases the claim and resets the failure count (`failures`).
-
-**Failure isolation.** A source that fails (an HTTP error, model pages that
-together parse fewer than 100 variants, no agent rows, JSON that does not
-parse, no listed channel) keeps the previous snapshot's data for that source,
-and the snapshot says `ok: false` with the reason. Within Artificial Analysis
-the parts fail apart: when only the model page fails, the leaderboard rows
-are kept (with the previous records' extra fields); when only the agents page
-fails, the new models are kept with the previous agent rows; each speech
-leaderboard that fails keeps its previous rows (`sources.media`). The status
-error lists every page that failed (`leaderboard: http_503; agents: ...`).
-Nothing is stored when both Artificial Analysis and models.dev fail, or when
-there would be no models at all. Every refresh logs one
-`model_registry_refresh` line with `models`, `agents` and `media` counts; a
-site redesign that breaks the parser shows up there as
-`artificialAnalysisError` or `mediaError`, while the route keeps serving the
-previous data. A partly failed refresh still counts as the day's refresh, so
-the failed source is next retried a day later.
-
-**Size and CPU.** The stored snapshot is under 1 MB of compact JSON, and the
-Worker refuses to store one over 1.9 MB (D1's row cap is 2 MB). Seven are
-kept. A whole refresh parse takes well under a second of CPU, so
-`limits.cpu_ms` stays unset.
-
-**Deploying it.** `migrations/0013_model_registry.sql` creates both tables;
-apply it before the deploy, the same way as the usage research migration
-above. The profile and speech rows live inside the stored snapshot body and
-need no migration. Until the first refresh lands (at most a minute after a deploy with
-`MODEL_REGISTRY_REFRESH` on), the route answers `503`. To look at what is
-stored:
-
-```sh
-npx wrangler d1 execute DB --remote --env production --command \
-  "SELECT id, generated_at, bytes, etag FROM model_registry_snapshots ORDER BY id DESC"
-```
+  ```sh
+  npx wrangler d1 execute DB --remote --env production --command \
+    "SELECT id, generated_at, bytes, etag FROM model_registry_snapshots ORDER BY id DESC"
+  ```
 
 ## Apple Music developer tokens
 
 `GET /music/developer-token` returns `{ token, expiresAt }` (ms) to a signed-in
-ADE caller: the same Clerk bearer check as `GET /router/registry`, GET only, no
-CORS, `cache-control: no-store`. The token is an ES256 JWT with header
-`{ alg: "ES256", kid: MUSICKIT_KEY_ID }` and claims
-`{ iss: MUSICKIT_TEAM_ID, iat, exp }`, lifetime `MUSICKIT_TOKEN_TTL_SECONDS`
-(default 30 days, capped at Apple's six months). One token per isolate is
-reused until it has under seven days left (half its lifetime when that is
-shorter), because a desktop player keeps the token it started with; it is
-public by design (MusicKit JS sends it from the page), the key is not.
+ADE caller (the registry's bearer check, GET only, no CORS,
+`cache-control: no-store`).
 
-The key is the secret `MUSICKIT_PRIVATE_KEY`, the `.p8` file's PEM text. Without
-it (or with a malformed one) the route answers 503 `music_unavailable` and the
-desktop Music tab says it is unavailable; nothing else depends on it, so the
-deploy preflight does not require it.
+- The token is an ES256 JWT (`kid: MUSICKIT_KEY_ID`, `iss: MUSICKIT_TEAM_ID`),
+  lifetime `MUSICKIT_TOKEN_TTL_SECONDS` (default 30 days, at most six months).
+- One token per isolate is reused until it has under seven days left, because
+  a desktop player keeps the token it started with. The token is public by
+  design; the key is not.
+- The key is the secret `MUSICKIT_PRIVATE_KEY` (the `.p8` PEM text). Without a
+  valid key the route answers 503 `music_unavailable`, and the desktop Music
+  tab says it is unavailable. The deploy preflight does not require it.
+- Logs: `music_developer_token_request` with status, reason and duration,
+  never the token.
 
 ```bash
 cd apps/account-directory
-wrangler secret put MUSICKIT_PRIVATE_KEY < "$USERPROFILE/.ade/secrets/musickit/AuthKey_3NNQ5Y43RA.p8"
-wrangler secret put MUSICKIT_PRIVATE_KEY --env production < "$USERPROFILE/.ade/secrets/musickit/AuthKey_3NNQ5Y43RA.p8"
-npm run deploy && npm run deploy:production
+wrangler secret put MUSICKIT_PRIVATE_KEY < "<path to AuthKey_….p8>"
+wrangler secret put MUSICKIT_PRIVATE_KEY --env production < "<path to AuthKey_….p8>"
 ```
-
-Logs: one `music_developer_token_request` line per call with status, reason and
-duration, never the token.
 
 ## Jev bonus
 
 `POST /jev/systemone` answers a signed-in ADE caller's Jev question with ADE's
-key: the same Clerk bearer check as `GET /router/registry`, POST only, no
-CORS, `cache-control: no-store`. The ADE brain sends it the same
-`{ state, questions }` it sends OpenCode's free Jev, but only once that day's
-free allowance is out (or OpenCode refused the call). The Worker forwards it
-to TypeSafe's API (`https://api.typesafe.ai/v1/systemone`) with model
-`JEV_MODEL` (`jev-latest` unset, which tracks the newest Jev) and answers with
-TypeSafe's response unchanged, plus `x-ade-jev-remaining`, the caller's calls
-left today.
+key (the registry's bearer check, POST only, no CORS,
+`cache-control: no-store`). The brain sends it the same `{ state, questions }`
+as to OpenCode's free Jev, but only once that day's free allowance is out.
+The Worker forwards it to `https://api.typesafe.ai/v1/systemone` with
+`JEV_MODEL` (default `jev-latest`) and answers unchanged, plus
+`x-ade-jev-remaining`.
 
-Each account gets `JEV_BONUS_DAILY_LIMIT` calls a UTC day (500 unset), and the
-whole fleet `JEV_BONUS_DAILY_GLOBAL_LIMIT` (100,000 unset), in `jev_bonus_days`
-(migration `0015`): one upsert per call whose `where count < ?` is the cap, so
-concurrent calls cannot both take the last slot. Over either cap the answer is
-429 `jev_bonus_exhausted` with `retry-after` set to the next UTC midnight, and
-the brain stops asking the bonus until then. A call TypeSafe did not answer
-gives its slot back; TypeSafe's own 429 passes through, a 402 (ADE's spend
-cap on the key) becomes the same 429 until the next UTC midnight, and a
-refused key answers 503. Rows older than a week are swept by the cron. At
-Jev's price ($0.042 per million input tokens, output free; about 1,000 input
-tokens a call) a full day at the cap is about 2 cents per account, and the
-fleet cap holds the key to about $4 a day.
-
-The key is the secret `JEV_API_KEY`, a TypeSafe API key. Without it the route
-answers 503 `jev_unavailable` and the brain uses its built-in rules; nothing
-else depends on it, so the deploy preflight does not require it.
-
-```bash
-cd apps/account-directory
-wrangler secret put JEV_API_KEY
-wrangler secret put JEV_API_KEY --env production
-npm run deploy && npm run deploy:production
-```
-
-Logs: one `jev_bonus_request` line per call with status, reason, TypeSafe's
-status, token counts and duration. The question and the answer are never
-logged or stored. Failures that are ADE's to fix (no key, a refused key, the
-spend cap, the fleet cap, TypeSafe failing or throttling) are also Sentry
-issues, one per reason.
+- Each account gets `JEV_BONUS_DAILY_LIMIT` calls a UTC day (default 500), the
+  fleet `JEV_BONUS_DAILY_GLOBAL_LIMIT` (default 100,000), in `jev_bonus_days`
+  (migration `0015`, one capped upsert per call). Over a cap: 429
+  `jev_bonus_exhausted` with `retry-after` at the next UTC midnight.
+- A call TypeSafe did not answer gives its slot back. TypeSafe's 429 passes
+  through; its 402 (ADE's spend cap) becomes the same 429; a refused key
+  answers 503. The cron sweeps rows older than a week.
+- The fleet cap holds the key to about $4 a day.
+- The key is the secret `JEV_API_KEY` (`wrangler secret put JEV_API_KEY`,
+  also with `--env production`). Without it the route answers 503
+  `jev_unavailable`, and the brain uses its built-in rules.
+- Logs: `jev_bonus_request` with status, reason, TypeSafe's status, token
+  counts and duration, never the question or the answer. Failures ADE must fix
+  are Sentry issues, one per reason.
 
 ## ADE Cloud timed wakes and event wakes
 
-A sleeping ADE Cloud computer is frozen, so the timers ADE keeps on it (a
-chat's scheduled wake-up, an automation's cron) can't fire there. Before its
-ADE lets it sleep, it sends its next time here, and the minute cron wakes it
-two minutes early (`src/cloudWake.ts`, table `cloud_wakes`):
+A sleeping ADE Cloud computer is frozen, so its timers (a chat's scheduled
+wake-up, an automation's cron) can't fire there.
 
-- `PUT /cloud/wake` `{instanceId, url, at}` with the account bearer records
-  or replaces the account's one row for that computer. `url` must be an
-  `https://<slug>.agent37.app` origin, the computer's own public address; `at`
-  is a time within the next 32 days. Fifty computers per account at most.
-- `DELETE /cloud/wake` `{instanceId}` forgets it (nothing scheduled any more).
-- The cron requests `url` with a plain GET. Any answer, a 502 included,
-  reaches the computer and wakes it, so this Worker never holds an ADE Cloud
-  key. The cron sets the computer's row to `waking` at once
-  (`cloud.timed_wake_recorded`), so the awake cap and every client see it. A
-  woken row is deleted; one that didn't answer is retried each minute and
-  dropped 30 minutes after its time.
+**Timed wakes** (`src/cloudWake.ts`, `cloud_wakes`). Before its ADE lets it
+sleep, the computer sends its next time, and the minute cron wakes it two
+minutes early.
 
-Nothing else about the computer is stored, and no request body is logged.
+- `PUT /cloud/wake` `{instanceId, url, at}` (account bearer) records the
+  computer's one row. `url` must be its own `https://<slug>.agent37.app`
+  origin; `at` is within 32 days; 50 computers per account at most.
+  `DELETE /cloud/wake` `{instanceId}` forgets it.
+- The cron sends a plain GET to `url`. Any answer, a 502 too, wakes the
+  computer, so this Worker holds no ADE Cloud key. The row reads `waking` at
+  once (`cloud.timed_wake_recorded`). A woken row goes; one that didn't
+  answer is retried each minute for 30 minutes.
 
-Event wakes (`src/cloud/eventWakes.ts`, migration `0040`):
+**Event wakes** (`src/cloud/eventWakes.ts`, migration `0040`):
 
-- `PUT /cloud/instances/:id/event-wakes {topics}` replaces the computer's list
-  of topics that wake it at rest: at most 20, each `linear-org:<id>`,
-  `linear-account:<id>` or `hooks-account:<id>`. An account topic must name
-  the caller's own user id (else 400). `[]` clears the list. Another
-  account's computer answers 404.
+- `PUT /cloud/instances/:id/event-wakes {topics}` replaces the computer's
+  topics: at most 20, each `linear-org:<id>`, `linear-account:<id>` or
+  `hooks-account:<id>`. An account topic must name the caller's own user id
+  (else 400). `[]` clears it. Another account's computer answers 404.
 - `POST /cloud/internal/event-wake {topic}` comes from the webhook relay with
-  the header `x-ade-event-wake-secret` (`CLOUD_EVENT_WAKE_SECRET`, checked in
-  constant time before auth). Unset, it answers 503; a wrong secret answers
-  404. It skips awake computers and computers that the idle cleanup claimed in
-  the last 20 minutes. A conditional upsert gives each computer one wake in 5
-  minutes, under the normal wake checks (block, hours, disk, awake cap). It
-  answers `{subscribed, woken}`.
+  `x-ade-event-wake-secret` (`CLOUD_EVENT_WAKE_SECRET`, constant-time, before
+  auth; unset 503, wrong 404). It skips awake computers and ones the idle
+  cleanup claimed in the last 20 minutes, wakes each at most once in 5
+  minutes under the normal wake checks, and answers `{subscribed, woken}`.
 
 ## ADE Cloud account
 
 The server holds the provider key and owns every ADE Cloud computer
 (`src/cloud/`, migration `0018_cloud_account.sql`, secret `AGENT37_API_KEY`).
-`src/cloud/contract.ts` lists the routes and their shapes for a client to
-mirror. Every route takes the account bearer. The plan rules, the hours, the
-disk, the idle cleanup and the cheaper-plan cleanup are in
-[ADE Cloud](../../docs/features/ade-cloud/README.md); this section keeps the
-server facts.
+`src/cloud/contract.ts` lists the routes and shapes. Every route takes the
+account bearer. The plan rules, hours, disk and cleanups are in
+[ADE Cloud](../../docs/features/ade-cloud/README.md).
 
-- ADE Cloud is open to every signed-in account. `GET /cloud/access` answers
-  `{ enabled }` for older builds. A blocked account gets
-  `{ enabled: false, readOnly: true, reason }` (see "ADE Cloud safety").
-- `cloud_computers` records each computer's owner. Every call by instance id
-  checks it, and not yours or unknown is 404. Provider errors become one plain
-  sentence.
-- Every wake, start, send and create refusal is `{ code, message }` with a
-  code from `CLOUD_REFUSAL_CODES` (`contract.ts`). Clients show `message`.
-- A create ignores any template from the client and uses the channel's image
-  in `cloud_settings` (an exact `ade@N`; unset refuses with a log line). Sizes
-  are the eight in `src/cloud/plans.ts`. Disk is 4 GB on create. No plan
-  limits how many computers an account has; about 25 may be awake at once
-  (`AWAKE_COMPUTER_CAP`).
-- Every delete, automatic ones included, writes `cloud_delete_log`, with the
-  provider's start and sleep history read first. Every power change writes
-  `cloud_power_log`.
-- `POST /cloud/instances/:id/idle` is the computer asking to be slept.
-  `POST /cloud/instances/:id/use` records a person's use while the idle
-  cleanup saves the computer (`last_active_at`); it answers 409
-  `computer_deleting` once the delete runs. `GET /cloud/instances` marks a
-  computer whose idle save runs with `idleSaving`.
+- `GET /cloud/access` answers `{ enabled }`; a blocked account gets
+  `{ enabled: false, readOnly: true, reason }`.
+- `cloud_computers` records each computer's owner. A call for another
+  account's or an unknown instance id is 404.
+- Every wake, start, send and create refusal is `{ code, message }` from
+  `CLOUD_REFUSAL_CODES`. Clients show `message`.
+- A create ignores the client's template and uses the channel's image in
+  `cloud_settings` (an exact `ade@N`). Sizes are the eight in
+  `src/cloud/plans.ts`; disk is 4 GB on create. No plan limits the number of
+  computers; about 25 may be awake at once (`AWAKE_COMPUTER_CAP`).
+- Every delete writes `cloud_delete_log` (after it reads the provider's
+  history); every power change writes `cloud_power_log`.
+- `POST /cloud/instances/:id/idle` asks to sleep the computer.
+  `POST /cloud/instances/:id/use` records a person's use during the idle save
+  (`last_active_at`), or answers 409 `computer_deleting`. `GET /cloud/instances`
+  marks a saving computer with `idleSaving`, through a 5-second Cache API copy
+  of the provider's list that a change of the account's rows skips.
 
-The minute cron reads the provider's list once, and only when a computer
-exists. It writes only on change: hours settle when a stretch of awake time
-ends, and live hours are the settled figure plus the open stretches. Hours
-are integer thousandths of a Small-hour. Free accounts reset on the 1st UTC;
-paid accounts wait for Stripe to move `period_end`
-(`applyCloudPlanChange` in `store.ts` is the one place a plan changes).
+**The minute cron:**
 
-At 0 hours with extra hours off, the cron runs
-`ade cloud prepare-stop --timeout 40` on each awake computer, treating a failure
-as "stop anyway", then stops it, because a sleeping computer wakes on any
-request. A stop answering 409 retries; a stop answering 400 is cold storage and
-is left alone until something wakes it. Starts and creates are refused, except
-`POST .../start` with `{ "reason": "push_work" }`: a free 15-minute wake, once a
-day per computer. Timed wakes are dropped while an account is at 0 hours.
+- It reads the provider's list once when a computer exists, and writes only on
+  change. Hours settle when an awake stretch ends; live hours add the open
+  stretches. Hours are integer thousandths of a Small-hour. Free accounts
+  reset on the 1st UTC; paid accounts follow Stripe's `period_end`
+  (`applyCloudPlanChange` is the one place a plan changes).
+- At 0 hours with extra hours off, it runs `ade cloud prepare-stop --timeout 40`
+  on each awake computer, then stops it (409 retries; 400 is cold storage and
+  stays). Starts and creates are refused, except a free 15-minute
+  `POST .../start {"reason":"push_work"}` once a day per computer. Timed wakes
+  are dropped.
+- It sleeps an awake computer with no check-in for 10 minutes.
+- Daily after 02:00 UTC, it corrects each computer-day to the provider's
+  `awake_minutes` and alerts the owner to unexplained minutes. Every 10
+  minutes it checks the wallet (`$15` floor, top-up) and the provider's awake
+  limit (80%).
 
-An awake computer with no check-in for 10 minutes (`machines.last_seen_at`) is
-slept. Daily after 02:00 UTC, the cron compares each computer-day with the
-provider's `awake_minutes`, corrects the account to the provider's number, and
-alerts the owner to minutes the power log can't explain. Every 10 minutes it
-checks the wallet (`$15` floor, automatic top-up) and awake computers against
-the provider's limit (80%). The idle cleanup (`idleCleanup.ts`) deletes unused
-computers after its warnings.
-
-The cloud emails (`src/cloud/email.ts`) go through Resend (`RESEND_API_KEY`).
-The person's address comes from Clerk (`CLERK_SECRET_KEY`); owner alerts go
-to `CLOUD_ALERT_EMAIL`. An email the Worker can not send logs
-`cloud.email_skipped` at level warn with the reason (`no_resend_key`,
-`no_clerk_key`, `no_recipient`, `no_alert_address`). No email log line has the
-subject or a lane name.
+**Email** (`src/cloud/email.ts`) goes through Resend (`RESEND_API_KEY`) to the
+address from Clerk (`CLERK_SECRET_KEY`); owner alerts go to
+`CLOUD_ALERT_EMAIL`. A skipped email logs `cloud.email_skipped` (warn) with
+`no_resend_key`, `no_clerk_key`, `no_recipient` or `no_alert_address`. No
+email log line has the subject or a lane name.
 
 ### Payments
 
-`src/cloud/billing.ts` sells the plan through Stripe Managed Payments (secrets
-`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`; vars `STRIPE_PLAN_PRICE_ID`,
-`STRIPE_PRO_PRICE_ID`, `STRIPE_MAX_PRICE_ID`, one extra-hours price per plan
-`STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID` (2¢, 1.5¢, 1.2¢, flat, on one
-meter; the older graduated `STRIPE_EXTRA_HOURS_PRICE_ID` stays for older
-subscriptions until their next renewal),
-`STRIPE_DISK_PRICE_ID` ($2 per 10 GB a month), `STRIPE_METER_EVENT`, from
-`scripts/stripe-setup.mjs`). Plus, Pro, Max, extra hours and extra disk are
-separate products, so Checkout names each line and shows its one-line
-description (Managed Payments refuses `custom_text`); the customer
-is made with the account's email from Clerk, so Checkout shows it filled in. `POST /cloud/billing/checkout` and `/portal` answer
-a URL for the person's browser, which comes back to `/billing/return`.
-With `returnTo: "web"` (the hosted web client; `/free-unlock` too) Stripe
-sends the person back to `WEB_CLIENT_ORIGIN` at `/?cloudReturn=<outcome>`
-instead, and the web app opens Settings › ADE Cloud. The address comes from
-this server's own `WEB_CLIENT_ORIGIN`, never from the request, so it is not
-an open redirect; any other `returnTo`, or no web client set, is a 400.
-`POST /cloud/billing/extra-hours` takes `{ enabled }`, paid plan only.
+`src/cloud/billing.ts` sells the plans through Stripe Managed Payments.
 
-`POST /webhooks/stripe` takes no account bearer and is checked with the
-signature instead. In production (`SENTRY_ENVIRONMENT=production`) an event
-with `livemode: false` is dropped with a 200; other environments keep test
-events. `cloud_stripe_events` makes each event run once. A handler
-uses its event only to find the subscription and re-reads it from Stripe, so
-late or reordered events land in the same place. Checkout completing sets the
-plan, then adds the $5 threshold, which Stripe refuses at Checkout. `invoice.paid`
-for a renewal starts fresh hours; a subscription that is `active` again restores
-from `past_due`. A failure moves the account to free rules and turns extra hours
-off, with an email each way and `billing.notice` for the banner.
-
-Each tick reports every whole extra Small-hour as one meter event (the rest
-waits). The identifier is the hour's place in the billing period, so a retry
-can't count one twice. Only accounts with extra hours on and past their plan's
-hours are reported.
+- Configuration (from `scripts/stripe-setup.mjs`): secrets
+  `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`; vars `STRIPE_PLAN_PRICE_ID`,
+  `STRIPE_PRO_PRICE_ID`, `STRIPE_MAX_PRICE_ID`,
+  `STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID` (flat, one meter; the older
+  `STRIPE_EXTRA_HOURS_PRICE_ID` serves older subscriptions until renewal),
+  `STRIPE_DISK_PRICE_ID` ($2 per 10 GB a month) and `STRIPE_METER_EVENT`.
+- Each plan and add-on is its own product, so Checkout names each line. The
+  customer gets the account's email from Clerk.
+- `POST /cloud/billing/checkout` and `/portal` answer a URL; Stripe returns to
+  `/billing/return`. With `returnTo: "web"` (also `/free-unlock`), it returns
+  to this server's own `WEB_CLIENT_ORIGIN` at `/?cloudReturn=<outcome>`, never
+  an address from the request. Any other `returnTo` is 400.
+  `POST /cloud/billing/extra-hours` takes `{ enabled }`, paid plans only.
+- `POST /webhooks/stripe` checks the signature, not a bearer. Production
+  (`SENTRY_ENVIRONMENT=production`) drops `livemode: false` events with a 200.
+  `cloud_stripe_events` runs each event once, and a handler re-reads the
+  subscription, so event order does not matter.
+- Checkout sets the plan, then adds the $5 threshold. `invoice.paid` for a
+  renewal starts fresh hours; `active` again restores from `past_due`. A
+  failed payment moves the account to free rules with extra hours off, an
+  email and `billing.notice`.
+- Each tick reports every whole extra Small-hour as one meter event, keyed by
+  the hour's place in the period, so a retry never counts twice.
 
 ### ADE Cloud safety
 
 Anti-spam and fast owner alerts, not usage limits (`src/cloud/blocks.ts`,
-`src/cloud/safety.ts`, migration `0037_cloud_safety.sql`). The free plan
-stays 100 hours with the GitHub rules (`freePlanGithub.ts`: a GitHub account
-at least 30 days old, one free plan per GitHub account).
+`src/cloud/safety.ts`, migration `0037_cloud_safety.sql`). The free plan is
+100 hours with the GitHub rules (`freePlanGithub.ts`: a GitHub account at
+least 30 days old, one free plan per GitHub account).
 
 - **Kill switch.** `CLOUD_CREATES_PAUSED=1` refuses every new computer, copy
-  and launch start with 503 `creates_paused` and a plain message. Existing
-  computers keep working: wakes, moves, chats. A start sent again for a
-  launch that already exists (a lost answer) is never refused.
+  and launch start with 503 `creates_paused`. Existing computers keep working.
+  A repeated start of an existing launch is never refused.
 - **Block list** (`cloud_blocks`: `user_id`, `github_user_id`,
   `card_fingerprint`, `reason`, `created_at`). The owner routes take
-  `Authorization: Bearer <CLOUD_OWNER_TOKEN>` (secret; unset answers 503),
-  never an account bearer:
-  - `POST /cloud/owner/block` `{ "userId": "user_…", "reason": "…" }` sets
-    each of the account's computers to the provider's `deny-all` network
-    policy (no internet, no DNS), then stops it (not sleep), deletes its timed
-    wakes, cancels its Stripe subscription at once (`prorate=false`,
-    `invoice_now=false`: no credit, no refund), and stores its GitHub id and
-    cards (free-unlock cards and the ones saved on its Stripe customer) on the
-    list. `{ "githubUserId": 123 }` or `{ "cardFingerprint": "…" }` blocks an
-    identity alone. Safe to send again.
-  - `POST /cloud/owner/unblock` with the same keys takes them off the list.
-    The computers get `allow-all` back and stay stopped. Unblocking only a
-    `githubUserId` or `cardFingerprint` never unblocks an account that stored
-    it: that account stays blocked until its `userId` is unblocked.
-  A computer made while a block lands (a launch mid-create) is stopped when
-  its row becomes a real computer, and the minute tick stops any computer of
-  a blocked account that isn't stopped, and sets `deny-all` again on any whose
-  policy didn't land (`cloud_computers.network_denied_at` empty): running ones
-  first, stopped ones at most hourly (`network_deny_tried_at`), 10 a tick. A start, update, resize, exec wake, sign-in start or
-  timed wake request (`PUT /cloud/wake`) reads the block fresh, not the
-  routes' 30-second cache.
-  A blocked account is read-only. It can read and export its saved chats and
-  everything else it can look at: the GET routes in
-  `CLOUD_BLOCKED_READ_ROUTES` (`contract.ts`, checked by `blockedMayRead` in
-  `routes.ts`), among them `/cloud/chats`, `/cloud/sessions`, `/cloud/git`,
-  `/cloud/limits`, `/cloud/account-secrets` and `/cloud/cto`. Every other
-  `/cloud/*` route, `/cloud/wake` included, answers 403 `account_blocked`:
-  wakes, creates, sends, the Linear and Jira POST reads and `PUT /cloud/limits`.
-  `GET /cloud/account` carries `blocked: true`. A blocked GitHub account
-  on a new ADE account is held as `github_used` (the person isn't told about
-  the block); a blocked card can't unlock free hours. Both alert the owner.
+  `Bearer <CLOUD_OWNER_TOKEN>` (unset 503), never an account bearer.
+  - `POST /cloud/owner/block {userId, reason}` sets each computer to the
+    provider's `deny-all` network policy, stops it, deletes its timed wakes,
+    cancels the subscription at once (`prorate=false`, `invoice_now=false`),
+    and lists its GitHub id and cards. `{githubUserId}` or `{cardFingerprint}`
+    blocks an identity alone. It is safe to repeat.
+  - `POST /cloud/owner/unblock` with the same keys gives back `allow-all`; the
+    computers stay stopped. An identity unblock never unblocks an account.
+  - The minute tick stops any running computer of a blocked account and sets
+    `deny-all` again where it didn't land (`network_denied_at`; stopped ones
+    hourly, `network_deny_tried_at`; 10 a tick). A start, update, resize, exec
+    wake, sign-in start or `PUT /cloud/wake` reads the block fresh, not the
+    30-second cache.
+  - A blocked account is read-only: the GET routes in
+    `CLOUD_BLOCKED_READ_ROUTES` (`blockedMayRead` in `routes.ts`) work, among
+    them `/cloud/chats`, `/cloud/sessions`, `/cloud/git`, `/cloud/limits`,
+    `/cloud/account-secrets` and `/cloud/cto`. Every other `/cloud/*` route
+    answers 403 `account_blocked`. `GET /cloud/account` carries
+    `blocked: true`.
+  - A blocked GitHub account on a new ADE account reads as `github_used`; a
+    blocked card can't unlock free hours. Both alert the owner.
 - **One card, one free unlock** (`cloud_free_card_claims`, unique on the
   fingerprint). The free-unlock Checkout takes cards only, asks for 3D Secure
-  whenever the card supports it (`request_three_d_secure=any`), and the
-  webhook reads the card's fingerprint from the SetupIntent. A card that
-  already unlocked another account, or a blocked one, is refused (the person
-  gets an email for a used card) and the owner is alerted. A card already on
-  the Stripe customer goes through the same claim. A refused card is detached
-  from the Stripe customer, so the next try opens Checkout for another card.
-  Paid plans take any card.
-- **Rate limits.** 10 new computers an hour per account (`cloud_computers`
-  rows made in the last hour: creates, moves, copies, a launch's or an
-  automation's) and 15 launch starts an hour (`cloud_launches`). Over it:
-  429 `rate_limited` with a plain message.
-- **The owner's cap counts free use only.** `cloud_settings.owner_cost_limit_usd`
-  is compared with this month's cost of accounts on free-plan rules
-  (`free_cost_mtd_micros`): each stretch stamps the plan it ran on
-  (`cloud_computer_days.free_cost_micros`, `cloud_disk_days.free`; the daily
-  reconcile scales the free share with the correction). A disk-day counts as
-  free only if the account was on free rules at every write that day, so a
-  plan change mid-day leaves that day's disk as paid. At the cap, free
-  accounts get no new computer, copy or disk grow (503, never says why); paid
-  accounts are never refused.
-  Free use made between applying `0037` and deploying the Worker that writes
-  `free_cost_micros` is counted as paid (the Worker before it doesn't stamp
-  it). To count that gap, run the migration's two backfill `update`s again
-  once the Worker is deployed, with
-  `npx wrangler d1 execute DB --remote --env production --command "<update>"`
-  (the two `update cloud_computer_days …` and `update cloud_disk_days …`
-  statements at the end of `migrations/0037_cloud_safety.sql`). They use the
-  same rule as the migration (an account not on paid rules now counts its
-  month as free), so running them again is safe.
-- **Owner alerts, at once** (`sendOwnerAlert`, Resend to `CLOUD_ALERT_EMAIL`).
-  Never throttled; `cloud_owner_alerts` keys each event so one event sends one
-  email (a failed send gives the key back). Each names the account, its plan,
-  ADE account age, GitHub login and age, the reason, counts, and the exact
-  `curl` that blocks it. Alerts: a sign-up burst (sign-ups from one hashed IP
-  in the last 60 minutes reach `SIGNUP_BURST_PER_IP_HOUR`, checked on each
-  Clerk `user.created`; alert only), free use at 50%, 80% and 100% of the
-  cap (once each a month for each cap value, so a raised cap alerts again,
-  with the free accounts that cost the most), a card
-  used again for a free unlock, and a blocked GitHub account or card on a new
-  account. Sustained CPU stays in the daily report only.
-- **Logging.** `reportCloudAbuse` (`store.ts`) logs, sends a Sentry error
-  every time (tag `area: cloud-abuse`, no hourly throttle) and writes a
-  `cloud_abuse_events` row (`user_id`, `kind`, `detail_json`, `created_at`).
-  PostHog `ade_cloud_safety` records `first_chat` (once per account,
-  `cloud_accounts.first_chat_at`), the cap steps and refusals, blocks,
-  rate limits, kill-switch refusals and sign-up bursts.
-- **The month's cost.** Every 10 minutes `costReport.ts` estimates this
-  month's ADE Cloud cost from awake time and disk at the provider's prices:
-  `cost_mtd_micros` (all use) and `free_cost_mtd_micros` (free-plan rules
-  only). The owner gets one email each time the month's estimate of all use
-  passes another $50 (`OWNER_COST_STEP_USD`): the step, the estimate, the cap
-  and the three accounts that cost the most. A jump over several steps sends
-  one email. `owner_cost_step_alert` keeps the month and the last step
-  (`2026-11:150`). Each email claims its key with a conditional write before
-  it sends, and a failed send gives the key back.
+  (`request_three_d_secure=any`), and the webhook reads the fingerprint from
+  the SetupIntent. A used or blocked card is refused, detached from the
+  customer, and alerts the owner. Paid plans take any card.
+- **Rate limits.** 10 new computers an hour per account (creates, moves,
+  copies, launches, automations) and 15 launch starts an hour. Over it: 429
+  `rate_limited`.
+- **The owner's cap counts free use only.** `owner_cost_limit_usd` is compared
+  with this month's free-rules cost (`free_cost_mtd_micros`; each stretch
+  stamps `cloud_computer_days.free_cost_micros` and `cloud_disk_days.free`). A
+  disk-day is free only if the account was on free rules at every write that
+  day. At the cap, free accounts get no new computer, copy or disk grow (503,
+  no reason given); paid accounts are never refused. The backfill `update`s at
+  the end of `migrations/0037_cloud_safety.sql` are safe to run again.
+- **Owner alerts, at once** (`sendOwnerAlert` to `CLOUD_ALERT_EMAIL`).
+  `cloud_owner_alerts` keys each event, so one event sends one email (a failed
+  send gives the key back). Each names the account, plan, ages, GitHub login,
+  reason, counts and the `curl` that blocks it. The alerts:
+  - a sign-up burst from one hashed IP (`SIGNUP_BURST_PER_IP_HOUR`, on each
+    Clerk `user.created`)
+  - free use at 50%, 80% and 100% of the cap (once each a month per cap value)
+  - a card used again for a free unlock
+  - a blocked GitHub account or card on a new account
+- **Logging.** `reportCloudAbuse` (`store.ts`) logs, sends a Sentry error each
+  time (`area: cloud-abuse`) and writes `cloud_abuse_events`. PostHog
+  `ade_cloud_safety` records `first_chat` (`cloud_accounts.first_chat_at`),
+  cap steps, refusals, blocks, rate limits, kill-switch refusals and sign-up
+  bursts.
+- **The month's cost.** Every 10 minutes `costReport.ts` estimates
+  `cost_mtd_micros` and `free_cost_mtd_micros` at the provider's prices. Each
+  time the estimate passes another $50 (`OWNER_COST_STEP_USD`), the owner gets
+  one email with the top three accounts (`owner_cost_step_alert`, a
+  conditional claim before the send).
 - **The daily run** writes `cloud_account_days` (cost and income per
   account), raises alarms (a paid account that costs more than it pays, a
   free one past $3 a month, a day at twice the week's mean), and emails the
-  owner the daily report: the day's sign-ups, cloud hours, this month's cost
-  split into free and paid use, blocks, abuse events and alerts sent.
-- `GET /cloud/instances` reads the provider's list through a 5-second Cache
-  API copy, skipped when the account's rows changed inside those 5 seconds
-  (a create, a reservation in flight, a recorded start or sleep).
+  owner the daily report.
 
 ## Launches from the web and the phone
 
@@ -1101,9 +655,8 @@ messages and capsule. Deleting a lane removes its sessions, capsules and Git
 summaries. Deleting the account (Clerk `user.deleted`) removes the R2
 prefixes, the rows and the user key.
 
-Rollout: `wrangler r2 bucket create ade-cloud-chats` (and `-production`),
-`wrangler secret put CLOUD_CHAT_MASTER_KEY` on both environments, and
-migration `0039_cloud_no_computer.sql`.
+Migration `0039_cloud_no_computer.sql`. The bucket and
+`CLOUD_CHAT_MASTER_KEY` are in [Cloudflare deployment](#cloudflare-deployment).
 
 ## The message queue of an existing chat or CLI
 
@@ -1178,155 +731,111 @@ them as mentions with no computer awake.
 ## Lane sharing
 
 One account (the giver) gives another account (the receiver) limited access
-to one lane on one of the giver's machines (`src/laneShares/routes.ts`, table
-in migration 0023, tickets in migration 0024, the receiver's name in
-migration 0025, routes and shapes in
-`src/laneShares/contract.ts`). This Worker is only the index and the
-revocation list. It holds no detailed rights and a grant here never opens a
-machine: the host machine keeps the rights and redeems the guest's ticket on
-every guest connection.
+to one lane on one of the giver's machines (`src/laneShares/routes.ts`,
+migrations 0023–0025, shapes in `src/laneShares/contract.ts`). This Worker is
+only the index and the revocation list. It holds no detailed rights, and a
+grant here never opens a machine: the host keeps the rights and redeems the
+guest's ticket on each guest connection. A guest's account token goes only to
+the directory; a host sees a one-use ticket. The product rules are in
+[Lane sharing](../../docs/features/lanes/lane-sharing.md).
 
-Trust: a guest's account token goes only to the directory; a host sees a
-one-use ticket. No sign-in or credential moves to another machine.
+**Host rules under any rights.** A guest's input reaches services written for
+the owner, so the host turns off each interpretation it does for the owner:
 
-On the host machine, a guest's input reaches services that ADE wrote for the
-owner. So the host turns off each interpretation it does for the owner, and
-these rules apply under any rights:
+- A guest's text is a plain prompt: no slash command, `!` line, `/side`,
+  `/memory`, custom command, skill or `@chat:`-style expansion. The host
+  refuses a guest message that starts with `/` or `!`
+  (`lane_share_plain_text_only`): a send, a steer, a draft and its edits, a
+  card answer, and the first input of a CLI session. A guest's draft goes
+  only to an existing chat.
+- Only the owner answers a permission or secret card (a project secret, an
+  MCP server, an integration connect, the Mac real-input lease, a
+  shared-desktop consent, an MCP App call) or a card kind with no mapped
+  right. A guest sees "Waiting for the owner". With Decide, a guest can't
+  choose "for the whole session", and approves a plan only when its return
+  mode is one the owner allowed.
+- A guest's thread comment goes with a send only when the owner names it, and
+  the agent reads it as another person's text.
+- Typing into a CLI session gives a shell's reach, so only the typing right
+  allows it, and never on a Windows host. Each submitted line counts as one
+  message.
+- A guest reads no git-ignored file (such as `.env`) and nothing under
+  `.ade/`, also through a link.
+- The mode lock holds the mode a turn really runs in, from the provider's
+  settings. A mode the host can't map is refused. A guest changes only a chat
+  it started. With no model in the lock, a guest starts nothing.
+- The host enforces the end date on every action. When a share ends, is
+  revoked or left, or loses send and steer, the host removes its guest's
+  unstarted queued messages.
+- The host admits a guest only when its rights row names the grant's lane.
+  Message and draft limits are counted in one step.
+- "Hide machines" removes every device and machine name, id and platform.
+  "History before the share" off removes earlier previews, summaries, goals,
+  comments and subagents from every read.
+- `lane_share.*` actions are user-only, except three (see the lanes doc). A
+  guest's commands are a fixed list, with no runtime RPC channel. An agent can
+  only list shares, make a Watch share (at most 5 an hour per machine) and
+  stop one.
 
-- A guest's text is a plain prompt. The host runs no slash command of any
-  provider, no `!` shell line, no `/side` or `/memory`, no custom command or
-  skill, and no `@chat:`, `@term:`, `@lane:` or `@mac:` expansion on it. A
-  provider CLI can read a leading `/` or `!` itself, so the host refuses a
-  guest message that starts with one (`lane_share_plain_text_only`). The rule
-  applies to a send, a steer, a guest's draft and each edit of it (also when
-  the owner sends it), a guest's answer to a card, and the first input of a
-  CLI session. A guest's draft goes only to an existing chat.
-- Only the owner answers a card that is a permission or a secret: a project
-  secret, an MCP server to add or remove, an integration connect, the Mac
-  real-input lease, a shared-desktop consent, an MCP App call. The host
-  refuses a guest's answer or dismissal of such a card, and a guest sees only
-  "Waiting for the owner" in place of its text. A card kind with no mapped
-  right (such as a model choice) is refused too. With a Decide right, a guest
-  cannot choose "for the whole session" (that saves rules in the provider's
-  settings), and approves a plan only when the mode the plan returns to is
-  one the owner allowed.
-- A guest's thread comment never goes with the owner's next send on its own.
-  The owner includes it by name, and the agent reads it as written by
-  another person. Its `@chat:`-style chips stay plain text.
-- Typing into a CLI session gives the same reach as a shell on the host. Only
-  the typing right allows it. Each submitted line counts as one message. The
-  host refuses guest typing when it runs Windows, where a shell stays after
-  the CLI exits.
-- A guest reads no file that git ignores (such as `.env`) and nothing under
-  `.ade/`, through a file read or a diff read, also through a link.
-- The mode lock holds the mode a turn really runs in, read from the
-  provider's own settings (for a plan, also the mode its approval returns
-  to). A mode the host cannot map is refused. A guest changes the settings
-  only of a chat it started. With no model in the lock, a guest starts no
-  chat and no CLI session.
-- The host keeps the share's end date in its own rights and enforces it on
-  every action and every outgoing message. When a share ends, is revoked
-  (here or on another device), is left, or loses its send and steer rights,
-  the host removes the messages its guest queued that have not started.
-- The host admits a guest only when its rights row names the same lane as
-  the directory's grant. Message and draft limits are counted in one step,
-  so two requests at once cannot both take the last place.
-- With "hide machines" on, a guest sees no device or machine name, id or
-  platform in any payload. With "history before the share" off, previews,
-  summaries, goals, thread comments and subagents from before the share are
-  removed from every read, not only from the transcript.
-- `lane_share.*` actions are user-only, except three: only an RPC caller
-  that names itself as an ADE desktop client and carries no agent identity
-  reaches the rest. A guest never reaches any of them: its commands are
-  limited to a fixed list, and its connection has no runtime RPC channel.
-- An agent (the `ade` CLI, an agent's shell, ADE MCP) can only list shares,
-  make a Watch share (it sees, it cannot act), at most 5 an hour per machine,
-  and stop a share of that machine. The host machine enforces it, from the
-  caller its RPC server knows; this Worker has no part in it.
+**The directory's rules:**
 
-- Every route takes the account bearer and checks the caller's user id against
-  the row. A pending invite matches a caller only through an address Clerk has
-  VERIFIED for that caller, read on each call with `CLERK_SECRET_KEY`. Without
-  that key, invite, accept and open by the invitee answer 503.
-- A grant the caller may not see answers 404, the same as an id that does not
-  exist. The routes ask Clerk before they decide that 404.
-- At most 5 guests (pending and active) per lane. An invite lasts 24 h, on the
-  server clock. A second invite to the same address refreshes the pending one.
-- Limits against spam: 20 invites and re-sends per giver per UTC day, 5 invite
-  emails per address per UTC day, 2,000 invite emails per UTC day from all
-  accounts together, one email per invite per 10 minutes and 5 in its life
-  (`lane_share_invite_days`, as in the Jev bonus). The per-address cap counts
-  a canonical form of the address (lowercase, no `+tag`, no dots at Gmail);
-  the invite keeps the exact address.
-- Each account may cause 120 Clerk Backend API reads per UTC hour through these
-  routes. Past that, the routes that need Clerk answer 429, and the
-  "Shared with me" list leaves out pending invites.
-- The invite email goes through Resend (`RESEND_API_KEY`). Without the key, or
-  when the send fails, the invite still succeeds and says `emailSent: false`.
-  The email names the giver (cleaned: no link-like or host-like words, no `@`)
-  and carries no project or lane label. Its only link is ADE's invite link.
-- The host read lists every live grant of the machine. A host drops any cached
-  grant that is not in the list, so a revoke counts at the next connection.
-  Each grant carries `createdAt` (the host hides chat history from before it)
-  and, once active, `acceptedAt` and `receiverName`: the receiver's Clerk name,
-  stored at accept (`receiver_label`, migration 0025) and cleaned like the
-  invite email's sender name. The host shows only this name as the author of
-  the guest's messages and in a guest turn's commit trailer; the guest never
-  chooses it. `closed` lists the machine's final grants, so the host can
-  delete their rights and counters.
+- Every route takes the account bearer and checks the caller against the row.
+  A pending invite matches only an address Clerk VERIFIED for the caller, read
+  on each call with `CLERK_SECRET_KEY` (without it, invitee routes answer 503).
+- A grant the caller may not see answers 404, as an unknown id does.
+- At most 5 guests (pending and active) per lane. An invite lasts 24 h. A
+  second invite to the same address refreshes the pending one.
+- Spam limits (`lane_share_invite_days`): 20 invites and re-sends per giver
+  per UTC day, 5 invite emails per canonical address per day (lowercase, no
+  `+tag`, no Gmail dots), 2,000 invite emails a day in all, and one email per
+  invite per 10 minutes, 5 in its life.
+- 120 Clerk reads per account per UTC hour. Past that, routes that need Clerk
+  answer 429, and "Shared with me" leaves out pending invites.
+- The invite email (Resend) names the cleaned giver name, no project or lane,
+  and has only ADE's invite link. A failed send still succeeds with
+  `emailSent: false`.
+- The host read lists every live grant of the machine with `createdAt`, and
+  once active `acceptedAt` and `receiverName` (the cleaned Clerk name stored
+  at accept, `receiver_label`). The host drops a cached grant not in the list
+  and uses only this name as the guest's author. `closed` lists final grants.
 - `POST /lane-shares/:id/connect` gives the receiver of an ACTIVE grant the
-  ADE Relay address the host machine published (`wss://…/connect/<machineKey>`),
-  whether the host reported in recently, and a one-use ticket. Nobody else may
-  read it, not even the giver (404); a closed grant answers 410. LAN and
-  tailnet addresses are never given out. The body names the guest's DPoP key
-  (`dpopThumbprint`, RFC 7638). The ticket is 32 random bytes, lives 2
-  minutes, and D1 keeps only its hash. A grant may mint 30 tickets an hour.
-- `POST /lane-shares/host/redeem` is for a machine of the giver only (owner
-  token, no browser Origin). One conditional UPDATE uses the ticket once,
-  and only while it is unexpired, minted for that machine, and its grant is
-  still active with the caller as the giver. The answer names the receiver,
-  the lane and the DPoP key, with the machine's full grant list. Every
-  failure answers the same 404. The host admits the user id from this answer
-  and only for a hello signed by that DPoP key, so a copied ticket is useless.
-- A guest keeps the relay address after a revoke, so a revoked guest can still
-  reach the host's hello step (and use one of the relay's 16 sockets for that
-  machine). The host drops a guest hello without a well-formed ticket and a
-  valid DPoP proof before it calls the directory, and a revoked guest gets no
-  new ticket.
+  relay address (`wss://…/connect/<machineKey>`, never LAN or tailnet), the
+  host's last report, and a one-use ticket bound to the guest's DPoP key
+  (`dpopThumbprint`). The giver gets 404; a closed grant 410. The ticket is 32
+  random bytes, lives 2 minutes, is stored as a hash, and a grant mints at most
+  30 an hour.
+- `POST /lane-shares/host/redeem` (a giver's machine only, no browser Origin)
+  spends the ticket in one conditional UPDATE and answers the receiver, lane,
+  DPoP key and the grant list. Every failure is the same 404. The host admits
+  only a hello signed by that key.
+- A revoked guest still knows the relay address, but the host drops a hello
+  without a valid ticket and DPoP proof before it calls the directory.
 - Clerk `user.deleted` closes every live grant given by or to the account.
 - The cron writes the clock-derived states, deletes rows closed 90 days ago,
-  drops budget rows older than a week, and deletes tickets older than an hour.
+  budget rows older than a week and tickets older than an hour.
 
 ### Moving a chat to the other person
 
-The owner, or a guest with Collaborate (send and start chats), can move a chat
-of the shared lane, with its unpushed work, to a computer of the other person.
-The directory carries none of it: the move goes only over the guest
-connection (the `laneShare.move` guest command) and the machines' own runtime
-actions. `POST /lane-shares/:id/move` is a different thing: it moves the
-owner's grants to another machine of the same account.
+The owner, or a guest with Collaborate, can move a chat of the shared lane,
+with its unpushed work, to a computer of the other person (see
+[the lanes doc](../../docs/features/lanes/lane-sharing.md#moving-a-chat-to-the-other-person)).
+The directory carries none of it: the move goes over the guest connection
+(`laneShare.move`) and the machines' runtime actions.
+`POST /lane-shares/:id/move` is different: it moves the owner's grants to
+another machine of the same account.
 
-- The person who must consent does it on their own machine. A consent refuses
-  by default, ends after 15 minutes, works once, and ends with a revoke, a
-  leave, the end of the share or a pause. One move at a time per share; a
-  second one gets "A move is already waiting".
-- The host binds each step to the guest's grant and lane (from its own role,
-  never from the client), to the move id and to the consent state. It sends no
-  chunk and takes no chunk without an accepted consent for that move id.
-- What moves is a fixed list of fields: the move id, chat title, lane name,
-  branch name, head commit, repository key, a model hint, the handoff brief,
-  the continuation note, the artifact summary, Linear issue references, and
-  the bundle's size, checksum and chunk count. The receiver refuses any other
-  field. No sign-in, token, credential, provider session, environment, MCP
+- The receiving person consents on their own machine: refused by default, 15
+  minutes, once, ended by a revoke, a leave, the share's end or a pause. One
+  move at a time per share.
+- The host binds each step to the guest's grant and lane (from its own role),
+  the move id and the consent. No chunk moves without an accepted consent.
+- Only a fixed list of fields moves; the receiver refuses any other. No
+  sign-in, token, credential, provider session, environment, MCP
   configuration or secret moves.
-- The bundle goes in 384 KiB chunks, in order, with its SHA-256 checked at the
-  end, at most 50 MiB. The receiver runs `git bundle verify`, accepts only the
-  one expected ref, fetches with hooks off and no submodule fetch, and lands
-  the work in a NEW lane on a branch that did not exist there. It never
-  touches the shared lane's worktree or an existing branch.
-- The chat on the receiving computer uses only that computer's sign-ins and
-  starts in plan mode. The new lane is shared back to the other person by the
-  receiving computer's own account, with the rights its person chose.
+- The bundle goes in 384 KiB chunks, at most 50 MiB, SHA-256 checked. The
+  receiver runs `git bundle verify`, accepts one expected ref, fetches with
+  hooks off and no submodules, and puts the work in a NEW lane on a new
+  branch, in plan mode, with its own sign-ins.
 - When the owner starts a move, the owner's account email goes to the guest,
   so the guest's computer can share the new lane back.
 
@@ -1467,81 +976,51 @@ npm run build
 
 ## Cloudflare deployment
 
-Development and production are isolated so development Clerk users and machine
-heartbeats never enter the production directory:
+Development and production are separate, so development users and heartbeats
+never enter the production directory:
 
 - Development: `https://ade-account-directory.arulsharma1028.workers.dev`
 - Production: `https://ade-account-directory-production.arulsharma1028.workers.dev`
+  (D1 `ade-account-directory-production`)
 
-The `production` Wrangler environment binds a separate
-`ade-account-directory-production` D1 database. To reproduce or move either
-deployment:
+To set up either one:
 
-1. Create the matching D1 database and put its UUID in `wrangler.jsonc`.
-2. Set `CLERK_JWKS_URL`, `CLERK_ISSUER`, and
-   `CLERK_OAUTH_CLIENT_ID=<your-clerk-oauth-client-id>` as Worker vars/secrets. Register
-   `https://<worker-host>/device/callback` as an allowed redirect URI for the
-   Clerk OAuth application. Set `WEB_CLIENT_ORIGIN` to the exact HTTPS origin
-   of the hosted ADE web client; this is the only cross-origin caller allowed
-   to send an account bearer to `GET /account/machines`. Set `PUSH_RELAY_URL`
-   to the push relay origin; machine removal fails loudly without it. Set
-   `CLERK_SECRET_KEY` (`npx wrangler secret put CLERK_SECRET_KEY`) to the Clerk
-   Backend API key of the same Clerk instance. `/device/approve` uses it, and
-   the ADE Cloud emails use it to find the person's address. Set
-   `DIRECTORY_AUTH_SECRET` (`npx wrangler secret put DIRECTORY_AUTH_SECRET`) to
-   the same value configured on the push relay; machine removal and re-pairing
-   both fail loudly without it.
-3. Create the R2 bucket behind the `DIAGNOSTICS` binding, **before** the deploy
-   that first references it — `wrangler deploy` does not create buckets, and a
-   Worker bound to a bucket that does not exist fails to start:
+1. Create the D1 database and put its UUID in `wrangler.jsonc`.
+2. Set the Clerk values: `CLERK_JWKS_URL`, `CLERK_ISSUER`,
+   `CLERK_OAUTH_CLIENT_ID` and the secret `CLERK_SECRET_KEY` (approvals, emails,
+   lane share invites). Register `https://<worker-host>/device/callback` as a
+   redirect URI of the Clerk OAuth application.
+3. Set `WEB_CLIENT_ORIGIN` (the only cross-origin caller that may send an
+   account bearer), `PUSH_RELAY_URL`, and the secret `DIRECTORY_AUTH_SECRET`
+   (the same value as on the push relay).
+4. Create the R2 buckets before the first deploy that binds them
+   (`wrangler deploy` does not create buckets): `ade-diagnostics`,
+   `ade-cloud-chats` and their `-production` copies. A missing diagnostics
+   bucket only makes `/diagnostics/upload` answer `503`.
+5. Give both diagnostics buckets a 30-day expiry rule. The Worker never
+   deletes a report, and the 30 days are a term of the cost ceiling (90 days is
+   about 18 GB, past the free tier):
 
    ```sh
-   npx wrangler r2 bucket create ade-diagnostics              # default environment
-   npx wrangler r2 bucket create ade-diagnostics-production   # production
-   ```
-
-   The binding is optional in code, so an already-deployed Worker whose bucket
-   was removed answers `503` on `/diagnostics/upload` and keeps every other
-   route working.
-4. Give both diagnostics buckets a **30-day** expiry lifecycle rule. **Nothing
-   in the Worker ever deletes a report**, so without this the bucket grows
-   forever and every report a user ever sent stays readable indefinitely. Thirty
-   days is not a taste preference: it is the third term of the cost ceiling
-   above (400/day × 512 KB × 30 days ≈ 6 GB, inside R2's 10 GB free tier), and
-   it is the one term this repository cannot enforce in code. Lengthen it and
-   the ceiling moves with it — 90 days is ~18 GB and off the free tier:
-
-   ```sh
-   npx wrangler r2 bucket lifecycle add ade-diagnostics \
-     expire-reports reports/ --expire-days 30
    npx wrangler r2 bucket lifecycle add ade-diagnostics-production \
      expire-reports reports/ --expire-days 30
    ```
 
-   Confirm with `npx wrangler r2 bucket lifecycle list <bucket>`. Thirty days is
-   still far longer than any support thread; a report nobody has read in a month
-   is not going to be read.
-5. Set the ADE Cloud secrets on each environment
-   (`npx wrangler secret put <NAME> [--env production]`; `wrangler.jsonc`
-   explains each one):
+6. Set the ADE Cloud secrets (`npx wrangler secret put <NAME> [--env production]`;
+   `wrangler.jsonc` explains each):
    - `AGENT37_API_KEY` (required for ADE Cloud).
    - `CLOUD_CHAT_MASTER_KEY` (saved copies, the queue, the per-computer free
      plan key) and `CLOUD_LAUNCH_JOIN_KEY` (the server launcher).
-   - `RESEND_API_KEY` and `CLOUD_ALERT_EMAIL` for the emails. Without them the
-     Worker logs `cloud.email_skipped`.
-   - `CLOUD_EVENT_WAKE_SECRET`, the same value on the webhook relay. Unset, no
-     event wakes.
-   - `CLOUD_OWNER_TOKEN` for the owner routes, and the Stripe secrets.
-6. Apply the remote migrations and deploy the Worker. Use
-   `npm run d1:migrate:production` and `npm run deploy:production` for the
-   production environment. Each deploy script validates only the environment it
-   is about to publish, so an unconfigured development Worker cannot block a
-   production deploy. The check refuses to deploy unless
-   `DIRECTORY_AUTH_SECRET` and `PUSH_RELAY_URL` are configured for that
-   environment — without either one, every machine removal answers 502 and every
-   re-pair 503. Release builds use the production origin; local
-   development uses the development origin. Set the machine-level
-   `ADE_ACCOUNT_DIRECTORY_URL=https://<worker-host>` only for a trusted
-   self-hosted override.
+   - `RESEND_API_KEY` and `CLOUD_ALERT_EMAIL` (else `cloud.email_skipped`).
+   - `CLOUD_EVENT_WAKE_SECRET`, the same value on the webhook relay.
+   - `CLOUD_OWNER_TOKEN`, and the Stripe secrets.
+7. Deploy with `npm run deploy:production` (or `npm run deploy` for
+   development). Each script checks only its own environment's configuration
+   (it refuses without `DIRECTORY_AUTH_SECRET` and `PUSH_RELAY_URL`), applies
+   the remote migrations, then deploys. A merge to `main` that touches this
+   app runs the production deploy (`.github/workflows/deploy-web.yml`). Check
+   with `npx wrangler d1 migrations list DB --remote --env production`.
 
-`ONLINE_WINDOW_MS` defaults to 150 seconds and can be adjusted as a Worker var.
+Release builds use the production origin. Set `ADE_ACCOUNT_DIRECTORY_URL` on a
+machine only for a trusted self-hosted override. `ONLINE_WINDOW_MS` (default
+150 seconds) is a Worker var.
