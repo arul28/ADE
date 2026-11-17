@@ -1258,6 +1258,10 @@ export class DesktopPairedMachineStore {
           deviceId: localDeviceId,
           accountToken,
           dpop: accountDpop,
+          // The secret this desktop already holds for the host. A host that
+          // recognizes it keeps it instead of minting a new one, so a reply
+          // lost below cannot leave the two ends on different secrets.
+          ...(existing?.secret ? { pairedSecret: existing.secret } : {}),
         };
         let sealedAccountAuth: string | null = null;
         if (adoptSessionKey) {

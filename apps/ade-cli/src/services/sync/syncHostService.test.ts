@@ -3706,8 +3706,11 @@ describe("sync host account authentication", () => {
         secret: expect.stringMatching(/^[0-9a-f]{48}$/),
       });
       expect(replacement?.secret).not.toBe(pairing.secret);
-      expect(pairingStore.authenticate(peer.deviceId, pairing.secret)).toBe(false);
+      // Until the device proves it saved the replacement, the secret it held
+      // still works: a hello_ok lost on the way must not strand it.
+      expect(pairingStore.verifySecret(peer.deviceId, pairing.secret)).toBe("committed");
       expect(pairingStore.authenticate(peer.deviceId, replacement!.secret)).toBe(true);
+      expect(pairingStore.authenticate(peer.deviceId, pairing.secret)).toBe(false);
       const activeSecret = replacement!.secret;
 
       const directPairedClient = await openAccountClient(port);
@@ -4085,12 +4088,14 @@ describe("sync host account authentication", () => {
         // `getPairingRecord` returns a committed view that strips
         // `pendingRotation` unconditionally, so asserting its absence there
         // proves nothing. `hasPendingRotation` reads the raw record.
-        expect(harness.pairingStore.hasPendingRotation(legacyPeer.deviceId)).toBe(false);
+        // Only the new secret waits for the device to prove it; the account's
+        // ownership above already applies.
+        expect(harness.pairingStore.hasPendingRotation(legacyPeer.deviceId)).toBe(true);
         // Adoption must not hand the account power to delete a hand-made
         // pairing when this Mac signs out.
         expect(upgraded?.localTrustOrigin).toBe(true);
-        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, adopted!.secret)).toBe("committed");
-        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, legacyPairing.secret)).toBeNull();
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, adopted!.secret)).toBe("pending");
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, legacyPairing.secret)).toBe("committed");
         expect(harness.baseArgs.logger.info).toHaveBeenCalledWith(
           "sync_host.account_legacy_pairing_upgraded",
           { deviceId: legacyPeer.deviceId },
@@ -4115,6 +4120,9 @@ describe("sync host account authentication", () => {
           () => pairedClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
           "adopted paired hello_ok",
         );
+        // That hello proved the new secret, which retires the manual one.
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, adopted!.secret)).toBe("committed");
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, legacyPairing.secret)).toBeNull();
       } finally {
         await harness.cleanup();
       }

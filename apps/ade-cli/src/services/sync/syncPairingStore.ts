@@ -56,10 +56,28 @@ export type PendingPairingRotation = {
   expiresAtMs: number;
   /** The complete record that replaces the committed one when promoted. */
   record: CommittedPairingRecord;
+  /**
+   * Only the secret is staged: the committed record already carries every
+   * other field of `record`. Promotion then swaps in the new secret hash and
+   * keeps whatever the committed record became meanwhile (an account sign-out
+   * that demoted it), instead of restoring the fields of the staging moment.
+   * Hosts that predate the flag promote `record` whole, which is the same
+   * record at the moment it was staged.
+   */
+  secretOnly?: boolean;
 };
 
 /** How long a staged re-pair waits for the device to prove it received it. */
 export const PAIRING_ROTATION_WINDOW_MS = 10 * 60_000;
+
+/**
+ * An account adoption's staged secret does not expire. The device gets the new
+ * secret inside hello_ok and has no follow-up to arm a window with, so a
+ * device that saved the secret and then stayed away would find it dropped.
+ * The old secret stays valid meanwhile, which it was before the adoption, and
+ * a paired hello still needs the record's pinned DPoP key.
+ */
+const ACCOUNT_ROTATION_EXPIRES_AT_MS = Number.MAX_SAFE_INTEGER;
 
 type PairingSecretsFile = Record<string, SyncPairingRecord>;
 type RuntimeHostGrantFile = Record<string, { expiresAt: number }>;
@@ -91,6 +109,20 @@ type NewPairingResult = {
   deviceId: string;
   secret: string;
   pendingRotationExpiresAtMs: number | null;
+  /**
+   * True when the device proved the secret it already holds and the host kept
+   * it. The caller must not hand the secret back: the device has it.
+   */
+  keptExistingSecret?: boolean;
+};
+
+type AccountPairingOptions = NewPairingRecordOptions & {
+  /**
+   * The paired secret the device says it holds for this host. When it matches
+   * the committed or the staged secret, adoption keeps it instead of minting a
+   * new one, so no reply can be lost.
+   */
+  presentedSecret?: string | null;
 };
 
 type PairingTrust =
@@ -227,9 +259,20 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     return committed;
   };
 
+  /**
+   * The record a staged rotation becomes once its secret is proven. A
+   * secret-only rotation keeps the committed fields as they are now.
+   */
+  const promotedRecord = (
+    entry: SyncPairingRecord,
+    pending: PendingPairingRotation,
+  ): CommittedPairingRecord => pending.secretOnly
+    ? { ...committedView(entry), secretHash: pending.record.secretHash }
+    : { ...pending.record };
+
   const writeNewPairingRecord = (
     peer: SyncPeerMetadata,
-    options?: NewPairingRecordOptions,
+    options?: AccountPairingOptions,
     trust: PairingTrust = { kind: "pin" },
     stageRotation = false,
   ): NewPairingResult => {
@@ -367,6 +410,69 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       writeRecords(records);
       return { deviceId: peer.deviceId, secret, pendingRotationExpiresAtMs: expiresAtMs };
     }
+    // Account adoption of a record that already exists. It used to write the
+    // new secret straight through before hello_ok left this machine, so a drop
+    // before the device saved the reply left the two ends on different
+    // secrets, with "pair it again" as the only way out. Now the device keeps
+    // whichever secret it holds:
+    // - It proved the secret it holds: keep that secret, mint nothing.
+    // - It did not (an older client, or one that lost its secret): stage the
+    //   new secret behind the committed one. The account's authority applies
+    //   now, because the attestation is the proof; only the secret waits for
+    //   the first hello that authenticates with it.
+    if (trust.kind === "account" && existing) {
+      const current = pruneExpiredRotation(existing, Date.now()).record ?? committedView(existing);
+      const presentedHash = options?.presentedSecret?.trim()
+        ? hashSecret(options.presentedSecret.trim())
+        : null;
+      const pending = current.pendingRotation ?? null;
+      if (presentedHash && safeHashEquals(current.secretHash, presentedHash)) {
+        records[peer.deviceId] = {
+          ...replacement,
+          secretHash: current.secretHash,
+          lastUsedAt: nowIso(),
+          // A staged rotation is not this device's to discard: it may hold the
+          // staged secret in a store another process writes.
+          pendingRotation: pending,
+        };
+        writeRecords(records);
+        return {
+          deviceId: peer.deviceId,
+          secret: options!.presentedSecret!.trim(),
+          pendingRotationExpiresAtMs: null,
+          keptExistingSecret: true,
+        };
+      }
+      if (presentedHash && pending && safeHashEquals(pending.record.secretHash, presentedHash)) {
+        records[peer.deviceId] = {
+          ...replacement,
+          secretHash: pending.record.secretHash,
+          lastUsedAt: nowIso(),
+          pendingRotation: null,
+        };
+        writeRecords(records);
+        return {
+          deviceId: peer.deviceId,
+          secret: options!.presentedSecret!.trim(),
+          pendingRotationExpiresAtMs: null,
+          keptExistingSecret: true,
+        };
+      }
+      records[peer.deviceId] = {
+        ...replacement,
+        secretHash: current.secretHash,
+        lastUsedAt: current.lastUsedAt,
+        pendingRotation: {
+          expiresAtMs: ACCOUNT_ROTATION_EXPIRES_AT_MS,
+          record: replacement,
+          secretOnly: true,
+        },
+      };
+      writeRecords(records);
+      // No window for the caller to arm: the staged secret never expires and
+      // the first hello that presents it promotes it.
+      return { deviceId: peer.deviceId, secret, pendingRotationExpiresAtMs: null };
+    }
     records[peer.deviceId] = replacement;
     writeRecords(records);
     return {
@@ -392,13 +498,12 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     },
 
     /**
-     * PIN pairing over the wire. This is the only entry point that stages its
-     * rotation: it is the one whose credential crosses two more round trips
-     * (pairing_result, then hello) before the device can persist it, and the
-     * only one whose recovery costs the user a walk back to the Mac. Account
-     * adoption returns its secret inside `hello_ok` with no acknowledged
-     * follow-up, so staging it would strand devices that never send another
-     * hello; local OS/SSH trust hands the secret back in-process.
+     * PIN pairing over the wire. Its credential crosses two more round trips
+     * (pairing_result, then hello) before the device can persist it, so a
+     * re-pair stages behind the committed secret for PAIRING_ROTATION_WINDOW_MS.
+     * Account adoption stages too, without a window (see
+     * `writeNewPairingRecord`); local OS/SSH trust hands the secret back
+     * in-process and writes straight through.
      */
     pairPeer(
       peer: SyncPeerMetadata,
@@ -422,7 +527,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     pairPeerViaAccount(
       peer: SyncPeerMetadata,
       attestation: VerifiedAccountAttestation,
-      options?: NewPairingRecordOptions,
+      options?: AccountPairingOptions,
     ): NewPairingResult {
       if (!isVerifiedAccountAttestation(attestation)) {
         throw pairingError("account_not_verified", "Account attestation was not verified.");
@@ -505,7 +610,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
           });
         } else {
           records[normalized] = withBackfilledSyncHostRecoveryGrant({
-            ...pending.record,
+            ...promotedRecord(entry, pending),
             lastUsedAt: nowIso(),
           });
         }
@@ -534,7 +639,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (safeHashEquals(entry.secretHash, presented)) return committedView(entry);
       const pending = entry.pendingRotation;
       return pending && safeHashEquals(pending.record.secretHash, presented)
-        ? { ...pending.record }
+        ? promotedRecord(entry, pending)
         : null;
     },
 
@@ -557,7 +662,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         }
         return null;
       }
-      records[normalized] = { ...pending.record, lastUsedAt: nowIso() };
+      records[normalized] = { ...promotedRecord(pruned.record!, pending), lastUsedAt: nowIso() };
       writeRecords(records);
       return committedView(records[normalized]!);
     },

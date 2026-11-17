@@ -61,7 +61,7 @@ export const SYNC_ACCOUNT_VERIFY_FAILED_MESSAGE = "The computer you're connectin
 export type SyncAccountHelloAuth = Extract<SyncHelloPayload["auth"], { kind: "account" }>;
 
 export type SyncAccountHelloResult =
-  /** Authentication succeeded. `accountPairing` is set only on a fresh adoption. */
+  /** Authentication succeeded. `accountPairing` is null when the device keeps the secret it holds. */
   | {
       kind: "authenticated";
       pairingRecord: SyncPairingRecord;
@@ -256,8 +256,8 @@ export async function authenticateSyncAccountHello(
       // verified and re-captured under the commit lock.
       const upgradingLegacyPairing = Boolean(existingPairingRecord) && !existingAccountOwner;
       // A PIN re-pair the device has not acknowledged yet is staged on this
-      // record. Adoption writes through, which would drop that staged secret
-      // and leave the device's `pairing_commit` with nothing to promote. The
+      // record. Adoption would replace that staged secret and leave the
+      // device's `pairing_commit` with nothing to promote. The
       // staging window exists to make a re-pair survive a lost reply, so it
       // wins — the device keeps the secret it already holds.
       if (
@@ -276,17 +276,18 @@ export async function authenticateSyncAccountHello(
           connectionAttemptReserved,
         };
       }
-      // Written through rather than staged. Staging exists to protect a
-      // credential the device is still holding across two more round trips, and
-      // only PIN pairing has that shape. An account hello has no
-      // acknowledgement to arm, and staging deliberately withholds elevations,
-      // so a staged adoption would leave the record local for exactly as long
-      // as the bug it fixes.
+      // For a record that already exists, the store never replaces the secret
+      // the device holds before the device proves the new one: it keeps the
+      // secret the device presents, or stages the new one behind the
+      // committed secret (see `writeNewPairingRecord`). A reply lost after
+      // this point then leaves both ends on a secret the other accepts.
+      const presentedSecret = typeof auth.pairedSecret === "string" ? auth.pairedSecret.trim() : "";
       let paired: ReturnType<SyncPairingStore["pairPeerViaAccount"]>;
       try {
         paired = pairingStore.pairPeerViaAccount(peer, attestation, {
           dpopPublicKey: existingPairingRecord ? null : auth.dpop?.publicKey ?? null,
           runtimeHostGrant: auth.runtimeHostGrant ?? null,
+          presentedSecret: presentedSecret || null,
         });
       } catch (error) {
         logger.warn(`${logPrefix}.account_pairing_write_failed`, {
@@ -313,7 +314,11 @@ export async function authenticateSyncAccountHello(
       return {
         kind: "authenticated",
         pairingRecord,
-        accountPairing: { deviceId: paired.deviceId, secret: paired.secret },
+        // A kept secret is not sent back: the device holds it, and every
+        // client reads an omitted `accountPairing` as "keep yours".
+        accountPairing: paired.keptExistingSecret
+          ? null
+          : { deviceId: paired.deviceId, secret: paired.secret },
         attestation,
         connectionAttemptReserved,
       };

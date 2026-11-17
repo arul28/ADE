@@ -3784,6 +3784,31 @@ owner, mints a fresh device-bound secret, and returns it in `accountPairing`.
 This is what lets a signed-in device that no longer holds its manual secret
 recover over the network rather than requiring a physical trip back to the Mac.
 
+Adoption never leaves the two ends on different secrets. The new secret travels
+only inside `hello_ok`, so a link that drops before the device saves it used to
+leave the host on the new secret and the device on the old one, with "pair it
+again" on every connect. Now, for a record that already exists:
+
+- The account hello may carry `pairedSecret`, the secret the device already
+  holds for this host (desktop and web send it). When it matches the committed
+  or the staged secret, the host keeps that secret, applies the account's
+  ownership and grants, and omits `accountPairing`. Nothing is minted, so no
+  reply can be lost.
+- Otherwise (an older client, or one that lost its secret) the new secret is
+  **staged** behind the committed one (`pendingRotation`, `secretOnly: true`).
+  Ownership and grants apply at once, because the attestation is the proof;
+  only the secret waits. The first hello that authenticates with the new secret
+  promotes it and retires the old one. The staged secret has no expiry window:
+  the device has no follow-up to arm one with, and the old secret was valid
+  before the adoption anyway. A paired hello still needs the record's pinned
+  DPoP key.
+
+A first-time account pairing (no record) still writes straight through: the
+device holds no secret that a lost reply could strand. On the client,
+`reconcileStaleAccountCommit` puts a prior record back only when it holds the
+secret the host kept; after a host that minted a new secret, it removes the
+record instead of saving one the host refuses.
+
 Adoption is an authorization decision and it is gated on evidence, not on the
 caller's claim:
 
@@ -3804,8 +3829,8 @@ caller's claim:
 
 Adoption is **deferred** while a PIN re-pair is staged on the record and the
 device has not acknowledged it (`pairingStore.hasPendingRotation`). Adoption
-writes through rather than staging, which would discard the staged secret and
-leave the device's `pairing_commit` with nothing to promote. That hello answers
+would replace the staged secret and leave the device's `pairing_commit` with
+nothing to promote. That hello answers
 `hello_ok` without `accountPairing` and logs
 `sync_host.account_adoption_deferred_pending_rotation`; a device mid-re-pair
 holds a working secret by definition, and every client treats an omitted

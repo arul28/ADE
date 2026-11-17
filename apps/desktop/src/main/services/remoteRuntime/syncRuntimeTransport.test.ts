@@ -10,6 +10,7 @@ import {
   wsDataToText,
 } from "../sync/syncProtocol";
 import { isPairedRuntimeRpcOverBudgetError, isPairedRuntimeSupersededError } from "./pairedRuntimeErrors";
+import { classifyPairedRuntimeFailure } from "./pairedRuntimeRoutes";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
 import {
   buildDesktopPairedHello,
@@ -443,36 +444,73 @@ describe("openSyncRuntimeTransport", () => {
     expect(late).toBe(early[0]);
   });
 
-  it("rejects a saved endpoint when the host identity changed", async () => {
+  // A saved address can come to reach a different machine (another ADE on the
+  // same port, a reused LAN address). Only the paired host's own rejection
+  // may read as "pair it again"; anything another machine says is "identity",
+  // which also makes the dial order forget the address.
+  it.each([
+    {
+      name: "another host accepts the hello",
+      reply: { type: "hello_ok", host: "replacement-host" },
+      failure: "identity",
+    },
+    {
+      name: "another host rejects the pairing",
+      reply: { type: "hello_error", host: "replacement-host" },
+      failure: "identity",
+    },
+    {
+      name: "the paired host rejects the pairing",
+      reply: { type: "hello_error", host: "host-1" },
+      failure: "pairing",
+    },
+    {
+      name: "a host too old to name itself rejects the pairing",
+      reply: { type: "hello_error", host: null },
+      failure: "pairing",
+    },
+  ] as const)("classifies a refused hello when $name", async ({ reply, failure }) => {
     const socket = new FakeWebSocket((text, ws) => {
       const envelope = parseSyncEnvelope(wsDataToText(text));
       if (envelope.type !== "hello") return;
-      ws.receive(encodeSyncEnvelope({
-        type: "hello_ok",
-        requestId: envelope.requestId,
-        payload: {
-          peer: (envelope.payload as { peer: unknown }).peer,
-          brain: {
-            deviceId: "replacement-host",
-            deviceName: "Different Mac",
-            platform: "macOS",
-            deviceType: "desktop",
-            siteId: "replacement-site",
-            dbVersion: 0,
+      ws.receive(encodeSyncEnvelope(reply.type === "hello_ok"
+        ? {
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: {
+            peer: (envelope.payload as { peer: unknown }).peer,
+            brain: {
+              deviceId: reply.host,
+              deviceName: "Different Mac",
+              platform: "macOS",
+              deviceType: "desktop",
+              siteId: "replacement-site",
+              dbVersion: 0,
+            },
+            serverDbVersion: 0,
+            heartbeatIntervalMs: 5_000,
+            pollIntervalMs: 1_500,
+            features: { rpcChannel: true, portForward: true },
           },
-          serverDbVersion: 0,
-          heartbeatIntervalMs: 5_000,
-          pollIntervalMs: 1_500,
-          features: { rpcChannel: true, portForward: true },
-        },
-      }));
+        }
+        : {
+          type: "hello_error",
+          requestId: envelope.requestId,
+          payload: {
+            code: "repair_required",
+            message: "This device is not paired with this machine. Pair it again.",
+            ...(reply.host ? { host: { deviceId: reply.host, name: "Some Mac" } } : {}),
+          },
+        }));
     });
 
-    await expect(openSyncRuntimeTransport({
+    const error = await openSyncRuntimeTransport({
       credentials: credentials(),
       endpoint: "ws://replacement.test",
       createWebSocket: () => socket as unknown as WebSocket,
-    })).rejects.toThrow("Sync endpoint identity mismatch");
+    }).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(classifyPairedRuntimeFailure(error)).toBe(failure);
     expect(socket.readyState).toBe(3);
   });
 });

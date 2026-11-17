@@ -39,6 +39,7 @@ import {
 import type { RuntimeRpcTransport, RuntimeRpcTransportCloseInfo } from "./runtimeRpcClient";
 import {
   PairedRuntimeHelloRejectedError,
+  PairedRuntimeHostMismatchError,
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeRpcOverBudgetError,
 } from "./pairedRuntimeErrors";
@@ -554,14 +555,29 @@ export async function openPairedSyncConnection(
       requestId,
     );
     const envelope = await response;
-    if (envelope.type === "hello_error") throw helloError(envelope.payload);
+    const expectedHostId = options.credentials.hostIdentity.deviceId.trim();
+    if (envelope.type === "hello_error") {
+      const rejection = helloError(envelope.payload);
+      // A host names itself in hello_error. When that is not the paired host,
+      // a different machine now answers at this address, and its rejection
+      // says nothing about this pairing. A host too old to name itself keeps
+      // the old reading: its rejection is taken as the paired host's.
+      const rejectingHostId = rejection instanceof PairedRuntimeHelloRejectedError
+        ? rejection.rejectingHost?.deviceId ?? null
+        : null;
+      if (rejectingHostId && rejectingHostId !== expectedHostId) {
+        throw new PairedRuntimeHostMismatchError(
+          expectedHostId,
+          rejectingHostId,
+          (rejection as PairedRuntimeHelloRejectedError).helloCode,
+        );
+      }
+      throw rejection;
+    }
     const hello = envelope.payload as PairedRuntimeHelloOkPayload;
     const actualHostId = hello?.brain?.deviceId?.trim();
-    const expectedHostId = options.credentials.hostIdentity.deviceId.trim();
     if (!actualHostId || actualHostId !== expectedHostId) {
-      throw new Error(
-        `Sync endpoint identity mismatch (expected ${expectedHostId || "unknown"}, received ${actualHostId || "unknown"}).`,
-      );
+      throw new PairedRuntimeHostMismatchError(expectedHostId, actualHostId ?? "");
     }
     return Object.assign(connection, {
       hello,
