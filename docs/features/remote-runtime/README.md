@@ -1498,204 +1498,149 @@ having no holder, which reads as "free" and is the opposite of the truth.
 
 ## Wedge supervision and remote repair
 
-A brain can fail in a way no supervisor notices: the event loop dies while the
-process stays alive. launchd's `KeepAlive` and the Windows supervisor loop both
-react only to an **exit**, so a hung brain keeps its socket and its sync lease
-and answers nothing. Three layers of different kinds cover that:
+A brain can hang with its process alive: the event loop dies, the brain keeps
+its socket and sync lease, and answers nothing. launchd's `KeepAlive` and the
+Windows supervisor react only to an **exit**, so three layers cover a hang:
 
-- **In-process** — `brainLoopWatchdog` runs a worker thread that SIGKILLs the
+- **In-process.** `brainLoopWatchdog` runs a worker thread that SIGKILLs the
   brain when the event loop stalls past its threshold. It cannot help when the
-  worker itself never starts or dies with the process.
-- **External** — the brain writes `<ADE home>/runtime/heartbeat.json`
+  worker never starts or dies with the process.
+- **External.** The brain writes `<ADE home>/runtime/heartbeat.json`
   (`{pid, ts, seq, startedAt}`) every 15 s from a timer that ticks while idle
-  (`services/runtime/brainHeartbeat.ts`). Something outside the process reads it
-  and kills a brain whose beat is older than 90 s **and** whose pid is still
-  alive. Both conditions are required: an absent or unreadable heartbeat means
-  "no judgement available", never "wedged", and a stale beat with a dead writer
-  is left to the supervisor that already owns the restart.
-
-  A sleeping laptop suspends the brain and its watcher together, so on wake an
-  old beat describes the suspension, not a wedge. A kill needs three facts, and
-  `evaluateBrainHeartbeat` returns a named verdict for each one it lacks:
-
-  1. the beat is stale and its writer is alive and positively identified;
-  2. **the watcher was awake to watch it go stale** — it measures its own
-     lateness, which is the one thing a suspended process can still report.
-     When the gap since its previous run reaches
+  (`services/runtime/brainHeartbeat.ts`). A watcher kills a brain whose beat is
+  older than 90 s **and** whose pid is alive. An absent or unreadable heartbeat
+  is "no judgement", never "wedged"; a stale beat with a dead writer is left to
+  the supervisor. `evaluateBrainHeartbeat` needs three facts and returns a
+  named verdict for each one it lacks:
+  1. The beat is stale and its writer is alive and positively identified.
+  2. **The watcher was awake to see it go stale.** A sleeping laptop suspends
+     both. When the gap since the watcher's last run reaches
      `brainWatcherSuspendFloorMs` (`max(90 s, 3 × the check interval)`) and the
      beat's age fits inside that gap plus the staleness window, the verdict is
-     `machine_slept` and nothing is killed. A brain that went quiet days before
-     a ten-minute nap is not explained by the nap and still dies;
-  3. **a previous check already saw this same beat**, matched on the beat's own
-     timestamp rather than on its age. A brain the OS merely stopped scheduling
-     beats again before the next check and never reaches a kill; a wedged one is
-     still sitting on the same timestamp a cadence later. Until then the verdict
-     is `stale_unconfirmed`. A beat that comes back fresh clears the strike, so
-     the two stale checks have to be consecutive.
+     `machine_slept` and nothing dies. A brain quiet for days before a short
+     nap still dies.
+  3. **A previous check saw this same beat**, matched on the beat's own
+     timestamp. A brain the OS only stopped scheduling beats again first; until
+     the second consecutive stale check the verdict is `stale_unconfirmed`. A
+     fresh beat clears the strike.
 
-  Both platforms apply the same three rules. macOS gets them from
-  `evaluateBrainHeartbeat`; the Windows supervisor implements them inline in
-  PowerShell against the same heartbeat file and the same suspend floor.
-  `ADE_BRAIN_HEARTBEAT_STALE_MS` overrides the 90 s staleness threshold on both
-  platforms, under the same rules — a positive integer wins, anything else keeps
-  the default, and the result never drops below 30 s — and the suspend floor is
-  computed after the override, so it rescales. Only the pickup differs: the
-  macOS check is a fresh process every 60 s and reads the variable at the next
-  check, while the Windows supervisor reads it once at start, so a changed
-  machine variable applies after the brain service restarts.
-  - *macOS*: a separate launch agent, `com.ade.watchdog` (`.alpha` for the
-    Alpha channel), `StartInterval` 60 s, running `ade runtime watchdog-check` from
-    the same binary the brain was installed from. It is installed and removed
-    alongside the brain's own launch agent, best effort — a machine that cannot
-    install the watchdog still gets a brain.
-  - *Windows*: the PowerShell supervisor's restart loop waits in 15 s slices
-    and stops a child that stopped beating, with the same three rules
-    (`Get-StaleBeatTs` returns the beat's timestamp, for the second strike). No
-    Scheduled Task.
-- **Desktop, when running** — `projectRecoveryService.restartBrain` already
-  probes and repairs. The watchdog exists for the headless case, and does not
-  duplicate it.
+  `ADE_BRAIN_HEARTBEAT_STALE_MS` overrides the 90 s (a positive integer wins,
+  never below 30 s), and the suspend floor rescales with it.
+  - *macOS*: a separate launch agent, `com.ade.watchdog` (`.alpha` for Alpha),
+    `StartInterval` 60 s, runs `ade runtime watchdog-check` from the brain's
+    binary. It is installed and removed with the brain's agent, best effort.
+    Each check is a fresh process, so it reads the variable each time.
+  - *Windows*: the PowerShell supervisor's restart loop waits in 15 s slices and
+    applies the same three rules inline (`Get-StaleBeatTs` returns the beat's
+    timestamp for the second strike). No Scheduled Task. It reads the variable
+    once at start, so a change applies after the service restarts.
+- **Desktop, when running.** `projectRecoveryService.restartBrain` probes and
+  repairs; the watchdog is for the headless case.
 
-A kill writes the same `event-loop-wedge.json` breadcrumb the in-process
-watchdog writes, so the next start promotes it to `last-wedge.json`, logs
-`brain.recovered_from_wedge`, and it surfaces through the existing `lastWedge`
-field on `runtime/info` with no second reporting path.
+A kill writes the `event-loop-wedge.json` breadcrumb the in-process watchdog
+writes, so the next start promotes it to `last-wedge.json`, logs
+`brain.recovered_from_wedge`, and shows it in `runtime/info`'s `lastWedge`.
 
-The brain's launch agent also pins `ThrottleInterval` to 10 s. While
-`/Applications/ADE.app` is being replaced the brain can be restarted onto
-half-written files and die instantly (`Cannot find module '/serve'`); the floor
-turns that into a slow, self-healing retry instead of a hot spin.
-
-`brainFreshnessMonitor` handles the other half of a swap: it re-hashes the
-installed runtime every ~5 minutes and restarts into new code when the hash
-moves. A file that is missing, unreadable, or still changing is treated as a
-swap **in progress** — it must hold still across a settle pause before it is
-hashed at all — so a mid-copy binary can never trigger a restart into a
-truncated file.
+- The brain's launch agent pins `ThrottleInterval` to 10 s. While
+  `/Applications/ADE.app` is being replaced, a restart onto half-written files
+  dies at once (`Cannot find module '/serve'`); the floor makes that a slow
+  retry, not a hot spin.
+- `brainFreshnessMonitor` re-hashes the installed runtime about every 5 minutes
+  and restarts into new code when the hash moves. A missing, unreadable or
+  changing file is a swap **in progress** and must hold still across a settle
+  pause before it is hashed, so a mid-copy binary never triggers a restart.
 
 ### `machine.updateAndRestart`
 
-A machine that is stuck, or quietly running old code because no local desktop
-ever connected to notice, has to be fixable from wherever the user is. The
-projectless runtime method `machine.updateAndRestart` does that. It requires the
-`cto` role and only exists on the authenticated runtime RPC endpoint, so it
-inherits the paired/authenticated channel; it is never automatic and never
-silent.
+A machine that is stuck, or runs old code because no local desktop noticed,
+must be fixable from wherever the user is. The projectless method
+`machine.updateAndRestart` needs the `cto` role and the authenticated runtime
+RPC endpoint. It is never automatic and never silent.
 
-The host records who asked (`requestedBy`: a machine name and a client kind).
-The name comes from the paired device record of the connection; the client's
-own claim counts only when there is none, and it is cleaned and length-capped
-either way. It appears in `brain.remote_update_route` and
-`autoUpdate.remote_install_requested`, and, when the update was accepted, in
-the message agents get after the restart ("an update to 1.2.3 that "Mac Studio"
-asked for"). It never changes the routing, and an older client or app that
-sends or reads no such field keeps working.
+- **Who asked.** The host records `requestedBy` (a machine name and client
+  kind), from the connection's paired device record (the client's own claim
+  only when there is none; cleaned and length-capped). It appears in
+  `brain.remote_update_route`, `autoUpdate.remote_install_requested`, and the
+  message agents get after an accepted restart ("an update to 1.2.3 that "Mac
+  Studio" asked for"). It never changes routing; older clients ignore it.
+- **Version.** The client sends `targetVersion`. A machine already on it (or
+  past it) installs and restarts nothing: "Already on X — nothing to update,
+  nothing restarted" (`alreadyCurrentResult`), because a restart stops every
+  agent there. A request with no version is the "fix a stuck machine" button
+  and still restarts.
+- **Steps.** The reply names `check`, `apply` and `restart`. `restart` comes
+  back `pending`: it ends the process that answers, so the client confirms by
+  reconnecting and reading the version.
 
-The client names the version it believes is newest (`targetVersion`); the host
-refuses to "update" to a version it already runs or has passed. A versioned
-request the machine already satisfies installs nothing and restarts nothing — it
-answers "Already on X — nothing to update, nothing restarted"
-(`alreadyCurrentResult`) — because a needless restart stops every agent on that
-machine. A request naming no version is the "fix a stuck machine" button and
-still restarts. The reply is step-attributed — `check`, `apply`, `restart` — so
-a failure names the step instead of saying "something went wrong". The `restart`
-step comes back
-`pending` on purpose: it tears down the process answering the call, so the
-client confirms by reconnecting and reading the version. A brain cannot report
-on its own replacement.
+**Which updater runs.** A brain served by an open desktop app belongs to it:
+the app re-registers its runtime whenever the brain goes missing, so a
+standalone runtime installed under it is replaced within milliseconds.
 
-Which updater runs depends on whether the host's desktop app is open. A brain
-served by an open app belongs to that app: the app re-registers its own runtime
-whenever it sees the brain go missing, so a standalone runtime installed under
-it is replaced again within milliseconds. So the host asks
-first: the brain calls `app_update.install` on this machine's desktop bridge
-when an app answers there
-(`apps/ade-cli/src/services/runtime/desktopAppUpdateBridge.ts`). The app
-(`apps/desktop/src/main/services/updates/remoteUpdateInstall.ts`) checks its own
-feed, then answers `installing` (staged: it runs its consented
-`quitAndInstall` 1.5 s after replying, so the reply reaches the caller before
-the service uninstall takes the brain down), `downloading` (it installs when
-the download finishes, giving up after 30 minutes), `already_current`,
-`no_update`, `unsupported` (development and channel builds), or `failed`. The
-app's post-update transaction then restarts the brain on the new build. This is
-the same path on macOS and Windows. With no app attached, an app too old to
-know the method, or `unsupported`, the standalone `ade brain update` runs as
-before. The reply's `route` says which (`desktop_app` or `standalone`), and
-`pendingVersion` names the version the machine should come back on.
+- The brain first calls `app_update.install` on this machine's desktop bridge
+  (`apps/ade-cli/src/services/runtime/desktopAppUpdateBridge.ts`). The app
+  (`apps/desktop/src/main/services/updates/remoteUpdateInstall.ts`) checks its
+  feed and answers `installing` (it runs its consented `quitAndInstall` 1.5 s
+  after the reply), `downloading` (installs when done, gives up after 30
+  minutes), `already_current`, `no_update`, `unsupported` (development and
+  channel builds) or `failed`. The app's post-update step restarts the brain.
+  The same on macOS and Windows.
+- With no app, an app too old for the method, or `unsupported`, the standalone
+  `ade brain update` runs. The reply's `route` (`desktop_app` or `standalone`)
+  says which, and `pendingVersion` names the version to come back on.
+- A connected Windows machine whose build cannot self-install
+  (`isWindowsSelfInstallBlocked`, `shared/updateVersions.ts`) gets no
+  `app_update.install`. `runtimeBridge` uses `updateViaRemoteTerminal`
+  (`remoteTerminalUpdate.ts`): a remote PTY in the primary lane of that
+  machine's live project runs `ade brain update [--version X]`, and the client
+  polls `session.get`. Exit 0 or a dropped connection is installing (route
+  `terminal`); a refused read while connected is retried, then failed; a
+  non-zero exit is failed with a manual hint. It gives up after
+  `REMOTE_MACHINE_UPDATE_TIMEOUT_MS` (15 min).
+- The app-routed install on a healthy build runs a read-only service-removal
+  preflight first, so `failed` carries the reason. See
+  [Desktop auto-update](../onboarding-and-settings/desktop-auto-update.md).
+- A brain update this app did not start writes
+  `<ADE home>/runtime/update-status.json`. While it says `staged` (2 min),
+  `applying` or `restarting` (5 min), or `succeeded` (60 s), the desktop
+  connection pool does not repair the service, so an open app cannot put its
+  older runtime back.
 
-A connected Windows machine on a build that cannot self-install
-(`isWindowsSelfInstallBlocked`, `shared/updateVersions.ts`) is not sent
-`app_update.install`. `runtimeBridge` routes its Update to
-`updateViaRemoteTerminal` (`remoteTerminalUpdate.ts`): it opens a remote PTY in
-the primary lane of that machine's live project, runs
-`ade brain update [--version X]`, and polls `session.get`. Exit 0 or a dropped
-connection means installing (reply route `terminal`); a refused read while still
-connected is retried, then reported failed; a non-zero exit is failed with a
-manual hint. It gives up after `REMOTE_MACHINE_UPDATE_TIMEOUT_MS` (15 min), and
-the IPC ceiling allows for it. The app-routed install on a healthy build first
-runs a read-only service-removal preflight, so `failed` carries the reason
-instead of an `installing` that cannot finish. See
-[Desktop auto-update](../onboarding-and-settings/desktop-auto-update.md).
+**The client checks the result.** Before it sends, it re-reads each machine's
+live version and skips one already on the target with the same "Already on X"
+answer. It records `pendingVersion` (from an older host, `targetVersion` for an
+applied update). When the machine reports that version the row says "Updated
+to X"; after 5 minutes (35 for a download) it says "Still on Y — the update to
+X didn't apply". A reconnect after the restart refreshes the version
+(`RemoteConnectionPool.onEntryConnected`), so a finished update is never
+called failed. The button stays busy until then.
 
-A brain update this app did not start (`ade brain update` on the machine, or a
-remote one that fell back to the standalone route) writes its progress to
-`<ADE home>/runtime/update-status.json`. While that file says `staged` (2 min),
-`applying` or `restarting` (5 min), or `succeeded` (60 s), the desktop's
-connection pool treats it as an update window and does not repair the service,
-so an open app cannot put its older runtime back over the new one.
+**Nothing restarts without a yes.** The desktop first asks what the update
+would stop (`ade.remoteRuntime.getUpdateImpact` → `runtime.updateImpact`) and
+shows it in the confirmation: chats mid-turn by name, plus counts of open CLI
+sessions and terminals (a restart closes each).
 
-The client does not trust "reconnecting…". Before it sends anything it re-reads
-each machine's live version and skips one already on the target (or newer) with
-the same "Already on X — nothing to update, nothing restarted" answer, so a
-stale list cannot stop work on a machine that needs nothing. It then records
-`pendingVersion` (or, from a host that predates it, `targetVersion` for an
-applied update) and checks the machine against it: once the machine reports that
-version the row says
-"Updated to X"; if it has not after 5 minutes (35 for a download) it says
-"Still on Y — the update to X didn't apply" with the version it is actually on.
-A call that reconnects the machine after its restart refreshes the recorded
-version (`RemoteConnectionPool.onEntryConnected`), so a finished update is never
-called a failed one. The button stays busy until then.
+- `runtime.updateImpact` is `cto`-gated, reads only booted projects (it never
+  boots one), and includes personal chats. A machine too old for it falls back
+  to `runtime.activitySummary`: "Work is running" or "Nothing is running".
+- One 3-second deadline covers both asks; no answer reads "Couldn't check
+  what's running", never idle. The IPC never rejects.
+- With two or more connected machines behind, `MachinesBehindBanner` ("N
+  machines are behind", naming the target) offers **Update all**: one
+  confirmation with a block per machine, then the updates in parallel.
 
-Nothing restarts without a yes. Before the call, the desktop asks the machine
-what the update would stop (`ade.remoteRuntime.getUpdateImpact`, which calls the
-projectless `runtime.updateImpact`) and shows it in the confirmation: the chats
-mid-turn by name, plus counts of the CLI sessions and terminals that are open (a restart closes each one, quiet or not).
-`runtime.updateImpact` is `cto`-gated, reads only projects the brain has already
-booted (it never boots one to answer), and includes personal chats. A machine
-that needs the update is usually too old to have the method, so the desktop
-falls back to `runtime.activitySummary` and says only "Work is running" or
-"Nothing is running". One 3-second deadline covers both asks; a machine that
-has not answered by then (or is no longer saved) reads "Couldn't check what's
-running", never as idle. The IPC never rejects. When two or more connected
-machines are behind, a banner above the section header offers **Update all**
-(`MachinesBehindBanner`, "N machines are behind", naming the target version):
-one confirmation with a block per machine, then the same per-machine update in
-parallel.
-
-The same action is offered where this computer's own update lives: General's
-ADE card has an update row for every machine
+**Where it is offered.** General's ADE card has an update row per machine
 (`components/settings/general/MachineUpdateRows.tsx`), and **Update other
-machines** (`components/settings/OtherMachinesUpdateSection.tsx`) sits under
-Your computers on the Account page. Each lists the machines with their version
-and track, "Update" for the ones behind the newest build this computer knows on
-**their own** track (a Stable machine is never sent a Beta build, or the
-reverse), and "Update all N". Every place that starts or shows one of
-these updates, the install dialog below included, goes through one store
-(`components/remoteTargets/machineUpdates.ts`), so an update started in one
-shows as in flight in the others and its outcome survives leaving the page.
-The words for what is running live in
-`components/remoteTargets/MachineUpdateImpact.tsx`. The
-browser client cannot ask a machine to update, so the section is not rendered
-there.
-
-The same rows appear in this computer's own restart dialog
-(`components/app/autoUpdateInstallAction.tsx`) for connected machines behind on
-their track, each with its own "Update" box (the confirm dialog lets its body
-place the checkboxes in its rows, each still answered by key). The machines
-picked update first and this computer restarts last, because its relaunch ends
-the run. If one refuses, the dialog names it and asks whether to restart here
-anyway.
+machines** (`components/settings/OtherMachinesUpdateSection.tsx`) is under Your
+computers on the Account page. Each lists machines with version and track,
+"Update" for those behind the newest build on **their own** track (Stable never
+gets Beta, or the reverse), and "Update all N". This computer's restart dialog
+(`components/app/autoUpdateInstallAction.tsx`) shows the same rows with an
+"Update" box each; picked machines update first and this computer restarts
+last, and a refusal is named with a choice to restart anyway. All of them use
+one store (`components/remoteTargets/machineUpdates.ts`), so an update shows as
+in flight everywhere and its outcome survives leaving the page. The words for
+what runs live in `components/remoteTargets/MachineUpdateImpact.tsx`. The
+browser client cannot ask a machine to update, so it does not show the section.
 
 ### Account state and reachability
 
