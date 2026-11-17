@@ -738,7 +738,8 @@ you add a poll, a timer, a spawn, a read or a background job.
   instead of the changed strip. Put the blur only on a surface that is open for
   a short time (a menu, a popover, a hover state), and give the blur the same
   condition that shows the element. A blur over a solid surface shows nothing;
-  use a solid colour there. Check with the harness dirty rects or Quartz
+  use a solid colour there. An element that stays shown on a touch surface
+  (`[@media(hover:none)]`) takes a solid plate for the same reason. Check with the harness dirty rects or Quartz
   Debug's flash screen updates.
   A computed `backdrop-filter` of `none` does not prove the element has no
   blur: the renderer's CSS build keeps only the prefixed

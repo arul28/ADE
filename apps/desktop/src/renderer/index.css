@@ -5091,6 +5091,16 @@ button, [role="button"] {
   color: var(--chat-copy-button-hover-fg) !important;
 }
 
+/* On a touch surface the block's buttons are always shown, and their plate is
+   nearly transparent: give them the block's own solid colour instead of a blur,
+   which would otherwise stay on the page for every code block in the chat (and
+   on macOS, make Chromium redraw the whole window for every streamed word). */
+@media (hover: none) {
+  .ade-chat-copy-button {
+    background: var(--chat-code-bg, var(--color-surface-recessed)) !important;
+  }
+}
+
 /* Animated timeline connector */
 .ade-timeline-line {
   background: linear-gradient(180deg,
