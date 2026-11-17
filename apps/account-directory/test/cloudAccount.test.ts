@@ -1781,7 +1781,7 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     expect([blockedAccount.status, ((await blockedAccount.json()) as { blocked?: boolean }).blocked]).toEqual([200, true]);
     expect(await (await harness.send(OWNER, "GET", "/cloud/access")).json()).toEqual({ enabled: false, readOnly: true, reason: expect.any(String) });
     expect((await harness.send(OWNER, "GET", "/cloud/lanes/without-computer")).status).toBe(200);
-    for (const [method, url] of [["POST", `/cloud/instances/${INSTANCE}/start`], ["GET", "/cloud/instances"], ["POST", "/cloud/chats/key/chat/messages"], ["DELETE", "/cloud/chats/key/chat"]] as const) {
+    for (const [method, url] of [["POST", `/cloud/instances/${INSTANCE}/start`], ["GET", "/cloud/instances"], ["POST", "/cloud/chats/key/chat/messages"], ["DELETE", "/cloud/chats/key/chat"], ["POST", "/cloud/integrations/linear/query"], ["PUT", "/cloud/limits"]] as const) {
       const refused = await harness.send(OWNER, method, url, method === "GET" ? undefined : {});
       expect([url, refused.status, ((await refused.json()) as { error?: { code?: string } }).error?.code]).toEqual([url, 403, "account_blocked"]);
     }

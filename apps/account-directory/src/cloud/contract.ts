@@ -1153,7 +1153,9 @@ export const CLOUD_PLAN_PAST_DUE_SENTENCE = "ADE Cloud suspended this machine be
 /**
  * The GET routes a blocked account still reads (`readOnly`): everything it
  * can look at, nothing that wakes, makes or sends. A path matches when it is
- * one of these or starts with one plus `/`.
+ * one of these or starts with one plus `/`. The Linear and Jira reads are
+ * POST routes that use the account's own credentials, so a blocked account
+ * can not use them.
  */
 export const CLOUD_BLOCKED_READ_ROUTES = [
   "/cloud/account",
@@ -1166,6 +1168,7 @@ export const CLOUD_BLOCKED_READ_ROUTES = [
   "/cloud/sign-ins",
   "/cloud/models",
   "/cloud/limits",
+  "/cloud/account-secrets",
   "/cloud/projects/overview",
   "/cloud/cto",
 ] as const;

@@ -45,6 +45,12 @@ export async function deleteCloudAccount(
   }
 
   await env.DB.prepare("delete from cloud_wakes where user_id = ?").bind(userId).run();
+  // The topics that wake a computer at rest, their state, and the request counts of the Linear and Jira reads.
+  await env.DB.batch([
+    env.DB.prepare("delete from cloud_event_wakes where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_event_wake_state where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_request_windows where user_id = ?").bind(userId),
+  ]);
   // Lane names, repository origins and branches of lanes whose computer is gone.
   await env.DB.prepare("delete from cloud_lanes_without_computer where user_id = ?").bind(userId).run();
   // Saved chats, their queued messages, CLI and shell copies, Git summaries and fork capsules, then the key.
