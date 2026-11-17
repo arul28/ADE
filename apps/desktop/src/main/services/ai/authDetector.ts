@@ -24,6 +24,7 @@ import { pinnedToolForProvider, pinnedToolPresence, resolvePinnedCursorAgentCli 
 import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
 import type { PinnedToolState } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { loadQwenUserSettings } from "./qwenUserSettings";
+import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, devinCredentialFiles, factoryConfigHome, ghHostsFiles, grokConfigHome } from "../shared/providerConfigHomes";
 import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 import { kimiCodeLoginInKeyring, resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
@@ -180,7 +181,11 @@ async function inspectAcpCliCredentials(
   }
 
   if (cli === "qwen") {
-    if (env.OPENAI_API_KEY?.trim() || env.QWEN_API_KEY?.trim() || env.DASHSCOPE_API_KEY?.trim()) {
+    // On an ADE Cloud computer OPENAI_API_KEY is the Codex key, not a Qwen
+    // key: alone it must not mark Qwen ready. Qwen's ADE Cloud key goes in
+    // Qwen's own settings.json, which the settings read below finds.
+    const openAiCounts = !isAdeCloudComputer(env);
+    if ((openAiCounts && env.OPENAI_API_KEY?.trim()) || env.QWEN_API_KEY?.trim() || env.DASHSCOPE_API_KEY?.trim()) {
       return { authenticated: true, verified: false };
     }
     const root = dir(env.QWEN_HOME, ".qwen");

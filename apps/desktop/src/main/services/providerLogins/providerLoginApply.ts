@@ -628,6 +628,60 @@ export function applyCodexKey(source: string, token: string, ctx: CarryContext, 
   };
 }
 
+/** The model a saved Qwen key (a DashScope key) signs in to, as Qwen's own docs set it up. */
+export const QWEN_KEY_MODEL = {
+  id: "qwen3.5-plus",
+  name: "Qwen 3.5 Plus",
+  baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+  envKey: "DASHSCOPE_API_KEY",
+} as const;
+
+/**
+ * A saved ADE Cloud Qwen key in Qwen's `settings.json`: the DashScope model
+ * provider, the `openai` auth type, and the key in the file's `env` block.
+ * The key never goes in the brain's env, so no other process reads it and
+ * it never takes the place of the Codex `OPENAI_API_KEY`. Only the auth part
+ * goes in, through the same hash tracking as a carried Qwen sign-in, so a
+ * person's later edit stays and a removed key leaves only ADE's part. A
+ * default model is set only where the file names none.
+ */
+export function applyQwenKey(source: string, token: string, ctx: CarryContext, previous: AppliedEntry | null, now: number): ApplyResult {
+  const dir = carryRootDir("qwenHome", ctx);
+  if (!dir) return { ok: false, reason: "refused_path" };
+  const abs = path.join(dir, "settings.json");
+  const current = readJsonObject(abs);
+  if (current === "unreadable") return { ok: false, reason: "unreadable_target" };
+  const target: Record<string, unknown> = current === "missing" ? {} : { ...current };
+  const security = isRecord(target.security) ? { ...target.security } : {};
+  security.auth = { selectedType: "openai" };
+  target.security = security;
+  target.env = { ...(isRecord(target.env) ? target.env : {}), [QWEN_KEY_MODEL.envKey]: token };
+  target.modelProviders = { openai: [{ ...QWEN_KEY_MODEL }] };
+  const model = isRecord(target.model) ? target.model : null;
+  if (typeof model?.name !== "string" || !model.name.trim()) target.model = { ...(model ?? {}), name: QWEN_KEY_MODEL.id };
+  const envKeys = [QWEN_KEY_MODEL.envKey];
+  try {
+    writePrivateFileAtomic(abs, encodeJson(target));
+  } catch (error) {
+    return { ok: false, reason: "write_failed", code: (error as NodeJS.ErrnoException)?.code ?? null };
+  }
+  for (const old of previous?.files ?? []) removeIfOurs(old);
+  return {
+    ok: true,
+    entry: {
+      provider: "qwen",
+      source,
+      contentHash: shortHash(token),
+      accessOnly: false,
+      renewalSafe: true,
+      files: [],
+      loginHashes: readBackLoginHashes("qwen", null, ctx),
+      qwen: { path: abs, partHash: qwenPartHash(qwenPartOf(target, envKeys)), envKeys, wroteProviders: true },
+      appliedAt: now,
+    },
+  };
+}
+
 /**
  * Take one applied sign-in away: each file only while it is still the one
  * ADE wrote; Pi's entry only while it is unchanged; Kimi's section only when

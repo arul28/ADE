@@ -143,6 +143,7 @@ export const qwenDialect = defineAcpDialect({
     "QWEN_RUNTIME_DIR",
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
+    "DASHSCOPE_API_KEY",
   ],
   // 0.22.3/0.24.0/0.25.0 have no `session/close`. A process may never be shared.
   oneProcessPerSession: true,

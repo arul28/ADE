@@ -23,6 +23,7 @@ export type CloudSignInId =
   | "copilot"
   | "devin"
   | "muse"
+  | "qwen"
   | "openrouter";
 
 export type CloudSignInSpec = {
@@ -127,6 +128,18 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
     note: "Make an API key on Meta's developer site.",
   },
   {
+    id: "qwen",
+    label: "Qwen Code",
+    providers: ["qwen"],
+    method: "key",
+    // Never in the brain's env: the cloud computer writes it into Qwen's own
+    // settings.json (`applyQwenKey`), so it can't clash with the OpenAI key.
+    env: "DASHSCOPE_API_KEY",
+    keyName: "DashScope API key",
+    keyUrl: "https://modelstudio.console.alibabacloud.com/",
+    note: "Make an API key in Alibaba Cloud Model Studio. Qwen Code uses it for Qwen 3.5 Plus.",
+  },
+  {
     id: "openrouter",
     label: "OpenCode and Pi",
     providers: ["opencode", "pi"],
@@ -140,11 +153,6 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
 
 /** Providers with no sign-in a new machine can start with, and why, in the card's words. */
 export const CLOUD_SIGN_IN_GAPS: readonly { provider: string; label: string; reason: string }[] = [
-  {
-    provider: "qwen",
-    label: "Qwen Code",
-    reason: "Reads its models and key from its own settings file, and its key would clash with the OpenAI key. Sign in on the machine.",
-  },
   {
     provider: "kimi",
     label: "Kimi Code",
