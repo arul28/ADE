@@ -32,6 +32,84 @@ function cloudflarePagesOutput(): Plugin {
 }
 
 /**
+ * Dev only: a test sign-in for agents that check the web client on screen.
+ * When `ADE_DEV_TEST_SESSION_FILE` names a Clerk client session file
+ * (`{ clientAuth, sessionId }`), `GET /__ade_dev/session-token` mints a fresh
+ * session token for that account here in Node. The web client reads it only
+ * in a dev build (`account/devTestSession.ts`). The route answers loopback
+ * callers only, and never logs the token. `vite build` never has it.
+ */
+function devTestSession(): Plugin | null {
+  const file = process.env.ADE_DEV_TEST_SESSION_FILE?.trim();
+  if (!file) return null;
+  const fapiBase = (() => {
+    const key = process.env.CLERK_PROD_PUBLISHABLE_KEY?.trim();
+    if (key) {
+      try {
+        const host = Buffer.from(key.replace(/^pk_(live|test)_/, ""), "base64").toString("utf8").replace(/\$$/, "");
+        if (/^[a-z0-9.-]+$/i.test(host)) return `https://${host}`;
+      } catch {
+        // Fall back to the production Clerk host.
+      }
+    }
+    return "https://clerk.ade-app.dev";
+  })();
+  let kept: { token: string; expiresAtMs: number } | null = null;
+  const expiresAtOf = (token: string): number => {
+    try {
+      const claims = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { exp?: unknown };
+      return typeof claims.exp === "number" ? claims.exp * 1000 : Date.now() + 30_000;
+    } catch {
+      return Date.now() + 30_000;
+    }
+  };
+  const mint = async (): Promise<string> => {
+    if (kept && kept.expiresAtMs - Date.now() > 15_000) return kept.token;
+    const session = JSON.parse(fs.readFileSync(file, "utf8")) as { clientAuth?: unknown; sessionId?: unknown };
+    if (typeof session.clientAuth !== "string" || typeof session.sessionId !== "string" || !/^sess_[A-Za-z0-9]+$/.test(session.sessionId)) {
+      throw new Error("The test session file has no client session. Run testaccount.mjs token once.");
+    }
+    const response = await fetch(`${fapiBase}/v1/client/sessions/${session.sessionId}/tokens?_is_native=1`, {
+      method: "POST",
+      headers: { authorization: session.clientAuth },
+    });
+    const body = await response.json().catch(() => null) as { jwt?: unknown } | null;
+    if (!response.ok || typeof body?.jwt !== "string") {
+      throw new Error(`Clerk did not give a session token (${response.status}). Run testaccount.mjs token once.`);
+    }
+    kept = { token: body.jwt, expiresAtMs: expiresAtOf(body.jwt) };
+    return body.jwt;
+  };
+  return {
+    name: "ade-web-client-dev-test-session",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use("/__ade_dev/session-token", (req, res) => {
+        const remote = req.socket.remoteAddress ?? "";
+        const send = (status: number, value: unknown) => {
+          res.statusCode = status;
+          res.setHeader("content-type", "application/json");
+          res.setHeader("cache-control", "no-store");
+          res.end(JSON.stringify(value));
+        };
+        if (remote !== "127.0.0.1" && remote !== "::1" && remote !== "::ffff:127.0.0.1") {
+          send(403, { error: "loopback only" });
+          return;
+        }
+        if (req.method !== "GET") {
+          send(405, { error: "GET only" });
+          return;
+        }
+        void mint().then(
+          (token) => send(200, { token }),
+          (error: unknown) => send(503, { error: error instanceof Error ? error.message : "no token" }),
+        );
+      });
+    },
+  };
+}
+
+/**
  * In dev, Vite's root (src/renderer) also contains the desktop renderer's
  * index.html, which would otherwise be served at `/` and `/work` (the desktop
  * app + browserMock), shadowing the web client. Rewrite every HTML navigation
@@ -145,7 +223,7 @@ const desktopPackageVersion = process.env.ADE_WEB_VERSION?.trim()
 export default defineConfig({
   root: "src/renderer",
   base: "/",
-  plugins: [react(), webClientDevEntry(), cloudflarePagesOutput(), sceneThreePlugin()],
+  plugins: [react(), webClientDevEntry(), devTestSession(), cloudflarePagesOutput(), sceneThreePlugin()],
   server: {
     host: true,
     port: 5174,

@@ -1,4 +1,5 @@
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
+import { fetchDevTestSessionToken } from "./devTestSession";
 import { CLOUD_PATHS } from "../../../../../account-directory/src/cloud/contract";
 import { captureError } from "../../../shared/sentry/capture";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
@@ -357,6 +358,33 @@ function machinesSignature(machines: readonly AdeAccountMachine[]): string {
     .join("\u0001");
 }
 
+/**
+ * Dev only: the sessions of the dev server's test account (`devTestSession.ts`).
+ * Null in a production build, so the bundler removes it and the code below.
+ */
+const devTestSessions: WeakSet<BrowserAccountSession> | null = import.meta.env.DEV ? new WeakSet() : null;
+
+type DevTestSession = { session: BrowserAccountSession; claims: ReturnType<typeof decodeClaims>; expiresAtMs: number };
+
+/** Dev only: a session from a test account token. It stores nothing, so a real sign-in in this browser stays. */
+function devTestSessionOf(token: string, nowMs: number): DevTestSession {
+  const claims = decodeClaims(token);
+  const expiresAtMs = accessTokenExpiresAtMs(token) ?? nowMs + 30_000;
+  return { session: { ...claims, accessToken: token, refreshToken: null, expiresAtMs }, claims, expiresAtMs };
+}
+
+/** Dev only: the signed-in snapshot of a test account session. */
+function devTestSnapshotOf(dev: DevTestSession, previous: BrowserAccountSnapshot, first: boolean): BrowserAccountSnapshot {
+  return {
+    state: "signed_in",
+    ...dev.claims,
+    expiresAt: new Date(dev.expiresAtMs).toISOString(),
+    machines: first ? [] : previous.machines,
+    relayBaseUrls: previous.relayBaseUrls,
+    message: null,
+  };
+}
+
 export class BrowserAccountClient {
   private session: BrowserAccountSession | null = null;
   private sessionGeneration = 0;
@@ -513,6 +541,17 @@ export class BrowserAccountClient {
   async bootstrap(): Promise<BrowserAccountSnapshot> {
     const config = this.config;
     if (!config) return this.getSnapshot();
+    if (import.meta.env.DEV) {
+      const devToken = await fetchDevTestSessionToken();
+      if (devToken) {
+        const dev = devTestSessionOf(devToken, this.options.now?.() ?? Date.now());
+        devTestSessions?.add(dev.session);
+        this.session = dev.session;
+        this.sessionGeneration += 1;
+        this.snapshot = devTestSnapshotOf(dev, this.snapshot, true);
+        return await this.loadMachines();
+      }
+    }
     const params = new URLSearchParams(this.location.search);
     if (this.location.pathname !== "/account/callback") {
       return await this.restorePersistedSession(config);
@@ -701,6 +740,15 @@ export class BrowserAccountClient {
       && session.expiresAtMs - (this.options.now?.() ?? Date.now()) > REFRESH_SKEW_MS
     ) {
       return session.accessToken;
+    }
+    if (import.meta.env.DEV && devTestSessions?.has(session)) {
+      const devToken = await fetchDevTestSessionToken();
+      if (!devToken) throw new Error("The dev test sign-in gave no token.");
+      const dev = devTestSessionOf(devToken, this.options.now?.() ?? Date.now());
+      devTestSessions.add(dev.session);
+      this.session = dev.session;
+      this.snapshot = devTestSnapshotOf(dev, this.snapshot, false);
+      return devToken;
     }
     if (!session.refreshToken) {
       if (session.expiresAtMs > (this.options.now?.() ?? Date.now())) {
