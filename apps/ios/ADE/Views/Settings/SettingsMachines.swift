@@ -596,7 +596,12 @@ struct SettingsMachineSections: View {
         hint: "\(controller.liveCount(machines)) of \(MachineFleet.liveMachineLimit) live",
         symbol: "desktopcomputer",
         tint: .green,
-        trailing: { addMenu }
+        trailing: {
+          HStack(spacing: 8) {
+            SettingsMachineUpdateAllButton(machines: sections.connected, origin: Self.updateOrigin)
+            addMenu
+          }
+        }
       ) {
         ADESettingsRows {
           if sections.connected.isEmpty {
@@ -619,10 +624,14 @@ struct SettingsMachineSections: View {
       SettingsCloudMachineRow()
     }
     .task { await account.loadMachines() }
+    .task { await MachineUpdateStore.shared.refreshLatestBuilds() }
+    .machineUpdateConfirmation(origin: Self.updateOrigin)
     .onChange(of: machines.filter(\.isLive).map(\.id)) { _, liveIds in
       controller.retireErrors(liveMachineIds: liveIds)
     }
   }
+
+  static let updateOrigin = "settings.machines"
 
   private func row(_ machine: SettingsMachine) -> some View {
     NavigationLink {
@@ -632,6 +641,7 @@ struct SettingsMachineSections: View {
         machine: machine,
         busy: controller.busyMachineIds.contains(machine.id),
         error: controller.errors[machine.id],
+        updateOrigin: Self.updateOrigin,
         onConnect: { controller.connect(machine) },
         onRetry: { controller.retry(machine) }
       )
@@ -661,8 +671,11 @@ struct SettingsMachineRow: View {
   let machine: SettingsMachine
   var busy = false
   var error: SettingsMachineError?
+  /// Where an Update on this row asks from; nil leaves Update off the row.
+  var updateOrigin: String?
   var onConnect: () -> Void = {}
   var onRetry: () -> Void = {}
+  @ObservedObject private var updates = MachineUpdateStore.shared
 
   var body: some View {
     HStack(spacing: 12) {
@@ -700,6 +713,9 @@ struct SettingsMachineRow: View {
   private var trailing: some View {
     if busy {
       ProgressView().controlSize(.small)
+    } else if let updateOrigin, updates.isBusy(machine) || updates.target(for: machine) != nil {
+      // A live machine that is behind offers its update where "Live" stood.
+      SettingsMachineUpdateControl(machine: machine, origin: updateOrigin)
     } else {
       switch machine.link {
       case .primary(let live, let connecting):
@@ -806,6 +822,8 @@ struct SettingsMachinePage: View {
   @State private var confirmForget = false
   @State private var confirmRemove = false
 
+  private var updateOrigin: String { "settings.machine:\(machineId)" }
+
   var body: some View {
     let machine = settingsMachines(syncService: syncService, account: account, fleet: fleet, hidden: hidden)
       .first { $0.id == machineId }
@@ -815,6 +833,7 @@ struct SettingsMachinePage: View {
           machine: machine,
           busy: controller.busyMachineIds.contains(machine.id),
           error: controller.errors[machine.id],
+          updateOrigin: updateOrigin,
           actions: SettingsMachinePageActions(
             connect: { controller.connect(machine) },
             disconnect: { controller.disconnect(machine) },
@@ -859,6 +878,8 @@ struct SettingsMachinePage: View {
     .navigationBarTitleDisplayMode(.inline)
     .settingsPageClose()
     .adeToast($controller.toast)
+    .task { await MachineUpdateStore.shared.refreshLatestBuilds() }
+    .machineUpdateConfirmation(origin: updateOrigin)
     .sheet(item: $controller.renaming) { machine in
       SettingsMachineRenameSheet(machine: machine)
         .presentationDetents([.medium, .large])
@@ -898,6 +919,8 @@ struct SettingsMachinePageContent: View {
   let machine: SettingsMachine
   var busy = false
   var error: SettingsMachineError?
+  /// Where "Update & restart" asks from; nil leaves the ADE card off.
+  var updateOrigin: String?
   var actions = SettingsMachinePageActions()
   @State private var showsAllProjects = false
 
@@ -925,6 +948,10 @@ struct SettingsMachinePageContent: View {
               ADESettingsValueRow(title: fact.label, value: fact.value)
             }
           }
+        }
+
+        if let updateOrigin, machine.isPaired {
+          SettingsMachineUpdateSection(machine: machine, origin: updateOrigin)
         }
 
         ADESettingsSection("Projects", hint: machine.projects.isEmpty ? nil : "\(machine.projects.count) open", symbol: "folder", tint: .blue) {

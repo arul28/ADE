@@ -42,6 +42,7 @@ import { cleanupLaneShares, handleLaneShareRequest, isLaneShareRequest, type Lan
 import { handleAccountProjectRequest, isAccountProjectRequest, type AccountProjectEnv } from "./accountProjects/routes";
 import { handleAccountLanesRequest, isAccountLanesRequest } from "./accountLanes/routes";
 import { handleGithubAppRequest, isGithubAppRequest, type GithubAppEnv } from "./githubApp/routes";
+import { handleLatestReleasesRequest, isLatestReleasesRequest, type LatestReleasesEnv } from "./latestReleases";
 import { runGithubAppCron } from "./githubApp/grants";
 import {
   cleanupUsageResearch,
@@ -51,7 +52,8 @@ import {
 } from "./usageResearch";
 
 type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv
-  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv & LaneShareEnv & AccountProjectEnv & GithubAppEnv;
+  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv & LaneShareEnv & AccountProjectEnv & GithubAppEnv
+  & LatestReleasesEnv;
 
 const WORKER_NAME = "ade-account-directory";
 
@@ -88,6 +90,10 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // The Jev bonus: account bearer, POST only, no CORS — the ADE brain is the
   // only caller. It forwards to TypeSafe with ADE's key under a daily cap.
   if (isJevBonusRequest(url)) return handleJevBonusRequest(request, env);
+  // The newest ADE build on each track, for the phone's and the web's
+  // "Update & restart" on other machines: account bearer, GET only, the
+  // directory's exact-origin CORS for the web client.
+  if (isLatestReleasesRequest(url)) return handleLatestReleasesRequest(request, env);
   // ADE Cloud (src/cloud): account bearer, the directory's exact-origin CORS for
   // the web client (routes.ts). Timed wakes ride the same gate. Everything
   // under /cloud refuses an account the owner blocked (403), except a launch's

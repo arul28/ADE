@@ -1243,7 +1243,10 @@ export function RemoteTargetList({
               ? updateAttempt.pendingVersion
               // A cloud computer updates itself; its card shows that line instead.
               : row.connected && !extras.selfUpdating
-                ? machineUpdateTargetVersion({ version: row.version }, knownVersions)
+                ? machineUpdateTargetVersion(
+                    { version: row.version, canUpdate: row.status?.capabilities?.remoteUpdate !== false },
+                    knownVersions,
+                  )
                 : null
           }
           manualDownloadUrl={machineUpdateIsManual(row.status ?? {}, updateAttempt) ? row.status?.downloadUrl ?? updateAttempt?.downloadUrl ?? null : undefined}
@@ -1378,7 +1381,14 @@ export function RemoteTargetList({
       ? machinesBehindOnTheirTrack(
           rows.flatMap((row) =>
             row.kind === "saved" && row.connected
-              ? [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel, updateInstallMode: row.status?.updateInstallMode }]
+              ? [{
+                  id: row.target.id,
+                  name: row.target.name,
+                  version: row.version,
+                  versionLabel: row.versionLabel,
+                  updateInstallMode: row.status?.updateInstallMode,
+                  canUpdate: row.status?.capabilities?.remoteUpdate !== false,
+                }]
               : []),
           knownVersions,
         ).filter((machine) => !machineUpdateIsManual(machine, machineUpdates.attempts[machine.id]))

@@ -299,6 +299,10 @@ additive commands that newer phones feature-detect, so a host without them is
 not `limited`. Each entry has a comment with what the phone does without it
 (for example: the Linear connection commands, `cto.getAttention`, the
 session lifecycle commands, the new-lane launch commands).
+`machine.updateImpact` and `machine.updateAndRestart` ("Update & restart" for
+a computer from a phone or ADE Web) are optional too: only a brain started by
+`ade serve` that can update itself registers them, and a client that does not
+see them keeps its "update ADE there" fallback.
 See `remote-commands.md` and `../linear-integration/README.md`.
 
 ## What syncs, what does not

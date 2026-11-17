@@ -54,7 +54,7 @@ import {
 import { startDownloadStallWatchdog, type DownloadStallWatchdog } from "./downloadStallWatchdog";
 import { updateTrackOfVersion, type UpdateTrack } from "../../../shared/updateTrack";
 import { createTrackFeedPolicy } from "./updateTrackFeed";
-import type { LatestByTrackReader } from "./latestByTrack";
+import type { LatestByTrackReader } from "../../../shared/latestByTrack";
 import type { UpdateTrackSwitchResult } from "../../../shared/types";
 import { InstallOnQuitDeferredError } from "./installOnQuit";
 import { RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";

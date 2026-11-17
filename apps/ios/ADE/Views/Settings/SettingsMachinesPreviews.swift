@@ -4,10 +4,47 @@ import SwiftUI
 /// `-adePreviewScreen settings-machines`: Settings with the Connected and
 /// Available machine sections, from fixtures. `settings-machine-page` opens the
 /// MacBook's machine page; `settings-machine-page-failing` opens the Studio
-/// install whose last connect failed.
+/// install whose last connect failed. `settings-machine-updates` puts the
+/// Studio (Stable) and the MacBook (Beta) one build behind their tracks, so
+/// both rows show Update and the section shows "Update all";
+/// `settings-machine-update-page` opens the Studio's page with its ADE card.
+/// Update asks with fixed answers and sends nothing.
 struct SettingsMachinesPreviewHost: View {
   var showsPage = false
   var showsFailingPage = false
+  var showsUpdates = false
+
+  static let updateOrigin = "settings.machines.fixture"
+
+  /// One build behind on each track: Stable 1.2.126 → 1.2.127 and Beta
+  /// 1.2.128-beta.1 → 1.2.128-beta.2.
+  static var updateMachines: [SettingsMachine] {
+    machines.map { machine in
+      var machine = machine
+      if machine.id == "studio" { machine.appVersion = "1.2.126" }
+      if machine.id == "mbp" { machine.appVersion = "1.2.128-beta.1" }
+      return machine
+    }
+  }
+
+  static let updateFixture = MachineUpdateStore.Fixture(
+    latestStable: "1.2.127",
+    latestBeta: "1.2.128-beta.2",
+    impacts: [
+      "machine:studio": MachineUpdateImpact(
+        checked: true,
+        chats: [
+          .init(id: "c1", title: "Refactor the sync relay", projectName: "ADE", resumable: true, awaitingUser: false),
+          .init(id: "c2", title: "Pick a name for the release", projectName: "ADE", resumable: true, awaitingUser: true),
+        ],
+        cliSessions: 0,
+        terminals: 1,
+        continueAfterRestart: true,
+        cliSessionsReopen: false
+      ),
+      "machine:mbp": MachineUpdateImpact(checked: true, chats: [], cliSessions: 0, terminals: 0, continueAfterRestart: true, cliSessionsReopen: false),
+    ]
+  )
 
   /// The Studio install whose last connect failed (the relay reached it, ADE
   /// on it did not answer).
@@ -81,11 +118,26 @@ struct SettingsMachinesPreviewHost: View {
   ]
 
   private func row(_ machine: SettingsMachine) -> some View {
-    SettingsMachineRow(machine: machine, error: machine.id == Self.failingId ? Self.failingError : nil)
+    SettingsMachineRow(
+      machine: machine,
+      error: machine.id == Self.failingId ? Self.failingError : nil,
+      updateOrigin: showsUpdates ? Self.updateOrigin : nil
+    )
   }
 
   var body: some View {
     NavigationStack {
+      content
+    }
+    .machineUpdateConfirmation(origin: Self.updateOrigin)
+    .onAppear {
+      if showsUpdates { MachineUpdateStore.shared.useFixture(Self.updateFixture) }
+    }
+  }
+
+  @ViewBuilder
+  private var content: some View {
+      let machines = showsUpdates ? Self.updateMachines : Self.machines
       if showsFailingPage, let failing = Self.machines.first(where: { $0.id == Self.failingId }) {
         SettingsMachinePageContent(
           machine: failing,
@@ -95,13 +147,21 @@ struct SettingsMachinesPreviewHost: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
       } else if showsPage {
-        SettingsMachinePageContent(machine: Self.machines[1], actions: SettingsMachinePageActions(rename: {}, removeFromAccount: {}))
+        SettingsMachinePageContent(
+          machine: showsUpdates ? machines[0] : machines[1],
+          updateOrigin: showsUpdates ? Self.updateOrigin : nil,
+          actions: SettingsMachinePageActions(rename: {}, removeFromAccount: {})
+        )
           .navigationTitle("")
           .navigationBarTitleDisplayMode(.inline)
       } else {
-        let sections = settingsMachineSections(Self.machines)
+        let sections = settingsMachineSections(machines)
         ADESettingsPage(title: "Settings") {
-          ADESettingsSection("Connected", hint: "2 of 8 live") {
+          ADESettingsSection("Connected", hint: "2 of 8 live", trailing: {
+            if showsUpdates {
+              SettingsMachineUpdateAllButton(machines: sections.connected, origin: Self.updateOrigin)
+            }
+          }) {
             ADESettingsRows {
               ForEach(sections.connected) { row($0) }
             }
@@ -121,7 +181,6 @@ struct SettingsMachinesPreviewHost: View {
         }
         .navigationTitle("Settings")
       }
-    }
   }
 }
 

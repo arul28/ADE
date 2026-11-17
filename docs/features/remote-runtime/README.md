@@ -496,7 +496,9 @@ Tabs, machines and routing:
     the project, renames the folder aside and deletes it. The desktop's own
     computer sends `folderMode: "caller"` and uses the Trash. Older hosts lack
     `machineProjects.removeCopy` and get entry removal only.
-  - It also serves `machine.updateAndRestart` and the
+  - It also serves `machine.updateAndRestart` (a paired phone or browser
+    sends the sync commands `machine.updateImpact` /
+    `machine.updateAndRestart` instead) and the
     `ProjectlessSyncControls` fallback for `sync.*` — see
     [sync and multi-device](../sync-and-multi-device/README.md#sync-on-a-machine-with-no-project).
 
@@ -535,6 +537,9 @@ Brain liveness and lifecycle:
   out, so no caller starts a rival brain on the supervisor's socket.
 - `apps/ade-cli/src/services/runtime/machineUpdateAndRestart.ts` — the host
   side of `machine.updateAndRestart`; embedded and test runtimes refuse it.
+- `apps/ade-cli/src/services/runtime/machineUpdateInFlight.ts` —
+  `joinOrStartMachineUpdate`, the one-run-per-process coalescer that the
+  runtime RPC and the phone's sync command both go through.
 - `apps/ade-cli/src/services/runtime/atomicJson.ts` — the write-temp-then-
   rename JSON helper for these state files.
 - `apps/ade-cli/src/services/projects/` — the machine project registry, the
@@ -1555,7 +1560,13 @@ writes, so the next start promotes it to `last-wedge.json`, logs
 A machine that is stuck, or runs old code because no local desktop noticed,
 must be fixable from wherever the user is. The projectless method
 `machine.updateAndRestart` needs the `cto` role and the authenticated runtime
-RPC endpoint. It is never automatic and never silent.
+RPC endpoint. A paired phone or ADE Web asks for the same run over the sync
+commands `machine.updateImpact` and `machine.updateAndRestart`
+(`apps/ade-cli/src/services/sync/machineUpdateRemoteCommands.ts`): any paired
+controller may run them, and a viewer or lane-share guest is refused. One run
+happens per process, whatever asked for it (`machineUpdateInFlight.ts`): a
+second caller joins the run in flight and gets its result. It is never
+automatic and never silent.
 
 - **Who asked.** The host records `requestedBy` (a machine name and client
   kind), from the connection's paired device record (the client's own claim

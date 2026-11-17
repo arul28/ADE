@@ -100,8 +100,12 @@ before a binding exists, in diagnostics and in tests.
   verdict per turn on the session row.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — the
   `terminal_sessions` rows: CRUD, continuation metadata, `reattach`,
-  `reconcileStaleRunningSessions`, and the settle, status-note, attention and
-  last-turn-failure marks.
+  `reconcileStaleRunningSessions`, `endRunningSessionsOwnedBy` (a stopping
+  process ends the rows it owns: a chat at rest `completed`, work in flight
+  `detached`), `closeStrandedLocalSessions` (rows an earlier clean stop
+  stranded on this computer, proven from the cr-sqlite clock and the process
+  registry), and the settle, status-note, attention and last-turn-failure
+  marks.
   - Agent activity reports are stored with a host time and cleared when a new
     turn is accepted. A new user turn clears settle, attention and failure;
     PTY output clears settle but keeps an agent's status note.
@@ -982,7 +986,10 @@ schema is used for:
 
 Status transitions: `running` → `completed` | `failed` | `disposed` |
 `detached`. `detached` means the durable row and transcript remain, but the
-process-local PTY is no longer reachable from the current ADE runtime.
+process-local PTY is no longer reachable from the current ADE runtime. For a
+chat, a clean stop ends a chat at rest `completed` (the next start does not
+load it; a send or a scheduled wake reopens the row) and a chat with work in
+flight `detached`, which restart recovery resumes.
 
 Those persisted process statuses are intentionally separate from the canonical
 UI phase. `CanonicalSessionPhase` adds `needs_you`, `stale`, `ready`, `idle`,
@@ -1401,6 +1408,33 @@ not affect canonical session state; iOS stores them for sync compatibility.
    any other row (`excludeToolTypes` exists, but no host passes chat types),
    because chat runtimes start fresh. Ended chats stay resumable through the
    SDK, or `ade.agentChat.delete` removes them.
+
+   **A clean stop ends its own rows first.** Both hosts call
+   `sessionService.endRunningSessionsOwnedBy([{ pid, startedAt }])` with the
+   stopping process's registry identity, after every service that drives a
+   session is down and before `processRegistry.stop()` removes its row.
+   - The chat service ends its chats at rest as `completed`
+     (`chatHasWorkInFlightAtStop`). The host ends every other row it still owns
+     as `detached`, so restart recovery resumes it.
+   - A desktop project close or quit goes through `disposeAll`: `completed`
+     only for a chat at rest whose row this process owns, `detached` for the
+     rest (a chat whose runtime another brain holds keeps `detached`).
+   - The brain's shutdown and the desktop's emergency path go through
+     `forceDisposeAll`, which ends only rows this process owns as `completed`.
+
+   **Rows an earlier clean stop stranded.** `closeStrandedLocalSessions` runs
+   before the reconcile at every start and rescan.
+   - The cr-sqlite clock proves that an owner is from this computer (site 0
+     wrote the owner columns and the status), so a row synced from another
+     machine never qualifies.
+   - Owners the registry still lists are a crash, not a clean stop: those rows
+     stay with the reconcile and close `detached`.
+   - For the others, each row ends once its pid is gone, at its own last
+     output: a chat quiet for longer than `RESTART_RESUME_MAX_AGE_MS` (6 h)
+     ends `completed`, and a newer one ends `detached`.
+   - The call passes the row ids and the update re-checks the owner, so a row
+     a peer wrote last, or a chat another brain takes over mid-scan, stays
+     untouched.
 
    Both hosts re-run the reconcile once after startup —
    `setTimeout(…, STALE_RUNNING_SESSION_RESCAN_DELAY_MS)` in desktop `main.ts`

@@ -536,7 +536,7 @@ import {
   startCrossChannelSyncHostConflictCheck,
 } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService, shouldShowInstalledNotice, WINDOWS_PREPARE_WATCHDOG_MS } from "./services/updates/autoUpdateService";
-import { createLatestByTrackReader } from "./services/updates/latestByTrack";
+import { createLatestByTrackReader } from "../shared/latestByTrack";
 import { fetchAdeLatestRelease } from "./services/github/adeReleaseFeed";
 import { fetchReleaseManifestJson } from "../../../ade-cli/src/lib/releaseAssets";
 import { resolveContinueAfterRestart } from "../../../ade-cli/src/services/runtime/continueAfterRestartStore";
@@ -4776,13 +4776,14 @@ app.whenReady().then(async () => {
     });
     processRegistry.start();
     const reconcileStaleRunningSessions = (reason: "startup" | "owner-liveness-expired") => {
+      // Rows an earlier clean stop left `running` on this computer.
+      const stranded = sessionService.closeStrandedLocalSessions(processRegistry);
+      if (stranded.detached + stranded.completed > 0) {
+        logger.warn("sessions.closed_stranded_running", { ...stranded, reason });
+      }
       const reconciledSessions = sessionService.reconcileStaleRunningSessions({
         status: "detached",
-        liveOwnerPids: processRegistry.listLivePids(),
-        liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
-        knownOwnerPids: processRegistry.listKnownPids(),
-        knownOwnerIdentities: processRegistry.listKnownProcessIdentities(),
-        deadOwnerIdentities: processRegistry.listDeadProcessIdentities(),
+        ...processRegistry.staleSessionOwnerScope(),
       });
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {
@@ -8085,6 +8086,21 @@ app.whenReady().then(async () => {
       await ctx.syncHostService?.dispose?.();
     } catch {
       // ignore
+    }
+    try {
+      // The rows this process still holds `running` become `detached` before
+      // it leaves the registry (`endRunningSessionsOwnedBy`).
+      if (ctx.processRegistry) {
+        ctx.sessionService?.endRunningSessionsOwnedBy([{
+          pid: ctx.processRegistry.pid,
+          startedAt: ctx.processRegistry.startedAt,
+        }]);
+      }
+    } catch (error) {
+      // The next start's stranded scan closes what this could not write.
+      ctx.logger.warn("sessions.detach_own_on_stop_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     try {
       ctx.processRegistry?.stop();

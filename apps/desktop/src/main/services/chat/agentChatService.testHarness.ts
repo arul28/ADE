@@ -1223,6 +1223,7 @@ import {
 import { createChatRuntimeBudget } from "./chatRuntimeBudget";
 import { readThreadPointerLedger } from "./threadPointerLedger";
 import { SESSION_STALE_AFTER_MS } from "../../../shared/sessionCanonicalState";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import {
   enforceCrossMachineForkEncodedBudget,
   gunzipFromBase64,
@@ -1757,6 +1758,23 @@ function createMockSessionService() {
         row.status = args?.status ?? "disposed";
         row.endedAt = args?.endedAt ?? new Date().toISOString();
       }
+    }),
+    endRunningSessionsOwnedBy: vi.fn((
+      owners: Array<{ pid: number; startedAt: string | null }>,
+      options: { sessionIds?: string[]; isRestingChat?: (row: { id: string; lastActivityAt: string }) => boolean } = {},
+    ) => {
+      const result = { detached: 0, completed: 0 };
+      for (const row of sessions.values()) {
+        if (row.status !== "running") continue;
+        if (!owners.some((owner) => owner.pid === row.ownerPid && owner.startedAt === row.ownerProcessStartedAt)) continue;
+        if (options.sessionIds && !options.sessionIds.includes(row.id)) continue;
+        const resting = isChatToolType(row.toolType)
+          && options.isRestingChat?.({ id: row.id, lastActivityAt: row.lastOutputAt ?? row.startedAt }) === true;
+        row.status = resting ? "completed" : "detached";
+        row.endedAt = new Date().toISOString();
+        result[resting ? "completed" : "detached"] += 1;
+      }
+      return result;
     }),
     deleteSession: vi.fn((sessionId: string) => {
       sessions.delete(sessionId);

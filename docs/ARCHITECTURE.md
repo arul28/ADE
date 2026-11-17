@@ -229,8 +229,12 @@ Fresh-chat kickoff uses `chat.messageSession(kind: "auto")` after creation. The 
 That same update path is reachable *remotely*, because a machine quietly running
 old code — or one no local desktop ever connects to — has to be fixable from
 wherever the user is. The runtime method `machine.updateAndRestart`
-(`services/runtime/machineUpdateAndRestart.ts`) requires the `cto` role, exists
-only on the authenticated runtime RPC endpoint, and is never automatic. The
+(`services/runtime/machineUpdateAndRestart.ts`) requires the `cto` role and
+exists only on the authenticated runtime RPC endpoint; a paired phone or ADE Web
+runs the same transaction over the sync commands `machine.updateImpact` /
+`machine.updateAndRestart` (`services/sync/machineUpdateRemoteCommands.ts`), and
+one run per process is shared by every caller (`machineUpdateInFlight.ts`). It
+is never automatic. The
 caller names the version it believes is newest (`targetVersion`); a host already
 on that version or newer refuses to "update" and, for a versioned request,
 installs and restarts nothing (it answers "already current"), because a needless

@@ -2969,6 +2969,10 @@ export type SyncRemoteCommandAction =
   | "proxy.status"
   | "search.query"
   | "search.indexStatus"
+  // This machine's "Update & restart", from a phone or browser
+  // (`machineUpdateRemoteCommands.ts`).
+  | "machine.updateImpact"
+  | "machine.updateAndRestart"
   | PersonalChatRemoteCommandAction
   | "lanes.list"
   | "lanes.listDeleteProgress"

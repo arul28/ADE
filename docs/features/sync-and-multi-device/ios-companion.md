@@ -128,6 +128,24 @@ because the connection is how the person learns the host needs an update.
   (`SettingsConnectionHeader`).
 - **Missing actions** fail before they are queued or sent, with an "update ADE
   on the machine" message.
+- **Update another machine.** A machine whose ADE is behind on its own
+  update track gets **Update** / **Update & restart** on its Settings row
+  (Settings › General's "Every machine" list and Settings › Machines read one
+  store, `MachineUpdateStore.swift`), with **Update all** when several are
+  behind and an attention line before the confirmation ("Mac Studio can update
+  to 1.2.130").
+  - The phone asks `machine.updateImpact` first and names what the restart
+    stops (chats mid-turn by name, the open CLI sessions and terminals), then
+    sends `machine.updateAndRestart`. A host that does not advertise both keeps
+    its "update ADE on that computer" state.
+  - A machine that answers `updateInstallMode: "manual_download"` (a Linux
+    AppImage, or an install that cannot replace itself) shows **Download the
+    update** instead.
+  - The newest build per track comes from the account directory's
+    `GET /releases/latest` (the release manifests when signed out). A machine
+    only gets a build of its own track. The version it comes back on settles
+    an answer lost to the restart. An ADE Cloud computer updates itself, so it
+    is never offered.
 - **App Store check.** `AppUpdateAdvisor` checks the public listing at most
   once in 6 h, also on foreground. A newer version shows a low-priority banner
   with Update and a per-version Later. A missing listing or a network error is
@@ -290,6 +308,9 @@ apps/ios/
 │   │   │   SSHPrivateKeyParser.swift # one-time SSH pairing
 │   │   ├── PushNotificationService.swift, LiveActivityService.swift # APNs, Live Activity
 │   │   ├── MobileUsageQuotaStore.swift # cached Claude/Codex quota per host
+│   │   ├── MachineUpdateStore.swift # "Update & restart" for the account's other
+│   │   │                            #   machines, the newest build per track, the
+│   │   │                            #   attempt state ("Back on 1.2.130")
 │   │   ├── PendingSessionSettleStates.swift, PendingAttentionClearStates.swift
 │   │   │                            # local, never-persisted overlays over host-owned
 │   │   │                            #   columns (a replicated write could undo a host
@@ -364,7 +385,9 @@ apps/ios/
 │   │   ├── Settings/                # ConnectionSettingsView, SettingsRoute, the
 │   │   │                            #   General/Chat/Providers/Integrations/Lanes pages,
 │   │   │                            #   SettingsMachines (one ADE Cloud row),
-│   │   │                            #   SettingsMachineRenameSheet, SettingsPairingSection,
+│   │   │                            #   SettingsMachineRenameSheet, SettingsMachineUpdates
+│   │   │                            #   (Update / Update all, the confirmation, the
+│   │   │                            #   machine page's ADE card), SettingsPairingSection,
 │   │   │                            #   SettingsPairingScannerSheet, SettingsPinSheet,
 │   │   │                            #   SettingsConnectionHeader, SettingsUsagePage,
 │   │   │                            #   SettingsUsageChart, SettingsProviderAccounts

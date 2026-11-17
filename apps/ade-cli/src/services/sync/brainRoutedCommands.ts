@@ -104,7 +104,9 @@ export function createBrainRoutedCommandHandler<P extends BrainRoutedCommandPeer
         const action = descriptor.action;
         if (seen.has(action)) return false;
         seen.add(action);
+        // `machine.*` is the ingress's own (`machineUpdateRemoteCommands`).
         return !action.startsWith("personalChats.")
+          && !action.startsWith("machine.")
           && !action.startsWith("lanes.presence.")
           && !UNROUTABLE_PROJECT_COMMAND_PREFIXES.some((prefix) => action.startsWith(prefix))
           && !descriptor.policy.localOnly

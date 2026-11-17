@@ -440,6 +440,12 @@ import { noteSessionInputOrigin } from "../../../../desktop/src/main/services/ch
 import { createWebhookRemoteCommandHandlers, type WebhookRemoteSource } from "./webhookRemoteCommands";
 import { createAutomationRuleRemoteCommandHandlers, type AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
 import { readAgentSkill } from "../skills/agentSkillCatalogService";
+import {
+  isMachineUpdateRemoteCommandAction,
+  machineUpdateRemoteCommandDescriptors,
+  runMachineUpdateRemoteCommand,
+  type MachineUpdatePairing,
+} from "./machineUpdateRemoteCommands";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -830,6 +836,12 @@ export type SyncRemoteCommandExecutionContext = {
    * before it acts (`expectedTurnId`). Absent: no check.
    */
   expectedTurnId?: string | null;
+  /**
+   * Set only by the host, for `machine.*` commands: the invoking peer's
+   * pairing record, so "who asked for this update" names the paired device
+   * rather than what the client says it is. Null: not a paired peer.
+   */
+  requester?: MachineUpdatePairing | null;
 };
 
 /** The turn a host-set `expectedTurnId` names, added to a guest's args. */
@@ -5957,6 +5969,23 @@ function registerPersonalChatRemoteCommands({ args, register }: RemoteCommandReg
   );
 }
 
+/**
+ * "Update & restart" for this machine, from a phone or browser on the project
+ * host's socket. Registered only on a brain that can update itself.
+ */
+function registerMachineUpdateRemoteCommands({ register }: RemoteCommandRegistrationDeps): void {
+  // The descriptors the hello advertises; none when this brain cannot update itself.
+  for (const { action, policy, scope } of machineUpdateRemoteCommandDescriptors()) {
+    if (!isMachineUpdateRemoteCommandAction(action)) continue;
+    register(
+      action,
+      policy,
+      async (payload, context) => await runMachineUpdateRemoteCommand(action, payload, context.requester ?? null),
+      scope,
+    );
+  }
+}
+
 function registerPushRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   const publisher = args.pushPublisherService ?? null;
   const unavailable = (action: string) => async (): Promise<never> => {
@@ -8848,6 +8877,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerWorkRemoteCommands({ args, register });
   registerChatRemoteCommands({ args, register });
   registerPersonalChatRemoteCommands({ args, register });
+  registerMachineUpdateRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
   registerWorkToolsRemoteCommands({ args, register });
   registerComputerUseRemoteCommands({ args, register });

@@ -138,7 +138,32 @@ Examples:
   falls back to `lanes.create` → `chat.create`;
 - `chat.resumeUsageLimitNow`, `chat.continueUsageLimitOnAlternate`,
   `chat.switchAccount`, `prs.setDraft`, `prs.setAutoMerge`: the phone hides
-  that control.
+  that control;
+- `machine.updateImpact` and `machine.updateAndRestart`: the phone and the web
+  keep "Update ADE on that computer".
+
+`machine.updateImpact` and `machine.updateAndRestart` are the sync-command twins
+of the runtime RPC's `runtime.updateImpact` and `machine.updateAndRestart`.
+They run the same transaction: `joinOrStartMachineUpdate` joins a desktop's
+call and a phone's call into one run.
+
+- Both are runtime-scoped and are answered on both of the phone's paths: the
+  project host's registry and the brain ingress (a roster socket, or a socket
+  parked there while the host is down).
+- The policy is `controllerAllowed` only, never queueable. Any paired phone or
+  browser may run them; a desktop viewer, an unpaired socket or a lane-share
+  guest is refused.
+- The requester's name comes from the pairing record when there is one, not
+  from the client's claim (`SyncRemoteCommandExecutionContext.requester`).
+- Only a brain started by `ade serve` that owns its machine installs them
+  (`setMachineUpdateRemoteCommands`). An embedded runtime installs and
+  advertises nothing.
+- ADE Web sends the same two commands from its
+  `remoteRuntime.updateAndRestart` / `getUpdateImpact`
+  (`webclient/adapter/federated.ts`).
+- The phone and the web read the newest build from the account directory's
+  `GET /releases/latest`; the phone reads the manifests directly when signed
+  out. No client moves a machine across tracks.
 
 ## Registry
 

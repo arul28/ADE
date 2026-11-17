@@ -763,11 +763,11 @@ Deleting or archiving a chat cancels every schedule it owns.
 
 Explicit dispose, continuity replacement and lane teardown cannot rebind a provider job to another Claude session, so they pause durable provider rows (recoverable in Settings) and cancel local-only work. Reconciliation quarantines a provider job whose owning session ended or disappeared the same way.
 
-Project close and graceful quit end live chat rows as `detached` and keep their schedules armed, so restart can late-fire and cold-resume. The scheduler's `sessionState`:
+Project close and graceful quit end the rows the stopping process owns. A chat at rest ends `completed`. A chat with work in flight (a turn running or awaited, a queued or steered message, an open question or approval, background work it waits on, an owed wake-up) ends `detached`. Either way its schedules stay armed, so restart can late-fire and cold-resume. A `completed` chat is not loaded at the next start until a wake or a send reopens its row. The scheduler's `sessionState`:
 
 | Row | State |
 |---|---|
-| `running`, `detached` | `active` |
+| `running`, `detached`, `completed` | `active` |
 | other non-archived terminal | `ended` |
 | archived | `archived` |
 | absent | `missing` |
@@ -1670,7 +1670,7 @@ A newer machine pick goes to the account for other computers; Fast mode never do
    - **Timeouts.** Interactive sends have no service clock; the turn runs until the provider completes or someone interrupts. `runSessionTurn` (automations, headless) defaults `timeoutMs` to 5 min; `null` or `0` means none, and automations pass `null` unless the step sets a limit. Optional `idleTimeoutMs` arms before the provider starts, restarts on every turn event, and pauses while a tool call, command, foreground subagent or approval is open (`trackTurnInFlight` in `sessionTurnLimits.ts`; background subagents are not tracked). Both are clamped by `clampTurnTimerMs` (at least 15 s, at most the Node ceiling) and on expiry interrupt the turn but keep the chat. If the chat goes away mid-turn (`finishSession`, delete, dispose, shutdown), the waiter rejects with `SessionTurnAbandonedError`.
 4. **Stream.** Events go through the main-process emitter to the renderer via `ade.agentChat.event` (`registerIpc.ts`). Codex turns run a watchdog: if `turn/start` succeeds but no useful event arrives, ADE reconciles the thread with `thread/read` and `thread/turns/list`, tries at most one restart + resume, then publishes provider-neutral `turn_health` if manual recovery is needed. Parents receive it with `sourceSessionId` and target the child.
 5. **Complete.** The service emits `status: "completed" | "failed" | "interrupted"`, optionally `turn_diff_summary`, flushes text, marks the session idle and pulls the next queued steer. A terminal failure also stops still-active child subagents, without keeping the parent active.
-6. **Dispose.** `dispose({ sessionId })` ends the runtime, persists `disposed`, pauses provider-owned durable work and cancels local-only schedules. Project close and graceful quit instead mark live rows `detached`, tear runtimes down and keep durable schedules for restart. Lane archive/delete disposes every session of the lane, including ones not loaded in this runtime.
+6. **Dispose.** `dispose({ sessionId })` ends the runtime, persists `disposed`, pauses provider-owned durable work and cancels local-only schedules. Project close and graceful quit instead end a chat at rest `completed` and a chat with work in flight `detached`, tear runtimes down and keep durable schedules for restart. Lane archive/delete disposes every session of the lane, including ones not loaded in this runtime.
 
 ### Settling
 

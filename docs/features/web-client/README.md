@@ -882,8 +882,15 @@ Tests:
   go to the account adapter, never to a sync adapter.
 - **Native-only surfaces stay unavailable.** OS notifications, external
   editors, Finder, directory pickers, native shells, computer use, the
-  built-in browser, the iOS Simulator, the updater and transcription. App
-  Control is watch-only (`adapter/appControl.ts`).
+  built-in browser, the iOS Simulator, an update of the tab's own app and
+  transcription. App Control is watch-only (`adapter/appControl.ts`).
+- **Updating another machine works.** A tab installs nothing itself. It calls
+  `remoteRuntime.updateAndRestart` / `getUpdateImpact`, which the federated
+  adapter sends as that machine's `machine.updateAndRestart` /
+  `machine.updateImpact` sync commands (`adapter/federated.ts`,
+  `machineUpdateRemoteCommands.ts`). A machine whose brain predates them
+  reports `capabilities.remoteUpdate: false`, so its row shows "Update it on
+  that machine" and no Update button.
 - **The build output shape matters.** `_headers`, `_redirects`,
   `_routes.json`, `_worker.js` and `index.html` must sit directly in
   `apps/desktop/dist/web-client`.
