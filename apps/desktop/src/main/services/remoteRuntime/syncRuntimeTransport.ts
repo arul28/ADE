@@ -509,6 +509,15 @@ export async function waitForSyncEnvelope(
  * error so callers classify structurally — the message is prose for a human and
  * changes whenever the copy does.
  */
+/** The machine a hello_error names as the one that refused, if it names one. */
+function helloErrorHost(payload: unknown): { deviceId: string; name?: string } | null {
+  const host = (payload as Partial<SyncHelloErrorPayload> | null)?.host;
+  const deviceId = typeof host?.deviceId === "string" ? host.deviceId.trim() : "";
+  if (!deviceId) return null;
+  const name = typeof host?.name === "string" ? host.name.trim() : "";
+  return { deviceId, ...(name ? { name } : {}) };
+}
+
 function helloError(payload: unknown): Error {
   const value = payload as Partial<SyncHelloErrorPayload> | null;
   const message = typeof value?.message === "string" && value.message.trim()
@@ -517,12 +526,7 @@ function helloError(payload: unknown): Error {
   if (value?.code === "relay_account_required") {
     return new PairedRuntimeRelayAuthRequiredError(message);
   }
-  const rejectingHost = value?.host?.deviceId?.trim()
-    ? {
-        deviceId: value.host.deviceId.trim(),
-        ...(value.host.name?.trim() ? { name: value.host.name.trim() } : {}),
-      }
-    : null;
+  const rejectingHost = helloErrorHost(payload);
   return new PairedRuntimeHelloRejectedError(
     message,
     typeof value?.code === "string" ? value.code : null,
@@ -557,18 +561,16 @@ export async function openPairedSyncConnection(
     const envelope = await response;
     const expectedHostId = options.credentials.hostIdentity.deviceId.trim();
     if (envelope.type === "hello_error") {
-      const rejection = helloError(envelope.payload);
       // A host names itself in hello_error. When that is not the paired host,
       // a different machine now answers at this address, and its rejection
-      // says nothing about this pairing. A host too old to name itself keeps
-      // the old reading: its rejection is taken as the paired host's.
-      const rejectingHostId = rejection instanceof PairedRuntimeHelloRejectedError
-        ? rejection.rejectingHost?.deviceId ?? null
-        : null;
+      // (any code, a relay sign-in request included) says nothing about this
+      // pairing. A host too old to name itself keeps the old reading: its
+      // rejection is taken as the paired host's.
+      const rejectingHostId = helloErrorHost(envelope.payload)?.deviceId ?? null;
       if (rejectingHostId && rejectingHostId !== expectedHostId) {
         throw new PairedRuntimeHostMismatchError(expectedHostId, rejectingHostId);
       }
-      throw rejection;
+      throw helloError(envelope.payload);
     }
     const hello = envelope.payload as PairedRuntimeHelloOkPayload;
     const actualHostId = hello?.brain?.deviceId?.trim();

@@ -460,6 +460,11 @@ describe("openSyncRuntimeTransport", () => {
       failure: "identity",
     },
     {
+      name: "another host asks for a relay sign-in",
+      reply: { type: "hello_error", host: "replacement-host", code: "relay_account_required" },
+      failure: "identity",
+    },
+    {
       name: "the paired host rejects the pairing",
       reply: { type: "hello_error", host: "host-1" },
       failure: "pairing",
@@ -497,7 +502,7 @@ describe("openSyncRuntimeTransport", () => {
           type: "hello_error",
           requestId: envelope.requestId,
           payload: {
-            code: "repair_required",
+            code: "code" in reply ? reply.code : "repair_required",
             message: "This device is not paired with this machine. Pair it again.",
             ...(reply.host ? { host: { deviceId: reply.host, name: "Some Mac" } } : {}),
           },
