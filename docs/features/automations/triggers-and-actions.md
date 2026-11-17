@@ -159,7 +159,7 @@ Lane lifecycle `namePattern` values are globs matched against the resolved lane 
 - `cursor` — for relay polling.
 - `receivedAt`.
 
-The raw webhook payload is **not** persisted or returned. `automationIngressService` normalizes and matches against the payload in memory, but the stored `automation_ingress_events` row keeps only the fields above (`raw_payload_json` is written `null`), and the record `automationService` returns to run-detail / history readers no longer includes a `rawPayloadJson`. Rows are bounded at write time (7 days, and the newest 2,000 non-`dispatched` rows per project) and swept again by the storage doctor.
+The raw webhook payload is **not** persisted or returned. `automationIngressService` normalizes and matches against the payload in memory, but the stored `automation_ingress_events` row keeps only the fields above (`raw_payload_json` is written `null`), and the record `automationService` returns to run-detail / history readers has no `rawPayloadJson`. Rows are bounded at write time (7 days, and the newest 2,000 non-`dispatched` rows per project) and swept again by the storage doctor.
 
 Label normalization helper `normalizeLabels` accepts either string arrays or objects with a `.name` property (the GitHub payload shape).
 
@@ -307,7 +307,7 @@ Deletion runs after the run finishes and its `runs-updated` event is emitted. It
 - `parseNaturalLanguage({ text, projectContext })` — runs a planner subprocess (Claude CLI or Codex CLI; resolved via `resolveClaudeCodeExecutable` / `resolveCodexExecutable`). Returns `AutomationParseNaturalLanguageResult` with a candidate `AutomationRuleDraft`, `ambiguities`, and `confirmationRequirements`.
 - `validateDraft({ draft })` — static validation: `AutomationValidateDraftResult` with `issues[]`.
 - `saveDraft({ draft, resolution })` — saves after resolution of ambiguities. Returns `AutomationSaveDraftResult`.
-- `simulate({ rule, trigger })` — lint a draft against a synthetic trigger. `AutomationSimulateResult` lists the actions that would fire. The builder no longer calls it; it uses test runs instead (see the README's Test runs).
+- `simulate({ rule, trigger })` — lint a draft against a synthetic trigger. `AutomationSimulateResult` lists the actions that would fire. The builder does not call it; it uses test runs (see the README's Test runs).
 
 The planner output JSON is extracted with `extractFirstJsonObject` — it handles fenced code blocks, bare objects, and best-effort span extraction. Planner output is always validated before persistence.
 
