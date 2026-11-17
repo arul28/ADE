@@ -16386,7 +16386,7 @@ export function AgentChatPane({
 
     // Set once the message is handed to the chat, so a transport timeout can
     // tell "may still arrive" from "never left".
-    let handedOff: { sessionId: string; submittedAt: string; texts: string[]; alreadyThere: number; identityKey: string | null } | null = null;
+    let handedOff: { sessionId: string; submittedAt: string; texts: string[]; alreadyThere: number; identityKey: string; clientSendId: string } | null = null;
     // The send's identity (chat + payload) and client id, once a send (not a steer) went out.
     let sendIdentity: { identityKey: string; record: UnconfirmedSend } | null = null;
     try {
@@ -16564,7 +16564,7 @@ export function AgentChatPane({
       const known = unconfirmedSend(identityKey);
       const knownArrived = known != null
         && countSentMessages(known.sessionId, known.texts, known.submittedAt) > known.alreadyThere;
-      if (knownArrived) forgetUnconfirmedSend(identityKey);
+      if (knownArrived && known) forgetUnconfirmedSend(identityKey, known.clientSendId);
       sendIdentity = {
         identityKey,
         record: {
@@ -16578,7 +16578,7 @@ export function AgentChatPane({
           alreadyThere,
         },
       };
-      handedOff = { sessionId, submittedAt, texts: sentTexts, alreadyThere, identityKey: sendIdentity.identityKey };
+      handedOff = { sessionId, submittedAt, texts: sentTexts, alreadyThere, identityKey: sendIdentity.identityKey, clientSendId: sendIdentity.record.clientSendId };
       // The bubble and the cleared composer draw first. Re-sorting the list
       // and marking the chat as running re-render every surface that reads
       // the list, so that waits for the task after the frame: one frame later.
@@ -16651,7 +16651,7 @@ export function AgentChatPane({
           }, chatPin));
           sendTiming.mark("sendResolved");
           // The answer confirms it: this message is not waiting to be retried.
-          forgetUnconfirmedSend(identityKey);
+          forgetUnconfirmedSend(identityKey, sendIdentity?.record.clientSendId ?? "");
         } catch (sendError) {
           // Race condition: the turn may have started between our state check
           // and the backend call. If so, automatically fall back to steer
@@ -16738,7 +16738,7 @@ export function AgentChatPane({
             if (arrived()) {
               // It did arrive after all: an identical message later today is a
               // message of its own, not a repeat of this one.
-              forgetUnconfirmedSend(pending.identityKey);
+              forgetUnconfirmedSend(pending.identityKey, pending.clientSendId);
               setError((current) => (current === waitingMessage ? null : current));
               return;
             }

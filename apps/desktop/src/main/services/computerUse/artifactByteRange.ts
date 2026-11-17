@@ -36,9 +36,15 @@ export async function readArtifactFileBytes(absolutePath: string, maxBytes: numb
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size <= 0 || stat.size > maxBytes) return null;
+    // A read may stop short of the requested length without being at EOF.
     const buffer = Buffer.alloc(stat.size);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    return bytesRead === buffer.length ? buffer : buffer.subarray(0, bytesRead);
+    let read = 0;
+    while (read < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, read, buffer.length - read, read);
+      if (bytesRead <= 0) break;
+      read += bytesRead;
+    }
+    return read === buffer.length ? buffer : buffer.subarray(0, read);
   } finally {
     await handle.close().catch(() => {});
   }

@@ -41,7 +41,11 @@ export function rememberUnconfirmedSend(identityKey: string, send: UnconfirmedSe
   }
 }
 
-/** The send is confirmed (or the person gave up): a later identical one is new. */
-export function forgetUnconfirmedSend(identityKey: string | null | undefined): void {
-  if (identityKey) unconfirmed.delete(identityKey);
+/**
+ * The send is confirmed (or the person gave up): a later identical one is new.
+ * It forgets only the entry it names — an earlier send's late check must not
+ * drop the id a later, identical send is still relying on.
+ */
+export function forgetUnconfirmedSend(identityKey: string, clientSendId: string): void {
+  if (unconfirmed.get(identityKey)?.clientSendId === clientSendId) unconfirmed.delete(identityKey);
 }
