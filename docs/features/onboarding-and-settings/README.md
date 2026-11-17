@@ -536,7 +536,9 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   new session overwrites the stored one): it leads with `BrainRepairButton`
   (or a retry) and demotes sign-in to "Sign in anyway".
 - `account/YourMacsCard.tsx`: **Your computers** (this computer first;
-  rename, clear name, remove; the missing-directory row). Custom names are
+  rename, clear name, remove; the missing-directory row). ADE Cloud's
+  computers never get their own rows: one ADE Cloud row shows while ADE Cloud
+  is available, and the web heading counts only the rows it shows. Custom names are
   account-wide and win for display without replacing the reported hostname.
   - **Absence is not removal** (a publish gap, a split listener or an expired
     sign-in look the same). `describeThisComputerMissing` claims removal only

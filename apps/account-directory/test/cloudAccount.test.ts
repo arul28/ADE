@@ -3036,5 +3036,24 @@ describe("ADE Cloud without a computer", () => {
     const { wake } = (await gone.json()) as { wake: { launchId: string } };
     const request = JSON.parse(String(harness.row("select request_json from cloud_launches where launch_id = ?", wake.launchId).request_json)) as Record<string, Record<string, unknown>>;
     expect([request.continueChat, request.chat!.provider, request.chat!.modelId]).toEqual([{ machineKey: "key-cli", chatId: "cli-1", kind: "cli" }, "cursor", ""]);
+
+    // The new computer continued it: the copy and its waiting message move to its key once,
+    // and a later send to the old address reaches it instead of starting another computer.
+    seedComputer(harness, { instance_id: SECOND, machine_key: "key-new", ade_features: "chat_queue" });
+    const moveCli = async (toMachineKey = "key-new") => harness.send(OWNER, "POST", "/cloud/sessions/key-cli/cli-1/move", { toMachineKey, instanceId: SECOND });
+    expect((await moveCli("key-else")).status).toBe(409);
+    expect([await (await moveCli()).json(), await (await moveCli()).json()]).toEqual([{ moved: true }, { moved: false }]);
+    const copyAt = async (machineKey: string) => {
+      const response = await harness.send(OWNER, "GET", `/cloud/sessions/${machineKey}/cli-1`);
+      if (response.status !== 200) return [response.status];
+      const copy = (await response.json()) as { text: string; session: { machineKey: string; toolType: string | null } };
+      return [200, copy.text, copy.session.machineKey, copy.session.toolType];
+    };
+    // Sealed again under the new key: it opens there, with its summary, and is gone from the old one.
+    expect([await copyAt("key-new"), await copyAt("key-cli")]).toEqual([[200, "$ ready\n", "key-new", "cursor-cli"], [404]]);
+    expect((await send("cli-1", "m4")).status).toBe(201);
+    const onNew = (await (await harness.send(OWNER, "GET", `/cloud/instances/${SECOND}/messages`)).json()) as { messages: Array<{ messageId: string; targetKind?: string }> };
+    expect(onNew.messages.map((message) => [message.messageId, message.targetKind])).toEqual([["m1", "cli"], ["m4", "cli"]]);
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
   });
 });

@@ -197,7 +197,7 @@ are in
 | Automations whose home is ADE Cloud | `automations.ts` |
 | Linear and Jira, with the account's sign-in | `integrations.ts` |
 | Agent limits, secret names, plan, hours, usage | `limits.ts`, `accountSecrets.ts` |
-| Files and history | none: the client reads GitHub |
+| Files and history | none: the client reads GitHub (each lane's branch, and a read-only "Default branch" workspace for every repository) |
 
 - The server seals each copy with the account's own key (`seal.ts`). Only a
   computer the account owns writes one, and every read checks the owner.
@@ -243,7 +243,12 @@ chat continues on the new computer in the same chat row.
   from a native capsule the old computer saved before its delete
   (`forkCapsules.ts`). The other 10 providers replay the saved transcript.
 - The new computer moves the saved chat to its own machine key
-  (`POST /cloud/chats/:m/:c/move`); the queued messages move with it.
+  (`POST /cloud/chats/:m/:c/move`); the queued messages move with it. A CLI's
+  saved copy moves the same way (`POST /cloud/sessions/:m/:s/move`), sealed
+  again under the new key, before the CLI starts. A send to the old address
+  finds the moved copy by its session id, so it reaches the new computer.
+- Messages a person sends while the new CLI starts are typed at the CLI's
+  prompt (`typeIntoAgentCliWhenFree`), never sent as a chat's.
 - The first message's `settings` go in `continueChat.settings` (chats only).
   The new computer applies them after the restore and before it sends the
   message. A second send that joins the launch carries no settings.

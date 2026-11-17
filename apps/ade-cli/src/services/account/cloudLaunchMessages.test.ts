@@ -6,6 +6,7 @@ import { CloudApiError } from "../../../../desktop/src/shared/cloudApiClient";
 import {
   CHAT_QUEUE_JOURNAL_KEY,
   deliverInOrder,
+  deliverQueuedMessages,
   readMessageJournal,
   writeMessageJournal,
   type OrderedMessage,
@@ -116,5 +117,67 @@ describe("deliverInOrder", () => {
     expect(await run([{ ...queued("a", 1), state: "sending" }], { send })).toBe(true);
     expect(sent).toEqual(["a"]);
     expect(reports).toEqual([{ messageId: "a", state: "delivered" }]);
+  });
+});
+
+/**
+ * A launch's queued messages: the server API is faked (the network boundary).
+ * A continued CLI row takes no chat send, so each message is typed at its prompt.
+ */
+describe("deliverQueuedMessages", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-launch-messages-"));
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it("types a continued CLI's messages at its prompt, never through the chat send, and reports an ended CLI as failed", async () => {
+    const reports: Array<[string, string]> = [];
+    const typed: Array<[string, string]> = [];
+    const chatSends: string[] = [];
+    const idleWaits: string[] = [];
+    const api = {
+      launchMessages: async () => ({ messages: [
+        { messageId: "first", seq: 1, state: "queued", text: "opened the CLI" },
+        { messageId: "m2", seq: 2, state: "queued", text: "Run the tests." },
+        { messageId: "m3", seq: 3, state: "queued", text: "Then lint." },
+      ] }),
+      claimLaunchMessage: async () => {},
+      reportLaunchMessage: async (_launchId: string, messageId: string, report: { state: string }) => {
+        reports.push([messageId, report.state]);
+      },
+    };
+    let ended = false;
+    const deps = {
+      launchId: "launch-1",
+      logger,
+      stateFile: path.join(dir, "boot.json"),
+      api: () => api as never,
+      sendChatMessage: async (_projectId: string, sessionId: string) => {
+        chatSends.push(sessionId);
+        throw new Error("Chat session 'cli-1' was not found.");
+      },
+      waitForChatIdle: async (_projectId: string, sessionId: string) => {
+        idleWaits.push(sessionId);
+        return true;
+      },
+      typeIntoCli: async (_projectId: string, sessionId: string, message: { text: string }) => {
+        typed.push([sessionId, message.text]);
+        return ended ? "ended" as const : "delivered" as const;
+      },
+    };
+
+    expect(await deliverQueuedMessages(deps, "project-1", { sessionId: "cli-1", kind: "cli" })).toBe(true);
+    expect(typed).toEqual([["cli-1", "Run the tests."], ["cli-1", "Then lint."]]);
+    expect([chatSends, idleWaits]).toEqual([[], []]);
+    expect(reports).toEqual([["m2", "delivered"], ["m3", "delivered"]]);
+
+    // A CLI whose process ended: the message reads failed, not delivered.
+    fs.rmSync(`${deps.stateFile}.messages.json`, { force: true });
+    reports.length = 0;
+    ended = true;
+    api.launchMessages = async () => ({ messages: [{ messageId: "m4", seq: 4, state: "queued", text: "One more." }] });
+    expect(await deliverQueuedMessages(deps, "project-1", { sessionId: "cli-1", kind: "cli" })).toBe(true);
+    expect(reports).toEqual([["m4", "failed"]]);
   });
 });

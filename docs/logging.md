@@ -889,7 +889,8 @@ Account directory (`apps/account-directory/src/cloud/`, Worker logs):
 - The message queue: `cloud.chat_message_queued`, `cloud.chat_message_launch`,
   `cloud.chat_message_wake_failed`, `cloud.chat_message_unreadable`,
   `cloud.chat_message_rate_limited`; the sweep `cloud.chat_messages_swept`,
-  `cloud.chat_messages_sweep_failed`; the move `cloud.chat_moved`.
+  `cloud.chat_messages_sweep_failed`; the moves `cloud.chat_moved` and
+  `cloud.session_moved` (a continued CLI's copy and messages).
 - Saved copies: `cloud.session_account_full`, `cloud.session_bucket_missing`,
   `cloud.session_copy_unreadable`, `cloud.git_summary_unreadable`,
   `cloud.capsule_account_full`, `cloud.capsule_bucket_missing`,
@@ -943,7 +944,8 @@ The cloud computer's brain (`apps/ade-cli/src/services/cloudChats/`,
   `cloud.use_report_failed`.
 - Restore after a delete: `cloud.chat_restored` (with `kind: "cli"` for a CLI
   session), `cloud.restore_capsule_read_failed`,
-  `cloud.restore_capsule_unreadable`, `cloud.restore_move_failed`,
+  `cloud.restore_capsule_unreadable`, `cloud.restore_move_failed` (with
+  `kind: "cli"` for a CLI's copy),
   `agent_chat.cloud_restored`, `agent_chat.cloud_restore_capsule_failed`,
   `agent_chat.cloud_restored_cli`, `agent_chat.cloud_restore_cli_place_failed`,
   `agent_chat.cloud_restore_cli_mark_failed` (the send id the CLI got could
