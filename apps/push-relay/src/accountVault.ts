@@ -723,3 +723,89 @@ export async function handleAccountVaultRoute(
   }
   return null;
 }
+
+/* ---- The account directory's Linear lease (directory secret, no account token) ---- */
+
+/** The one item this route can change. */
+const LINEAR_LEASE_ITEM = { kind: "integration", key: "linear" } as const;
+
+function linearOAuthRefreshTokenOf(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown> | null;
+    if (!parsed || parsed.v !== 1 || parsed.authMode !== "oauth") return null;
+    return typeof parsed.refreshToken === "string" && parsed.refreshToken.trim() ? parsed.refreshToken.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `PUT /directory/accounts/<userId>/vault/linear-lease` from the account
+ * directory's minute cron: publish a Linear grant the directory renewed but
+ * could not publish while the person's request was open (the directory's
+ * `linearRenewal.ts`). Directory provenance is the only credential, so the
+ * route is as narrow as the job:
+ *
+ * - It changes only `integration/linear` of one repository scope.
+ * - It changes a row only while that row still holds the refresh token the
+ *   directory spent (`spentRefreshToken`). That token is dead at Linear, so
+ *   such a row can only be replaced by its next turn. A row that was deleted,
+ *   or that holds another grant (a new sign-in), is left alone.
+ * - The new value must be a Linear OAuth grant, and the row's owner becomes
+ *   `refreshOwner` (the directory), as on any renewal.
+ *
+ * A browser never reaches it: a request with an Origin is refused.
+ */
+export async function handleDirectoryLinearLeasePublish(
+  request: Request,
+  env: VaultEnv,
+  url: URL,
+  checkProvenance: (request: Request, env: VaultEnv) => { ok: true } | { response: Response },
+  accountKeysFor: (env: VaultEnv, clerkUserId: string) => Promise<string[]>,
+): Promise<Response | null> {
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length !== 5 || parts[0] !== "directory" || parts[1] !== "accounts" || parts[3] !== "vault" || parts[4] !== "linear-lease") return null;
+  if (request.headers.get("origin")) return json({ ok: false, error: "origin not allowed" }, { status: 403 });
+  if (request.method !== "PUT") return json({ ok: false, error: "not found" }, { status: 404 });
+  const provenance = checkProvenance(request, env);
+  if ("response" in provenance) return provenance.response;
+  const clerkUserId = requiredString(decodePathSegment(parts[2]), 256);
+  if (!clerkUserId) return json({ ok: false, error: "invalid account" }, { status: 400 });
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+  if (!isRecord(body)) return json({ ok: false, error: "invalid body" }, { status: 400 });
+  const scope = parseAccountScopeKey(typeof body.scope === "string" ? body.scope : null);
+  const refreshOwner = requiredString(body.refreshOwner, 128);
+  const spent = typeof body.spentRefreshToken === "string" ? body.spentRefreshToken.trim() : "";
+  const value = typeof body.value === "string" ? body.value : "";
+  const next = linearOAuthRefreshTokenOf(value);
+  if (!scope || scope === "all" || !refreshOwner || !spent || !next || next === spent || value.length > 16_384) {
+    return json({ ok: false, error: "invalid lease publish" }, { status: 400 });
+  }
+  const key = await vaultKey(env);
+  if (!key) return vaultUnavailable();
+  const accountKeys = await accountKeysFor(env, clerkUserId);
+  if (accountKeys.length === 0) return json({ ok: false, error: "account sign-in is not configured" }, { status: 503 });
+
+  const sealed = await sealValue(key, value);
+  const now = new Date().toISOString();
+  let written = 0;
+  for (const accountKey of accountKeys) {
+    const row = await readVaultRow(env, accountKey, { scope, ...LINEAR_LEASE_ITEM });
+    if (!row || row.deleted) continue;
+    if (linearOAuthRefreshTokenOf(await openValue(key, row.ciphertext)) !== spent) continue;
+    // The row's own revision guards the gap between this read and the write.
+    const result = await env.DB.prepare(`
+      update account_vault_items
+      set ciphertext = ?, updated_at = ${NEXT_UPDATED_AT}, writer_device_id = ?, refresh_owner = ?, deleted = 0
+      where user_id = ? and scope_key = ? and item_kind = ? and item_key = ? and deleted = 0 and updated_at = ?
+    `).bind(sealed, now, now, refreshOwner, refreshOwner, accountKey, scope, LINEAR_LEASE_ITEM.kind, LINEAR_LEASE_ITEM.key, row.updated_at).run();
+    written += result.meta?.changes ?? 0;
+  }
+  return json({ ok: true, written });
+}

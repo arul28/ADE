@@ -8,6 +8,7 @@ import {
   handleAttentionAccountRequest,
   handleAttentionMachinePublish,
   handleDirectoryAccountPurge,
+  assertDirectoryProvenance,
   inspectAttentionAuthConfiguration,
   machineKeyRevokedAt,
   pruneAttentionState,
@@ -33,6 +34,8 @@ import {
 } from "./cloudflareTransient";
 import { boundedText, constantTimeEqual, decodePathSegment, sha256Hex, toHex } from "./attentionShared";
 import { scrubString } from "./sentryScrub";
+import { handleDirectoryLinearLeasePublish } from "./accountVault";
+import { relayAccountKeysForClerkUser } from "./attentionAuth";
 
 export { resetSpendGuardsForTests } from "./spendGuards";
 
@@ -1336,6 +1339,9 @@ async function routeRequest(request: Request, env: PushRelayEnv): Promise<Respon
   }
   // The directory's account deletion. Not under /attention/account/: it has
   // no account token and no browser caller, only the directory's secret.
+  // The directory's Linear lease publish (accountVault.ts). Same provenance; before the purge, which owns the rest of /directory/accounts/.
+  const linearLeaseResponse = await handleDirectoryLinearLeasePublish(request, env, url, assertDirectoryProvenance, relayAccountKeysForClerkUser);
+  if (linearLeaseResponse) return linearLeaseResponse;
   const directoryPurgeResponse = await handleDirectoryAccountPurge(request, env, url);
   if (directoryPurgeResponse) return directoryPurgeResponse;
 
