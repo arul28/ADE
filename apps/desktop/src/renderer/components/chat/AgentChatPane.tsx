@@ -481,7 +481,10 @@ import {
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
 import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
-import { savedChatComputerGone } from "../../state/cloudSavedChats";
+import { SAVED_CHAT_COMPUTER_GONE_MESSAGE, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
+import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
+import { noteAdeCloudQueuedSend } from "../../state/adeCloudChatQueue";
+import { CloudQueueSendCard, type CloudQueueSend } from "./CloudQueueSendCard";
 import { isAdeCloudComputer, useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
   LAUNCH_PROFILE_TITLE,
@@ -5164,6 +5167,9 @@ export function AgentChatPane({
   const adeCloudLastStartRef = useRef<{ key: string; at: number } | null>(null);
   /** The open chat's lane kept without a computer, or null (written below, where the chat's binding exists). */
   const freedChatLaneRef = useRef<CloudLaneWithoutComputer | null>(null);
+  // The last message this pane queued for a chat whose computer is gone or asleep (`sendThroughCloudQueue`).
+  const [cloudQueueSend, setCloudQueueSend] = useState<CloudQueueSend | null>(null);
+  const cloudQueueSendInFlightRef = useRef(false);
   /** The ADE Cloud account from the shared computers read, when the draft has read it. */
   const adeCloudAccountRef = useRef<CloudAccountState | null>(null);
   // The cloud model (`devin_version`) and VM OS for the next Devin Cloud launch.
@@ -14284,6 +14290,50 @@ export function AgentChatPane({
   ]);
 
   /**
+   * Sends the composer's text to an ADE Cloud chat whose computer is gone,
+   * through the account's queue (`window.ade.cloud.sendChatMessage`): the
+   * server starts a launch that continues this chat in the same row, and the
+   * row shows its setup card. Account level, by the chat's machine key: no
+   * pin. Files can't go this way yet: they stay in the box with a line why.
+   * Answers `unsupported` for a client or server without the queue.
+   */
+  const sendThroughCloudQueue = useCallback(async (chat: { machineKey: string; chatId: string }): Promise<"sent" | "refused" | "unsupported"> => {
+    const send = window.ade?.cloud?.sendChatMessage;
+    if (!send) return "unsupported";
+    const text = draftStore.get().trim();
+    if (attachments.length > 0 || contextAttachments.length > 0) {
+      setError({ message: "Files can't go with this message while the chat moves to a new ADE Cloud computer. Send the text first, then the files once it is up.", kind: "hint" });
+      return "refused";
+    }
+    if (!text) return "refused";
+    if (cloudQueueSendInFlightRef.current) return "refused";
+    cloudQueueSendInFlightRef.current = true;
+    const messageId = newClientSendId();
+    const provider = selectedSession?.provider ?? null;
+    setError(null);
+    try {
+      const answer = await send({ ...chat, messageId, text, provider, modelId: modelId || null });
+      if (answer.state === "unsupported") return "unsupported";
+      if (answer.state === "refused") {
+        setError({ message: answer.message, kind: "status" });
+        return "refused";
+      }
+      // Queued: the chat shows it as its own queued row (`adeCloudChatQueue.ts`),
+      // the box clears, and the chat stays selected with the launch's card.
+      noteAdeCloudQueuedSend(chat, answer, { text, provider, modelId: modelId || null });
+      draftStore.set("");
+      draftsPerSessionRef.current.delete(chat.chatId);
+      setCloudQueueSend({ chatId: chat.chatId, wake: answer.wake.state, launchId: answer.wake.launchId ?? null, text });
+      return "sent";
+    } catch (sendError) {
+      setError({ message: errorMessage(sendError), kind: "status" });
+      return "refused";
+    } finally {
+      cloudQueueSendInFlightRef.current = false;
+    }
+  }, [attachments.length, contextAttachments.length, draftStore, modelId, selectedSession?.provider]);
+
+  /**
    * Send in the chat of a lane kept without a computer: ADE makes the lane a
    * new computer on its branch on GitHub (same lane id) and starts a new chat
    * there with this message. The old chat stays readable as its saved copy.
@@ -16043,15 +16093,25 @@ export function AgentChatPane({
       return;
     }
 
-    // A chat whose lane has no computer now: Send gives the lane a new one
-    // and starts a new chat there (never a send to the deleted computer).
+    // A chat whose computer is gone (a lane kept without a computer, or a
+    // deleted computer's saved chat): the account's queue takes the message
+    // and a new computer continues this same chat, in this row. A server
+    // without the queue gets the old way for a freed lane: a new chat there.
     const freedLane = selectedSessionId && !subagentView ? freedChatLaneRef.current : null;
-    if (freedLane) {
+    const goneChat = selectedSessionId && !subagentView && !freedLane
+      ? savedChatLocation(chatForeignPin, selectedSessionId, () => false)
+      : null;
+    if (freedLane || goneChat?.computerGone) {
       if (pendingToDecline.length > 0) {
         setError({ message: PENDING_INPUT_SEND_BLOCKED_MESSAGE, kind: "status" });
         return;
       }
-      startFreedLaneChat(freedLane);
+      const machineKey = goneChat?.machineKey ?? freedLane?.formerMachineKey ?? null;
+      const queued = machineKey && selectedSessionId
+        ? await sendThroughCloudQueue({ machineKey, chatId: selectedSessionId })
+        : "unsupported";
+      if (queued === "unsupported" && freedLane) startFreedLaneChat(freedLane);
+      else if (queued === "unsupported") setError({ message: SAVED_CHAT_COMPUTER_GONE_MESSAGE, kind: "status" });
       return;
     }
 
@@ -16984,6 +17044,8 @@ export function AgentChatPane({
   }, [
     countSentMessages,
     startFreedLaneChat,
+    sendThroughCloudQueue,
+    chatForeignPin,
     openSideChatFromComposer,
     isBoundScopePane, attachments,
     claudeUsageAvailable,
@@ -21513,6 +21575,15 @@ export function AgentChatPane({
           />
         ) : null}
         <ChatMachineWakeBanner style={RUNTIME_BANNER_STYLE} />
+        {cloudQueueSend && cloudQueueSend.chatId === selectedSessionId ? (
+          <CloudQueueSendCard
+            send={cloudQueueSend}
+            style={RUNTIME_BANNER_STYLE}
+            onDone={() => setCloudQueueSend(null)}
+            onRestore={(text) => setDraft((current) => (current.trim().length ? current : text))}
+          />
+        ) : null}
+        {!chatScope ? <CloudLaneDeletingSoonBand laneId={selectedSession?.laneId ?? laneId ?? null} style={RUNTIME_BANNER_STYLE} /> : null}
         {replayForkDisclosure ? (
           <Banner
             layout="inline"
@@ -21575,15 +21646,6 @@ export function AgentChatPane({
                   key="chat-view"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-        {cloudQueueSend && cloudQueueSend.chatId === selectedSessionId ? (
-          <CloudQueueSendCard
-            send={cloudQueueSend}
-            style={RUNTIME_BANNER_STYLE}
-            onDone={() => setCloudQueueSend(null)}
-            onRestore={(text) => setDraft((current) => (current.trim().length ? current : text))}
-          />
-        ) : null}
-        {!chatScope ? <CloudLaneDeletingSoonBand laneId={selectedSession?.laneId ?? laneId ?? null} style={RUNTIME_BANNER_STYLE} /> : null}
                   transition={{ duration: 0.12, ease: "easeOut" }}
                   className="absolute inset-0 flex min-h-0 overflow-hidden"
                 >
