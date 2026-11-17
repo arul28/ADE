@@ -107,7 +107,7 @@ export function CloudQueueSendCard({
   const signIn = record?.state === "waiting_for_sign_in" ? record.signIn ?? null : null;
   const approval = record?.state === "needs_approval" ? record.approval : null;
   const actions = [
-    ...(failed ? [{ label: "Put it back", onClick: () => { onRestore(send.text); onDone(); } }] : []),
+    ...(failed ? [{ label: "Put back", onClick: () => { onRestore(send.text); onDone(); } }] : []),
     ...(signIn?.url ? [{ label: "Open sign-in", onClick: () => openExternalUrl(signIn.url!) }] : []),
     ...(approval ? [{ label: "Confirm", onClick: () => openExternalUrl(approval.url) }] : []),
   ];
