@@ -942,6 +942,8 @@ The cloud computer's brain (`apps/ade-cli/src/services/cloudChats/`,
   `cloud.restore_capsule_unreadable`, `cloud.restore_move_failed`,
   `agent_chat.cloud_restored`, `agent_chat.cloud_restore_capsule_failed`,
   `agent_chat.cloud_restored_cli`, `agent_chat.cloud_restore_cli_place_failed`,
+  `agent_chat.cloud_restore_cli_mark_failed` (the send id the CLI got could
+  not be saved, so a retry could type the message again),
   `cloud_boot_launch.chat_continued`.
 - The lane index: `account.lanes_published`, `account.lanes_publish_failed`,
   `account.lanes_read_failed`, `account.lanes_cache_write_failed`.
@@ -954,7 +956,14 @@ Desktop main process (`apps/desktop/src/main/services/adeCloud/adeCloudReadIpc.t
 `ade_cloud.account_write_failed` {channel, error},
 `ade_cloud.account_call_refused` (warn) {call, code, status}: an account call
 (CTO, automations, Linear, Jira and other account data) that the server
-refused; a 404 is not logged. The renderer logs
+refused; a 404 is not logged. In `cloudSignInStore.ts`:
+`cloud.cloud_key_store_read_failed` (warn) {id, reason} and
+`cloud.cloud_key_unmirror_failed` (warn) {id}, a read or a removal in the one
+API key store that failed (never the key). The ignored `.env` list logs
+`projects.dotenv_list_failed` (warn) {reason, exitCode or error class name}.
+The Linear quick view of a tab with no computer logs
+`ade_cloud.linear_quick_view_part_failed` {part, code} to the console when
+one of its parts fails. The renderer logs
 `[cloud] the action after a wake failed` to the console from
 `renderer/lib/cloudMachineWake.ts`. The web client, the iPhone and the other renderer
 surfaces add no events for this work.
