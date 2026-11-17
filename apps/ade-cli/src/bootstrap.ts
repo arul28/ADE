@@ -331,6 +331,7 @@ import {
 } from "./services/projects/machineLayout";
 import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
+import { noteAccountLanesChanged } from "./services/account/accountLaneIndexPublisher";
 import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
 import { createCloudServerProvider } from "../../desktop/src/main/services/adeCloud/cloudServerProvider";
 import { normalizeGitRemoteIdentity } from "../../desktop/src/shared/crossMachineHandoff";
@@ -1384,6 +1385,8 @@ export async function createAdeRuntime(args: {
     const cloudChatUploaderRef: { current: ReturnType<typeof createCloudChatUploader> | null } = { current: null };
     const ctoAccountCopyRef: { current: CtoAccountCopyService | null } = { current: null };
     const cloudLaneNameSyncRef: { current: CloudLaneNameSync | null } = { current: null };
+    // The account lane index (accountLaneIndexPublisher.ts): set once the lane and PR services exist.
+    const accountLanesRef: { note: (() => void) | null } = { note: null };
     let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
     let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
     let jiraServiceRef: ReturnType<typeof createJiraService> | null = null;
@@ -1434,6 +1437,7 @@ export async function createAdeRuntime(args: {
         // Its chats are gone, so nothing would ever let go of its tabs: free
         // them in every browser, and close none.
         if (event.type === "lane-deleted" && event.laneId) cloudChatUploaderRef.current?.noteLaneDeleted(event.laneId);
+        accountLanesRef.note?.();
         // Lane sharing: an archived lane pauses its shares (guests are closed
         // and refused until it is unarchived); a deleted lane ends them. Shares
         // key on the lane id, so a rename or a branch change only tells the
@@ -4060,6 +4064,7 @@ export async function createAdeRuntime(args: {
       if (event.type === "pr-chat-watch-changed") agentChatService?.notifyPrWatchChanged(event.sessionId);
       if (event.type === "prs-updated") {
         syncService?.notifyPrsUpdated();
+        accountLanesRef.note?.();
       }
       if (event.type === "pr-notification" && pushPrNotificationSubscribers.size > 0) {
         const notification: PushPrNotification = {
@@ -4672,6 +4677,21 @@ export async function createAdeRuntime(args: {
     });
     searchServiceHolder.current = searchService;
     teardown.push(() => searchService.dispose());
+    // The account lane index: this project's lanes, with their branch and PR number.
+    // The primary lane goes with its stored name and `isPrimary`; clients name it "Main checkout".
+    accountLanesRef.note = () => noteAccountLanesChanged(syncRuntimeOptions?.registryProjectId ?? projectId, async () => {
+      const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+      const projectKey = normalizeGitRemoteIdentity(readGitOriginUrl(projectRoot)) || null;
+      return lanes.map((lane) => ({
+        laneId: lane.id,
+        projectKey,
+        name: lane.name.slice(0, 200),
+        branch: lane.branchRef || null,
+        prNumber: headlessLinearServices.prService?.getForLane(lane.id)?.githubPrNumber ?? null,
+        isPrimary: lane.laneType === "primary",
+      }));
+    });
+    accountLanesRef.note();
     headlessLinearServices.prService?.setEventEmitter(createPrEventFanout(
       emitPrEvent,
       (event) => {

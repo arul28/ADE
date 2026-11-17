@@ -1,0 +1,253 @@
+/**
+ * Messages a person sent to an EXISTING chat on this ADE Cloud computer
+ * while the computer slept (`POST /cloud/chats/:m/:c/messages`). The server
+ * keeps them; this brain claims each one, sends it once, and reports it.
+ *
+ * A drain runs at brain start, when the computer wakes from a sleep
+ * (`cloudKeepAwake` `onWoke`), and when the server runs
+ * `ade cloud messages drain --json` after it woke the computer. No timer: a
+ * round that could not finish waits for the next of these.
+ *
+ * Each chat's messages go in order, one at a time, and only to an idle chat.
+ * Chats go side by side, at most `CHAT_PARALLEL` at once. A chat whose
+ * provider is not signed in here waits for the person's sign-in, which the
+ * message shows (`waiting_for_sign_in` + `signIn`), as a launch does.
+ * The journal (`<ADE_HOME>/cloud/chat-messages.json`) makes a restart safe:
+ * a message is never sent twice (`deliverInOrder`).
+ */
+
+import fs from "node:fs";
+import path from "node:path";
+import type { CloudChatMessageAttachment, CloudComputerQueuedMessage } from "../../../../account-directory/src/cloud/contract";
+import type { CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
+import {
+  CHAT_QUEUE_JOURNAL_KEY,
+  deliverInOrder,
+  readMessageJournal,
+  writeMessageJournal,
+} from "../account/cloudLaunchMessages";
+import { SIGN_IN_WAIT_MS, waitForSignIn, type SignInWaitDeps } from "../account/cloudLaunchSignInWait";
+
+type Logger = {
+  info: (event: string, meta?: Record<string, unknown>) => void;
+  warn: (event: string, meta?: Record<string, unknown>) => void;
+};
+
+/** Chats whose messages go side by side. */
+const CHAT_PARALLEL = 4;
+/** The file ids the server accepts (`launches.ts`). */
+const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const MESSAGE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+export type CloudChatQueueDeps = {
+  instanceId: string;
+  /** `<ADE_HOME>`: the journal is `<ADE_HOME>/cloud/chat-messages.json`. */
+  adeHome: string;
+  logger: Logger;
+  api: () => Promise<CloudApiClient | null>;
+  /**
+   * The project on this computer that holds the chat: the message's own
+   * project id when this brain knows it, else the project whose chats include
+   * it. Null when no project here has the chat.
+   */
+  locateChat: (message: CloudComputerQueuedMessage) => Promise<{ projectId: string; rootPath: string } | null>;
+  /** The chat's provider here; null when the chat is gone. */
+  chatProvider: (projectId: string, sessionId: string) => Promise<string | null>;
+  /** Resolves when the chat has no running turn (an event wait, never a poll); false at the wait's limit. */
+  waitForChatIdle: (projectId: string, sessionId: string) => Promise<boolean>;
+  sendChatMessage: (projectId: string, sessionId: string, message: { text: string; clientSendId: string; attachments?: QueuedFile[] }) => Promise<void>;
+  /** The provider sign-in wait (`cloudLaunchSignInWait.ts`); left out, nothing waits. */
+  signIn?: SignInWaitDeps;
+  /** Holds the computer awake for one named step, up to `ttlMs`. */
+  holdFor?: <T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>;
+  sleep?: (ms: number) => Promise<void>;
+};
+
+export type CloudChatQueueDrainResult = {
+  /** Messages the server listed for this computer. */
+  listed: number;
+  /** True when every listed message was settled (sent, failed or not this computer's). */
+  done: boolean;
+  /** The list could not be read (an older server, no account session, the network). */
+  error?: string;
+};
+
+export type CloudChatMessageQueue = {
+  /**
+   * One drain round. A call while a round runs waits for it and starts one
+   * more after it, so a message queued during the round is not missed.
+   */
+  drain: (reason: string) => Promise<CloudChatQueueDrainResult>;
+};
+
+/** A file a queued message carries, downloaded here. */
+type QueuedFile = { path: string; type: "image" | "file" };
+
+const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+const safeFileName = (name: string): string => name.replace(/[/\\\u0000-\u001f]/g, "_").replace(/^\.+/, "_").slice(0, 120) || "file";
+
+async function downloadAttachments(
+  api: CloudApiClient,
+  rootPath: string,
+  messageId: string,
+  attachments: readonly CloudChatMessageAttachment[],
+): Promise<QueuedFile[]> {
+  const out: QueuedFile[] = [];
+  if (!attachments.length) return out;
+  if (!MESSAGE_ID.test(messageId)) throw new Error("The message has an id this computer can't keep files under.");
+  const folder = path.join(rootPath, ".ade", "attachments", `chat-message-${messageId}`);
+  for (const file of attachments) {
+    if (!FILE_ID.test(file.fileId)) throw new Error(`The message names a file this computer can't keep ("${safeFileName(file.name)}").`);
+    fs.mkdirSync(folder, { recursive: true });
+    const target = path.join(folder, `${file.fileId}-${safeFileName(file.name)}`);
+    if (!fs.existsSync(target)) fs.writeFileSync(target, Buffer.from(await api.readLaunchFile(file.launchId, file.fileId)));
+    out.push({ path: target, type: file.contentType.startsWith("image/") ? "image" : "file" });
+  }
+  return out;
+}
+
+export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChatMessageQueue {
+  const { logger, instanceId } = deps;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  }));
+  const journalFile = path.join(deps.adeHome, "cloud", "chat-messages.json");
+  let running: Promise<CloudChatQueueDrainResult> | null = null;
+  let again = false;
+
+  const round = async (reason: string): Promise<CloudChatQueueDrainResult> => {
+    const api = await deps.api().catch(() => null);
+    if (!api) return { listed: 0, done: false, error: "not_signed_in" };
+    let messages: CloudComputerQueuedMessage[];
+    try {
+      messages = await api.computerMessages(instanceId);
+    } catch (error) {
+      logger.warn("cloud.chat_queue_read_failed", { reason, error: errorText(error) });
+      return { listed: 0, done: false, error: errorText(error).slice(0, 200) };
+    }
+    const journal = readMessageJournal(journalFile, CHAT_QUEUE_JOURNAL_KEY, logger);
+    // A message the server no longer lists is settled there: its journal row goes.
+    const listedIds = new Set(messages.map((message) => message.messageId));
+    const before = Object.keys(journal.claims).length;
+    for (const id of Object.keys(journal.claims)) if (!listedIds.has(id)) delete journal.claims[id];
+    journal.attempted = journal.attempted.filter((id) => listedIds.has(id));
+    journal.sent = journal.sent.filter((id) => listedIds.has(id));
+    if (Object.keys(journal.claims).length !== before) writeMessageJournal(journalFile, journal);
+    if (!messages.length) return { listed: 0, done: true };
+    logger.info("cloud.chat_queue_drain", { reason, listed: messages.length });
+
+    const byChat = new Map<string, CloudComputerQueuedMessage[]>();
+    for (const message of messages) {
+      const key = `${message.machineKey}/${message.chatId}`;
+      byChat.set(key, [...(byChat.get(key) ?? []), message]);
+    }
+    const chats = [...byChat.values()];
+    let done = true;
+    let next = 0;
+    const deliverChat = async (list: CloudComputerQueuedMessage[]): Promise<boolean> => {
+      const first = list[0]!;
+      const sessionId = first.chatId;
+      const logMeta = { chatId: sessionId, reason };
+      const report = async (messageId: string, claimId: string, report: Parameters<CloudApiClient["reportComputerMessage"]>[2]) => {
+        await api.reportComputerMessage(instanceId, messageId, { ...report, claimId });
+      };
+      let located: { projectId: string; rootPath: string } | null | undefined;
+      const locate = async () => {
+        if (located === undefined) located = await deps.locateChat(first).catch(() => null);
+        return located;
+      };
+      return await deliverInOrder(list, {
+        journal,
+        saveJournal: () => writeMessageJournal(journalFile, journal),
+        claim: async (messageId, claimId) => {
+          await api.claimComputerMessage(instanceId, messageId, claimId);
+        },
+        report: async (messageId, claimId, state, error) => {
+          await report(messageId, claimId, { claimId, state, sessionId, ...(error ? { error } : {}) });
+        },
+        beforeSend: async (message, claimId) => {
+          const where = await locate();
+          if (!where) return { kind: "failed", error: "This chat is not on its computer any more. Send the message again." };
+          const provider = message.provider ?? await deps.chatProvider(where.projectId, sessionId).catch(() => null);
+          if (!provider) return { kind: "failed", error: "This chat is not on its computer any more. Send the message again." };
+          if (!deps.signIn) return { kind: "go" };
+          const holdFor = deps.holdFor ?? (<T>(_reason: string, _ttlMs: number, run: () => Promise<T>) => run());
+          const waited = await holdFor("chat_message_sign_in", SIGN_IN_WAIT_MS + 10 * 60_000, () => waitForSignIn(deps.signIn!, provider, {
+            show: async (signIn) => {
+              try {
+                await report(message.messageId, claimId, { claimId, state: "waiting_for_sign_in", sessionId, signIn });
+                return true;
+              } catch (error) {
+                logger.warn("cloud.chat_queue_sign_in_report_failed", { ...logMeta, error: errorText(error) });
+                return false;
+              }
+            },
+            // Back to `sending`: every client drops the sign-in card.
+            ready: async () => {
+              await report(message.messageId, claimId, { claimId, state: "sending", sessionId }).catch((error: unknown) => {
+                logger.warn("cloud.chat_queue_sign_in_report_failed", { ...logMeta, error: errorText(error) });
+              });
+            },
+            logMeta,
+          }, sleep));
+          if (waited.kind === "ready") return { kind: "go" };
+          if (waited.kind === "cancelled") return { kind: "stop" };
+          return { kind: "failed", error: waited.error };
+        },
+        waitIdle: async () => {
+          const where = await locate();
+          return where ? await deps.waitForChatIdle(where.projectId, sessionId) : false;
+        },
+        send: async (message) => {
+          const where = await locate();
+          if (!where) throw new Error("This chat is not on its computer any more.");
+          const attachments = await downloadAttachments(api, where.rootPath, message.messageId, message.attachments ?? []);
+          await deps.sendChatMessage(where.projectId, sessionId, {
+            text: message.text,
+            clientSendId: message.clientSendId || message.messageId,
+            ...(attachments.length ? { attachments } : {}),
+          });
+        },
+        logger,
+        logMeta,
+      });
+    };
+    const worker = async () => {
+      while (next < chats.length) {
+        const list = chats[next++]!;
+        const finished = await deliverChat(list).catch((error: unknown) => {
+          logger.warn("cloud.chat_queue_chat_failed", { reason, error: errorText(error) });
+          return false;
+        });
+        if (!finished) done = false;
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CHAT_PARALLEL, chats.length) }, worker));
+    logger.info("cloud.chat_queue_drained", { reason, listed: messages.length, done });
+    return { listed: messages.length, done };
+  };
+
+  const drain = (reason: string): Promise<CloudChatQueueDrainResult> => {
+    if (running) {
+      again = true;
+      return running;
+    }
+    const holdFor = deps.holdFor ?? (<T>(_reason: string, _ttlMs: number, run: () => Promise<T>) => run());
+    running = (async () => {
+      let result: CloudChatQueueDrainResult;
+      do {
+        again = false;
+        // Held awake through the round; a sign-in wait holds on its own.
+        result = await holdFor("chat_messages", 10 * 60_000, () => round(reason));
+      } while (again);
+      return result;
+    })().finally(() => {
+      running = null;
+    });
+    return running;
+  };
+
+  return { drain };
+}

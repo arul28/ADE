@@ -623,6 +623,8 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
 
   return {
     getStatus,
+    /** True when a rule or the Linear agent acts on this workspace's events (an ADE Cloud computer then asks to be woken for them). */
+    wantsEvents,
     setup,
     teardown,
     start,

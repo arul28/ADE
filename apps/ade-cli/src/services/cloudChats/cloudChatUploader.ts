@@ -73,10 +73,24 @@ export type CloudChatUploader = {
   noteLaneDeleted(laneId: string): void;
   /** Uploads everything pending now; resolves when done or after `timeoutMs`. */
   uploadPending(timeoutMs?: number): Promise<CloudChatUploadPendingResult>;
+  /**
+   * A chat restored here from its saved copy (fork-continue): the server
+   * already holds its history up to `seq`, so the upload goes on from the
+   * transcript's end as it is now. False when this project has no such chat.
+   */
+  adoptRestored(sessionId: string, seq: number, laneId: string | null): Promise<boolean>;
   dispose(): void;
 };
 
 const uploaders = new Set<CloudChatUploader>();
+
+/** The restored chat's upload goes on from `seq` in the project that holds it (`CloudChatUploader.adoptRestored`). */
+export async function adoptRestoredCloudChat(sessionId: string, seq: number, laneId: string | null): Promise<boolean> {
+  for (const uploader of uploaders) {
+    if (await uploader.adoptRestored(sessionId, seq, laneId)) return true;
+  }
+  return false;
+}
 
 /**
  * Every project's pending uploads on this computer, for the out-of-hours path:
@@ -482,6 +496,16 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       if (timer) clearTimeout(timer);
       const remaining = pending.filter((id) => state.chats[id]?.dirty).length;
       return { uploaded, remaining, timedOut };
+    },
+    async adoptRestored(sessionId, seq, laneId) {
+      if (disposed || !sessionId || !Number.isSafeInteger(seq) || seq < 0) return false;
+      await deps.flushTranscript(sessionId).catch(() => {});
+      const reader = openTranscript(deps.chatTranscriptsDir, sessionId);
+      if (!reader) return false;
+      currentMachineKey();
+      state.chats[sessionId] = { offset: reader.size, seq, dirty: false, laneId };
+      persist();
+      return true;
     },
     dispose() {
       disposed = true;
