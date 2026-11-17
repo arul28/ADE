@@ -13,6 +13,7 @@ import { ANNOUNCEMENTS_SEEN_SETTING_KEY } from "../../../shared/announcementsSee
 import type { AdapterInfra } from "./types";
 import type { AccountSettingRow } from "../../../shared/types/accountSettings";
 import { relayBaseUrl } from "./attention";
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
 function loginStatus(state: BrowserAccountState): "pending" | "signed_in" | "expired" {
   if (browserAccountIsSignedIn(state)) return "signed_in";
@@ -105,6 +106,12 @@ export function createAccountNamespace(
   };
 }
 
+/** A failed account settings call: the caller keeps its local copy. Method and status only, never a key or a value. */
+function reportRelayFailure(method: string, status: number, error?: unknown): void {
+  console.warn("[cloud] account settings call failed", method, status, error instanceof Error ? error.message : "");
+  forwardSignalToSentry("web.account_settings_relay_failed", { method, status }, `account_settings_relay_failed:${method}`, "info");
+}
+
 /** Pages one settings read follows at most (the relay serves 1,000 rows a page). */
 const SETTINGS_MAX_PAGES = 5;
 /** This browser's writer id in the account settings rows. */
@@ -177,10 +184,20 @@ export function createAccountSettingsNamespace(
     try {
       let response = await once(false);
       if (response?.status === 401) response = await once(true);
-      if (!response?.ok) return null;
+      // No response: the session changed during the call, which is not a failure.
+      if (!response) return null;
+      if (!response.ok) {
+        reportRelayFailure(method, response.status);
+        return null;
+      }
       const parsed = await response.json().catch(() => null) as Record<string, unknown> | null;
-      return parsed && parsed.ok !== false ? parsed : null;
-    } catch {
+      if (!parsed || parsed.ok === false) {
+        reportRelayFailure(method, response.status);
+        return null;
+      }
+      return parsed;
+    } catch (error) {
+      reportRelayFailure(method, 0, error);
       return null;
     }
   };

@@ -105,7 +105,8 @@ export async function refreshAdeCloudChatQueue(machineKey: string, chatId: strin
     const messages = await read({ machineKey, chatId });
     if (!messages) return;
     publish(key, { ...(states.get(key) ?? current), messages: openRows(messages), failed: failedRows(messages), readFailed: false });
-  } catch {
+  } catch (error) {
+    console.warn("[cloud] the chat queue read failed", error instanceof Error ? error.message : String(error));
     publish(key, { ...(states.get(key) ?? current), readFailed: true });
   }
 }

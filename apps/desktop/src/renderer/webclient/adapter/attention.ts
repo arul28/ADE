@@ -522,7 +522,10 @@ export function createAttentionNamespace(
       const api = accountClient.cloudApi();
       laneIndex = {
         at: now,
-        lanes: api ? api.accountLanes().then((answer) => answer?.lanes ?? []).catch(() => []) : Promise.resolve([]),
+        lanes: api ? api.accountLanes().then((answer) => answer?.lanes ?? []).catch((error: unknown) => {
+          console.warn("[cloud] the account lane index read failed; lanes keep the names their machines sent", error instanceof Error ? error.message : String(error));
+          return [];
+        }) : Promise.resolve([]),
       };
     }
     const lanes = await laneIndex.lanes;

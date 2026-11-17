@@ -200,7 +200,10 @@ async function listAllSavedChats(
   const chats = [...first.chats];
   let cursor = first.nextCursor;
   for (let page = 1; cursor && page < SAVED_CHATS_MAX_PAGES && context.isActive(); page += 1) {
-    const next = await bridge.list({ projectKey: context.projectKey, limit: SAVED_CHATS_PAGE, cursor }).catch(() => null);
+    const next = await bridge.list({ projectKey: context.projectKey, limit: SAVED_CHATS_PAGE, cursor }).catch((error: unknown) => {
+      console.warn("[cloud] a later saved chats page failed; the list keeps the pages read", error instanceof Error ? error.message : String(error));
+      return null;
+    });
     if (!next) break;
     chats.push(...next.chats);
     cursor = next.nextCursor;
@@ -577,7 +580,8 @@ async function readProjectOverview(projectKey: string | null): Promise<CloudProj
   if (!read || !projectKey) return null;
   try {
     return await read({ origin: projectKey });
-  } catch {
+  } catch (error) {
+    console.warn("[cloud] the project overview read failed", error instanceof Error ? error.message : String(error));
     return null;
   }
 }
