@@ -292,6 +292,27 @@ async function findIgnoredEnvFiles(checkoutPath: string, ignoredLines: string[])
   return found.slice(0, MAX_ENV_FILES);
 }
 
+/** A `.env` file people import to ADE secrets: not an example or a template. */
+const DOTENV_FILE = /(^|\/)\.env(\.[^/]+)?$/i;
+const DOTENV_EXAMPLE = /\.(example|sample|template|dist|defaults?)$/i;
+
+/**
+ * The ignored `.env` files of one checkout, relative POSIX paths: one bounded
+ * `git ls-files` and the same bounded walk the remove dialog runs. Names
+ * only; nothing here reads a file. Empty when git can't answer.
+ */
+export async function listIgnoredDotenvFiles(cwd: string): Promise<string[]> {
+  try {
+    const ignored = await runGit(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"], { cwd, timeoutMs: GIT_READ_TIMEOUT_MS });
+    if (ignored.exitCode !== 0) return [];
+    const lines = ignored.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    return (await findIgnoredEnvFiles(cwd, lines))
+      .filter((file) => DOTENV_FILE.test(file) && !DOTENV_EXAMPLE.test(file));
+  } catch {
+    return [];
+  }
+}
+
 async function mapLimited<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;

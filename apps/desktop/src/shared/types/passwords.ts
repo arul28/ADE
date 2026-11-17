@@ -145,6 +145,16 @@ export type PasswordsStatus = {
 /** A `.env` file the person picked, read on this computer. */
 export type PasswordEnvFile = { fileName: string; entries: Array<{ name: string; value: string }> };
 
+/**
+ * A `.env` file in a project's main checkout on the machine that owns it,
+ * as names and lengths only: its values stay on that machine
+ * (`passwords.previewLaneEnv`).
+ */
+export type PasswordLaneEnvPreview = { fileName: string; path: string; entries: Array<{ name: string; length: number }> };
+
+/** Saves the picked names of that file as secrets, on its machine (`passwords.importLaneEnv`). */
+export type PasswordLaneEnvImportInput = { path: string; names: string[]; projectScope: string | null };
+
 /** Which names an import added, and which it changed. */
 export type PasswordSecretsImportResult = { imported: string[]; replaced: string[] };
 

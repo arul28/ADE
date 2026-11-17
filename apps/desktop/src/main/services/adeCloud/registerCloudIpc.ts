@@ -26,7 +26,7 @@ import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
 import { CloudApiError, createCloudApiClient } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
-import { CLOUD_CHAT_MESSAGE_MAX_CHARS, isCloudRefusalCode, type CloudCarriedSignIns, type CloudLaunchRecord } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_CHAT_MESSAGE_MAX_CHARS, isCloudRefusalCode, type CloudAgentLimitsUpdate, type CloudCarriedSignIns, type CloudLaunchRecord } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudRemoteSignInStatus } from "../../../shared/accountCloudLaunches";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
 import type { CloudSignInEnd } from "../../../shared/cloudSignIns";
@@ -531,18 +531,44 @@ export function registerCloudIpc(args: {
     return result;
   });
 
+  // Agent limits are the account's (`GET/PUT /cloud/limits`), so every
+  // computer and ADE Cloud read the same ones with no computer awake. This
+  // computer's vault copy stays: an older server (404) or no network reads it,
+  // and every write also goes there. Account level: no pin.
+  const serverAgentLimits = async (): Promise<CloudAgentLimits | null> => {
+    if (!credentials.signedIn() || !directoryBaseUrl()) return null;
+    try {
+      const state = await accountApi().agentLimits();
+      return state ? { ...state.limits } as CloudAgentLimits : null;
+    } catch (error) {
+      logger.warn("cloud.agent_limits_server_read_failed", { error: getErrorMessage(error) });
+      return null;
+    }
+  };
+
   ipcMain.handle(IPC.cloudGetAgentLimits, async (event): Promise<CloudAgentLimits | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetAgentLimits)) return null;
-    return await agentLimits.read();
+    return (await serverAgentLimits()) ?? await agentLimits.read();
   });
 
   ipcMain.handle(IPC.cloudSetAgentLimits, async (event, arg: { limits?: Partial<CloudAgentLimits> }): Promise<CloudAgentLimits | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetAgentLimits)) return null;
-    const current = await agentLimits.read();
+    const current = (await serverAgentLimits()) ?? await agentLimits.read();
     const saved = await agentLimits.write({ ...current, ...(arg?.limits ?? {}) });
-    logger.info("cloud.agent_limits_set", { unattendedSpend: saved.unattendedSpend, machinesPerDay: saved.machinesPerDay });
+    let onServer: CloudAgentLimits | null = null;
+    if (credentials.signedIn() && directoryBaseUrl()) {
+      // A refusal (a newer ADE's limits, a blocked account) says why; a 404 keeps the local copy.
+      const state = await accountApi().saveAgentLimits({ limits: { ...(arg?.limits ?? {}) } as CloudAgentLimitsUpdate["limits"] }).catch((error: unknown) => {
+        if (error instanceof CloudApiError && error.status === 409) throw new AdeExpectedError(getErrorMessage(error), "user");
+        logger.warn("cloud.agent_limits_server_write_failed", { error: getErrorMessage(error) });
+        return null;
+      });
+      onServer = state ? { ...state.limits } as CloudAgentLimits : null;
+    }
+    const answer = onServer ?? saved;
+    logger.info("cloud.agent_limits_set", { unattendedSpend: answer.unattendedSpend, machinesPerDay: answer.machinesPerDay, onServer: Boolean(onServer) });
     sendToAllWindows(IPC.cloudStatusChanged);
-    return saved;
+    return answer;
   });
 
   /** The server's one sentence, so the renderer shows it without an error class name in front. */

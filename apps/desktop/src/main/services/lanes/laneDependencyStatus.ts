@@ -7,6 +7,7 @@ import type {
   LaneDependencyStatus,
 } from "../../../shared/types";
 import { runGit } from "../git/git";
+import { listIgnoredDotenvFiles } from "../projects/projectRemovalState";
 
 /**
  * Which lockfiles the main checkout has, and whether each install is current.
@@ -362,6 +363,8 @@ export async function readLaneDependencyStatus(
     defaultTemplateId: deps.getDefaultTemplateId(),
     templateCount: deps.getTemplateCount(),
     checkedAt: new Date().toISOString(),
+    // One bounded git read, inside this cached call (never per render).
+    envFiles: await listIgnoredDotenvFiles(deps.projectRoot),
   };
   statusCache.set(deps.projectRoot, { at: Date.now(), status });
   return status;

@@ -11,6 +11,7 @@ import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import { forgetPostponedSuggestion } from "../../onboarding/adeTipsSuggestions";
 import { useSituationalSuggestion } from "./suggestions/useSituationalSuggestion";
+import { useEnvImportSuggestion } from "./suggestions/useEnvImportSuggestion";
 
 /**
  * Two notices about the open project's main checkout, on the tab's machine:
@@ -243,6 +244,9 @@ export function useLaneDependencyBanners({
     onNever: () => captureLaneSetupAnalytics({ action: "template_suggestion_hidden", outcome: "completed" }),
     busy: templateChatBusy,
   });
+
+  // The main checkout has an ignored `.env`: import it to ADE secrets.
+  useEnvImportSuggestion({ status, pin: projectBinding, scopeKey, context: projectContext, navigate });
 
   // A default template now exists: nothing left to suggest from Tips.
   const hasDefaultTemplate = Boolean(status?.defaultTemplateId);
