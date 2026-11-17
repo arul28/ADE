@@ -1943,6 +1943,12 @@ original/omitted-byte metadata on the event (`outputOriginalBytes`,
 original event while a turn is active. Persisted-history consumers see the
 stored preview on replay.
 
+Codex command output is not one event per delta. A busy command sends many
+deltas a second, and they are joined per command into one `command` event,
+emitted at most ten times a second (or sooner at 64 KiB). Any other event of the
+chat flushes the waiting chunk first, so the order and the final output are
+unchanged, and the stored copy goes through the same compaction.
+
 The policy — every cap, every wrapper shape — lives in one module,
 `apps/desktop/src/shared/chatEventCompaction.ts`, because it has two consumers
 that must never disagree: the stored transcript

@@ -1471,6 +1471,22 @@ cosmetic problem: the GitHub App refresh coordinates through this identity, and
 two identities for one file means two processes each believing they hold the
 only refresh lease.
 
+The **safeStorage key** has a name too, and on macOS it is the Keychain item
+`ade-desktop Safe Storage`. Electron names it after the app name (the packaged
+`ade-desktop`) for every channel, so a Stable and an Alpha app on one machine
+share one key — and a build the Keychain does not trust gets a prompt for it.
+`resolveSafeStorageKeyName` (`main/safeStorageKeyName.ts`) gives a channel build
+`ade-desktop-<channel>`, but only on its **first launch**, and only when nothing
+is sealed yet: a key name cannot change under files sealed with the old key, and
+a project's own `.ade/secrets` is sealed with the same key with no project folder
+known before the app is ready. An install that has run before keeps the shared
+name. The choice is written down once, in `safe-storage-key.json` beside the
+files it protects, so a later launch cannot pick another name. Windows needs
+none of this: its key is sealed with DPAPI into the user-data folder's
+`Local State`, and each channel already has its own folder. Linux keeps the
+shared name because the app name there also names the window class the desktop
+entry matches.
+
 Every one of those writes goes through `updateCredentialKeySync`, one ladder for
 changing a single key: `updateKeySync` (atomic for one key, and the only rung a
 routed store can take), then `updateSync` wrapped over the whole map, then plain
