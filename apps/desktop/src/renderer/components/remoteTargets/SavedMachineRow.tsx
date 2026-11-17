@@ -206,7 +206,7 @@ export function SavedMachineRow({
 }: SavedMachineRowProps) {
   const { target, status } = row;
   const cloudIndex = useAdeCloudLaneComputers();
-  // A cloud computer reads "Cloud · <lane>"; its own name moves to the tooltip.
+  // An ADE Cloud computer reads "ADE Cloud"; its own name moves to the tooltip.
   const cloudLabel = adeCloudMachineLabel({ hostname: target.hostname, machineKey: target.pairedMachine?.machineKey ?? null }, cloudIndex);
   const shownName = cloudLabel ?? target.name;
   // Covers this computer's own connect and main's automatic reconnect.
@@ -339,7 +339,7 @@ export function SavedMachineRow({
           />
           <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-              {/* A cloud lane computer reads "Cloud · <lane>"; its own name stays in the tooltip for support. */}
+              {/* An ADE Cloud computer reads "ADE Cloud"; its own name stays in the tooltip for support. */}
               <span style={nameStyle} title={cloudLabel ? target.name : undefined}>{shownName}</span>
               <PresenceDot state={presence} />
             </div>

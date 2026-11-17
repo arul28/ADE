@@ -988,7 +988,7 @@ export function isMachineMarkerShown(marker: CrossMachineLaneMarker): boolean {
  */
 export function resolveCrossMachineLaneMarkers(
   rows: readonly CrossMachineLaneRow[],
-  /** The lane index's computers, for "Cloud · <lane>" names (the hook passes its subscribed list). */
+  /** The lane index's computers, to name ADE Cloud computers "ADE Cloud" (the hook passes its subscribed list). */
   cloudLaneComputers: readonly AdeCloudLaneComputer[] = adeCloudLaneComputersNow(),
 ): Map<string, CrossMachineLaneMarker> {
   const foreign = rows.filter((row) => !row.isThisMachine);
@@ -1017,7 +1017,7 @@ export function resolveCrossMachineLaneMarkers(
       : `${row.machineId}:${row.lane.id}`;
     markers.set(markerKey, {
       machineId: row.machineId,
-      // A cloud lane computer reads "Cloud · <lane>"; its own name stays in the title for support.
+      // An ADE Cloud computer reads "ADE Cloud"; its own name stays in the title for support.
       machineName: machineLabelForMachine({
         hostname: row.binding?.kind === "remote" ? row.binding.hostname ?? null : null,
         machineKey: row.machineId,

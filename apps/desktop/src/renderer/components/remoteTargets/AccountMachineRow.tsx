@@ -168,9 +168,8 @@ export function AccountMachineRow({
 }: AccountMachineRowProps) {
   const { machine } = row;
   const displayName = accountMachineDisplayName(machine) ?? "Unnamed machine";
-  // What the row shows: a cloud lane computer reads "Cloud · <lane>" (its own name stays in the tooltip and rename field).
   const cloudIndex = useAdeCloudLaneComputers();
-  // A cloud computer reads "Cloud · <lane>"; its own name moves to the tooltip.
+  // An ADE Cloud computer reads "ADE Cloud"; its own name moves to the tooltip and the rename field.
   const cloudLabel = adeCloudMachineLabel({ machineKey: machine.machineKey, hostname: machine.name }, cloudIndex);
   const shownName = cloudLabel ?? displayName;
   const installLabel = accountMachineInstallLabel(machine);
