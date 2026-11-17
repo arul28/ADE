@@ -1885,7 +1885,10 @@ export class RemoteConnectionPool {
         if (retryOnConnectionError) throw reconnectError;
         throw new RemoteActionOutcomeUnknownError(false);
       }
-      if (mayRetryOn(nextEntry)) {
+      if (mayRetryOn(nextEntry) && retryOnConnectionError) {
+        // The replacement must be able to take the replay *and* the original
+        // call must have been safe to replay: a brain that only now announces
+        // a send's dedupe cannot know it kept the first copy.
         if (options.phases) notePhase(options.phases.operation);
         return await operation(nextEntry);
       }
