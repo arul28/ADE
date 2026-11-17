@@ -3087,6 +3087,10 @@ export async function createAdeRuntime(args: {
               projectId: syncRuntimeOptions?.registryProjectId ?? projectId,
               projectRoot,
               lastActivityAt: row.lastActivityAt ?? row.startedAt ?? null,
+              // A chat another chat spawned (`ade chat spawn`, a CTO child):
+              // the saved Work tree nests it under its parent.
+              parentChatId: summary?.orchestrationParentSessionId ?? row.orchestrationParentSessionId ?? null,
+              spawnKind: summary?.spawnKind ?? row.spawnKind ?? null,
             };
           },
           flushTranscript: () => flushAllQueuedTranscriptWrites(),
