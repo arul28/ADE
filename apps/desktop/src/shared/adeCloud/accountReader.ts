@@ -123,6 +123,11 @@ export function githubReadSentence(error: GithubDirectError): string {
   }
 }
 
+/** A file search of a lane at rest: it needs the lane's checkout. */
+const ADE_CLOUD_SEARCH_NEEDS_COMPUTER_SENTENCE = "Searching this lane's files needs its computer. Send a message or run something in the lane to wake it.";
+/** History past GitHub's first page of a lane at rest. */
+const ADE_CLOUD_OLDER_COMMITS_SENTENCE = "Older commits of this lane show when its computer is on. Send a message or run something in the lane to wake it.";
+
 function readFailure(message: string): Error {
   return markExpected(new Error(message), "network");
 }
@@ -212,7 +217,8 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
   };
 
   const lanesOf = async (scope: AdeCloudReadScope): Promise<CloudLaneOverview[]> => {
-    if (!scope.origin) return [];
+    // No repository address: the account can't say which lanes are this project's.
+    if (!scope.origin) throw readFailure("ADE doesn't know this project's repository address, so it can't read its ADE Cloud lanes. Open the project on a computer once.");
     const answer = await overview(scope.origin);
     const lanes = answer?.lanes ?? [];
     return scope.machineKey ? lanes.filter((lane) => lane.machineKey === scope.machineKey) : lanes;
@@ -331,7 +337,7 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
     const laneId = stringField(args, "laneId");
     if (!laneId) return [];
     // Older pages need the lane's computer: GitHub's first page is what a resting lane shows.
-    if (typeof args.skip === "number" && args.skip > 0) return [];
+    if (typeof args.skip === "number" && args.skip > 0) throw readFailure(ADE_CLOUD_OLDER_COMMITS_SENTENCE);
     const { repo, branch } = await repoAt(scope, laneId);
     const commits = await github({ op: "listCommits", params: { ...repo, ref: branch } });
     const limit = typeof args.limit === "number" && args.limit > 0 ? Math.trunc(args.limit) : commits.length;
@@ -406,8 +412,8 @@ export function createAdeCloudAccountReader(deps: AdeCloudAccountReaderDeps) {
         return { handled: true, result: await gitDecorations(scope, args) };
       case "file.quickOpen":
       case "file.searchText":
-        // A search needs the lane's checkout.
-        return { handled: true, result: [] };
+        // A search needs the lane's checkout: say so, never "no matches".
+        throw readFailure(ADE_CLOUD_SEARCH_NEEDS_COMPUTER_SENTENCE);
       case "git.listRecentCommits":
         return { handled: true, result: await recentCommits(scope, args) };
       case "git.getSyncStatus": {
