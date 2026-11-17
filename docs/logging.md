@@ -951,7 +951,10 @@ The cloud computer's brain (`apps/ade-cli/src/services/cloudChats/`,
 Desktop main process (`apps/desktop/src/main/services/adeCloud/adeCloudReadIpc.ts`):
 `ade_cloud.account_read_failed` {channel, error class name, status},
 `ade_cloud.account_write_refused` {channel, code, status},
-`ade_cloud.account_write_failed` {channel, error}. The renderer logs
+`ade_cloud.account_write_failed` {channel, error},
+`ade_cloud.account_call_refused` (warn) {call, code, status}: an account call
+(CTO, automations, Linear, Jira and other account data) that the server
+refused; a 404 is not logged. The renderer logs
 `[cloud] the action after a wake failed` to the console from
 `renderer/lib/cloudMachineWake.ts`. The web client, the iPhone and the other renderer
 surfaces add no events for this work.
