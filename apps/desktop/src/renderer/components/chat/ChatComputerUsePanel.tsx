@@ -134,6 +134,7 @@ function ArtifactKindIcon({ artifact, size = 14 }: {
 export function ArtifactLightbox({
   artifact,
   preview,
+  placeholder = null,
   failed,
   failureText,
   onMediaError,
@@ -141,6 +142,8 @@ export function ArtifactLightbox({
 }: {
   artifact: ComputerUseArtifactView;
   preview: string;
+  /** The tile's smaller copy, shown at once while `preview` (the original) loads. */
+  placeholder?: string | null;
   failed: boolean;
   failureText: string;
   onMediaError: () => void;
@@ -166,6 +169,7 @@ export function ArtifactLightbox({
   return (
     <MediaLightbox
       src={preview}
+      placeholderSrc={placeholder}
       kind={isImageArtifact(artifact) ? "image" : "video"}
       title={artifact.description?.trim() || artifact.title}
       readDataUrl={externalArtifactUrl(artifact.uri) ? undefined : readDataUrl}
@@ -310,6 +314,7 @@ export function ChatProofArtifactCard({
         <ArtifactLightbox
           artifact={artifact}
           preview={fullPreview ?? preview}
+          placeholder={preview}
           failed={failed}
           failureText={failureText}
           onMediaError={onMediaError}
@@ -550,6 +555,7 @@ function DrawerProofTile({
         <ArtifactLightbox
           artifact={artifact}
           preview={fullPreview ?? preview}
+          placeholder={preview}
           failed={failed}
           failureText={failureText}
           onMediaError={onMediaError}

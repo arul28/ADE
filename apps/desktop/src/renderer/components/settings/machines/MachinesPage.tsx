@@ -2,7 +2,7 @@ import { useMemo, type CSSProperties } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ArrowRight, CaretRight } from "@phosphor-icons/react";
 import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
-import type { ProjectMachine } from "../../../state/projectMachines";
+import { useLinkRoundTripMs, useSlowLinkActive, type ProjectMachine } from "../../../state/projectMachines";
 import { useAutoUpdateSnapshot } from "../../app/useAutoUpdateSnapshot";
 import { UpdateTrackChip } from "../../app/ChannelBadge";
 import { MachineAvatar, machineFormFactor, useMachineColor } from "../../remoteTargets/MachineIdentity";
@@ -133,6 +133,17 @@ function MachinesList() {
   );
 }
 
+/**
+ * "766 ms", "Slow connection" while the link to a paired machine is in
+ * slow-connection mode, as the Connections panel says it; nothing otherwise.
+ */
+function useSlowLinkWords(targetId: string | null): string[] {
+  const slow = useSlowLinkActive(targetId);
+  const rttMs = useLinkRoundTripMs(slow ? targetId : null);
+  if (!slow) return [];
+  return typeof rttMs === "number" ? [`${Math.round(rttMs)} ms`, "Slow connection"] : ["Slow connection"];
+}
+
 /** The dot and word under a machine's name: its service here, its connection elsewhere. */
 function presence(
   machine: ProjectMachine,
@@ -169,6 +180,7 @@ function MachineListRow({
 }) {
   const offline = !machine.online && !machine.isThisMachine;
   const status = presence(machine, local);
+  const slowLink = useSlowLinkWords(machine.isThisMachine ? null : machine.machineId);
   const target = fact?.connected && machine.online ? machineUpdateTargetVersion(fact.connected, known) : null;
   const os = machine.isThisMachine ? osLabel(local?.info?.platform) : platformWord(fact?.platform);
   // Disk sizes in the machine's own file manager's units (Finder vs Explorer).
@@ -197,7 +209,7 @@ function MachineListRow({
         </span>
         <span className="ade-mx-row-sub">
           <span className="kit-dot" data-state={status.state} aria-hidden />
-          <span className="ade-mx-row-sub-text">{[status.word, os, ...busyNotes].filter(Boolean).join(" · ")}</span>
+          <span className="ade-mx-row-sub-text">{[status.word, ...slowLink, os, ...busyNotes].filter(Boolean).join(" · ")}</span>
           {preferenceTag ? <span className="kit-tag" data-tone={preferenceTag === "Manual only" ? "warn" : undefined} title="New work: how often Least loaded picks this machine">{preferenceTag}</span> : null}
         </span>
       </span>
@@ -254,6 +266,7 @@ function MachineDetail({ scope }: { scope: SettingsMachinePage }) {
   const color = useMachineColor(fact?.colorKey ?? scope.machineId);
   const offline = !scope.online && !scope.isThisMachine;
   const os = scope.isThisMachine ? osLabel(local.info?.platform) : platformWord(fact?.platform);
+  const slowLink = useSlowLinkWords(scope.isThisMachine ? null : scope.machineId);
 
   return (
     <div className="ade-mx">
@@ -275,7 +288,7 @@ function MachineDetail({ scope }: { scope: SettingsMachinePage }) {
             </div>
             <div className="ade-mx-hero-sub">
               <span className="kit-dot" data-state={offline ? undefined : "ok"} aria-hidden />
-              {[scope.isThisMachine ? "This machine" : offline ? "Offline" : "Online", os, fact?.versionLabel ? `ADE ${fact.versionLabel}` : null].filter(Boolean).join(" · ")}
+              {[scope.isThisMachine ? "This machine" : offline ? "Offline" : "Online", ...slowLink, os, fact?.versionLabel ? `ADE ${fact.versionLabel}` : null].filter(Boolean).join(" · ")}
             </div>
           </div>
         </div>

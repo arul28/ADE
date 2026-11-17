@@ -5,7 +5,8 @@ import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 /**
  * A chip on the composer's top edge while the link to the chat's machine is
- * in slow-connection mode. Its hover says why pictures wait for a tap.
+ * in slow-connection mode. Its hover says what the number is and why
+ * pictures wait for a tap.
  * Nothing for this computer's own chats, nor on a good link.
  */
 export function ChatSlowLinkChip() {
@@ -20,7 +21,10 @@ export function ChatSlowLinkChip() {
       icon={<WifiLow size={10} weight="bold" />}
       label="Slow connection"
       detail={typeof rttMs === "number" ? `${Math.round(rttMs)} ms` : undefined}
-      tooltip={`Pictures load when you click them, and terminals show what you type before the machine echoes it (${scope.machineName}).`}
+      tooltip={[
+        typeof rttMs === "number" ? `Round trip to ${scope.machineName}: ${Math.round(rttMs)} ms.` : null,
+        "Pictures load when you click them, and terminals show what you type before the machine echoes it.",
+      ].filter(Boolean).join(" ")}
       testId="chat-slow-link-chip"
     />
   );
