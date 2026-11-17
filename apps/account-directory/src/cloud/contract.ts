@@ -1252,6 +1252,8 @@ export type CloudComputerQueuedMessage = CloudChatQueuedMessage & {
   laneId: string | null;
   /** Send it with this `clientSendId`, so a direct send of the same id is the same message. */
   clientSendId: string;
+  /** What the message goes to: a chat, or a CLI session (send it as typed input). Older servers leave it out (a chat). */
+  targetKind?: "chat" | "cli";
 };
 
 /** `PUT /cloud/instances/:id/messages/:msg`, from the computer that claimed it. */
@@ -1667,7 +1669,12 @@ export type CloudServerLaunchRequest = {
    * `lane.id` of the chat's lane. A server or computer that predates it
    * starts a new chat.
    */
-  continueChat?: { machineKey: string; chatId: string };
+  continueChat?: {
+    machineKey: string;
+    chatId: string;
+    /** `cli`: the saved row is a CLI session copy (`chatId` is its session id); the computer restores the CLI. Left out: a chat. */
+    kind?: "chat" | "cli";
+  };
 };
 
 /**

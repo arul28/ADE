@@ -2969,4 +2969,31 @@ describe("ADE Cloud without a computer", () => {
     expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
     expect(harness.rows("select message_id from cloud_launch_messages where launch_id = ? order by seq", wake.launchId)).toEqual([{ message_id: "m1" }, { message_id: "m2" }]);
   });
+
+  it("a saved CLI takes messages like a chat: its computer reads it as a CLI, a gone one continues it with no model, a shell takes none", async () => {
+    harness.env.CLERK_SECRET_KEY = "sk_test";
+    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-cli", lane_id: LANE, lane_name: "Fix the login page", lane_project_origin: "https://github.com/acme/widgets", lane_branch: "ade/fix-login" });
+    const saveSession = (sessionId: string, kind: "cli" | "shell", toolType: string) => harness.send(OWNER, "PUT", `/cloud/sessions/key-cli/${sessionId}`, {
+      instanceId: INSTANCE, format: "text", text: "$ ready\n", row: { kind, toolType, laneId: LANE, projectKey: "github.com/acme/widgets" },
+    });
+    expect([(await saveSession("cli-1", "cli", "cursor-cli")).status, (await saveSession("sh-1", "shell", "shell")).status]).toEqual([200, 200]);
+    const send = (sessionId: string, messageId: string) => harness.send(OWNER, "POST", `/cloud/chats/key-cli/${sessionId}/messages`, { messageId, text: "Run the tests." });
+
+    // A live computer: the message waits for it, marked as typed input for a CLI.
+    expect((await send("cli-1", "m1")).status).toBe(201);
+    const listed = (await (await harness.send(OWNER, "GET", `/cloud/instances/${INSTANCE}/messages`)).json()) as { messages: Array<{ messageId: string; targetKind?: string; laneId: string | null }> };
+    expect(listed.messages.map((message) => [message.messageId, message.targetKind, message.laneId])).toEqual([["m1", "cli", LANE]]);
+    expect((await send("sh-1", "m2")).status).toBe(404);
+
+    // Its computer gone: one launch continues the CLI, with its agent and no model.
+    harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
+    const gone = await send("cli-1", "m3");
+    expect(gone.status).toBe(201);
+    const { wake } = (await gone.json()) as { wake: { launchId: string } };
+    const request = JSON.parse(String(harness.row("select request_json from cloud_launches where launch_id = ?", wake.launchId).request_json)) as Record<string, Record<string, unknown>>;
+    expect([request.continueChat, request.chat!.provider, request.chat!.modelId]).toEqual([{ machineKey: "key-cli", chatId: "cli-1", kind: "cli" }, "cursor", ""]);
+  });
 });

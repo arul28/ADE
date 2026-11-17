@@ -323,9 +323,10 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
     const machineKey = typeof raw?.machineKey === "string" && CONTINUE_ID.test(raw.machineKey.trim()) ? raw.machineKey.trim() : null;
     const chatId = typeof raw?.chatId === "string" && CONTINUE_ID.test(raw.chatId.trim()) ? raw.chatId.trim() : null;
     if (!machineKey || !chatId) return "The chat to continue can't be read.";
+    if (raw?.kind != null && raw.kind !== "chat" && raw.kind !== "cli") return "The chat to continue can't be read.";
     if (kind !== "chat") return "Only a chat launch continues a chat.";
     if (lane?.id == null) return "A launch that continues a chat names the chat's lane.";
-    continueChat = { machineKey, chatId };
+    continueChat = { machineKey, chatId, ...(raw?.kind === "cli" ? { kind: "cli" as const } : {}) };
   }
   // An ADE app's own launch args, kept as sent: the computer parses them as every entry's.
   let launch: Record<string, unknown> | null = null;

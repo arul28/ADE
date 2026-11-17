@@ -122,6 +122,13 @@ function readSessionRowInput(value: unknown): CloudSessionRowInput | null {
   };
 }
 
+/** One saved CLI session (never a shell) as the queue reads it: its row and its opened summary. */
+export async function cliSessionCopy(env: CloudEnv, keys: UserKeys, userId: string, machineKey: string, sessionId: string): Promise<CloudSessionRow | null> {
+  const row = await env.DB.prepare("select * from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ? and kind = 'cli'")
+    .bind(userId, machineKey, sessionId).first<SessionRow>();
+  return row ? await rowOf(keys, row) : null;
+}
+
 async function rowOf(keys: UserKeys, row: SessionRow): Promise<CloudSessionRow> {
   const summary = await openJson(keys, summaryAad(row.user_id, row.machine_key, row.session_id), row.summary_sealed);
   const record = summary && typeof summary === "object" && !Array.isArray(summary) ? summary as Record<string, unknown> : {};
@@ -271,7 +278,11 @@ export async function deleteSessionCopy(env: CloudEnv, userId: string, machineKe
     .bind(userId, machineKey, sessionId).first<{ r2_key: string }>();
   if (!row) return false;
   await env.CLOUD_CHATS?.delete(row.r2_key);
-  await env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?").bind(userId, machineKey, sessionId).run();
+  // Messages queued to a CLI go with its copy.
+  await env.DB.batch([
+    env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and session_id = ?").bind(userId, machineKey, sessionId),
+    env.DB.prepare("delete from cloud_chat_messages where user_id = ? and machine_key = ? and chat_id = ?").bind(userId, machineKey, sessionId),
+  ]);
   return true;
 }
 
@@ -281,7 +292,14 @@ export async function deleteSessionCopiesForLane(env: CloudEnv, userId: string, 
     .bind(userId, machineKey, laneId).all<{ session_id: string; r2_key: string }>()).results ?? [];
   if (!rows.length) return 0;
   if (env.CLOUD_CHATS) await env.CLOUD_CHATS.delete(rows.map((row) => row.r2_key));
-  await env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and lane_id = ?").bind(userId, machineKey, laneId).run();
+  // Messages queued to its CLIs go first: the copies name which ones.
+  await env.DB.batch([
+    env.DB.prepare(`
+      delete from cloud_chat_messages where user_id = ? and machine_key = ?
+        and chat_id in (select session_id from cloud_session_copies where user_id = ? and machine_key = ? and lane_id = ?)
+    `).bind(userId, machineKey, userId, machineKey, laneId),
+    env.DB.prepare("delete from cloud_session_copies where user_id = ? and machine_key = ? and lane_id = ?").bind(userId, machineKey, laneId),
+  ]);
   return rows.length;
 }
 

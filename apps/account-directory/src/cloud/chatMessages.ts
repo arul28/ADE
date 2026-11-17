@@ -22,6 +22,7 @@ import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, ty
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
 import { logCloud, type CloudEnv, type ComputerRow } from "./store";
 import { copyRow, openSummary, type CopyRow } from "./chats";
+import { cliSessionCopy } from "./sessionCopies";
 
 /**
  * The person's queue for an existing cloud chat (CONTRACTS 3.1). A send to a
@@ -35,6 +36,10 @@ import { copyRow, openSummary, type CopyRow } from "./chats";
  * gone is continued by a launch the server starts for the same lane
  * (`continueChat`), which carries the message; its rows here are
  * `via_launch` and read their state from the launch's own message.
+ *
+ * A send can also go to a saved CLI session (`cloud_session_copies`, kind
+ * `cli`): its session id takes the chat id's place, and the computer types
+ * the text into the CLI. A shell takes no messages.
  *
  * The text is sealed with the user's key. No text reaches a log line.
  */
@@ -191,21 +196,74 @@ export type ChatMessageDeps = {
 
 /* ---- Person routes: /cloud/chats/:m/:c/messages[/:msg] ---- */
 
+/** The facts a continue launch needs, from the target's sealed summary. */
+type TargetFacts = { provider: string | null; model: string | null; laneName: string | null; projectId: string | null };
+
+/** What a send goes to: a saved chat, or a saved CLI session (its session id in `chat_id`). */
+type QueueTarget = Pick<CopyRow, "machine_key" | "chat_id" | "instance_id" | "project_key" | "lane_id"> & {
+  kind: "chat" | "cli";
+  facts: (keys: UserKeys) => Promise<TargetFacts>;
+};
+
+const textOf = (record: Record<string, unknown> | null | undefined, key: string): string | null =>
+  typeof record?.[key] === "string" && record[key] ? record[key] as string : null;
+
+/** The agent of a CLI tool type (`LAUNCH_PROFILE_TOOL_TYPES`): `cursor-cli` is `cursor`. A shell has none. */
+function cliProviderOf(toolType: string | null): string | null {
+  const provider = toolType?.trim().toLowerCase().replace(/-(cli|orchestrated|chat)$/, "") ?? "";
+  return provider && provider !== "shell" && /^[a-z][a-z0-9_-]{0,39}$/.test(provider) ? provider : null;
+}
+
+function chatTarget(chat: CopyRow): QueueTarget {
+  return {
+    kind: "chat",
+    machine_key: chat.machine_key,
+    chat_id: chat.chat_id,
+    instance_id: chat.instance_id,
+    project_key: chat.project_key,
+    lane_id: chat.lane_id,
+    facts: async (keys) => {
+      const summary = await openSummary(keys, chat) as Record<string, unknown> | null;
+      return { provider: textOf(summary, "provider"), model: textOf(summary, "model"), laneName: textOf(summary, "laneName"), projectId: textOf(summary, "projectId") };
+    },
+  };
+}
+
 /**
- * The chat a send names, or the row a fork restore moved it to (an older
- * client still names the old machine key).
+ * The target a send names: the saved chat, or the row a fork restore moved
+ * it to (an older client still names the old machine key), or a saved CLI
+ * session with that id.
  */
-async function resolveChat(env: CloudEnv, userId: string, machineKey: string, chatId: string): Promise<CopyRow | null> {
+async function resolveTarget(env: CloudEnv, userId: string, machineKey: string, chatId: string): Promise<QueueTarget | null> {
   const direct = await copyRow(env, userId, machineKey, chatId);
-  if (direct) return direct;
-  return await env.DB.prepare(`
+  if (direct) return chatTarget(direct);
+  const moved = await env.DB.prepare(`
     select * from cloud_chat_copies where user_id = ? and forked_from_machine_key = ? and forked_from_chat_id = ? and chat_id = ?
     order by updated_at desc limit 1
   `).bind(userId, machineKey, chatId, chatId).first<CopyRow>();
+  if (moved) return chatTarget(moved);
+  const cli = await env.DB.prepare(`
+    select machine_key, session_id, instance_id, project_key, lane_id from cloud_session_copies
+    where user_id = ? and machine_key = ? and session_id = ? and kind = 'cli'
+  `).bind(userId, machineKey, chatId)
+    .first<{ machine_key: string; session_id: string; instance_id: string | null; project_key: string | null; lane_id: string | null }>();
+  if (!cli) return null;
+  return {
+    kind: "cli",
+    machine_key: cli.machine_key,
+    chat_id: cli.session_id,
+    instance_id: cli.instance_id,
+    project_key: cli.project_key,
+    lane_id: cli.lane_id,
+    facts: async (keys) => {
+      const copy = await cliSessionCopy(env, keys, userId, cli.machine_key, cli.session_id);
+      return { provider: cliProviderOf(copy?.toolType ?? null), model: null, laneName: copy?.laneName ?? null, projectId: copy?.projectId ?? null };
+    },
+  };
 }
 
 /** The live computer that holds a saved chat now: the one with its machine key, else the one that saved it. */
-async function liveComputerOf(env: CloudEnv, userId: string, chat: CopyRow): Promise<ComputerRow | null> {
+async function liveComputerOf(env: CloudEnv, userId: string, chat: QueueTarget): Promise<ComputerRow | null> {
   const byKey = await env.DB.prepare(`
     select * from cloud_computers where user_id = ? and lower(machine_key) = lower(?) and deleted_at is null order by created_at desc limit 1
   `).bind(userId, chat.machine_key).first<ComputerRow>();
@@ -236,7 +294,7 @@ export async function routeChatMessages(
 }
 
 async function handleList(env: CloudEnv, userId: string, machineKey: string, chatId: string, now: number): Promise<Response> {
-  const chat = await resolveChat(env, userId, machineKey, chatId);
+  const chat = await resolveTarget(env, userId, machineKey, chatId);
   if (!chat) return notFound();
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
@@ -278,7 +336,7 @@ async function attachmentsUploaded(env: CloudEnv, userId: string, attachments: C
 }
 
 /** The per-chat and per-account caps, and the minute rate limit. A response when the send is refused. */
-async function capsRefusal(env: CloudEnv, userId: string, chat: CopyRow, now: number): Promise<Response | null> {
+async function capsRefusal(env: CloudEnv, userId: string, chat: QueueTarget, now: number): Promise<Response | null> {
   const counts = await env.DB.prepare(`
     select
       (select count(*) from cloud_chat_messages where user_id = ? and created_at > ?) as recent,
@@ -305,7 +363,7 @@ async function insertRow(
   env: CloudEnv,
   keys: UserKeys,
   userId: string,
-  chat: CopyRow,
+  chat: QueueTarget,
   input: SendInput,
   where: { instanceId: string | null; launchId: string | null; viaLaunch: boolean },
   now: number,
@@ -346,7 +404,7 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
   const provider = body.provider == null ? null : shortString(body.provider, 40);
   const modelId = body.modelId == null ? null : shortString(body.modelId, 300);
 
-  const chat = await resolveChat(env, userId, machineKey, chatId);
+  const chat = await resolveTarget(env, userId, machineKey, chatId);
   if (!chat) return notFound();
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
@@ -390,7 +448,7 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
  * (`continueChat`) and carries this message. A launch already continuing it
  * takes the message as one more launch message.
  */
-async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, chat: CopyRow, input: SendInput, deps: ChatMessageDeps): Promise<Response> {
+async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, chat: QueueTarget, input: SendInput, deps: ChatMessageDeps): Promise<Response> {
   const { now } = deps;
   const gone = (why: string) => fail("computer_deleted", why, 409);
   if (!chat.lane_id || !UUID_PATTERN.test(chat.lane_id)) {
@@ -400,12 +458,15 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
   if (running) return await addToLaunch(env, keys, userId, chat, input, running, now);
 
   const lane = await laneFactsForChat(env, userId, chat);
-  const summary = await openSummary(keys, chat);
-  const provider = input.provider ?? (typeof summary?.provider === "string" ? summary.provider : null);
-  const modelId = input.modelId ?? (typeof summary?.model === "string" ? summary.model : null);
+  const facts = await chat.facts(keys);
+  const provider = input.provider ?? facts.provider;
+  // A CLI needs no model: the computer restores it from its capsule with its own settings, or starts it fresh.
+  const modelId = input.modelId ?? facts.model ?? (chat.kind === "cli" ? "" : null);
   const origin = githubOriginOf(lane.projectOrigin ?? chat.project_key);
-  if (!provider || !modelId || !origin) {
-    return gone("This chat's computer is gone and ADE can't tell which agent or repository it used. Start a new chat in the lane.");
+  if (!provider || modelId == null || !origin) {
+    return gone(chat.kind === "cli"
+      ? "This CLI's computer is gone and ADE can't tell which CLI or repository it used. Start a new CLI in the lane."
+      : "This chat's computer is gone and ADE can't tell which agent or repository it used. Start a new chat in the lane.");
   }
   const parsed: ParsedLaunchRequest = {
     launchId: crypto.randomUUID(),
@@ -415,7 +476,7 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
     project: { origin },
     lane: {
       id: chat.lane_id,
-      name: lane.laneName ?? (typeof summary?.laneName === "string" ? summary.laneName : "Lane"),
+      name: lane.laneName ?? facts.laneName ?? "Lane",
       ...(lane.branch ? { existingBranch: lane.branch } : {}),
     },
     chat: {
@@ -429,7 +490,7 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
     },
     madeBy: { kind: "person" },
     channel: "beta",
-    continueChat: { machineKey: chat.machine_key, chatId: chat.chat_id },
+    continueChat: { machineKey: chat.machine_key, chatId: chat.chat_id, ...(chat.kind === "cli" ? { kind: "cli" as const } : {}) },
   };
   const started = await deps.wake!.startLaunch(parsed);
   if (started.status !== 200 && started.status !== 201) return started;
@@ -444,7 +505,7 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
   return json({ message: await messageOf(env, keys, row), wake: { state: "launching", launchId: record.launchId } } satisfies CloudChatMessageAddResult, 201);
 }
 
-async function addToLaunch(env: CloudEnv, keys: UserKeys, userId: string, chat: CopyRow, input: SendInput, launch: LaunchRow, now: number): Promise<Response> {
+async function addToLaunch(env: CloudEnv, keys: UserKeys, userId: string, chat: QueueTarget, input: SendInput, launch: LaunchRow, now: number): Promise<Response> {
   if (input.attachments.length) return badRequest("Files can't be added while the chat moves to its new computer. Send them once it is ready.");
   const added = await addLaunchMessage(env, launch, input.messageId, input.text, now);
   if (added instanceof Response) return added;
@@ -453,7 +514,7 @@ async function addToLaunch(env: CloudEnv, keys: UserKeys, userId: string, chat: 
 }
 
 /** The lane a gone computer held: its lane-without-computer row first, else the computer's own row. */
-async function laneFactsForChat(env: CloudEnv, userId: string, chat: CopyRow): Promise<{ laneName: string | null; projectOrigin: string | null; branch: string | null }> {
+async function laneFactsForChat(env: CloudEnv, userId: string, chat: QueueTarget): Promise<{ laneName: string | null; projectOrigin: string | null; branch: string | null }> {
   const kept = await env.DB.prepare("select lane_name, project_origin, branch_ref from cloud_lanes_without_computer where user_id = ? and lane_id = ?")
     .bind(userId, chat.lane_id).first<{ lane_name: string; project_origin: string | null; branch_ref: string | null }>();
   if (kept) return { laneName: kept.lane_name, projectOrigin: kept.project_origin, branch: kept.branch_ref };
@@ -464,7 +525,7 @@ async function laneFactsForChat(env: CloudEnv, userId: string, chat: CopyRow): P
 }
 
 async function handleCancel(env: CloudEnv, userId: string, machineKey: string, chatId: string, messageId: string, now: number): Promise<Response> {
-  const chat = await resolveChat(env, userId, machineKey, chatId);
+  const chat = await resolveTarget(env, userId, machineKey, chatId);
   if (!chat) return notFound();
   const row = await readRow(env, userId, chat.machine_key, chat.chat_id, messageId);
   if (!row) return messageNotFound();
@@ -488,13 +549,14 @@ async function handleCancel(env: CloudEnv, userId: string, machineKey: string, c
 /* ---- Computer routes: /cloud/instances/:id/messages[/:msg[/claim]] ---- */
 
 async function computerMessageOf(env: CloudEnv, keys: UserKeys, row: ChatMessageRow): Promise<CloudComputerQueuedMessage> {
-  const chat = await copyRow(env, row.user_id, row.machine_key, row.chat_id);
-  const summary = chat ? await openSummary(keys, chat) : null;
+  const target = await resolveTarget(env, row.user_id, row.machine_key, row.chat_id);
+  const facts = target ? await target.facts(keys) : null;
   return {
     ...(await messageOf(env, keys, row)),
-    projectId: typeof summary?.projectId === "string" ? summary.projectId : null,
-    laneId: chat?.lane_id ?? null,
+    projectId: facts?.projectId ?? null,
+    laneId: target?.lane_id ?? null,
     clientSendId: row.message_id,
+    targetKind: target?.kind ?? "chat",
   };
 }
 
