@@ -150,13 +150,25 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   // "Open chat" on a computer that had to wake first: the copy opens when it is
   // back (the effect below), then that chat opens, not the new-chat page.
   const chatToOpenRef = useRef<{ record: CloudLaunchRecord; machineKey: string } | null>(null);
+  const openRequestRef = useRef(0);
   const openCopyAndReport = useCallback((copy: RepositoryCopy) => {
     setOpenFailure(null);
     const chat = chatToOpenRef.current;
     const opensChat = chat != null && chat.record.sessionId != null && copy.machineKey?.toLowerCase() === chat.machineKey;
     if (opensChat) chatToOpenRef.current = null;
+    const request = ++openRequestRef.current;
     void openCopy(copy).then(
       () => {
+        // A later open (or another project) won: the earlier chat opens nothing.
+        if (request !== openRequestRef.current) return;
+        const bound = useAppStore.getState().projectBinding;
+        const address = copy.address;
+        const sameCopy = bound != null && address != null && (
+          bound.kind === "remote" && address.kind === "remote"
+            ? bound.targetId === address.targetId
+            : bound.kind === "local" && address.kind === "local" && bound.rootPath === address.rootPath
+        );
+        if (!sameCopy) return;
         if (opensChat && chat.record.sessionId) navigateToAppTarget({ kind: "chat", sessionId: chat.record.sessionId, laneId: chat.record.laneId ?? null });
       },
       (error: unknown) => setOpenFailure({ copy, detail: extractError(error) }),
