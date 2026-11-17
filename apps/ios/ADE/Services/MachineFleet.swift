@@ -454,7 +454,7 @@ final class MachineFleet: ObservableObject {
     // it is up. The pairing can wait for minutes, so a Connect or Disconnect
     // the user chose meanwhile still wins.
     if connections[machineKey] == nil {
-      let paired = await syncService?.pairRestingCloudMachine(fleetKey: machineKey, name: name, waking: waking) ?? .skipped
+      let paired = await syncService?.pairRestingCloudMachine(fleetKey: machineKey, name: name, waking: waking, waitsForStart: wake) ?? .skipped
       guard choiceBeforeWake == keepLiveChoices else { return false }
       switch paired {
       case .started: break

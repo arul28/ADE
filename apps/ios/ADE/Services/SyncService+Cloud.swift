@@ -990,7 +990,9 @@ extension SyncService {
   /// heartbeat from before it slept can still read "online" for a while, and
   /// its ADE answers only once it is up, so a failed pairing is tried again
   /// (after a new heartbeat, a new address, or 15 s) until the wake time ends.
-  func pairRestingCloudMachine(fleetKey: String, name: String, waking: Bool = false) async -> CloudWakeResult {
+  /// `waitsForStart: false` (a read: connect, never wake) pairs only a
+  /// computer the account lists online now, and else answers `.skipped`.
+  func pairRestingCloudMachine(fleetKey: String, name: String, waking: Bool = false, waitsForStart: Bool = true) async -> CloudWakeResult {
     guard machineFleet?.connection(for: fleetKey) == nil,
           let accountKey = AccountService.shared.machine(forFleetKey: fleetKey)?.machineKey,
           cloudMachineFleetKeys.contains(fleetKey),
@@ -1005,6 +1007,9 @@ extension SyncService {
     var lastAttempt: (at: ContinuousClock.Instant, signal: CloudPairingSignal)?
     while !Task.isCancelled {
       guard AccountService.shared.isPairingCommitAuthorized(owner) else { return .skipped }
+      // A read: a computer that is not up has nothing to pair with. Waiting
+      // here would read the account every 3 s and end in a false failure.
+      if !waitsForStart, current()?.online != true { return .skipped }
       if let machine = current(), machine.online {
         let signal = CloudPairingSignal(machine)
         let due = lastAttempt.map { attempt in
