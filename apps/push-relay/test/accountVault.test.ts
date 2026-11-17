@@ -445,6 +445,52 @@ describe("account vault", () => {
     expect(read.body.items).toHaveLength(0);
   });
 
+  // The keys list exists so status views never open a credential: no value
+  // may ride on it, and it shows only the caller's live rows of one scope.
+  it("lists keys without values, and reads one named item", async () => {
+    await put([
+      sealed(),
+      sealed({ kind: "provider_login", key: "antigravity/default", value: "login-blob" }),
+      sealed({ key: "openai", value: "sk-gone" }),
+      sealed({ scope: "repo:github.com/o/r", key: "repo-only", value: "sk-repo" }),
+    ]);
+    await put([sealed({ key: "other-account", value: "sk-other" })], OTHER_USER);
+    await call("DELETE", "/attention/account/vault/all/provider_key/openai?deviceId=device-1");
+
+    const keys = await call("GET", "/attention/account/vault/keys?scope=all");
+    expect(keys.body.items).toEqual([
+      { scope: "all", kind: "provider_key", key: "anthropic", updatedAt: expect.any(String) },
+      { scope: "all", kind: "provider_login", key: "antigravity/default", updatedAt: expect.any(String) },
+    ]);
+    expect(JSON.stringify(keys.body)).not.toMatch(/sk-|login-blob/);
+    const logins = await call("GET", "/attention/account/vault/keys?scope=all&kind=provider_login");
+    expect(logins.body.items).toEqual([expect.objectContaining({ key: "antigravity/default" })]);
+
+    const one = await call("GET", "/attention/account/vault/item?scope=all&kind=provider_key&key=anthropic");
+    expect(one.body.item).toMatchObject({ key: "anthropic", value: "sk-live-abc123" });
+    const missing = await call("GET", "/attention/account/vault/item?scope=all&kind=provider_key&key=other-account");
+    expect(missing).toEqual({ status: 200, body: { ok: true, item: null } });
+  });
+
+  it("refuses the item and keys reads from a browser", async () => {
+    await put([sealed()]);
+    for (const pathname of [
+      "/attention/account/vault/item?scope=all&kind=provider_key&key=anthropic",
+      "/attention/account/vault/keys?scope=all",
+    ]) {
+      const url = new URL(`https://relay.test${pathname}`);
+      const response = await handleAccountVaultRoute(
+        new Request(url, { headers: { origin: "https://app.ade-app.dev" } }),
+        env,
+        url,
+        USER,
+        url.pathname.split("/").filter(Boolean).slice(2),
+      );
+      expect(response?.status).toBe(403);
+      expect(await response?.text()).not.toContain("sk-live");
+    }
+  });
+
   it("does not answer routes that are not its own", async () => {
     const url = new URL("https://relay.test/attention/account/settings");
     const response = await handleAccountVaultRoute(

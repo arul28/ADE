@@ -385,6 +385,51 @@ async function handleRead(
 }
 
 /**
+ * `GET vault/item?scope&kind&key`: one item, opened. The account directory
+ * reads a few named items per request; the full `GET vault` opens every item
+ * of the scope to find them. `item: null` when there is no row, so a 404 here
+ * always means a relay without this route.
+ */
+async function handleItemRead(env: VaultEnv, userId: string, url: URL): Promise<Response> {
+  const scope = parseAccountScopeKey(url.searchParams.get("scope"));
+  const kind = requiredString(url.searchParams.get("kind"), 32);
+  const itemKey = parseItemKey(url.searchParams.get("key"));
+  if (!scope || !kind || !ITEM_KINDS.has(kind) || !itemKey) {
+    return json({ ok: false, error: "invalid item" }, { status: 400 });
+  }
+  const key = await vaultKey(env);
+  if (!key) return vaultUnavailable();
+  const row = await readVaultRow(env, userId, { scope, kind, key: itemKey });
+  return json({ ok: true, item: row ? await rowToVaultItem(key, row) : null });
+}
+
+/**
+ * `GET vault/keys?scope[&kind]`: the live item keys of one scope, with no
+ * value and nothing opened. For status views (which keys are saved), so they
+ * never decrypt a credential they do not show. At most the account's item cap.
+ */
+async function handleKeysRead(env: VaultEnv, userId: string, url: URL): Promise<Response> {
+  const scope = parseAccountScopeKey(url.searchParams.get("scope"));
+  const kindParam = url.searchParams.get("kind");
+  const kind = kindParam == null ? null : requiredString(kindParam, 32);
+  if (!scope || (kindParam != null && (!kind || !ITEM_KINDS.has(kind)))) {
+    return json({ ok: false, error: "invalid scope" }, { status: 400 });
+  }
+  const rows = await env.DB.prepare(`
+    select item_kind, item_key, updated_at
+    from account_vault_items
+    where user_id = ? and scope_key = ? and deleted = 0${kind ? " and item_kind = ?" : ""}
+    order by item_kind asc, item_key asc
+    limit ?
+  `).bind(...(kind ? [userId, scope, kind] : [userId, scope]), MAX_ITEMS_PER_ACCOUNT)
+    .all<{ item_kind: string; item_key: string; updated_at: string }>();
+  return json({
+    ok: true,
+    items: rows.results.map((row) => ({ scope, kind: row.item_kind, key: row.item_key, updatedAt: row.updated_at })),
+  });
+}
+
+/**
  * The statement for one write.
  *
  * - `ifRevision` names a revision: change the row only while it still has
@@ -628,6 +673,12 @@ async function handleDelete(
  * Routes under `/attention/account/vault`. Returns `null` when the path is not
  * ours.
  *
+ *   GET    vault?scope&since            items, opened, paged by revision
+ *   PUT    vault                        { items: [...] } writes
+ *   DELETE vault/<scope>/<kind>/<key>   one removal
+ *   GET    vault/item?scope&kind&key    one item, opened (never a browser)
+ *   GET    vault/keys?scope[&kind]      live keys only, no value (never a browser)
+ *
  * The caller has already authenticated; `userId` is the verified account and
  * every statement is scoped to it. No route names another account, so one
  * cannot be reached by guessing a path.
@@ -646,6 +697,15 @@ export async function handleAccountVaultRoute(
   }
   if (route.length === 1 && request.method === "PUT") {
     return await handleWrite(request, env, userId);
+  }
+  if (route.length === 2 && (route[1] === "item" || route[1] === "keys") && request.method === "GET") {
+    // For the account directory's binding: a browser never reaches these
+    // (`BROWSER_ACCOUNT_ROUTES` in relay.ts refuses them first). Checked here
+    // again so a change to that list cannot open them by accident.
+    if (request.headers.has("origin")) return json({ ok: false, error: "origin not allowed" }, { status: 403 });
+    return route[1] === "item"
+      ? await handleItemRead(env, userId, url)
+      : await handleKeysRead(env, userId, url);
   }
   // `/vault/<scope>/<kind>/<key>`. A key with `/` in it arrives encoded
   // (`%2F`) and stays one segment; one a proxy decoded on the way arrives as
