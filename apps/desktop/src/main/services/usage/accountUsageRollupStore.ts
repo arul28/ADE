@@ -18,6 +18,7 @@ import type {
   AdeUsageTranscriptSource,
 } from "../../../shared/types";
 import { getErrorMessage, safeJsonParse } from "../shared/utils";
+import { normalizeRollupActivity, serializeRollupActivity } from "./accountUsageRollup";
 
 /**
  * How far back a rollup publishes.
@@ -50,16 +51,28 @@ type RollupMetaRecord = {
   captured_at: string;
   source_id: string | null;
   source_roots: string;
+  source_window?: string | null;
 };
 
 /**
- * The `content_digest` and `source_window` columns are deliberately absent.
- * They fed the token-level source comparison that `isSameTranscriptSource` no
- * longer runs, and dropping a column from a cr-sqlite CRR table is a migration
- * risk with nothing to gain: both are `not null default ''`, so leaving them
- * unread and unwritten costs an empty string per machine.
+ * `content_digest` is deliberately absent: it fed the token-level source
+ * comparison that `isSameTranscriptSource` no longer runs.
+ *
+ * `source_window` was retired the same way and now holds the machine's
+ * per-day activity (`AdeUsageRollup.activity`) as JSON. Reusing it, rather
+ * than adding a column or rows, is what keeps older machines correct:
+ * - every build since this table exists has the column (`not null default ''`),
+ *   so a peer on an older build applies the replicated change like any other
+ *   and needs no schema change; adding a column to a replicated table would
+ *   leave such a peer holding changes for a column it does not have;
+ * - no build reads or writes it, so an older machine neither shows the JSON
+ *   nor clears it when it republishes a meta row (its upsert names only the
+ *   columns in its own list);
+ * - extra rows in `usage_machine_rollups` (a sentinel provider) would show up
+ *   in an older machine's provider and model lists.
+ * `''` (never written) reads as "no activity reported".
  */
-const META_COLUMNS = "machine_key, label, platform, captured_at, source_id, source_roots";
+const META_COLUMNS = "machine_key, label, platform, captured_at, source_id, source_roots, source_window";
 
 function parseStringArray(raw: unknown): string[] {
   const parsed = typeof raw === "string" ? safeJsonParse<unknown>(raw, null) : null;
@@ -237,6 +250,10 @@ export function createAccountUsageRollupStore({ db, logger }: { db?: AdeDb | nul
         source_id: rollup.source.sourceId,
         source_roots: JSON.stringify(rollup.source.roots),
       };
+      // A rollup with no activity (an older machine's, fetched live) leaves
+      // the stored activity alone: absent means unknown, not zero.
+      const activity = rollup.activity ? normalizeRollupActivity(rollup.activity) : undefined;
+      const activityText = activity ? serializeRollupActivity(activity) : null;
       const storedMeta = db.get<RollupMetaRecord>(
         `select ${META_COLUMNS} from usage_machine_rollup_meta where machine_key = ?`,
         [rollup.machineKey],
@@ -254,19 +271,25 @@ export function createAccountUsageRollupStore({ db, logger }: { db?: AdeDb | nul
         || (storedMeta.platform ?? null) !== (meta.platform ?? null)
         || (storedMeta.source_id ?? null) !== (meta.source_id ?? null)
         || storedMeta.source_roots !== meta.source_roots;
-      const metaChanged = identityChanged || storedMeta?.captured_at !== meta.captured_at;
-      if (identityChanged) changed = true;
+      // New counts are something to show, like a moved row.
+      const activityChanged = activityText !== null && (storedMeta?.source_window ?? "") !== activityText;
+      const metaChanged = identityChanged || activityChanged || storedMeta?.captured_at !== meta.captured_at;
+      if (identityChanged || activityChanged) changed = true;
       if (metaChanged) {
+        // The activity column is named only when it moved, so the common
+        // republish (a fresh capture time) does not tick its CRR clock and
+        // re-send the whole JSON to every peer.
+        const writeActivity = activityChanged ? activityText : null;
         db.run(
           `insert into usage_machine_rollup_meta
-             (machine_key, label, platform, captured_at, source_id, source_roots)
-           values (?, ?, ?, ?, ?, ?)
+             (machine_key, label, platform, captured_at, source_id, source_roots${writeActivity !== null ? ", source_window" : ""})
+           values (?, ?, ?, ?, ?, ?${writeActivity !== null ? ", ?" : ""})
            on conflict(machine_key) do update set
              label = excluded.label,
              platform = excluded.platform,
              captured_at = excluded.captured_at,
              source_id = excluded.source_id,
-             source_roots = excluded.source_roots`,
+             source_roots = excluded.source_roots${writeActivity !== null ? ",\n             source_window = excluded.source_window" : ""}`,
           [
             rollup.machineKey,
             meta.label,
@@ -274,6 +297,7 @@ export function createAccountUsageRollupStore({ db, logger }: { db?: AdeDb | nul
             meta.captured_at,
             meta.source_id,
             meta.source_roots,
+            ...(writeActivity !== null ? [writeActivity] : []),
           ],
         );
       }
@@ -320,6 +344,9 @@ export function createAccountUsageRollupStore({ db, logger }: { db?: AdeDb | nul
           sourceId: record.source_id || null,
           roots: parseStringArray(record.source_roots),
         };
+        const activity = record.source_window
+          ? normalizeRollupActivity(safeJsonParse<unknown>(record.source_window, null))
+          : undefined;
         return {
           version: 1,
           machineKey: record.machine_key,
@@ -328,6 +355,7 @@ export function createAccountUsageRollupStore({ db, logger }: { db?: AdeDb | nul
           capturedAt: record.captured_at || "",
           source,
           rows: rowsByMachine.get(record.machine_key) ?? [],
+          ...(activity ? { activity } : {}),
         };
       });
     } catch (error) {

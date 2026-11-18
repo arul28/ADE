@@ -5124,14 +5124,16 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       source_window text not null default ''
     )
   `);
-  // `content_digest` and `source_window` are retired: they fed a token-level
-  // comparison of two machines' recent history that `isSameTranscriptSource` no
-  // longer runs (dedupe is marker-then-roots, nothing else). The columns stay in
-  // the schema rather than being dropped — a `not null default ''` column costs
-  // an empty string per machine, while dropping one from a cr-sqlite CRR table
-  // means rewriting the table and its clocks under every peer on the account.
-  // The `add column`s are kept so a database created before either column still
-  // matches the `create table` above.
+  // `content_digest` is retired: it fed a token-level comparison of two
+  // machines' recent history that `isSameTranscriptSource` no longer runs
+  // (dedupe is marker-then-roots, nothing else). `source_window` was retired
+  // the same way and now carries the machine's per-day activity JSON
+  // (`accountUsageRollupStore.ts` says why reusing it is the safe route). The
+  // columns stay in the schema rather than being dropped — a `not null
+  // default ''` column costs an empty string per machine, while dropping one
+  // from a cr-sqlite CRR table means rewriting the table and its clocks under
+  // every peer on the account. The `add column`s are kept so a database
+  // created before either column still matches the `create table` above.
   safeAddColumn(db, "alter table usage_machine_rollup_meta add column content_digest text not null default ''");
   safeAddColumn(db, "alter table usage_machine_rollup_meta add column source_window text not null default ''");
 }

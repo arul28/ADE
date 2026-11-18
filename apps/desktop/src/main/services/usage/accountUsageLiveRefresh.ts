@@ -35,7 +35,7 @@ import type {
 import type { PeerLiveQuota } from "../../../shared/usageLiveQuota";
 import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
 import { getErrorMessage } from "../shared/utils";
-import { MAX_LIVE_QUOTA_ACCOUNTS, MAX_LIVE_QUOTA_WINDOWS } from "./accountUsageRollup";
+import { MAX_LIVE_QUOTA_ACCOUNTS, MAX_LIVE_QUOTA_WINDOWS, normalizeRollupActivity } from "./accountUsageRollup";
 import { ROLLUP_RETAINED_DAYS } from "./accountUsageRollupStore";
 import { localDayKey } from "./localDay";
 
@@ -352,6 +352,9 @@ function boundPeerRollup(rollup: AdeUsageRollup, fetchedAtIso: string): AdeUsage
   const capturedAt = boundedString(rollup.capturedAt, MAX_PEER_ID_LENGTH);
   const capturedAtMs = capturedAt ? Date.parse(capturedAt) : Number.NaN;
   const { windows, accounts } = boundPeerQuota(rollup);
+  // Rebuilt and capped like the rows: it is stored in the replicated meta row.
+  // Absent stays absent (a peer too old to count), never an empty zero.
+  const activity = normalizeRollupActivity((rollup as { activity?: unknown }).activity);
   return {
     // Every field listed explicitly, and the peer object never spread: a peer
     // controls this payload, and a spread carries anything it invented straight
@@ -376,6 +379,7 @@ function boundPeerRollup(rollup: AdeUsageRollup, fetchedAtIso: string): AdeUsage
     },
     ...(windows.length > 0 ? { windows } : {}),
     ...(accounts.length > 0 ? { accounts } : {}),
+    ...(activity ? { activity } : {}),
   };
 }
 

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  AdeUsageActivityDay,
   AdeUsageActivitySummary,
   AdeUsageAgentModelSummary,
   AdeUsageAgentProviderSummary,
@@ -1108,4 +1109,73 @@ export function collectAdeDatabaseUsageStats(
     clients,
     daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
   };
+}
+
+/**
+ * The name the account scope files a project database's counts under: its
+ * oldest `projects` row id.
+ *
+ * `projects` replicates, so every copy of one synced database reaches the
+ * same oldest row and therefore the same name, while two databases made
+ * apart (a clone on another computer, a cloud lane computer) each minted
+ * their own random id. That is what lets the merge take the larger count for
+ * one database instead of adding two copies of the same sessions. Null when
+ * the database has no project row (nothing here to count).
+ */
+export function readActivityDatabaseId(db: AdeDb | null | undefined): string | null {
+  if (!db) return null;
+  const row = safeGet<{ id: string | null }>(db, "select id from projects order by created_at asc, id asc limit 1");
+  return typeof row?.id === "string" && row.id ? row.id : null;
+}
+
+/**
+ * One project database's chats, shells, commits and PRs per local day, on
+ * or after `oldestDay`, for the account scope's rollup.
+ *
+ * The same sources and the same chat rule as `collectAdeDatabaseUsageStats`:
+ * `terminal_sessions` by start day, succeeded `git_commit` / `pr_land`
+ * operations by start day. A deleted lane's rows are gone, and its tombstone
+ * keeps totals rather than days, so its counts land on its last active day:
+ * they happened, and the account has no truer day for them.
+ *
+ * Runs on the ledger scan's publish (and once lazily before the first one),
+ * never per read: three plain scans of one database.
+ */
+export function collectDatabaseActivityDays(
+  db: AdeDb | null | undefined,
+  oldestDay: string | null,
+): { id: string; days: Record<string, AdeUsageActivityDay> } | null {
+  const id = readActivityDatabaseId(db);
+  if (!db || !id) return null;
+  const oldestIso = oldestDay ? localDayOffset(oldestDay, 0)?.toISOString() ?? null : null;
+  const sinceParams: SqlValue[] = oldestIso ? [oldestIso] : [];
+  const days = new Map<string, AdeUsageActivityDay>();
+  const add = (day: string | null, slot: 0 | 1 | 2 | 3, count: number): void => {
+    if (!day || count <= 0 || (oldestDay && day < oldestDay)) return;
+    const entry = days.get(day) ?? [0, 0, 0, 0];
+    entry[slot] += count;
+    days.set(day, entry);
+  };
+  const sessions = safeAll<{ started_at: string; tool_type: string | null; chat_session_id: string | null }>(
+    db,
+    `select started_at, tool_type, chat_session_id from terminal_sessions${oldestIso ? " where started_at >= ?" : ""}`,
+    sinceParams,
+  );
+  for (const row of sessions) add(isoDate(row.started_at), isChatSession(row) ? 0 : 1, 1);
+  const operations = safeAll<{ started_at: string; kind: string }>(
+    db,
+    `select started_at, kind from operations
+      where status = 'succeeded' and kind in ('git_commit', 'pr_land')${oldestIso ? " and started_at >= ?" : ""}`,
+    sinceParams,
+  );
+  for (const row of operations) add(isoDate(row.started_at), row.kind === "git_commit" ? 2 : 3, 1);
+  const tombstones = safeAll<LaneUsageTombstoneRow>(db, "select * from lane_usage_tombstones");
+  for (const tombstone of tombstones) {
+    const day = isoDate(tombstone.last_active_day ?? tombstone.deleted_day);
+    add(day, 0, int(tombstone.chat_sessions));
+    add(day, 1, int(tombstone.terminal_sessions));
+    add(day, 2, int(tombstone.commits_created));
+    add(day, 3, int(tombstone.pr_landings));
+  }
+  return { id, days: Object.fromEntries([...days].sort(([a], [b]) => a.localeCompare(b))) };
 }
