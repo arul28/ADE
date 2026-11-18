@@ -293,3 +293,59 @@ export async function restoreCloudChat(
   });
   return { sessionId: restored.sessionId, restoredWith: restored.restoredWith, promptSent: false, moved, olderPartLeftOut: saved.olderPartLeftOut };
 }
+
+/** The most chats one lane brings back to a new computer, and the list pages read to find them. */
+const LANE_CHATS_MAX = 50;
+const LANE_CHATS_MAX_PAGES = 10;
+
+/**
+ * Contract C3 for a lane that comes back on a new computer (a new computer
+ * for a kept lane, or a send that continues one of its chats): its other
+ * chats come back too. Their old computer is gone, so every surface lists
+ * them under this computer; restored here with their own ids, they open and
+ * take sends like any chat on it. Chats only: a CLI comes back when a send
+ * continues it. One chat that can't be restored is logged and skipped.
+ * Returns how many came back.
+ */
+export async function restoreLaneChats(
+  deps: CloudChatRestoreDeps,
+  args: { laneId: string; projectKey: string },
+): Promise<number> {
+  const { api, logger, machineKey } = deps;
+  const newest = new Map<string, CloudChatRow>();
+  let cursor: string | null = null;
+  for (let page = 0; page < LANE_CHATS_MAX_PAGES; page += 1) {
+    const listed = await api.savedChats({ projectKey: args.projectKey, limit: 500, cursor });
+    for (const row of listed.chats) {
+      if (row.laneId !== args.laneId) continue;
+      const current = newest.get(row.chatId);
+      if (!current || row.updatedAt > current.updatedAt) newest.set(row.chatId, row);
+    }
+    cursor = listed.nextCursor;
+    if (!cursor) break;
+  }
+  // Only a chat whose newest copy is on a computer that is gone: one on a live computer stays there.
+  const lost = [...newest.values()]
+    .filter((row) => row.machineKey.toLowerCase() !== machineKey.toLowerCase() && row.computer?.state === "deleted")
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, LANE_CHATS_MAX);
+  const { restoreCli: _cliRestore, ...chatOnly } = deps;
+  let restored = 0;
+  for (const row of lost) {
+    try {
+      await restoreCloudChat(chatOnly, {
+        fromMachineKey: row.machineKey,
+        chatId: row.chatId,
+        laneId: args.laneId,
+        modelId: null,
+        prompt: "",
+        clientMessageId: `restore-${row.chatId}`,
+        kind: "chat",
+      });
+      restored += 1;
+    } catch (error) {
+      logger.warn("cloud.lane_chat_restore_failed", { chatId: row.chatId, error: errorText(error) });
+    }
+  }
+  return restored;
+}

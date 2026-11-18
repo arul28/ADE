@@ -32573,6 +32573,26 @@ async function runServe(
           release: releaseRestoringCloudChat,
         }, args);
       },
+      // A lane that came back here brings its other saved chats (C3).
+      restoreLaneChats: async (projectId, args) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        const api = await accountCloudApi();
+        if (!chat || !api) return 0;
+        const [{ restoreLaneChats }, { adoptRestoredCloudChat, holdRestoringCloudChat, releaseRestoringCloudChat }] = await Promise.all([
+          import("./services/cloudChats/cloudChatRestore"),
+          import("./services/cloudChats/cloudChatUploader"),
+        ]);
+        return await restoreLaneChats({
+          api,
+          instanceId: cloudInstanceId,
+          machineKey: machineCloudRelayStore.getMachineIdentity().machineKey,
+          logger: headlessProjectLogger,
+          restore: (restoreArgs) => chat.restoreSavedCloudChat(restoreArgs),
+          adopt: adoptRestoredCloudChat,
+          hold: holdRestoringCloudChat,
+          release: releaseRestoringCloudChat,
+        }, args);
+      },
       // An automation's run (C9): its chat's turn ending is the run's end. Nobody
       // watches that chat, so one that stops to ask for input ends the run as
       // failed rather than holding its computer until the server's stop limit.

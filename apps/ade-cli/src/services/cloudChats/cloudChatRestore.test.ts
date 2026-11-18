@@ -1,6 +1,6 @@
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { restoreCloudChat, type CloudChatRestoreDeps } from "./cloudChatRestore";
+import { restoreCloudChat, restoreLaneChats, type CloudChatRestoreDeps } from "./cloudChatRestore";
 
 /**
  * A deleted computer's CLI continues on a new computer. The account API is
@@ -63,5 +63,62 @@ describe("restoreCloudChat for a CLI", () => {
     expect(await moveFails.run()).toMatchObject({ sessionId: "cli-1", promptSent: true, moved: false });
     expect(moveFails.steps).toHaveLength(2);
     expect(moveFails.warnings).toEqual(["cloud.restore_move_failed"]);
+  });
+});
+
+/**
+ * Contract C3: a lane that comes back on a new computer brings its chats whose
+ * computer is gone, each with its own id, and leaves every other chat where it is.
+ */
+describe("restoreLaneChats", () => {
+  it("restores the lane's chats from gone computers (newest copy, read over pages), skips live, own, other-lane and unreadable ones", async () => {
+    const gone = { state: "deleted", deletedAt: 1, reason: "freed" } as const;
+    const row = (chatId: string, machineKey: string, laneId: string, updatedAt: number, computer: unknown) =>
+      ({ chatId, machineKey, laneId, updatedAt, computer, model: "claude-sonnet", title: chatId, lastSeq: 1 });
+    const pages = [
+      { chats: [row("c1", "key-old", "lane-1", 10, gone), row("c1", "key-older", "lane-1", 5, gone), row("live", "key-live", "lane-1", 9, { state: "exists" })], nextCursor: "p2" },
+      { chats: [row("mine", "key-new", "lane-1", 8, gone), row("other-lane", "key-old", "lane-2", 7, gone), row("cli", "key-old", "lane-1", 6, gone)], nextCursor: null },
+    ];
+    const steps: string[] = [];
+    const warnings: string[] = [];
+    const api = {
+      savedChats: async (args: { projectKey: string; cursor: string | null }) => {
+        steps.push(`list ${args.projectKey} ${args.cursor ?? "first"}`);
+        return pages[args.cursor ? 1 : 0];
+      },
+      // The CLI row has no saved transcript: it isn't restored as a chat.
+      savedChat: async ({ machineKey, chatId }: { machineKey: string; chatId: string }) => (chatId === "cli"
+        ? null
+        : { chat: row(chatId, machineKey, "lane-1", 10, gone), parts: [{ seq: 1, text: "" }], hasMore: false, nextBefore: null }),
+      capsuleManifest: async () => null,
+      moveSavedChat: async (from: string, chatId: string, move: { toMachineKey: string }) => {
+        steps.push(`move ${from}/${chatId} -> ${move.toMachineKey}`);
+        return { moved: true, chat: { lastSeq: 1 } };
+      },
+      savedSession: async () => { throw new Error("a lane's chats never restore as a CLI"); },
+    };
+    const deps = {
+      api: api as never,
+      instanceId: "newbox1234",
+      machineKey: "key-new",
+      logger: { info: () => {}, warn: (event: string) => warnings.push(event) } as never,
+      restore: async (args: { sessionId: string; laneId: string }) => {
+        steps.push(`restore ${args.sessionId} in ${args.laneId}`);
+        return { sessionId: args.sessionId, restoredWith: "replay" as const };
+      },
+      adopt: async () => true,
+      hold: () => {},
+      release: () => {},
+      restoreCli: async () => { throw new Error("a lane's chats never restore as a CLI"); },
+    } satisfies CloudChatRestoreDeps;
+
+    expect(await restoreLaneChats(deps, { laneId: "lane-1", projectKey: "github.com/acme/widgets" })).toBe(1);
+    expect(steps).toEqual([
+      "list github.com/acme/widgets first",
+      "list github.com/acme/widgets p2",
+      "move key-old/c1 -> key-new",
+      "restore c1 in lane-1",
+    ]);
+    expect(warnings).toEqual(["cloud.lane_chat_restore_failed"]);
   });
 });
