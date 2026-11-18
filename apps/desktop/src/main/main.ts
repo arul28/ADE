@@ -4807,7 +4807,15 @@ app.whenReady().then(async () => {
     };
     reconcileStaleRunningSessions("startup");
     const staleSessionReconcileTimer = setTimeout(
-      () => reconcileStaleRunningSessions("owner-liveness-expired"),
+      () => {
+        // The project's database can vanish while the brain runs (its .ade
+        // folder deleted); a throw here would be an uncaught timer error.
+        try {
+          reconcileStaleRunningSessions("owner-liveness-expired");
+        } catch (error) {
+          logger.warn("sessions.reconcile_stale_failed", { error: error instanceof Error ? error.message : String(error) });
+        }
+      },
       STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
     );
     staleSessionReconcileTimer.unref?.();
