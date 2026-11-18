@@ -10,12 +10,23 @@ struct CloudMachineScreen: View {
   let instanceId: String
   /// False when opened from the lane's own at-rest screen: its work is the page below.
   var showsOpenWork = true
+  /// The page closes when its computer moved and is gone with no new one to
+  /// show. False in the book layout's right pane, which picks another computer.
+  var pops = true
+  /// The new computer this one moved to: the page shows it from then on.
+  @State private var movedTo: String?
+  @Environment(\.dismiss) private var dismiss
+
+  private var shownId: String { movedTo ?? instanceId }
 
   var body: some View {
     ScrollView {
-      if let machine = store.machine(instanceId) {
+      if let machine = store.machine(shownId) {
         VStack(alignment: .leading, spacing: 16) {
           CloudMachineFacts(store: store, machine: machine)
+          if let move = store.move(for: machine.instanceId) {
+            CloudMoveCard(store: store, move: move)
+          }
           CloudDiskParts(store: store, machine: machine)
           CloudMachineSizeCard(store: store, machine: machine)
           CloudMachineControls(store: store, machine: machine, showsOpenWork: showsOpenWork)
@@ -30,8 +41,86 @@ struct CloudMachineScreen: View {
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
     .refreshable { await store.reload() }
-    .navigationTitle(store.machine(instanceId)?.displayName ?? "Computer")
+    .navigationTitle(store.machine(shownId)?.displayName ?? "Computer")
     .navigationBarTitleDisplayMode(.inline)
+    .onChange(of: instanceId) { _, _ in movedTo = nil }
+    // A move of this computer ended well and the lists read again: go on to
+    // the new computer, or back to the list when there is none to show.
+    .onChange(of: store.endedMove(from: shownId)?.moveId) { _, moveId in
+      guard moveId != nil, let ended = store.endedMove(from: shownId) else { return }
+      if let target = ended.targetInstanceId, store.machine(target) != nil {
+        if store.selectedId == ended.sourceInstanceId { store.selectedId = target }
+        movedTo = target
+      } else if store.machine(ended.sourceInstanceId) == nil {
+        if pops {
+          dismiss()
+        } else if store.selectedId == ended.sourceInstanceId {
+          store.selectedId = store.machines.first?.instanceId
+        }
+      }
+    }
+  }
+}
+
+/// A move of a computer to the other kind, as the account server runs it:
+/// its one sentence, "Approve the new computer" while the new one waits for
+/// the person, Cancel until its copy starts, and the reason when it failed.
+/// It reads the move every 5 s only while it is on screen and the move runs.
+struct CloudMoveCard: View {
+  @ObservedObject var store: CloudPaneStore
+  let move: CloudServerMove
+  @Environment(\.openURL) private var openURL
+
+  private var failed: Bool { move.state == "failed" }
+
+  private var title: String {
+    failed ? "Couldn't move to \(move.kindWords)" : "Moving to \(move.kindWords)"
+  }
+
+  private var sentence: String {
+    cloudPhoneWords(move.message) ?? (move.isFinished ? "The move ended." : "ADE Cloud is moving this computer.")
+  }
+
+  var body: some View {
+    ADEKitCard(title: title, symbol: failed ? "exclamationmark.triangle" : "arrow.left.arrow.right", hint: move.sourceName) {
+      VStack(alignment: .leading, spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          if !move.isFinished { ProgressView().controlSize(.small) }
+          Text(sentence)
+            .font(.system(size: 13))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        if failed {
+          ADESettingsNotice(message: cloudPhoneWords(move.error) ?? "ADE Cloud couldn't finish the move. The computer stays as it was.", tone: .crit, dismiss: {
+            store.dismissMove(move.moveId)
+          })
+        }
+        if move.approval != nil || move.canCancel {
+          CloudFlowRow {
+            if let url = move.approval {
+              Button { ADEHaptics.light(); openURL(url) } label: {
+                Label("Approve the new computer", systemImage: "checkmark.shield")
+              }
+              .buttonStyle(ADEKitButtonStyle(prominent: true))
+            }
+            if move.canCancel {
+              let cancelling = store.cancellingMoves.contains(move.moveId)
+              Button { Task { await store.cancelMove(move) } } label: {
+                Label(cancelling ? "Cancelling…" : "Cancel the move", systemImage: "xmark")
+              }
+              .buttonStyle(ADEKitButtonStyle())
+              .disabled(cancelling)
+            }
+          }
+        }
+      }
+    }
+    // Keyed on the move's id: a newer read of the same move keeps one follow.
+    .task(id: move.isFinished ? nil : move.moveId) {
+      guard !move.isFinished else { return }
+      await store.followMove(move.moveId)
+    }
   }
 }
 
@@ -106,7 +195,7 @@ struct CloudDiskParts: View {
 
   var body: some View {
     if machine.resources != nil {
-      let busy = store.busy.contains(machine.instanceId) || machine.isMoving
+      let busy = store.busy.contains(machine.instanceId) || machine.isMoving || store.isMoving(machine.instanceId)
       ADEKitCard(
         title: "What uses the disk",
         symbol: "internaldrive",
@@ -155,9 +244,10 @@ struct CloudDiskParts: View {
 
 /// The computer's size: the sizes of its own kind, each with how fast it uses
 /// hours (never a price). A change restarts it now, so running chats and
-/// terminals stop; their chats are saved first. The other kind (standard ↔
-/// full computer) is a move to a new computer, which only ADE on a computer
-/// makes, so it shows why and stays off.
+/// terminals stop; their chats are saved first. A size of the other kind
+/// (standard ↔ full computer) is a move the account server runs: a new
+/// computer, the files copied over, this one deleted. On a server too old for
+/// moves it shows why (a move needs ADE on a computer) and stays off.
 struct CloudMachineSizeCard: View {
   @ObservedObject var store: CloudPaneStore
   let machine: CloudPhoneMachine
@@ -166,8 +256,8 @@ struct CloudMachineSizeCard: View {
   var body: some View {
     let tiers = store.tiers
     if store.canManage, let current = cloudPhoneTier(of: machine, in: tiers) {
-      let busy = store.busy.contains(machine.instanceId) || machine.isMoving
-      let otherKind = tiers.first { $0.type != current.type }
+      let busy = store.busy.contains(machine.instanceId) || machine.isMoving || store.isMoving(machine.instanceId)
+      let otherKind = store.movesUnsupported ? tiers.first { $0.type != current.type } : nil
       ADEKitCard(title: "Size", symbol: "cpu", hint: "More CPU and memory use hours faster.", flush: true) {
         VStack(alignment: .leading, spacing: 0) {
           ForEach(Array(tiers.enumerated()), id: \.element.id) { index, tier in
@@ -186,17 +276,31 @@ struct CloudMachineSizeCard: View {
         }
       }
       .confirmationDialog(
-        "Change \(machine.displayName) to \(ask?.label ?? "this size")?",
+        confirmTitle(current: current),
         isPresented: Binding(get: { ask != nil }, set: { if !$0 { ask = nil } }),
         titleVisibility: .visible,
         presenting: ask
       ) { tier in
-        Button("Change to \(tier.label)") { Task { await store.changeSize(machine, to: tier) } }
+        if tier.type == current.type {
+          Button("Change to \(tier.label)") { Task { await store.changeSize(machine, to: tier) } }
+        } else {
+          Button("Move to \(tier.label)") { Task { await store.startMove(machine, to: tier) } }
+        }
         Button("Cancel", role: .cancel) {}
       } message: { tier in
-        Text("It restarts on the new size, so running chats and terminals stop. Their chats are saved first. \(tier.rateLine).")
+        if tier.type == current.type {
+          Text("It restarts on the new size, so running chats and terminals stop. Their chats are saved first. \(tier.rateLine).")
+        } else {
+          Text("ADE copies its files to a new computer and deletes this one. Its lane and chats come along. It takes a few minutes and uses hours on both while it copies. \(tier.rateLine).")
+        }
       }
     }
+  }
+
+  private func confirmTitle(current: CloudPhoneTier) -> String {
+    guard let ask else { return "Change \(machine.displayName)?" }
+    if ask.type == current.type { return "Change \(machine.displayName) to \(ask.label)?" }
+    return "Move \(machine.displayName) to a \(ask.full ? "Full" : "Standard") computer?"
   }
 
   private func row(_ tier: CloudPhoneTier, current: CloudPhoneTier, busy: Bool) -> some View {
@@ -230,8 +334,13 @@ struct CloudMachineSizeCard: View {
       .frame(maxWidth: .infinity, alignment: .leading)
     }
     .buttonStyle(ADEKitRowButtonStyle(dimsWhenDisabled: !isCurrent))
-    .disabled(isCurrent || !sameKind || busy)
-    .accessibilityHint(isCurrent ? "Its size now." : sameKind ? "\(tier.rateLine). It restarts on the new size." : cloudPhoneKindChangeReason(to: tier))
+    .disabled(isCurrent || (!sameKind && store.movesUnsupported) || busy)
+    .accessibilityHint(
+      isCurrent ? "Its size now."
+        : sameKind ? "\(tier.rateLine). It restarts on the new size."
+        : store.movesUnsupported ? cloudPhoneKindChangeReason(to: tier)
+        : "\(tier.rateLine). ADE moves it to a new computer."
+    )
   }
 }
 
@@ -250,7 +359,7 @@ struct CloudMachineControls: View {
   @State private var confirmFree = false
 
   private var working: Bool { store.busy.contains(machine.instanceId) }
-  private var busy: Bool { working || machine.isMoving }
+  private var busy: Bool { working || machine.isMoving || store.isMoving(machine.instanceId) }
   private var idle: CloudPhoneAccount.IdleCleanup? {
     store.account?.dueForDeletion.first { $0.instanceId == machine.instanceId }
   }

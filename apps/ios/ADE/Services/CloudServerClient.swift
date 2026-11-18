@@ -545,6 +545,41 @@ struct CloudServerClient {
     _ = try await send("DELETE", "cloud/chats/\(segment(machineKey))/\(segment(chatId))/messages/\(segment(messageId))")
   }
 
+  // MARK: Moves to the other kind (standard ↔ full computer)
+
+  private struct MoveList: Decodable { let moves: [CloudServerMove] }
+
+  /// Starts a move the account server runs (`POST /cloud/instances/:id/move`):
+  /// a new computer of the other kind, the old one's files copied over, the
+  /// old one deleted. The same `moveId` again answers the same move, so a
+  /// lost answer is safe to send again. A server older than the route answers
+  /// 404 (`.noAccess`): only ADE on a computer can move it then.
+  func startMove(instanceId: String, to kind: String, sizeId: String?, moveId: String) async throws -> CloudServerMove {
+    var payload: [String: Any] = ["moveId": moveId, "to": kind]
+    if let sizeId { payload["sizeId"] = sizeId }
+    let body = try JSONSerialization.data(withJSONObject: payload)
+    return try decode(
+      CloudServerMove.self,
+      from: try await send("POST", "cloud/instances/\(segment(instanceId))/move", body: body, timeout: 30, resendOnLostConnection: true)
+    )
+  }
+
+  /// One move (`GET /cloud/moves/:moveId`); `.noAccess` once the server keeps it no more.
+  func move(_ moveId: String) async throws -> CloudServerMove {
+    try decode(CloudServerMove.self, from: try await send("GET", "cloud/moves/\(segment(moveId))"))
+  }
+
+  /// The account's moves: running ones and those that ended in the last day.
+  func moves() async throws -> [CloudServerMove] {
+    try decode(MoveList.self, from: try await send("GET", "cloud/moves")).moves
+  }
+
+  /// Cancels a move before its copy starts (`DELETE /cloud/moves/:moveId`);
+  /// the server refuses it later, with its sentence.
+  func cancelMove(_ moveId: String) async throws {
+    _ = try await send("DELETE", "cloud/moves/\(segment(moveId))", timeout: 30)
+  }
+
   /// One path segment, with `/` encoded too. Every route file uses it.
   func segment(_ value: String) -> String {
     value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? value
@@ -632,6 +667,65 @@ func cloudServerFailure(status: Int, body: Data) -> CloudServerClient.Failure {
   }
   if status == 403 { return message.map { .refused(code: code ?? "forbidden", message: $0) } ?? .unauthorized }
   return .server(status, message: message)
+}
+
+/// A move of a computer to the other kind, as the account server runs it
+/// (`CloudMoveRecord`). `message` is the one sentence to show; a state this
+/// app doesn't know shows only that sentence and counts as still running.
+struct CloudServerMove: Decodable, Equatable, Identifiable {
+  let moveId: String
+  let sourceInstanceId: String
+  let sourceName: String?
+  let targetInstanceId: String?
+  /// `standard` or `full`.
+  let to: String
+  let sizeId: String?
+  let state: String
+  let message: String
+  let approvalUrl: String?
+  let error: String?
+  let sourceDeleted: Bool?
+  let createdAt: Double?
+  let updatedAt: Double?
+
+  var id: String { moveId }
+
+  private enum CodingKeys: String, CodingKey {
+    case moveId, sourceInstanceId, sourceName, targetInstanceId, to, sizeId, state, message, approvalUrl, error, sourceDeleted, createdAt, updatedAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    moveId = try c.decode(String.self, forKey: .moveId)
+    sourceInstanceId = c.lenient(String.self, forKey: .sourceInstanceId) ?? ""
+    sourceName = c.lenient(String.self, forKey: .sourceName).flatMap { nonEmptyTrimmed($0) }
+    targetInstanceId = c.lenient(String.self, forKey: .targetInstanceId).flatMap { nonEmptyTrimmed($0) }
+    to = c.lenient(String.self, forKey: .to) ?? ""
+    sizeId = c.lenient(String.self, forKey: .sizeId).flatMap { nonEmptyTrimmed($0) }
+    state = c.lenient(String.self, forKey: .state) ?? ""
+    message = c.lenient(String.self, forKey: .message).flatMap { nonEmptyTrimmed($0) } ?? ""
+    approvalUrl = c.lenient(String.self, forKey: .approvalUrl).flatMap { nonEmptyTrimmed($0) }
+    error = c.lenient(String.self, forKey: .error).flatMap { nonEmptyTrimmed($0) }
+    sourceDeleted = c.lenient(Bool.self, forKey: .sourceDeleted)
+    createdAt = c.lenient(Double.self, forKey: .createdAt)
+    updatedAt = c.lenient(Double.self, forKey: .updatedAt)
+  }
+
+  /// Done, failed or cancelled: nothing more happens to it.
+  var isFinished: Bool { state == "done" || state == "failed" || state == "cancelled" }
+  /// The server still lets the person cancel it: its copy hasn't started.
+  var canCancel: Bool { state == "making" || state == "joining" || state == "needs_approval" }
+  /// The approval page, when the new computer waits for the person.
+  var approval: URL? {
+    guard state == "needs_approval", let approvalUrl, let url = URL(string: approvalUrl),
+          url.scheme?.lowercased() == "https" else { return nil }
+    return url
+  }
+  var toFull: Bool { to == "full" }
+  /// "a full computer", "a standard computer".
+  var kindWords: String { toFull ? "a full computer" : "a standard computer" }
+  /// Whether it moves this computer, from it or onto it.
+  func involves(_ instanceId: String) -> Bool { sourceInstanceId == instanceId || targetInstanceId == instanceId }
 }
 
 /// What `POST /cloud/instances/:id/exec` answered. An answer missing a part reads as a failed run.
@@ -919,8 +1013,8 @@ extension CloudServerClient {
   /// `resize`): running turns stop and the chats' saved copy is written, then
   /// the computer restarts at the new CPU and memory. A computer that was
   /// awake and comes back asleep is woken, as the desktop's wait does. A
-  /// change to the other kind (standard ↔ full) is a move to a new computer,
-  /// which only ADE on a computer makes.
+  /// change to the other kind (standard ↔ full) is a move to a new computer
+  /// (`startMove`), never this.
   func changeSize(instanceId: String, to tier: CloudPhoneTier) async -> CloudComputerOutcome {
     func fail(_ message: String) -> CloudComputerOutcome { CloudComputerOutcome(ok: false, message: message) }
     let box: CloudServerInstance
@@ -983,9 +1077,9 @@ private func cloudWithoutStop(_ text: String) -> String {
   text.hasSuffix(".") ? String(text.dropLast()) : text
 }
 
-/// Why the phone doesn't move a computer to the other kind: a move makes a
-/// new computer, copies the old one's files over and pairs ADE with it, which
-/// only ADE on a computer does (`moveCloudMachine`).
+/// Why the phone can't move a computer to the other kind on an account
+/// server older than the move route (its POST answers 404): there only ADE
+/// on a computer makes the new computer and copies the files (`moveCloudMachine`).
 func cloudPhoneKindChangeReason(to tier: CloudPhoneTier) -> String {
   tier.full
     ? "Moving to a full computer makes a new computer; start it from ADE on a computer."

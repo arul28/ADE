@@ -65,7 +65,7 @@ struct CloudPaneSheet: View {
         }
       }
     }
-    .task { await store.reload() }
+    .task { await store.load() }
     .cloudLaneActionsHost()
   }
 
@@ -82,7 +82,7 @@ struct CloudPaneSheet: View {
       DuoSeam(axis: .vertical, foldRect: fold.frame)
       NavigationStack {
         if let id = store.selectedId {
-          CloudMachineScreen(store: store, instanceId: id)
+          CloudMachineScreen(store: store, instanceId: id, pops: false)
         } else {
           CloudPickPrompt()
         }
@@ -144,7 +144,7 @@ struct CloudSettingsPage: View {
 
   var body: some View {
     CloudDashboardScreen(store: store, onClose: nil, pushes: true)
-      .task { await store.reload() }
+      .task { await store.load() }
       .cloudLaneActionsHost()
   }
 }
@@ -177,7 +177,7 @@ struct CloudLaneManageSheet: View {
           }
         }
     }
-    .task { await store.reload() }
+    .task { await store.load() }
     .cloudLaneActionsHost()
   }
 }
@@ -313,6 +313,13 @@ final class CloudPaneStore: ObservableObject {
   func refresh() async {
     refreshes += 1
     await reload()
+    await loadMoves()
+  }
+
+  /// The page's first read, then the moves once (a move started on another device shows).
+  func load() async {
+    await reload()
+    await loadMoves()
   }
 
   /// The page from the account server, with this phone's own sign-in.
@@ -611,6 +618,192 @@ final class CloudPaneStore: ObservableObject {
       UIApplication.shared.endBackgroundTask(background)
       background = .invalid
     }
+  }
+
+  // MARK: Moves to the other kind
+
+  /// The moves this page shows, by move id: running ones, and failed ones
+  /// until the person dismisses them. A finished move leaves once handled.
+  @Published private(set) var moves: [String: CloudServerMove] = [:]
+  /// The account server is older than the move route: a size of the other
+  /// kind says why (a move needs ADE on a computer) and stays off.
+  @Published private(set) var movesUnsupported = false
+  /// When each move was last read, so two cards following one move read it once.
+  private var moveReadAt: [String: Date] = [:]
+  /// Each finished move's follow-up (lists read again, its toast), once.
+  private var moveEndings: [String: Task<Void, Never>] = [:]
+  /// Moves that ended well while this page followed them, by move id, once
+  /// their follow-up ran: a computer's page goes on to the new computer.
+  @Published private(set) var endedMoves: [String: CloudServerMove] = [:]
+  /// Moves whose cancel is on its way (their Cancel waits).
+  @Published private(set) var cancellingMoves: Set<String> = []
+
+  /// The moves to show, oldest first.
+  var shownMoves: [CloudServerMove] {
+    moves.values.sorted { ($0.createdAt ?? 0, $0.moveId) < ($1.createdAt ?? 0, $1.moveId) }
+  }
+
+  /// The move this computer is part of (from it or onto it), a running one first.
+  func move(for instanceId: String) -> CloudServerMove? {
+    let mine = moves.values.filter { $0.involves(instanceId) }
+    return mine.first { !$0.isFinished } ?? mine.first
+  }
+
+  /// The move that took this computer to a new one and ended well, once the
+  /// lists show the new computer.
+  func endedMove(from instanceId: String) -> CloudServerMove? {
+    endedMoves.values.first { $0.sourceInstanceId == instanceId }
+  }
+
+  /// The computer is part of a running move: its other actions wait.
+  func isMoving(_ instanceId: String) -> Bool {
+    moves.values.contains { !$0.isFinished && $0.involves(instanceId) }
+  }
+
+  /// The account's moves, once per open and per pull to refresh. Moves that
+  /// ended well or were cancelled aren't news; a failed one shows its reason.
+  func loadMoves() async {
+    guard !isFixture, AccountService.shared.isSignedIn,
+          let client = await syncService.cloudServerClient() else { return }
+    do {
+      let rows = try await client.moves()
+      movesUnsupported = false
+      for row in rows {
+        if let known = moves[row.moveId] {
+          await apply(row, was: known)
+        } else if !row.isFinished || row.state == "failed" {
+          moves[row.moveId] = row
+        }
+      }
+    } catch CloudServerClient.Failure.noAccess {
+      // An older server has no move routes; the POST says so when it's tried.
+    } catch {
+      cloudPaneLog.notice("cloud_pane read=moves failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+    }
+  }
+
+  /// Starts the server's move of a computer to `tier`, of the other kind.
+  func startMove(_ machine: CloudPhoneMachine, to tier: CloudPhoneTier) async {
+    let instanceId = machine.instanceId
+    guard !busy.contains(instanceId), !isMoving(instanceId) else { return }
+    busy.insert(instanceId)
+    defer { busy.remove(instanceId) }
+    actionError = nil
+    let kind = tier.full ? "a full computer" : "a standard computer"
+    guard let client = await syncService.cloudServerClient() else {
+      actionError = "Sign in to ADE, then try again."
+      ADEHaptics.error()
+      return
+    }
+    do {
+      let record = try await client.startMove(instanceId: instanceId, to: tier.full ? "full" : "standard", sizeId: tier.id, moveId: UUID().uuidString.lowercased())
+      moves[record.moveId] = record
+      moveReadAt[record.moveId] = Date()
+      ADEHaptics.success()
+      CloudLaneActions.shared.toast = ADEToastMessage(text: "Moving \(machine.displayName) to \(kind)", kind: .info, detail: cloudPhoneWords(record.message))
+    } catch CloudServerClient.Failure.noAccess {
+      movesUnsupported = true
+      actionError = cloudPhoneKindChangeReason(to: tier)
+      ADEHaptics.error()
+    } catch {
+      let why = cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't start the move."
+      actionError = why
+      ADEHaptics.error()
+      CloudLaneActions.shared.toast = ADEToastMessage(text: "Couldn't move \(machine.displayName)", kind: .failure, detail: why)
+    }
+  }
+
+  /// Cancels a move before its copy starts; the server's answer shows next.
+  func cancelMove(_ move: CloudServerMove) async {
+    guard !cancellingMoves.contains(move.moveId) else { return }
+    cancellingMoves.insert(move.moveId)
+    defer { cancellingMoves.remove(move.moveId) }
+    guard let client = await syncService.cloudServerClient() else {
+      actionError = "Sign in to ADE, then try again."
+      return
+    }
+    do {
+      try await client.cancelMove(move.moveId)
+      ADEHaptics.success()
+      if let fresh = try? await client.move(move.moveId) {
+        await apply(fresh, was: moves[move.moveId])
+      } else {
+        moves[move.moveId] = nil
+        CloudLaneActions.shared.toast = ADEToastMessage(text: "Cancelled the move", detail: "\(move.sourceName ?? "The computer") stays as it was.")
+      }
+    } catch {
+      ADEHaptics.error()
+      CloudLaneActions.shared.toast = ADEToastMessage(text: "Couldn't cancel the move", kind: .failure, detail: cloudPhoneWords(cloudServerFailureMessage(error)))
+    }
+  }
+
+  /// A failed move the person has read.
+  func dismissMove(_ moveId: String) {
+    guard moves[moveId]?.isFinished == true else { return }
+    moves[moveId] = nil
+  }
+
+  /// Follows one running move while a screen showing it is on screen: a
+  /// read every 5 s, none once it ends or the screen's task is cancelled.
+  /// Two screens following one move read it once.
+  func followMove(_ moveId: String) async {
+    while !Task.isCancelled {
+      guard let current = moves[moveId], !current.isFinished else { return }
+      try? await Task.sleep(for: .seconds(5))
+      if Task.isCancelled { return }
+      if let last = moveReadAt[moveId], Date().timeIntervalSince(last) < 4 { continue }
+      moveReadAt[moveId] = Date()
+      guard let client = await syncService.cloudServerClient() else { continue }
+      do {
+        let fresh = try await client.move(moveId)
+        await apply(fresh, was: moves[moveId])
+      } catch CloudServerClient.Failure.noAccess {
+        // The server keeps it no more.
+        moves[moveId] = nil
+        return
+      } catch {
+        // A read that didn't answer: the next round reads again.
+      }
+    }
+  }
+
+  /// A newer read of a move. The step to finished runs its follow-up once:
+  /// done reads the computers and the account's machines again and says
+  /// "Moved"; failed keeps the move to show its reason; cancelled leaves.
+  private func apply(_ fresh: CloudServerMove, was: CloudServerMove?) async {
+    moves[fresh.moveId] = fresh
+    guard fresh.isFinished, was?.isFinished != true, moveEndings[fresh.moveId] == nil else {
+      await moveEndings[fresh.moveId]?.value
+      return
+    }
+    let ending = Task { @MainActor [weak self] in
+      guard let self else { return }
+      let name = fresh.sourceName ?? "The computer"
+      switch fresh.state {
+      case "done":
+        await self.syncService.refreshCloudServerInstances()
+        await AccountService.shared.loadMachines()
+        await self.reload()
+        ADEHaptics.success()
+        CloudLaneActions.shared.toast = ADEToastMessage(
+          text: "Moved",
+          detail: fresh.sourceDeleted == false
+            ? "\(name) is on \(fresh.kindWords) now. ADE couldn't delete the old computer; delete it from its page."
+            : "\(name) is on \(fresh.kindWords) now. Its lane and chats came along."
+        )
+      case "failed":
+        ADEHaptics.error()
+        CloudLaneActions.shared.toast = ADEToastMessage(text: "Couldn't move \(name)", kind: .failure, detail: cloudPhoneWords(fresh.error ?? fresh.message))
+        await self.reload()
+      default:
+        CloudLaneActions.shared.toast = ADEToastMessage(text: "Cancelled the move", detail: cloudPhoneWords(fresh.message))
+        await self.reload()
+      }
+    }
+    moveEndings[fresh.moveId] = ending
+    await ending.value
+    if fresh.state == "done" { endedMoves[fresh.moveId] = fresh }
+    if fresh.state != "failed" { moves[fresh.moveId] = nil }
   }
 
   func setLimits(_ args: [String: Any]) async {
