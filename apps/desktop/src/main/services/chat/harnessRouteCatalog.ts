@@ -37,6 +37,7 @@ import {
 } from "../opencode/openCodeCredentials";
 import { lastOpenCodeDiscoveredLocalModels, listPersistedOpenCodeProviderModels, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
 import { OPENCODE_HOUSE_PROVIDER_IDS } from "../../../shared/opencodeProviders";
+import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import type { Logger } from "../logging/logger";
 import { DEFAULT_API_CREDENTIAL_ID } from "../../../shared/types/apiCredentials";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
@@ -124,7 +125,9 @@ let keyModelsProbe: Promise<unknown> | null = null;
 /**
  * Lists the models of `openCodeKeysWithoutModels` once, in the background, so
  * the next read of the catalog has their routes. One probe at a time; a failed
- * one is tried again at the next read.
+ * one is tried again at the next read. A computer that never ran OpenCode
+ * (a new ADE Cloud computer whose OpenCode Go key came from the account)
+ * gets ADE's pinned OpenCode first: the key is useless without it.
  */
 export function probeOpenCodeKeyModelsInBackground(deps: {
   projectRoot: string;
@@ -135,13 +138,13 @@ export function probeOpenCodeKeyModelsInBackground(deps: {
   const missing = openCodeKeysWithoutModels();
   if (missing.length === 0) return;
   deps.logger.info("harness_routes.opencode_key_models_probe", { providers: missing });
-  keyModelsProbe = probeOpenCodeProviderInventory({
+  keyModelsProbe = (pinnedToolDownload("opencode") ?? Promise.resolve()).then(() => probeOpenCodeProviderInventory({
     projectRoot: deps.projectRoot,
     projectConfig: deps.projectConfig,
     logger: deps.logger,
     force: true,
     discoveredLocalModels: lastOpenCodeDiscoveredLocalModels(),
-  }).catch((error: unknown) => {
+  })).catch((error: unknown) => {
     deps.logger.warn("harness_routes.opencode_key_models_probe_failed", { error: error instanceof Error ? error.message : String(error) });
   }).finally(() => {
     keyModelsProbe = null;

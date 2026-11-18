@@ -353,10 +353,21 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       const binding = previous?.binding
         ?? (connection ? realBinding(connection, first) : null)
         ?? savedBinding(machineId, first, machineName);
-      const sessions = rows.map(savedChatSession);
+      // A chat saves its lane's name as it was when the chat started. A lane
+      // renamed since (the launch names it first, the person later) shows by
+      // the name the account's lane index has now.
+      const laneNow = new Map(adeCloudLaneComputersNow().map((computer) => [computer.laneId, computer.laneName] as const));
+      const current = (row: RoutedSavedChatRow): RoutedSavedChatRow => {
+        const name = row.laneId ? laneNow.get(row.laneId)?.trim() : null;
+        return name && name !== row.laneName ? { ...row, laneName: name } : row;
+      };
+      const sessions = rows.map((row) => savedChatSession(current(row)));
       const known = new Set(previous?.lanes.map((lane) => lane.id) ?? []);
-      const lanes = [...(previous?.lanes ?? [])];
-      for (const row of rows) {
+      const lanes = (previous?.lanes ?? []).map((lane) => {
+        const name = laneNow.get(lane.id)?.trim();
+        return name && name !== lane.name ? { ...lane, name } : lane;
+      });
+      for (const row of rows.map(current)) {
         const lane = savedChatLane(row);
         if (!known.has(lane.id)) {
           known.add(lane.id);

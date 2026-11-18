@@ -20623,6 +20623,12 @@ export function AgentChatPane({
     : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;
+  // A resting ADE Cloud computer cannot say which models it can run: its
+  // sign-ins are unknown, not missing. The picker then lists every model as
+  // one to pick (the send wakes the computer, which names a real sign-in
+  // problem), instead of "Sign in" rows that lead to a settings page for a
+  // computer that is asleep.
+  const restingModelPicker = chatComputerResting && !cursorCloudSessionActive;
   const composerAvailableModelIds = cursorCloudSessionActive ? cursorCloudModelIds : effectiveAvailableModelIds;
   const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudSessionActive;
 
@@ -20851,13 +20857,13 @@ export function AgentChatPane({
             onModelPickerOpenRequestHandled={handleModelPickerOpenRequestHandled}
             // Cloud mode narrows the picker to the models Cursor Cloud can actually run. Leaving
             // it (or picking a non-cursor model another way) restores the full list.
-            availableModelIds={composerAvailableModelIds}
+            {...(restingModelPicker ? {} : { availableModelIds: composerAvailableModelIds })}
             mentionModelIds={handoffAvailableModelIds}
             catalogScopeKey={modelCatalogScopeKey}
             constrainModelSelection={composerConstrainModelSelection}
             modelUnavailableMessage={cursorCloudSessionActive ? undefined : constrainedModelSelectionError ?? undefined}
-            providerAuthStatus={modelPickerProviderAuthStatus}
-            {...(modelPickerProviderRuntimeMissing ? { providerRuntimeMissing: modelPickerProviderRuntimeMissing } : {})}
+            {...(restingModelPicker || !modelPickerProviderAuthStatus ? {} : { providerAuthStatus: modelPickerProviderAuthStatus })}
+            {...(modelPickerProviderRuntimeMissing && !restingModelPicker ? { providerRuntimeMissing: modelPickerProviderRuntimeMissing } : {})}
             onRuntimeCatalogRefreshed={() => {
               setRuntimeCatalogVersion((version) => version + 1);
             }}

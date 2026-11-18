@@ -262,7 +262,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       );
       if (match) return match;
       throw new Error(
-        `${machineName(machine)} doesn't have this repository (${origin}). Open it in ADE there once, or pass --project <name|path|id>.`,
+        `${machineName(machine)} doesn't have this repository (${origin}). Run the command again with --clone to clone it there, or pass --project <name|path|id>.`,
       );
     }
     if (scope.kind !== "project") throw new Error("This request needs a project on the other machine.");
