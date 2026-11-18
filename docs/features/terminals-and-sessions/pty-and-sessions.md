@@ -568,7 +568,13 @@ for the TopBar indicator. Each root is `{ pid, kind }` from `toolTypeHint`
 
 `ade.app.getResourceUsage` (`registerIpc.ts`) caches for 900 ms
 (`APP_RESOURCE_USAGE_CACHE_MS`) and shares one in-flight sample per context
-set. The renderer's `resourcePressure.ts` groups roles into "ADE app"
+set. The top bar's pressure check (the default `calm-ok` mode) can reuse the
+last `ps` for the time `processSampleReuseMs` gives: 30 s while the process
+trees were far below every pressure line, 10 s while only their CPU was (a
+shown chip checks every 2 s, and agents can hold memory on a small Mac at
+rest), and never while their CPU was not. Electron's own numbers and system
+memory are read fresh on every call; Settings > Health asks with
+`fresh: true` and always gets a new `ps`. The renderer's `resourcePressure.ts` groups roles into "ADE app"
 (Electron, `ade-runtime`, `ade-pty-host`), "agents" (`provider-agent`) and
 "other terminal processes" (`shell`, `unknown`), and adds a staleness note when
 the sample is `unavailable`.
